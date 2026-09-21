@@ -172,8 +172,10 @@ func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (m
 
 	// §4.4 pre-copy gate: the authoritative write-time check (statfs is
 	// ground truth; the CRD ratio was only the fast pre-filter). The
-	// statfs target is the FILESYSTEM — the uploads dir's parent (the
-	// mount root, which always exists); avail is per-filesystem.
+	// statfs target is the uploads dir ITSELF — which exists only
+	// because of the load-bearing MkdirAll above (avail is
+	// per-filesystem; the dir is as good a probe as any path on the
+	// volume, and it is the one we are about to write into).
 	if !e.destAvailAtLeast(size + e.destMargin) {
 		return nil, &applyError{code: "dest_disk_full", msg: "destination avail below size + margin"}
 	}
@@ -337,6 +339,13 @@ func (s *controlSocketServer) uploadApplyControlMethod(ctx context.Context, conn
 	methodCtx, cancel := context.WithTimeout(ctx, s.uploadApply.applyDeadline+5*time.Second)
 	defer cancel()
 	result, aerr := s.uploadApply.Apply(methodCtx, req.Params)
+	// The ack (success OR error) gets a FRESH deadline arm: a copy that
+	// consumed the whole bound must still be able to deliver its
+	// terminal response — without this, a bound-expired abort writes to
+	// a dead conn and the client sees EOF instead of the class.
+	if conn != nil {
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	}
 	if aerr != nil {
 		if aerr.code == "bad_request" {
 			return s.errResp(req.ID, "bad_request", aerr.msg)

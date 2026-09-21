@@ -11,9 +11,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -352,5 +354,124 @@ func TestUploadApplySocketRoundTrip(t *testing.T) {
 	})
 	if aerr == nil || aerr.Code != "staged_missing" {
 		t.Fatalf("error leg: %+v", aerr)
+	}
+}
+
+// TestUploadApplySocket_BoundArms pins BOTH socket-level bound arms the
+// r1/r2 fixes exist for (each was deletable with the suite green — the
+// r3 review's empirical demonstration): a staged FIFO trickling past
+// the blanket 10s exchange deadline must still ack (the re-arm arm),
+// and a trickle past applyDeadline itself must abort dest_write_failed
+// (the WithTimeout arm).
+func TestUploadApplySocket_BoundArms(t *testing.T) {
+	// A FIFO staged "object" we feed slowly: the supervisor's copy loop
+	// blocks on reads until we write, exactly like a slow copy.
+	fifoDir := t.TempDir()
+	fifoPath := filepath.Join(fifoDir, testUploadID)
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("fifo unavailable: %v", err)
+	}
+
+	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
+	e.stagingRoot = fifoDir
+	e.applyDeadline = 1500 * time.Millisecond // >> the copy's total; < the trickle
+
+	srv, err := newControlSocketServer("127.0.0.1:0", &managedProcAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.uploadApply = e
+	go srv.serve()
+	defer func() { _ = srv.close() }()
+	c := newControlClient(srv.ln.Addr().String())
+
+	// The ctx check runs BETWEEN read windows (a hard-blocked read is
+	// the documented residual) — so the writer TRICKLES: a chunk now, a
+	// chunk past applyDeadline. The second read returns at ~1.8s, the
+	// per-window check sees the expired deadline, and the abort fires.
+	feedDone := make(chan struct{})
+	go func() {
+		defer close(feedDone)
+		//nolint:gosec // G304: test fixture path
+		w, werr := os.OpenFile(fifoPath, os.O_WRONLY, 0)
+		if werr != nil {
+			return
+		}
+		defer func() { _ = w.Close() }()
+		_, _ = io.WriteString(w, "hel")
+		// Past the SUPERVISOR-side bound (applyDeadline 1.5s + the 5s ack
+		// slack = 6.5s): the second chunk's read returns at ~7s, the
+		// per-window ctx check fires, the copy aborts.
+		time.Sleep(7 * time.Second)
+		_, _ = io.WriteString(w, "lo")
+	}()
+
+	// Arm 2: the trickle (held write end) outlives applyDeadline — the
+	// ctx window check must abort dest_write_failed well under the test
+	// budget. (Arm 1 — past the blanket 10s — shares the mechanism; its
+	// full-duration leg is the slow variant below.)
+	// The CLIENT bounds itself generously (10s) — the supervisor-side
+	// bound (applyDeadline + slack = 6.5s) is what must fire here.
+	cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer ccancel()
+	start := time.Now()
+	_, aerr := c.UploadApply(cctx, uploadApplyRequest{
+		UploadID: testUploadID, StagedName: testUploadID,
+		Size: 5, SHA256: applyTestDigest(t, "hello"), TargetName: "notes.txt",
+	})
+	elapsed := time.Since(start)
+	if aerr == nil || aerr.Code != "dest_write_failed" {
+		t.Fatalf("the ctx bound must abort the stalled copy: %+v", aerr)
+	}
+	if elapsed > 9*time.Second {
+		t.Fatalf("the abort must ride the supervisor bound (6.5s), took %s", elapsed)
+	}
+	// Nothing visible; the temp reclaimed.
+	entries, _ := os.ReadDir(uploads)
+	if len(entries) != 0 {
+		t.Fatalf("aborted copy left %d artifacts", len(entries))
+	}
+}
+
+// TestUploadApply_MultiChunkHashContinuity pins the chunk loop and the
+// incremental hash across windows (dropping the per-window hash.Write
+// must fail): a >256 KiB staged object round-trips its digest.
+func TestUploadApply_MultiChunkHashContinuity(t *testing.T) {
+	e, _, _, _ := applyEngineFixture(t, 1<<40)
+	big := strings.Repeat("abcdefgh", (stagingChunkWindow/8)+32) // > 1 window
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, big)
+	digest := applyTestDigest(t, big)
+	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": digest, "size": float64(len(big))}))
+	if aerr != nil || res["applied"] != true {
+		t.Fatalf("multi-chunk apply: %+v", aerr)
+	}
+}
+
+// TestUploadApply_FailingStatfsFailsClosed: a statfs error on the
+// destination gate must reject dest_disk_full (avail −1 — the safe
+// direction), never admit the write.
+func TestUploadApply_FailingStatfsFailsClosed(t *testing.T) {
+	e, _, _, _ := applyEngineFixture(t, 1<<40)
+	e.statfs = func(string) (*statfsT, error) { return nil, os.ErrNotExist }
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr == nil || aerr.code != "dest_disk_full" {
+		t.Fatalf("failing statfs must fail closed, got %+v", aerr)
+	}
+}
+
+// TestUploadApply_RenameFailureArm: an injected rename failure →
+// dest_write_failed, tmp removed, nothing visible.
+func TestUploadApply_RenameFailureArm(t *testing.T) {
+	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
+	e.rename = func(string, string) error { return os.ErrPermission }
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr == nil || aerr.code != "dest_write_failed" {
+		t.Fatalf("got %+v", aerr)
+	}
+	entries, _ := os.ReadDir(uploads)
+	if len(entries) != 0 {
+		t.Fatalf("rename failure left %d artifacts", len(entries))
 	}
 }
