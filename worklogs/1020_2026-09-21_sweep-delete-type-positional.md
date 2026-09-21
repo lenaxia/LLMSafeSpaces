@@ -35,4 +35,4 @@ None.
 
 - `local/us-70-secret-delivery-e2e.sh` — type positional on both sweep deletes.
 - `local/us70_harness_script_test.go` — grammar-validating fakes + tightened trace assertion.
-- `worklogs/NNNN_2026-09-21_sweep-delete-type-positional.md` — this worklog.
+- `worklogs/1020_2026-09-21_sweep-delete-type-positional.md` — this worklog.
