@@ -14,6 +14,7 @@ import { UserSettingsTab } from "./components/settings/UserSettingsTab";
 import { UserProviderCredentialsTab } from "./components/settings/UserProviderCredentialsTab";
 import { SecretsTab } from "./components/settings/SecretsTab";
 import { ApiKeysTab } from "./components/settings/ApiKeysTab";
+import { PromptsTab } from "./components/settings/PromptsTab";
 import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
 import { PasskeySettings } from "./components/settings/PasskeySettings";
 import { WorkspaceImagesTab } from "./components/settings/WorkspaceImagesTab";
@@ -128,6 +129,7 @@ export const router = createBrowserRouter([
               { path: "provider-keys", element: <UserProviderCredentialsTab /> },
               { path: "mcp-servers", element: <UserMcpServersTab scope="user" /> },
               { path: "secrets", element: <SecretsTab /> },
+              { path: "prompts", element: <PromptsTab /> },
               { path: "api-keys", element: <ApiKeysTab /> },
               { path: "passkeys", element: <PasskeySettings /> },
               { path: "workspace-images", element: <WorkspaceImagesTab /> },

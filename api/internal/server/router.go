@@ -225,6 +225,7 @@ type RouterConfig struct {
 	AdminMCPServersHandler *handlers.MCPServersHandler
 	OrgMCPServersHandler   *handlers.MCPServersHandler
 	UserMCPServersHandler  *handlers.MCPServersHandler
+	UserPromptsHandler     *handlers.UserPromptsHandler
 
 	CookieName string
 
@@ -1871,6 +1872,16 @@ func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg Rou
 	}
 
 	if cfg.UserMCPServersHandler != nil {
+		// #1499: user-level saved prompts (owner-scoped CRUD).
+		if cfg.UserPromptsHandler != nil {
+			userPrompts := router.Group("/api/v1/me/prompts")
+			userPrompts.Use(services.GetAuth().AuthMiddleware())
+			userPrompts.GET("", cfg.UserPromptsHandler.List)
+			userPrompts.POST("", cfg.UserPromptsHandler.Create)
+			userPrompts.PUT("/:id", cfg.UserPromptsHandler.Update)
+			userPrompts.DELETE("/:id", cfg.UserPromptsHandler.Delete)
+		}
+
 		userMcp := router.Group("/api/v1/me/mcp-servers")
 		userMcp.Use(services.GetAuth().AuthMiddleware())
 		userMcp.GET("", cfg.UserMCPServersHandler.UserList)
