@@ -48,6 +48,7 @@ What this is **not**: the sidecar never writes the PVC (US-4b preserved — the 
 ```
 client ── multipart (streamed) ──▶ API POST /workspaces/:id/uploads
                                     │ D16 gates (phase→disk-ratio→cap)   [unchanged]
+                                    │ + declared-length gate: no Content-Length → 411 (§4.1)
                                     ▼
                      agentd (sidecar) :4097 /v1/files    [streamed, as today]
                        1 admission: reserve bytes (§4.1–4.2) ── reject: 507/429 (§4.6)
@@ -116,7 +117,7 @@ Two same-filesystem renames bracket a cross-filesystem copy — that is the atom
 
 The stress invariants (§6) shaped this decision explicitly. The chain is synchronous and streaming end-to-end — client → API pipe → agentd staging write → (later) supervisor copy — with a bounded window at each hop. TCP backpressure therefore *is* the flow control: if the tmpfs write or the PVC copy stalls, agentd stops reading, the API's `io.Pipe` fills its window and blocks, and the client's send stalls. There is no decoupled buffer anywhere in the chain, so there is nothing for an explicit window-credit protocol to protect — adding one would complicate the control protocol (§3.2) for no invariant it alone can uphold. This is a deliberate rejection, pinned by the backpressure invariant (§6.3): a stalled consumer must stall the producer with memory flat, and it does.
 
-The one mid-stream hazard admission cannot pre-empt — the D14 adversary consuming tmpfs capacity *after* admission, making the staged write hit `ENOSPC` mid-stream — is handled as a clean stream abort: write error → reservation released → 507 `write_error`-class to the API → hygiene reclaims the `.tmp` (§4.1.1, §4.3). The client retries against a fresh admission that sees the reduced `f_bavail`.
+The one mid-stream hazard admission cannot pre-empt — the D14 adversary consuming tmpfs capacity *after* admission, making the staged write hit `ENOSPC` mid-stream — is handled as a clean stream abort, in the §4.1 lifecycle order (unlink BEFORE release — the ordering §6.1's walked bound rests on): write error → **unlink the partial `.tmp` synchronously** → release the reservation → 507 `write_error`-class to the API. The crash backstop (§4.3's TTL/boot scrub) exists for a process that died before the unlink ran; in the live abort path it never has anything to reclaim. The client retries against a fresh admission that sees the reduced `f_bavail`.
 
 ---
 
@@ -143,7 +144,8 @@ admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
 //   a crashed process holds no reservations; its staged bytes are
 //   walked orphans until the TTL/boot scrub reclaims them). One mutex,
 //   defer-shaped. Unlink-before-release is what makes the no-crash
-//   walked bound hold (§6.1).
+//   walked bound hold (§6.1); the scrub arm finalizes BOTH crash
+//   orphans AND the live 504 path's held reservation (§4.3/§6.1).
 // (A) is the byte-weighted semaphore's enforcement point: the explicit
 //   upload budget (UPLOAD_STAGING_BUDGET, default 48 MiB on the 96 MiB
 //   volume, env-tunable) bounds aggregate upload residency regardless
@@ -280,14 +282,14 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 **Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/2×/4× concurrency (the count cap's default IS 4 — higher concurrency is unreachable by design, so the matrix characterizes the CAP BOUNDARY instead: the 5th concurrent upload's 429 latency) across file sizes (1 KiB / 1 MiB / 10 MiB — 25 MiB is single-flight by clause (A), characterized at 1× only).
 **Mechanism:** §3.3's bounded wait; the supervisor's apply-concurrency choice (§8 item 3).
-**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers).
+**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional (needs credentialUsage + floor + 40 MiB ≤ f_bavail — on the 96 MiB volume that requires the tmpfs's non-upload surfaces ≤ ~2 MiB); the harness asserts the precondition up front and skips DOWN with an explicit message rather than silently measuring 3×.
 
 ---
 
 ## 7. Test plan (implementation lanes inherit this)
 | Class | Pin |
 |---|---|
-| Staging admission | budget math unit table (floor/usage/reserve boundaries); reject-before-first-byte ordering; 507 shapes |
+| Staging admission | budget math unit table (floor/usage/reserve boundaries, two-clause); reject-before-first-byte ordering; 507 shapes; the admission INPUT wire contract: X-LLS-Declared-Body-Bytes propagation, the 411 shape on undeclared bodies, and lying declarations both directions (declares small/sends large → body truncated at the declared length → clean 400-class; declares large/sends small → over-reservation, the safe direction) |
 | Semaphore | concurrent admission never exceeds clause (A)'s budget (race test); 429 class |
 | Streaming | large-object memory flatness (allocation ceiling assertion on a ≥cap object); window bounded |
 | Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; the 504-tail orphan completes-or-is-reclaimed (both terminal states acceptable, never a partial) |
