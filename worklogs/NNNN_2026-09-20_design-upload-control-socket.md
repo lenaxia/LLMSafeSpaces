@@ -127,3 +127,10 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 
 - **The destination-side hygiene claim was FALSE in sidecar mode**: I had verified the scrub CALL's existence (sidecar_mode.go:163) but never its EFFICACY — the sidecar's /workspace is RO (its own comment concedes the no-op), and the only live call site (main.go:182) is the single-container path sidecar pods never reach. The issue thread's own /analyze comment had documented this gap and specified the fix; my doc asserted the opposite. Fixed: §9.2's supervisor lane ADDS the uid-1000 destination scrub (boot + TTL, the existing *.tmp glob); §4.3/§5.2 state the real gap being closed; §7 pins the destination-scrub row. Lesson recorded: verify EFFICACY (trace the call through its execution environment), not existence.
 - Diagram 411-arm cite corrected to §4.1; the PR body rewritten to the head doc (the .part/idempotency claims were stale from revision 1).
+
+
+## Review round 9 (design doc) — 1 minor + 2 nits (convergence)
+
+- §4.3's false absolute corrected: the supervisor is the only CONTROL-PLANE component that can write the destination dir — the in-pod agent shares its uid (§4.1.1) and is the D14 adversary, not a hygiene authority.
+- §5.2: "no PVC `.tmp` survives" → "survives INDEFINITELY" (reclaimed at boot/TTL, not instantly).
+- Destination scrub's TTL pinned to the same `UPLOAD_STAGING_TTL`.
