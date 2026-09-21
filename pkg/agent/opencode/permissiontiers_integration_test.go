@@ -113,9 +113,13 @@ func (m *tierProbeProvider) handler(t *testing.T) http.HandlerFunc {
 	}
 }
 
-// tierBoot writes a config whose mode.permissions.external_directory is
-// EXACTLY the platform floor (as the ConfigWriter renders it) and boots
-// the pinned binary via the shared harness.
+// tierBoot writes a config whose TOP-LEVEL permission.external_directory
+// is EXACTLY the platform floor (as the ConfigWriter renders it since the
+// #1493 wire finding) and boots the pinned binary via the shared harness.
+// The historical mode.permissions shape is deliberately NOT written: it
+// is INERT on the pinned 1.18.15 — these legs exist to prove the floor
+// DENIES through the live key, so a leg passing here is proof the
+// top-level shape is the one the harness reads.
 func tierBoot(t *testing.T, prov *httptest.Server) *opencodeServer {
 	t.Helper()
 	extDir := make(map[string]string, len(platformPermissionTiers))
@@ -123,7 +127,6 @@ func tierBoot(t *testing.T, prov *httptest.Server) *opencodeServer {
 		extDir[k] = v
 	}
 	perms := map[string]any{"external_directory": extDir}
-	mode := map[string]any{"permissions": perms}
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": map[string]any{
@@ -136,8 +139,8 @@ func tierBoot(t *testing.T, prov *httptest.Server) *opencodeServer {
 				}},
 			},
 		},
-		"model": "mock/mockmodel",
-		"mode":  mode,
+		"model":      "mock/mockmodel",
+		"permission": perms,
 	}
 	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
 	require.NoError(t, err)
@@ -198,8 +201,18 @@ func TestPermissionTier_ReadDeniesCanonicalTargets(t *testing.T) {
 
 	res := lastToolResult(t, c, id)
 	t.Logf("read tool result: %s", res)
-	assert.Contains(t, strings.ToLower(res), "denied",
-		"the read of a resolved secret target must be DENIED by the tier floor through the real matcher")
+	// The live 1.18.15 denial message is "The user has specified a rule
+	// which prevents you from using this specific tool call" followed by
+	// the matcher's own rule dump — assert the message AND that OUR deny
+	// pattern is quoted in the dump (proves the tier rule fired, not
+	// some other gate). The word "denied" appears nowhere in the real
+	// message — an earlier draft asserted it and failed against a
+	// demonstrably-firing deny (the unsatisfiable-assertion class; caught
+	// by running the leg live, which is why these legs exist).
+	assert.Contains(t, res, "prevents you from using this specific tool call",
+		"the read of a resolved secret target must be denied by the tier floor through the real matcher")
+	assert.Contains(t, res, `"/sandbox-runtime/rt/secrets/*"`,
+		"the matcher's rule dump must quote the resolved-target deny — OUR rule fired")
 }
 
 // TestPermissionTier_BashDeniesTypedEtcPath: bash command parsing feeds
@@ -226,8 +239,11 @@ func TestPermissionTier_BashDeniesTypedEtcPath(t *testing.T) {
 
 	res := lastBashResult(t, c, id)
 	t.Logf("bash tool result: %s", res)
-	assert.Contains(t, strings.ToLower(res), "denied",
-		"bash with a typed /etc path must be DENIED by the tier floor")
+	// Same shape as the read leg: the live message + our quoted pattern.
+	assert.Contains(t, res, "prevents you from using this specific tool call",
+		"bash with a typed /etc path must be denied by the tier floor")
+	assert.Contains(t, res, `"/etc/*"`,
+		"the matcher's rule dump must quote the /etc deny — OUR rule fired")
 }
 
 func (m *tierProbeProvider) handlerBash(t *testing.T) http.HandlerFunc {
