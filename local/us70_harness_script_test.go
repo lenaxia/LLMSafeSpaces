@@ -806,7 +806,7 @@ func TestUS70MidSweep_CleansRowWorkspacesBeforeAC11(t *testing.T) {
 	ac11 := strings.Index(src, "AC-11 — POST /v1/resync-secrets")
 	midSweep := strings.LastIndex(src[:ac11], "deleted and verified gone")
 	if ac11 < 0 || midSweep < 0 {
-		t.Fatal("a verified sweep must run before AC-11's row — the AC-17/AC-F/Chaos legs' five standing workspaces are the margin ws-010 lacked (run 35550849959)")
+		t.Fatal("a verified sweep must run before AC-11's row — the five standing row workspaces (1=AC-1's, 2=AC-2's, 3=Chaos's, 4=AC-F's, 5=AC-3's) are the margin ws-010 lacked (run 35550849959)")
 	}
 	blockStart := strings.LastIndex(src[:midSweep], "MID_SEL_FAILED=0")
 	if blockStart < 0 {
@@ -934,7 +934,7 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		id   int
 		want bool
 	}{
-		{0, false}, {1, true}, {2, true}, {5, true}, {6, false}, {90, false}, {101, false},
+		{0, false}, {1, true}, {2, true}, {3, true}, {4, true}, {5, true}, {6, false}, {90, false}, {101, false},
 	} {
 		name := fmt.Sprintf("e2e5d000-0000-4000-8000-%012d", tc.id)
 		cmd := exec.Command("awk", "-F/", mid[1])
