@@ -165,3 +165,8 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - The r13 body edit added the chain/history lines but left the §4 highlight's unscoped absolute and the (r12) label — stale within the very edit announcing the scoping. Both fixed (highlight now carries the scoped phrasing verbatim; label r13).
 - The §4.1 "Available, not total" bullet's last sentence tightened to the same scoped truth (pre-admission junk → 507s; post-admission → §3.5 abort).
 - Lesson generalized: EVERY body sentence overlapping a scoped doc claim must be re-visited in the same edit that scopes the doc — the body is a summary OF the doc, not a parallel text.
+
+
+## Review round 15 — the label recurrence inside the label fix
+
+- r14's commit bumped the label to (r13) while making the head r14 — stale within its own fix (sixth body-staleness recurrence, fourth label-specific). Body now (r14) with the 14-round count, verified by grep before this record. The reviewer's guidance for the class is now codified here: re-grep the LABEL against the head SHA in the same breath as the edit.
