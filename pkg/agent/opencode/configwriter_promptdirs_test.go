@@ -24,7 +24,7 @@ const renderedBase = `{
 	"provider": {"openai": {"options": {"apiKey": "k"}}},
 	"model": "openai/gpt-4o",
 	"agent": {"build": {"prompt": "BOOT PROMPT"}},
-	"mode": {"permissions": {"external_directory": {"/tmp/*": "allow", "/secrets": "deny"}}}
+	"permission": {"external_directory": {"/injected/*": "allow", "/secrets": "deny"}}
 }`
 
 func writeRenderedBase(t *testing.T, dir string) string {
@@ -44,14 +44,14 @@ func decodeRendered(t *testing.T, path string) (prompt string, extDir map[string
 				Prompt string `json:"prompt"`
 			} `json:"build"`
 		} `json:"agent"`
-		Mode struct {
-			Permissions struct {
-				ExternalDirectory map[string]string `json:"external_directory"`
-			} `json:"permissions"`
-		} `json:"mode"`
+		// #1493: external_directory rules render under the LIVE top-level
+		// permission key (mode.permissions is inert on pinned opencode).
+		Permission struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
 	}
 	require.NoError(t, json.Unmarshal(data, &cfg))
-	return cfg.Agent.Build.Prompt, cfg.Mode.Permissions.ExternalDirectory
+	return cfg.Agent.Build.Prompt, cfg.Permission.ExternalDirectory
 }
 
 // Replace semantics through the contract, over a config the writer did
@@ -70,7 +70,7 @@ func TestConfigWriter_Apply_PromptDirs_ReplaceOverRenderedFile(t *testing.T) {
 	prompt, extDir := decodeRendered(t, path)
 	assert.Equal(t, "UPDATED", prompt)
 	assert.Equal(t, "allow", extDir["/data/*"], "new pattern injected")
-	assert.NotContains(t, extDir, "/tmp/*", "previously-injected pattern replaced, not merged")
+	assert.NotContains(t, extDir, "/injected/*", "previously-injected pattern replaced, not merged")
 	assert.Equal(t, "deny", extDir["/secrets"], "user-authored deny rule preserved")
 }
 
@@ -93,7 +93,7 @@ func TestConfigWriter_Apply_PromptDirs_ClearOverRenderedFile(t *testing.T) {
 
 	prompt, extDir := decodeRendered(t, path)
 	assert.Empty(t, prompt, "cleared prompt must be removed from the rendered output")
-	assert.NotContains(t, extDir, "/tmp/*", "cleared injected pattern must be removed")
+	assert.NotContains(t, extDir, "/injected/*", "cleared injected pattern must be removed (tier keys persist by design — the fixture pattern is deliberately non-tier)")
 	assert.Equal(t, "deny", extDir["/secrets"], "user-authored deny rule must survive the clear")
 }
 
@@ -125,9 +125,15 @@ func TestConfigWriter_Apply_PromptDirs_Sanitized(t *testing.T) {
 	require.NoError(t, err)
 
 	_, extDir := decodeRendered(t, path)
-	assert.Len(t, extDir, 2, "empty + duplicate patterns sanitized")
+	// #1493: the floor rides along — the sanitization pin asserts the
+	// caller-controlled subset (empty dropped, duplicate collapsed), not
+	// the total size.
 	assert.Equal(t, "allow", extDir["/tmp/*"])
 	assert.Equal(t, "allow", extDir["/data/*"])
+	for k, v := range platformPermissionTiers {
+		assert.Equal(t, v, extDir[k])
+	}
+	assert.NotContains(t, extDir, "", "empty pattern dropped")
 }
 
 // Defensive copy: mutating the caller's slice after Apply must not
@@ -191,8 +197,8 @@ func TestConfigWriter_Apply_PromptDirs_RollbackRestoresCapturedRaws(t *testing.T
 
 	w := NewConfigWriter(path)
 	require.NotEmpty(t, w.agentRaw, "rendered agent section must be captured at construction")
-	require.NotEmpty(t, w.modeRaw, "rendered mode section must be captured at construction")
-	prevAgent, prevMode := w.agentRaw, w.modeRaw
+	require.NotEmpty(t, w.permissionRaw, "rendered permission section must be captured at construction (#1493: the live key)")
+	prevAgent, prevMode := w.agentRaw, w.permissionRaw
 
 	require.NoError(t, os.Chmod(dir, 0o555))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
@@ -205,8 +211,8 @@ func TestConfigWriter_Apply_PromptDirs_RollbackRestoresCapturedRaws(t *testing.T
 
 	assert.JSONEq(t, string(prevAgent), string(w.agentRaw),
 		"failed Apply must restore the stripped agentRaw")
-	assert.JSONEq(t, string(prevMode), string(w.modeRaw),
-		"failed Apply must restore the stripped modeRaw")
+	assert.JSONEq(t, string(prevMode), string(w.permissionRaw),
+		"failed Apply must restore the stripped permissionRaw")
 }
 
 // Production configuration (round-2 hard requirement): BOTH constructors
@@ -223,16 +229,19 @@ func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *t
 
 	// Extend the rendered file with a prior-runtime-Apply pattern so the
 	// sets differ (side-car below has only /tmp/*).
+	// Non-tier patterns: /tmp/* is now a TIER key (always present), so
+	// the authority semantics use /sc/* (side-car) and /prior/*
+	// (rendered prior-apply) to stay observable (#1493).
 	rendered := `{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": {"openai": {"options": {"apiKey": "k"}}},
 		"agent": {"build": {"prompt": "BOOT PROMPT"}},
-		"mode": {"permissions": {"external_directory": {"/tmp/*": "allow", "/data/*": "allow", "/secrets": "deny"}}}
+		"permission": {"external_directory": {"/sc/*": "allow", "/prior/*": "allow", "/secrets": "deny"}}
 	}`
 	require.NoError(t, os.WriteFile(path, []byte(rendered), 0o600))
 
 	dirsPath := filepath.Join(dir, "allowed-dirs")
-	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
+	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/sc/*"]`), 0o600))
 
 	// Production wiring: side-car present, constructed over the
 	// rendered file.
@@ -244,9 +253,10 @@ func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *t
 	require.NoError(t, err)
 
 	_, extDir := decodeRendered(t, path)
-	assert.NotContains(t, extDir, "/tmp/*", "side-car pattern must clear")
-	assert.NotContains(t, extDir, "/data/*", "pattern injected by a prior writer lifetime must clear too (union semantics)")
+	assert.NotContains(t, extDir, "/sc/*", "side-car pattern must clear")
+	assert.NotContains(t, extDir, "/prior/*", "pattern injected by a prior writer lifetime must clear too (union semantics)")
 	assert.Equal(t, "deny", extDir["/secrets"], "user-authored deny rule survives")
+	assert.Equal(t, "allow", extDir["/tmp/*"], "tier keys persist through an allowedDirs clear (the floor is not clearable)")
 }
 
 // Round-3 review: `"external_directory": null` decoded into a nil

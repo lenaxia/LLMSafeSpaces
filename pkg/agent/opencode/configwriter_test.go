@@ -523,31 +523,30 @@ func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
 	require.NoError(t, err)
 
 	var cfg struct {
-		Mode struct {
-			Permissions struct {
-				ExternalDirectory map[string]string `json:"external_directory"`
-			} `json:"permissions"`
-		} `json:"mode"`
+		Permission struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
-	require.Len(t, cfg.Mode.Permissions.ExternalDirectory, 2,
-		"both patterns must be present as allow-rules")
-	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"])
-	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/var/cache/*"])
+	// #1493: the tier floor renders alongside the allowed-dirs — the
+	// count pin becomes a membership pin (floor keys are always present).
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"])
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/var/cache/*"])
+	assert.Equal(t, "deny", cfg.Permission.ExternalDirectory["/etc/*"],
+		"the tier floor rides along")
 }
 
 func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
+	// #1493 shape: bash stays in the legacy (dead) mode block the writer
+	// preserves verbatim; external_directory rules live in the top-level
+	// permission key.
 	existing := `{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
-		"mode": {
-			"permissions": {
-				"bash": "ask",
-				"external_directory": {"/opt/data/*": "allow"}
-			}
-		}
+		"mode": {"permissions": {"bash": "ask"}},
+		"permission": {"external_directory": {"/opt/data/*": "allow"}}
 	}`
 	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
 	writeAllowedDirs(t, dir, []string{"/tmp/*"})
@@ -558,7 +557,14 @@ func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
 
+	// #1493: the injected rule renders under the LIVE top-level
+	// permission key; the legacy mode block is preserved verbatim
+	// (bash + the user's /opt/data/* stay in the dead shape, swept of
+	// tier keys only).
 	var cfg struct {
+		Permission struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
 		Mode struct {
 			Permissions struct {
 				Bash              string            `json:"bash"`
@@ -568,60 +574,65 @@ func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
 	assert.Equal(t, "ask", cfg.Mode.Permissions.Bash,
-		"sibling permission rule `bash` must be preserved")
-	require.Contains(t, cfg.Mode.Permissions.ExternalDirectory, "/opt/data/*",
-		"existing external_directory rule must be preserved")
-	require.Contains(t, cfg.Mode.Permissions.ExternalDirectory, "/tmp/*",
-		"injected /tmp/* rule must be present")
-	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"])
+		"sibling permission rule `bash` must be preserved in the legacy block")
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/opt/data/*"],
+		"existing external_directory rule preserved in the LIVE key")
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"],
+		"injected rule renders under the live top-level key")
+	assert.Equal(t, "deny", cfg.Permission.ExternalDirectory["/etc/*"],
+		"the tier floor rides along (the live key carries the tiers — NOT swept there)")
 }
 
 func TestAllowedDirs_MissingFile_NoModeBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
 
+	// #1493: the tier floor ALWAYS emits a mode block (empty allowedDirs
+	// no longer means no mode block). The prior no-mode-block pin is
+	// superseded: what still holds is that ONLY the floor renders — no
+	// allowed-dirs noise — and no other sections are invented.
 	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "does-not-exist.json")))
 	require.NoError(t, w.Rebuild())
 
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.NotContains(t, string(written), `"mode"`,
-		"missing allowed-dirs file must not emit a mode block")
+	var cfg struct {
+		Provider   map[string]json.RawMessage `json:"provider"`
+		Permission struct {
+			ExtDir map[string]string `json:"external_directory"`
+		} `json:"permission"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	assert.Empty(t, cfg.Provider, "no provider invented from nothing")
+	assert.Equal(t, len(platformPermissionTiers), len(cfg.Permission.ExtDir),
+		"only the tier floor renders — no allowed-dirs entries without a side-car")
 }
 
-func TestAllowedDirs_BareStringExternalDirectory_Preserved(t *testing.T) {
+func TestAllowedDirs_BareStringExternalDirectory_ConvertedToFloorMap(t *testing.T) {
+	// #1493 semantics change: a bare-string external_directory ("allow")
+	// would defeat every tier deny if preserved as-is. The writer now
+	// converts it to the map form with the floor — the string shape can
+	// only originate from agent self-tampering (the writer always
+	// renders the map form), so the superseded preserve-as-is pin is
+	// replaced by the conversion pin.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
-	existing := `{
-		"$schema": "https://opencode.ai/config.json",
-		"mode": {
-			"permissions": {
-				"external_directory": "ask"
-			}
-		}
-	}`
+	existing := `{"permission": {"external_directory": "allow"}}`
 	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
-	writeAllowedDirs(t, dir, []string{"/tmp/*"})
 
-	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json")))
+	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "does-not-exist.json")))
 	require.NoError(t, w.Rebuild())
 
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
-
 	var cfg struct {
-		Mode struct {
-			Permissions struct {
-				ExternalDirectory json.RawMessage `json:"external_directory"`
-			} `json:"permissions"`
-		} `json:"mode"`
+		Permission struct {
+			ExtDir map[string]string `json:"external_directory"`
+		} `json:"permission"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
-	var bare string
-	require.NoError(t, json.Unmarshal(cfg.Mode.Permissions.ExternalDirectory, &bare),
-		"bare-string external_directory must be preserved as a bare string, not converted to a map")
-	assert.Equal(t, "ask", bare,
-		"bare-string external_directory value must be unchanged")
+	assert.Equal(t, "deny", cfg.Permission.ExtDir["/etc/*"],
+		"a bare-string allow must be converted to the floored map, not preserved")
 }
 
 func TestAllowedDirs_EmptyDirs_NoExternalDirectoryNoise(t *testing.T) {
@@ -640,21 +651,28 @@ func TestAllowedDirs_EmptyDirs_NoExternalDirectoryNoise(t *testing.T) {
 	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "does-not-exist.json")))
 	require.NoError(t, w.Rebuild())
 
+	// #1493: the permission-tier floor is ALWAYS rendered (empty
+	// allowedDirs no longer means a no-op external_directory — the
+	// floor is the platform boundary). The prior no-op pin is
+	// superseded; what still holds:
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.NotContains(t, string(written), "external_directory",
-		"empty allowedDirs must not add external_directory to an existing mode block")
-
 	var cfg struct {
 		Mode struct {
 			Permissions struct {
 				Bash string `json:"bash"`
 			} `json:"permissions"`
 		} `json:"mode"`
+		Permission struct {
+			ExtDir map[string]string `json:"external_directory"`
+		} `json:"permission"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
 	assert.Equal(t, "ask", cfg.Mode.Permissions.Bash,
 		"existing bash permission rule must be preserved")
+	assert.Equal(t, "deny", cfg.Permission.ExtDir["/etc/*"],
+		"the tier floor renders even with empty allowedDirs")
+	assert.Equal(t, "allow", cfg.Permission.ExtDir["/tmp/*"])
 }
 
 func TestAllowedDirs_SchemaValid(t *testing.T) {
