@@ -856,6 +856,7 @@ func TestUS70MidSweep_Executes(t *testing.T) {
 		"    [[ \"${FAKE_SEL_EMPTY:-}\" != \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000001\\nworkspace/e2e5d000-0000-4000-8000-000000000005\\n'\n" +
 		"    exit 0\n" +
 		"  fi\n" +
+		"  [[ -n \"${FAKE_GET_EXIT_AFTER:-}\" ]] && exit ${FAKE_GET_EXIT_AFTER}\n" +
 		"  [[ \"${FAKE_STUCK:-}\" == \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000001\\n'\n" +
 		"  exit 0\n" +
 		"}; done\n" +
@@ -896,6 +897,27 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		out, err := run("export FAKE_SEL_EMPTY=1\n")
 		if err != nil || !strings.Contains(out, "nothing to sweep") || strings.Contains(out, "verified gone") {
 			t.Fatalf("the unswept path states what it is, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("failed delete dies loudly (fiction-class parity)", func(t *testing.T) {
+		out, err := run("export FAKE_DELETE_EXIT=1\n")
+		if err == nil || !strings.Contains(out, "DIE") {
+			t.Fatalf("a failed mid-sweep delete must die, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("selection failure: state unknown, never a fiction claim", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a selection-get blip warns and continues, got: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "already absent") || strings.Contains(out, "verified gone") || !strings.Contains(out, "state unknown") {
+			t.Fatalf("a failed selection must assert no unobserved state, got: %q", out)
+		}
+	})
+	t.Run("failed verify get never counts as verified", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT_AFTER=1\n")
+		if err == nil || strings.Contains(out, "verified gone") || !strings.Contains(out, "failed to terminate") {
+			t.Fatalf("a never-succeeding verify get must die unverified, err=%v\n%s", err, out)
 		}
 	})
 }
