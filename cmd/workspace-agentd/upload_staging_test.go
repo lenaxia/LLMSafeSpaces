@@ -630,7 +630,10 @@ func TestUploadApplyClient_LongCopyWithinBudgetSucceeds(t *testing.T) {
 			return
 		}
 		_, _ = io.ReadFull(conn, make([]byte, 1))
-		time.Sleep(300 * time.Millisecond) // a copy slower than the 2s default
+		// The delay MUST exceed the 2s control-plane default (the bug's
+		// bound) while staying inside the 5s apply budget — a 300ms copy
+		// would pass against the buggy code too (r3's finding).
+		time.Sleep(2500 * time.Millisecond)
 		_ = json.NewEncoder(conn).Encode(map[string]any{
 			"v": 1, "id": 1,
 			"result": map[string]any{"applied": true, "path": "/workspace/uploads/x-n", "size": 1},

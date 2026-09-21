@@ -100,3 +100,8 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 - **Dest-outcome rejections were dead code**: the dest_disk_full/checksum/size rejection path now counts on workspace_agentd_upload_dest_outcomes_total (the metric's own advertised contract).
 - **§7's race test** (concurrent admission never exceeds clause A): added TestStagingAdmission_ConcurrentNeverExceedsBudget (N goroutines racing Admit at a tight budget; max observed reserved ≤ budget).
 - Minors: staging_scrubbed moved onto the injected seam (RecordScrubbed); the boot ensureStagingDir error logs loudly (rides to the request-time 507 seam); the envelope-allowance comment now states the direct-path cap honestly moved to maxBytes+64KiB.
+
+
+## Review round 3 (1 finding: the toothless pin)
+
+- The reproduction pin's 300ms delay never crossed the 2s default it existed to exceed — it passed against the buggy code unchanged (the reviewer mutation-proved it twice). Fixed: the copy delay is 2.5s — beyond the bug's 2s bound, inside the 5s apply budget. Mutation-verified at this head: reverting to the inverted bound FAILS the pin; the fix passes (-count=2 stable, 5s runtime).
