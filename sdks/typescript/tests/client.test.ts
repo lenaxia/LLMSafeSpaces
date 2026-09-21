@@ -688,3 +688,34 @@ describe("attachments (Epic 68)", () => {
     });
   });
 });
+
+// #1499: user prompt library CRUD
+describe("userPrompts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("create + list unwrap the named envelope on the right paths", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ prompt: { id: "p1", name: "Weekly summary", content: "c" } }, 201),
+    );
+    const created = await client.userPrompts.create({ name: "Weekly summary", content: "c" });
+    expect(created.id).toBe("p1");
+    expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/prompts");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ prompts: [{ id: "p1", name: "Weekly summary", content: "c" }] }));
+    const list = await client.userPrompts.list();
+    expect(list).toHaveLength(1);
+    expect(list[0].name).toBe("Weekly summary");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ prompt: { id: "p1", name: "renamed", content: "c" } }));
+    const updated = await client.userPrompts.update("p1", { name: "renamed" });
+    expect(updated.name).toBe("renamed");
+    expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/me/prompts/p1");
+
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await expect(client.userPrompts.delete("p1")).resolves.toBeUndefined();
+    expect(mockFetch.mock.calls[3][1].method).toBe("DELETE");
+  });
+});

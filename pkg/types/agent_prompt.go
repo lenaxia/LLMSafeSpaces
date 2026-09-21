@@ -112,3 +112,37 @@ Identity and credentials:
 ## Tone
 
 Direct, neutral, and factual. No sycophancy. Match the user's technical level. If the user is wrong or a plan won't work, say so respectfully and propose an alternative rather than agreeing and failing later.`
+
+// UserPrompt is one saved prompt row (#1499). Owner-scoped to a user;
+// content is plain text (not a credential — settings-tier trust).
+type UserPrompt struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// UserPromptListResponse is the named-envelope list shape (house
+// convention: {"fires":[...]}, {"runs":[...]}).
+type UserPromptListResponse struct {
+	Prompts []UserPrompt `json:"prompts"`
+}
+
+// UserPromptResponse wraps a single prompt.
+type UserPromptResponse struct {
+	Prompt UserPrompt `json:"prompt"`
+}
+
+// CreatePromptRequest is the POST /me/prompts body.
+type CreatePromptRequest struct {
+	Name    string `json:"name" binding:"required"`
+	Content string `json:"content" binding:"required"`
+}
+
+// UpdatePromptRequest is the PUT /me/prompts/:id body — pointer fields,
+// nil keeps the stored value.
+type UpdatePromptRequest struct {
+	Name    *string `json:"name,omitempty"`
+	Content *string `json:"content,omitempty"`
+}

@@ -29,6 +29,9 @@ from .types import (
     InputRequest,
     McpAutoApplyRule,
     McpServer,
+    UserPrompt,
+    CreateUserPromptRequest,
+    UpdateUserPromptRequest,
     CreateMcpServerRequest,
     Message,
     ModelRef,
@@ -169,6 +172,7 @@ class LLMSafeSpaces:
         self.prompts = _PromptsAPI(self)
         self.agent_roles = _AgentRolesAPI(self)
         self.mcp_servers = _McpServersAPI(self)
+        self.user_prompts = _UserPromptsAPI(self)
         self.admin_mcp_servers = _AdminMcpServersAPI(self)
         self.org_mcp_servers = _OrgMcpServersAPI(self)
         self.workflows = _WorkflowsAPI(self)
@@ -1050,6 +1054,28 @@ class _ProbeAPI:
             "/probe-models",
             json={"apiKey": api_key, "baseURL": base_url},
         )
+
+
+class _UserPromptsAPI:
+    """The caller's saved prompts (/me/prompts, #1499)."""
+
+    def __init__(self, client: "LLMSafeSpaces"):
+        self._c = client
+
+    def list(self) -> list[UserPrompt]:
+        resp = self._c._request("GET", "/me/prompts")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("prompts", [])
+
+    def create(self, req: CreateUserPromptRequest) -> UserPrompt:
+        return self._c._request("POST", "/me/prompts", json=dict(req))["prompt"]
+
+    def update(self, prompt_id: str, req: UpdateUserPromptRequest) -> UserPrompt:
+        return self._c._request("PUT", f"/me/prompts/{prompt_id}", json=dict(req))["prompt"]
+
+    def delete(self, prompt_id: str) -> None:
+        self._c._request("DELETE", f"/me/prompts/{prompt_id}")
 
 
 class _McpServersAPI:

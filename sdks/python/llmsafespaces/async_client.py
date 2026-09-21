@@ -33,6 +33,9 @@ from .types import (
     InputRequest,
     McpAutoApplyRule,
     McpServer,
+    UserPrompt,
+    CreateUserPromptRequest,
+    UpdateUserPromptRequest,
     CreateMcpServerRequest,
     Message,
     PromptAccepted,
@@ -84,6 +87,7 @@ class AsyncLLMSafeSpaces:
         self.prompts = _AsyncPromptsAPI(self)
         self.agent_roles = _AsyncAgentRolesAPI(self)
         self.mcp_servers = _AsyncMcpServersAPI(self)
+        self.user_prompts = _AsyncUserPromptsAPI(self)
         self.admin_mcp_servers = _AsyncAdminMcpServersAPI(self)
         self.org_mcp_servers = _AsyncOrgMcpServersAPI(self)
 
@@ -874,6 +878,28 @@ class _AsyncProbeAPI:
     async def probe_models(self, api_key: str, base_url: str) -> dict[str, Any]:
         return await self._c._request("POST", "/probe-models",
                                       json={"apiKey": api_key, "baseURL": base_url})
+
+
+class _AsyncUserPromptsAPI:
+    """The caller's saved prompts (/me/prompts, #1499)."""
+
+    def __init__(self, client: "AsyncLLMSafeSpaces"):
+        self._c = client
+
+    async def list(self) -> list[UserPrompt]:
+        resp = await self._c._request("GET", "/me/prompts")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("prompts", [])
+
+    async def create(self, req: CreateUserPromptRequest) -> UserPrompt:
+        return (await self._c._request("POST", "/me/prompts", json=dict(req)))["prompt"]
+
+    async def update(self, prompt_id: str, req: UpdateUserPromptRequest) -> UserPrompt:
+        return (await self._c._request("PUT", f"/me/prompts/{prompt_id}", json=dict(req)))["prompt"]
+
+    async def delete(self, prompt_id: str) -> None:
+        await self._c._request("DELETE", f"/me/prompts/{prompt_id}")
 
 
 class _AsyncMcpServersAPI:

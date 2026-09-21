@@ -1445,6 +1445,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		AdminMCPServersHandler:          adminMcpHandler,
 		OrgMCPServersHandler:            orgMcpHandler,
 		UserMCPServersHandler:           userMcpHandler,
+		UserPromptsHandler:              handlers.NewUserPromptsHandler(dbSvc),
 		SecretsHandler:                  secretsHandler,
 		ModelsHandler:                   modelsHandler,
 		WorkspaceEnvHandler:             workspaceEnvHandler,

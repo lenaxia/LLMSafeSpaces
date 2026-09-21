@@ -24,6 +24,9 @@ import type {
   InputRequest,
   McpAutoApplyRule,
   McpServer,
+  UserPrompt,
+  CreateUserPromptRequest,
+  UpdateUserPromptRequest,
   Message,
   ProviderCredential,
   PromptAccepted,
@@ -69,6 +72,7 @@ export class LLMSafeSpaces {
   public readonly workflows: WorkflowsAPI;
   public readonly triggers: TriggersAPI;
   public readonly mcpServers: McpServersAPI;
+  public readonly userPrompts: UserPromptsAPI;
   public readonly adminMcpServers: AdminMcpServersAPI;
   public readonly orgMcpServers: OrgMcpServersAPI;
 
@@ -96,6 +100,7 @@ export class LLMSafeSpaces {
     this.workflows = new WorkflowsAPI(this);
     this.triggers = new TriggersAPI(this);
     this.mcpServers = new McpServersAPI(this);
+    this.userPrompts = new UserPromptsAPI(this);
     this.adminMcpServers = new AdminMcpServersAPI(this);
     this.orgMcpServers = new OrgMcpServersAPI(this);
   }
@@ -900,6 +905,26 @@ class McpServersAPI {
     return this.client
       .request<{ rules?: McpAutoApplyRule[] } | McpAutoApplyRule[]>("GET", `/me/mcp-servers/${id}/auto-apply`)
       .then((r) => (Array.isArray(r) ? r : (r.rules ?? [])));
+  }
+}
+
+/** The caller's saved prompts (/me/prompts, #1499). */
+class UserPromptsAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client
+      .request<{ prompts?: UserPrompt[] } | UserPrompt[]>("GET", "/me/prompts")
+      .then((r) => (Array.isArray(r) ? r : (r.prompts ?? [])));
+  }
+  create(req: CreateUserPromptRequest) {
+    return this.client.request<{ prompt: UserPrompt }>("POST", "/me/prompts", req).then((r) => r.prompt);
+  }
+  update(id: string, req: UpdateUserPromptRequest) {
+    return this.client.request<{ prompt: UserPrompt }>("PUT", `/me/prompts/${id}`, req).then((r) => r.prompt);
+  }
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/me/prompts/${id}`);
   }
 }
 

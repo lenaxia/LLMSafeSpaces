@@ -490,6 +490,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		AdminMCPServersHandler:          &handlers.MCPServersHandler{},
 		OrgMCPServersHandler:            &handlers.MCPServersHandler{},
 		UserMCPServersHandler:           &handlers.MCPServersHandler{},
+		UserPromptsHandler:              handlers.NewUserPromptsHandler(nil),
 		SSOHandler:                      &handlers.SSOHandler{},
 		LoginDiscoveryHandler:           &handlers.LoginDiscoveryHandler{},
 		PasskeyHandler:                  &handlers.PasskeyHandler{},

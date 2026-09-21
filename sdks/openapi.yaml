@@ -2826,6 +2826,106 @@ paths:
                 properties:
                   deleted:
                     type: boolean
+  /me/prompts:
+    get:
+      tags: [prompts]
+      summary: List the user's saved prompts
+      operationId: listUserPrompts
+      responses:
+        "200":
+          description: Saved prompt list (named envelope, updatedAt DESC)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [prompts]
+                properties:
+                  prompts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserPrompt"
+        "401":
+          description: Unauthorized
+    post:
+      tags: [prompts]
+      summary: Create a saved prompt
+      operationId: createUserPrompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePromptRequest"
+      responses:
+        "201":
+          description: Created prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [prompt]
+                properties:
+                  prompt:
+                    $ref: "#/components/schemas/UserPrompt"
+        "400":
+          description: "Invalid name or content (name 1-100 runes, no control characters; content 1-65536 bytes)"
+        "401":
+          description: Unauthorized
+        "409":
+          description: prompt_name_taken
+  /me/prompts/{id}:
+    put:
+      tags: [prompts]
+      summary: Update a saved prompt (partial)
+      operationId: updateUserPrompt
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePromptRequest"
+      responses:
+        "200":
+          description: Updated prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [prompt]
+                properties:
+                  prompt:
+                    $ref: "#/components/schemas/UserPrompt"
+        "400":
+          description: "Invalid name/content or empty update"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Prompt not found
+        "409":
+          description: prompt_name_taken
+    delete:
+      tags: [prompts]
+      summary: Delete a saved prompt
+      operationId: deleteUserPrompt
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthorized
+        "404":
+          description: Prompt not found
   /me/mcp-servers:
     get:
       tags: [mcp]
@@ -8112,6 +8212,43 @@ components:
       name: Authorization
       description: "lsp_ prefixed API key in Bearer format (e.g. Bearer lsp_abc123...)"
   schemas:
+    UserPrompt:
+      type: object
+      required: [id, name, content, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          maxLength: 100
+        content:
+          type: string
+          maxLength: 65536
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreatePromptRequest:
+      type: object
+      required: [name, content]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        content:
+          type: string
+          maxLength: 65536
+    UpdatePromptRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        content:
+          type: string
+          maxLength: 65536
     Error:
       type: object
       required: [error]

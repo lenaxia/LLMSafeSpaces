@@ -1085,3 +1085,34 @@ def test_abort_and_delete_are_no_content():
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.sessions.abort("ws-1", "ses_1")
     client.sessions.delete("ws-1", "ses_1")
+
+
+@respx.mock
+def test_user_prompts_crud():
+    create_route = respx.post(f"{BASE}/me/prompts").respond(
+        status_code=201,
+        json={"prompt": {"id": "p1", "name": "Weekly summary", "content": "c"}},
+    )
+    list_route = respx.get(f"{BASE}/me/prompts").respond(
+        json={"prompts": [{"id": "p1", "name": "Weekly summary", "content": "c"}]}
+    )
+    update_route = respx.put(f"{BASE}/me/prompts/p1").respond(
+        json={"prompt": {"id": "p1", "name": "renamed", "content": "new"}}
+    )
+    delete_route = respx.delete(f"{BASE}/me/prompts/p1").respond(status_code=204)
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    created = client.user_prompts.create({"name": "Weekly summary", "content": "c"})
+    assert created["id"] == "p1"
+    assert create_route.called
+
+    listed = client.user_prompts.list()
+    assert listed[0]["name"] == "Weekly summary"
+
+    updated = client.user_prompts.update("p1", {"name": "renamed"})
+    assert updated["name"] == "renamed"
+    import json as _json
+    assert _json.loads(update_route.calls.last.request.content) == {"name": "renamed"}
+
+    client.user_prompts.delete("p1")
+    assert delete_route.called
