@@ -61,3 +61,9 @@ None — design-doc lane (no code). The doc's §6 *specifies* the test artifact 
 ## Files Modified
 
 - `design/0060_2026-09-21_credential-plane-closure.md` (new)
+
+### Review round 2 (CHANGES_REQUESTED → addressed) + rulings recorded
+
+Rulings first: §10 became the R1-R5 decision record (the orchestrator ruled mid-review; Q1 upgraded to the FOUR-ask upstream bundle — session-ACL + FD-delivery + LANDLOCK + the #1465 MCP caller-session identity draft).
+
+R2's findings, all fixed: (9) the erratum itself miscited (secrets.go:1495-1498 is the symlink preamble; the 0660 chmod is 1510-1515) — fixed with the recursion acknowledged in-place; (10) A6's fallback was INFEASIBLE as written (a uid-2000-created 0600 file is unreadable by the uid-1000 supervisor; 0640-CROSS_UID for a control token is an unjustified carve) — replaced with the single pipe-across-exec-on-supervisor-spawn mechanism preserving T2 ownership; (security, carried from r1) §6's instrumentation is now BUILD-SCOPED — the memory-report primitive exists only in a sweep build-tag variant never shipped to production (a flag-gated production endpoint would be a new credential-plane surface AND a uid-1000→uid-2000 read path across the 0051 boundary); new A8 flags /proc/pid/mem as likely-INFEASIBLE (ptrace EPERM under cap-drop-ALL/NoNewPrivs, gVisor, Yama scope-1) with the memory row degraded to sweep-build self-reporting and B3's MECHANISM restated (process-memory access, not bare ptrace); sweep semantics made fallback-aware (per-delivery-mode residual sets; a lingering fallback file is RED); #825 option 4 named-and-adopted; the thread's "SEQUENCE AFTER epic-72" verdict reconciled with §7's tiers-first ordering via the inversion; the tiers pending-push caveat discharged (branch on origin, reviewer-diffed).
