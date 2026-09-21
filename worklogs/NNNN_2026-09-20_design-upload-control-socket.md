@@ -169,4 +169,5 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 
 ## Review round 15 — the label recurrence inside the label fix
 
-- r14's commit bumped the label to (r13) while making the head r14 — stale within its own fix (sixth body-staleness recurrence, fourth label-specific). Body now (r14) with the 14-round count, verified by grep before this record. The reviewer's guidance for the class is now codified here: re-grep the LABEL against the head SHA in the same breath as the edit.
+- r14's commit bumped the label to (r13) while making the head r14 — stale within its own fix (sixth body-staleness recurrence, fourth label-specific). Body now (r14), verified by grep before this record. The reviewer's guidance for the class is now codified here: re-grep the LABEL against the head SHA in the same breath as the edit.
+- The count went stale the same way one round later (body said 14 when this record made 15) — seventh instance. Now 15, grep-verified. The codified rule generalized: EVERY closed-form number in the body (label AND count) is re-grepped against the head state in the same edit that changes either.
