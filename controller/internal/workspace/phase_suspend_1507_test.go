@@ -138,6 +138,15 @@ func TestSuspendBounded_GraceRidesThePod(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(120), *pod.Spec.TerminationGracePeriodSeconds,
 		"the flag overrides the grace (operator-tunable bound)")
+
+	// Defense-in-depth: a sub-36 value set programmatically (bypassing
+	// the main() guard) falls back to the default — buildPod never
+	// produces a pod whose grace truncates agentd's serial budget.
+	r.WorkspaceTerminationGraceSeconds = 5
+	pod, err = r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+	assert.Equal(t, int64(40), *pod.Spec.TerminationGracePeriodSeconds,
+		"sub-budget programmatic values clamp to the default (structural invariant, not just the startup guard)")
 }
 
 // The non-suspend drain paths KEEP the #761 gate: the restart-gen

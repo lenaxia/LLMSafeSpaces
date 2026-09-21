@@ -71,3 +71,9 @@ None.
 1. Busy-suspend kind e2e: NOT delivered — closure claim adjusted instead (Refs, not Fixes; AC-level scoping documented in the PR body). The fake-client pins cannot catch real-cluster wiring divergence; the kind row is the post-merge nightly follow-up, and the incident workspace is the live target. Also avoids colliding with the local/ + e2e-nightly.yml lane (#1456's ownership).
 2. Unreachable-test misnomer → renamed LiveAgentNeverConsultedOnSuspend (fixture deliberately reachable — the strongest never-dials proof; dead-agent pinned separately).
 3. Stale "phase stays Suspending" comment → corrected to Active (restart-gen retarget).
+
+## r3 review — findings closed
+
+1. Drive-by scope creep REVERTED: the lint-hoist commits' accidental rewrites of --free-models-api-url's default (""→literal URL) and the --agentd-image/--agentd-binary-sha256-* help texts are restored to main's exact bytes; the hoist survives as pure structure (registerFreeModelsFlags). Net diff from main on those flags: zero.
+2. buildPod defense-in-depth: sub-36 programmatic values clamp to the 40s default (structural — the invariant no longer lives only in the main() guard); pinned.
+3. Kind e2e: reviewer accepts the honest Refs closure with a known-missing test level OR landing the row in the nightly lane pre-merge — deferring to the orchestrator's adjudication (the #1456 lane-ownership concern is real; the nightly row is the follow-up).

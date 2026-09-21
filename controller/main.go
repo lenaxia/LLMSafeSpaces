@@ -180,21 +180,26 @@ func main() {
 			"0 means unlimited. Recommended: 16384 (16GiB) for multi-tenant.")
 	enableFreeModelsRefresher, freeModelsRefreshInterval := registerFreeModelsFlags()
 	var freeModelsAPIURL string
-	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "https://models.dev/api.json",
-		"Source URL for the free-tier model catalog refresher (models.dev default).")
+	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "",
+		"Override URL for the free-models catalog. Empty defaults to "+
+			"https://models.dev/api.json. Useful for air-gapped clusters that "+
+			"mirror the catalog internally.")
 	var agentdImage string
 	flag.StringVar(&agentdImage, "agentd-image", "",
-		"Design 0053 §4.2: digest-pinned agentd image (ghcr.io/.../agentd@sha256:...) delivered to "+
-			"workspace pods via read-only image volumes. Required in sidecar mode (--agentd-sidecar); "+
-			"optional otherwise (single-container mode uses the baked binary). Must be digest-pinned.")
+		"#863: digest-pinned agentd image (ghcr.io/.../agentd@sha256:...) delivered to "+
+			"workspace pods via a read-only image volume. Empty = legacy mode "+
+			"(binary baked into runtimes/base). Must be digest-pinned; the entrypoint "+
+			"verifies the binary's sha256 against the pins before exec.")
 	var agentdBinarySHA256AMD64 string
 	flag.StringVar(&agentdBinarySHA256AMD64, "agentd-binary-sha256-amd64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the amd64 workspace-agentd "+
-			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
+			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
 	var agentdBinarySHA256ARM64 string
 	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
-			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
+			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
 	var agentdSidecarEnabled bool
 	flag.BoolVar(&agentdSidecarEnabled, "agentd-sidecar", false,
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
