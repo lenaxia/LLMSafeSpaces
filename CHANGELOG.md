@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **#1519** — Triggers update-path workflow-existence contract: PATCH retargeting to a nonexistent or cross-owner workflowId now answers the named 400 "target workflow not found" (create parity), not the opaque 500 (store FK) or silent persist (cross-owner) of the pre-fix asymmetry. The check fires on the post-patch merged view inside the mapping-touching block — de-opt patches on stored ghosts 400 too; non-mapping patches stay editable.
+
 ## [0.34.6] - 2026-09-20
 
 ### Fixes — activating the v0.34.5 origin-provenance feature (#1488, #1489)

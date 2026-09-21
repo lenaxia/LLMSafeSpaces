@@ -1709,6 +1709,27 @@ func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "target workflow not found")
 	})
 
+	t.Run("org-scope retarget to ghost → named 400 (shared handler, same arm)", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-org"] = &wf.TriggerRow{
+			ID: "t-org", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+			Name: "org-asym", Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+		}
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+		h := NewOrgTriggersHandler(store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+		org := r.Group("/api/v1/orgs/:id/triggers")
+		org.PUT("/:triggerId", h.OrgUpdate)
+
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/orgs/org-7/triggers/t-org",
+			map[string]any{"workflowId": "00000000-0000-4000-8000-00000000dead"})
+		// The org route resolves the owner scope as org-7; the owner-scoped
+		// GetWorkflow finds nothing → the named 400.
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), "target workflow not found")
+	})
+
 	t.Run("non-mapping patch on stored ghost stays editable", func(t *testing.T) {
 		// #1442 round-2 parity: a prompt rename on a stored-ghost row
 		// does NOT trigger the existence check (touchesMapping false) —

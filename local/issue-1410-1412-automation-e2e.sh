@@ -164,6 +164,24 @@ else
     note_fail "R1d: ghost-workflow PATCH returned ${api_status} (${r1d_resp}), expected 400 target workflow not found"
 fi
 
+# R1d-happy — the update contract's accept arm: PATCH retargeting to an
+# EXISTING own workflow 200s and persists.
+R1DH_WF=$(api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-r1dh-target",specYaml:"{\\\"nodes\\\":[{\\\"id\\\":\\\"n\\\",\\\"type\\\":\\\"script\\\",\\\"data\\\":{\\\"language\\\":\\\"python\\\",\\\"handler\\\":\\\"def handler(input): return {}\\\"}}],\\\"edges\\\":[]}",targetWorkspaceId:$w}')")
+if [[ "${api_status}" == "201" ]]; then
+    R1DH_WF_ID=$(printf '%s' "${R1DH_WF}" | jq -r '.id')
+    created_workflows+=("${R1DH_WF_ID}")
+    R1DH_ID=$(create_trigger "e2e-r1dh-retarget" "0 3 1 * *")
+    api PUT "/api/v1/me/triggers/${R1DH_ID}" \
+        '{"workflowId":"'"${R1DH_WF_ID}"'","workspaceId":""}'
+    if [[ "${api_status}" == "200" ]] && [[ "$(trigger_field "${R1DH_ID}" workflowId)" == "${R1DH_WF_ID}" ]]; then
+        ok "R1d-happy: PATCH retarget to existing workflow 200 + persisted"
+    else
+        note_fail "R1d-happy: retarget returned ${api_status}, workflowId='$(trigger_field "${R1DH_ID}" workflowId)'"
+    fi
+else
+    note_fail "R1d-happy setup: workflow create failed: ${api_status}"
+fi
+
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
 r1_next=$(trigger_field "${R1_ID}" nextFireAt)
 if [[ -n "${r1_next}" ]] && [[ "$(date -u -d "${r1_next}" +%s)" -ge "$(date -u +%s)" ]]; then
