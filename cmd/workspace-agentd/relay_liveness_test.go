@@ -271,10 +271,12 @@ func TestRelayLiveness_UnreachableRouter(t *testing.T) {
 }
 
 // TestRelayLiveness_BootOutageRearmRecovers — the §4.8 / #910
-// fault-injection leg (`boot_relay_outage_rearm`): router DOWN at boot
-// → loud degrade + bounded re-arm → router comes up → recovery within
-// the backoff bounds, no manual restart, exactly one re-arm loop in
-// flight, and the CAS guard re-opens for a second outage.
+// fault-injection leg, at the MONITOR level (real loop, real backoff,
+// real HTTP outage windows; the full-pod boot→materialize→healthz→CRD
+// sweep is US-72.6's `boot_relay_outage_rearm` deliverable): router DOWN
+// at boot → loud degrade + bounded re-arm → router comes up → recovery
+// within the backoff bounds, no manual restart, exactly one re-arm loop
+// in flight, and the CAS guard re-opens for a second outage.
 func TestRelayLiveness_BootOutageRearmRecovers(t *testing.T) {
 	router := newRelayTestRouter(t)
 	router.setDown() // boot-time outage

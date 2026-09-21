@@ -133,6 +133,11 @@ func (s *SecretService) SetRelayTokenSource(src RelayTokenSource) {
 	s.relayTokens = src
 }
 
+// RelayTokensForTest exposes the installed relay source for cross-package
+// wiring tests (the app.New seam test cannot reach the unexported field;
+// the GetOutboxForTest precedent). Nil means the flag is off.
+func (s *SecretService) RelayTokensForTest() RelayTokenSource { return s.relayTokens }
+
 // relayHandoffOpt reads the handoff under the flag; every nil-source
 // call short-circuits (flag-off paths never touch the seam).
 func (s *SecretService) relayHandoffOpt(ctx context.Context, workspaceID string) (*RelayHandoff, error) {
@@ -161,16 +166,17 @@ func (s *SecretService) relayBatchDegrade(ctx context.Context, ownerUserID, work
 	return &BuildDegrade{Reason: DegradeRelayStagingNotReady}
 }
 
-// relayMetadataFor builds the token-entry metadata document.
+// relayMetadataFor builds the token-entry metadata document. The
+// marshal error is ignored BECAUSE it is unconstructible: every key and
+// value is a Go string (json.Marshal of map[string]string cannot fail),
+// so a nil return — which would strip the relay metadata the liveness
+// registry keys on — is impossible by construction.
 func relayMetadataFor(h *RelayHandoff, p RelayHandoffProvider) json.RawMessage {
-	meta, err := json.Marshal(map[string]string{
+	meta, _ := json.Marshal(map[string]string{
 		RelayMetadataKey:          "true",
 		RelayMetadataExpiresAtKey: p.ExpiresAt,
 		RelayMetadataRevisionKey:  h.Revision,
 	})
-	if err != nil {
-		return nil
-	}
 	return meta
 }
 

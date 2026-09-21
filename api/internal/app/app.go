@@ -563,12 +563,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// builder swaps raw provider keys for the controller-staged
 		// relay tokens (handoff Secret in the workspace namespace).
 		// Flag off (default): nil source, byte-identical legacy batches.
-		if cfg.RelayOnlyKeyDelivery.Enabled {
-			secretService.SetRelayTokenSource(newK8sRelayTokenSource(
-				&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
-				k8sClient.Clientset(),
-			))
-		}
+		// (installRelayTokenSource — extracted so the seam is tested.)
+		installRelayTokenSource(secretService, cfg.RelayOnlyKeyDelivery.Enabled,
+			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+			k8sClient.Clientset())
 
 		// M2-a: shared model cache between SecretsHandler (evicts on bind) and
 		// ModelsHandler (reads on ListModels). One cache, two consumers.

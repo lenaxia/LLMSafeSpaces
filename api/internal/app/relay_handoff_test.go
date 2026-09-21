@@ -88,3 +88,38 @@ func TestK8sRelayTokenSource_GarbageDataErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, h)
 }
+
+// TestInstallRelayTokenSource_FlagGate (the app.New seam, #1529 review
+// item 4): flag ON installs the k8s source on the one builder — and the
+// INSTALLED source actually resolves a staged handoff; flag OFF
+// installs nothing (nil source = byte-identical legacy batches).
+func TestInstallRelayTokenSource_FlagGate(t *testing.T) {
+	newSvc := func() *secrets.SecretService { return secrets.NewSecretService(nil, nil) }
+
+	// Flag off: dependencies provided, flag false — nothing installed.
+	off := newSvc()
+	installRelayTokenSource(off, false, fakeRelayWorkspaceGetter{}, k8sfake.NewSimpleClientset())
+	assert.Nil(t, off.RelayTokensForTest(), "flag off must not install a source")
+
+	// Flag on: the k8s source is installed and WORKS through the seam.
+	const fakeToken = "lrt_fakeInstall0123456789"
+	cs := k8sfake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace-relay-ws-99", Namespace: "plat-ns"},
+		Data: handoffSecretData(t, &secrets.RelayHandoff{
+			Revision: "rINSTALL1", RouterURL: "http://router.example",
+			Providers: []secrets.RelayHandoffProvider{{ProviderSlug: "openai", Token: fakeToken}},
+		}),
+	})
+	on := newSvc()
+	installRelayTokenSource(on, true, fakeRelayWorkspaceGetter{}, cs)
+	require.NotNil(t, on.RelayTokensForTest(), "flag on must install the relay source on SecretService")
+
+	h, err := on.RelayTokensForTest().RelayHandoff(context.Background(), "ws-99")
+	require.NoError(t, err)
+	require.NotNil(t, h)
+	assert.Equal(t, "rINSTALL1", h.Revision)
+	assert.Equal(t, fakeToken, h.Providers[0].Token)
+
+	// Nil service must not panic (defensive seam contract).
+	installRelayTokenSource(nil, true, fakeRelayWorkspaceGetter{}, cs)
+}

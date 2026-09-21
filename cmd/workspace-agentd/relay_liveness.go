@@ -242,14 +242,12 @@ func (m *relayLivenessMonitor) evaluate(ctx context.Context) string {
 	}
 
 	// Credential-level probe per provider (the router serves /models
-	// from its staged catalog — zero upstream, zero key bytes).
+	// from its staged catalog — zero upstream, zero key bytes). The
+	// worst code across providers wins (codePriority); Reachable is
+	// derived from the final code below.
 	code := ""
 	for _, ref := range refs {
-		probeCode, reachable := m.probeOne(ctx, ref)
-		if !reachable {
-			next.Reachable = false
-		}
-		if probeCode != "" && codePriority(probeCode) > codePriority(code) {
+		if probeCode := m.probeOne(ctx, ref); probeCode != "" && codePriority(probeCode) > codePriority(code) {
 			code = probeCode
 		}
 	}
@@ -287,12 +285,12 @@ func codePriority(code string) int {
 
 // probeOne issues GET {baseURL}/models with the scoped token — the
 // exact request EnrichProviders issues through the router. Returns the
-// degrade code ("" healthy) and whether the relay path answered.
-func (m *relayLivenessMonitor) probeOne(ctx context.Context, ref relayProviderRef) (string, bool) {
+// degrade code ("" healthy — the relay path answered 200).
+func (m *relayLivenessMonitor) probeOne(ctx context.Context, ref relayProviderRef) string {
 	target := strings.TrimSuffix(ref.BaseURL, "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return relayDegradeUnreachable, false
+		return relayDegradeUnreachable
 	}
 	req.Header.Set("Authorization", "Bearer "+ref.Token)
 	req.Header.Set("Accept", "application/json")
@@ -302,12 +300,12 @@ func (m *relayLivenessMonitor) probeOne(ctx context.Context, ref relayProviderRe
 		// Transport failure (router down / DNS / timeout). The error may
 		// name the URL but never the token — still, keep it out of the
 		// degrade path: the code is the signal.
-		return relayDegradeUnreachable, false
+		return relayDegradeUnreachable
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusOK {
-		return "", true
+		return ""
 	}
 	// Parse the router's machine-readable rejection body when present.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -318,13 +316,13 @@ func (m *relayLivenessMonitor) probeOne(ctx context.Context, ref relayProviderRe
 			// clock already caught the expired case above, so this is a
 			// signing-key / keyID mismatch — the wrong-pub corruption
 			// class (§4.2's one escalating cause).
-			return "credential_stale", false
+			return "credential_stale"
 		}
-		return reject.Reason, false
+		return reject.Reason
 	}
 	// Any other non-200 (5xx, malformed body): the relay path is not
 	// serving this workspace — the generic unreachable code.
-	return relayDegradeUnreachable, false
+	return relayDegradeUnreachable
 }
 
 // routerOrigin derives scheme://host:port from a provider baseURL (the
@@ -340,7 +338,7 @@ func routerOrigin(baseURL string) string {
 // relayLivenessConfig parameterizes the loop (all test seams).
 type relayLivenessConfig struct {
 	// Interval is the healthy-cadence watchdog tick (0 → default 30s;
-	// env-overridable LLMSAFESPACE_RELAY_LIVENESS_INTERVAL).
+	// env-overridable LLMSAFESPACES_RELAY_LIVENESS_INTERVAL).
 	Interval time.Duration
 	// RearmMinDelay/RearmMaxDelay bound the degraded-phase backoff (0 →
 	// the #910 defaults 5m/30m via rearm_loop.go).
@@ -351,7 +349,7 @@ type relayLivenessConfig struct {
 }
 
 func relayLivenessIntervalFromEnv() time.Duration {
-	if v := os.Getenv("LLMSAFESPACE_RELAY_LIVENESS_INTERVAL"); v != "" {
+	if v := os.Getenv("LLMSAFESPACES_RELAY_LIVENESS_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

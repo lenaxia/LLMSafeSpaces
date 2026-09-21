@@ -319,6 +319,60 @@ func TestRelayBatch_BuildMintsNewSeqOnRevisionChange(t *testing.T) {
 	_ = env
 }
 
+// TestRelayBatch_FlagOnRawEmissionIsAudited (#1529 review item 6): a
+// provider absent from a PRESENT handoff takes the raw mixed-fleet path
+// (US-72.3 D5) — and that emission is audited (relay_raw_emission), the
+// observable signal for the silent raw window (frontable provider bound
+// after the last staging pass, or a torn handoff) until the US-72.6
+// sweep. NOT a kind-based gate, per the review ruling.
+func TestRelayBatch_FlagOnRawEmissionIsAudited(t *testing.T) {
+	fake := &fakeRelayTokenSource{handoff: stageableHandoff("rAUDIT001", "lrt_fake_audit")}
+	svc, env, _ := installRelayEnv(t, fake)
+	resetAudit(env.secrets)
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	require.Nil(t, degrade)
+
+	bedrock, ok := findEntry(batch, SecretTypeLLMProvider, "aws-bedrock")
+	require.True(t, ok, "the unstaged provider keeps the raw path")
+	assert.Contains(t, bedrock.Value, `"apiKey":"bedrock-raw-key"`)
+	assert.Contains(t, auditActions(env.secrets), "relay_raw_emission",
+		"every flag-on raw emission carries an audit row")
+}
+
+// TestRelayBatch_StagedProviderEmitsNoRawAudit: the token path itself
+// is silent (the audit is for RAW emissions under flag-on, not token
+// emissions).
+func TestRelayBatch_StagedProviderEmitsNoRawAudit(t *testing.T) {
+	fake := &fakeRelayTokenSource{handoff: stageableHandoff("rAUDIT002", "lrt_fake_audit2")}
+	svc, env, _ := installRelayEnv(t, fake)
+	resetAudit(env.secrets)
+
+	_, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	// bedrock (unstaged) emits exactly one raw row; openai (staged) adds
+	// none — count, not just presence.
+	rawRows := 0
+	env.secrets.mu.Lock()
+	for _, a := range env.secrets.audit {
+		if a.Action == "relay_raw_emission" {
+			rawRows++
+		}
+	}
+	env.secrets.mu.Unlock()
+	assert.Equal(t, 1, rawRows, "exactly the unstaged provider's emission is audited")
+}
+
+// TestRelayBatch_FlagOffEmitsNoRawAudit: the audit is a flag-on signal.
+func TestRelayBatch_FlagOffEmitsNoRawAudit(t *testing.T) {
+	svc, env, _ := installRelayEnv(t, nil)
+	resetAudit(env.secrets)
+	_, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.NotContains(t, auditActions(env.secrets), "relay_raw_emission")
+}
+
 // TestRelayBatch_FlagOffKeepsLegacyRowSlugDedup: the legacy path dedups
 // on the binding ROW slug only — two rows with different row-slugs but
 // the same decrypted pd slug BOTH emit (flag off is byte-identical,

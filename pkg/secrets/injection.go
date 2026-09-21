@@ -182,8 +182,14 @@ func (s *SecretService) loadWorkspaceRows(ctx context.Context, ownerUserID, work
 // US-72.4: under the relay-only flag the staged handoff's revision
 // participates (design 0058 §4.4) — identical tiering as the build path
 // (workspaceManifestHash), so a 304 here and a seq mint there can never
-// disagree. A handoff read failure degrades to the rows-only hash: the
-// worst case is a no-op re-delivery, never a false 304.
+// disagree. A handoff read failure degrades to the rows-only hash: a
+// false 304 is impossible, but under flag-on the rows-only manifest
+// makes the client refetch a batch whose provider class the not-ready
+// build mutes — the resync pull then PERSISTS that provider-less batch
+// to the working pod's durable state, wiping the relay tokens until the
+// handoff read recovers and the next pull restores the class
+// (self-healing, bounded by the resync cadence; the fail-closed choice
+// itself is pinned by TestRelayBatch_HandoffSourceError_TreatedAsNotReady).
 func (s *SecretService) ManifestFor(ctx context.Context, ownerUserID, workspaceID string) (string, error) {
 	bindings, relevantSecrets, servers, err := s.loadWorkspaceRows(ctx, ownerUserID, workspaceID)
 	if err != nil {
@@ -392,7 +398,18 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 					map[string]string{"slug": pd.Slug, "kind": pd.Kind})
 				continue
 			case relayNotStaged:
-				// Mixed-fleet raw path (US-72.3 D5).
+				// Mixed-fleet raw path (US-72.3 D5) — but AUDITED: under
+				// flag-on a raw emission is operator-relevant state (a
+				// frontable provider bound after the last staging pass,
+				// or a torn handoff, would land here too and be
+				// unobservable until the US-72.6 sweep otherwise). The
+				// audit names the slug so the row is actionable; the
+				// builder deliberately does NOT gate on kind (it cannot
+				// distinguish non-frontable-by-design from
+				// not-yet-staged — #1529 review ruling).
+				s.audit(ctx, ownerUserID, "relay_raw_emission", nil, &workspaceID,
+					map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind,
+						"reason": "absent from staged handoff"})
 			}
 		}
 		seen[b.Slug] = true

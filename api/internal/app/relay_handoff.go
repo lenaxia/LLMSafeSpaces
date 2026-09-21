@@ -73,5 +73,19 @@ func (s *k8sRelayTokenSource) RelayHandoff(ctx context.Context, workspaceID stri
 	return &h, nil
 }
 
+// installRelayTokenSource is the app.New seam (US-72.4, design 0058
+// §4.5): under the relayOnlyKeyDelivery deployment flag, install the
+// k8s relay source on the one builder. Flag off (or a nil service)
+// installs NOTHING — byte-identical legacy batches. Extracted from
+// app.New so the wiring itself is testable (the #1529 review's missing
+// test case 2: the config test covers the env half, the batch tests
+// install the source manually — this pins the seam between them).
+func installRelayTokenSource(svc *secrets.SecretService, enabled bool, getter relayWorkspaceGetter, clientset kubernetes.Interface) {
+	if svc == nil || !enabled {
+		return
+	}
+	svc.SetRelayTokenSource(newK8sRelayTokenSource(getter, clientset))
+}
+
 // Compile-time assertion: the source satisfies the builder seam.
 var _ secrets.RelayTokenSource = (*k8sRelayTokenSource)(nil)
