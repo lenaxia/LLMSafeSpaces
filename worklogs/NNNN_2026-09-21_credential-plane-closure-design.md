@@ -37,7 +37,11 @@ The doc's §8 table (A1–A7) is the canonical list; two are explicitly spike-fi
 
 ## Blockers
 
-None. Four owner questions outstanding (§10) — all non-blocking for the design, all with recommendations.
+None. FIVE owner questions outstanding (§10 after r1 added Q5) — all non-blocking, all with recommendations.
+
+### Review round 1 (CHANGES_REQUESTED → addressed)
+
+Eight findings, all doc-level, all fixed: (1) the stale S2 citation — inherited from 0058 despite my "re-verified" claims in THREE places (pickup comment, worklog, header); corrected + an in-doc erratum owning it (the same completion-claim class as #1509's lesson, now bit me directly); (2) the §5 batch-row mis-citation + recycled withdrawn-0050 wording → corrected to 0058's actual token-substitution shape; (3) B3's §8-Q2 → §10-Q1; (4) B2/A3's undeclared UPSTREAM dependency — opencode is a pinned binary; FD-read/stdin don't exist upstream; A3 rewritten as upstream-gated + new Q5 (file the ask; interim payload-seam redaction shrinks the env surface without touching the pin); (5) the tiers WIP is local-only/unfetchable — marked pending-push, A2's "unit suite green" claim weakened to corroborated-existence (branch push is worker 5's call); (6) #823 options 2/3 named and dispositioned (B2b); (7) #823's 2026-09-16 #978 rescope gate reconciled into Q2 (honor the recorded default-flip gate); (8) #825's LANDLOCK/seccomp arm explicitly deferred to the upstream seam, default-deny-vs-ask rationale added, option 3 one-line deferral. Plus the sweep's verdict semantics defined (§6.4b — a positive readability model with an explicit residual set, so the guaranteed memory finding has a defined verdict and probe-blindness is itself red).
 
 ---
 
