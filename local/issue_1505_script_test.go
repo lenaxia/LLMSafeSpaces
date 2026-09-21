@@ -59,9 +59,11 @@ func TestIssue1505Script_AssertsBusyBeforeRefresh(t *testing.T) {
 	}
 }
 
-// The outcome assertions (back to Active within the budget, a NEW pod
-// — the recycle really happened —, PVC retained, and the fail-closed
-// audit gate with BOTH the negative drain-defer check and the POSITIVE
+// The outcome assertions (back to Active within the budget, the
+// recycle PROVEN via the status.restartCount bump — podName is
+// deterministic per workspace UID, so the name cannot distinguish
+// recycle from no-op —, PVC retained, and the fail-closed audit gate
+// with BOTH the negative drain-defer check and the POSITIVE
 // forced-bypass check) are the row's verdicts.
 func TestIssue1505Script_OutcomeAssertions(t *testing.T) {
 	src := mustRead1505(t)

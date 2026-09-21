@@ -1,7 +1,7 @@
 # Worklog: refresh-compute force path (#1505 — user consent bypasses the #761 drain)
 
 **Date:** 2026-09-21
-**Session:** The owner's Refresh Compute stopped working on this multi-agent pod: the #761 drain gate defers pod deletion while sessions are busy-and-progressing, and an orchestration pod runs busy sessions around the clock — the drain never finds quiet. Owner decision: the user-initiated refresh/suspend action IS the force path; the UI warning is the consent.
+**Session:** The owner's Refresh Compute stopped working on this multi-agent pod: the #761 drain gate defers pod deletion while sessions are busy-and-progressing, and an orchestration pod runs busy sessions around the clock — the drain never finds quiet. Owner decision: the user-initiated refresh/suspend action IS the force path; the UI warning is the consent. *(r2 correction: the "suspend" half of that decision was superseded by #1510/#1507 — suspend is bounded-immediate for every caller and has no drain to bypass; only the refresh half survives.)*
 **Status:** Complete
 
 ---
@@ -9,6 +9,10 @@
 ## Objective
 
 Refresh Compute (and the user suspend endpoint) must delete the pod immediately despite busy in-flight sessions; every automated suspend source keeps the polite drain.
+
+> **SUPERSEDED (r2 rework):** the objective is now refresh-only — Refresh Compute must delete the pod immediately despite busy in-flight sessions; automated pod-recycle paths keep the polite drain; suspend shares #1510's single bounded-grace path (no drain, no force variant). The suspend-force half below was dropped; see the r2 section.
+
+---
 
 ---
 
@@ -112,3 +116,7 @@ Kept + added:
 The reviewer executed local/issue-1505-refresh-busy-e2e.sh UNMODIFIED on a real kind cluster built from 3676acf4 (their transcript: in-flight turn real, R1 Active in 16s vs the never-completing repro, R2 forced-bypass logged with reason restart_generation_user_forced, PVC retained, SessionDrainUserForced event on the CR, marker cleared, zero drain-defer lines) — and the row still exited 1, on MY verdict: "NEW pod" asserted `NEW_POD != OLD_POD`, but podName() is deterministic per workspace UID (constants.go: workspaceName + uid[:8]) — every in-place recycle recreates the pod under the SAME NAME. The verdict was unsatisfiable by construction; it would have permanently reded the nightly lane. Second instance of the r7-predicate bug class (an assertion that can never pass, shipped with a claim that it does) — caught this time by the reviewer's execution, which is exactly why execution is the gate.
 
 Fix: the verdict now asserts `status.restartCount` — the identity that actually changes on a replacement (the reviewer's run: 0→1). Empty-field guards on both reads (jsonpath returns empty-with-exit-0; bare `|| echo 0` never fires — OLD_RC is regex-coerced, NEW_RC regex-gated). Shape pins updated (`restartCount ${OLD_RC} → ${NEW_RC}`, `restartCount did not bump`); local pins + bash -n green. PR body's "NEW pod" phrase corrected. A green re-run of the unmodified row closes the gate.
+
+## r5 — the two doc defects; the row is execution-green
+
+The reviewer's gate-closing kind run at f5ad4e30 PASSED: the row unmodified, restartCount 0→1 live (rc=1 gen=2 observed=1), the guards exercised, one recycle exactly. The two r5 findings were doc-accuracy only, both fixed above: the stale "NEW pod" phrasing in the pin-test comment (the one file the r4 purge missed) and the r1-era header/Objective suspend claims, now bracketed with superseding corrections per the append-only rule. No script changes — no re-execution required per the verdict note.
