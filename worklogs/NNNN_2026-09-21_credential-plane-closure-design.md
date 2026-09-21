@@ -93,3 +93,7 @@ Part C's root clause was false through six rounds: "sidecar mode: the file lives
 ### Review round 8 (CHANGES_REQUESTED → addressed)
 
 One finding: the summary layer (§2 "the plane's shape" + §3's "in-memory-only residuals") contradicted the corrected Part C — C3 keeps a 0400 at-rest file in BOTH modes and C2 keeps mode-split file/env/heap surfaces, so "lose their at-rest/env surfaces... in-memory-only" was false for exactly the classes the dispositions had just corrected. The consume-the-correction failure surviving one layer up (the reviewer's framing — the misreading that kept Part C wrong six rounds was re-encoded in the summary). Both sentences rewritten to the declared-residual truth.
+
+### Review round 9 (CHANGES_REQUESTED → addressed)
+
+One finding, the r8 class one summary layer further down: §5's Kills/Accepts paragraph still claimed "the env-form control/admin tokens" die — false in both directions (w3 dies only when A3 lands; C3's sidecar env form is KEPT as the D1-correct design) and omitted the two most prominent declared residuals from Accepts (the 0400 both-modes file, the w2 env). Rewritten with the kills scoped and the Accepts list carrying every swept residual. The reviewer's framing is recorded: this paragraph is the one most likely to be quoted in an issue-closing comment.
