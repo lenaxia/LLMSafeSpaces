@@ -5,8 +5,9 @@
  * against the mocked API surface (compact action + rename title PUT are
  * asserted at the network boundary), unknown slashes stay literal, and
  * the #-recall popup filters/keyboard-navigates/expands against the
- * prompt-library contract endpoint (#1499's named envelope, mocked —
- * the sibling lane owns the backend).
+ * prompt-library contract endpoint (#1499's named envelope, mocked at
+ * the network boundary — the backend is live (6ee54512); route mocks
+ * keep the rows hermetic).
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { mockIdleContractStream } from "./helpers/contractStream";

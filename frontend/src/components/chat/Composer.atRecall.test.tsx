@@ -146,7 +146,7 @@ describe("Composer #-prompt recall (#1496 part 2; symbol moved @→# pre-release
   it("handles multiple #tokens: only the token under the caret offers recall", async () => {
     mockPrompts = [{ id: "p1", name: "a", content: "AAA" }];
     renderComposer();
-    // Build "@a text @b" with the caret after the FIRST token.
+    // Build "x #a tail y #b" with the caret after the FIRST token.
     const box = screen.getByRole("textbox") as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: "x #a tail y #b" } });
     fireEvent.select(box, { target: { selectionStart: 4, selectionEnd: 4 } });

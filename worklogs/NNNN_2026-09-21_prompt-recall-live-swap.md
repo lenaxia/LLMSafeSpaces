@@ -43,7 +43,7 @@ None.
 
 ## Tests Run
 
-- vitest: 27 files / 435 tests green (re-seamed suites, promptToken 15-row collision matrix incl. the fixed newline pins, promptLibrary pin 3, PromptsTab 7)
+- vitest: FULL frontend suite green — 178 files / 1959 tests (my earlier partial-scope figures — 27/435 then 765 — were filtered runs misreported as toplines; the reviewer measured the real suite)
 - `npx tsc --noEmit` clean
 - `npx playwright test tests/e2e/composer-slash-at.spec.ts` — 8/8 (live dev server)
 
