@@ -280,6 +280,23 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		row.NextFireAt = &nextFire
 	}
 
+	// A user-supplied workflowId must resolve at create (the 35597973572
+	// contract ruling): it previously fell through to the store insert
+	// and surfaced as an opaque 500 (FK shape). Named 400, mirroring the
+	// update path's wording; the FK stays the integrity anchor — this is
+	// the contract check, not a replacement for it. Ordered AFTER the
+	// cron validation so an invalid expr answers the cron error.
+	if req.WorkflowID != "" {
+		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, req.WorkflowID); err != nil {
+			if errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+			return
+		}
+	}
+
 	if err := h.store.CreateTrigger(c.Request.Context(), row); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create trigger"})
 		return

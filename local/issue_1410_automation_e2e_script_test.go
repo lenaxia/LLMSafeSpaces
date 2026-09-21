@@ -52,12 +52,14 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		// R3 — no-op enable keeps the slot (review guard on #1410).
 		`'{"enabled":true}' >/dev/null`,
 		`R3: no-op enabled:true kept the slot`,
-		// R4 — missing workflow is loud (#1412); R4d — the DELETE route
-		// (FK SET NULL) is loud too (#1440).
-		`GHOST_WF="deadbeef-0000-4000-8000-000000000000"`, // nonexistent DAG target
+		// R4 — missing workflow is loud (#1412, reshaped per the
+		// 35597973572 contract: ghost-workflow creates are a named 400,
+		// so fire coverage rides create-valid → delete-workflow — the
+		// #1440 FK-SET-NULL path); R4d — the DELETE route (#1440).
+		`--arg w "${REAL_WF_ID}"`,                         // creates target the shared REAL workflow
+		`api DELETE "/api/v1/me/workflows/${REAL_WF_ID}"`, // R4 deletes it before the fire window
 		`select(.status=="failed")`,                       // failed fire asserted
-		`*"workflow not found"*`,                          // payload asserted (never-existed route)
-		`*"trigger_has_no_target"*`,                       // payload asserted (delete route, #1440)
+		`*"trigger_has_no_target"*`,                       // payload asserted (delete route, #1440) — pinned twice: R4b and R4d
 		"silent zombie regression",                        // R4d auto-disable assertion present
 		`R4c: consecutiveFailures incremented`,            // failure counter asserted
 		// R5 — run input obeys inputSchema (#1413).
@@ -145,6 +147,24 @@ func TestIssue1410E2E_HarnessStartFirst(t *testing.T) {
 	apiIdx := strings.Index(src, "api GET")
 	if apiIdx >= 0 {
 		assert.Less(t, callIdx, apiIdx, "harness_start must precede the first api call — the rows' Bearer ${API_KEY} is seeded there")
+	}
+	// Ledger hardening (the #1514 adjudication note: ordering pins
+	// anchored on Index-of-first are move-tolerant within a span): EVERY
+	// authenticated api call must sit after harness_start — not just the
+	// first — so harness_start can never be moved below an early row.
+	off := 0
+	for {
+		j := strings.Index(src[off:], "api ")
+		if j < 0 {
+			break
+		}
+		pos := off + j
+		if strings.HasPrefix(src[pos:], "api GET") || strings.HasPrefix(src[pos:], "api POST") ||
+			strings.HasPrefix(src[pos:], "api PUT") || strings.HasPrefix(src[pos:], "api DELETE") {
+			assert.Greater(t, pos, callIdx,
+				"every authenticated api call must come after harness_start (found one at byte %d before it)", pos)
+		}
+		off = pos + 1
 	}
 	// The cleanup's DELETE calls also ride ${API_KEY}: the trap may fire
 	// before harness_start completes, and ${API_KEY:-} guarding is the
