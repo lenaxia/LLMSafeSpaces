@@ -65,3 +65,9 @@ None.
 1. Guard contract falsified for negatives (accepted -5) → the condition now rejects every non-zero value below the floor; table-driven pin added (controller/main_grace_test.go: 0/36/120 accept; 35/1/-5 reject).
 2. Dead drainReasonSuspend constant removed (the machinery vocabulary shrinks to the live reasons).
 3. The unreachable-test comment/code mismatch → comment rewritten (live stub wired, zero scrapes asserted); a GENUINELY-unreachable pin added (Port 1, no listener — the deeper incident state).
+
+## r2 review — findings closed
+
+1. Busy-suspend kind e2e: NOT delivered — closure claim adjusted instead (Refs, not Fixes; AC-level scoping documented in the PR body). The fake-client pins cannot catch real-cluster wiring divergence; the kind row is the post-merge nightly follow-up, and the incident workspace is the live target. Also avoids colliding with the local/ + e2e-nightly.yml lane (#1456's ownership).
+2. Unreachable-test misnomer → renamed LiveAgentNeverConsultedOnSuspend (fixture deliberately reachable — the strongest never-dials proof; dead-agent pinned separately).
+3. Stale "phase stays Suspending" comment → corrected to Active (restart-gen retarget).

@@ -256,9 +256,9 @@ func TestDrain_IdleAgentProceedsImmediately(t *testing.T) {
 	r.drainStatesMu.Unlock()
 }
 
-// TestDrain_BusyAgentDefersDeletion: busy sessions → pod survives, phase
-// stays Suspending, requeue is the drain poll interval, one defer event and
-// one deferred metric increment are emitted.
+// TestDrain_BusyAgentDefersDeletion (restart-gen path): busy sessions → pod
+// survives, phase stays Active, requeue is the drain poll interval, one
+// defer event and one deferred metric increment are emitted.
 func TestDrain_BusyAgentDefersDeletion(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)

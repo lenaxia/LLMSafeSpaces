@@ -66,8 +66,11 @@ func TestSuspendBounded_FlappingBusySessionsSuspendImmediately(t *testing.T) {
 
 // The suspend path never dials the agent — a live statusz stub wired
 // to the workspace's PodIP must see ZERO scrapes through a full
-// suspend flow with busy sessions.
-func TestSuspendBounded_UnreachableAgentSuspendsWithoutConsult(t *testing.T) {
+// suspend flow with busy sessions. (The fixture is deliberately
+// reachable: a live stub that stays unscraped is the strongest proof
+// the path never attempts the dial; the dead-agent variant is pinned
+// separately below.)
+func TestSuspendBounded_LiveAgentNeverConsultedOnSuspend(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
 	ws := makeWorkspace("ws-1507-unreach", "default", v1.WorkspacePhaseActive)
