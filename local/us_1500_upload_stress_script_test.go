@@ -69,9 +69,21 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`reload-secrets returned ${api_status}, expected 200`,
 		// SR-6: refused COUNT parsed + the regression guard AS AN
 		// ASSERTION (r3 findings 1+4).
-		`CONC_MS}" -le "${GUARD}`,
 		// storm_report completeness (r3 finding 5).
 		`total=%d`,
+		// SR-5: the honest bound — per-phase 201 tracking (r5).
+		`SR5_PHASE_STATUSES`,
+		`SR5_DELIVERED`,
+		// SR-5: post-kill listing exec-failure guard (r5).
+		`POST_KILL_EXIT`,
+		// SR-6: per-upload median guard — the design's §6.6 quantity
+		// (r5: the wall-clock form was conditionally vacuous).
+		`SR6_GUARD=$((2 * L1))`,
+		`SR6_P95`,
+		`ms-${i}`,
+		// SR-6B: the literal-429 construct + the precondition gate.
+		`SR6B_HAS_429`,
+		`-eq 4 ]]; then`,
 		// Cleanup.
 		`trap cleanup EXIT`,
 	} {

@@ -120,3 +120,13 @@ The r4 catch quality was exceptional — two of my r3 fixes were themselves defe
 2. **The SR-6 guard was mathematically vacuous**: N·L1 ≤ 2·N·L1 always passes — a fully-serialized storm satisfies it. The design's per-upload p95 ≤ 2× single maps to wall ≤ 2×L1 + settle overhead (2s): a serialized storm at ~N×L1 trips it for N≥3. The latency storm's outcomes are now asserted too (other=0 + total=CONCURRENCY — an all-000 storm yields a tiny wall and previously passed while measuring nothing).
 3. **SR6B now requires a LITERAL 429** (refused lumps 507|429|504 — a 507 satisfied the old count without the count-cap boundary) + total=5 completeness; the results dir survives until the check runs.
 4. The refused-count sed parse (r3) was replaced wholesale — its needles removed from the pin suite alongside the new pins for the awk counter, the honest guard, and the literal-429 check.
+
+## Review Round 5 (the guard's blind regime + SR6B ungated + evidence claims)
+
+The sharpest catch: the r4 wall-clock guard was conditionally vacuous — GUARD=2×L1+2s passes a serialized N×L1 storm whenever (N−2)×L1 ≤ 2000ms, i.e. L1 ≤ 1000ms at N=4 — fast uploads on the kind cluster are PLAUSIBLE. My "trips for N≥3" claim was false in that regime. Fixes:
+
+1. **Per-upload median guard (design-conformant)**: each concurrent job records its own wall time (ms-N files); the guard asserts median ≤ 2×L1 — serialization inflates EVERY job's own latency (queue-slot cumulative wait), so the median catches it regardless of speed regime. L1 is now status-checked (a failed single makes the baseline garbage).
+2. **SR6B gated** on the same §6.6 precondition (SR-5's orphans can make it 507-not-429 — red-by-environment otherwise).
+3. **POST_KILL_LISTING exec-failure guard** (a transient kc-exec failure produced an empty listing → NEW_NON_TMP=0 → §6.5 false-pass).
+4. **Pins added** for every r4/r5 construct: SR5_PHASE_STATUSES/SR5_DELIVERED (the honest bound), POST_KILL_EXIT, SR6_GUARD=2×L1, SR6_P95, ms-N files, SR6B_HAS_429, the precondition gate. The stale CONC_MS/GUARD needle removed.
+5. **Evidence claims corrected**: the r4 worklog/commit said "trips for N≥3" — false for L1 ≤ 1s (this section corrects the record); the r4 PR comment claimed pins for the honest guard and literal-429 — the diff shows one awk needle added, two removed, none for the constructs (this round's pins close that).

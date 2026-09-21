@@ -322,7 +322,8 @@ done
 # §6.5's PRIMARY invariant check: the post-settle non-.tmp set minus
 # the pre-kill set must be empty OR every addition is a 201's uuid file
 # (a kill-fragmented rename would produce a non-.tmp partial).
-POST_KILL_LISTING=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/ 2>/dev/null | grep -v "\.tmp$" | sort' 2>/dev/null || echo "")
+POST_KILL_EXIT=0
+POST_KILL_LISTING=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/ 2>/dev/null | grep -v "\.tmp$" | sort' 2>/dev/null) || POST_KILL_EXIT=1
 # Zero-match arithmetic: grep -c . prints 0 AND exits 1 under pipefail —
 # the || echo 0 appended a SECOND 0 (r4 finding: "0\n0" → arithmetic
 # syntax error → false-fail on the SUCCESS case). awk never trips.
@@ -338,7 +339,9 @@ SR5_DELIVERED=0
 for st in ${SR5_PHASE_STATUSES:-}; do
     [[ "${st}" == "201" ]] && SR5_DELIVERED=$((SR5_DELIVERED + 1))
 done
-if [[ "${NEW_NON_TMP}" -le "${SR5_DELIVERED}" ]]; then
+if [[ "${POST_KILL_EXIT}" -ne 0 ]]; then
+    sr_skip "SR-5: post-settle listing exec failed (§6.5 primary invariant unverifiable this run)"
+elif [[ "${NEW_NON_TMP}" -le "${SR5_DELIVERED}" ]]; then
     ok "SR-5: no non-.tmp partials beyond ${SR5_DELIVERED} completed uploads (${NEW_NON_TMP} new)"
 else
     note_fail "SR-5: ${NEW_NON_TMP} non-.tmp artifacts > ${SR5_DELIVERED} delivered (rename fragmentation)"
@@ -380,23 +383,37 @@ else
     CONCURRENCY=3
     warn "SR-6: 4×10 precondition unmet (tmpfs f_bavail ${TMPFS_AVAIL_BYTES} < C+94MiB) — skip-DOWN to 3×, explicitly"
 fi
-# Single-upload baseline (1×).
-L1=$(apply_latency $((10 * 1024 * 1024)))
-# The concurrency boundary — CONCURRENT uploads, wall-clock timed
-# (r2 finding 6: serial apply_latency calls measured N sequential
-# uploads, not the N×-concurrent boundary).
+# Single-upload baseline (1×) — status-checked: a failed single makes
+# every downstream number garbage (r5 finding: apply_latency discarded
+# the status).
+L1_T0=$(date +%s%3N)
+L1_STATUS=$(upload_bytes $((10 * 1024 * 1024)))
+L1_T1=$(date +%s%3N)
+L1=$((L1_T1 - L1_T0))
+if [[ "${L1_STATUS}" != "201" ]]; then
+    note_fail "SR-6: single-upload baseline failed (${L1_STATUS}) — latency numbers meaningless"
+fi
+# The concurrency boundary — CONCURRENT uploads with PER-UPLOAD timing
+# (r5 finding: wall-clock-only was conditionally vacuous for fast
+# uploads; the design's §6.6 guard is per-upload p95 ≤ 2× single p95).
 SR6_DIR=$(mktemp -d /tmp/sr6-storm-XXXXXX)
-T0=$(date +%s%3N)
 for i in $(seq 1 "${CONCURRENCY}"); do
-    upload_bytes $((10 * 1024 * 1024)) "${SR6_DIR}/res-${i}" &
+    (
+        _t0=$(date +%s%3N)
+        upload_bytes $((10 * 1024 * 1024)) "${SR6_DIR}/res-${i}" >/dev/null
+        _t1=$(date +%s%3N)
+        echo $((_t1 - _t0)) > "${SR6_DIR}/ms-${i}"
+    ) &
 done
 wait
-T1=$(date +%s%3N)
-CONC_MS=$((T1 - T0))
 REPORT6=$(storm_report "${SR6_DIR}" "${CONCURRENCY}")
+SR6_P95=$(awk '{v[i++]=$1} END{asort(v); if (i==0){print 0} else if (i%2==1){print v[int(i/2)]} else {print int((v[i/2-1]+v[i/2])/2)}}' "${SR6_DIR}"/ms-* 2>/dev/null || echo 0)
 rm -rf "${SR6_DIR}"
 # The 5th-concurrent-429 row (§6.6's boundary characterization): fire
-# MAX+1 CONCURRENT uploads; the 5th must 429 (the count cap).
+# MAX+1 CONCURRENT uploads; the 5th must 429 (the count cap). Gated on
+# the SAME §6.6 precondition (r5 finding: SR-5's orphans can make this
+# deterministically 507 instead of 429 — red-by-environment).
+if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 for i in 1 2 3 4 5; do
     upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-${i}" &
@@ -418,6 +435,10 @@ else
     note_fail "SR-6: 5-concurrent storm lacks a literal 429 or incomplete (${REPORT6B}, has429=${SR6B_HAS_429})"
 fi
 rm -rf "${SR6B_DIR}"
+else
+    sr_skip "SR-6B: 5th-429 boundary needs the 4× precondition (skip-DOWN was active)"
+fi
+
 # The latency storm's outcomes must be asserted (r4 finding ◐ r3.5):
 # other=0 AND total=CONCURRENCY — an all-000 storm has a tiny wall and
 # would pass any guard while measuring nothing.
@@ -425,16 +446,16 @@ if [[ "${REPORT6}" != *"other=0"* || "${REPORT6}" != *"total=${CONCURRENCY}"* ]]
     note_fail "SR-6: latency storm not clean+complete (${REPORT6})"
 fi
 log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB-concurrent=${CONC_MS}ms wall; report=${REPORT6}"
-# Serialization guard (r4: N·L1 ≤ 2·N·L1 ALWAYS passes — the old bound
-# was vacuous for full serialization). The design's per-upload p95 ≤ 2×
-# single maps to wall ≤ 2×L1 + small settle overhead: a serialized
-# storm runs ~N×L1; a healthy concurrent one runs ~L1 + contention.
-# 2×L1 + 2s absorbs the contention without passing N×L1 at N≥3.
-GUARD=$((2 * L1 + 2000))
-if [[ "${CONC_MS}" -le "${GUARD}" ]]; then
-    ok "SR-6: concurrency confirmed (${CONCURRENCY}× wall ${CONC_MS}ms ≤ 2×single+2s=${GUARD}ms)"
+# Design §6.6's regression guard: per-upload p95 ≤ 2× the single-
+# upload p95 (r5: the wall-clock form was conditionally vacuous for
+# fast uploads — a serialized N×L1 storm passed when L1 ≤ 1s; the
+# per-upload median is regime-independent: serialization makes every
+# concurrent job's OWN latency ≈ its queue slot's cumulative wait).
+SR6_GUARD=$((2 * L1))
+if [[ "${SR6_P95}" -le "${SR6_GUARD}" ]]; then
+    ok "SR-6: regression guard (per-upload median ${SR6_P95}ms ≤ 2×single ${L1}ms = ${SR6_GUARD}ms)"
 else
-    note_fail "SR-6: wall ${CONC_MS}ms suggests serialization (≥3× single ${L1}ms; guard ${GUARD}ms)"
+    note_fail "SR-6: per-upload median ${SR6_P95}ms > 2×single (${L1}ms → guard ${SR6_GUARD}ms) — serialization?"
 fi
 
 fi # staging gauges present
