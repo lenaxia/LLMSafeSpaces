@@ -108,3 +108,8 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 ## Review round 5 (1 finding: two stale comments describing the removed arm)
 
 - The struct + socket comments still described the r4-removed re-arm mechanism. Both now describe the real architecture: the WithTimeout ctx bounds the copy; the fresh post-Apply arm is the sole ack bound.
+
+
+## Review round 6 (partial-fix residuals)
+
+- The struct comment now states the TRUE arm inventory (Apply ctx = applyDeadline+5s; ack = fresh fixed 2s; blanket 10s for the rest); the dangling test string fixed; the ops_metrics help + scrubDestination doc describe the staging- class; the response-shaping duplication deduped (one errResp shape).

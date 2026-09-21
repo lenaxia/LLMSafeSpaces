@@ -44,8 +44,8 @@ type opsMetrics struct {
 	// the design doc's agentd-side observability (cap hits + write
 	// failures) plus the rejection reasons the API cannot see.
 	fileUploads *prometheus.CounterVec
-	// uploadScrubRemoved counts stale uploads/*.tmp files removed by the
-	// boot scrub (design epic-68 D3).
+	// uploadScrubRemoved counts stale staging-*.tmp upload temps removed
+	// by the boot scrub (design epic-68 D3; the 0060 structural marker).
 	uploadScrubRemoved *prometheus.CounterVec
 	// Design 0060 §4.6 staging surfaces.
 	uploadStagingBytes      *prometheus.GaugeVec
@@ -110,7 +110,7 @@ func newOpsMetrics() *opsMetrics {
 
 		uploadScrubRemoved: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_agentd_upload_scrub_removed_total",
-			Help: "Stale uploads/*.tmp files removed by the agentd boot scrub (Epic 68 D3 atomic-or-absent contract)",
+			Help: "Stale staging-*.tmp upload temps removed by the agentd boot scrub (Epic 68 D3 atomic-or-absent contract; design 0060 structural marker)",
 		}, []string{"workspace_id"}),
 
 		// Design 0060 §4.6: the staging-leg surfaces.

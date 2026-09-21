@@ -523,7 +523,7 @@ func TestUploadApplySocket_SlowSuccessPastBlanketDeadline(t *testing.T) {
 		Size: 5, SHA256: applyTestDigest(t, "hello"), TargetName: "notes.txt",
 	})
 	if aerr != nil {
-		t.Fatalf("a slow-but-in-budget apply must deliver its ack (the re-arm arm), got %+v", aerr)
+		t.Fatalf("a slow-but-in-budget apply must deliver its ack (the fresh arm), got %+v", aerr)
 	}
 	if !res.Applied {
 		t.Fatalf("ack: %+v", res)

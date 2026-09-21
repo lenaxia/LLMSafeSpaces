@@ -41,11 +41,12 @@ type uploadApplyEngine struct {
 	uploadsDir  string
 	destMargin  int64
 	ttl         time.Duration
-	// applyDeadline is the supervisor-side copy bound (§6.3): the
-	// method arms it as the Apply ctx deadline (checked per copy
-	// window) and as the fresh post-Apply ack arm — the socket's
-	// blanket 10s exchange deadline must not truncate a legitimate
-	// 10-60s apply, and the client's 504 must bound the hold here too.
+	// applyDeadline is the supervisor-side copy bound (§6.3). The arm
+	// inventory: the Apply ctx = applyDeadline + 5s slack (checked per
+	// copy window); the ack = a fresh FIXED 2s post-Apply arm; the
+	// socket's blanket 10s covers everything else. The blanket must not
+	// truncate a legitimate 10-60s apply, and the client's 504 must
+	// bound the hold here too.
 	applyDeadline time.Duration
 
 	// applyMu serializes applies (§8 item 3's simplest choice): the
@@ -268,10 +269,11 @@ func (e *uploadApplyEngine) destAvailAtLeast(need int64) bool {
 	return e.destAvail() >= need
 }
 
-// scrubDestination removes /workspace/uploads/*.tmp older than ttl
-// (ttl=0: everything — the boot arm). The pre-existing sidecar-mode gap
-// this closes (design §4.3): the boot scrub's only live call site was
-// the single-container path; the sidecar's own call is an RO no-op.
+// scrubDestination removes the staging-*.tmp temp class from
+// /workspace/uploads, older than ttl (ttl=0: everything — the boot
+// arm). The pre-existing sidecar-mode gap this closes (design §4.3):
+// the boot scrub's only live call site was the single-container path;
+// the sidecar's own call is an RO no-op.
 func (e *uploadApplyEngine) scrubDestination(ttl time.Duration) int {
 	entries, err := os.ReadDir(e.uploadsDir)
 	if err != nil {
@@ -345,9 +347,6 @@ func (s *controlSocketServer) uploadApplyControlMethod(ctx context.Context, conn
 		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	}
 	if aerr != nil {
-		if aerr.code == "bad_request" {
-			return s.errResp(req.ID, "bad_request", aerr.msg)
-		}
 		return controlResponse{V: controlProtocolVersion, ID: idOr(req.ID),
 			Error: &controlError{Code: aerr.code, Message: aerr.msg}}
 	}
