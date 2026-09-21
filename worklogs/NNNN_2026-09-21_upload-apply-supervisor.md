@@ -112,4 +112,9 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 
 ## Review round 6 (partial-fix residuals)
 
-- The struct comment now states the TRUE arm inventory (Apply ctx = applyDeadline+5s; ack = fresh fixed 2s; blanket 10s for the rest); the dangling test string fixed; the ops_metrics help + scrubDestination doc describe the staging- class; the response-shaping duplication deduped (one errResp shape).
+- The struct comment now states the TRUE arm inventory (Apply ctx = applyDeadline+5s; ack = fresh fixed 2s; blanket 10s for the rest); the dangling test string fixed; the ops_metrics help + scrubDestination doc describe the staging- class; the response-shaping duplication deduped (one inline construction, field-for-field and wire-identical to errResp).
+
+
+## Review round 7 (1 LOW: the BoundArms over-claim)
+
+- The BoundArms comment claimed to pin the fresh ack arm too — false (its abort fires inside the blanket 10s; the sibling slow-success test is the actual pin, as the comment's own next sentence conceded). The clause is deleted. The standing gate is e2e (PR 4, now unblocked — #1516 merged).

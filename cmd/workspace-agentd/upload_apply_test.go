@@ -357,10 +357,9 @@ func TestUploadApplySocketRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUploadApplySocket_BoundArms pins the WithTimeout wrap and the
-// fresh ack arm (a FIFO trickle past the supervisor bound aborts
-// dest_write_failed within it). The r1 SetDeadline re-arm's slow-
-// SUCCESS leg past the blanket 10s is pinned by its sibling below —
+// TestUploadApplySocket_BoundArms pins the WithTimeout wrap (a FIFO
+// trickle past the supervisor bound aborts dest_write_failed within
+// it). The fresh ack arm's own pin is the sibling below —
 // TestUploadApplySocket_SlowSuccessPastBlanketDeadline.
 func TestUploadApplySocket_BoundArms(t *testing.T) {
 	// A FIFO staged "object" we feed slowly: the supervisor's copy loop
