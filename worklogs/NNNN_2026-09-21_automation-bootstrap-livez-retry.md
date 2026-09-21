@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-21
 **Session:** Adjudicated class-shaped fix: run 35586321658 proved the #1342 gate + us-70 green + 2-node spread all working, then the automation step died at its very first command — a one-shot 2s livez curl racing an API pod 32s old (us-70's closing AC-8 rows churn API replicas; the instant #1342 skip removed the accidental settle window). R1–R9 still await arbitration.
-**Status:** Complete — PR open, iterating review
+**Status:** Complete — PR open, iterating review (title/branch retain the r1 name; the SHIPPED fix is harness_start-first — see the Rule 7.5 correction)
 
 ---
 
@@ -25,8 +25,8 @@ None.
 
 ## Tests Run
 
-- New pins RED pre-fix → GREEN post-fix (incl. both executable legs).
-- `go test -count=1 -timeout 300s ./local/` — **ok** (32.1s). `bash -n` clean.
+- Pin RED pre-fix → GREEN post-fix at both heads: the r1 loop-pin family (RED against the one-shot probe) and, after the root-cause correction, `TestIssue1410E2E_HarnessStartFirst` (RED against the harness_start-less script, GREEN with it).
+- `go test -count=1 -timeout 300s ./local/` — **ok** (45.3s at the corrected head). `bash -n` clean.
 
 ## Next Steps
 
@@ -34,6 +34,6 @@ None.
 
 ## Files Modified
 
-- `local/issue-1410-1412-automation-e2e.sh` — bootstrap retry loop + why-comment.
-- `local/issue_1410_automation_e2e_script_test.go` — the two new pins.
-- `worklogs/NNNN_2026-09-21_automation-bootstrap-livez-retry.md` — this worklog.
+- `local/issue-1410-1412-automation-e2e.sh` — `harness_start` as the first statement (supersedes the r1 retry loop, fully removed); EXIT-trap `${API_KEY:-}` guards; why-comment.
+- `local/issue_1410_automation_e2e_script_test.go` — `TestIssue1410E2E_HarnessStartFirst` (replaces the r1 loop-pin family).
+- `worklogs/NNNN_2026-09-21_automation-bootstrap-livez-retry.md` — this worklog (Rule 7.5 correction recorded).
