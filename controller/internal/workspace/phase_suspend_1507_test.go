@@ -64,12 +64,10 @@ func TestSuspendBounded_FlappingBusySessionsSuspendImmediately(t *testing.T) {
 		"the PVC must survive suspend")
 }
 
-// A wedged agentd (statusz UNREACHABLE — the deeper incident state
-// where even the scrape times out) also suspends immediately: nothing
-// on the suspend path dials the agent at all.
+// The suspend path never dials the agent — a live statusz stub wired
+// to the workspace's PodIP must see ZERO scrapes through a full
+// suspend flow with busy sessions.
 func TestSuspendBounded_UnreachableAgentSuspendsWithoutConsult(t *testing.T) {
-	// No statusz agent started: fetchAgentStatusz would fail — but the
-	// suspend path must never call it.
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
 	ws := makeWorkspace("ws-1507-unreach", "default", v1.WorkspacePhaseActive)
@@ -87,6 +85,33 @@ func TestSuspendBounded_UnreachableAgentSuspendsWithoutConsult(t *testing.T) {
 	assert.Zero(t, stub.statuszCalls(),
 		"the suspend path must not consult statusz at all — suspend no longer depends on agent health (#1507)")
 	assert.False(t, podExists(t, r, pod.Name))
+}
+
+// The genuinely-unreachable variant: the PodIP points at a port with
+// no listener (the deeper incident state — even the scrape times out).
+// Suspend completes identically: the path never attempts the dial.
+func TestSuspendBounded_DeadAgentSuspendsImmediately(t *testing.T) {
+	ws := makeWorkspace("ws-1507-dead", "default", v1.WorkspacePhaseActive)
+	trueVal := true
+	ws.Spec.Suspend = &trueVal
+	// Port 1 with no listener: any fetch would fail — irrelevant now.
+	ws.Status.PodIP = "127.0.0.1"
+	origAdminPort := agentdAdminPort
+	agentdAdminPort = 1
+	t.Cleanup(func() { agentdAdminPort = origAdminPort })
+	pod := makeRunningPod(podName(ws.Name, string(ws.UID)), "default", "127.0.0.1")
+	r, _ := reconcilerForDrain(t, ws, pod)
+
+	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+	result, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+	assert.NotEqual(t, drainPollInterval, result.RequeueAfter,
+		"a dead agentd cannot block suspend — the path never dials it")
+	assert.False(t, podExists(t, r, pod.Name))
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase)
 }
 
 // The graceful window rides the POD: the deletion's

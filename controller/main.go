@@ -57,7 +57,7 @@ const workspaceTerminationGraceUsage = "Workspace pods' terminationGracePeriodSe
 // serial shutdown budget would short-circuit the drain mid-flight — the
 // pre-#761 5s bug class. Extracted from main for the funlen bound.
 func validateWorkspaceTerminationGrace(grace int64) error {
-	if grace > 0 && grace < 36 {
+	if grace < 0 || (grace > 0 && grace < 36) {
 		return fmt.Errorf("--workspace-termination-grace-seconds=%d is below agentd's 35s serial shutdown budget — a short grace cuts in-flight turns that the budget exists to drain", grace)
 	}
 	return nil

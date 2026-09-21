@@ -59,3 +59,9 @@ None.
 - `controller/internal/workspace/phase_suspend_1507_test.go` (new — the incident pins)
 - `controller/internal/workspace/session_drain_test.go` (machinery re-target + the rewritten flow pin)
 - `worklogs/NNNN_2026-09-21_suspend-bounded-graceful.md` (this file)
+
+## r1 review — findings closed
+
+1. Guard contract falsified for negatives (accepted -5) → the condition now rejects every non-zero value below the floor; table-driven pin added (controller/main_grace_test.go: 0/36/120 accept; 35/1/-5 reject).
+2. Dead drainReasonSuspend constant removed (the machinery vocabulary shrinks to the live reasons).
+3. The unreachable-test comment/code mismatch → comment rewritten (live stub wired, zero scrapes asserted); a GENUINELY-unreachable pin added (Port 1, no listener — the deeper incident state).
