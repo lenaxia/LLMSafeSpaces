@@ -50,20 +50,27 @@ created_triggers=()
 created_workflows=()
 
 cleanup() {
+    # ${API_KEY:-}: the EXIT trap can fire before harness_start seeds it
+    # (die-before-bootstrap); set -u must not abort the trap.
     local id
     for id in ${created_triggers[*]:-}; do
-        curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
+        curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY:-}" \
             "http://127.0.0.1:${PORTFWD_PORT}/api/v1/me/triggers/${id}" >/dev/null 2>&1 || true
     done
     for id in ${created_workflows[*]:-}; do
-        curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
+        curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY:-}" \
             "http://127.0.0.1:${PORTFWD_PORT}/api/v1/me/workflows/${id}" >/dev/null 2>&1 || true
     done
 }
 trap cleanup EXIT
 
-curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
-    || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
+# harness_start FIRST (the #1452/#1417 pinned pattern): it establishes
+# THIS step's API port-forward, runs the 10×1s livez retry gate, and
+# seeds the session user + API key every row's Bearer auth depends on.
+# Run 35586321658 died forwardless in 18ms — ECONNREFUSED against a
+# Ready API pod: this script never established the forward at all (and
+# its rows never had an API_KEY). Never-worked; first execution.
+harness_start
 
 # api runs one request. The BODY goes to stdout (pipe-friendly); the
 # status lands in api_status and the body in api_body — plain globals,

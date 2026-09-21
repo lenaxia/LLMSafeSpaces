@@ -123,6 +123,35 @@ func TestIssue1410E2EWorkflowRegistered(t *testing.T) {
 		"the automation e2e script must be registered in the nightly workflow")
 }
 
+// TestIssue1410E2E_HarnessStartFirst pins run-35586321658's TRUE root
+// cause (review r1's refutation of the livez-race theory): the step
+// died in 18ms — ECONNREFUSED on a dead local port, because the script
+// never established its port-forward AT ALL and its rows' Bearer
+// ${API_KEY} was never seeded. Every row depends on harness_start (the
+// #1452/#1417 pinned pattern): it establishes the forward, runs the
+// 10×1s livez retry gate, and seeds the session user + API key.
+func TestIssue1410E2E_HarnessStartFirst(t *testing.T) {
+	raw, err := os.ReadFile(issue1410Script)
+	require.NoError(t, err)
+	src := string(raw)
+	callIdx := strings.Index(src, "\nharness_start")
+	require.GreaterOrEqual(t, callIdx, 0, "the script must call harness_start — nothing else establishes its port-forward or seeds the API_KEY its rows authenticate with (run 35586321658: 18ms ECONNREFUSED, forwardless)")
+	livezIdx := strings.Index(src, "/livez")
+	if livezIdx >= 0 {
+		assert.Less(t, callIdx, livezIdx, "harness_start must precede any standalone /livez probe (it establishes the forward)")
+	}
+	// The first authenticated row call must come AFTER harness_start —
+	// before it, API_KEY is unbound (set -u abort).
+	apiIdx := strings.Index(src, "api GET")
+	if apiIdx >= 0 {
+		assert.Less(t, callIdx, apiIdx, "harness_start must precede the first api call — the rows' Bearer ${API_KEY} is seeded there")
+	}
+	// The cleanup's DELETE calls also ride ${API_KEY}: the trap may fire
+	// before harness_start completes, and ${API_KEY:-} guarding is the
+	// lib's convention — pin that the trap tolerates the empty case.
+	assert.Contains(t, src, "${API_KEY:-}", "the EXIT-trap cleanup must tolerate an unset API_KEY (die-before-bootstrap)")
+}
+
 // TestIssue1410E2EScript_ExecuteSmoke runs the script end-to-end under
 // curl/sleep/kubectl shims and asserts it TRAVERSES to the final gate
 // (die "N row(s) failed") instead of aborting on an unbound variable,
