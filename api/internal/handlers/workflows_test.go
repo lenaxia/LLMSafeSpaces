@@ -1137,3 +1137,46 @@ func TestWorkflowCreate_NilExistencer_SkipsCheck(t *testing.T) {
 	r.ServeHTTP(rec, w)
 	require.Equal(t, 201, rec.Code, rec.Body.String())
 }
+
+// TestWorkflowUpdate_GhostTargetWorkspace_Named400 pins the audit's
+// third instance (review r1): a PATCHED nonexistent targetWorkspaceId
+// previously reached the FK as an opaque 500 — the named 400 now.
+func TestWorkflowUpdate_GhostTargetWorkspace_Named400(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{}})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.PUT("/:id", h.UserUpdate)
+
+	w := httptest.NewRequest("PUT", "/api/v1/me/workflows/wf-1",
+		io.NopCloser(strings.NewReader(`{"targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "target workspace not found")
+}
+
+// TestWorkflowCreate_ExistencerError_500 pins the create infra arm.
+func TestWorkflowCreate_ExistencerError_500(t *testing.T) {
+	store := newMockWorkflowStore()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{err: errors.New("db down")})
+	g := r.Group("/contract")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("", h.UserCreate)
+	body := `{"name":"infra","specYaml":"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}","targetWorkspaceId":"00000000-0000-4000-8000-000000000001"}`
+	w := httptest.NewRequest("POST", "/contract", io.NopCloser(strings.NewReader(body)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 500, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "failed to check target workspace")
+}

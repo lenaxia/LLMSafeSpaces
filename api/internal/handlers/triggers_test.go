@@ -1703,3 +1703,78 @@ func TestTriggerUpdate_NonexistentWorkspace_Named400(t *testing.T) {
 	require.Equal(t, 400, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), "target workspace not found")
 }
+
+// TestTriggerUpdate_CrossOwnerWorkflow_Named400 pins #1519 half (b) as
+// IMPLEMENTED: a PATCHED cross-owner workflowId answers the same named
+// 400 as a nonexistent one (owner-scoped GetWorkflow — no existence
+// oracle, matching create). STORED cross-owner targets are deliberately
+// NOT re-validated (legacy rows stay patchable for #1440 mitigation).
+func TestTriggerUpdate_CrossOwnerWorkflow_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("00000000-0000-4000-8000-000000000001"), Prompt: "x"}
+	// The workflow EXISTS — owned by someone else (the owner-scoped mock
+	// returns ErrNotFound for it, exactly as the real store does).
+	store.workflows["wf-foreign"] = &wf.WorkflowRow{ID: "wf-foreign", OwnerType: "user", OwnerID: "someone-else"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{
+		exists: map[string]bool{"00000000-0000-4000-8000-000000000001": true},
+	})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workflowId": "wf-foreign",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workflow not found")
+}
+
+// TestTriggerUpdate_StoredTargetNotRevalidated pins the scope decision:
+// a patch that does NOT touch the targets never re-validates the STORED
+// workflowId — a legacy cross-owner row stays patchable for #1440
+// mitigation (enabled:false).
+func TestTriggerUpdate_StoredTargetNotRevalidated(t *testing.T) {
+	store := newMockTriggerStore()
+	// Stored target is cross-owner (not in this owner's mock map).
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "zombie", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkflowID:   strPtr("wf-legacy-foreign"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{exists: map[string]bool{}})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"enabled": false,
+	})
+	require.Equal(t, 200, w.Code, "stored targets must never be re-validated by unrelated patches: %s", w.Body.String())
+	assert.False(t, store.triggers["t1"].Enabled)
+}
+
+// TestTriggerUpdate_WorkspaceExistencerError_500 pins the infra arm.
+func TestTriggerUpdate_WorkspaceExistencerError_500(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("ws-1"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{err: errors.New("db down")})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workspaceId": "00000000-0000-4000-8000-000000000002",
+	})
+	require.Equal(t, 500, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "failed to check target workspace")
+}
+
+// TestTriggerCreate_WorkspaceExistencerError_500 pins the create arm.
+func TestTriggerCreate_WorkspaceExistencerError_500(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{err: errors.New("db down")})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "infra-fail", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "00000000-0000-4000-8000-000000000002", "prompt": "x",
+	})
+	require.Equal(t, 500, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "failed to check target workspace")
+}

@@ -88,6 +88,21 @@ func (s *StoreIntegrationSuite) newWorkspaceID() string {
 	return id
 }
 
+// --- Workspace existence (the parent-id contract primitive) ----------------
+
+func (s *StoreIntegrationSuite) TestWorkspaceExistsByID() {
+	ctx := context.Background()
+	id := s.newWorkspaceID()
+
+	exists, err := s.store.WorkspaceExistsByID(ctx, id)
+	s.Require().NoError(err)
+	s.True(exists, "a seeded workspace row must exist (unscoped — the FK's semantics)")
+
+	exists, err = s.store.WorkspaceExistsByID(ctx, uuid.New().String())
+	s.Require().NoError(err)
+	s.False(exists, "a random id must not exist")
+}
+
 // --- Workflow CRUD ---------------------------------------------------------
 
 func (s *StoreIntegrationSuite) TestWorkflowCRUD() {

@@ -69,7 +69,8 @@ type WorkflowsHandler struct {
 }
 
 // workspaceExistencer is the unscaled existence primitive the FK
-// semantics define (see database.Service.WorkspaceExistsByID).
+// semantics define (implemented by (*workflows.Store).WorkspaceExistsByID,
+// pkg/workflows/store.go).
 type workspaceExistencer interface {
 	WorkspaceExistsByID(ctx context.Context, workspaceID string) (bool, error)
 }
@@ -369,6 +370,23 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID, workflowID
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// The parent-id audit's UPDATE arm (review r1's third instance): a
+	// PATCHED targetWorkspaceId must exist — the FK previously answered
+	// nonexistent targets with the opaque-500 class. Scoped to the
+	// PATCHED value only (stored targets are FK-anchored); existence
+	// only, cross-owner is #1440's post-persist business.
+	if req.TargetWorkspaceID != nil && *req.TargetWorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.TargetWorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
 	}
 
 	upd := &wf.WorkflowUpdate{

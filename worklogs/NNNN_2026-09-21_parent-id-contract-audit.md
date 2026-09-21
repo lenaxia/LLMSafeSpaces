@@ -10,10 +10,10 @@
 
 | Column (FK →) | Surface | Verdict |
 |---|---|---|
-| `workflows.target_workspace_id` → workspaces (000016, SET NULL) | workflow create | **BUG → FIXED**: named 400 "target workspace not found" (run 35617684178's finding — the harness's REAL_WF create died in 9.3ms) |
+| `workflows.target_workspace_id` → workspaces (000016, SET NULL) | workflow create AND update | **BUG → FIXED** (r1 caught the update surface — the audit's third instance): named 400 on the PATCHED value both views (run 35617684178's finding — the harness's REAL_WF create died in 9.3ms) |
 | `triggers.workflow_id` → workflows (000020:21, SET NULL) | trigger create | already fixed (#1517) — cited |
-| `triggers.workflow_id` | trigger update | **BUG → FIXED (#1519's nonexistent half)**: post-patch merged view resolves; named 400. Cross-owner PERSISTS + fires loud BY DESIGN (#1440 — untouched) |
-| `triggers.workspace_id` → workspaces (000020:11, SET NULL) | trigger create + update | **BUG → FIXED**: existence check via the new unscaled primitive; named 400 both views |
+| `triggers.workflow_id` | trigger update | **BUG → FIXED (#1519 BOTH halves, per r1's record correction)**: PATCHED target resolves owner-scoped → named 400 for nonexistent AND cross-owner (no existence oracle; matching create). STORED targets deliberately NOT re-validated — legacy cross-owner rows stay patchable for #1440 mitigation (enabled:false), pinned by TestTriggerUpdate_StoredTargetNotRevalidated |
+| `triggers.workspace_id` → workspaces (000020:11, SET NULL) | trigger create + update | **BUG → FIXED**: existence check via the unscoped primitive; named 400, scoped to the PATCHED value |
 | `user_secret_bindings.workspace_id`/`secret_id` (000001) | secrets bind | **CORRECT**: workspace-scoped route resolves the parent (404 by construction; sessions of green live bind usage) |
 | `workspace_credential_bindings.*` (000001) | credential bind | **CORRECT + PINNED**: `TestUserProviderCredentials_Bind_OwnershipCheck` (404 ownership ⇒ existence) |
 | `mcp_server_bindings.*` (000012) | MCP bind | **CORRECT + PINNED**: `TestBind_RejectsForeignServer` + the workspace-ownership 404 at mcp_servers.go:636 |
@@ -23,14 +23,18 @@
 
 - `pkg/workflows/store.go`: `WorkspaceExistsByID` — the UNSCALED existence primitive (the FKs' semantics; ownership NOT judged — cross-owner targets remain the fire-time loud class). Same pool, one COUNT.
 - `workflows.go` create: `targetWorkspaceId` pre-flight via `SetWorkspaceExistencer` (deferred injection, SetAudit pattern — nil skips, preserving legacy construction). Ordered after spec/schema validation.
-- `triggers.go`: create gains the workspaceId existence check beside the #1517 workflowId check; update (#1519) resolves the post-patch MERGED workflowId (owner-scoped GetWorkflow) + workspaceId (existencer) → named 400s. `mergedWorkflowID`/`mergedWorkspaceID` hoisted + computed once (nil-`existing` guarded — a bare autoDisableAfter patch fetches nothing; caught by the panicking fixture and fixed).
+- `triggers.go`: create gains the workspaceId existence check beside the #1517 workflowId check; update (#1519) resolves the PATCHED workflowId (owner-scoped GetWorkflow) + workspaceId (existencer) → named 400s. **r1's scope correction: the first draft re-validated the post-patch MERGED view — that made legacy cross-owner rows unpatchable (blocking #1440's enabled:false mitigation); the checks now scope to PATCHED values only** (STORED targets stay FK-anchored and untouched), pinned by `TestTriggerUpdate_StoredTargetNotRevalidated`.
+- `workflows.go` update: **the third instance (r1)** — a PATCHED targetWorkspaceId resolves via the existencer → named 400.
+- Store integration: `TestWorkspaceExistsByID` (seeded row exists unscoped; random id does not) in the integration-tagged suite.
+- E2E unhappy rows: R1c now covers BOTH ghost-parent creates (targetWorkspaceId on workflows; workflowId on triggers) so the arbitration run patrols the retired class.
 - `app.go`: all four handlers wired to the wfStore existencer.
 - Harness: the automation script seeds the dummy workspace ROW (`00000000-0000-4000-8000-000000000001`, psql like seed_session — no CR, no pod; runs still queue-and-no-op) before the REAL_WF create; R4d's target retargeted from a second never-existing literal to the seeded row.
 
 ### Assumptions stated and validated (Rule 7)
 
 - The FK map is complete for user-facing parents: migrations grepped BOTH constraint forms (the inline `REFERENCES` in 000020 evaded the constraint-name grep first pass — noted).
-- Existence-not-ownership is the right contract for target_workspace_id / triggers.workspace_id (org-owned workflows target user workspaces; ownership enforcement would false-block; #1440 keeps cross-owner loud).
+- Existence-not-ownership for the WORKSPACE axis (org-owned workflows target user workspaces; the FK is unscoped). For the WORKFLOW axis (trigger targets), owner-scoping matches #1517's create check and closes #1519 half (b): a PATCHED cross-owner workflowId answers the same named 400 as a nonexistent one (no oracle); #1440's loud-fire design survives for STORED targets (deletion SET NULL, legacy rows).
+- The r1-recorded decision: update-path checks scope to PATCHED values — stored state is FK-anchored and deliberately unvalidated (mitigation path preserved).
 - Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.
 
 ---

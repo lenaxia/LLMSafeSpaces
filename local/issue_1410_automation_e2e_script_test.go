@@ -43,10 +43,11 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 
 	for _, needle := range []string{
 		// R1 — create-path validation (#1411).
-		`"expr":"not-a-cron"`,                                     // invalid expr attempted
-		`R1a: invalid cron expr rejected`,                         // 400 asserted
-		`R1b: nextFireAt is a future scheduled occurrence`,        // first-slot, not creation time
-		`R1c: nonexistent workflowId rejected with the named 400`, // the create contract, live-API (35597973572)
+		`"expr":"not-a-cron"`,                                                      // invalid expr attempted
+		`R1a: invalid cron expr rejected`,                                          // 400 asserted
+		`R1b: nextFireAt is a future scheduled occurrence`,                         // first-slot, not creation time
+		`R1c: ghost targetWorkspaceId workflow create rejected with the named 400`, // the audit's headline, live-API (35617684178)
+		`R1c: nonexistent workflowId trigger create rejected with the named 400`,   // the create contract, live-API (35597973572)
 		// R2 — reschedule moves the slot immediately (#1410).
 		`"sourceConfig":{"expr":"0 4 1 * *","tz":"UTC"}`,     // the new schedule
 		`03:00" ]] && [[ "$(slot_hm "${r2_new}")" == "04:00`, // old→new slot asserted

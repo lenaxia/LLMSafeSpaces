@@ -153,13 +153,23 @@ if [[ "${api_status}" == "400" ]]; then ok "R1a: invalid cron expr rejected (400
     note_fail "R1a: invalid cron expr returned ${api_status}, expected 400 (${r1_resp})"
 fi
 
-# R1c — the create contract (35597973572 ruling): a nonexistent
-# workflowId answers the named 400, never the pre-fix opaque 500.
+# R1c — the create contract (35597973572 ruling) + the audit's headline
+# (35617684178): nonexistent workflowId AND targetWorkspaceId answer the
+# named 400, never the pre-fix opaque 500s.
+api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-ghost-target-ws",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:"00000000-0000-4000-8000-000000000099"}')"
+r1w_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1w_resp}" == *"target workspace not found"* ]]; then
+    ok "R1c: ghost targetWorkspaceId workflow create rejected with the named 400"
+else
+    note_fail "R1c: ghost targetWorkspaceId create returned ${api_status} (${r1w_resp}), expected 400"
+fi
 api POST /api/v1/me/triggers \
     '{"name":"e2e-ghost-wf-contract","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
 r1c_resp="${api_body}"
 if [[ "${api_status}" == "400" && "${r1c_resp}" == *"target workflow not found"* ]]; then
-    ok "R1c: nonexistent workflowId rejected with the named 400 (create contract)"
+    ok "R1c: nonexistent workflowId trigger create rejected with the named 400 (create contract)"
 else
     note_fail "R1c: ghost-workflow create returned ${api_status} (${r1c_resp}), expected 400 target workflow not found"
 fi
