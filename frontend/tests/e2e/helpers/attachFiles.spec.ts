@@ -5,12 +5,12 @@ import { test, expect } from "@playwright/test";
 import { attachFiles } from "./attachFiles";
 import { mockAuthAndWorkspace, mockHistory, gotoChat, mockUpload } from "../attachments-helpers";
 
-// The #1523 regression rows. The dispatch must be single-turn (live-node
+// The #1520 regression rows. The dispatch must be single-turn (live-node
 // query + DataTransfer + bubbling events inside ONE evaluate) — Playwright's
 // setInputFiles round-trip orphans the dispatch on remounted nodes (the
 // chip-never-appears flake class). These rows prove the helper works
 // end-to-end through the real composer, including the multi-file case.
-test.describe("attachFiles helper (#1523)", () => {
+test.describe("attachFiles helper (#1520)", () => {
   test("single file dispatch reaches React and produces an attached chip", async ({ page }) => {
     const uploaded: string[] = [];
     await mockAuthAndWorkspace(page);

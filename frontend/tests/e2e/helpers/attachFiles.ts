@@ -13,7 +13,7 @@ export interface AttachFile {
  * Dispatch a file selection on the composer's hidden file input WITHOUT
  * Playwright's `setInputFiles` action machinery.
  *
- * Why this exists (the #1523 investigation): Playwright's setInputFiles
+ * Why this exists (the #1520 investigation): Playwright's setInputFiles
  * resolves the element, then sets `.files` and dispatches `input`/`change`
  * from its injected script — across a CDP round-trip. In the dev-server
  * e2e environment the composer subtree re-renders during that window
@@ -29,8 +29,11 @@ export interface AttachFile {
  *
  * The fix is the single-turn dispatch: query the LIVE node, set its
  * files via DataTransfer, and fire bubbling input+change events — all
- * in one JS turn inside the page, so no round-trip window exists for a
- * remount to orphan. This mirrors what a real user's file dialog does
+ * in one JS turn inside the page, so the dispatch itself cannot be
+ * orphaned by a remount mid-round-trip. A remount between the
+ * waitForSelector and the evaluate re-query still throws — a loud
+ * rejection the caller sees, never a silent no-op success (the flake's
+ * failure mode). This mirrors what a real user's file dialog does
  * (the browser dispatches change on the attached node synchronously).
  */
 export async function attachFiles(page: Page, files: AttachFile[]): Promise<void> {
@@ -39,7 +42,7 @@ export async function attachFiles(page: Page, files: AttachFile[]): Promise<void
   // React StrictMode's dev double-mount (and the mobile viewport's
   // late fragment commit) leaves brief windows where the input is not
   // yet (or no longer, mid-remount) in the DOM — an immediate query
-  // throws and the row flakes (#1523's residual, isolated as
+  // throws and the row flakes (#1520's residual, isolated as
   // "composer-file-input not found").
   await page.waitForSelector('[data-testid="composer-file-input"]', { state: "attached", timeout: 10_000 });
 

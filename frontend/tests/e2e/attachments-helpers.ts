@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // The shared mock/setup surface of the Epic 68 attachments e2e —
-// extracted (#1523) so the attachFiles helper's own regression rows can
+// extracted (#1520) so the attachFiles helper's own regression rows can
 // compose the same environment without duplicating the mocks.
 
 import { expect, type Page, type Route } from "@playwright/test";
