@@ -86,6 +86,19 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// single-container boot path in main.go).
 	ensureOpencodeBootLayers(log)
 
+	// Design 0060 §4.3/§9.2 — the uid-1000 destination scrub: close the
+	// sidecar-mode gap where NOTHING reclaimed /workspace/uploads/*.tmp
+	// (the only other live scrub call is the single-container server
+	// path this subcommand exits before; the sidecar's own call is an
+	// RO no-op). Boot arm + the TTL sweeper on the shared knob.
+	{
+		engine := uploadApplyEngineFromEnv()
+		if n := engine.scrubDestination(0); n > 0 {
+			log.Info("upload destination scrub: reclaimed crashed .tmp files", zap.Int("count", n))
+		}
+		engine.startDestinationSweeper(context.Background(), 10*time.Minute)
+	}
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -179,6 +192,7 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter) (*cont
 		return nil, err
 	}
 	srv.metricsSource = newWorkspaceCgroupReader().read
+	srv.uploadApply = uploadApplyEngineFromEnv()
 	return srv, nil
 }
 

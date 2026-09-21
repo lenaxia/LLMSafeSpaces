@@ -96,6 +96,11 @@ type controlSocketServer struct {
 	// restartMu serializes restart execution (A.3): one at a time,
 	// TryLock for the in_progress report.
 	restartMu sync.Mutex
+
+	// uploadApply is the design-0060 §3.2 method engine — wired by the
+	// supervisor's server construction; nil answers internal (a wiring
+	// bug, never a silent no-op).
+	uploadApply *uploadApplyEngine
 }
 
 func newControlSocketServer(addr string, proc supervisedProcIface) (*controlSocketServer, error) {
@@ -190,6 +195,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.refreshFiles(req))
 	case "metrics":
 		writeJSON(conn, s.metrics(req.ID))
+	case "upload_apply":
+		writeJSON(conn, s.uploadApplyControlMethod(req))
 	default:
 		writeJSON(conn, s.errResp(req.ID, "method_unknown",
 			fmt.Sprintf("method %q is not part of control protocol v1", req.Method)))
