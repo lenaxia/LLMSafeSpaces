@@ -79,3 +79,13 @@ None. (The `/share` exclusion is recorded, not blocking.)
 - `frontend/src/api/promptLibrary.ts` (contract adapter), `frontend/src/api/workspaces.ts` (+sessionAction), `frontend/src/hooks/usePromptLibrary.ts`
 - `frontend/tests/e2e/composer-slash-at.spec.ts` — 6 browser rows
 - `worklogs/NNNN_2026-09-20_composer-slash-at-recall.md` — this worklog
+
+## Review Round 1 (four findings — all taken; plus a process near-miss recorded)
+
+1. **Compact wire payload was wrong**: `{type:"action.compact"}` invents a type-field the protojson union silently discards (oneof unset → guaranteed action.unknown 501) — reviewer reproduced the decode empirically. Fixed to the documented union member `{"compact":{}}`; both test pins corrected (the vitest pin had enshrined the wrong shape as spec; the e2e boundary assertion now pins the right one).
+2. **The 501 "verbatim" claim was false**: ApiClientError renders nested error objects as "[object Object]". `errorText` now digs into the documented body shapes; the failure test constructs the REAL ApiClientError + nested 501 body and pins readable detail (capability included, no [object Object]).
+3. **/rename now mirrors the kebab path's DUAL invalidation** (["sessions", ws] + ["session-title", ws, ses]) — useSessionTitle's persist effect could otherwise PUT the stale title back and revert the rename.
+4. **/new**: comment corrected (the page's createSessionMutation, NOT the sidebar's ensure endpoint — documented difference) + pending guard added (rapid double-invoke no longer mints duplicates).
+5. **The dead suppression mechanism rebuilt**: suppressAtRef was consumed in onChange, which programmatic setText never fires — the jsdom no-recursion pin passed on a caret-state accident. Suppression is now text-keyed state checked in the open condition, with setCaret alongside the programmatic expand; a NEW e2e row pins the trailing-@token case (the recursion bug the old mechanism could not decide). Also added: prompt-library-500 row (no popup, no crash, composer still sends). Mutation-verified: dropping the suppression condition fails the trailing-@ row; restoring the wrong payload fails the union-member pin.
+
+**Process near-miss, recorded per the standing rules**: mid-mutation I ran `git checkout` on an UNSTAGED file (slashCommands.ts) — the exact #1489-r4 class — silently reverting three r1 fixes; my narrow post-restore verification (one playwright row) missed it; the FULL suite caught it and the fixes were re-applied and re-verified present by grep before this commit. The rule (file-copy mutations only, never checkout-of-unstaged) was in my own worklog and I violated it under time pressure. Recorded here because the record is the enforcement.

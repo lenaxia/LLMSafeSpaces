@@ -207,9 +207,12 @@ export function Composer({
   // Dismissal keys on the @ ANCHOR INDEX: extending the same token
   // (typing more filter chars) stays dismissed; a fresh @ re-arms.
   const [atDismissedAt, setAtDismissedAt] = useState<number | null>(null);
-  // Programmatic expansions must not re-open the @ popup (the prompt's
-  // own content may contain @ tokens): suppressed for one change.
-  const suppressAtRef = useRef(false);
+  // Programmatic expansions must not re-open the @ popup: prompt content
+  // may itself contain (or end with) an @token, and the caret lands
+  // right after it — a live token by the findAtToken rules. Suppression
+  // is keyed on the exact resulting text and consumed by any subsequent
+  // edit (onChange sees a different text and re-arms).
+  const [suppressAtForText, setSuppressAtForText] = useState<string | null>(null);
 
   const slashMatch = matchSlash(text);
   const slashItems = slashMatch
@@ -225,7 +228,10 @@ export function Composer({
       )
     : [];
   const atOpen =
-    atToken !== null && prompts.length > 0 && atDismissedAt !== atToken.at;
+    atToken !== null &&
+    prompts.length > 0 &&
+    atDismissedAt !== atToken.at &&
+    suppressAtForText !== text;
 
   const openOptionsDrawer = () => {
     if (!drawerOpen) toggleDrawer();
@@ -240,7 +246,15 @@ export function Composer({
     onAbort,
     notify: (n) => setCommandNotice(n),
     invalidateSessions: () => {
-      if (workspaceId) void queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+      // Mirror the sidebar-kebab rename path (ChatPage): BOTH cache
+      // keys, or useSessionTitle's persist effect can PUT the stale
+      // title back and silently revert the rename.
+      if (workspaceId) {
+        void queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+        if (sessionId) {
+          void queryClient.invalidateQueries({ queryKey: ["session-title", workspaceId, sessionId] });
+        }
+      }
     },
   };
 
@@ -262,8 +276,9 @@ export function Composer({
     const prompt = atItems[index];
     if (!prompt) return;
     const out = expandAtToken(text, atToken, prompt.content);
-    suppressAtRef.current = true;
+    setSuppressAtForText(out.text);
     setText(out.text);
+    setCaret(out.caret);
     setAtDismissedAt(null);
     pendingCursor.current = out.caret;
     setNavTick((t) => t + 1);
@@ -666,9 +681,8 @@ export function Composer({
           onChange={(e) => {
             const next = e.target.value;
             const pos = e.target.selectionStart;
-            // Consume the programmatic-expansion suppression exactly once.
-            if (suppressAtRef.current) {
-              suppressAtRef.current = false;
+            if (suppressAtForText !== null && suppressAtForText !== next) {
+              setSuppressAtForText(null);
             }
             setText(next);
             setCaret(pos);

@@ -163,18 +163,27 @@ describe("Composer slash commands (#1496 part 1)", () => {
     expect(screen.getByTestId("command-notice").textContent).toContain("Model picker opened");
   });
 
-  it("compact routes the typed action through the adapter", async () => {
+  it("compact routes the typed action through the adapter — protojson union member", async () => {
+    // The wire contract is the discriminated union member {"compact":{}}
+    // (sdks/openapi.yaml; a `type` field is silently discarded by the
+    // protojson decoder and the oneof stays unset → action.unknown).
     renderComposer();
     const box = await typeIn("/co");
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() =>
-      expect(sessionAction).toHaveBeenCalledWith("ws-1", "ses-1", { type: "action.compact" }),
+      expect(sessionAction).toHaveBeenCalledWith("ws-1", "ses-1", { compact: {} }),
     );
     expect(screen.getByTestId("command-notice").textContent).toContain("Compaction scheduled");
   });
 
-  it("compact surfaces adapter failures (501 off-regime class)", async () => {
-    sessionAction.mockRejectedValueOnce(new Error("not supported: typed actions require AGENTD_STATE_AUTHORITY"));
+  it("compact surfaces the REAL 501 body shape — nested error object, not [object Object]", async () => {
+    // ApiClientError's message is "[object Object]" for nested error
+    // payloads (the actions 501 body is {"error":{code,capability,detail}})
+    // because the client constructs Error from the raw body.error value.
+    // Construct the real shape; the notice must render the detail.
+    const { ApiClientError } = await import("../../api/client");
+    const realBody = { error: { code: "not_supported", capability: "abi.actions", detail: "typed actions require AGENTD_STATE_AUTHORITY (design 0055 M4/D4: single delivery regime)" } } as never;
+    sessionAction.mockRejectedValueOnce(new ApiClientError(501, realBody));
     renderComposer();
     const box = await typeIn("/co");
     fireEvent.keyDown(box, { key: "Enter" });
@@ -182,6 +191,8 @@ describe("Composer slash commands (#1496 part 1)", () => {
     const notice = screen.getByTestId("command-notice");
     expect(notice.getAttribute("aria-label")).toBe("command-error-notice");
     expect(notice.textContent).toContain("AGENTD_STATE_AUTHORITY");
+    expect(notice.textContent).toContain("abi.actions");
+    expect(notice.textContent).not.toContain("[object Object]");
   });
 
   it("requirements gate: /compact without a session errors instead of calling", async () => {

@@ -8,14 +8,18 @@ import { workspacesApi } from "../../api/workspaces";
  * maps to an action users actually perform mid-chat, chosen by walking
  * the existing API surface — no command here invents backend behavior:
  *
- *   /compact — typed action `action.compact` via POST /sessions/:id/actions
- *              (single-flight pod-side; 501 + capability detail when the
- *              state-authority flag is off — surfaced verbatim)
+ *   /compact — typed action via POST /sessions/:id/actions with the
+ *              protojson union member {"compact":{}} (sdks/openapi.yaml:
+ *              "Discriminated union — exactly one member per request";
+ *              a `type` field is silently discarded and the oneof stays
+ *              unset → guaranteed "action.unknown" 501). Off-regime the
+ *              API answers 501 with the capability detail.
  *   /model   — opens the composer options drawer (model picker lives there)
  *   /rename  — PUT /sessions/:id/title (args = the new title; reuses the
  *              sidebar's rename adapter + cache invalidation)
- *   /new     — new session (ensure/create + navigate; callback wired by
- *              the page, same mutation the sidebar's "+ New chat" uses)
+ *   /new     — new session (create + navigate; the page's
+ *              createSessionMutation — the SIDEBAR's "+ New chat" uses
+ *              the ensure endpoint instead, a documented difference)
  *   /abort   — stops the current turn (the composer's existing abort path)
  *   /help    — local overlay listing the commands (no backend)
  *
@@ -65,7 +69,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     requires: (ctx) => (!ctx.workspaceId || !ctx.sessionId ? "needs an active session" : null),
     run: async (_args, ctx) => {
       try {
-        await workspacesApi.sessionAction(ctx.workspaceId!, ctx.sessionId!, { type: "action.compact" });
+        await workspacesApi.sessionAction(ctx.workspaceId!, ctx.sessionId!, { compact: {} });
         ctx.notify({ kind: "info", text: "Compaction scheduled — it runs when the current turn ends." });
       } catch (err) {
         ctx.notify({ kind: "error", text: `Compact failed: ${errorText(err)}` });
@@ -122,7 +126,22 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
 ];
 
+/**
+ * errorText renders adapter failures readably. ApiClientError's message
+ * is "[object Object]" whenever the server nests the error payload
+ * (the actions union's 501 body is {"error":{code,capability,detail}})
+ * because the client constructs Error from the raw body.error value —
+ * dig into the documented shapes instead of trusting .message.
+ */
 export function errorText(err: unknown): string {
+  const anyErr = err as { body?: { error?: unknown }; message?: string } | null;
+  const nested = anyErr?.body?.error;
+  if (typeof nested === "string") return nested;
+  if (nested && typeof nested === "object") {
+    const n = nested as { detail?: string; code?: string; capability?: string };
+    const parts = [n.detail ?? n.code, n.capability ? `(capability: ${n.capability})` : ""].filter(Boolean);
+    if (parts.length > 0) return parts.join(" ");
+  }
   if (err instanceof Error) return err.message;
   return String(err);
 }

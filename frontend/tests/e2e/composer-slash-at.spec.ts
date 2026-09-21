@@ -94,7 +94,7 @@ test.describe("composer slash commands + @-prompt recall (#1496)", () => {
     await box.type("com");
     await expect(page.getByTestId("slash-palette").locator('[data-command="compact"]')).toBeVisible();
     await box.press("Enter");
-    await expect(compactCalls[0]).toEqual({ type: "action.compact" });
+    await expect(compactCalls[0]).toEqual({ compact: {} });
     await expect(page.getByTestId("command-notice")).toContainText("Compaction scheduled");
     await expect(box).toHaveValue("");
   });
@@ -147,6 +147,32 @@ test.describe("composer slash commands + @-prompt recall (#1496)", () => {
     await box.press("Enter");
     await expect(box).toHaveValue("first @second tail");
     await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+  });
+
+  test("expanding a prompt ENDING in an @token does not reopen the popup", async ({ page }) => {
+    await setupAPIMocks(page);
+    await page.route(`${API}/me/prompts`, (r: Route) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prompts: [{ id: "p8", name: "ping", content: "now ping @deploy" }] }) }));
+    const box = await openChat(page);
+    await box.type("@pi");
+    await box.press("Enter");
+    await expect(box).toHaveValue("now ping @deploy");
+    // The expanded content's TRAILING @token is live by the token rules —
+    // suppression must hold; a reopen here is the recursion bug.
+    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+  });
+
+  test("a failing prompt library never opens the popup and never crashes", async ({ page }) => {
+    await setupAPIMocks(page);
+    await page.route(`${API}/me/prompts`, (r: Route) =>
+      r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "boom" }) }));
+    const box = await openChat(page);
+    await box.type("@any");
+    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    // The composer still works for normal text.
+    await box.fill("plain message");
+    await box.press("Control+Enter");
+    await expect(page.getByText("plain message")).toBeVisible({ timeout: 10_000 });
   });
 
   test("Esc dismisses the popup; a fresh @ re-arms", async ({ page }) => {
