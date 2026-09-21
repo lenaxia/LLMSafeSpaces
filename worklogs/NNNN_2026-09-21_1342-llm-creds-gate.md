@@ -1,0 +1,47 @@
+# Worklog: #1342 nightly step — LLM creds gate with loud SKIP (run 35564258221 adjudication)
+
+**Date:** 2026-09-21
+**Session:** Envelope-ladder rung #8: the nightly's history-making run (us-70 complete, all rows green, first time ever — #1508 verified live) moved the wall into the cascade, where #1342's first execution ever failed both rows on missing LLM credentials. Adjudicated one-liner lane: gate the step, loudly.
+**Status:** Complete — PR open, iterating review
+
+---
+
+## Objective / Work Completed
+
+Run 35564258221 evidence: R1/R2 both `timeout (120s): tool part running` → `FAIL: tool never reached running state`; `LLM_MODEL` on the `vars.E2E_LLM_MODEL` fallback; us-63 + benchmarks skipped on their LLM gates → the nightly has no LLM creds. The rows are real-LLM rows (streaming tool turns) — no creds means no model call, no tool part, and a 120s timeout each, blocking every downstream suite.
+
+- `.github/workflows/e2e-nightly.yml`: the #1342 step wires `LLM_API_KEY: ${{ secrets.LLM_API_KEY }}` into its env (the gate's source of truth) and guards **in-run** with a loud named SKIP — `SKIP: LLM_API_KEY not configured — … configure secrets.LLM_API_KEY (+ vars.E2E_LLM_MODEL) to restore coverage. Not gating downstream suites on absent creds.` → exit 0. The F8 SKIP-on-absent pattern; the cascade proceeds.
+- Pins (`local/issue_1342_e2e_script_test.go`): `TestIssue1342E2EWorkflow_LLMCredsGate` (secret wired; in-run guard, never a silent step-if; the named SKIP + config keys; guarded path still runs the script) and `TestIssue1342E2EWorkflow_GateExecutes` (the REAL guard executed on BOTH legs: unset → SKIP printed, exit 0, never falls through; set → the full step body falls through and actually invokes the script via a stubbed bash).
+
+### Key decisions
+
+1. **In-run guard over a step-level `if:`** — the adjudication demanded loudness; a step-if skips silently. Also: the guard evaluates the secret WIRED INTO THE STEP ENV — `env.LLM_API_KEY` at step-if scope is populated by nothing (see finding below).
+2. **Noted, not fixed**: us-63's `if: ${{ env.LLM_API_KEY != '' }}` gate reads an env var nothing populates at that scope — that suite skips even WITH creds configured. Restoring us-63 takes THREE pieces (review r2's validation): the gate rewired to the secret, PLUS `LLM_API_KEY`/`LLM_BASE_URL` wired into its step env (its script requires all three vars; only `LLM_MODEL` is wired today), PLUS the repo secrets actually configured — gate-only rewiring would flip always-skip to run-without-creds (always-FAIL), not restored coverage.
+3. No script change — `local/issue-1342-graceful-restart-e2e.sh` is untouched; the gate is workflow-side, exactly where the creds live.
+
+### Assumptions stated and validated (Rule 7)
+
+- The timeout root cause is creds absence (not a model/product defect) — from the vars-fallback evidence + the sibling suites' gates skipping + both rows failing identically at the tool-part poll; definitive confirmation arrives when the owner configures creds and the rows run (adjudication item (b)).
+- `secrets.LLM_API_KEY` in step env + in-run guard evaluates correctly — pinned structurally and executably.
+
+---
+
+## Blockers
+
+None.
+
+## Tests Run
+
+- New pins RED pre-fix → GREEN post-fix.
+- `go test -count=1 -timeout 300s ./local/` — **ok** (24.4s). Workflow YAML validated.
+
+## Next Steps
+
+- APPROVED → orchestrator merges + dispatches → #1342 SKIPs loudly → **automation R1–R9 first real arbitration** + #1452/#1455/#1417/revisions/dev-preview first executions.
+- Owner item: configure `secrets.LLM_API_KEY` + `vars.E2E_LLM_MODEL` to restore #1342. us-63 additionally needs its gate rewired AND `LLM_API_KEY`/`LLM_BASE_URL` wired into its step env before its coverage returns.
+
+## Files Modified
+
+- `.github/workflows/e2e-nightly.yml` — the creds gate.
+- `local/issue_1342_e2e_script_test.go` — the two new pins.
+- `worklogs/NNNN_2026-09-21_1342-llm-creds-gate.md` — this worklog.
