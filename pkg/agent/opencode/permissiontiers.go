@@ -3,6 +3,11 @@
 
 package opencode
 
+import (
+	"regexp"
+	"strings"
+)
+
 // permissiontiers.go — the platform-baked external_directory permission
 // floor (the 2026-09-19 ruling, transcribed in
 // design/0060_2026-09-21_credential-plane-closure.md row A2, the #825
@@ -43,6 +48,12 @@ package opencode
 //     and rt/auth.json (file tools resolve symlinks to canonical paths
 //     before asking, so only the resolved target denies read-tool
 //     access).
+//
+// Design 0060 Part D transcribes the pre-allow set as
+// "caches/config/workspace" — there is deliberately NO /workspace
+// entry: /workspace is the opencode project root, which
+// external_directory does not govern at all (residual 1 below); the
+// workspace subsumes into that exemption, not into a tier.
 //
 // RESIDUALS (documented, not solved — PR + ruling):
 //  1. bash-typed reads of PROJECT-RELATIVE credential paths
@@ -100,7 +111,11 @@ var platformPermissionTiers = map[string]string{
 	"/home/sandbox/.ssh/*":                    "deny",
 
 	// --- /sys carve-out: cgroup2 is ro at the kernel level (runtime
-	//     default — assert before trusting; see the residuals) ---
+	//     default — assert before trusting; see the residuals). BOTH
+	//     keys, same bare-path rule as the home carve: without the bare
+	//     key the directory itself denies (^/sys/.*$ matches it, the
+	//     /* variant does not) — r4 finding 2.
+	"/sys/fs/cgroup":   "allow",
 	"/sys/fs/cgroup/*": "allow",
 
 	// --- standalone pre-allows ---
@@ -114,4 +129,62 @@ var platformPermissionTiers = map[string]string{
 	"/sandbox-runtime/rt/auth.json": "deny",
 	"/sandbox-runtime/rt/secrets":   "deny",
 	"/sandbox-runtime/rt/secrets/*": "deny",
+}
+
+// tierRule is one rendered external_directory rule (pattern, action).
+type tierRule struct{ pattern, action string }
+
+// tierMatch is the ported 1.18.15 external_directory matcher (moved
+// verbatim from the test-side model into production when the render
+// gained floor dominance — r4): backslashes normalize to slashes, the
+// pattern is regex-quoted with \* → .* and \? → ., anchored both ends.
+// The precedence tests exercise THIS function — the model and the
+// enforcement share one source.
+func tierMatch(resource, pattern string) bool {
+	p := strings.ReplaceAll(pattern, "\\", "/")
+	p = regexp.QuoteMeta(p)
+	p = strings.ReplaceAll(p, `\*`, `.*`)
+	p = strings.ReplaceAll(p, `\?`, `.`)
+	return regexp.MustCompile(`^` + p + `$`).MatchString(strings.ReplaceAll(resource, "\\", "/"))
+}
+
+// allowReopensTierDeny — the floor-dominance filter (r4): reports
+// whether an operator allow pattern can match ANY path a tier deny
+// governs. Exact-key collision handling alone is insufficient: under
+// findLast, a deeper operator pattern ("/etc/latency/*") sorts AFTER
+// the deny it carves ("/etc/*") and would WIN — reopening the deny.
+// The render DROPS any operator allow that reopens; the tier map is
+// never weakened by operator input.
+//
+// Soundness: every tier deny is an exact path or a trailing-"/\*"
+// prefix glob. An exact deny D intersects pattern p iff p matches D
+// (single concrete string — complete check). A deny "X/\*" intersects
+// p iff p can match some string beginning "X/": with L the literal
+// prefix of p before its first \*, that holds iff L is empty, L is
+// itself under "X/", or "X/" extends L (p's star can absorb the rest
+// of X plus the slash — provably a live overlap in every such case,
+// since L + (X minus L) + "/" + p's-tail matches both patterns).
+// Patterns outside every deny keep their allow.
+func allowReopensTierDeny(pattern string) bool {
+	star := strings.IndexByte(pattern, '*')
+	litPrefix := pattern
+	if star >= 0 {
+		litPrefix = pattern[:star]
+	}
+	for k, v := range platformPermissionTiers {
+		if v != "deny" {
+			continue
+		}
+		if !strings.Contains(k, "*") {
+			if tierMatch(k, pattern) {
+				return true
+			}
+			continue
+		}
+		denyRoot := strings.TrimSuffix(k, "*") // "X/"
+		if litPrefix == "" || strings.HasPrefix(litPrefix, denyRoot) || strings.HasPrefix(denyRoot, litPrefix) {
+			return true
+		}
+	}
+	return false
 }

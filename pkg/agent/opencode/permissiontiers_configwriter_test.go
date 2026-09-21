@@ -172,3 +172,29 @@ func TestConfigWriter_MigratesLegacyModeShapeToLiveKey(t *testing.T) {
 	assert.Equal(t, "allow", ext2["/legacy-allow/*"],
 		"the operator-supplied allow renders into the live key — the source is the migration path")
 }
+
+// Render-level floor dominance (r4): reopening operator allows are
+// DROPPED from the rendered live key; legitimate ones survive. This is
+// the pin that would have caught the subpath hole — the model-side pin
+// alone is circular.
+func TestConfigWriter_RenderDropsReopeningOperatorAllows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	writeTiersConfig(t, path, `{}`)
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agentapi.AgentConfigInput{AllowedDirs: &agentapi.AllowedDirsChange{Dirs: []string{
+		"/etc/latency/*",            // deeper pattern inside a deny — must DROP
+		"/home/sandbox/.ssh/id_rsa", // exact credential path — must DROP
+		"/et*",                      // prefix glob reaching /etc — must DROP
+		"/opt/cache/*",              // outside every deny — must SURVIVE
+	}}})
+	require.NoError(t, err)
+
+	ext := readRenderedExtDir(t, path)
+	assert.NotContains(t, ext, "/etc/latency/*", "a reopening allow must not render")
+	assert.NotContains(t, ext, "/home/sandbox/.ssh/id_rsa", "a credential-path allow must not render")
+	assert.NotContains(t, ext, "/et*", "a prefix-glob reaching a deny root must not render")
+	assert.Equal(t, "allow", ext["/opt/cache/*"], "a legitimate operator allow survives")
+	assert.Equal(t, "allow", ext["/tmp/*"], "the tier floor still renders")
+}

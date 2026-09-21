@@ -5,7 +5,6 @@ package opencode
 
 import (
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -28,16 +27,6 @@ import (
 // (ordering, findLast, glob translation), these tests fail before any
 // production behavior drifts.
 
-type tierRule struct{ pattern, action string }
-
-func tierMatch(resource, pattern string) bool {
-	p := strings.ReplaceAll(pattern, "\\", "/")
-	p = regexp.QuoteMeta(p)
-	p = strings.ReplaceAll(p, `\*`, `.*`)
-	p = strings.ReplaceAll(p, `\?`, `.`)
-	return regexp.MustCompile(`^` + p + `$`).MatchString(strings.ReplaceAll(resource, "\\", "/"))
-}
-
 // tierEvaluate renders the tier map the way the writer does — the
 // operator's allowed-dirs merged FIRST, the tier floor applied LAST
 // (collisions resolve to the tier) — with Go map marshal = byte-sorted
@@ -46,6 +35,9 @@ func tierMatch(resource, pattern string) bool {
 func tierEvaluate(resource string, allowedDirs map[string]string) string {
 	merged := make(map[string]string, len(platformPermissionTiers)+len(allowedDirs))
 	for k, v := range allowedDirs {
+		if v == "allow" && allowReopensTierDeny(k) {
+			continue // the render drops reopening allows (floor dominance, r4)
+		}
 		merged[k] = v
 	}
 	for k, v := range platformPermissionTiers {
@@ -92,6 +84,8 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/home/sandbox/.cache/mise/x", "allow", "pre-allow .cache"},
 		{"/home/sandbox/.config/opencode/x", "allow", "pre-allow .config"},
 		{"/sys/fs/cgroup/memory.current", "allow", "cgroup carve-out beats the /sys deny (alphabetical: '*' < 'f')"},
+		{"/sys/fs/cgroup", "allow", "BARE cgroup dir: the wildcardless allow key (r4 finding 2 — without it the /sys deny matches the bare path)"},
+		{"/sys", "ask", "BARE /sys matches no rule (^/sys/.*$ needs the slash) — ambient; children stay denied"},
 		{"/sys/kernel/xxx", "deny", "rest of /sys stays denied"},
 		{"/opencode/plugins/llmsafespaces-origin.js", "allow", "pre-allow the ro artifact mount"},
 		{"/home/sandbox/.ssh", "deny", "credential name (bash-typed tripwire)"},
@@ -132,6 +126,7 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/home/sandbox/*", "/home/*"},
 		{"/home/sandbox", "/home/*"},
 		{"/sys/fs/cgroup/*", "/sys/*"},
+		{"/sys/fs/cgroup", "/sys/*"},
 		{"/home/sandbox/.cache/*", "/home/sandbox/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
 		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/.local/*"},
@@ -148,10 +143,37 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 // allow colliding with a tier deny key cannot reopen the boundary
 // (fat-finger defense; the floor is the platform's, allowedDirs the
 // operator's).
+// Floor dominance: an operator allow can NEVER reopen a tier deny —
+// not by exact-key collision, and not by a deeper/overlapping subpath
+// pattern (the r4 finding: findLast lets "/etc/latency/*" sort after
+// and beat "/etc/*"). The render DROPS reopening allows before merge;
+// tierEvaluate models the render (drop + merge + floor).
 func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
+	// Exact-key collisions (the original pin).
 	assert.Equal(t, "deny", tierEvaluate("/etc/passwd", map[string]string{"/etc/*": "allow"}),
 		"a colliding operator allow must not reopen a tier deny (floor applied last)")
 	assert.Equal(t, "deny", tierEvaluate("/sys/kernel/x", map[string]string{"/sys/*": "allow"}))
+
+	// Subpath overlaps — deeper patterns that would sort after the deny
+	// and win under findLast (the r4-demonstrated hole).
+	assert.Equal(t, "deny", tierEvaluate("/etc/latency/x", map[string]string{"/etc/latency/*": "allow"}),
+		"a deeper allow inside a denied tree must be DROPPED, not rendered")
+	assert.Equal(t, "deny", tierEvaluate("/home/sandbox/.ssh/id_rsa", map[string]string{"/home/sandbox/.ssh/id_rsa": "allow"}),
+		"an exact operator allow on a credential path must be DROPPED")
+	assert.Equal(t, "deny", tierEvaluate("/var/data/x", map[string]string{"/var/data/*": "allow"}))
+
+	// Mid-glob prefixes: "/et*" can reach "/etc/x" — dropped.
+	assert.Equal(t, "deny", tierEvaluate("/etc/x", map[string]string{"/et*": "allow"}),
+		"a prefix-glob that can reach under a denied root must be DROPPED")
+
+	// The filter's own predicates, independent of the model.
+	assert.True(t, allowReopensTierDeny("/etc/latency/*"))
+	assert.True(t, allowReopensTierDeny("/et*"))
+	assert.True(t, allowReopensTierDeny("/home/sandbox/.ssh/id_rsa"))
+	assert.False(t, allowReopensTierDeny("/opt/cache/*"),
+		"an allow outside every deny keeps its allow")
+	assert.False(t, allowReopensTierDeny("/tmp/build/*"),
+		"pre-allowed roots are not denies — a redundant operator allow is harmless")
 }
 
 // TestPermissionTier_CgroupMountReadOnly — the amended tier ruling's

@@ -33,7 +33,7 @@ The platform's allowedExternalDirectories feature (operator-configured prompt su
 - Migration sweep: existing `mode.permissions.external_directory` allow entries are recovered into the new location on first rewrite (the historical shape stops being written).
 - `configwriter_promptdirs.go`: prompt-dir handling re-pointed at the live key.
 - Pins: the precedence model (ported verbatim from the decompiled matcher), alphabetical carve-ordering, allowedDirs-cannot-reopen-deny, and the cgroup-ro READINESS assertion (the amended ruling): where a dedicated /sys/fs/cgroup mount exists it MUST be ro — passes live in this pod (the actual sandbox); skips on bare hosts where the allow is never trusted.
-- Integration legs (real pinned binary, real matcher, `-tags=integration`): the read tool through a RESOLVED symlink target (canonical-path deny fires) and bash through a TYPED absolute path (/etc deny fires). Both assert the live denial message AND that OUR pattern is quoted in the matcher's own rule dump.
+- Integration legs (real pinned binary, real matcher, `-tags=integration`): the read tool through a RESOLVED symlink target (canonical-path deny fires), bash through a TYPED absolute path (/etc deny fires), and — since r2 — the ALLOW leg (a /tmp read returns content through the real matcher; the corpse-#5 regression tripwire). All assert the live denial message where denial is the subject AND that OUR pattern is quoted in the matcher's own rule dump; the allow leg asserts the probe CONTENT returns.
 
 ## Honest record — the third unsatisfiable assertion
 
@@ -54,7 +54,7 @@ The first live run of the legs FAILED with the deny demonstrably firing: the rea
 ## Tests Run
 
 - `go test ./pkg/agent/opencode/` — ok (13s).
-- `OPENCODE_BINARY=/opencode/usr/local/bin/opencode go test -tags=integration -run TestPermissionTier ./pkg/agent/opencode/` — ok (21.8s, live binary, both deny legs + readiness).
+- `OPENCODE_BINARY=/opencode/usr/local/bin/opencode go test -tags=integration -run TestPermissionTier ./pkg/agent/opencode/` — ok (21.8s live, then 18.4s / 21.4s on later runs: BOTH deny legs + the ALLOW leg — the corpse-#5 regression, added r2 — + readiness; all CI-wired in the freeze-pin job since r2).
 - `go build ./...`, `go vet` (unit + integration tags) — clean.
 
 ## Files Modified
@@ -76,3 +76,10 @@ The r2 disposition claimed types.go corrected and #1493 grep-clean — BOTH FALS
 - `grep -rn "mode.permissions" pkg/ cmd/ api/` → only inert/dead-context mentions remain (types.go ACTUALLY fixed this time — asserted; plus the api-side present-tense falsehoods this PR's own wire finding made false: app.go:1030, pod_bootstrap.go:120+379).
 - configwriter_test.go:592 "mode block" wording corrected (the floor emits the top-level permission block).
 - Environment note: /tmp PVC exhausted at the go link step mid-round (the build cache lives there; a cold `go clean` rebuild filled it to 81%) — cleaned the stale testbin dirs; the touched-package suites re-ran green (agentd 293s, handlers 111s, opencode 13s).
+
+## r4 — floor dominance enforced (the subpath hole); the bare cgroup key; claim corrections
+
+- **The subpath hole (r4 finding 1): enforced, not re-worded.** The reviewer demonstrated operator allows ("/etc/latency/*", "/home/sandbox/.ssh/id_rsa", "/et*") reopening tier denies under findLast — the shipped "cannot reopen" claim was true only for exact-key collisions. The render now DROPS any operator allow that can match a path a tier deny governs (allowReopensTierDeny, production — sound for the tier map's exact-path/trailing-/* deny shapes via literal-prefix analysis; the argument is in the code comment). The ported matcher moved from the test file into production (single source — the model pins exercise the same function the render enforces with). Render-level pin TestConfigWriter_RenderDropsReopeningOperatorAllows was RED first (all three leaks visible in the dump), green after the filter; the model pin extended with the demonstrated rows.
+- **Bare /sys/fs/cgroup (r4 finding 2): the bare allow key added** — same class as the r0 bare-home fix, now applied to the cgroup carve (the bare dir denied while children allowed). Matrix rows pin bare cgroup=allow and bare /sys=ambient.
+- **Worklog (r4 finding 3): the allow leg now recorded** in Work Completed and Tests Run (the Objective claimed it; the record now does).
+- **Design 0060 divergence (r4 finding 4): noted in permissiontiers.go** — no /workspace tier by design (the project root is outside external_directory's governance; residual 1); Part D's "caches/config/workspace" wording subsumes workspace under that exemption.

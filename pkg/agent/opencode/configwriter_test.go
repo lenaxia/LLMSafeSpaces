@@ -516,7 +516,7 @@ func writeAllowedDirs(t *testing.T, dir string, patterns []string) {
 func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
-	writeAllowedDirs(t, dir, []string{"/tmp/*", "/var/cache/*"})
+	writeAllowedDirs(t, dir, []string{"/tmp/*", "/data/cache/*"})
 
 	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json")))
 	require.NoError(t, w.Rebuild())
@@ -533,7 +533,11 @@ func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
 	// tier ruling: the tier floor renders alongside the allowed-dirs — the
 	// count pin becomes a membership pin (floor keys are always present).
 	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"])
-	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/var/cache/*"])
+	// NOTE: the fixture uses /data/cache/* (outside every tier deny).
+	// It previously used /var/cache/* — which sits under the /var/*
+	// tier deny and silently REOPENED it under findLast until the r4
+	// floor-dominance filter (correctly) started dropping it.
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/data/cache/*"])
 	assert.Equal(t, "deny", cfg.Permission.ExternalDirectory["/etc/*"],
 		"the tier floor rides along")
 }

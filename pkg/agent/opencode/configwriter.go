@@ -574,11 +574,25 @@ func (w *ConfigWriter) rebuildLocked() error {
 			extDir = map[string]string{}
 		}
 		for _, p := range w.allowedDirs {
+			// Floor dominance (r4): DROP any operator allow that can
+			// match a path a tier deny governs — not just exact-key
+			// collisions: under findLast a deeper pattern
+			// ("/etc/latency/*") would sort after the deny ("/etc/*")
+			// and WIN, reopening it. See allowReopensTierDeny for the
+			// soundness argument.
+			if allowReopensTierDeny(p) {
+				// Deterministic drop, pinned by
+				// TestConfigWriter_RenderDropsReopeningOperatorAllows;
+				// the writer carries no logger by design (the adapter
+				// owns logging) — the drop is visible as the pattern's
+				// absence from the rendered config.
+				continue
+			}
 			extDir[p] = "allow"
 		}
-		// The floor is applied AFTER the operator's allows: collisions
-		// resolve to the TIER (an operator allow cannot reopen a tier
-		// deny; self-tampered tier values are restored every rebuild).
+		// The floor is applied AFTER the surviving operator allows:
+		// exact-key collisions resolve to the TIER, and self-tampered
+		// tier values are restored every rebuild.
 		for k, v := range platformPermissionTiers {
 			extDir[k] = v
 		}
