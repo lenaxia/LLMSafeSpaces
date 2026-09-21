@@ -90,7 +90,7 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 
 ## Tests Run (r1)
 
-- `go test -run 'TestStaging|TestStagedUpload|TestUploadApplyClient'` — 24 tests green (the production client seam now has its own wire tests).
+- `go test -run 'TestStaging|TestStagedUpload|TestUploadApplyClient'` — 24 green as counted THEN; one of them (the r1 timeout pin) was a coin-flip flake discovered in r2 and rewritten deterministically — the stable count is post-r2. [Corrected r5: this line originally presented the 24 as unqualified.]
 - Full `./cmd/workspace-agentd/` — ok (274s); golangci-lint 0 issues.
 
 
@@ -109,4 +109,4 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 
 ## Review round 4 (1 finding: the stale doc comment)
 
-- The pin's doc comment still stated the r3-rejected 300ms parameterization (contradicting the code; inviting silent reintroduction). Corrected to the 2.5s truth with the parameterization rule stated IN the comment (delay > the default, < the budget). Worklog correction: the r2 section's "24 tests green" predates the flaky-pin discovery (5/5 coin-flip) — the stable count is post-r2's deterministic rewrite; the r2 section's own findings say so.
+- The pin's doc comment still stated the r3-rejected 300ms parameterization (contradicting the code; inviting silent reintroduction). Corrected to the 2.5s truth with the parameterization rule stated IN the comment (delay > the default, < the budget). A worklog correction was CLAIMED here in r4 but not applied until r5: the "24 tests green" line lives in the ROUND-1 Tests Run section (not r2's), predates the flaky-pin discovery, and now carries its own in-place correction marker above.
