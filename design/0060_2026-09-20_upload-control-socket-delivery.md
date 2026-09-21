@@ -125,7 +125,7 @@ The one mid-stream hazard admission cannot pre-empt — the D14 adversary consum
 
 ### 4.1 R1 — Staging admission by reserved bytes (never evict credentials)
 
-The staging dir is `/sandbox-runtime/staged-upload-files/` on the shared ~96 MiB tmpfs. **Admission is reservation-before-acceptance** — which requires the size BEFORE the body streams, so the mechanism must be stated against the real wire: the client→API request carries a declared Content-Length (composer uploads are sized FormData), but the API→agentd forward is an `io.Pipe` body sent **chunked** (`uploads.go:341,371-383`) — agentd receives NO Content-Length and today learns sizes only mid-copy. The design therefore adds a second required API change: the upload hop carries **`X-LLS-Declared-Body-Bytes: <client Content-Length>`**, and the API rejects chunked client uploads (no declared length) with **411 Length Required** — the composer's FormData always declares, and silent cap+1 truncation mid-stream is exactly the non-clean failure the directive forbids. `newBytes` in both clauses is the declared body size (≥ the file size by the multipart envelope — the conservative direction for admission); the reservation reconciles DOWN to the actual staged size at rename completion.
+The staging dir is `/sandbox-runtime/staged-upload-files/` on the shared ~96 MiB tmpfs. **Admission is reservation-before-acceptance** — which requires the size BEFORE the body streams, so the mechanism must be stated against the real wire: the client→API request carries a declared Content-Length (composer uploads are sized FormData), but the API→agentd forward is an `io.Pipe` body sent **chunked** (`uploads.go:341,371-383`) — agentd receives NO Content-Length and today learns sizes only mid-copy. The design therefore adds a second required API change: the upload hop carries **`X-LLS-Declared-Body-Bytes: <client Content-Length>`**, and the API rejects chunked client uploads (no declared length) with **411 Length Required** — the composer's FormData always declares, and silent cap+1 truncation mid-stream is exactly the non-clean failure the directive forbids. `newBytes` in both clauses is the declared body size (≥ the file size by the multipart envelope — the conservative direction for admission); the reservation reconciles DOWN to the actual staged size at rename completion. The declared value is ALSO a hard read-cap on the staging side, and the header is mandatory there: agentd 411s a request with a missing/invalid `X-LLS-Declared-Body-Bytes` (the pod network namespace is shared and the workspace password is readable to the in-pod agent — D14 makes direct `:4097` calls adversary-reachable, so the API-side 411 cannot be the only gate), and caps its body read at the declared value with an over-read (body exceeds the declaration) rejected 400 `declared_length_exceeded` — a lying-small caller can therefore never stage unreserved bytes, and a lying-large caller merely over-reserves (the safe direction).
 
 ```
 admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
@@ -140,12 +140,12 @@ admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
 // reservedUploads(): admitted-but-not-released upload reservations —
 //   HELD UNTIL THE BYTES LEAVE THE TMPFS: released on ack (after the
 //   post-ack unlink), on abort (the error path unlinks the partial
-//   synchronously, then releases), or on scrub (crash orphans only —
-//   a crashed process holds no reservations; its staged bytes are
-//   walked orphans until the TTL/boot scrub reclaims them). One mutex,
+//   synchronously, then releases), or on scrub. The scrub arm's TWO
+//   jobs differ: for a LIVE 504 hold it releases the reservation it
+//   still carries (§4.3/§6.1); crash orphans hold no reservation (the
+//   process died) — there the scrub only unlinks bytes. One mutex,
 //   defer-shaped. Unlink-before-release is what makes the no-crash
-//   walked bound hold (§6.1); the scrub arm finalizes BOTH crash
-//   orphans AND the live 504 path's held reservation (§4.3/§6.1).
+//   walked bound hold (§6.1).
 // (A) is the byte-weighted semaphore's enforcement point: the explicit
 //   upload budget (UPLOAD_STAGING_BUDGET, default 48 MiB on the 96 MiB
 //   volume, env-tunable) bounds aggregate upload residency regardless
@@ -215,7 +215,7 @@ Metric surfaces, named against the code as it exists (agentd's counter is `works
 
 **Supervisor→agentd export mechanism:** the supervisor owns no Prometheus registry — its outcomes ride the `upload_apply` response (the closed error enum carries the class; the success result carries the verified size for `copied_out`). agentd is the single metrics authority for the leg; there is no second export path to keep true.
 
-Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; all others → the existing 502 class with the specific reason in the body.
+Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; mid-stream staging write abort (§3.5, incl. adversary-induced ENOSPC) → **507** `staging write failed`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; malformed admission inputs (missing/lying declaration) → **411/400**; the true remainder (unexpected agentd statuses) → the existing fixed-502 class, unchanged.
 
 **These statuses are client-visible only after the API forwarding change (§9, wiring PR):** today the API handler special-cases only agentd 201 and 413 and collapses every other status into a fixed `502 {"error":"workspace agent upload failed"}` with `reason=agentd_error` (`api/internal/handlers/uploads.go:241-245`) — nothing passes through, and the API reason enum cannot record the new classes. The wiring PR therefore (a) forwards agentd's 507/429/504 statuses and their reason bodies verbatim, and (b) widens the API-side reason enum (`staging_full`, `staging_busy`, `apply_timeout`, `apply_rejected`, `dest_disk_full`, keeping `agentd_error` for the true remainder — the write-time destination 507 gets its own value, never misrecorded as a staging outcome), and (c) adds the admission-input header + the 411 gate (§4.1). These are required API changes, not polish — §5.4 reflects them.
 
@@ -282,14 +282,14 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 **Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/2×/4× concurrency (the count cap's default IS 4 — higher concurrency is unreachable by design, so the matrix characterizes the CAP BOUNDARY instead: the 5th concurrent upload's 429 latency) across file sizes (1 KiB / 1 MiB / 10 MiB — 25 MiB is single-flight by clause (A), characterized at 1× only).
 **Mechanism:** §3.3's bounded wait; the supervisor's apply-concurrency choice (§8 item 3).
-**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional (needs credentialUsage + floor + 40 MiB ≤ f_bavail — on the 96 MiB volume that requires the tmpfs's non-upload surfaces ≤ ~2 MiB); the harness asserts the precondition up front and skips DOWN with an explicit message rather than silently measuring 3×.
+**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional at the WORST TIMING (first three fully staged when the 4th admits): `credentialUsage + nonUploadTmpfsUsage + 24 + 40 ≤ f_bavail`. On the 96 MiB volume with C ≈ U (the non-upload tmpfs content is almost entirely credential surfaces) that resolves to `C + U ≤ 2 MiB`; the harness asserts the literal inequality up front — measured, both terms, against the pre-storm walk — and skips DOWN with an explicit message rather than silently measuring 3×.
 
 ---
 
 ## 7. Test plan (implementation lanes inherit this)
 | Class | Pin |
 |---|---|
-| Staging admission | budget math unit table (floor/usage/reserve boundaries, two-clause); reject-before-first-byte ordering; 507 shapes; the admission INPUT wire contract: X-LLS-Declared-Body-Bytes propagation, the 411 shape on undeclared bodies, and lying declarations both directions (declares small/sends large → body truncated at the declared length → clean 400-class; declares large/sends small → over-reservation, the safe direction) |
+| Staging admission | budget math unit table (floor/usage/reserve boundaries, two-clause); reject-before-first-byte ordering; 507 shapes; the admission INPUT wire contract: X-LLS-Declared-Body-Bytes propagation, the 411 shape on undeclared bodies, and lying declarations both directions (declares small/sends large → over-read rejected 400 declared_length_exceeded at the declared cap, forwarded verbatim per §4.6(a); declares large/sends small → over-reservation, the safe direction); missing/invalid declared header on a direct agentd call → 411 (the D14-reachable hop, §4.1) |
 | Semaphore | concurrent admission never exceeds clause (A)'s budget (race test); 429 class |
 | Streaming | large-object memory flatness (allocation ceiling assertion on a ≥cap object); window bounded |
 | Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; the 504-tail orphan completes-or-is-reclaimed (both terminal states acceptable, never a partial) |

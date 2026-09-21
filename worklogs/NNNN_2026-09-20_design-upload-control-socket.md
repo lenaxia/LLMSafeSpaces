@@ -95,3 +95,12 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 
 - **§3.5 still had the old abort order** ("reservation released → … hygiene reclaims") while §4.1/§6.1 had been corrected to unlink-before-release — the walked bound was falsifiable without a crash (a released-reservation partial + fresh admissions could walk 58 MiB on a 48 MiB budget). §3.5 now states the normative order (unlink → release → 507) and demotes the scrub to the crash backstop it is.
 - §7's admission row gained the r4 wire-change contract (header propagation, 411 shape, lying declarations both directions); §3.1's diagram shows the 411 arm; the worklog Key-Decision-4 superseded pointer added; §4.1's scrub-arm parenthetical and §6.6's clause-(B) harness precondition (skip-DOWN with an explicit message, never silently measure 3×) stated.
+
+
+## Review round 5 (design doc) — 4 minors + 1 nit, all fixed
+
+- **§6.6's precondition omitted the credentialUsage term**: the worst-timing 4th-admission inequality is `credentialUsage + nonUploadUsage + 24 + 40 ≤ f_bavail` (on 96 MiB with C≈U: C+U ≤ 2 MiB); the harness now asserts the literal inequality, both terms, against the pre-storm walk.
+- **The lying-declaration pin had no specifying mechanism and promised an undeliverable client shape**: the declared value is now a HARD READ-CAP agentd-side (over-read → 400 declared_length_exceeded), the header is MANDATORY at agentd (411 on missing/invalid — D14 makes direct :4097 calls adversary-reachable via the shared netns + pod-readable password, so the API-side 411 cannot stand alone), and the API forwarding list extends to the 4xx class so the shape reaches the client as itself.
+- **§4.6's table gained the missing row** (mid-stream staging write abort → 507 staging write failed) and the remainder class is honest again (fixed-502, unchanged — no phantom "reason in the body").
+- **The enum gained `staging_write_error` + `invalid_declared_length`** — each 507 class its own value, nothing misrecorded.
+- **§4.1's scrub-arm comment reconciled** (two jobs: release the LIVE 504 hold's reservation; crash orphans hold none — bytes only).
