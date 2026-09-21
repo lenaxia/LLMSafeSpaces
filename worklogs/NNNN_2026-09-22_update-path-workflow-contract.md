@@ -10,7 +10,7 @@ Mirror create's workflow-existence contract on the triggers update path: PATCH r
 
 ## Work Completed
 
-TDD (4-case matrix, RED-first on the two asymmetric arms):
+TDD (7-case matrix, RED-first on the two asymmetric arms):
 - PATCH to nonexistent workflow → 400 "target workflow not found" (create parity)
 - PATCH to foreign-owner workflow → 400 (owner-scoped GetWorkflow returns NotFound)
 - PATCH to existing own workflow → 200
@@ -23,13 +23,21 @@ Two pre-existing tests updated to seed their referenced workflows in the mock st
 ## Key Decisions
 
 1. **Placement after #1442, not inside the V-matrix**: the V-matrix owns opted-in validation's specific errors; this guard owns the existence contract for every retarget regardless of opted-in status.
-2. **Not checking the merged view's stored workflow**: a trigger whose stored target was deleted between create and PATCH is #1440's drain-time case — PATCH-time rejection would strand the incident population (the same reasoning as the #1442 round-2 tests).
+2. **SUPERSEDED by r1** ~~Not checking the merged view's stored workflow~~: a trigger whose stored target was deleted between create and PATCH is #1440's drain-time case — PATCH-time rejection would strand the incident population (the same reasoning as the #1442 round-2 tests).
 
 ## Tests Run
 
 - 4-case matrix: RED on nonexistent + foreign arms; all 4 GREEN post-fix.
 - Full handlers suite (94s) — ok, incl. the two updated tests.
 - go vet, gofmt, golangci-lint (new-from-rev) — clean.
+
+## Blockers
+
+None.
+
+## Next Steps
+
+- Review loop to APPROVED; orchestrator merges.
 
 ## Files Modified
 
