@@ -412,13 +412,13 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 		"agent.build.prompt must contain the admin prompt body — "+
 			"the pre-boot relay writer must load it from the admin-prompt source")
 
-	// 2. Allowed external directories must be present as allow-rules.
-	mode, ok := cfg["mode"].(map[string]any)
-	require.True(t, ok, "mode block must be present (allowed-dirs source loaded)")
-	perms, ok := mode["permissions"].(map[string]any)
-	require.True(t, ok, "mode.permissions must be present")
-	extDir, ok := perms["external_directory"].(map[string]any)
-	require.True(t, ok, "mode.permissions.external_directory must be a map of allow-rules")
+	// 2. Allowed external directories must be present as allow-rules —
+	// in the TOP-LEVEL permission key (#1493: mode.permissions is inert
+	// on pinned opencode 1.18.15; the writer renders the live shape).
+	permBlock, ok := cfg["permission"].(map[string]any)
+	require.True(t, ok, "top-level permission block must be present (allowed-dirs source loaded)")
+	extDir, ok := permBlock["external_directory"].(map[string]any)
+	require.True(t, ok, "permission.external_directory must be a map of allow-rules")
 	assert.Equal(t, "allow", extDir["/tmp/*"],
 		"/tmp/* from allowed-dirs file must be an allow-rule")
 	assert.Equal(t, "allow", extDir["/opt/cache/*"],

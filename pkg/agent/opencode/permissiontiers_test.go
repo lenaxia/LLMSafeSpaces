@@ -160,15 +160,17 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 // because the cgroup2 mount is kernel-read-only (a runtime default,
 // NOT our pod spec — nothing in the chart enforces it). This pin
 // asserts the environmental invariant the tier map's safety argument
-// rests on: where a dedicated /sys/fs/cgroup mount exists (the sandbox
-// pod, CI containers), it MUST be ro. Environments without the mount
-// (bare dev machines) skip — the allow is only trusted inside the
-// sandbox, and the sandbox always has the mount.
+// rests on — but ONLY where the allow is actually trusted: inside the
+// LLMSafeSpaces sandbox (marked by /sandbox-runtime). Other
+// environments skip by design — their cgroup mount state is irrelevant
+// (a GitHub runner mounts /sys/fs/cgroup rw, and that is fine: the
+// floor it would "protect" there is never rendered into a live pod).
 func TestPermissionTier_CgroupMountReadOnly(t *testing.T) {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		t.Skipf("no /proc/self/mountinfo (%v) — not the sandbox environment", err)
+	if _, err := os.Stat("/sandbox-runtime"); err != nil {
+		t.Skip("not the LLMSafeSpaces sandbox (no /sandbox-runtime) — the cgroup allow is only trusted inside the sandbox, so the ro invariant is not asserted here")
 	}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	require.NoError(t, err, "the sandbox always exposes /proc/self/mountinfo")
 	found := false
 	for _, line := range strings.Split(string(data), "\n") {
 		// mountinfo: id parent major:minor root MOUNTPOINT OPTIONS...
@@ -188,10 +190,8 @@ func TestPermissionTier_CgroupMountReadOnly(t *testing.T) {
 			}
 		}
 		if !ro {
-			t.Fatalf("/sys/fs/cgroup is mounted rw (%s) — the tier map's cgroup allow is UNSAFE here; the kernel-ro invariant is violated", fields[5])
+			t.Fatalf("/sys/fs/cgroup is mounted rw (%s) inside the sandbox — the tier map's cgroup allow is UNSAFE here; the kernel-ro invariant is violated", fields[5])
 		}
 	}
-	if !found {
-		t.Skip("no dedicated /sys/fs/cgroup mount (bare host?) — the cgroup allow is only trusted inside the sandbox, which always mounts it")
-	}
+	require.True(t, found, "the sandbox must mount /sys/fs/cgroup (the tier pre-allow targets it)")
 }

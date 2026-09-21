@@ -45,3 +45,9 @@ The first live run of the legs FAILED with the deny demonstrably firing: the rea
 
 - `pkg/agent/opencode/permissiontiers.go` (new), `permissiontiers_test.go` (new, +readiness), `permissiontiers_integration_test.go` (new, top-level shape)
 - `pkg/agent/opencode/configwriter.go`, `configwriter_promptdirs.go` (+ their tests)
+
+## r1 (post-first-CI) — two misses caught by CI red
+
+- **The readiness assertion's discriminator was wrong**: I gated on "a /sys/fs/cgroup mount exists → MUST be ro" — GitHub runners mount it RW (rw,nosuid,nodev,noexec,relatime), so the pin failed in exactly the environment where the invariant does not apply. The allow is only trusted inside the LLMSafeSpaces sandbox; the pin now gates on the sandbox marker (/sandbox-runtime) — INSIDE the sandbox: mount must exist AND be ro (both hard-fail); everywhere else: skip. Live-green in this pod (the actual sandbox: ro confirmed).
+- **Two downstream test sites still read the inert shape**: cmd/workspace-agentd boot_config_test.go and pre_boot_relay_test.go asserted allowedDirs through mode.permissions — my configwriter migration moved the render to the live top-level key but I never swept the CONSUMING tests outside pkg/agent/opencode. Both re-pointed (and a stale comment in bootstrap_test.go corrected). Full ./cmd/workspace-agentd suite green (297s).
+- The unsatisfiable-assertion ledger grows by a NEAR-miss this round: the legs' "denied" wording (caught locally pre-PR, recorded above) and now the runner-rw readiness pin (caught by CI) — both instances of asserting an environmental invariant without checking the environment where it binds.

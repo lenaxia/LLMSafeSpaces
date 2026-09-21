@@ -45,11 +45,11 @@ func TestEnsureBootAgentConfig_StampsPlatformBlocks(t *testing.T) {
 				Prompt string `json:"prompt"`
 			} `json:"build"`
 		} `json:"agent"`
-		Mode struct {
-			Permissions struct {
-				ExternalDirectory map[string]string `json:"external_directory"`
-			} `json:"permissions"`
-		} `json:"mode"`
+		// #1493: the LIVE permission shape on pinned opencode 1.18.15 is
+		// the TOP-LEVEL key (mode.permissions is inert).
+		Permission struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
@@ -57,7 +57,7 @@ func TestEnsureBootAgentConfig_StampsPlatformBlocks(t *testing.T) {
 	assert.Contains(t, cfg.Provider, "openai")
 	assert.Equal(t, "openai/gpt-4o", cfg.Model)
 	assert.Equal(t, "PLATFORM PROMPT", cfg.Agent.Build.Prompt)
-	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"])
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"])
 
 	require.Contains(t, cfg.MCP, "llmsafespaces")
 	var entry struct {
