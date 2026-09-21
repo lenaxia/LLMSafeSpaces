@@ -154,8 +154,9 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// The connection's lifetime bounds every method's ctx (§6.3: apply
-	// holds must be cancellable); per-method deadline extensions arm
-	// their own (upload_apply re-arms for its long-held copy).
+	// holds must be cancellable); long-held methods bound themselves
+	// (upload_apply wraps Apply in its own timeout and gives the ack a
+	// fresh deadline arm — the blanket 10s stays for everything else).
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
 

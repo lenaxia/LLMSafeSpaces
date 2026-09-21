@@ -42,10 +42,10 @@ type uploadApplyEngine struct {
 	destMargin  int64
 	ttl         time.Duration
 	// applyDeadline is the supervisor-side copy bound (§6.3): the
-	// method arms it as BOTH the conn deadline and the Apply ctx
-	// deadline (checked per copy window) — the socket's blanket 10s
-	// exchange deadline must not truncate a legitimate 10-60s apply,
-	// and the client's 504 must bound the hold here too.
+	// method arms it as the Apply ctx deadline (checked per copy
+	// window) and as the fresh post-Apply ack arm — the socket's
+	// blanket 10s exchange deadline must not truncate a legitimate
+	// 10-60s apply, and the client's 504 must bound the hold here too.
 	applyDeadline time.Duration
 
 	// applyMu serializes applies (§8 item 3's simplest choice): the

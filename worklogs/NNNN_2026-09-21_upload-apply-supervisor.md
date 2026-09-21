@@ -103,3 +103,8 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 ## Review round 4 (1 MEDIUM: the unpinned/jointly-deletable re-arm + a false comment)
 
 - The reviewer's mutations showed the fresh 2s ack arm ALONE carries ack delivery — the r1 SetDeadline re-arm was individually deletable and carried no unique duty once the response got its own arm. Honest remedy: the redundant arm REMOVED (simpler code beats doubly-armed redundancy), the fresh arm is now the sole ack bound, and its slow-success pin (trickle completing past the blanket 10s under a permitting applyDeadline) is mutation-verified red when the arm is deleted. The test comments state which arm carries what — no dangling references.
+
+
+## Review round 5 (1 finding: two stale comments describing the removed arm)
+
+- The struct + socket comments still described the r4-removed re-arm mechanism. Both now describe the real architecture: the WithTimeout ctx bounds the copy; the fresh post-Apply arm is the sole ack bound.
