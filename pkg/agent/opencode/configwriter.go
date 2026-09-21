@@ -111,6 +111,7 @@ type ConfigWriter struct {
 	adminPrompt     string           // admin-configured system prompt; "" = none
 	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
+	permissionRaw   json.RawMessage  // existing top-level "permission" config from loadExisting; the LIVE permission key on pinned opencode (#1493 wire finding: mode.permissions is inert)
 	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
 	pluginRaw       json.RawMessage  // existing "plugin" string-array from loadExisting (user-staged plugins); re-emitted verbatim. Non-array shapes are NOT captured
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
@@ -147,12 +148,13 @@ func (w *ConfigWriter) loadExisting() {
 		return
 	}
 	var cfg struct {
-		Provider json.RawMessage `json:"provider"`
-		Model    string          `json:"model,omitempty"`
-		Agent    json.RawMessage `json:"agent,omitempty"`
-		Mode     json.RawMessage `json:"mode,omitempty"`
-		MCP      json.RawMessage `json:"mcp,omitempty"`
-		Plugin   json.RawMessage `json:"plugin,omitempty"`
+		Provider   json.RawMessage `json:"provider"`
+		Model      string          `json:"model,omitempty"`
+		Agent      json.RawMessage `json:"agent,omitempty"`
+		Mode       json.RawMessage `json:"mode,omitempty"`
+		MCP        json.RawMessage `json:"mcp,omitempty"`
+		Plugin     json.RawMessage `json:"plugin,omitempty"`
+		Permission json.RawMessage `json:"permission,omitempty"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return
@@ -161,6 +163,7 @@ func (w *ConfigWriter) loadExisting() {
 	w.model = cfg.Model
 	w.agentRaw = cfg.Agent
 	w.modeRaw = cfg.Mode
+	w.permissionRaw = cfg.Permission
 
 	// Preserve the on-disk "mcp" section (user-staged servers written by
 	// the materialize subcommand, Epic 53). Without this, any rebuild
@@ -208,6 +211,28 @@ func (w *ConfigWriter) loadExisting() {
 		if json.Unmarshal(cfg.Mode, &mode) == nil {
 			for k, v := range mode.Permissions.ExternalDirectory {
 				if v == "allow" {
+					w.injectedDirs = append(w.injectedDirs, k)
+				}
+			}
+		}
+	}
+
+	// #1493: recover from the LIVE top-level permission key too — the
+	// same fail-closed allow-valued heuristic, and TIER "allow" keys are
+	// excluded (the floor re-applies those itself; treating them as
+	// injected would let an AllowedDirs clear drop pre-allow tier rules
+	// from prior renders — the floor re-stamps them in the same rebuild,
+	// so the exclusion is hygiene, not correctness).
+	if len(cfg.Permission) > 0 {
+		var perm struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		}
+		if json.Unmarshal(cfg.Permission, &perm) == nil {
+			for k, v := range perm.ExternalDirectory {
+				if v == "allow" {
+					if _, tier := platformPermissionTiers[k]; tier {
+						continue
+					}
 					w.injectedDirs = append(w.injectedDirs, k)
 				}
 			}
@@ -517,102 +542,65 @@ func (w *ConfigWriter) rebuildLocked() error {
 		cfg["agent"] = agentJSON
 	}
 
-	// Merge allowed-external-directories into mode.permissions.external_directory.
-	// The instance's allowedExternalDirectories setting (e.g. ["/tmp/*"]) is
-	// injected as "allow" rules so opencode stops prompting for paths outside
-	// the /workspace project root. The existing mode block is preserved —
-	// only the external_directory sub-object gains entries — so sibling
-	// permission rules (bash, edit, etc.) and other mode fields survive.
+	// Render the external_directory rules (operator allowed-dirs + the
+	// platform permission-tier floor) into the TOP-LEVEL permission key.
 	//
-	// The mode block is re-emitted when EITHER we have allowed-dirs to inject
-	// OR an existing mode block needs preserving (loadExisting captured it).
-	// When allowedDirs is empty and no mode exists, no mode block is emitted
-	// (true no-op, no empty-object noise).
-	if len(w.allowedDirs) > 0 || len(w.modeRaw) > 0 {
-		mode := make(map[string]json.RawMessage)
-		if len(w.modeRaw) > 0 {
-			_ = json.Unmarshal(w.modeRaw, &mode)
-			// JSON null nils even a pre-initialized map — re-arm before
-			// the permissions merge writes into it (nil-map panic guard).
-			if mode == nil {
-				mode = map[string]json.RawMessage{}
+	// #1493 WIRE FINDING (live-proven on pinned 1.18.15): the harness
+	// reads ONLY the top-level `permission` config — the historical
+	// `mode.permissions` shape this writer used is INERT (a boot with
+	// mode.permissions rules evaluates the default ask; the same rules
+	// under top-level permission deny). The allowedDirs prompt-suppression
+	// shipped in the mode shape has therefore been silently not applying;
+	// this render moves both it and the new tier floor to the live key.
+	// The legacy mode block captured from loadExisting is preserved
+	// verbatim (never regenerated here) and its injected external_directory
+	// entries are swept on rebuild so upgraded pods drop the dead rules.
+	{
+		perm := make(map[string]json.RawMessage)
+		if len(w.permissionRaw) > 0 {
+			_ = json.Unmarshal(w.permissionRaw, &perm)
+			if perm == nil {
+				perm = map[string]json.RawMessage{}
 			}
 		}
 
-		// Only touch external_directory when we have patterns to inject.
-		// Without this guard, an existing mode block with no external_directory
-		// key would gain an empty "external_directory": {} — functional but
-		// unnecessary noise in the rendered config.
-		if len(w.allowedDirs) > 0 {
-			var perms map[string]json.RawMessage
-			if raw, ok := mode["permissions"]; ok {
-				_ = json.Unmarshal(raw, &perms)
-			}
-			if perms == nil {
-				perms = map[string]json.RawMessage{}
-			}
-			// external_directory may be a bare action string ("ask"/"allow"/
-			// "deny") or an object map of {pattern: action} (both valid per
-			// opencode's PermissionRuleConfig schema). If it's a bare string,
-			// we PRESERVE it as-is — converting to a map would silently narrow
-			// a global policy (e.g. "allow" for all dirs → "allow" only for
-			// /tmp/*). Only merge our patterns when the value is absent or is
-			// already in the map form.
-			// JSON `null` decodes into a nil map WITHOUT error — writing
-			// into it would panic the whole agentd process (round-3
-			// review; reachable via agent self-tampering of
-			// /sandbox-runtime, RW in the main container). Null is
-			// treated as absent: a fresh map of the injected patterns
-			// replaces it.
-			if raw, ok := perms["external_directory"]; ok {
-				var existing map[string]string
-				unmarshalErr := json.Unmarshal(raw, &existing)
-				switch {
-				case unmarshalErr == nil && existing != nil:
-					for _, p := range w.allowedDirs {
-						existing[p] = "allow"
-					}
-					extDirJSON, err := json.Marshal(existing)
-					if err != nil {
-						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
-					}
-					perms["external_directory"] = extDirJSON
-				case unmarshalErr == nil && existing == nil:
-					extDir := make(map[string]string, len(w.allowedDirs))
-					for _, p := range w.allowedDirs {
-						extDir[p] = "allow"
-					}
-					extDirJSON, err := json.Marshal(extDir)
-					if err != nil {
-						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
-					}
-					perms["external_directory"] = extDirJSON
-				default:
-					// Bare-string branch: preserved as-is, no injection.
-				}
-			} else {
-				extDir := make(map[string]string, len(w.allowedDirs))
-				for _, p := range w.allowedDirs {
-					extDir[p] = "allow"
-				}
-				extDirJSON, err := json.Marshal(extDir)
-				if err != nil {
-					return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
-				}
-				perms["external_directory"] = extDirJSON
-			}
-			permsJSON, err := json.Marshal(perms)
-			if err != nil {
-				return fmt.Errorf("agent-config writer: marshal permissions: %w", err)
-			}
-			mode["permissions"] = permsJSON
+		extDir := map[string]string{}
+		if raw, ok := perm["external_directory"]; ok {
+			_ = json.Unmarshal(raw, &extDir) // bare string / null → nil: floor replaces
 		}
-
-		modeJSON, err := json.Marshal(mode)
+		if extDir == nil {
+			extDir = map[string]string{}
+		}
+		for _, p := range w.allowedDirs {
+			extDir[p] = "allow"
+		}
+		// The floor is applied AFTER the operator's allows: collisions
+		// resolve to the TIER (an operator allow cannot reopen a tier
+		// deny; self-tampered tier values are restored every rebuild).
+		for k, v := range platformPermissionTiers {
+			extDir[k] = v
+		}
+		extDirJSON, err := json.Marshal(extDir)
 		if err != nil {
-			return fmt.Errorf("agent-config writer: marshal mode: %w", err)
+			return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
 		}
-		cfg["mode"] = modeJSON
+		perm["external_directory"] = extDirJSON
+		permJSON, err := json.Marshal(perm)
+		if err != nil {
+			return fmt.Errorf("agent-config writer: marshal permission: %w", err)
+		}
+		cfg["permission"] = permJSON
+	}
+
+	// Preserve the captured mode block verbatim — it may carry unrelated
+	// legacy fields; only sweep the dead injected external_directory the
+	// prior writer shape wrote (the live key above now owns the rules).
+	if len(w.modeRaw) > 0 {
+		swept := stripInjectedExternalDirs(w.modeRaw, w.injectedDirs)
+		swept = stripTierExternalDirs(swept)
+		if string(swept) != "{}" && string(swept) != "" {
+			cfg["mode"] = swept
+		}
 	}
 
 	// Merge MCP servers into the top-level "mcp" section. Each server
@@ -756,6 +744,7 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	prevAllowedDirs := w.allowedDirs
 	prevAgentRaw := w.agentRaw
 	prevModeRaw := w.modeRaw
+	prevPermissionRaw := w.permissionRaw
 	prevInjectedDirs := w.injectedDirs
 	rollback := func() {
 		w.providerRaw = prevProviderRaw
@@ -767,6 +756,7 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 		w.allowedDirs = prevAllowedDirs
 		w.agentRaw = prevAgentRaw
 		w.modeRaw = prevModeRaw
+		w.permissionRaw = prevPermissionRaw
 		w.injectedDirs = prevInjectedDirs
 	}
 
@@ -829,6 +819,7 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	if in.AllowedDirs != nil {
 		dirs := sanitizeAllowedDirs(in.AllowedDirs.Dirs)
 		w.modeRaw = stripInjectedExternalDirs(w.modeRaw, w.injectedDirs)
+		w.permissionRaw = stripFlatInjectedExternalDirs(w.permissionRaw, w.injectedDirs)
 		w.allowedDirs = dirs
 		w.injectedDirs = dirs
 	}

@@ -1,0 +1,107 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package opencode
+
+// permissiontiers.go — the platform-baked external_directory permission
+// floor (#1493 ruling): the pre-allow set stops the recurring folder
+// prompts; the deny tier is the security boundary; ask stays ambient
+// (opencode's built-in external_directory default is ask, so no rule is
+// needed for the ask tier).
+//
+// PRECEDENCE MODEL (pinned by TestPermissionTier_PrecedenceModel, ported
+// from the decompiled 1.18.15 matcher): rules evaluate findLast — the
+// LAST matching rule wins — in rule-list order, which for a rendered
+// JSON object is KEY ORDER. Go's encoding/json marshals map keys in
+// BYTE-SORTED order, so precedence between our patterns is alphabetical
+// and deterministic. The tier set is constructed so that every carve-out
+// sorts AFTER the deny it carves:
+//
+//	"/home/*" (deny)      < "/home/sandbox/*" (ask)   — '*' (0x2A) < 's'
+//	"/sys/*"  (deny)      < "/sys/fs/cgroup/*" (allow)
+//	"/home/sandbox/*" ask < "/home/sandbox/.ssh…" denies — '*' < '.'
+//
+// TIER MAP (per the 2026-09-19 ruling, amended):
+//
+//   - PRE-ALLOW (kernel-ro verified live for the artifact/cgroup paths —
+//     the mount is the boundary; the rule only stops prompts):
+//     /tmp, /home/sandbox/.cache, /home/sandbox/.local,
+//     /home/sandbox/.config, /sys/fs/cgroup (carved out of the /sys
+//     deny), /opencode.
+//   - ASK (ambient, no rule): everything not matched — /sandbox-cfg,
+//     /agentd-config, /sandbox-runtime, /home/sandbox itself, and the
+//     credential SYMLINK NAMES rt/ssh + rt/git-credentials (git/ssh
+//     tooling consumes them out-of-band, ungated by permissions; the
+//     ambient ask catches a curious agent typing the name).
+//   - HARD-DENY: /etc /proc /sys /dev /run /root /var /home (parent);
+//     the home credential names /home/sandbox/.ssh, .secrets,
+//     .git-credentials, .local/opencode/auth.json (bash-typed
+//     tripwire — matching for parsed bash commands uses the TYPED
+//     path); and the RESOLVED secret targets /sandbox-runtime/rt/secrets
+//     and rt/auth.json (file tools resolve symlinks to canonical paths
+//     before asking, so only the resolved target denies read-tool
+//     access).
+//
+// RESIDUALS (documented, not solved — PR + ruling):
+//  1. bash-typed reads of PROJECT-RELATIVE credential paths
+//     (/workspace/.local/opencode/auth.json) are inside the workspace
+//     root: external_directory does not govern them. Same trust class
+//     as the tokens already in the agent's env.
+//  2. No read-only granularity exists in the permission model: one
+//     action per directory. The ro mounts carry the real boundary for
+//     the two read-only pre-allows (assert cgroup2 ro before trusting —
+//     runtime default, not our pod spec; /opencode ro is ours).
+
+// platformPermissionTiers is the external_directory floor the writer
+// bakes into mode.permissions. Map keys are exactly the rendered JSON
+// keys (marshal-sorted = precedence, see the file comment). Values are
+// the opencode actions: "allow", "ask", "deny".
+//
+// The bare-directory entries (no trailing /*) govern the symlink NAME
+// itself (e.g. an `ls /home/sandbox/.ssh`); the /* variants govern
+// children typed through the name.
+var platformPermissionTiers = map[string]string{
+	// --- deny tier (parents first alphabetically; carves below) ---
+	"/dev/*":  "deny",
+	"/etc/*":  "deny",
+	"/home/*": "deny",
+	"/proc/*": "deny",
+	"/root/*": "deny",
+	"/run/*":  "deny",
+	"/sys/*":  "deny",
+	"/var/*":  "deny",
+
+	// --- /home carve: the workspace home back to ambient ask ---
+	"/home/sandbox/*": "ask",
+
+	// --- pre-allows under the home carve (each sorts after the ask) ---
+	"/home/sandbox/.cache/*":  "allow",
+	"/home/sandbox/.config/*": "allow",
+	"/home/sandbox/.local/*":  "allow",
+
+	// --- credential-name denies (bash-typed tripwire; sort after the
+	//     .local/.cache/.config allows they live alongside) ---
+	"/home/sandbox/.git-credentials":          "deny",
+	"/home/sandbox/.git-credentials/*":        "deny",
+	"/home/sandbox/.local/opencode/auth.json": "deny",
+	"/home/sandbox/.secrets":                  "deny",
+	"/home/sandbox/.secrets/*":                "deny",
+	"/home/sandbox/.ssh":                      "deny",
+	"/home/sandbox/.ssh/*":                    "deny",
+
+	// --- /sys carve-out: cgroup2 is ro at the kernel level (runtime
+	//     default — assert before trusting; see the residuals) ---
+	"/sys/fs/cgroup/*": "allow",
+
+	// --- standalone pre-allows ---
+	"/opencode/*": "allow",
+	"/tmp/*":      "allow",
+
+	// --- resolved secret targets (canonical matching for file tools).
+	//     rt/ssh and rt/git-credentials are deliberately ABSENT: ambient
+	//     ask on the name only; the git/ssh tooling reads them
+	//     out-of-band, ungated by the permission model. ---
+	"/sandbox-runtime/rt/auth.json": "deny",
+	"/sandbox-runtime/rt/secrets":   "deny",
+	"/sandbox-runtime/rt/secrets/*": "deny",
+}
