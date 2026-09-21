@@ -87,13 +87,21 @@ func (c *controlClient) nextID() int64 { return c.nextIDAtomic.Add(1) }
 
 // call performs one request/response round trip.
 func (c *controlClient) call(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
+	return c.callTimeout(ctx, method, params, c.timeout)
+}
+
+// callTimeout is call with an explicit per-invocation deadline — the
+// long-held upload_apply connection bounds ITSELF by the design-0060
+// apply timeout (seconds-scale for a ≤25 MiB copy), not the 2s
+// control-plane default.
+func (c *controlClient) callTimeout(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
 		return nil, fmt.Errorf("control socket: dial %s: %w", c.addr, err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	id := c.nextID()
 	req := struct {
@@ -242,14 +250,29 @@ func (c *controlClient) RefreshFiles(ctx context.Context) (*RefreshFilesResult, 
 // supervisor error returns *uploadApplyError; transport errors wrap
 // (the caller's timeout class maps to 504).
 func (c *controlClient) UploadApply(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
-	res, err := c.call(ctx, "upload_apply", map[string]any{
+	// The connection is held through the supervisor's copy (design 0060
+	// §3.3) — bound it by the caller's ctx deadline (the apply timeout),
+	// not the 2s control-plane default.
+	timeout := c.timeout
+	if dl, ok := ctx.Deadline(); ok {
+		if d := time.Until(dl); d > 0 && d < timeout {
+			timeout = d
+		}
+	}
+	res, err := c.callTimeout(ctx, "upload_apply", map[string]any{
 		"upload_id":   req.UploadID,
 		"staged_name": req.StagedName,
 		"size":        req.Size,
 		"sha256":      req.SHA256,
 		"target_name": req.TargetName,
-	})
+	}, timeout)
 	if err != nil {
+		// The §3.3 timeout class is defined by the CALLER'S clock: if the
+		// apply ctx expired, the failure is a timeout regardless of the
+		// surface error (conn i/o timeout, dial stall, anything).
+		if ctx.Err() != nil {
+			return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: ctx.Err()}
+		}
 		var ce *controlClientError
 		if errors.As(err, &ce) {
 			return nil, &uploadApplyError{Code: ce.ctl.Code, Message: ce.ctl.Message}

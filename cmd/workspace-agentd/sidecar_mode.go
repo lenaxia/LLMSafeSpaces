@@ -300,6 +300,10 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	// the stager stays unwired and uploads keep today's clean-fail
 	// rather than staging bytes nothing can deliver.
 	stager := newUploadStager(stagingConfigFromEnv(), pkgOpsMetrics)
+	// §4.1.1: establish the dir contract (0750, gid-1000 by process
+	// inheritance) BEFORE the boot scrub so the scrub observes the same
+	// surface the API will write into.
+	_ = stager.ensureStagingDir()
 	stager.scrubStagingDir(0, time.Time{})
 	// The sweeper rides the process lifetime (buildSidecarDeps has no
 	// shutdown context; the goroutine is a ticker that dies with the

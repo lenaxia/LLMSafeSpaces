@@ -213,6 +213,15 @@ type noopStagingMetrics struct{}
 func (noopStagingMetrics) RecordStagingGauges(int64, int64, int64, int) {}
 func (noopStagingMetrics) RecordUploadBytes(string, int64)              {}
 
+// ensureStagingDir establishes the §4.1.1 contract at boot: 0750 dir,
+// gid 1000 by process inheritance (the sidecar runs uid 2000 / gid
+// 1000 per the pod spec — the supervisor shares gid 1000, so staged
+// 0640 files are group-readable across the boundary; this is the
+// validated dependency, not fsGroup wiring).
+func (s *uploadStager) ensureStagingDir() error {
+	return os.MkdirAll(s.cfg.stagingDir, 0o750)
+}
+
 func newUploadStager(cfg stagingConfig, m stagingMetrics) *uploadStager {
 	if m == nil {
 		m = noopStagingMetrics{}
@@ -466,6 +475,10 @@ func (s *uploadStager) scrubStagingDir(ttl time.Duration, now time.Time) int {
 			s.ReleaseIfHeld(stripTmpSuffix(e.Name()))
 		}
 	}
+	if removed > 0 {
+		// §4.6 staging_scrubbed: scrub activity is observable.
+		pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeStagingScrubbed)
+	}
 	return removed
 }
 
@@ -549,7 +562,7 @@ func handleStagedUpload(w http.ResponseWriter, r *http.Request, cfg fileUploadCo
 		stager.abortStaged(id)
 		if errors.Is(err, errDeclaredExceeded) {
 			pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeRejectedDeclaredExceed)
-			writeUploadErrorClass(w, http.StatusBadRequest, "body exceeds declared length", "invalid_declared_length", "")
+			writeUploadErrorClass(w, http.StatusBadRequest, "body exceeds declared length", "declared_length_exceeded", "")
 			return
 		}
 		pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeStagingWriteError)
@@ -589,12 +602,19 @@ func handleStagedUpload(w http.ResponseWriter, r *http.Request, cfg fileUploadCo
 
 	// Ack: unlink after the successful apply, then release (§4.1).
 	stager.ackStaged(id)
+	pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeAccepted)
+	// §4.4/§4.6: the supervisor-computed margin flag is the export
+	// channel — count the observation here, never infer it.
 	if result != nil && result.MarginConsumed {
-		pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeAccepted)
-	} else {
-		pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeAccepted)
+		pkgOpsMetrics.RecordDestOutcome("dest_margin_consumed")
 	}
-	stager.metrics.RecordUploadBytes("copied_out", size)
+	// §4.6: copied_out counts the ack's verified size (equal to the
+	// staged size by the verification gate; the ack value is the truth).
+	copied := size
+	if result != nil && result.Size > 0 {
+		copied = result.Size
+	}
+	stager.metrics.RecordUploadBytes("copied_out", copied)
 	destPath := "/workspace/uploads/" + id + "-" + name
 	if result != nil && result.Path != "" {
 		destPath = result.Path
@@ -633,6 +653,8 @@ func isApplyTimeout(e *uploadApplyError) bool {
 // outcome, status, human text, machine reason.
 func mapApplyError(aerr *uploadApplyError) (uploadOutcome, int, string, string) {
 	switch aerr.Code {
+	case "busy":
+		return uploadOutcomeRejectedStagingBusy, http.StatusTooManyRequests, "staging busy", "staging_busy"
 	case "dest_disk_full":
 		return uploadOutcomeApplyRejected, http.StatusInsufficientStorage,
 			"workspace disk is full (write-time check)", "dest_disk_full"

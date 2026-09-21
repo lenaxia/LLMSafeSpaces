@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -457,8 +459,8 @@ func TestStagedUpload_OverRead400(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("over-read must 400, got %d", code)
 	}
-	if resp.Reason != "invalid_declared_length" {
-		t.Fatalf("reason: %q", resp.Reason)
+	if resp.Reason != "declared_length_exceeded" {
+		t.Fatalf("reason: %q (the design-pinned 400 literal)", resp.Reason)
 	}
 	// Nothing staged, nothing reserved (§4.1: unreserved bytes can never land).
 	if _, files := stager.StagedBytesAndFiles(); files != 0 {
@@ -542,6 +544,31 @@ func TestStagedUpload_ApplyRejected507WithCode(t *testing.T) {
 	}
 }
 
+func TestStagedUpload_ApplyBusy429(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Err = &uploadApplyError{Code: "busy", Message: "supervisor queue full"}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusTooManyRequests || resp.Reason != "staging_busy" {
+		t.Fatalf("busy shape: got %d %q (design §4.6: busy → 429 staging_busy)", code, resp.Reason)
+	}
+}
+
+func TestStagedUpload_MarginObserved(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Result = &uploadApplyResult{Applied: true, Path: "/workspace/uploads/x-notes.txt", Size: 5, MarginConsumed: true}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("margin-consumed is an observation, not a rejection: got %d", w.Code)
+	}
+}
+
 func TestStagedUpload_ApplyDestDiskFull507(t *testing.T) {
 	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
 	rec.mu.Lock()
@@ -577,5 +604,71 @@ func TestStagedUpload_CapExactWithEnvelopeAdmitted(t *testing.T) {
 	h(w, stagingRequest(t, "hello", strconv.FormatInt(exact, 10)))
 	if w.Code == http.StatusRequestEntityTooLarge {
 		t.Fatalf("cap-exact file with envelope must pass the agentd gate (the divergence worker 2's cross-check caught), got %d", w.Code)
+	}
+}
+
+// --- The production apply seam (the r1-review reproduction made permanent) ---
+
+// TestUploadApplyClient_BoundedByContextDeadline drives the REAL
+// control client against a socket server that delays past the caller's
+// ctx deadline: the failure must classify as the §3.3 timeout
+// (cause = DeadlineExceeded), never the 2s control-plane default's
+// i/o-timeout-as-apply_rejected misroute.
+func TestUploadApplyClient_BoundedByContextDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		time.Sleep(3 * time.Second) // outlive the caller's 150ms deadline
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, aerr := c.UploadApply(ctx, uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr == nil {
+		t.Fatal("expected the timeout class")
+	}
+	if !isApplyTimeout(aerr) {
+		t.Fatalf("ctx-expired apply must classify as timeout (§3.3), got code=%q err=%v", aerr.Code, aerr)
+	}
+	if !errors.Is(aerr, context.DeadlineExceeded) {
+		t.Fatalf("the cause must be the ctx deadline, got %v", aerr.Unwrap())
+	}
+}
+
+// TestUploadApplyClient_ClosedEnumErrorMapping pins the supervisor's
+// error-code mapping through the real client wire path.
+func TestUploadApplyClient_ClosedEnumErrorMapping(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		_, _ = io.ReadFull(conn, make([]byte, 1)) // let the request land
+		_ = json.NewEncoder(conn).Encode(map[string]any{
+			"v": 1, "id": 1,
+			"error": map[string]any{"code": "checksum_mismatch", "message": "digest mismatch"},
+		})
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String())
+	_, aerr := c.UploadApply(context.Background(), uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr == nil || aerr.Code != "checksum_mismatch" {
+		t.Fatalf("closed-enum mapping: got %+v", aerr)
 	}
 }

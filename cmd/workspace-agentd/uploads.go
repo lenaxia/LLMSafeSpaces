@@ -71,6 +71,7 @@ const (
 	uploadOutcomeApplyRejected           uploadOutcome = "apply_rejected"
 	uploadOutcomeChecksumMismatch        uploadOutcome = "checksum_mismatch"
 	uploadOutcomeStagingWriteError       uploadOutcome = "staging_write_error"
+	uploadOutcomeStagingScrubbed         uploadOutcome = "staging_scrubbed"
 )
 
 // uploadSink is the writable-file seam behind PUT /v1/files. Production

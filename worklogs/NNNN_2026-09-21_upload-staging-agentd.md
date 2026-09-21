@@ -73,3 +73,22 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 - `cmd/workspace-agentd/sidecar_mode.go` — the sidecar wiring (stager/scrub/sweeper/apply)
 - `cmd/workspace-agentd/uploads_test.go` — call sites updated for the new signature (nil stager)
 - `worklogs/NNNN_2026-09-21_upload-staging-agentd.md` — this worklog
+
+
+---
+
+## Review round 1 (7 findings, all fixed; the cross-lane envelope divergence folded in)
+
+- **BLOCKING — the 2s control-client deadline defeated the 60s apply bound** (the reviewer reproduced it empirically): `call` fixed `SetDeadline(now+2s)`, so a >2s supervisor copy died as a conn i/o timeout → misrouted to abort+507 apply_rejected, unlinking mid-copy, and `UPLOAD_APPLY_TIMEOUT_MS` was dead in production. Fixed: `callTimeout` (per-invocation deadline); `UploadApply` bounds the connection by the caller's ctx deadline AND normalizes ctx-expiry to the timeout class regardless of the surface error. Pinned permanently by `TestUploadApplyClient_BoundedByContextDeadline` (the reproduction, in-tree) + the closed-enum mapping pin.
+- **§4.6 literal deviation**: the 400 over-read carried reason `invalid_declared_length`; the design pins `declared_length_exceeded` for the 400 (the 411 is the invalid_declared_length carrier). Fixed + re-pinned.
+- **`busy` mapping missing**: mapApplyError now routes the supervisor's `busy` → 429 staging_busy (§4.6), pinned.
+- **Dead branch on the ack path**: the dest-margin observation implemented — `workspace_agentd_upload_dest_outcomes_total{code}` counted from the ack's supervisor-computed flag (never inferred); pinned by TestStagedUpload_MarginObserved (an observation, not a rejection).
+- **`staging_scrubbed` absent**: scrub activity now records the outcome at both scrub sites.
+- **§4.1.1 dir contract**: `ensureStagingDir` (0750) established at boot BEFORE the scrub; the gid-1000 dependency stated and validated (the sidecar runs gid 1000 by pod spec — process inheritance, not fsGroup; the supervisor shares gid 1000 so 0640 staged files are group-readable across the boundary).
+- Minor: `copied_out` now counts the ack's verified size; the ack Unmarshal swallow stays consistent with sibling methods (noted, not changed).
+- **Cross-lane (worker 2's coordination catch)**: the declared value on the hop is the envelope-INCLUSIVE client Content-Length — my bare `declared > cap` gate would have 413'd exactly-at-cap files. Now mirrors the API's 64 KiB allowance, pinned both arms (commit 76d9cb41, pre-review).
+
+## Tests Run (r1)
+
+- `go test -run 'TestStaging|TestStagedUpload|TestUploadApplyClient'` — 24 tests green (the production client seam now has its own wire tests).
+- Full `./cmd/workspace-agentd/` — ok (274s); golangci-lint 0 issues.

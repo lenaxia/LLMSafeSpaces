@@ -53,6 +53,7 @@ type opsMetrics struct {
 	uploadStagingFiles      *prometheus.GaugeVec
 	uploadStagingCredential *prometheus.GaugeVec
 	uploadBytesTotal        *prometheus.CounterVec
+	uploadDestOutcomes      *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -133,6 +134,11 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_agentd_upload_bytes_total",
 			Help: "Cumulative upload bytes by direction: staged_in (API→tmpfs) and copied_out (tmpfs→PVC, from the ack's verified size)",
 		}, []string{"workspace_id", "direction"}),
+
+		uploadDestOutcomes: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_agentd_upload_dest_outcomes_total",
+			Help: "Supervisor-side destination outcomes by code (dest_disk_full, integrity mismatches, dest_margin_consumed) — counted by agentd from the upload_apply ack (design 0060 §4.6)",
+		}, []string{"workspace_id", "code"}),
 	}
 }
 
@@ -202,6 +208,13 @@ func (m *opsMetrics) RecordStagingGauges(stagedBytes, reservedBytes, credentialB
 // RecordUploadBytes counts staged_in / copied_out upload bytes (§4.6).
 func (m *opsMetrics) RecordUploadBytes(direction string, n int64) {
 	m.uploadBytesTotal.WithLabelValues(uploadWorkspaceID(), direction).Add(float64(n))
+}
+
+// RecordDestOutcome counts a supervisor-side destination outcome
+// (design 0060 §4.6): rejections by code and the success-path
+// dest_margin_consumed observation (from the ack's flag).
+func (m *opsMetrics) RecordDestOutcome(code string) {
+	m.uploadDestOutcomes.WithLabelValues(uploadWorkspaceID(), code).Add(1)
 }
 
 // RecordUploadScrub adds n to the boot-scrub removed counter.
