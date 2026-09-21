@@ -59,13 +59,14 @@ None.
 
 ## Files Modified
 
-- `pkg/workflows/store.go` — WorkspaceExistsByID.
-- `api/internal/handlers/workflows.go` — the target-workspace create check + existencer seam.
-- `api/internal/handlers/triggers.go` — create workspaceId + update merged-view checks; hoisted merge.
-- `api/internal/app/app.go` — existencer wiring ×4.
-- `local/issue-1410-1412-automation-e2e.sh` — dummy workspace row seed + R4d retarget.
-- `api/internal/handlers/{workflows,triggers}_test.go` — the audit pins + fixture completions.
-- `api/internal/handlers/mcp_servers.go` — instances 5 + 7 (auto-apply server resolution; every-scope bind workspace check).
+- `pkg/workflows/store.go` — WorkspaceExistsByID (the unscoped existence primitive).
+- `api/internal/handlers/workflows.go` — create + update + run-override target-workspace checks; the existencer seam.
+- `api/internal/handlers/triggers.go` — create workspaceId + update PATCHED-target checks; the hoisted V7 merge.
+- `api/internal/handlers/mcp_servers.go` — instance 5 (auto-apply server resolution) + instance 7 (every-scope bind workspace check).
 - `api/internal/handlers/admin_provider_credentials.go` — instance 6 (the (nil,nil)-aware credential resolution).
-- `api/internal/handlers/{mcp_servers,admin_provider_credentials}_test.go` — the instance 5/6/7 pins.
-- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog (audit table complete through instance 7).
+- `api/internal/app/app.go` — existencer wiring ×4.
+- `local/issue-1410-1412-automation-e2e.sh` — the dummy workspace row seed; R4d retarget; R1c/R1d/R1e live rows.
+- `local/issue_1410_automation_e2e_script_test.go` — the R1c/R1d/R1e ledger needles + R1/R4 harness pins.
+- `api/internal/handlers/{workflows,triggers,mcp_servers,admin_provider_credentials}_test.go` — the audit pins (all seven instances + infra arms + pass arms).
+- `pkg/workflows/store_integration_test.go` — WorkspaceExistsByID against real PG (incl. the soft-deleted face).
+- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.

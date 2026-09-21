@@ -717,6 +717,27 @@ else
                 note_fail "R8e: foreign-org trigger GET returned 200 — scoping regression"
             fi
         fi
+        # R1f — instances 5 and 7's reachable faces: org-scope MCP
+        # auto-apply with a ghost serverId answers the ownership 404;
+        # org-scope MCP bind with ghost surfaces fails closed. The
+        # admin-scope twins are behind AdminGuard — not harness-reachable
+        # in the nightly (documented; unit-pinned).
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/auto-apply" \
+            '{"targetType":"all"}'
+        r1f_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1f_resp}" == *"MCP server not found"* ]]; then
+            ok "R1f: org auto-apply ghost serverId answers the named 404 (instance 5)"
+        else
+            note_fail "R1f: org auto-apply ghost returned ${api_status} (${r1f_resp}), expected 404"
+        fi
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/bindings" \
+            '{"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+        r1f2_resp="${api_body}"
+        if [[ "${api_status}" == "404" ]]; then
+            ok "R1f: org bind ghost surfaces fail closed 404 (instance 7's org face)"
+        else
+            note_fail "R1f: org bind ghost returned ${api_status} (${r1f2_resp}), expected 404"
+        fi
         api DELETE "/api/v1/orgs/${R8_ORG}" >/dev/null 2>&1 || true
     fi
 fi
