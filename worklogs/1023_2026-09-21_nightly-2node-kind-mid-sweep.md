@@ -49,4 +49,4 @@ None.
 - `local/us-70-secret-delivery-e2e.sh` — the AC-11 mid sweep.
 - `local/kind_cluster_config_test.go` — NEW, kind-config + blast-radius + wiring pins.
 - `local/us70_harness_script_test.go` — mid-sweep structural + executable pins.
-- `worklogs/NNNN_2026-09-21_nightly-2node-kind-mid-sweep.md` — this worklog.
+- `worklogs/1023_2026-09-21_nightly-2node-kind-mid-sweep.md` — this worklog.
