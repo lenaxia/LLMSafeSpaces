@@ -1180,3 +1180,78 @@ func TestWorkflowCreate_ExistencerError_500(t *testing.T) {
 	require.Equal(t, 500, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), "failed to check target workspace")
 }
+
+// TestWorkflowRun_GhostWorkspaceOverride_Named400 pins the audit's
+// fourth instance (review r3): a user-supplied workspaceId override on
+// run-create reached the FK unvalidated — opaque 500 on a nonexistent
+// id; the contract is the named 400.
+func TestWorkflowRun_GhostWorkspaceOverride_Named400(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{}})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("/:id/runs", h.UserRunWorkflow)
+
+	w := httptest.NewRequest("POST", "/api/v1/me/workflows/wf-1/runs",
+		io.NopCloser(strings.NewReader(`{"input":{},"workspaceId":"00000000-0000-4000-8000-000000000099"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "target workspace not found")
+	assert.Nil(t, store.lastRun, "nothing queued on the rejected path")
+}
+
+// TestWorkflowRun_ValidWorkspaceOverride_Passes: the override pass-arm
+// reaches the queue.
+func TestWorkflowRun_ValidWorkspaceOverride_Passes(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{
+		"00000000-0000-4000-8000-000000000001": true,
+	}})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("/:id/runs", h.UserRunWorkflow)
+
+	w := httptest.NewRequest("POST", "/api/v1/me/workflows/wf-1/runs",
+		io.NopCloser(strings.NewReader(`{"input":{},"workspaceId":"00000000-0000-4000-8000-000000000001"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+}
+
+// TestWorkflowUpdate_MalformedSpecOutranksGhostTarget pins the r3
+// ordering claim: a PATCH carrying both answers the SPEC error (the
+// target check sits after all validation).
+func TestWorkflowUpdate_MalformedSpecOutranksGhostTarget(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{}})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.PUT("/:id", h.UserUpdate)
+
+	w := httptest.NewRequest("PUT", "/api/v1/me/workflows/wf-1",
+		io.NopCloser(strings.NewReader(`{"specYaml":"not: [a: valid, spec","targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "spec", "the malformed spec must win over the ghost-target 400")
+	assert.NotContains(t, rec.Body.String(), "target workspace not found")
+}

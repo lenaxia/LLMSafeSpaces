@@ -194,6 +194,17 @@ else
     note_fail "R1d: ghost workflowId trigger PATCH returned ${api_status} (${r1d_t_resp}), expected 400"
 fi
 
+# R1e — the fourth instance (review r3): a ghost workspaceId OVERRIDE on
+# run-create answers the named 400 (was the opaque 500).
+api POST "/api/v1/me/workflows/${REAL_WF_ID}/runs" \
+    '{"input":{},"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+r1e_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1e_resp}" == *"target workspace not found"* ]]; then
+    ok "R1e: ghost workspaceId run override rejected with the named 400"
+else
+    note_fail "R1e: ghost workspaceId run override returned ${api_status} (${r1e_resp}), expected 400"
+fi
+
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
 r1_next=$(trigger_field "${R1_ID}" nextFireAt)
 if [[ -n "${r1_next}" ]] && [[ "$(date -u -d "${r1_next}" +%s)" -ge "$(date -u +%s)" ]]; then

@@ -674,6 +674,22 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID, workf
 
 	workspaceID := ""
 	if req.WorkspaceID != "" {
+		// The parent-id audit's fourth instance (review r3): a
+		// user-supplied workspaceId override reached the FK unvalidated
+		// (opaque 500 on a nonexistent id). Named 400, matching every
+		// other surface; the workflow's STORED target stays untouched
+		// (FK-anchored at create time).
+		if h.wsExistencer != nil {
+			exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), req.WorkspaceID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+				return
+			}
+			if !exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+				return
+			}
+		}
 		workspaceID = req.WorkspaceID
 	} else if wfRow.TargetWorkspaceID != nil {
 		workspaceID = *wfRow.TargetWorkspaceID

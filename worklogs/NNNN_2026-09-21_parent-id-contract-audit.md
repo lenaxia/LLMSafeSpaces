@@ -14,6 +14,7 @@
 | `triggers.workflow_id` → workflows (000020:21, SET NULL) | trigger create | already fixed (#1517) — cited |
 | `triggers.workflow_id` | trigger update | **BUG → FIXED (#1519 BOTH halves, per r1's record correction)**: PATCHED target resolves owner-scoped → named 400 for nonexistent AND cross-owner (no existence oracle; matching create). STORED targets deliberately NOT re-validated — legacy cross-owner rows stay patchable for #1440 mitigation (enabled:false), pinned by TestTriggerUpdate_StoredTargetNotRevalidated |
 | `triggers.workspace_id` → workspaces (000020:11, SET NULL) | trigger create + update | **BUG → FIXED**: existence check via the unscoped primitive; named 400, scoped to the PATCHED value |
+| `workflow_runs.workspace_id` → workspaces (000016:261, plain FK) | run-create `workspaceId` OVERRIDE (REST + MCP workflow_run) | **BUG → FIXED (r3's fourth instance)**: named 400 on the user-supplied override; the workflow's STORED target stays FK-anchored and untouched |
 | `user_secret_bindings.workspace_id`/`secret_id` (000001) | secrets bind | **CORRECT**: workspace-scoped route resolves the parent (404 by construction; sessions of green live bind usage) |
 | `workspace_credential_bindings.*` (000001) | credential bind | **CORRECT + PINNED**: `TestUserProviderCredentials_Bind_OwnershipCheck` (404 ownership ⇒ existence) |
 | `mcp_server_bindings.*` (000012) | MCP bind | **CORRECT + PINNED**: `TestBind_RejectsForeignServer` + the workspace-ownership 404 at mcp_servers.go:636 |
@@ -32,7 +33,7 @@
 
 ### Assumptions stated and validated (Rule 7)
 
-- The FK map is complete for user-facing parents: migrations grepped BOTH constraint forms (the inline `REFERENCES` in 000020 evaded the constraint-name grep first pass — noted).
+- The FK map is complete for user-facing parents after three review passes: r1 added the workflow-update surface, r3 the run-override surface (greps covered `ADD CONSTRAINT` and inline `REFERENCES`; the run override lives in the REQUEST DTO, not a new column — found by trace, not grep). The first draft's completeness claim was false twice; the reviews enforced the PR's own bar.
 - Existence-not-ownership for the WORKSPACE axis (org-owned workflows target user workspaces; the FK is unscoped). For the WORKFLOW axis (trigger targets), owner-scoping matches #1517's create check and closes #1519 half (b): a PATCHED cross-owner workflowId answers the same named 400 as a nonexistent one (no oracle); #1440's loud-fire design survives for STORED targets (deletion SET NULL, legacy rows).
 - The r1-recorded decision: update-path checks scope to PATCHED values — stored state is FK-anchored and deliberately unvalidated (mitigation path preserved).
 - Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.
