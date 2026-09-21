@@ -75,3 +75,19 @@ None. The knob-plumbing gap (above) and the SR-3 fault-seam dependency (skip-DOW
 - `local/e2e_smoke_repo_wide_test.go` — smoke row
 - `.github/workflows/e2e-nightly.yml` — harness registration
 - `worklogs/NNNN_2026-09-21_uploads-api-forwarding-stress.md` — this worklog
+
+## Review Round 1 (nine harness defects — all fixed; the handler was already sound)
+
+The reviewer reproduced every defect by execution. All nine fixed in the harness rewrite:
+
+1. **SR-A 415-vs-411**: the row sent JSON content-type — the media gate 415s before the 411. Now sends multipart content-type with a length-less body (the shape the handler actually 411s).
+2. **grep -c line-counting**: `storm_report()` now iterates result FILES (one per upload, written by concurrent jobs) — terminal counting is per-outcome.
+3. **Vacuous gauge sampler**: the background subshell's variables never reached the parent. The sampler now writes to a FILE; the parent aggregates with awk.
+4. **statf → stat -f**: corrected (statf doesn't exist); TOTAL/BLOCK unified into the fill math.
+5. **SR-5 triple-defect**: container-ID kill via `crictl ps -q --name agentd` (pod name never worked); the tautological `-ge 0` assertion replaced by terminal-outcome checking; the partial-visibility assertion now counts `.tmp` artifacts (the real §6.5 surface).
+6. **SR-6 constant**: the check, the message, and the pin now ALL say the design's C+94 MiB (98_560_614 bytes).
+7. **trap clobber**: the sampler kill + fill cleanup ride the SAME EXIT trap as workspace cleanup — one cleanup function, no clobbering.
+8. **SR-2 not-mid-storm**: the three uploads now run CONCURRENTLY and the resync fires 1s in (uploads still staging); outcomes asserted via storm_report.
+9. **Concurrency absent**: SR-1 fires all six uploads concurrently (backgrounded with staggered starts); SR-2 likewise.
+
+The pin suite was hardened alongside (file-backed sampler needle, concurrent-fire needle, container-ID needle, stat -f needle + a NotContains for statf, terminal-outcome needles); three stale needles from the first draft's text cost several edit cycles (the recurring needle-alignment lesson: write needles FROM the final script text, never from the draft that produced them).

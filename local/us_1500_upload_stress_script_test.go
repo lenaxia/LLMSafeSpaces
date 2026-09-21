@@ -40,20 +40,21 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`workspace_agentd_upload_staging_credential_bytes`,
 		`credential_bytes never regressed`,
 		// §4.1/§4.6 API-side rows shipped with the forwarding PR.
-		`undeclared client body → 411`,
+		`undeclared multipart body → 411`,
 		`invalid_declared_length`,
 		// §6.4 write-time edge.
 		`507 dest_disk_full`,
 		// §6.5 kills: partial-visibility + destination .tmp reclaim.
-		`grep -v "\.tmp$"`,
+		`ls /workspace/uploads/*.tmp`,
 		`destination .tmp reclaimed`,
 		// §6.6 precondition + EXPLICIT skip-DOWN (never silent 3×).
 		`skip-DOWN to 3×, explicitly`,
-		`f >= c + 98*1024*1024`,
+		`98_560_614`,
 		// The loud-skip convention for not-yet-landed mechanisms.
 		`SKIP-DOWN`,
 		// The #1474-r4 no-subshell api() contract.
-		`var="${api_body}"`,
+		`api_status="${out##*$'\n'}"`,
+		`api_body="${out%$'\n'*}"`,
 		// Cleanup.
 		`trap cleanup EXIT`,
 	} {
