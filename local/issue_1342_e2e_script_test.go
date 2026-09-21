@@ -129,9 +129,11 @@ func TestIssue1342E2EWorkflow_GateExecutes(t *testing.T) {
 	// The SET-creds leg (r1's gap): the REAL full step body runs with a
 	// stubbed bash on PATH — the guard must fall through and invoke the
 	// script (an unconditional-exit regression silently retires the rows).
+	// The stub's shebang is ABSOLUTE: `#!/usr/bin/env bash` would resolve
+	// `bash` back to the stub itself and recurse forever.
 	dir := t.TempDir()
 	rec := filepath.Join(dir, "bash-argv")
-	stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > " + rec + "\nexit 0\n"
+	stub := "#!/bin/bash\nprintf '%s\\n' \"$*\" > " + rec + "\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bash"), []byte(stub), 0o755))
 	out, err = exec.Command(bash, "-c", "set -u; export PATH="+shQuote(dir)+":$PATH LLM_API_KEY=dummy-creds\n"+script).CombinedOutput()
 	require.NoError(t, err, "the set-creds leg must fall through clean, got:\n%s", out)
