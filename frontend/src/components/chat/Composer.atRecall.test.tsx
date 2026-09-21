@@ -175,6 +175,18 @@ describe("Composer @-prompt recall (#1496 part 2)", () => {
     await waitFor(() => expect(screen.getByTestId("at-recall-popup")).toBeTruthy());
   });
 
+  it("trailing-@token expansion stays suppressed (the jsdom fast-loop pin)", async () => {
+    // The text-keyed suppression is decidable in jsdom (unlike the old
+    // dead-ref mechanism): prompt content ENDING in an @token leaves a
+    // live token at the new caret — the popup must stay closed.
+    mockPrompts = [{ id: "p7", name: "ping", content: "now ping @deploy" }];
+    renderComposer();
+    const box = await typeIn("@pi");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("now ping @deploy"));
+    expect(screen.queryByTestId("at-recall-popup")).toBeNull();
+  });
+
   it("click selects: the popup row click expands the prompt", async () => {
     mockPrompts = [{ id: "p1", name: "deploy", content: "CLICKED CONTENT" }];
     renderComposer();

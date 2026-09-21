@@ -30,6 +30,13 @@ vi.mock("../../api/workspaces", () => ({
 }));
 // Prompt library: irrelevant for slash tests; empty list.
 vi.mock("../../api/promptLibrary", () => ({ promptLibraryApi: { list: () => Promise.resolve([]) } }));
+// useQueryClient only (real query machinery stays for usePromptLibrary);
+// the invalidate spy lets the dual-key rename pin observe cache calls.
+const invalidateQueries = vi.fn();
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+  return { ...actual, useQueryClient: () => ({ invalidateQueries }) };
+});
 
 const onSend = vi.fn();
 
@@ -128,13 +135,31 @@ describe("Composer slash commands (#1496 part 1)", () => {
     expect(screen.getByTestId("command-notice").textContent).toContain("Usage: /rename");
   });
 
-  it("Tab completes the highlighted word", async () => {
+  it("Tab completes the highlighted bare word", async () => {
     renderComposer();
     const box = await typeIn("/com");
     fireEvent.keyDown(box, { key: "Tab" });
     expect((box as HTMLTextAreaElement).value).toBe("/compact ");
     // The palette stays armed (exact word + args) — Enter now executes.
     expect(screen.getByTestId("slash-palette")).toBeTruthy();
+  });
+
+  it("Tab is a no-op with args typed — never destroys them", async () => {
+    renderComposer();
+    const box = await typeIn("/rename Weekly review");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect((box as HTMLTextAreaElement).value).toBe("/rename Weekly review");
+    expect(screen.getByTestId("slash-palette")).toBeTruthy(); // still armed
+  });
+
+  it("rename invalidates BOTH cache keys (the kebab path's dual set)", async () => {
+    renderComposer();
+    const box = await typeIn("/rename Dual");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalled());
+    const keys = invalidateQueries.mock.calls.map((c: unknown[]) => (c[0] as { queryKey: unknown })?.queryKey);
+    expect(keys).toContainEqual(["sessions", "ws-1"]);
+    expect(keys).toContainEqual(["session-title", "ws-1", "ses-1"]); // absent → the rename-revert bug
   });
 
   it("Escape dismisses the current token; editing to a new word reopens", async () => {

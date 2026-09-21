@@ -410,10 +410,15 @@ export function Composer({
         return;
       }
       if (e.key === "Tab") {
-        e.preventDefault();
-        const cmd = slashItems[Math.min(slashActive, slashItems.length - 1)];
-        if (cmd) setText(`/${cmd.id} `);
-        setSlashActive(0);
+        // Tab completes the BARE word; with args already typed there is
+        // nothing to complete and rewriting would destroy them (the
+        // palette stays armed either way — Enter executes).
+        if (!slashMatch?.args) {
+          e.preventDefault();
+          const cmd = slashItems[Math.min(slashActive, slashItems.length - 1)];
+          if (cmd) setText(`/${cmd.id} `);
+          setSlashActive(0);
+        }
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {

@@ -89,3 +89,10 @@ None. (The `/share` exclusion is recorded, not blocking.)
 5. **The dead suppression mechanism rebuilt**: suppressAtRef was consumed in onChange, which programmatic setText never fires — the jsdom no-recursion pin passed on a caret-state accident. Suppression is now text-keyed state checked in the open condition, with setCaret alongside the programmatic expand; a NEW e2e row pins the trailing-@token case (the recursion bug the old mechanism could not decide). Also added: prompt-library-500 row (no popup, no crash, composer still sends). Mutation-verified: dropping the suppression condition fails the trailing-@ row; restoring the wrong payload fails the union-member pin.
 
 **Process near-miss, recorded per the standing rules**: mid-mutation I ran `git checkout` on an UNSTAGED file (slashCommands.ts) — the exact #1489-r4 class — silently reverting three r1 fixes; my narrow post-restore verification (one playwright row) missed it; the FULL suite caught it and the fixes were re-applied and re-verified present by grep before this commit. The rule (file-copy mutations only, never checkout-of-unstaged) was in my own worklog and I violated it under time pressure. Recorded here because the record is the enforcement.
+
+## Review Round 2 (three residuals — all taken)
+
+1. The adapter seam's comment still taught the broken `{type:...}` example — corrected, and the payload is now a TYPED union (`SessionAction = { compact: Record<string, never> }`; new members land in the type, never as a discriminator field), closing the Rule 1 violation.
+2. Tab-with-args: no-op guard (Tab completes the BARE word; rewriting with args typed was silent data loss) + pinned.
+3. Unpinned fixes pinned: dual cache invalidation observed via a partial useQueryClient mock (both keys asserted — deleting the session-title line fails it); jsdom trailing-@ suppression pin added (the fast loop the reviewer suggested — decidable now the mechanism is text-keyed).
+Full: vitest 441 in the chat+libs scope, suite 176/1943, Playwright 8/8, tsc + eslint clean (incl. the no-empty-object-type fix Record<string, never>).

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { workspacesApi } from "../../api/workspaces";
+import type { SessionAction } from "../../api/workspaces";
 
 /**
  * The composer's slash-command registry (#1496 part 1). Every command
@@ -69,7 +70,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     requires: (ctx) => (!ctx.workspaceId || !ctx.sessionId ? "needs an active session" : null),
     run: async (_args, ctx) => {
       try {
-        await workspacesApi.sessionAction(ctx.workspaceId!, ctx.sessionId!, { compact: {} });
+        const action: SessionAction = { compact: {} };
+        await workspacesApi.sessionAction(ctx.workspaceId!, ctx.sessionId!, action);
         ctx.notify({ kind: "info", text: "Compaction scheduled — it runs when the current turn ends." });
       } catch (err) {
         ctx.notify({ kind: "error", text: `Compact failed: ${errorText(err)}` });
