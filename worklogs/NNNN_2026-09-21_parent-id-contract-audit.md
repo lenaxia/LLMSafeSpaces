@@ -1,0 +1,60 @@
+# Worklog: Parent-id contract audit — the opaque-500 class retired across create/update handlers (runs 35597973572 + 35617684178; Refs #1519)
+
+**Date:** 2026-09-21
+**Session:** Adjudicated upgrade of the workflow-create parity fix to a CLASS audit: every create/update handler accepting a parent resource id checked for the opaque-500-on-nonexistent-parent shape; buggy ones fixed to named-4xx, correct ones cited/pinned. Create/update surface only — #1440 fire-time loud semantics untouched.
+**Status:** Complete — PR open, iterating review
+
+---
+
+## The audit table (FK columns in migrations → handler surfaces)
+
+| Column (FK →) | Surface | Verdict |
+|---|---|---|
+| `workflows.target_workspace_id` → workspaces (000016, SET NULL) | workflow create | **BUG → FIXED**: named 400 "target workspace not found" (run 35617684178's finding — the harness's REAL_WF create died in 9.3ms) |
+| `triggers.workflow_id` → workflows (000020:21, SET NULL) | trigger create | already fixed (#1517) — cited |
+| `triggers.workflow_id` | trigger update | **BUG → FIXED (#1519's nonexistent half)**: post-patch merged view resolves; named 400. Cross-owner PERSISTS + fires loud BY DESIGN (#1440 — untouched) |
+| `triggers.workspace_id` → workspaces (000020:11, SET NULL) | trigger create + update | **BUG → FIXED**: existence check via the new unscaled primitive; named 400 both views |
+| `user_secret_bindings.workspace_id`/`secret_id` (000001) | secrets bind | **CORRECT**: workspace-scoped route resolves the parent (404 by construction; sessions of green live bind usage) |
+| `workspace_credential_bindings.*` (000001) | credential bind | **CORRECT + PINNED**: `TestUserProviderCredentials_Bind_OwnershipCheck` (404 ownership ⇒ existence) |
+| `mcp_server_bindings.*` (000012) | MCP bind | **CORRECT + PINNED**: `TestBind_RejectsForeignServer` + the workspace-ownership 404 at mcp_servers.go:636 |
+| org tables' `org_id` | org routes | path-resolved org (404s; R8e's fails-closed row covers live) |
+
+## Implementation
+
+- `pkg/workflows/store.go`: `WorkspaceExistsByID` — the UNSCALED existence primitive (the FKs' semantics; ownership NOT judged — cross-owner targets remain the fire-time loud class). Same pool, one COUNT.
+- `workflows.go` create: `targetWorkspaceId` pre-flight via `SetWorkspaceExistencer` (deferred injection, SetAudit pattern — nil skips, preserving legacy construction). Ordered after spec/schema validation.
+- `triggers.go`: create gains the workspaceId existence check beside the #1517 workflowId check; update (#1519) resolves the post-patch MERGED workflowId (owner-scoped GetWorkflow) + workspaceId (existencer) → named 400s. `mergedWorkflowID`/`mergedWorkspaceID` hoisted + computed once (nil-`existing` guarded — a bare autoDisableAfter patch fetches nothing; caught by the panicking fixture and fixed).
+- `app.go`: all four handlers wired to the wfStore existencer.
+- Harness: the automation script seeds the dummy workspace ROW (`00000000-0000-4000-8000-000000000001`, psql like seed_session — no CR, no pod; runs still queue-and-no-op) before the REAL_WF create; R4d's target retargeted from a second never-existing literal to the seeded row.
+
+### Assumptions stated and validated (Rule 7)
+
+- The FK map is complete for user-facing parents: migrations grepped BOTH constraint forms (the inline `REFERENCES` in 000020 evaded the constraint-name grep first pass — noted).
+- Existence-not-ownership is the right contract for target_workspace_id / triggers.workspace_id (org-owned workflows target user workspaces; ownership enforcement would false-block; #1440 keeps cross-owner loud).
+- Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.
+
+---
+
+## Blockers
+
+None.
+
+## Tests Run
+
+- New pins: workflow-create named-400/pass/nil-skip; trigger-create workspace named-400/pass; trigger-update workflow+workspace named-400s. All red-verified against the pre-fix shapes where applicable.
+- `go test -count=1 -timeout 300s ./api/internal/handlers/` — **ok** (84.5s). `./local/` — **ok** (29.7s). `./api/internal/app/` + `./api/internal/server/` — ok. `go build` — ok. `bash -n` — clean.
+- Two fixture completions (swap/repair update tests seed their workflow targets — the checks resolve them now).
+
+## Next Steps
+
+- APPROVED → merge → dispatch → R1–R9 arbitration with the parent-id class retired (the next run should find NO third instance).
+
+## Files Modified
+
+- `pkg/workflows/store.go` — WorkspaceExistsByID.
+- `api/internal/handlers/workflows.go` — the target-workspace create check + existencer seam.
+- `api/internal/handlers/triggers.go` — create workspaceId + update merged-view checks; hoisted merge.
+- `api/internal/app/app.go` — existencer wiring ×4.
+- `local/issue-1410-1412-automation-e2e.sh` — dummy workspace row seed + R4d retarget.
+- `api/internal/handlers/{workflows,triggers}_test.go` — the audit pins + fixture completions.
+- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.

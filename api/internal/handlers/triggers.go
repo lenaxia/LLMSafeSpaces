@@ -61,11 +61,16 @@ const errTriggerMemoryCaptureConstraint = "memoryMode 'last_result' requires cap
 
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
-	store   triggerStore
-	quota   workflowQuotaChecker
-	audit   workflowAuditLogger
-	encrypt triggerEncryptor
+	store        triggerStore
+	quota        workflowQuotaChecker
+	audit        workflowAuditLogger
+	encrypt      triggerEncryptor
+	wsExistencer workspaceExistencer
 }
+
+// SetWorkspaceExistencer wires the target-workspace existence check for
+// the parent-id contract (deferred injection; nil skips).
+func (h *TriggersHandler) SetWorkspaceExistencer(w workspaceExistencer) { h.wsExistencer = w }
 
 // NewUserTriggersHandler constructs a handler for user-scope triggers.
 func NewUserTriggersHandler(store triggerStore, quota workflowQuotaChecker, encrypt triggerEncryptor) *TriggersHandler {
@@ -297,6 +302,23 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		}
 	}
 
+	// The parent-id audit: a user-supplied workspaceId must EXIST (the
+	// triggers.workspace_id FK answered nonexistent targets with the same
+	// opaque-500 class). Existence only — cross-owner targets remain the
+	// fire-time loud class by design (#1440); nil existencer (legacy
+	// construction) skips.
+	if req.WorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), req.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
+	}
+
 	if err := h.store.CreateTrigger(c.Request.Context(), row); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create trigger"})
 		return
@@ -496,19 +518,34 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	// Input mapping (0059 V7): only patches that touch workflowId, input,
-	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
-	// merged view. Patches that remove an opt-in (input → null, inputFrom →
-	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
-	// or schedule change re-runs nothing.
-	if touchesMapping {
-		mergedWorkflowID := ""
+	// The post-patch MERGED targets — computed once for the V7 mapping
+	// rules below AND the parent-id existence checks further down.
+	// existing is nil for patches that touch no target-bearing field
+	// (then req carries no target either — both merge to empty and the
+	// checks no-op).
+	mergedWorkflowID := ""
+	mergedWorkspaceID := ""
+	if existing != nil {
 		if existing.WorkflowID != nil {
 			mergedWorkflowID = *existing.WorkflowID
 		}
 		if req.WorkflowID != nil {
 			mergedWorkflowID = *req.WorkflowID
 		}
+		if existing.WorkspaceID != nil {
+			mergedWorkspaceID = *existing.WorkspaceID
+		}
+		if req.WorkspaceID != nil {
+			mergedWorkspaceID = *req.WorkspaceID
+		}
+	}
+
+	// Input mapping (0059 V7): only patches that touch workflowId, input,
+	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
+	// merged view. Patches that remove an opt-in (input → null, inputFrom →
+	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
+	// or schedule change re-runs nothing.
+	if touchesMapping {
 		mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
 		if req.InputFrom != nil {
 			mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
@@ -532,6 +569,30 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	if targetlessAfterPatch {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
 		return
+	}
+
+	// The parent-id audit on the UPDATE view (#1519): the post-patch
+	// MERGED targets must exist — a nonexistent workflowId or workspaceId
+	// previously reached the FK as an opaque 500 ("failed to update
+	// trigger"). Named 400s; EXISTENCE only — a cross-owner workflow
+	// still PERSISTS and fires loud at fire time (the #1440 design,
+	// untouched by the audit's scope guard).
+	if mergedWorkflowID != "" {
+		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, mergedWorkflowID); errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+			return
+		}
+	}
+	if mergedWorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), mergedWorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)

@@ -122,6 +122,19 @@ slot_hm() { # rfc3339 -> "HH:MM" (UTC)
 
 # --- R1: create-path validation + first-occurrence slot (#1411) ----------
 
+# The dummy workspace row: the parent-id contract (run 35617684178's
+# audit) resolves every workspaceId/targetWorkspaceId against
+# workspaces(id) — the row never existed, so R4d/R5/R10's creates (never
+# executed before this) would 400/500 against it. Seeded via psql like
+# seed_session's user row; no CR, no pod — runs still queue and no-op
+# against a non-activated target.
+kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
+    psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 -c "
+INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size)
+VALUES ('${R5_WS}', 'e2e-automation-dummy', '${OWNER_ID}', '${NS}', 'python:3.11', '1Gi')
+ON CONFLICT (id) DO NOTHING;
+" >/dev/null
+
 # The shared real workflow every create below targets (R4d's specYaml
 # shape; the 35597973572 ruling made ghost-workflow creates a named 400).
 REAL_WF=$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-real-target",
@@ -221,9 +234,9 @@ fi
 # SET NULLs the trigger's workflow_id (migration 000020 FK), so the
 # scheduler sees a targetless row — which must ALSO fail loudly
 # (trigger_has_no_target) and auto-disable, not tick silently.
-api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
+api POST /api/v1/me/workflows "$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-r4d-target",
     specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
-    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')"
+    targetWorkspaceId:$ws}')"
 R4D_WF="${api_body}"
 [[ "${api_status}" == "201" ]] || die "R4d setup: workflow create failed: ${api_status} ${R4D_WF}"
 R4D_WF_ID=$(printf '%s' "${R4D_WF}" | jq -r '.id')

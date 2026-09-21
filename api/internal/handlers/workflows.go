@@ -63,7 +63,20 @@ type WorkflowsHandler struct {
 	store workflowStore
 	quota workflowQuotaChecker
 	audit workflowAuditLogger
+	// wsExistencer backs the targetWorkspaceId create contract (the
+	// parent-id audit): nil skips the check (legacy construction, tests).
+	wsExistencer workspaceExistencer
 }
+
+// workspaceExistencer is the unscaled existence primitive the FK
+// semantics define (see database.Service.WorkspaceExistsByID).
+type workspaceExistencer interface {
+	WorkspaceExistsByID(ctx context.Context, workspaceID string) (bool, error)
+}
+
+// SetWorkspaceExistencer wires the target-workspace existence check
+// (deferred injection, like SetAudit).
+func (h *WorkflowsHandler) SetWorkspaceExistencer(w workspaceExistencer) { h.wsExistencer = w }
 
 // NewUserWorkflowsHandler constructs a handler for user-scope workflows.
 func NewUserWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *WorkflowsHandler {
@@ -282,6 +295,23 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 
 	var targetWS *string
 	if req.TargetWorkspaceID != "" {
+		// The parent-id create contract (run 35617684178's finding): a
+		// nonexistent targetWorkspaceId previously fell through to the
+		// store insert and surfaced as an opaque 500 (FK shape, 9.3ms).
+		// Named 400; EXISTENCE only — cross-owner targets remain the
+		// fire-time loud class by design (#1440). Ordered after spec and
+		// schema validation so malformed specs keep their specific errors.
+		if h.wsExistencer != nil {
+			exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), req.TargetWorkspaceID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+				return
+			}
+			if !exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+				return
+			}
+		}
 		targetWS = &req.TargetWorkspaceID
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -231,6 +232,19 @@ type mockQuotaChecker struct {
 
 func (m *mockQuotaChecker) GetInt(_ context.Context, key string) (int, error) {
 	return m.values[key], nil
+}
+
+// fakeWorkspaceExistencer arms the parent-id contract checks in tests.
+type fakeWorkspaceExistencer struct {
+	exists map[string]bool
+	err    error
+}
+
+func (f *fakeWorkspaceExistencer) WorkspaceExistsByID(_ context.Context, workspaceID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.exists[workspaceID], nil
 }
 
 func setupWorkflowRouter(t *testing.T, store workflowStore, quota workflowQuotaChecker) *gin.Engine {
@@ -1053,4 +1067,73 @@ func TestOrgWorkflowRunRoute_ResolvesWorkflowID(t *testing.T) {
 	w := doWFRequest(t, r, "POST", "/api/v1/orgs/org-7/workflows/wf-org-run/runs", map[string]any{"input": map[string]any{}})
 	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "workspace_id is required")
+}
+
+// TestWorkflowCreate_NonexistentTargetWorkspace_Named400 pins the
+// parent-id audit's headline fix (run 35617684178): a nonexistent
+// targetWorkspaceId previously reached the FK as an opaque 500 — the
+// contract is a named 400. Existence only; cross-owner targets are the
+// fire-time loud class (#1440, untouched).
+func TestWorkflowCreate_NonexistentTargetWorkspace_Named400(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+	// The router helper constructs its own handler; wire the existencer
+	// through a fresh route group on the same engine for this test.
+	gin.SetMode(gin.TestMode)
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{}})
+	g := r.Group("/contract")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("", h.UserCreate)
+
+	w := httptest.NewRequest("POST", "/contract", nil)
+	body := `{"name":"ghost-target-ws","specYaml":"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}","targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}`
+	w.Body = io.NopCloser(strings.NewReader(body))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "target workspace not found")
+	assert.Nil(t, store.lastCreated, "nothing stored on the rejected path")
+}
+
+// TestWorkflowCreate_ExistingTargetWorkspace_Passes: the existencer's
+// pass-arm must not disturb a valid create.
+func TestWorkflowCreate_ExistingTargetWorkspace_Passes(t *testing.T) {
+	store := newMockWorkflowStore()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{exists: map[string]bool{
+		"00000000-0000-4000-8000-000000000001": true,
+	}})
+	g := r.Group("/contract")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("", h.UserCreate)
+
+	body := `{"name":"real-target-ws","specYaml":"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}","targetWorkspaceId":"00000000-0000-4000-8000-000000000001"}`
+	w := httptest.NewRequest("POST", "/contract", io.NopCloser(strings.NewReader(body)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 201, rec.Code, rec.Body.String())
+}
+
+// TestWorkflowCreate_NilExistencer_SkipsCheck: legacy construction (no
+// existencer wired) preserves the pre-audit behavior — the check is a
+// contract upgrade, not a hard dependency.
+func TestWorkflowCreate_NilExistencer_SkipsCheck(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+	gin.SetMode(gin.TestMode)
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	g := r.Group("/legacy")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("", h.UserCreate)
+	body := `{"name":"legacy","specYaml":"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}","targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}`
+	w := httptest.NewRequest("POST", "/legacy", io.NopCloser(strings.NewReader(body)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 201, rec.Code, rec.Body.String())
 }
