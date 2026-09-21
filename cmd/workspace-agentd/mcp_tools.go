@@ -666,6 +666,18 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		return "", fmt.Errorf("failed to stamp message origin: %w", err)
 	}
 
+	// #1525 self-send guard: target == origin delivers silently
+	// otherwise (the message boomerangs as the caller's next turn) —
+	// the orchestrator's 11-misfire class. WARNING, never a refusal
+	// (legitimate self-notes exist per the issue's ruling); the result
+	// carries a loud warning field plus a plain-language line so the
+	// misaddress is visible at SEND time, not after echo-inspection.
+	selfSend := sessionID == origin
+	var selfWarn string
+	if selfSend {
+		selfWarn = "target is your own session — this message will come back to you as your next turn, not reach another agent. If you meant a different session, re-check the ID (session_list / session_metadata); if this is an intentional self-note, carry on."
+	}
+
 	busy, err := client.GetSessionStatuses(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read session status: %w", err)
@@ -698,12 +710,16 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		}
 	}()
 
-	out, _ := json.Marshal(map[string]string{
+	result := map[string]string{
 		"status":      status,
 		"session_id":  sessionID,
 		"origin":      origin,
 		"origin_mode": mode,
-	})
+	}
+	if selfWarn != "" {
+		result["warning"] = selfWarn
+	}
+	out, _ := json.Marshal(result)
 	return string(out), nil
 }
 
