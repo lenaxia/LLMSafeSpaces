@@ -78,7 +78,7 @@ None. (The `/share` exclusion is recorded, not blocking.)
 - `frontend/src/components/chat/ChatView.tsx`, `frontend/src/pages/ChatPage.tsx` — sessionId/onNewSession threading
 - `frontend/src/api/promptLibrary.ts` (contract adapter), `frontend/src/api/workspaces.ts` (+sessionAction), `frontend/src/hooks/usePromptLibrary.ts`
 - `frontend/tests/e2e/composer-slash-at.spec.ts` — 6 browser rows
-- `worklogs/NNNN_2026-09-20_composer-slash-at-recall.md` — this worklog
+- `worklogs/1021_2026-09-20_composer-slash-at-recall.md` — this worklog
 
 ## Review Round 1 (four findings — all taken; plus a process near-miss recorded)
 
