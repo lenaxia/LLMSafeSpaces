@@ -47,6 +47,12 @@ type opsMetrics struct {
 	// uploadScrubRemoved counts stale uploads/*.tmp files removed by the
 	// boot scrub (design epic-68 D3).
 	uploadScrubRemoved *prometheus.CounterVec
+	// Design 0060 §4.6 staging surfaces.
+	uploadStagingBytes      *prometheus.GaugeVec
+	uploadStagingReserved   *prometheus.GaugeVec
+	uploadStagingFiles      *prometheus.GaugeVec
+	uploadStagingCredential *prometheus.GaugeVec
+	uploadBytesTotal        *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -105,6 +111,28 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_agentd_upload_scrub_removed_total",
 			Help: "Stale uploads/*.tmp files removed by the agentd boot scrub (Epic 68 D3 atomic-or-absent contract)",
 		}, []string{"workspace_id"}),
+
+		// Design 0060 §4.6: the staging-leg surfaces.
+		uploadStagingBytes: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "workspace_agentd_upload_staging_bytes",
+			Help: "Staged-upload bytes on the credential-shared tmpfs (walked truth, reconciled by the sweeper) — the §6.1 residency pin reads this",
+		}, []string{"workspace_id"}),
+		uploadStagingReserved: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "workspace_agentd_upload_staging_reserved_bytes",
+			Help: "Admitted-not-released upload reservations (held until the bytes leave the tmpfs)",
+		}, []string{"workspace_id"}),
+		uploadStagingFiles: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "workspace_agentd_upload_staging_files",
+			Help: "Staged upload objects in the staging dir",
+		}, []string{"workspace_id"}),
+		uploadStagingCredential: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "workspace_agentd_upload_staging_credential_bytes",
+			Help: "Credential-surface usage on the shared tmpfs (the clause-B admission input — makes the floor policy auditable)",
+		}, []string{"workspace_id"}),
+		uploadBytesTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_agentd_upload_bytes_total",
+			Help: "Cumulative upload bytes by direction: staged_in (API→tmpfs) and copied_out (tmpfs→PVC, from the ack's verified size)",
+		}, []string{"workspace_id", "direction"}),
 	}
 }
 
@@ -160,6 +188,20 @@ func (m *opsMetrics) RecordUploadOutcome(workspaceID string, outcome uploadOutco
 		outcome = "unknown"
 	}
 	m.fileUploads.WithLabelValues(workspaceID, string(outcome)).Inc()
+}
+
+// RecordStagingGauges pushes the design-0060 §4.6 staging snapshot.
+func (m *opsMetrics) RecordStagingGauges(stagedBytes, reservedBytes, credentialBytes int64, files int) {
+	ws := uploadWorkspaceID()
+	m.uploadStagingBytes.WithLabelValues(ws).Set(float64(stagedBytes))
+	m.uploadStagingReserved.WithLabelValues(ws).Set(float64(reservedBytes))
+	m.uploadStagingCredential.WithLabelValues(ws).Set(float64(credentialBytes))
+	m.uploadStagingFiles.WithLabelValues(ws).Set(float64(files))
+}
+
+// RecordUploadBytes counts staged_in / copied_out upload bytes (§4.6).
+func (m *opsMetrics) RecordUploadBytes(direction string, n int64) {
+	m.uploadBytesTotal.WithLabelValues(uploadWorkspaceID(), direction).Add(float64(n))
 }
 
 // RecordUploadScrub adds n to the boot-scrub removed counter.

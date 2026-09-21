@@ -155,7 +155,7 @@ func TestUploadFilesHandler_HappyPath(t *testing.T) {
 
 	cfg := uploadTestConfig(t)
 	body := []byte("hello upload bytes")
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "notes.txt", body)
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "notes.txt", body)
 
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
@@ -194,7 +194,7 @@ func TestUploadFilesHandler_AuthTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := uploadTestConfig(t)
-			h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+			h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 			req := httptest.NewRequest(http.MethodPut, "/v1/files?filename=x.txt", strings.NewReader("data"))
 			tt.auth(req)
 			rec := httptest.NewRecorder()
@@ -209,7 +209,7 @@ func TestUploadFilesHandler_AuthTable(t *testing.T) {
 
 func TestUploadFilesHandler_ControlPlanePasswordAccepted(t *testing.T) {
 	cfg := uploadTestConfig(t)
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, "cp-secret")
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil, "cp-secret")
 	req := httptest.NewRequest(http.MethodPut, "/v1/files?filename=ok.txt", strings.NewReader("data"))
 	req.Header.Set("Authorization", "Basic "+basicAuth("cp-secret"))
 	rec := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestUploadFilesHandler_HostileNamesOnWire(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {
 			cfg := uploadTestConfig(t)
-			w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), tt.raw, []byte("x"))
+			w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), tt.raw, []byte("x"))
 			require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 			resp := decodeUploadResponse(t, w)
 			assert.Equal(t, tt.want, resp.Name)
@@ -266,7 +266,7 @@ func TestUploadFilesHandler_RejectedNames(t *testing.T) {
 			}
 			req := authedReq(http.MethodPut, target, testAuthPassword, strings.NewReader("data"))
 			rec := httptest.NewRecorder()
-			uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)(rec, req)
+			uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)(rec, req)
 
 			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 			assert.Empty(t, listUploads(t, cfg.uploadsDir), "nothing written on 400")
@@ -277,7 +277,7 @@ func TestUploadFilesHandler_RejectedNames(t *testing.T) {
 func TestUploadFilesHandler_CapBoundary(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.maxBytes = 1024
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 
 	exact := make([]byte, 1024)
 	_, _ = rand.Read(exact)
@@ -298,7 +298,7 @@ func TestUploadFilesHandler_CapBoundary(t *testing.T) {
 
 func TestUploadFilesHandler_PipeStreamedSlowBody(t *testing.T) {
 	cfg := uploadTestConfig(t)
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 
 	pr, pw := io.Pipe()
 	var payload []byte
@@ -338,7 +338,7 @@ func TestUploadFilesHandler_MidWriteFailureIsAtomic(t *testing.T) {
 		return &failingWriteSink{f: f, failAfter: 4}, nil
 	}
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "broken.bin", []byte("0123456789"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "broken.bin", []byte("0123456789"))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
 	assert.Empty(t, listUploads(t, cfg.uploadsDir), "no final file and no .tmp after mid-write failure")
@@ -354,7 +354,7 @@ func TestUploadFilesHandler_ENOSPC(t *testing.T) {
 		return &enospcSink{f: f}, nil
 	}
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "big.bin", []byte("0123456789"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "big.bin", []byte("0123456789"))
 
 	assert.Equal(t, http.StatusInsufficientStorage, w.Code, "body: %s", w.Body.String())
 	assert.Empty(t, listUploads(t, cfg.uploadsDir), ".tmp removed on ENOSPC")
@@ -370,7 +370,7 @@ func TestUploadFilesHandler_FsyncFailure(t *testing.T) {
 		return &failingSyncSink{f: f}, nil
 	}
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "nosync.bin", []byte("data"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "nosync.bin", []byte("data"))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
 	assert.Empty(t, listUploads(t, cfg.uploadsDir), ".tmp removed, no final file")
@@ -381,7 +381,7 @@ func TestUploadFilesHandler_RenameFailure(t *testing.T) {
 	collisionDir := filepath.Join(cfg.uploadsDir, squatUUID+"-target.bin")
 	require.NoError(t, os.MkdirAll(collisionDir, 0o755))
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "target.bin", []byte("data"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "target.bin", []byte("data"))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
 	assert.Equal(t, []string{squatUUID + "-target.bin"}, listUploads(t, cfg.uploadsDir),
@@ -409,7 +409,7 @@ func TestUploadFilesHandler_FsyncPrecedesRename(t *testing.T) {
 		return os.Rename(oldpath, newpath)
 	}
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "order.txt", []byte("data"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "order.txt", []byte("data"))
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 
 	mu.Lock()
@@ -427,7 +427,7 @@ func TestUploadFilesHandler_TmpSquatSymlink(t *testing.T) {
 	symlinkPath := filepath.Join(cfg.uploadsDir, squatUUID+"-target.bin.tmp")
 	require.NoError(t, os.Symlink(outside, symlinkPath))
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "target.bin", []byte("payload"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "target.bin", []byte("payload"))
 
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 	resp := decodeUploadResponse(t, w)
@@ -448,7 +448,7 @@ func TestUploadFilesHandler_TmpSquatPlainFile(t *testing.T) {
 	squatPath := filepath.Join(cfg.uploadsDir, squatUUID+"-target.bin.tmp")
 	require.NoError(t, os.WriteFile(squatPath, []byte("ADVERSARY"), 0o644))
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "target.bin", []byte("payload"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "target.bin", []byte("payload"))
 
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
 	resp := decodeUploadResponse(t, w)
@@ -468,7 +468,7 @@ func TestUploadFilesHandler_EEXISTExhausted(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cfg.uploadsDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(cfg.uploadsDir, squatUUID+"-busy.bin.tmp"), []byte("X"), 0o644))
 
-	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword), "busy.bin", []byte("payload"))
+	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "busy.bin", []byte("payload"))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
 	assert.Equal(t, []string{squatUUID + "-busy.bin.tmp"}, listUploads(t, cfg.uploadsDir))
@@ -480,7 +480,7 @@ func TestUploadFilesHandler_UploadsDirAutoCreated(t *testing.T) {
 
 	cfg := uploadTestConfig(t)
 	cfg.uploadsDir = filepath.Join(cfg.uploadsDir, "nested", "uploads")
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 
 	w := putUpload(t, h, "one.txt", []byte("one"))
 	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
@@ -496,7 +496,7 @@ func TestUploadFilesHandler_UploadsDirAutoCreated(t *testing.T) {
 
 func TestUploadFilesHandler_Concurrent32DistinctHashes(t *testing.T) {
 	cfg := uploadTestConfig(t)
-	srv := httptest.NewServer(uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword))
+	srv := httptest.NewServer(uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil))
 	defer srv.Close()
 
 	const n = 32
@@ -551,7 +551,7 @@ func TestUploadFilesHandler_Concurrent32DistinctHashes(t *testing.T) {
 func TestUploadFilesHandler_SameNameTwiceDistinctPaths(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.uuid = fixedUUIDs(squatUUID, nextUUID)
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 
 	w1 := putUpload(t, h, "dup.txt", []byte("first"))
 	require.Equal(t, http.StatusCreated, w1.Code)
@@ -571,7 +571,7 @@ func TestUploadFilesHandler_SameNameTwiceDistinctPaths(t *testing.T) {
 func TestUploadFilesHandler_SlowlorisBodyStall(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.bodyTimeout = 150 * time.Millisecond
-	srv := httptest.NewServer(uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword))
+	srv := httptest.NewServer(uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil))
 	defer srv.Close()
 
 	pr, pw := io.Pipe()
@@ -600,7 +600,7 @@ func TestUploadFilesHandler_MethodNotAllowed(t *testing.T) {
 			cfg := uploadTestConfig(t)
 			req := authedReq(method, "/v1/files?filename=x.txt", testAuthPassword, strings.NewReader("data"))
 			rec := httptest.NewRecorder()
-			uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)(rec, req)
+			uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)(rec, req)
 
 			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 			assert.Equal(t, http.MethodPut, rec.Header().Get("Allow"))
@@ -611,7 +611,7 @@ func TestUploadFilesHandler_MethodNotAllowed(t *testing.T) {
 
 func TestUploadFilesHandler_NoPathLeakInResponses(t *testing.T) {
 	cfg := uploadTestConfig(t)
-	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword)
+	h := uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil)
 
 	success := putUpload(t, h, "ok.txt", []byte("data"))
 	require.Equal(t, http.StatusCreated, success.Code)
@@ -619,7 +619,7 @@ func TestUploadFilesHandler_NoPathLeakInResponses(t *testing.T) {
 
 	collision := uploadTestConfig(t)
 	_ = os.MkdirAll(filepath.Join(collision.uploadsDir, squatUUID+"-fail.bin"), 0o755)
-	failRename := uploadFilesHandler(zap.NewNop(), collision, testAuthPassword)
+	failRename := uploadFilesHandler(zap.NewNop(), collision, testAuthPassword, nil, nil)
 	w := putUpload(t, failRename, "fail.bin", []byte("data"))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.NotContains(t, w.Body.String(), collision.uploadsDir, "no internal path leak")
@@ -627,7 +627,7 @@ func TestUploadFilesHandler_NoPathLeakInResponses(t *testing.T) {
 
 	capCfg := uploadTestConfig(t)
 	capCfg.maxBytes = 4
-	w = putUpload(t, uploadFilesHandler(zap.NewNop(), capCfg, testAuthPassword), "cap.txt", []byte("toolarge"))
+	w = putUpload(t, uploadFilesHandler(zap.NewNop(), capCfg, testAuthPassword, nil, nil), "cap.txt", []byte("toolarge"))
 	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 	assert.NotContains(t, w.Body.String(), capCfg.uploadsDir)
 	assert.NotContains(t, w.Body.String(), ".tmp")

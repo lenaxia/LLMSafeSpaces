@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -232,6 +233,30 @@ func (c *controlClient) RefreshFiles(ctx context.Context) (*RefreshFilesResult, 
 		return nil, err
 	}
 	out := &RefreshFilesResult{}
+	_ = json.Unmarshal(mustMarshal(res), out)
+	return out, nil
+}
+
+// UploadApply invokes the design-0060 upload_apply method: the
+// supervisor streams the staged object onto the PVC. A closed-enum
+// supervisor error returns *uploadApplyError; transport errors wrap
+// (the caller's timeout class maps to 504).
+func (c *controlClient) UploadApply(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
+	res, err := c.call(ctx, "upload_apply", map[string]any{
+		"upload_id":   req.UploadID,
+		"staged_name": req.StagedName,
+		"size":        req.Size,
+		"sha256":      req.SHA256,
+		"target_name": req.TargetName,
+	})
+	if err != nil {
+		var ce *controlClientError
+		if errors.As(err, &ce) {
+			return nil, &uploadApplyError{Code: ce.ctl.Code, Message: ce.ctl.Message}
+		}
+		return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: err}
+	}
+	out := &uploadApplyResult{}
 	_ = json.Unmarshal(mustMarshal(res), out)
 	return out, nil
 }

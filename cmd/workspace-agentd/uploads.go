@@ -62,6 +62,15 @@ const (
 	uploadOutcomeRejectedCap  uploadOutcome = "rejected_cap"
 	uploadOutcomeWriteError   uploadOutcome = "write_error"
 	uploadOutcomeUnauthorized uploadOutcome = "unauthorized"
+	// Design 0060 §4.6: the staging-leg outcomes (sidecar mode).
+	uploadOutcomeRejectedStagingFull     uploadOutcome = "rejected_staging_full"
+	uploadOutcomeRejectedStagingBusy     uploadOutcome = "rejected_staging_busy"
+	uploadOutcomeRejectedDeclaredInvalid uploadOutcome = "rejected_declared_invalid"
+	uploadOutcomeRejectedDeclaredExceed  uploadOutcome = "rejected_declared_exceeded"
+	uploadOutcomeApplyTimeout            uploadOutcome = "apply_timeout"
+	uploadOutcomeApplyRejected           uploadOutcome = "apply_rejected"
+	uploadOutcomeChecksumMismatch        uploadOutcome = "checksum_mismatch"
+	uploadOutcomeStagingWriteError       uploadOutcome = "staging_write_error"
 )
 
 // uploadSink is the writable-file seam behind PUT /v1/files. Production
@@ -128,18 +137,36 @@ func sanitizeUploadFilename(raw string) (string, bool) {
 
 type uploadErrorResponse struct {
 	Error string `json:"error"`
+	// Reason (design 0060 §4.6) is the machine-readable class the API's
+	// forwarding reads for ITS metrics label — the body passes through
+	// untouched; an unknown reason degrades to agentd_error API-side.
+	Reason string `json:"reason,omitempty"`
+	// Code carries the §3.2 apply sub-code alongside reason
+	// apply_rejected (staged_missing/checksum_mismatch/size_mismatch/
+	// dest_write_failed/target_rejected).
+	Code string `json:"code,omitempty"`
 }
 
 func writeUploadError(w http.ResponseWriter, status int, msg string) {
+	writeUploadErrorClass(w, status, msg, "", "")
+}
+
+// writeUploadErrorClass emits the design-0060 staging error shape: the
+// human text in error, the machine-readable class in reason, and the
+// §3.2 sub-code in code when reason is apply_rejected.
+func writeUploadErrorClass(w http.ResponseWriter, status int, msg, reason, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(uploadErrorResponse{Error: msg})
+	_ = json.NewEncoder(w).Encode(uploadErrorResponse{Error: msg, Reason: reason, Code: code})
 }
 
 // uploadFilesHandler returns the PUT /v1/files handler. Control-plane
 // route: workspacePassword plus extraAuth (the §D1 agentdPassword in
-// sidecar mode) — the same credential set the control-plane routes accept.
-func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassword string, extraAuth ...string) http.HandlerFunc {
+// sidecar mode) — the same credential set the control-plane routes
+// accept. In sidecar mode (stager non-nil) the staged flow runs
+// (design 0060). apply is the control-socket seam the staged flow
+// calls; nil with a non-nil stager is a wiring bug and clean-fails.
+func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassword string, stager *uploadStager, apply uploadApplier, extraAuth ...string) http.HandlerFunc {
 	passwords := append([]string{workspacePassword}, extraAuth...)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuthAny(r, passwords...) {
@@ -157,6 +184,15 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 		if !ok {
 			pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeRejectedName)
 			writeUploadError(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
+
+		// Design 0060: in sidecar context the direct PVC write is
+		// impossible (RO mount) — the staged flow (budgeted admission →
+		// tmpfs stage → control-socket apply) takes over. Single-container
+		// mode has no stager and keeps the direct path below unchanged.
+		if stager != nil {
+			handleStagedUpload(w, r, cfg, stager, apply, name)
 			return
 		}
 

@@ -45,6 +45,13 @@ type serverDeps struct {
 	// Single-container mode leaves it nil (the loop falls back to
 	// deps.proc); sidecar mode wires the control-socket restarter.
 	restarter healthWatchdogRestarter
+
+	// uploadStager/uploadApply are the design-0060 sidecar upload leg:
+	// sidecar mode wires both (staging admission + the control-socket
+	// upload_apply seam); single-container leaves them nil so the
+	// direct-write path runs unchanged.
+	uploadStager *uploadStager
+	uploadApply  uploadApplier
 	// stateAuthority is the Epic 69 session-state authority (US-69.2).
 	// Nil only when construction failed (degraded, logged at boot).
 	stateAuthority *sessionstate.Authority
@@ -449,7 +456,15 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
 	// user mux, symmetric with the control-plane routes (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
-	userMux.HandleFunc("/v1/files", uploadFilesHandler(log, uploadConfigFromEnv(), deps.password, deps.controlPlanePassword))
+	stager := deps.uploadStager
+	applyFn := deps.uploadApply
+	if stager != nil && applyFn == nil {
+		// Design 0060: a stager without its apply seam is a wiring bug;
+		// the staged flow clean-fails every upload rather than staging
+		// bytes nothing can deliver.
+		stager = nil
+	}
+	userMux.HandleFunc("/v1/files", uploadFilesHandler(log, uploadConfigFromEnv(), deps.password, stager, applyFn, deps.controlPlanePassword))
 
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
