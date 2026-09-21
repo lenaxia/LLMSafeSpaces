@@ -121,3 +121,9 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - Minors: agentd counter gains `rejected_declared_invalid`/`rejected_declared_exceeded` (the D14-visible admission-input traffic — R6's visibility for exactly the adversarial class the read-cap gates); the round-6 record's `:9097` typo corrected here (the port is 4097).
 - Nit: the diagram's 400 arm moved to step 2 (mid-read detection, matching §4.1).
 - Context fold-in: §6.3 gained the WEDGED-consumer extreme (alive-but-spinning, #1507's autopsy shape) as the backpressure row's limit case — window bounded, apply timeout bounding the hold, 504 tail + hygiene reclaiming.
+
+
+## Review round 8 (design doc) — 1 pre-existing blocker surfaced by the skeptical pass + 2 minors
+
+- **The destination-side hygiene claim was FALSE in sidecar mode**: I had verified the scrub CALL's existence (sidecar_mode.go:163) but never its EFFICACY — the sidecar's /workspace is RO (its own comment concedes the no-op), and the only live call site (main.go:182) is the single-container path sidecar pods never reach. The issue thread's own /analyze comment had documented this gap and specified the fix; my doc asserted the opposite. Fixed: §9.2's supervisor lane ADDS the uid-1000 destination scrub (boot + TTL, the existing *.tmp glob); §4.3/§5.2 state the real gap being closed; §7 pins the destination-scrub row. Lesson recorded: verify EFFICACY (trace the call through its execution environment), not existence.
+- Diagram 411-arm cite corrected to §4.1; the PR body rewritten to the head doc (the .part/idempotency claims were stale from revision 1).

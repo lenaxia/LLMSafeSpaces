@@ -52,7 +52,7 @@ client ── multipart (streamed) ──▶ API POST /workspaces/:id/uploads
                                     ▼
                      agentd (sidecar) :4097 /v1/files    [streamed, as today]
                        1 admission: reserve bytes (§4.1–4.2) ── reject: 507/429;
-                         missing/invalid declared header → 411 (§4.6)
+                         missing/invalid declared header → 411 (§4.1)
                        2 stream body → /sandbox-runtime/staged-upload-files/<id>.tmp
                          (chunked copy, sha256 on the fly, 0640/gid-1000;
                          read capped at the declared value — over-read → 400)
@@ -185,7 +185,7 @@ Two reclaim paths, both extending the established `*.tmp`/boot-scrub class (`scr
 
 - **Boot scrub:** `scrubUploadsAtBoot` gains the staging dir (sidecar boot: any `staged-upload-files/*` is by-definition orphaned — the in-flight upload died with the process).
 - **TTL sweeper:** a bounded ticker (default 10 min) removes staged objects older than `UPLOAD_STAGING_TTL` (default 15 min) — covers supervisor-crash, socket-timeout tail, and agentd-crash-then-rebooted windows. The sweeper also finalizes reservation bookkeeping for what it removes (gauge truth, §4.6).
-- `.tmp` files are never signaled, never acked, and reclaimed by both paths on sight — on BOTH surfaces (the destination dir's boot scrub already exists and covers the supervisor's `<name>.tmp` for free).
+- `.tmp` files are never signaled, never acked, and reclaimed on sight — on BOTH surfaces. On the STAGING surface both paths above apply. On the DESTINATION surface there is a real pre-existing gap this design must close: today NOTHING scrubs `/workspace/uploads/*.tmp` in sidecar mode — the boot scrub's only live call site is the single-container server path (`main.go:182`, which sidecar pods never reach: the workspace container runs the `supervise-opencode` subcommand, dispatched earlier), and the sidecar's own call (`sidecar_mode.go:163`) is an RO-mount no-op by its own comment. The supervisor lane (§9.2) therefore adds the uid-1000 destination scrub: the existing `*.tmp` glob contract over `/workspace/uploads`, run at supervisor boot and on the same TTL ticker as the staging sweeper — the supervisor is the only process in a sidecar pod that CAN write that directory.
 
 ### 4.4 R5 — Destination gates: write-time re-check (TOCTOU) + post-write verification
 
@@ -231,7 +231,7 @@ The supervisor-mode agentd writes `/workspace/uploads` directly today, with the 
 
 ### 5.2 Suspension/resume mid-upload
 
-An in-flight upload dies with the pod (tmpfs wiped — the staging surface is per-pod by design). The client sees a transport error and retries against the resumed pod. No PVC `.tmp` survives: the supervisor's rename happened or it didn't; a crashed `<name>.tmp` on `/workspace/uploads` is reclaimed by the existing boot scrub — `scrubUploadTmpFiles` already globs `*.tmp` in that directory, and the supervisor's temp suffix is chosen to match it exactly.
+An in-flight upload dies with the pod (tmpfs wiped — the staging surface is per-pod by design). The client sees a transport error and retries against the resumed pod. No PVC `.tmp` survives: the supervisor's rename happened or it didn't; a crashed `<name>.tmp` on `/workspace/uploads` is reclaimed by the destination scrub §4.3 adds to the supervisor (boot + TTL, the existing `*.tmp` glob — the temp suffix is chosen to match it exactly; without that addition nothing reclaims destination `.tmp` in sidecar mode today).
 
 ### 5.3 Concurrency within one pod
 
@@ -300,7 +300,7 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 | Semaphore | concurrent admission never exceeds clause (A)'s budget (race test); 429 class |
 | Streaming | large-object memory flatness (allocation ceiling assertion on a ≥cap object); window bounded |
 | Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; the 504-tail orphan completes-or-is-reclaimed (both terminal states acceptable, never a partial) |
-| Hygiene | boot scrub clears staging; TTL sweeper reclaims + reconciles gauges; a `.tmp` is never signaled; agent-planted junk in the staging dir (D14) → admission shrinks via f_bavail, gauges reconciled by the sweeper |
+| Hygiene | boot scrub clears staging; TTL sweeper reclaims + reconciles gauges; a `.tmp` is never signaled; agent-planted junk in the staging dir (D14) → admission shrinks via f_bavail, gauges reconciled by the sweeper; DESTINATION scrub: a crashed `<name>.tmp` on `/workspace/uploads` is reclaimed by the supervisor's boot/TTL scrub (§4.3 — the sidecar-mode gap this closes) |
 | Destination gates | statfs pre-write rejection; post-write verification; margin-consumed counter |
 | Protocol | `upload_apply` param validation (basename regex, sanitized target, closed error enum); unknown-param KEYS are IGNORED per 0051 A.1 forward-compatibility (pin tolerance — a rejecting implementation would be non-conformant) |
 | E2E (nightly, sidecar) | upload → file present, owned uid 1000, survives suspend/resume; concurrent uploads; disk-full simulation → 507 write-time; multi-tenant isolation rows (E2/E10/E11 un-skip) |
@@ -321,6 +321,6 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 ## 9. Implementation sequencing (post-approval, multi-PR)
 
 1. **agentd staging leg** — staging dir, admission/semaphore, `.tmp`+rename staging, sha256, hygiene (boot+TTL), metrics, the 507/429 arms (sidecar context only).
-2. **supervisor `upload_apply`** — the socket method, destination gates, bounded-window copy+verify+rename, ack + closed errors.
+2. **supervisor `upload_apply` + destination scrub** — the socket method, destination gates, bounded-window copy+verify+rename, ack + closed errors; AND the uid-1000 destination scrub (boot + TTL over `/workspace/uploads/*.tmp`, the existing glob — closing the sidecar-mode gap §4.3 names: today that dir has no reclaim path at all).
 3. **API forwarding + wiring + observability + stress harness** — REQUIRED API handler changes (forward agentd 507/429/504 + reason bodies; widen the API reason enum incl. dest_disk_full — §4.6; the X-LLS-Declared-Body-Bytes admission header + 411 gate — §4.1), agentd→socket call with bounded wait, gauge/consumer surfaces, values-file knobs; the §6 stress harness (load driver, gauge sampler, fault-seam injection points, the §6.6 baseline table into the worklog) and the S/L invariant-matrix upload row family.
 4. **E2E un-skip** — nightly rows flip (delivery rows + the §6.2 isolation row and §6.4/§6.5 fault rows join the nightly); Epic 68 docs updated (the as-built caveat at `uploads.go:25-27` and the README §File Attachments sidecar note both retire).
