@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // Prompts settings tab (#1499): the user's saved-prompt library —
-// list, create/edit, delete-with-confirm. The composer @-recall popup
+// list, create/edit, delete-with-confirm. The composer #-recall popup
 // (#1496) reads the same data through its own adapter.
 
 import { useEffect, useState } from "react";
@@ -69,7 +69,7 @@ export function PromptsTab() {
         <div>
           <h3 className="text-lg font-medium">Prompts</h3>
           <p className="text-sm text-muted-foreground">
-            Your saved prompts — recall them in the composer with @.
+            Your saved prompts — recall them in the composer with #.
           </p>
         </div>
         <button
