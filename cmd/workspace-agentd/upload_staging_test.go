@@ -1,0 +1,744 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package main
+
+// upload_staging_test.go — design 0060 §4/§6 pins for the sidecar
+// staging leg: two-clause admission, declared-bytes gates
+// (411/over-read), the unlink-before-release lifecycle, hygiene
+// (boot scrub + TTL finalize), and the handler-level flow with a fake
+// apply seam.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	agentdpkg "github.com/lenaxia/llmsafespaces/pkg/agentd"
+)
+
+// testUUIDSeq mints unique, uuid-shaped ids for the fixture's uuid seam.
+var testUUIDCounter atomic.Int64
+
+func testUUIDSeq() string {
+	n := testUUIDCounter.Add(1)
+	const hexdigits = "0123456789abcdef"
+	b := make([]byte, 12)
+	for i := 11; i >= 0; i-- {
+		b[i] = hexdigits[n%16]
+		n /= 16
+	}
+	return string(b)
+}
+
+type agentdFileUploadResponse = agentdpkg.FileUploadResponse
+
+const agentdAuthUsername = agentdpkg.AuthUsername
+
+// recordingStagingMetrics captures the §4.6 seam calls.
+type recordingStagingMetrics struct {
+	mu       sync.Mutex
+	gauges   int
+	inBytes  int64
+	outBytes int64
+}
+
+func (m *recordingStagingMetrics) RecordStagingGauges(stagedBytes, reservedBytes, credentialBytes int64, files int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gauges++
+}
+
+func (m *recordingStagingMetrics) RecordUploadBytes(direction string, n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if direction == "staged_in" {
+		m.inBytes += n
+	} else {
+		m.outBytes += n
+	}
+}
+
+func (m *recordingStagingMetrics) RecordScrubbed(files int) {}
+
+// statfsT is the platform statfs alias (tests build f_bavail directly).
+type statfsT = syscall.Statfs_t
+
+// fakeStatfs gives tests direct control of f_bavail (Bsize=1 so Bavail
+// IS bytes).
+type fakeStatfs struct {
+	avail int64
+	err   error
+}
+
+func (f fakeStatfs) statfs(string) (*statfsT, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &statfsT{Bavail: uint64(f.avail), Bsize: 1}, nil
+}
+
+func testStagingConfig(t *testing.T, budget, floor int64, maxConc int) stagingConfig {
+	t.Helper()
+	return stagingConfig{
+		stagingDir:      t.TempDir() + "/staged-upload-files",
+		budget:          budget,
+		credentialFloor: floor,
+		ttl:             15 * time.Minute,
+		maxConcurrent:   maxConc,
+		applyTimeout:    50 * time.Millisecond,
+		uuid: func() string {
+			return "00000000-0000-4000-8000-" + testUUIDSeq()
+		},
+	}
+}
+
+// --- Admission (0060 §4.1, clause by clause) ---
+
+func TestStagingAdmission_TwoClauses(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 20, 4)
+	cfg.statfs = fakeStatfs{avail: 120}.statfs
+	s := newUploadStager(cfg, nil)
+
+	// Clause A: reservations + new ≤ budget. A second 60 with 50 held → 110 > 100.
+	if c := s.Admit("id-a", 50); c != "" {
+		t.Fatalf("first admission should pass, got %q", c)
+	}
+	if c := s.Admit("id-b", 60); c != rejectStagingFull {
+		t.Fatalf("clause A must reject 50+60>100, got %q", c)
+	}
+	s.Release("id-a")
+	// Clause B at the exact boundary: 0 cred + 20 floor + 50 + 50 = 120 = avail.
+	if c := s.Admit("id-c", 50); c != "" {
+		t.Fatalf("clause B satisfied at the boundary should pass, got %q", c)
+	}
+	// id-c STAYS held: the +1-cred rejection below needs its 50 reserved.
+	// Plant 1 credential byte: 1 + 20 + 50 + 50 = 121 > 120 → reject.
+	credFile := filepath.Join(filepath.Dir(cfg.stagingDir), "secrets-env")
+	if err := os.MkdirAll(filepath.Dir(credFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credFile, make([]byte, 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := s.Admit("id-d", 50); c != rejectStagingFull {
+		t.Fatalf("clause B must reject with +1 credential byte over, got %q", c)
+	}
+}
+
+func TestStagingAdmission_ClauseABinds(t *testing.T) {
+	// Clause A must bind on its own: f_bavail far from binding, budget
+	// exhausted by held reservations (the masked-mutation pin — clause
+	// B alone would admit).
+	cfg := testStagingConfig(t, 100, 0, 8)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	if c := s.Admit("a", 80); c != "" {
+		t.Fatalf("1st: %q", c)
+	}
+	if c := s.Admit("b", 30); c != rejectStagingFull {
+		t.Fatalf("80+30 > 100 must reject on clause A alone, got %q", c)
+	}
+}
+
+func TestStagingAdmission_ConcurrencyCap(t *testing.T) {
+	cfg := testStagingConfig(t, 1000, 0, 2)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	if c := s.Admit("a", 10); c != "" {
+		t.Fatalf("1st: %q", c)
+	}
+	if c := s.Admit("b", 10); c != "" {
+		t.Fatalf("2nd: %q", c)
+	}
+	if c := s.Admit("c", 10); c != rejectStagingBusy {
+		t.Fatalf("3rd must be the 429 class even with budget free, got %q", c)
+	}
+}
+
+func TestStagingAdmission_StatfsFailureRejects(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	cfg.statfs = fakeStatfs{err: errors.New("boom")}.statfs
+	s := newUploadStager(cfg, nil)
+	if c := s.Admit("a", 1); c != rejectStagingFull {
+		t.Fatalf("unstatable tmpfs must reject (the safe direction), got %q", c)
+	}
+}
+
+func TestStagingReconcileDown(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	_ = s.Admit("a", 80)
+	s.ReconcileDown("a", 30)
+	if got := s.ReservedBytes(); got != 30 {
+		t.Fatalf("reservation must reconcile down to 30, got %d", got)
+	}
+	// Freed headroom admits what the declared bound would have refused.
+	if c := s.Admit("b", 70); c != "" {
+		t.Fatalf("post-reconcile admission should pass, got %q", c)
+	}
+}
+
+// --- Lifecycle (0060 §4.1: unlink-before-release, §3.3 timeout-hold) ---
+
+func TestStagingLifecycle_AbortUnlinksBeforeRelease(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	_ = s.Admit("a", 10)
+
+	// Stage a real object, then abort: the file must be GONE and the
+	// reservation released (the §6.1 no-crash walked bound rests on this).
+	if _, _, err := s.stageStream(context.Background(), strings.NewReader("0123456789"), "a", 10); err != nil {
+		t.Fatalf("stageStream: %v", err)
+	}
+	if _, files := s.StagedBytesAndFiles(); files != 1 {
+		t.Fatalf("expected 1 staged object, got %d", files)
+	}
+	s.abortStaged("a")
+	if _, files := s.StagedBytesAndFiles(); files != 0 {
+		t.Fatalf("abort must unlink the staged object, %d remain", files)
+	}
+	if got := s.ReservedBytes(); got != 0 {
+		t.Fatalf("abort must release the reservation, got %d", got)
+	}
+}
+
+func TestStagingLifecycle_TimeoutHoldsReservation(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	_ = s.Admit("a", 10)
+	if _, _, err := s.stageStream(context.Background(), strings.NewReader("0123456789"), "a", 10); err != nil {
+		t.Fatalf("stageStream: %v", err)
+	}
+	// The §3.3 504 path: staged object stays AND reservation holds.
+	if got := s.ReservedBytes(); got != 10 {
+		t.Fatalf("reservation must hold at 10, got %d", got)
+	}
+	if _, files := s.StagedBytesAndFiles(); files != 1 {
+		t.Fatalf("staged object must remain for the TTL tail, got %d files", files)
+	}
+}
+
+// --- Hygiene (0060 §4.3) ---
+
+func TestStagingScrub_BootAndTTL(t *testing.T) {
+	cfg := testStagingConfig(t, 1000, 0, 4)
+	s := newUploadStager(cfg, nil)
+
+	old := filepath.Join(cfg.stagingDir, "old-id")
+	fresh := filepath.Join(cfg.stagingDir, "fresh-id")
+	if err := os.MkdirAll(cfg.stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{old, fresh, cfg.stagingDir + "/part-id.tmp"} {
+		if err := os.WriteFile(p, []byte("x"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * cfg.ttl)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// TTL scrub removes the AGED object only (the fresh object and the
+	// fresh .tmp part both survive — age-gated, not name-gated).
+	if n := s.scrubStagingDir(cfg.ttl, time.Now()); n != 1 {
+		t.Fatalf("TTL scrub should remove only the aged object, got %d", n)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh object must survive the TTL scrub: %v", err)
+	}
+	if _, err := os.Stat(cfg.stagingDir + "/part-id.tmp"); err != nil {
+		t.Fatalf("fresh .tmp must survive the TTL scrub: %v", err)
+	}
+
+	// Boot scrub (ttl=0) removes everything — a fresh incarnation's
+	// in-flight uploads died with the previous process (§4.3).
+	if n := s.scrubStagingDir(0, time.Now()); n != 2 {
+		t.Fatalf("boot scrub should remove the remainder (fresh + .tmp), got %d", n)
+	}
+}
+
+func TestStagingScrub_FinalizesHeldReservation(t *testing.T) {
+	cfg := testStagingConfig(t, 1000, 0, 4)
+	cfg.statfs = fakeStatfs{avail: 100000}.statfs
+	s := newUploadStager(cfg, nil)
+	_ = s.Admit("held-id", 10)
+	// A held 504 reservation: the scrub of its object finalizes the hold.
+	if err := os.MkdirAll(cfg.stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.stagingDir, "held-id"), []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s.scrubStagingDir(0, time.Now())
+	if got := s.ReservedBytes(); got != 0 {
+		t.Fatalf("scrub must finalize the held reservation, got %d", got)
+	}
+}
+
+// --- Staged stream (0060 §4.1 hard read-cap) ---
+
+func TestStagingStream_OverReadRejected(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	s := newUploadStager(cfg, nil)
+	// Declares 5, sends 10 → errDeclaredExceeded, nothing staged.
+	_, _, err := s.stageStream(context.Background(), strings.NewReader("0123456789"), "a", 5)
+	if !errors.Is(err, errDeclaredExceeded) {
+		t.Fatalf("expected errDeclaredExceeded, got %v", err)
+	}
+	if _, files := s.StagedBytesAndFiles(); files != 0 {
+		t.Fatalf("over-read must leave nothing staged, got %d", files)
+	}
+	if _, err := os.Stat(s.partPath("a")); !os.IsNotExist(err) {
+		t.Fatalf("the .part must be gone after the over-read abort: %v", err)
+	}
+}
+
+func TestStagingStream_HashAndSize(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 4)
+	s := newUploadStager(cfg, nil)
+	size, digest, err := s.stageStream(context.Background(), strings.NewReader("hello world"), "a", 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 11 {
+		t.Fatalf("size: got %d", size)
+	}
+	if len(digest) != 64 {
+		t.Fatalf("sha256 hex length: got %d", len(digest))
+	}
+	if _, err := os.Stat(s.stagedPath("a")); err != nil {
+		t.Fatalf("completed staged object must exist post-rename: %v", err)
+	}
+}
+
+// --- Handler-level flow (fake apply seam) ---
+
+func stagingHandlerFixture(t *testing.T, budget int64, avail int64) (*uploadStager, *uploadApplyRecorder, http.HandlerFunc, *recordingStagingMetrics) {
+	t.Helper()
+	cfg := testStagingConfig(t, budget, 0, 4)
+	cfg.statfs = fakeStatfs{avail: avail}.statfs
+	m := &recordingStagingMetrics{}
+	stager := newUploadStager(cfg, m)
+	rec := &uploadApplyRecorder{}
+	return stager, rec, uploadFilesHandler(nil, fileUploadConfig{
+		uploadsDir:  t.TempDir(),
+		maxBytes:    25 << 20,
+		bodyTimeout: 5 * time.Second,
+	}, "pw", stager, rec.apply), m
+}
+
+type uploadApplyRecorder struct {
+	mu    sync.Mutex
+	calls []uploadApplyRequest
+	// Result/Err returned per call; defaults to a successful apply.
+	Result *uploadApplyResult
+	Err    *uploadApplyError
+	// Delay, when set, sleeps inside the apply (timeout tests).
+	Delay time.Duration
+}
+
+func (r *uploadApplyRecorder) apply(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
+	r.mu.Lock()
+	r.calls = append(r.calls, req)
+	res, err, delay := r.Result, r.Err, r.Delay
+	r.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, &uploadApplyError{Code: "transport", Message: "timeout", cause: ctx.Err()}
+		case <-time.After(delay):
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if res != nil {
+		return res, nil
+	}
+	return &uploadApplyResult{Applied: true, Path: "/workspace/uploads/" + req.UploadID + "-" + req.TargetName, Size: req.Size}, nil
+}
+
+func stagingRequest(t *testing.T, body string, declared string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/v1/files?filename=notes.txt", strings.NewReader(body))
+	req.SetBasicAuth(agentdAuthUsername, "pw")
+	if declared != "" {
+		req.Header.Set("X-LLS-Declared-Body-Bytes", declared)
+	}
+	return req
+}
+
+func decodeStagingBody(t *testing.T, w *httptest.ResponseRecorder) (int, uploadErrorResponse) {
+	t.Helper()
+	var resp uploadErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body %q: %v", w.Body.String(), err)
+	}
+	return w.Code, resp
+}
+
+func TestStagedUpload_HappyPath(t *testing.T) {
+	stager, rec, h, m := stagingHandlerFixture(t, 1000, 100000)
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var uploaded agentdFileUploadResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Size != 5 || uploaded.Name != "notes.txt" {
+		t.Fatalf("201 shape: %+v", uploaded)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].Size != 5 || rec.calls[0].TargetName != "notes.txt" {
+		t.Fatalf("apply call: %+v", rec.calls)
+	}
+	if len(rec.calls[0].SHA256) != 64 {
+		t.Fatalf("apply must carry the sha256, got %q", rec.calls[0].SHA256)
+	}
+	// Ack lifecycle: staged bytes gone, reservation released.
+	if _, files := stager.StagedBytesAndFiles(); files != 0 {
+		t.Fatalf("post-ack staged files: %d", files)
+	}
+	if stager.ReservedBytes() != 0 {
+		t.Fatalf("post-ack reservations: %d", stager.ReservedBytes())
+	}
+	// §4.6 bytes accounting: staged_in and copied_out both counted.
+	if m.inBytes != 5 || m.outBytes != 5 {
+		t.Fatalf("bytes accounting: in=%d out=%d (want 5/5)", m.inBytes, m.outBytes)
+	}
+}
+
+func TestStagedUpload_MissingDeclaredHeader411(t *testing.T) {
+	_, _, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", ""))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusLengthRequired {
+		t.Fatalf("missing header must 411, got %d", code)
+	}
+	if resp.Reason != "invalid_declared_length" {
+		t.Fatalf("reason: %q", resp.Reason)
+	}
+}
+
+func TestStagedUpload_InvalidDeclaredHeader411(t *testing.T) {
+	_, _, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	for _, bad := range []string{"abc", "-5", "0"} {
+		w := httptest.NewRecorder()
+		h(w, stagingRequest(t, "hello", bad))
+		if w.Code != http.StatusLengthRequired {
+			t.Fatalf("invalid header %q must 411, got %d", bad, w.Code)
+		}
+	}
+}
+
+func TestStagedUpload_OverRead400(t *testing.T) {
+	stager, _, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "0123456789", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusBadRequest {
+		t.Fatalf("over-read must 400, got %d", code)
+	}
+	if resp.Reason != "declared_length_exceeded" {
+		t.Fatalf("reason: %q (the design-pinned 400 literal)", resp.Reason)
+	}
+	// Nothing staged, nothing reserved (§4.1: unreserved bytes can never land).
+	if _, files := stager.StagedBytesAndFiles(); files != 0 {
+		t.Fatalf("over-read left %d staged files", files)
+	}
+	if stager.ReservedBytes() != 0 {
+		t.Fatalf("over-read left %d reserved", stager.ReservedBytes())
+	}
+}
+
+func TestStagedUpload_BudgetExhausted507(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 4, 100000)
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusInsufficientStorage {
+		t.Fatalf("budget 4 < declared 5 must 507, got %d", code)
+	}
+	if resp.Reason != "staging_full" {
+		t.Fatalf("reason: %q", resp.Reason)
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("no apply may run on admission rejection")
+	}
+}
+
+func TestStagedUpload_ClauseB507(t *testing.T) {
+	// Budget large, f_bavail (4) below the declared (5): clause B rejects.
+	_, _, h, _ := stagingHandlerFixture(t, 1000, 4)
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusInsufficientStorage || resp.Reason != "staging_full" {
+		t.Fatalf("clause B: got %d %q", code, resp.Reason)
+	}
+}
+
+func TestStagedUpload_ApplyTimeout504HoldsStaged(t *testing.T) {
+	stager, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Delay = 500 * time.Millisecond // applyTimeout is 50ms in the fixture
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusGatewayTimeout {
+		t.Fatalf("apply timeout must 504, got %d", code)
+	}
+	if resp.Reason != "apply_timeout" {
+		t.Fatalf("reason: %q", resp.Reason)
+	}
+	// §3.3: staged object REMAINS, reservation HOLDS.
+	if _, files := stager.StagedBytesAndFiles(); files != 1 {
+		t.Fatalf("timeout must leave the staged object, got %d", files)
+	}
+	if stager.ReservedBytes() != 5 {
+		t.Fatalf("timeout must hold the reservation, got %d", stager.ReservedBytes())
+	}
+}
+
+func TestStagedUpload_ApplyRejected507WithCode(t *testing.T) {
+	stager, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Err = &uploadApplyError{Code: "checksum_mismatch", Message: "digest mismatch"}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusInsufficientStorage {
+		t.Fatalf("apply rejection must 507, got %d", code)
+	}
+	if resp.Reason != "apply_rejected" || resp.Code != "checksum_mismatch" {
+		t.Fatalf("shape: reason=%q code=%q", resp.Reason, resp.Code)
+	}
+	// Abort lifecycle: unlinked + released.
+	if _, files := stager.StagedBytesAndFiles(); files != 0 {
+		t.Fatalf("apply rejection must unlink, got %d", files)
+	}
+	if stager.ReservedBytes() != 0 {
+		t.Fatalf("apply rejection must release, got %d", stager.ReservedBytes())
+	}
+}
+
+func TestStagedUpload_ApplyBusy429(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Err = &uploadApplyError{Code: "busy", Message: "supervisor queue full"}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusTooManyRequests || resp.Reason != "staging_busy" {
+		t.Fatalf("busy shape: got %d %q (design §4.6: busy → 429 staging_busy)", code, resp.Reason)
+	}
+}
+
+func TestStagedUpload_MarginObserved(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Result = &uploadApplyResult{Applied: true, Path: "/workspace/uploads/x-notes.txt", Size: 5, MarginConsumed: true}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("margin-consumed is an observation, not a rejection: got %d", w.Code)
+	}
+}
+
+func TestStagedUpload_ApplyDestDiskFull507(t *testing.T) {
+	_, rec, h, _ := stagingHandlerFixture(t, 1000, 100000)
+	rec.mu.Lock()
+	rec.Err = &uploadApplyError{Code: "dest_disk_full", Message: "no space"}
+	rec.mu.Unlock()
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusInsufficientStorage || resp.Reason != "dest_disk_full" {
+		t.Fatalf("dest-disk shape: got %d %q", code, resp.Reason)
+	}
+}
+
+func TestStagedUpload_DeclaredOverCap413(t *testing.T) {
+	_, _, h, _ := stagingHandlerFixture(t, 1<<30, 1<<40)
+	// The declared value is envelope-inclusive: cap + allowance passes
+	// (a cap-exact file's multipart total), cap + allowance + 1 rejects.
+	over := int64(25<<20) + (64 << 10) + 1
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", strconv.FormatInt(over, 10)))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("declared > cap+allowance must 413 pre-admission, got %d", w.Code)
+	}
+}
+
+func TestStagedUpload_CapExactWithEnvelopeAdmitted(t *testing.T) {
+	// A file at exactly the cap declares cap + envelope on the API hop —
+	// must NOT 413 at agentd (the envelope allowance mirrors the API's
+	// pre-read gate).
+	_, _, h, _ := stagingHandlerFixture(t, 1<<30, 1<<40)
+	exact := int64(25<<20) + (64 << 10) // cap + allowance exactly — the multipart total of a cap-exact file
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", strconv.FormatInt(exact, 10)))
+	if w.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("cap-exact file with envelope must pass the agentd gate (the divergence worker 2's cross-check caught), got %d", w.Code)
+	}
+}
+
+// --- The production apply seam (the r1-review reproduction made permanent) ---
+
+// TestUploadApplyClient_LongCopyWithinBudgetSucceeds is the r2 review's
+// empirical reproduction, green: a 2.5s copy under a 5s apply budget —
+// strictly BEYOND the 2s control-plane default, inside the apply
+// budget (the production shape: 2s default, 60s apply timeout) — must
+// SUCCEED. The r1 code died at the 2s conn deadline and misrouted to
+// abort+507; the r2 code's inverted min kept dying; the r3 parameter-
+// ization (300ms, which never crossed the bug's bound and passed
+// against the buggy code) is rejected — the delay must stay > the
+// default. The ctx deadline IS the bound now.
+func TestUploadApplyClient_LongCopyWithinBudgetSucceeds(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		_, _ = io.ReadFull(conn, make([]byte, 1))
+		// The delay MUST exceed the 2s control-plane default (the bug's
+		// bound) while staying inside the 5s apply budget — the r3-rejected
+		// 300ms parameterization passed against the buggy code too.
+		time.Sleep(2500 * time.Millisecond)
+		_ = json.NewEncoder(conn).Encode(map[string]any{
+			"v": 1, "id": 1,
+			"result": map[string]any{"applied": true, "path": "/workspace/uploads/x-n", "size": 1},
+		})
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String()) // 2s default — must NOT bound this call
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, aerr := c.UploadApply(ctx, uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr != nil {
+		t.Fatalf("a copy within the apply budget must succeed, got %+v", aerr)
+	}
+	if res == nil || !res.Applied {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
+// TestUploadApplyClient_BeyondBudgetIsTheTimeoutClass: the copy
+// outlives the apply budget → the failure classifies deterministically
+// as §3.3 timeout (the conn arm IS the ctx arm — no clock race).
+func TestUploadApplyClient_BeyondBudgetIsTheTimeoutClass(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		time.Sleep(2 * time.Second) // outlive the 150ms budget decisively
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, aerr := c.UploadApply(ctx, uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr == nil {
+		t.Fatal("expected the timeout class")
+	}
+	if !isApplyTimeout(aerr) {
+		t.Fatalf("beyond-budget apply must classify as timeout (§3.3), got code=%q err=%v", aerr.Code, aerr)
+	}
+	if !errors.Is(aerr, context.DeadlineExceeded) {
+		t.Fatalf("the cause must be the deadline, got %v", aerr.Unwrap())
+	}
+}
+
+// TestUploadApplyClient_ClosedEnumErrorMapping pins the supervisor's
+// error-code mapping through the real client wire path.
+func TestUploadApplyClient_ClosedEnumErrorMapping(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		_, _ = io.ReadFull(conn, make([]byte, 1)) // let the request land
+		_ = json.NewEncoder(conn).Encode(map[string]any{
+			"v": 1, "id": 1,
+			"error": map[string]any{"code": "checksum_mismatch", "message": "digest mismatch"},
+		})
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String())
+	_, aerr := c.UploadApply(context.Background(), uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr == nil || aerr.Code != "checksum_mismatch" {
+		t.Fatalf("closed-enum mapping: got %+v", aerr)
+	}
+}
+
+// TestStagingAdmission_ConcurrentNeverExceedsBudget is the §7
+// semaphore race pin: N goroutines racing Admit under a tight budget —
+// the reserved total can never exceed clause (A)'s bound.
+func TestStagingAdmission_ConcurrentNeverExceedsBudget(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 64)
+	cfg.statfs = fakeStatfs{avail: 1 << 30}.statfs
+	s := newUploadStager(cfg, nil)
+
+	const racers = 32
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = s.Admit(fmt.Sprintf("racer-%d", i), 7) // 32×7=224 ≫ 100: most must lose
+		}(i)
+	}
+	wg.Wait()
+	if got := s.ReservedBytes(); got > 100 {
+		t.Fatalf("racing admissions exceeded the budget: reserved=%d > 100", got)
+	}
+	if got := len(s.reservations); got > 64 {
+		t.Fatalf("concurrency cap exceeded: %d", got)
+	}
+}

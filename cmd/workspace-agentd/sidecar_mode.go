@@ -275,7 +275,7 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 			time.Sleep(2 * time.Second)
 		}
 	}()
-	return serverDeps{
+	deps := serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,
 		resolvedAdminToken:   cfg.adminToken,
@@ -291,6 +291,38 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		sys:                  so.sysMetrics(),
 		pendingApply:         newPendingApplyTracker(),
 	}
+
+	// Design 0060: the sidecar upload leg — budgeted staging admission
+	// on the shared tmpfs + the control-socket upload_apply seam. The
+	// boot scrub reclaims any previous incarnation's staging (its
+	// in-flight uploads died with it); the sweeper runs the TTL arm and
+	// pushes the §4.6 gauge snapshot. No control client = no apply seam:
+	// the stager stays unwired and uploads keep today's clean-fail
+	// rather than staging bytes nothing can deliver.
+	stager := newUploadStager(stagingConfigFromEnv(), pkgOpsMetrics)
+	// §4.1.1: establish the dir contract (0750, gid-1000 by process
+	// inheritance) BEFORE the boot scrub so the scrub observes the same
+	// surface the API will write into. A failure logs loudly and rides
+	// (the per-request MkdirAll in stageStream surfaces it as a clean
+	// 507 — nothing is silently swallowed, just deferred to the seam
+	// that can answer the client).
+	if err := stager.ensureStagingDir(); err != nil {
+		log.Error("upload staging: boot dir establish failed", zap.Error(err))
+	}
+	stager.scrubStagingDir(0, time.Time{})
+	// The sweeper rides the process lifetime (buildSidecarDeps has no
+	// shutdown context; the goroutine is a ticker that dies with the
+	// process — same lifetime as every other sidecar loop).
+	stager.startStagingSweeper(context.Background(), 10*time.Minute)
+	stager.RecordGauges()
+	if cc != nil {
+		client := cc
+		deps.uploadStager = stager
+		deps.uploadApply = func(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
+			return client.UploadApply(ctx, req)
+		}
+	}
+	return deps
 }
 
 // socketOps bundles the socket-backed implementations.

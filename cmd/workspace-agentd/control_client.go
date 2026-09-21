@@ -17,8 +17,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -86,13 +88,32 @@ func (c *controlClient) nextID() int64 { return c.nextIDAtomic.Add(1) }
 
 // call performs one request/response round trip.
 func (c *controlClient) call(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
+	res, err, _ := c.callDeadline(ctx, method, params, c.timeout)
+	return res, err
+}
+
+// callDeadline is call with an explicit per-invocation deadline. The
+// third return reports whether the armed deadline is what failed (a
+// net timeout on the deadline THIS call set — os.ErrDeadlineExceeded on
+// the round trip) — the deterministic signal UploadApply's §3.3
+// timeout classification rests on: no clock race between the conn arm
+// and the ctx timer, because the two are the same arm when derived.
+func (c *controlClient) callDeadline(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error, bool) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		return nil, fmt.Errorf("control socket: dial %s: %w", c.addr, err)
+		return nil, fmt.Errorf("control socket: dial %s: %w", c.addr, err), false
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	res, err := c.roundTrip(conn, method, params)
+	deadlineFired := err != nil && errors.Is(err, os.ErrDeadlineExceeded)
+	return res, err, deadlineFired
+}
+
+// roundTrip is the encode/decode half of a call (post-dial,
+// post-deadline), split out so callDeadline can classify the failure.
+func (c *controlClient) roundTrip(conn net.Conn, method string, params map[string]any) (map[string]any, error) {
 
 	id := c.nextID()
 	req := struct {
@@ -232,6 +253,56 @@ func (c *controlClient) RefreshFiles(ctx context.Context) (*RefreshFilesResult, 
 		return nil, err
 	}
 	out := &RefreshFilesResult{}
+	_ = json.Unmarshal(mustMarshal(res), out)
+	return out, nil
+}
+
+// UploadApply invokes the design-0060 upload_apply method: the
+// supervisor streams the staged object onto the PVC. A closed-enum
+// supervisor error returns *uploadApplyError; transport errors wrap
+// (the caller's timeout class maps to 504).
+func (c *controlClient) UploadApply(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
+	// The connection is held through the supervisor's copy (design 0060
+	// §3.3) — the caller's ctx deadline (the apply timeout) IS the bound;
+	// the 2s control-plane default does not apply to this one long-held
+	// call. Only a deadline-less ctx falls back to the default.
+	timeout := c.timeout
+	ctxDerived := false
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = time.Until(dl)
+		ctxDerived = true
+	}
+	res, err, deadlineFired := c.callDeadline(ctx, "upload_apply", map[string]any{
+		"upload_id":   req.UploadID,
+		"staged_name": req.StagedName,
+		"size":        req.Size,
+		"sha256":      req.SHA256,
+		"target_name": req.TargetName,
+	}, timeout)
+	if err != nil {
+		// Deterministic §3.3 classification, no clock race: a deadline
+		// expiry on a deadline WE derived from the apply ctx is the
+		// timeout class by construction (the conn deadline and the apply
+		// budget are the same clock arm); a live ctx with a transport
+		// failure is an ordinary transport error; the supervisor's
+		// closed enum rides the wire error.
+		if ctxDerived && deadlineFired {
+			cause := ctx.Err()
+			if cause == nil {
+				cause = context.DeadlineExceeded // the conn arm fired a hair early
+			}
+			return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: cause}
+		}
+		if ctx.Err() != nil {
+			return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: ctx.Err()}
+		}
+		var ce *controlClientError
+		if errors.As(err, &ce) {
+			return nil, &uploadApplyError{Code: ce.ctl.Code, Message: ce.ctl.Message}
+		}
+		return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: err}
+	}
+	out := &uploadApplyResult{}
 	_ = json.Unmarshal(mustMarshal(res), out)
 	return out, nil
 }
