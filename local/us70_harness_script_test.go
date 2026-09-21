@@ -577,7 +577,26 @@ func TestUS70PreWaveSweep_Executes(t *testing.T) {
 	counter := filepath.Join(dir, "count")
 	fake := "#!/usr/bin/env bash\n" +
 		"printf '%s\\n' \"$*\" >> \"" + trace + "\"\n" +
-		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
+		"# grammar contract: a delete must carry an explicit resource-type\n" +
+		"# positional — with bare UUID names, kubectl parses the first bare\n" +
+		"# positional AS the type (run 35547975296: the server doesn't have\n" +
+		"# a resource type <uuid>). The fake models the contract, not just\n" +
+		"# invocation recording.\n" +
+		"seen_del=0\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && seen_del=1; done\n" +
+		"if [[ \"${seen_del:-0}\" == \"1\" ]]; then\n" +
+		"  seen_type=0\n" +
+		"  past_del=0\n" +
+		"  for a in \"$@\"; do\n" +
+		"    [[ \"$a\" == \"delete\" ]] && { past_del=1; continue; }\n" +
+		"    [[ \"$past_del\" == \"1\" && \"$a\" == \"workspace\" ]] && seen_type=1\n" +
+		"  done\n" +
+		"  if [[ \"$seen_type\" == \"0\" ]]; then\n" +
+		"    printf 'fake kubectl: typeless delete (grammar violation)\\n' >&2\n" +
+		"    exit 9\n" +
+		"  fi\n" +
+		"  exit ${FAKE_DELETE_EXIT:-0}\n" +
+		"fi\n" +
 		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && {\n" +
 		"  [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}\n" +
 		"  n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
@@ -620,9 +639,9 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 			t.Fatalf("the ok line must state verified termination, got: %q", out)
 		}
 		raw, _ := os.ReadFile(trace)
-		if !strings.Contains(string(raw), "delete --wait=false") ||
+		if !strings.Contains(string(raw), "delete --wait=false workspace") ||
 			!strings.Contains(string(raw), "e2e5d000-0000-4000-8000-000000000090") {
-			t.Fatalf("kubectl itself must receive the delete with --wait=false (xargs cannot exec the kc function), trace:\n%s", raw)
+			t.Fatalf("kubectl itself must receive a TYPED delete (delete --wait=false workspace <names> — bare names parse as a resource type), trace:\n%s", raw)
 		}
 	})
 
@@ -697,7 +716,23 @@ func TestUS70PostWaveSweep_Executes(t *testing.T) {
 
 	dir := t.TempDir()
 	fake := "#!/usr/bin/env bash\n" +
-		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
+		"# grammar contract (same as the pre-wave fake): a delete must carry\n" +
+		"# an explicit resource-type positional (run 35547975296).\n" +
+		"seen_del=0\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && seen_del=1; done\n" +
+		"if [[ \"$seen_del\" == \"1\" ]]; then\n" +
+		"  seen_type=0\n" +
+		"  past_del=0\n" +
+		"  for a in \"$@\"; do\n" +
+		"    [[ \"$a\" == \"delete\" ]] && { past_del=1; continue; }\n" +
+		"    [[ \"$past_del\" == \"1\" && \"$a\" == \"workspace\" ]] && seen_type=1\n" +
+		"  done\n" +
+		"  if [[ \"$seen_type\" == \"0\" ]]; then\n" +
+		"    printf 'fake kubectl: typeless delete (grammar violation)\\n' >&2\n" +
+		"    exit 9\n" +
+		"  fi\n" +
+		"  exit ${FAKE_DELETE_EXIT:-0}\n" +
+		"fi\n" +
 		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && { [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}; if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
 		"for a in \"$@\"; do [[ \"$a\" == \"workspace\" ]] && { if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
 		"exit 0\n"
