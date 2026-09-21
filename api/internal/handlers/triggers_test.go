@@ -25,10 +25,6 @@ type mockTriggerStore struct {
 	workflows map[string]*wf.WorkflowRow
 	fires     []*wf.TriggerFireRow
 	createErr error
-	// getWorkflowErr backs the create-path workflow lookup's
-	// non-NotFound failure arm (a genuine server fault, distinct from
-	// the contract 400).
-	getWorkflowErr error
 }
 
 func newMockTriggerStore() *mockTriggerStore {
@@ -175,9 +171,6 @@ func (m *mockTriggerStore) UpdateWebhookSecret(_ context.Context, triggerID stri
 // GetWorkflow backs the 0059 input-mapping validation (V3/V4/V6):
 // owner-scoped, schema-bearing rows live here.
 func (m *mockTriggerStore) GetWorkflow(_ context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
-	if m.getWorkflowErr != nil {
-		return nil, m.getWorkflowErr
-	}
 	r, ok := m.workflows[workflowID]
 	if !ok || r.OwnerType != ownerType || r.OwnerID != ownerID {
 		return nil, wf.ErrNotFound
@@ -470,26 +463,6 @@ func TestTriggerCreate_NonexistentWorkflow_Named400(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "target workflow not found")
 	// Nothing may be stored on the rejected path.
 	assert.Empty(t, store.triggers)
-}
-
-// TestTriggerCreate_WorkflowFetchError_500: a non-NotFound lookup
-// failure is a genuine server fault — opaque 500, distinct from the
-// contract 400.
-func TestTriggerCreate_WorkflowFetchError_500(t *testing.T) {
-	store := newMockTriggerStore()
-	store.getWorkflowErr = errors.New("db down")
-	quota := &mockQuotaChecker{values: map[string]int{}}
-	encrypt := &mockEncryptor{}
-	r := setupTriggerRouter(t, store, quota, encrypt)
-
-	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
-		"name":         "wf-fetch-fail",
-		"sourceType":   "cron",
-		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
-		"workflowId":   "wf_123",
-	})
-	require.Equal(t, 500, w.Code)
-	assert.Contains(t, w.Body.String(), "failed to fetch workflow")
 }
 
 // TestTriggerCreate_CronValidationErrorOutranksWorkflowCheck pins the

@@ -281,18 +281,18 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	}
 
 	// A user-supplied workflowId must resolve at create (the 35597973572
-	// contract ruling): it previously fell through to the store insert
-	// and surfaced as an opaque 500 (FK shape). Named 400, mirroring the
-	// update path's wording; the FK stays the integrity anchor — this is
-	// the contract check, not a replacement for it. Ordered AFTER the
-	// cron validation so an invalid expr answers the cron error.
+	// contract ruling): un-opted ghost wiring previously fell through to
+	// the store insert and surfaced as an opaque 500 (FK shape). The
+	// V-matrix pre-fetch above has already answered opted-in ghosts (400)
+	// and ANY non-NotFound lookup fault (500) — the only error reachable
+	// HERE is NotFound on the un-opted path, so this arm carries just the
+	// contract 400 (a hypothetical non-NotFound error falls through to
+	// the insert, where the FK answers identically to the pre-fix 500).
+	// Ordered AFTER the cron validation so an invalid expr answers the
+	// cron error; the FK stays the integrity anchor (ON DELETE SET NULL).
 	if req.WorkflowID != "" {
-		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, req.WorkflowID); err != nil {
-			if errors.Is(err, wf.ErrNotFound) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, req.WorkflowID); errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
 			return
 		}
 	}
