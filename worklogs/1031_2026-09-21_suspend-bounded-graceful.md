@@ -58,7 +58,7 @@ None.
 - `helm/values.yaml`, `helm/templates/controller-deployment.yaml` (+ chart pin in `helm/chart_test.go`)
 - `controller/internal/workspace/phase_suspend_1507_test.go` (new — the incident pins)
 - `controller/internal/workspace/session_drain_test.go` (machinery re-target + the rewritten flow pin)
-- `worklogs/NNNN_2026-09-21_suspend-bounded-graceful.md` (this file)
+- `worklogs/1031_2026-09-21_suspend-bounded-graceful.md` (this file)
 
 ## r1 review — findings closed
 
