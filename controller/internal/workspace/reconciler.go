@@ -45,6 +45,18 @@ type WorkspaceReconciler struct {
 	// cached (30s TTL); a lookup failure fails open (workspace keeps running).
 	OrgStatusClient OrgStatusClient
 
+	// WorkspaceTerminationGraceSeconds (#1507) bounds every workspace
+	// pod's graceful termination: on pod deletion kubelet SIGTERMs
+	// agentd, whose serial shutdown budget (HTTP drain 25s → bg wait 5s
+	// → opencode child SIGTERM→SIGKILL 5s) fits inside the default 40s.
+	// The SUSPEND path deliberately does NOT wait for busy sessions
+	// (#1507): this grace IS the bounded graceful opencode termination;
+	// the hard cut at expiry is the deadline. 0 = controller default
+	// (40s, the serial budget + margin). Sourced from
+	// --workspace-termination-grace-seconds / Helm
+	// controller.workspaceTerminationGraceSeconds.
+	WorkspaceTerminationGraceSeconds int64
+
 	// DefaultRuntimeClass is the container runtime class applied to all
 	// workspace pods (Epic 51 S51.1). Typically "gvisor" for production
 	// multi-tenant deployments to provide kernel-level isolation against

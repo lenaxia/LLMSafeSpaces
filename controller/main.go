@@ -128,6 +128,14 @@ func main() {
 			"Set to 'gvisor' for production multi-tenant isolation. "+
 			"Empty means runc (default K8s runtime). "+
 			"Individual workspaces can override via spec.runtimeClass.")
+	var workspaceTerminationGrace int64
+	flag.Int64Var(&workspaceTerminationGrace, "workspace-termination-grace-seconds", 0,
+		"Workspace pods' terminationGracePeriodSeconds override (#1507): the bounded "+
+			"graceful-termination window kubelet gives agentd on pod deletion (HTTP drain "+
+			"25s + bg wait 5s + opencode child SIGTERM→SIGKILL 5s = 35s serial budget). "+
+			"0 keeps the default 40s (budget + margin). Values <36 are rejected at startup — "+
+			"a grace below the serial budget short-circuits agentd's drain mid-flight (the "+
+			"pre-#761 5s bug class).")
 	var maxWorkspacesPerTenant int
 	flag.IntVar(&maxWorkspacesPerTenant, "max-workspaces-per-tenant", 0,
 		"Maximum concurrent workspace pods per tenant (Epic 51 S51.2). "+
@@ -218,6 +226,12 @@ func main() {
 	// pins). Image-only is the NORMAL (Renovate-friendly) form — hashes
 	// resolve from the image index annotations, covered by the digest.
 	// Hash flags are optional per-image overrides (both or neither).
+	// #1507: a grace below agentd's serial shutdown budget (35s) would
+	// short-circuit the drain mid-flight — the pre-#761 5s bug class.
+	if workspaceTerminationGrace > 0 && workspaceTerminationGrace < 36 {
+		fmt.Fprintf(os.Stderr, "--workspace-termination-grace-seconds=%d is below agentd's 35s serial shutdown budget — refusing to start (a short grace cuts in-flight turns that the budget exists to drain)\n", workspaceTerminationGrace)
+		os.Exit(1)
+	}
 	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
 		os.Exit(1)
@@ -392,7 +406,7 @@ func main() {
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
 		BinarySHA256ARM64: opencodeBinarySHA256ARM64,
-	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles), relayStaging); err != nil {
+	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles), relayStaging, workspaceTerminationGrace); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

@@ -393,12 +393,21 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// 40s = the 35s serial budget + 5s margin (process teardown, PID-1
 	// signal latency). This is a worst-case bound only: kubelet reaps the
 	// pod as soon as the containers exit, and measured idle shutdown is
-	// ~2s, so suspend/recycle latency is unchanged in the common case.
-	// Where in-flight turns exist, the controller-side session drain
-	// (session_drain.go) defers the deletion entirely; this grace is the
-	// last-resort window for whatever slips past it (node drains, kubectl
-	// deletes, deferred-but-stalled forces).
+	// ~2s, so suspend latency is unchanged in the common case.
+	//
+	// #1507: the SUSPEND path no longer defers behind busy sessions —
+	// this grace IS the bounded graceful opencode termination (agentd's
+	// drain runs inside it; expiry is the hard cut). The non-suspend
+	// recycles (restart-gen, arch drift, self-heal) keep the
+	// controller-side session drain (session_drain.go); this grace
+	// remains their last-resort window too (node drains, kubectl
+	// deletes). Operator-tunable via --workspace-termination-grace-
+	// seconds; 0 keeps the 40s default (values below the serial budget
+	// are rejected at flag-parse time — see main.go).
 	terminationGrace := int64(40)
+	if r.WorkspaceTerminationGraceSeconds > 0 {
+		terminationGrace = r.WorkspaceTerminationGraceSeconds
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
