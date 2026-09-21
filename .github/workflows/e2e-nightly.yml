@@ -64,7 +64,12 @@ jobs:
 
       - name: Create kind cluster
         run: |
-          kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+          # 2-node topology (kind-cluster-nightly.yaml): the nightly's
+          # class retirement for its capacity walls (AC-1c/AC-13/AC-11 —
+          # three FailedScheduling Insufficient cpu walls on one hosted
+          # node). The shared kind-cluster.yaml stays single-node for
+          # the pool (calibrated dind topology) and the weekly run.
+          kind create cluster --config local/kind-cluster-nightly.yaml --name $CLUSTER_NAME
           # Alias localhost:5001 inside the node to the registry container
           # (local/kind-cluster.yaml enables the certs.d config path).
           for node in $(kind get nodes --name $CLUSTER_NAME); do
