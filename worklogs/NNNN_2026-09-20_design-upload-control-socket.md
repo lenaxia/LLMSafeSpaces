@@ -104,3 +104,11 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - **§4.6's table gained the missing row** (mid-stream staging write abort → 507 staging write failed) and the remainder class is honest again (fixed-502, unchanged — no phantom "reason in the body").
 - **The enum gained `staging_write_error` + `invalid_declared_length`** — each 507 class its own value, nothing misrecorded.
 - **§4.1's scrub-arm comment reconciled** (two jobs: release the LIVE 504 hold's reservation; crash orphans hold none — bytes only).
+
+
+## Review round 6 (design doc) — 2 blockers of the claims-without-landing class + 1 minor + 1 nit, all fixed
+
+- **The r5 enum/forwarding "fixes" existed only in THIS worklog**: my r6 python edit replaced a sentence whose original didn't match, the replace silently missed, and my verification grep hit OTHER lines — I recorded the fix without verifying the strings landed in the doc. Second occurrence of the class this session; the check is now grep-the-specific-strings-in-the-target-file before writing any worklog claim about them.
+- Landed for real: the enum gains staging_write_error + invalid_declared_length (§4.6(b)); the 411/400 delivery story is honest per the reviewer's sharpening — the 411 is API-GENERATED (no forwarding needed), the 400 declared_length_exceeded is DIRECT-`:9097`-PATH-ONLY (the API pipes only the LimitReader-bounded part, so the declared bound always covers the API hop; only the D14 direct caller can over-read) — the forwarding list stays 507/429/504 by design, and §4.6's table row + §7's pins state the real delivery points.
+- §6.6's precondition is now definition-free and executable: assert `f_bavail_pre − 30 MiB ≥ C + 24 MiB + 10 MiB` measured pre-storm (the literal worst-timing clause-(B) substitution; the old C+U arithmetic double-counted against f_bavail's own exclusions three different ways).
+- §3.1's diagram step 1 shows the 411/400 admission arms.
