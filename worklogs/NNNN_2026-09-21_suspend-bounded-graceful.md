@@ -26,7 +26,7 @@ The suspend path never consults busy sessions; the pod's termination grace perio
 1. **The grace already existed**: #761 raised terminationGracePeriodSeconds to 40s for exactly this purpose (the pre-#761 5s grace was cutting in-flight turns). The pod's grace IS the "graceful opencode termination" the issue asks for — the only missing piece was the busy-gate making the controller WAIT INDEFINITELY before issuing the deletion. Removal + explicit flag = the issue's proposed behavior, no new termination machinery needed.
 2. **Why the stall window could never fire** (the incident's design-grade evidence): the flap loop (sessionstate clears stranded busy → the wedged opencode's tracker immediately re-marks busy) makes `snap.differsFrom(state.lastSnapshot)` true every poll — `lastProgressAt` resets each time — so `progressAge` stays ~0s and the 10-minute stall bound is unreachable. Any bound keyed on "progress" is defeated by a wedge that oscillates.
 3. **Waiting provided no value**: the PVC-retention design means busy sessions are terminated either way; the only question is grace (which kubelet provides). Cited in the block comment.
-4. **Metric/event labels for the retired path**: drainReasonSuspend no longer fires from production code — kept the constant (the machinery retains the reason vocabulary; a future caller may use it).
+4. **Metric/event labels for the retired path**: drainReasonSuspend no longer fires from production code — the constant was DELETED outright in the r1 round (no dead vocabulary kept; grep-clean repo-wide).
 
 ## Assumptions → validation record (Rule 7)
 
@@ -74,12 +74,18 @@ None.
 
 ## r3 review — findings closed
 
-1. Drive-by scope creep REVERTED: the lint-hoist commits' accidental rewrites of --free-models-api-url's default (""→literal URL) and the --agentd-image/--agentd-binary-sha256-* help texts are restored to main's exact bytes; the hoist survives as pure structure (registerFreeModelsFlags). Net diff from main on those flags: zero.
+1. Drive-by scope creep REVERTED (partially at r3 — CORRECTION: the r3 commit itself still left TWO flag texts divergent, the arm64 sha help and the refresh-interval help; the "net diff zero" line as originally written here was FALSE at r3): the lint-hoist commits' accidental rewrites of --free-models-api-url's default (""→literal URL) and the --agentd-image/--agentd-binary-sha256-* help texts were restored across r3+r4; the hoist survives as pure structure (registerFreeModelsFlags). Net diff from main on those flags: zero AS OF the r4 commit (d656e45f) — verified byte-exact by the r5 review.
 2. buildPod defense-in-depth: sub-36 programmatic values clamp to the 40s default (structural — the invariant no longer lives only in the main() guard); pinned.
-3. Kind e2e: reviewer accepts the honest Refs closure with a known-missing test level OR landing the row in the nightly lane pre-merge — deferring to the orchestrator's adjudication (the #1456 lane-ownership concern is real; the nightly row is the follow-up).
+3. Kind e2e: escalated to the orchestrator (the review framework's REQUEST CHANGES held every round — no reviewer accepted a known-missing test level). Ruling (a): standalone script in THIS PR; landed in the r5 commit.
 
 ## r4 — flag texts byte-exact; r5 — the kind row landed in-PR (ruling (a))
 
 - r4: the two remaining flag texts (arm64 sha help, refresh-interval help) restored to main's exact bytes — the hoist diff is provably pure structure.
 - r5 (orchestrator ruling (a)): local/issue-1507-bounded-suspend-e2e.sh + local/issue_1507_script_test.go pins. R1 = THE incident replay at cluster scale: seed → wait Active → in-flight turn (bash sleep 300, running-tool-part asserted BEFORE the suspend call — a LIVE busy turn is the stronger case: pre-#1507 the drain would legitimately wait for it, exactly what the incident faked forever) → API suspend → Suspended within 120s budget (grace 40s + reconcile + margin; the incident was 3600+) → pod gone, PVC retained. R2 = AC1's log assertion: no suspend drain-defer line in the controller log (discoverable-pod conditional; the phase/timing verdicts carry the row without log access). Env/budget overrides for execution smokes. Standalone by design — NO e2e-nightly.yml touch (the #1456 lane boundary); the nightly wiring is the documented follow-up on the next #1456-lane touch.
 - Pins: bash syntax, busy-before-suspend ordering, the four outcome assertions (Suspended/pod-gone/PVC-retained/no-defer-line), unconditional WS_BASE isolation.
+
+## r5 corrections (the review's three falsehood findings + the AC4 scoping)
+
+- The kind e2e WAS landed in the same round this review landed (ee95c4F4 — the review ran against the r4 head d656e45f; the review's own "no kind-level e2e" is stale against the pushed head).
+- AC4 honestly re-scoped in the PR body: the agentd shutdown-budget path and the grace-expiry hard cut are NOT exercised anywhere in this repo (kubelet-side / agentd-suite rows — nightly follow-ups); what IS delivered is enumerated precisely.
+- Style minors: the flap-repro test's comment reworded to the static-busy truth (the path never reads statusz — the fixture models the incident's observable state, not the oscillation); pod_builder's "flag-parse time" → "controller startup".

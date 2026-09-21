@@ -403,7 +403,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// remains their last-resort window too (node drains, kubectl
 	// deletes). Operator-tunable via --workspace-termination-grace-
 	// seconds; 0 keeps the 40s default (values below the serial budget
-	// are rejected at flag-parse time — see main.go).
+	// are rejected at controller startup — see main.go).
 	terminationGrace := int64(40)
 	// Defense-in-depth for the main() startup guard: a programmatically
 	// set sub-36 value (tests, future callers) falls back to the default

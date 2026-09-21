@@ -24,10 +24,12 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// THE FLAP-LOOP REPRO: busy sessions that KEEP flapping (progress
-// forever fresh — progressAge 0s, exactly the incident) must not delay
-// suspend by a single drain poll. Suspend completes: no deferral
-// requeue, pod deleted, phase Suspended.
+// THE INCIDENT SHAPE: a session pinned busy (the static-busy fixture
+// models the incident's observable state — the wedge below flapped the
+// count, but every poll observed busy-with-fresh-progress, which is
+// what the drain keyed on; the path under test never reads statusz at
+// all post-#1507). Must not delay suspend by a single drain poll:
+// no deferral requeue, pod deleted, phase Suspended.
 func TestSuspendBounded_FlappingBusySessionsSuspendImmediately(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
