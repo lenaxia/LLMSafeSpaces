@@ -139,3 +139,10 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 ## Review round 10 (design doc) — 1 minor ("one word from approval")
 
 - The r10 superlative still had a falsifier class: platform-init (PVC root RW, uid 1000) and workspace-setup (subPath RW) are boot-phase control-plane writers of the same directory. "STANDING" qualifier + boot-window carve-out clause added. PR body's revision label refreshed.
+
+
+## Review round 11 (design doc) — 2 pre-existing false absolutes + a stale body count
+
+- **"The sidecar never writes the PVC" was false as-built**: Epic 69's sessionstate cursor + ledger.wal are durably written by the sidecar under the PVC platform/ subPath (RW, sidecar-only — agentd_sidecar.go:204). US-4b governs the credential STORES, not a PVC-write ban. §2 now scopes the claim to what this design guarantees (no NEW sidecar→PVC write path from this leg) and names the platform/ carve-out — the efficacy-vs-existence lesson applied to a sentence eleven rounds of review (mine included) repeated without tracing the mount table.
+- **The boot-scrub "by-definition orphaned" absolute overreached in the sidecar-restart window** (native sidecar can restart while the supervisor mid-copies a completed staged object): scoped to full-pod death, with the benign outcomes stated (unlink-of-open-file completes the copy; not-yet-open → clean staged_missing) and the age-gate refinement marked optional.
+- PR body review-history count refreshed (11+ rounds, false-absolute chain represented).
