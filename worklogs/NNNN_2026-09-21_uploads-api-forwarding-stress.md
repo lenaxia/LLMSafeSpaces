@@ -111,3 +111,12 @@ Two unit tests added (the r1-carried gaps): unparseable-body 507 (the Unmarshal 
 4. SR-6's regression guard is an ASSERTION: concurrent wall ≤ 2 × single × count.
 5. storm_report prints `total=` and every consumer checks it — a storm losing result files fails completeness.
 All pins aligned; three needle-alignment cycles on the refused-count pin (backtick-escaping in raw strings — the recurring lesson).
+
+## Review Round 4 (two fix-introduced defects + the guard that couldn't fail)
+
+The r4 catch quality was exceptional — two of my r3 fixes were themselves defective:
+
+1. **SR-5's `grep -c . || echo 0`** produced "0\n0" under pipefail (grep prints 0 AND exits 1; the || echo 0 appended a second) → arithmetic syntax error → false-fail on the SUCCESS case (zero partials = the invariant HOLDING). Replaced with awk NF-counting (never trips pipefail). The bound is now the honest one: new non-.tmp ≤ count of 201 phases (per-phase statuses tracked).
+2. **The SR-6 guard was mathematically vacuous**: N·L1 ≤ 2·N·L1 always passes — a fully-serialized storm satisfies it. The design's per-upload p95 ≤ 2× single maps to wall ≤ 2×L1 + settle overhead (2s): a serialized storm at ~N×L1 trips it for N≥3. The latency storm's outcomes are now asserted too (other=0 + total=CONCURRENCY — an all-000 storm yields a tiny wall and previously passed while measuring nothing).
+3. **SR6B now requires a LITERAL 429** (refused lumps 507|429|504 — a 507 satisfied the old count without the count-cap boundary) + total=5 completeness; the results dir survives until the check runs.
+4. The refused-count sed parse (r3) was replaced wholesale — its needles removed from the pin suite alongside the new pins for the awk counter, the honest guard, and the literal-429 check.

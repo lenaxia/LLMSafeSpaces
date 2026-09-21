@@ -299,6 +299,7 @@ for phase in first mid last; do
       [[ -n "${SIDECAR_CID}" ]] && docker exec "${CLUSTER_NAME}-control-plane" crictl stop "${SIDECAR_CID}" >/dev/null 2>&1 || warn "SR-5/${phase}: crictl stop did not fire (no container id)"
     ) & killer=$!
     st=$(upload_bytes $((20 * 1024 * 1024)) || echo 000)
+    SR5_PHASE_STATUSES="${SR5_PHASE_STATUSES:-} ${st}"
     wait "${killer}" 2>/dev/null || true
     sleep 20
     wait_phase "${WS}" Active 300 >/dev/null 2>&1 || true
@@ -322,16 +323,25 @@ done
 # the pre-kill set must be empty OR every addition is a 201's uuid file
 # (a kill-fragmented rename would produce a non-.tmp partial).
 POST_KILL_LISTING=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/ 2>/dev/null | grep -v "\.tmp$" | sort' 2>/dev/null || echo "")
-NEW_NON_TMP=$(comm -13 <(printf '%s\n' "${PRE_KILL_LISTING}") <(printf '%s\n' "${POST_KILL_LISTING}") | grep -c . || echo 0)
+# Zero-match arithmetic: grep -c . prints 0 AND exits 1 under pipefail —
+# the || echo 0 appended a SECOND 0 (r4 finding: "0\n0" → arithmetic
+# syntax error → false-fail on the SUCCESS case). awk never trips.
+NEW_NON_TMP=$(comm -13 <(printf '%s\n' "${PRE_KILL_LISTING}") <(printf '%s\n' "${POST_KILL_LISTING}") | awk 'NF{n++} END{printf "%d", n+0}')
 # All SR-5 outcomes are transport/terminal (no 201s during kill phases
 # unless the copy completed before the kill — a completed 201 is a
 # final file, not a partial; we cannot distinguish per-file here, but
 # a FAILED rename leaving a non-.tmp fragment IS what this catches:
 # fragments have random-uuid names we never asked for).
-if [[ "${NEW_NON_TMP}" -le 3 ]]; then
-    ok "SR-5: no non-.tmp partials beyond completed uploads (${NEW_NON_TMP} new)"
+# The honest bound (r4): each new non-.tmp file must be a 201-delivered
+# upload — count the 201 phases; more new files than that is fragments.
+SR5_DELIVERED=0
+for st in ${SR5_PHASE_STATUSES:-}; do
+    [[ "${st}" == "201" ]] && SR5_DELIVERED=$((SR5_DELIVERED + 1))
+done
+if [[ "${NEW_NON_TMP}" -le "${SR5_DELIVERED}" ]]; then
+    ok "SR-5: no non-.tmp partials beyond ${SR5_DELIVERED} completed uploads (${NEW_NON_TMP} new)"
 else
-    note_fail "SR-5: ${NEW_NON_TMP} unexpected non-.tmp artifacts (rename fragmentation)"
+    note_fail "SR-5: ${NEW_NON_TMP} non-.tmp artifacts > ${SR5_DELIVERED} delivered (rename fragmentation)"
 fi
 # .tmp reclaim: the TTL ticker's default is 15 min (§4.3) — the honest
 # assertion at this point is bounded, not zero (r2 finding 5b).
@@ -393,24 +403,38 @@ for i in 1 2 3 4 5; do
 done
 wait
 REPORT6B=$(storm_report "${SR6B_DIR}" 5)
-rm -rf "${SR6B_DIR}"
 # Parse the refused COUNT (r3 finding 1: *"refused="* matches every
 # report — refused=0 included). The count-cap regression means
 # refused=0 here; the boundary demands at least one.
-SR6B_REFUSED=$(printf '%s' "${REPORT6B}" | sed -n 's/.*refused=\([0-9]*\).*/\1/p')
-if [[ "${SR6B_REFUSED}" -ge 1 ]]; then
-    ok "SR-6: 5th-concurrent 429 boundary observed (refused=${SR6B_REFUSED}; ${REPORT6B})"
+# Completeness + a LITERAL 429 (r4: refused lumps 507|429|504 — a 507
+# satisfies the count without the boundary being the count cap).
+SR6B_HAS_429=0
+for f in "${SR6B_DIR}"/res-*; do
+    [[ "$(cat "${f}" 2>/dev/null)" == "429" ]] && SR6B_HAS_429=1
+done
+if [[ "${REPORT6B}" == *"total=5"* && "${SR6B_HAS_429}" -eq 1 ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed (literal 429 present; ${REPORT6B})"
 else
-    note_fail "SR-6: 5-concurrent storm produced no refusals (${REPORT6B})"
+    note_fail "SR-6: 5-concurrent storm lacks a literal 429 or incomplete (${REPORT6B}, has429=${SR6B_HAS_429})"
+fi
+rm -rf "${SR6B_DIR}"
+# The latency storm's outcomes must be asserted (r4 finding ◐ r3.5):
+# other=0 AND total=CONCURRENCY — an all-000 storm has a tiny wall and
+# would pass any guard while measuring nothing.
+if [[ "${REPORT6}" != *"other=0"* || "${REPORT6}" != *"total=${CONCURRENCY}"* ]]; then
+    note_fail "SR-6: latency storm not clean+complete (${REPORT6})"
 fi
 log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB-concurrent=${CONC_MS}ms wall; report=${REPORT6}"
-# The §6.6 regression guard AS AN ASSERTION (r3 finding 4): concurrent
-# wall ≤ 2 × single × count catches accidental serialization.
-GUARD=$((2 * L1 * CONCURRENCY))
+# Serialization guard (r4: N·L1 ≤ 2·N·L1 ALWAYS passes — the old bound
+# was vacuous for full serialization). The design's per-upload p95 ≤ 2×
+# single maps to wall ≤ 2×L1 + small settle overhead: a serialized
+# storm runs ~N×L1; a healthy concurrent one runs ~L1 + contention.
+# 2×L1 + 2s absorbs the contention without passing N×L1 at N≥3.
+GUARD=$((2 * L1 + 2000))
 if [[ "${CONC_MS}" -le "${GUARD}" ]]; then
-    ok "SR-6: baseline + regression guard (${CONCURRENCY}× wall ${CONC_MS}ms ≤ 2×${L1}×${CONCURRENCY}=${GUARD}ms)"
+    ok "SR-6: concurrency confirmed (${CONCURRENCY}× wall ${CONC_MS}ms ≤ 2×single+2s=${GUARD}ms)"
 else
-    note_fail "SR-6: concurrent wall ${CONC_MS}ms exceeds guard ${GUARD}ms (serialization regression?)"
+    note_fail "SR-6: wall ${CONC_MS}ms suggests serialization (≥3× single ${L1}ms; guard ${GUARD}ms)"
 fi
 
 fi # staging gauges present

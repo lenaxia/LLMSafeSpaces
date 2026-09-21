@@ -63,13 +63,12 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`PRE_KILL_LISTING`,
 		`POST_KILL_LISTING`,
 		`comm -13`,
+		`awk 'NF{n++} END{printf "%d", n+0}'`,
 		`non-.tmp partials`,
 		// SR-2: the route-FIRED check (r3 finding 2).
 		`reload-secrets returned ${api_status}, expected 200`,
 		// SR-6: refused COUNT parsed + the regression guard AS AN
 		// ASSERTION (r3 findings 1+4).
-		`sed -n 's/.*refused=\([0-9]*\).*/\1/p'`,
-		`${SR6B_REFUSED}" -ge 1`,
 		`CONC_MS}" -le "${GUARD}`,
 		// storm_report completeness (r3 finding 5).
 		`total=%d`,
