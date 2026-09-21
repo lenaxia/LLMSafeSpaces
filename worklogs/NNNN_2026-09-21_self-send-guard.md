@@ -21,7 +21,7 @@ Close the orchestrator's 11-misfire class: send_message addressed at the caller'
 ## Key Decisions
 
 - Warning-only, per the issue's ruling — the teaching-error pattern (#1469): the result teaches the correct action instead of refusing.
-- The guard sits AFTER origin resolution (it needs the resolved origin, injected or declared — both modes covered by rows) and BEFORE compose (no behavioral ordering constraint; compose is origin-stamping of the payload, unaffected).
+- The guard sits AFTER origin resolution (it needs the resolved origin, injected or declared — both modes covered by rows) (no behavioral ordering constraint; compose is origin-stamping of the payload, unaffected — r2 corrected the r1 placement claim, which said "before compose").
 
 ### Assumptions (Rule 7)
 
