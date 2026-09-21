@@ -1333,8 +1333,10 @@ func TestMCPSendMessage_OriginProbeIndeterminateRefusesDelivery(t *testing.T) {
 	assert.Empty(t, f.msgArrived)
 }
 
-// Self-send (from == target): no special case — the sentinel carries
-// the caller's own ID and delivery schedules as the next turn.
+// Self-send (from == target): no DELIVERY special case — the result now
+// carries the #1525 warning (pinned by the SelfSendGuard rows below);
+// the sentinel still carries the caller's own ID and delivery schedules
+// as the next turn.
 func TestMCPSendMessage_SelfSend(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("self")
