@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -124,6 +125,20 @@ func TestIssue1342E2EWorkflow_GateExecutes(t *testing.T) {
 	require.NoError(t, err, "the unset-creds leg must exit clean (downstream proceeds)")
 	assert.Contains(t, string(out), "SKIP: LLM_API_KEY not configured")
 	assert.NotContains(t, string(out), "PAST-GATE", "the unset-creds leg must not fall through to the script")
+
+	// The SET-creds leg (r1's gap): the REAL full step body runs with a
+	// stubbed bash on PATH — the guard must fall through and invoke the
+	// script (an unconditional-exit regression silently retires the rows).
+	dir := t.TempDir()
+	rec := filepath.Join(dir, "bash-argv")
+	stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > " + rec + "\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bash"), []byte(stub), 0o755))
+	out, err = exec.Command(bash, "-c", "set -u; export PATH="+shQuote(dir)+":$PATH LLM_API_KEY=dummy-creds\n"+script).CombinedOutput()
+	require.NoError(t, err, "the set-creds leg must fall through clean, got:\n%s", out)
+	argv, rerr := os.ReadFile(rec)
+	require.NoError(t, rerr, "the script must have been invoked — an unconditional exit retired the rows silently")
+	assert.Contains(t, string(argv), "local/issue-1342-graceful-restart-e2e.sh",
+		"set creds must run the #1342 script")
 }
 
 // TestIssue1342E2EScript_WorkspaceIDCanonical pins the script's
