@@ -44,7 +44,7 @@ func decodeRendered(t *testing.T, path string) (prompt string, extDir map[string
 				Prompt string `json:"prompt"`
 			} `json:"build"`
 		} `json:"agent"`
-		// #1493: external_directory rules render under the LIVE top-level
+		// tier ruling: external_directory rules render under the LIVE top-level
 		// permission key (mode.permissions is inert on pinned opencode).
 		Permission struct {
 			ExternalDirectory map[string]string `json:"external_directory"`
@@ -125,7 +125,7 @@ func TestConfigWriter_Apply_PromptDirs_Sanitized(t *testing.T) {
 	require.NoError(t, err)
 
 	_, extDir := decodeRendered(t, path)
-	// #1493: the floor rides along — the sanitization pin asserts the
+	// tier ruling: the floor rides along — the sanitization pin asserts the
 	// caller-controlled subset (empty dropped, duplicate collapsed), not
 	// the total size.
 	assert.Equal(t, "allow", extDir["/tmp/*"])
@@ -197,7 +197,7 @@ func TestConfigWriter_Apply_PromptDirs_RollbackRestoresCapturedRaws(t *testing.T
 
 	w := NewConfigWriter(path)
 	require.NotEmpty(t, w.agentRaw, "rendered agent section must be captured at construction")
-	require.NotEmpty(t, w.permissionRaw, "rendered permission section must be captured at construction (#1493: the live key)")
+	require.NotEmpty(t, w.permissionRaw, "rendered permission section must be captured at construction (tier ruling: the live key)")
 	prevAgent, prevMode := w.agentRaw, w.permissionRaw
 
 	require.NoError(t, os.Chmod(dir, 0o555))
@@ -231,7 +231,7 @@ func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *t
 	// sets differ (side-car below has only /tmp/*).
 	// Non-tier patterns: /tmp/* is now a TIER key (always present), so
 	// the authority semantics use /sc/* (side-car) and /prior/*
-	// (rendered prior-apply) to stay observable (#1493).
+	// (rendered prior-apply) to stay observable (tier ruling).
 	rendered := `{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": {"openai": {"options": {"apiKey": "k"}}},

@@ -550,11 +550,12 @@ Within the agentd process, there is **one** write path to `agent-config.json`, b
 
 The **materialize subcommand** (separate process, runs before agentd) writes directly via `FlushProviders` + `applyMCPServersToConfig` (user-staged MCP servers, Epic 53) + `applyWorkspaceConfig` (model key). Once agentd starts, `ensureBootAgentConfig` (`cmd/workspace-agentd/boot_config.go`) constructs the writer — `NewConfigWriter` with the admin-prompt path, allowed-dirs path, and the pre-marshal hook that injects the platform MCP entry — and immediately applies an empty input, stamping the missing platform blocks while preserving the captured sources.
 
-The writer captures the existing on-disk config at construction (`loadExisting()`: provider, model, agent, mode, and the `mcp` section — the #857 fix that keeps user-staged MCP servers alive across rebuilds) and merges staged changes from `AgentConfigInput`:
+The writer captures the existing on-disk config at construction (`loadExisting()`: provider, model, agent, mode, the TOP-LEVEL `permission` section (the LIVE permission key on pinned opencode — `mode.permissions` is inert), and the `mcp` section — the #857 fix that keeps user-staged MCP servers alive across rebuilds) and merges staged changes from `AgentConfigInput`:
 - **Providers** — `Apply` with a `Providers` change, staged after `Materializer.FormatProviders()` on credential reload
 - **Model** — captured from the existing file at construction (written by `applyWorkspaceConfig` in the materialize process); no production caller stages a `ModelSelection` through `Apply` today
 - **Relay** — `Apply` with a `RelayState`, staged by the pre-boot relay or `startRelayInjector` after successful free-model discovery
 - **MCP servers** — `Apply` with an `MCPServerChange` (staged input supersedes the captured on-disk section, including on clear)
+- **External-directory permissions** — the allowed-dirs source and the platform permission-tier floor (the 2026-09-19 ruling, design/0060 row A2) render into the TOP-LEVEL `permission.external_directory` key — the LIVE shape on the pinned opencode (the historical `mode.permissions` render was inert; corpse #5). The floor is applied after the operator allows (collisions resolve to the tier); idempotent across rebuilds
 
 `Apply` with nil fields preserves the captured sources. The merged rebuild (`rebuildLocked()`) writes atomically; the writer's `sync.Mutex` serialises concurrent calls.
 

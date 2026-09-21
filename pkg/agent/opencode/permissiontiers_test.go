@@ -100,6 +100,8 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/home/sandbox/.secrets", "deny", "credential name"},
 		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name under the .local pre-allow (sorts after)"},
 		{"/home/sandbox/projects/foo", "ask", "the home carve restores ambient ask"},
+		{"/home/sandbox", "ask", "BARE home dir: the wildcardless ask key (without it the /home/* deny matches the bare path — pinned r0)"},
+		{"/home", "ask", "BARE /home parent matches NO rule (^/home/.*$ needs the slash) — ambient; children under other users still deny"},
 		{"/home/otheruser/x", "deny", "/home parent deny"},
 		{"/etc/passwd", "deny", "deny /etc"},
 		{"/proc/self/status", "deny", "deny /proc"},
@@ -128,16 +130,13 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 	carves := []struct{ carve, deny string }{
 		{"/home/sandbox/*", "/home/*"},
+		{"/home/sandbox", "/home/*"},
 		{"/sys/fs/cgroup/*", "/sys/*"},
 		{"/home/sandbox/.cache/*", "/home/sandbox/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
 		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/.local/*"},
-		{"/sandbox-runtime/rt/secrets", "/sandbox-runtime"}, // ask ambient, no rule: sanity only
 	}
 	for _, c := range carves {
-		if c.deny == "/sandbox-runtime" {
-			continue // no deny rule for the ambient parent
-		}
 		require.Contains(t, platformPermissionTiers, c.carve)
 		require.Contains(t, platformPermissionTiers, c.deny)
 		assert.Less(t, c.deny, c.carve, "carve %q must sort AFTER deny %q (findLast: last match wins)", c.carve, c.deny)
@@ -155,7 +154,7 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 	assert.Equal(t, "deny", tierEvaluate("/sys/kernel/x", map[string]string{"/sys/*": "allow"}))
 }
 
-// TestPermissionTier_CgroupMountReadOnly — the amended #1493 ruling's
+// TestPermissionTier_CgroupMountReadOnly — the amended tier ruling's
 // readiness assertion: the "/sys/fs/cgroup/*" allow is safe ONLY
 // because the cgroup2 mount is kernel-read-only (a runtime default,
 // NOT our pod spec — nothing in the chart enforces it). This pin

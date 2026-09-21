@@ -7,8 +7,9 @@
 // Containment (Epic 65 / Rule 12): every byte of opencode config-shape
 // knowledge — the $schema URL, the "provider" map, the "opencode-relay"
 // relay block, "disabled_providers", the "agent.build.prompt" deep-merge,
-// the "mode.permissions.external_directory" merge, the "mcp" section —
-// lives here, behind the pkg/agent/opencode/ seam. Platform code
+// the top-level "permission.external_directory" merge (the LIVE key on
+// pinned opencode 1.18.15 — mode.permissions is inert, corpse #5), the
+// "mcp" section — lives here, behind the pkg/agent/opencode/ seam. Platform code
 // (cmd/workspace-agentd) constructs a ConfigWriter via NewConfigWriter
 // and calls the exported setters; it does not know what the rendered
 // JSON looks like.
@@ -111,7 +112,7 @@ type ConfigWriter struct {
 	adminPrompt     string           // admin-configured system prompt; "" = none
 	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
-	permissionRaw   json.RawMessage  // existing top-level "permission" config from loadExisting; the LIVE permission key on pinned opencode (#1493 wire finding: mode.permissions is inert)
+	permissionRaw   json.RawMessage  // existing top-level "permission" config from loadExisting; the LIVE permission key on pinned opencode (tier-ruling wire finding: mode.permissions is inert)
 	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
 	pluginRaw       json.RawMessage  // existing "plugin" string-array from loadExisting (user-staged plugins); re-emitted verbatim. Non-array shapes are NOT captured
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
@@ -217,7 +218,7 @@ func (w *ConfigWriter) loadExisting() {
 		}
 	}
 
-	// #1493: recover from the LIVE top-level permission key too — the
+	// tier ruling: recover from the LIVE top-level permission key too — the
 	// same fail-closed allow-valued heuristic, and TIER "allow" keys are
 	// excluded (the floor re-applies those itself; treating them as
 	// injected would let an AllowedDirs clear drop pre-allow tier rules
@@ -433,7 +434,8 @@ func (w *ConfigWriter) HasRelay() bool {
 //   - model = the model source (from SetModel or loadExisting)
 //   - disabled_providers = ["opencode"] (only if relay is set)
 //   - agent.build.prompt = admin prompt (deep-merged into existing build agent)
-//   - mode.permissions.external_directory = allowed-dirs glob allow-rules
+//   - permission.external_directory = allowed-dirs glob allow-rules + the
+//     platform tier floor (top-level — the LIVE key; mode.permissions is inert)
 //   - mcp = staged MCP servers + pre-marshal hook additions
 //
 // The temp-file + rename pattern ensures readers never see a partially
@@ -545,7 +547,7 @@ func (w *ConfigWriter) rebuildLocked() error {
 	// Render the external_directory rules (operator allowed-dirs + the
 	// platform permission-tier floor) into the TOP-LEVEL permission key.
 	//
-	// #1493 WIRE FINDING (live-proven on pinned 1.18.15): the harness
+	// TIER-RULING WIRE FINDING (live-proven on pinned 1.18.15): the harness
 	// reads ONLY the top-level `permission` config — the historical
 	// `mode.permissions` shape this writer used is INERT (a boot with
 	// mode.permissions rules evaluates the default ask; the same rules
@@ -720,8 +722,8 @@ func atomicRenameWrite(path string, data []byte, perm os.FileMode) error {
 //
 // The opencode-specific rendering (deep-merge semantics, $schema URL,
 // disabled_providers, the opencode-relay provider block, the agent.build
-// prompt merge, the mode.permissions.external_directory merge, the mcp
-// section) is owned by this method and rebuildLocked — none of it leaks
+// prompt merge, the top-level permission.external_directory merge, the
+// mcp section) is owned by this method and rebuildLocked — none of it leaks
 // through the agent.AgentConfigInput type. Platform code calls Apply and
 // reacts to restartRequired; it does not know WHY a restart is needed.
 func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {

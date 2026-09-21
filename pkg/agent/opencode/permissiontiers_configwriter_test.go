@@ -14,10 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The permission-tier floor in the ConfigWriter render (#1493): the
-// tiers land in mode.permissions.external_directory alongside the
-// operator's allowed-dirs, the floor wins collisions, the render is
-// idempotent across rebuilds, and self-tampered shapes (bare-string
+// The permission-tier floor in the ConfigWriter render (the
+// 2026-09-19 ruling, design/0060 row A2): the tiers land in the
+// TOP-LEVEL permission.external_directory (the LIVE key on pinned
+// opencode 1.18.15 — mode.permissions is inert, corpse #5) alongside
+// the operator's allowed-dirs, the floor wins collisions, the render
+// is idempotent across rebuilds, and self-tampered shapes (bare-string
 // external_directory, null) cannot defeat the floor.
 
 func writeTiersConfig(t *testing.T, path, content string) {
@@ -116,14 +118,25 @@ func TestConfigWriter_TierFloorSweepsTamperedTierKeys(t *testing.T) {
 	assert.Equal(t, "allow", ext["/custom/*"], "a NON-tier entry survives (the floor sweeps only its own keys)")
 }
 
-// The #1493 wire finding: a prior-generation render carried the rules
+// The tier-ruling wire finding: a prior-generation render carried the rules
 // under the (inert) mode.permissions shape. The rebuild must move them
 // — top-level permission gains the floor, the legacy block loses the
 // dead keys.
+// The migration truth (r1 missing-case 3 rework): the dead
+// mode.permissions shape is SWEPT (its allow keys recovered as
+// writer-injected from the legacy file itself — configwriter.go
+// loadExisting — and removed), and the operator's allowedDirs SOURCE
+// re-renders them into the LIVE key on Apply. The artifact is
+// platform-owned ephemeral state: "nothing user-visible is lost"
+// because the source re-applies, NOT because artifact entries are
+// migrated. Pinned: (a) the floor renders under the live key, (b) tier
+// keys never linger in the dead shape, (c) a NON-TIER legacy allow is
+// dropped from the dead shape and RE-RENDERED into the live key when —
+// and only when — the operator source still supplies it.
 func TestConfigWriter_MigratesLegacyModeShapeToLiveKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
-	writeTiersConfig(t, path, `{"mode": {"permissions": {"external_directory": {"/tmp/*": "allow", "/legacy-user/*": "ask"}}}}`)
+	writeTiersConfig(t, path, `{"mode": {"permissions": {"external_directory": {"/tmp/*": "allow", "/legacy-allow/*": "allow"}}}}`)
 
 	w := NewConfigWriter(path)
 	_, err := w.Apply(agentapi.AgentConfigInput{})
@@ -131,14 +144,10 @@ func TestConfigWriter_MigratesLegacyModeShapeToLiveKey(t *testing.T) {
 
 	ext := readRenderedExtDir(t, path)
 	assert.Equal(t, "allow", ext["/tmp/*"], "the floor renders under the live top-level key")
+	assert.NotContains(t, ext, "/legacy-allow/*",
+		"a legacy allow is NOT artifact-migrated — it renders only when the operator source re-applies it")
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	// The mode block is preserved verbatim minus TIER keys: a fresh
-	// writer over a legacy file has no recovered injectedDirs (the
-	// side-car is absent), so only the tier sweep applies to the dead
-	// shape — non-tier legacy keys ride inert but preserved, exactly
-	// like any other captured legacy config the writer must not invent
-	// opinions about. The live key is authoritative.
 	var out struct {
 		Mode struct {
 			Permissions struct {
@@ -151,6 +160,15 @@ func TestConfigWriter_MigratesLegacyModeShapeToLiveKey(t *testing.T) {
 		assert.NotContains(t, out.Mode.Permissions.ExtDir, k,
 			"tier keys do not linger in the dead mode shape")
 	}
-	assert.Equal(t, "ask", out.Mode.Permissions.ExtDir["/legacy-user/*"],
-		"non-tier legacy keys in the dead shape are preserved verbatim (writer has no authority to drop user config it never injected)")
+	assert.NotContains(t, out.Mode.Permissions.ExtDir, "/legacy-allow/*",
+		"the recovered injected dir is swept from the dead shape")
+
+	// The source re-apply: the same operator allow, supplied through
+	// Apply, renders into the LIVE key — this is the nothing-lost path.
+	w2 := NewConfigWriter(path)
+	_, err = w2.Apply(agentapi.AgentConfigInput{AllowedDirs: &agentapi.AllowedDirsChange{Dirs: []string{"/legacy-allow/*"}}})
+	require.NoError(t, err)
+	ext2 := readRenderedExtDir(t, path)
+	assert.Equal(t, "allow", ext2["/legacy-allow/*"],
+		"the operator-supplied allow renders into the live key — the source is the migration path")
 }

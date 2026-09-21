@@ -501,7 +501,9 @@ func TestConfigWriter_Rebuild_AdminPromptPreservesExistingBuildAgent(t *testing.
 }
 
 // ---------------------------------------------------------------------------
-// Allowed-external-directories source (instance setting → mode.permissions).
+// Allowed-external-directories source (instance setting → the LIVE
+// top-level permission key; the historical mode.permissions render was
+// inert — corpse #5).
 // ---------------------------------------------------------------------------
 
 func writeAllowedDirs(t *testing.T, dir string, patterns []string) {
@@ -528,7 +530,7 @@ func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
 		} `json:"permission"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
-	// #1493: the tier floor renders alongside the allowed-dirs — the
+	// tier ruling: the tier floor renders alongside the allowed-dirs — the
 	// count pin becomes a membership pin (floor keys are always present).
 	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"])
 	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/var/cache/*"])
@@ -539,7 +541,7 @@ func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
 func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
-	// #1493 shape: bash stays in the legacy (dead) mode block the writer
+	// tier-ruling shape: bash stays in the legacy (dead) mode block the writer
 	// preserves verbatim; external_directory rules live in the top-level
 	// permission key.
 	existing := `{
@@ -557,7 +559,7 @@ func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	// #1493: the injected rule renders under the LIVE top-level
+	// tier ruling: the injected rule renders under the LIVE top-level
 	// permission key; the legacy mode block is preserved verbatim
 	// (bash + the user's /opt/data/* stay in the dead shape, swept of
 	// tier keys only).

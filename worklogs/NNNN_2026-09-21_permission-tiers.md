@@ -1,8 +1,24 @@
-# Worklog: opencode permission tiers — the live top-level key + the platform floor (#1493)
+# Worklog: opencode permission tiers — the live top-level key + the platform floor (the 2026-09-19 ruling; design/0060 row A2, #825 lineage)
 
 **Date:** 2026-09-21 (ruling 2026-09-19, amended)
 **Session:** The tier ruling (pre-allow /tmp, ~/.cache|~/.local|~/.config, /sys/fs/cgroup, /opencode; hard-deny the sensitive tree; ask ambient) needed landing. The wire finding changed the shape of the work: the pinned opencode 1.18.15 reads ONLY the top-level `permission` config — the `mode.permissions` shape our ConfigWriter rendered for months is INERT.
 **Status:** Complete
+
+---
+
+## Objective
+
+Land the permission-tier ruling on the LIVE top-level `permission` key: the platform floor (pre-allow / ask / deny) rendered alongside operator allowed-dirs, proven against the real pinned binary in both directions (deny legs AND the allow leg — the corpse-#5 regression), CI-wired so the live proof survives pin bumps.
+
+## Blockers
+
+None.
+
+## Next Steps
+
+1. Reviewer mutation surfaces (delete the floor loop → allow-cannot-reopen-deny pin fails; drop the bare-path ask key → the bare-/home/sandbox row fails; point the render back at mode.permissions → the ALLOW live leg fails — that leg is the corpse-#5 regression tripwire).
+2. Post-merge: watch a real workspace boot for the prompt-suppression actually applying (the thing that was silently inert for months).
+3. Increment 3 (#860): injected-keys tracked in writer state, not re-derived from the artifact — the fail-closed allow-sweep ambiguity dissolves there; also comment the recovered-non-tier-allow persistence semantics then.
 
 ---
 

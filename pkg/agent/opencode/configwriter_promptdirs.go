@@ -158,7 +158,7 @@ func sanitizeAllowedDirs(in []string) []string {
 }
 
 // stripTierExternalDirs removes the platform tier keys from a legacy
-// mode block's external_directory — the #1493 wire finding moved the
+// mode block's external_directory — the tier-ruling wire finding moved the
 // live rules to the TOP-LEVEL permission key, so tier keys previously
 // rendered into mode.permissions (by the superseded shape) are dead
 // weight that must not survive rebuilds.

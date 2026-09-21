@@ -4,10 +4,12 @@
 package opencode
 
 // permissiontiers.go — the platform-baked external_directory permission
-// floor (#1493 ruling): the pre-allow set stops the recurring folder
-// prompts; the deny tier is the security boundary; ask stays ambient
-// (opencode's built-in external_directory default is ask, so no rule is
-// needed for the ask tier).
+// floor (the 2026-09-19 ruling, transcribed in
+// design/0060_2026-09-21_credential-plane-closure.md row A2, the #825
+// credential-plane lineage): the pre-allow set stops the recurring
+// folder prompts; the deny tier is the security boundary; ask stays
+// ambient (opencode's built-in external_directory default is ask, so
+// no rule is needed for the ask tier).
 //
 // PRECEDENCE MODEL (pinned by TestPermissionTier_PrecedenceModel, ported
 // from the decompiled 1.18.15 matcher): rules evaluate findLast — the
@@ -53,9 +55,11 @@ package opencode
 //     runtime default, not our pod spec; /opencode ro is ours).
 
 // platformPermissionTiers is the external_directory floor the writer
-// bakes into mode.permissions. Map keys are exactly the rendered JSON
-// keys (marshal-sorted = precedence, see the file comment). Values are
-// the opencode actions: "allow", "ask", "deny".
+// bakes into the TOP-LEVEL permission key (the LIVE shape on the
+// pinned 1.18.15 — mode.permissions is inert, the corpse the ruling surfaced).
+// Map keys are exactly the rendered JSON keys (marshal-sorted =
+// precedence, see the file comment). Values are the opencode actions:
+// "allow", "ask", "deny".
 //
 // The bare-directory entries (no trailing /*) govern the symlink NAME
 // itself (e.g. an `ls /home/sandbox/.ssh`); the /* variants govern
@@ -71,7 +75,13 @@ var platformPermissionTiers = map[string]string{
 	"/sys/*":  "deny",
 	"/var/*":  "deny",
 
-	// --- /home carve: the workspace home back to ambient ask ---
+	// --- /home carve: the workspace home back to ambient ask. BOTH keys
+	// are needed: the /* variant governs children; the bare key governs
+	// the directory itself (the ported matcher treats a wildcardless
+	// pattern as an exact match, so ^/home/.*$ would otherwise deny the
+	// bare path with the /home/* deny — r0 finding 3). The bare key
+	// sorts after "/home/*" ('*' 0x2A < 's') — the ask wins.
+	"/home/sandbox":   "ask",
 	"/home/sandbox/*": "ask",
 
 	// --- pre-allows under the home carve (each sorts after the ask) ---

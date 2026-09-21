@@ -5,7 +5,7 @@
 
 package opencode
 
-// The #1493 live legs: the permission-tier floor rendered into a REAL
+// The tier-ruling live legs: the permission-tier floor rendered into a REAL
 // pinned-opencode boot, denied through the REAL matcher in both
 // semantics the ruling mandates — the READ tool (canonical/resolved
 // symlink paths) and BASH (typed paths). The mock provider emits one
@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -42,7 +41,14 @@ type tierProbeProvider struct {
 	calls []string // JSON argument blobs queued by the test, one per turn
 }
 
+// handler emits one queued tool call per turn (tool name + arguments
+// from the queue entries; see emitCall). The bash leg and any future
+// leg reuse it — there is exactly one SSE shape.
 func (m *tierProbeProvider) handler(t *testing.T) http.HandlerFunc {
+	return m.handlerTool(t, "read", "call_tier_1")
+}
+
+func (m *tierProbeProvider) handlerTool(t *testing.T, tool, callID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		if r.Method != http.MethodPost || !strings.Contains(r.URL.Path, "completions") {
@@ -94,8 +100,8 @@ func (m *tierProbeProvider) handler(t *testing.T) http.HandlerFunc {
 			"choices": []map[string]any{{
 				"index": 0, "finish_reason": nil,
 				"delta": map[string]any{"role": "assistant", "tool_calls": []map[string]any{{
-					"index": 0, "id": "call_tier_1", "type": "function",
-					"function": map[string]any{"name": "read", "arguments": *call},
+					"index": 0, "id": callID, "type": "function",
+					"function": map[string]any{"name": tool, "arguments": *call},
 				}}},
 			}},
 		})
@@ -115,7 +121,7 @@ func (m *tierProbeProvider) handler(t *testing.T) http.HandlerFunc {
 
 // tierBoot writes a config whose TOP-LEVEL permission.external_directory
 // is EXACTLY the platform floor (as the ConfigWriter renders it since the
-// #1493 wire finding) and boots the pinned binary via the shared harness.
+// tier-ruling wire finding) and boots the pinned binary via the shared harness.
 // The historical mode.permissions shape is deliberately NOT written: it
 // is INERT on the pinned 1.18.15 — these legs exist to prove the floor
 // DENIES through the live key, so a leg passing here is proof the
@@ -178,6 +184,43 @@ func lastToolResult(t *testing.T, c *Client, sessionID string) string {
 	return ""
 }
 
+// TestPermissionTier_AllowPathPermitsRead — THE CORPSE-#5 REGRESSION
+// LEG: the read of an ALLOWED path (/tmp — the tier pre-allow) must
+// SUCCEED through the real binary. This is the leg that would have
+// caught the months-long inertness (both deny legs pass under an
+// over-broad deny render; only an allow leg proves allows apply) and
+// the leg that guards the top-level render against a future regression
+// to the inert mode.permissions shape.
+func TestPermissionTier_AllowPathPermitsRead(t *testing.T) {
+	probeFile := "/tmp/tier-allow-probe.txt"
+	require.NoError(t, os.WriteFile(probeFile, []byte("TIER-ALLOW-PROBE-CONTENT\n"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(probeFile) })
+
+	prov := tierProbeProvider{}
+	prov.calls = []string{`{"filePath":"` + probeFile + `"}`}
+	provSrv := &httptest.Server{Listener: mustListener(t, 14500), Config: &http.Server{Handler: prov.handler(t)}}
+	provSrv.Start()
+	t.Cleanup(provSrv.Close)
+
+	srv := tierBoot(t, provSrv)
+	c := NewLoopbackClient(srv.baseURL, "test-password")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	id, err := c.SessionCreate(ctx, "tier-allow")
+	require.NoError(t, err)
+
+	_, err = c.SessionSend(ctx, id, "read the file", "", nil)
+	require.NoError(t, err, "the turn must complete")
+
+	res := lastToolResult(t, c, id)
+	t.Logf("read tool result: %s", res)
+	assert.NotContains(t, res, "prevents you from using this specific tool call",
+		"an ALLOWED path must NOT be denied — an allow-tier failure here is corpse #5 reanimated (the render or the key is wrong)")
+	assert.Contains(t, res, "TIER-ALLOW-PROBE-CONTENT",
+		"the allowed read must return the file's content — the allow tier PERMITS through the real matcher")
+}
+
 // TestPermissionTier_ReadDeniesCanonicalTargets: the read tool resolves
 // symlinks to canonical paths before the permission gate — the
 // resolved-target denies (/sandbox-runtime/rt/secrets/*) must fire.
@@ -222,7 +265,7 @@ func TestPermissionTier_BashDeniesTypedEtcPath(t *testing.T) {
 	// Reuse the provider shape with a bash call.
 	prov := tierProbeProvider{}
 	prov.calls = []string{`{"command":"cat /etc/passwd"}`}
-	provSrv := &httptest.Server{Listener: mustListener(t, 14495), Config: &http.Server{Handler: prov.handlerBash(t)}}
+	provSrv := &httptest.Server{Listener: mustListener(t, 14495), Config: &http.Server{Handler: prov.handlerTool(t, "bash", "call_tier_b")}}
 	provSrv.Start()
 	t.Cleanup(provSrv.Close)
 
@@ -244,69 +287,6 @@ func TestPermissionTier_BashDeniesTypedEtcPath(t *testing.T) {
 		"bash with a typed /etc path must be denied by the tier floor")
 	assert.Contains(t, res, `"/etc/*"`,
 		"the matcher's rule dump must quote the /etc deny — OUR rule fired")
-}
-
-func (m *tierProbeProvider) handlerBash(t *testing.T) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Connection", "close")
-		if r.Method != http.MethodPost || !strings.Contains(r.URL.Path, "completions") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		m.mu.Lock()
-		var call *string
-		if len(m.calls) > 0 {
-			c := m.calls[0]
-			m.calls = m.calls[1:]
-			call = &c
-		}
-		m.mu.Unlock()
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		if call == nil {
-			text, _ := json.Marshal(map[string]any{
-				"id": "chatcmpl-tier", "object": "chat.completion.chunk", "created": 1, "model": "mockmodel",
-				"choices": []map[string]any{{
-					"index": 0, "finish_reason": nil,
-					"delta": map[string]any{"role": "assistant", "content": "done"},
-				}},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", text)
-			done, _ := json.Marshal(map[string]any{
-				"id": "chatcmpl-tier", "object": "chat.completion.chunk", "created": 1, "model": "mockmodel",
-				"choices": []map[string]any{{"index": 0, "finish_reason": "stop", "delta": map[string]any{}}},
-				"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", done)
-			fmt.Fprint(w, "data: [DONE]\n\n")
-			if flusher != nil {
-				flusher.Flush()
-			}
-			return
-		}
-		chunk, _ := json.Marshal(map[string]any{
-			"id": "chatcmpl-tier", "object": "chat.completion.chunk", "created": 1, "model": "mockmodel",
-			"choices": []map[string]any{{
-				"index": 0, "finish_reason": nil,
-				"delta": map[string]any{"role": "assistant", "tool_calls": []map[string]any{{
-					"index": 0, "id": "call_tier_b", "type": "function",
-					"function": map[string]any{"name": "bash", "arguments": *call},
-				}}},
-			}},
-		})
-		fmt.Fprintf(w, "data: %s\n\n", chunk)
-		done, _ := json.Marshal(map[string]any{
-			"id": "chatcmpl-tier", "object": "chat.completion.chunk", "created": 1, "model": "mockmodel",
-			"choices": []map[string]any{{"index": 0, "finish_reason": "tool_calls", "delta": map[string]any{}}},
-			"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-		})
-		fmt.Fprintf(w, "data: %s\n\n", done)
-		fmt.Fprint(w, "data: [DONE]\n\n")
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
 }
 
 func lastBashResult(t *testing.T, c *Client, sessionID string) string {
@@ -349,6 +329,3 @@ func mustListener(t *testing.T, port int) net.Listener {
 	t.Fatalf("no free port near %d", port)
 	return nil
 }
-
-var _ = os.Getenv // keep os import if fixture paths land later
-var _ = filepath.Join
