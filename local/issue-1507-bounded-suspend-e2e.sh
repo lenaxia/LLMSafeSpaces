@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")")" && pwd
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/us70-common.sh
 source "${SCRIPT_DIR}/lib/us70-common.sh"
 
@@ -142,11 +142,13 @@ else
         note_fail "R1: not Suspended within ${R1_BUDGET_S}s — the busy gate is back or the wiring diverged"
     fi
 
-    # Pod gone.
-    if kc get pod "${POD}" >/dev/null 2>&1; then
-        note_fail "R1: pod ${POD} still exists after Suspended"
+    # Pod gone. Bounded: the phase flips when the controller issues the
+    # deletion, but the pod OBJECT lingers in Terminating while kubelet
+    # runs the grace window (default 40s) — grace + reconcile margin.
+    if wait_for "R1: pod object gone" $((R1_BUDGET_S + 120)) '! kc get pod "${POD}" >/dev/null 2>&1'; then
+        ok "pod deleted (grace window drained)"
     else
-        ok "pod deleted"
+        note_fail "R1: pod ${POD} still exists past the grace window"
     fi
 
     # PVC retained — suspend deletes compute, never data.
@@ -160,15 +162,13 @@ else
     # suspend. Only checkable when the controller pod is discoverable;
     # skip-with-note otherwise (the phase/timing assertions above carry
     # the row even without log access).
-    if [[ -n "${CTL}" ]]; then
-        if kubectl --context "${CTX}" -n "${NS}" logs "${CTL}" --since=$((suspend_elapsed + 60))s 2>/dev/null \
-            | grep -q 'deferring pod deletion behind busy sessions.*"reason": "suspend"'; then
-            note_fail "R2: the suspend drain-defer line fired — the busy gate is back (AC1 violated)"
-        else
-            ok "R2 PASS: no suspend drain-defer in the controller log (AC1)"
-        fi
+    if [[ -z "${CTL}" ]]; then
+        note_fail "R2: controller pod not found — the AC1 log assertion cannot be skipped (fail-closed)"
+    elif kubectl --context "${CTX}" -n "${NS}" logs "${CTL}" --since=$((suspend_elapsed + 120))s 2>/dev/null \
+        | grep -q 'deferring pod deletion behind busy sessions.*"reason": "suspend"'; then
+        note_fail "R2: the suspend drain-defer line fired — the busy gate is back (AC1 violated)"
     else
-        warn "R2: controller pod not found — log assertion skipped"
+        ok "R2 PASS: no suspend drain-defer in the controller log (AC1)"
     fi
 fi
 

@@ -75,7 +75,8 @@ func TestIssue1507Script_OutcomeAssertions(t *testing.T) {
 		`wait_phase "${WS}" Suspended`,
 		`deferring pod deletion behind busy sessions`,
 		`PVC ${PVC} retained`,
-		`pod ${POD} still exists after Suspended`,
+		`R1: pod object gone`,
+		`still exists past the grace window`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("script must assert %q — a #1507 row without this verdict is decorative", marker)

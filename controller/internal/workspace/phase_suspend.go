@@ -85,7 +85,8 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 	// semantics (incident 2026-09-21, workspace d8bed486: a wedged
 	// opencode at 69h CPU kept sessions re-marked busy forever —
 	// busySessions flapped 4↔5 with progressAge pinned at 0s, so the
-	// #761 deferral never expired and Suspending hung for 1h+): suspend
+	// #761 deferral never aged toward its 60-minute drainStallBound and
+	// Suspending hung for 1h+): suspend
 	// is a BOUNDED GRACEFUL termination, not a session-completion wait.
 	// The pod deletion below triggers kubelet SIGTERM → agentd's serial
 	// shutdown (HTTP drain 25s → bg wait 5s → opencode child

@@ -24,7 +24,7 @@ The suspend path never consults busy sessions; the pod's termination grace perio
 ## Key Decisions
 
 1. **The grace already existed**: #761 raised terminationGracePeriodSeconds to 40s for exactly this purpose (the pre-#761 5s grace was cutting in-flight turns). The pod's grace IS the "graceful opencode termination" the issue asks for — the only missing piece was the busy-gate making the controller WAIT INDEFINITELY before issuing the deletion. Removal + explicit flag = the issue's proposed behavior, no new termination machinery needed.
-2. **Why the stall window could never fire** (the incident's design-grade evidence): the flap loop (sessionstate clears stranded busy → the wedged opencode's tracker immediately re-marks busy) makes `snap.differsFrom(state.lastSnapshot)` true every poll — `lastProgressAt` resets each time — so `progressAge` stays ~0s and the 10-minute stall bound is unreachable. Any bound keyed on "progress" is defeated by a wedge that oscillates.
+2. **Why the stall window could never fire** (the incident's design-grade evidence): the flap loop (sessionstate clears stranded busy → the wedged opencode's tracker immediately re-marks busy) makes `snap.differsFrom(state.lastSnapshot)` true every poll — `lastProgressAt` resets each time — so `progressAge` stays ~0s and the 60-minute stall bound (drainStallBound = 60m) is unreachable. Any bound keyed on "progress" is defeated by a wedge that oscillates.
 3. **Waiting provided no value**: the PVC-retention design means busy sessions are terminated either way; the only question is grace (which kubelet provides). Cited in the block comment.
 4. **Metric/event labels for the retired path**: drainReasonSuspend no longer fires from production code — the constant was DELETED outright in the r1 round (no dead vocabulary kept; grep-clean repo-wide).
 
@@ -89,3 +89,10 @@ None.
 - The kind e2e WAS landed in the same round this review landed (ee95c4F4 — the review ran against the r4 head d656e45f; the review's own "no kind-level e2e" is stale against the pushed head).
 - AC4 honestly re-scoped in the PR body: the agentd shutdown-budget path and the grace-expiry hard cut are NOT exercised anywhere in this repo (kubelet-side / agentd-suite rows — nightly follow-ups); what IS delivered is enumerated precisely.
 - Style minors: the flap-repro test's comment reworded to the static-busy truth (the path never reads statusz — the fixture models the incident's observable state, not the oscillation); pod_builder's "flag-parse time" → "controller startup".
+
+## r6 — the runnable-row pass
+
+- SCRIPT_DIR bug fixed (the misplaced-paren subshell idiom killed the script at source — now the standard cd&&pwd form; reviewer-verified empty).
+- Pod-gone verdict BOUNDED: the phase flips at deletion-issue but the pod object lingers in Terminating while kubelet runs the 40s grace — the wait is now budget+120s, matching the semantics under test (the r5 instant-gone check would have false-failed every honest run).
+- R2 fail-closed: an undiscoverable controller pod is a FAIL, not a skip — the AC1 log assertion is a verdict, not decoration.
+- The 10-minute figure corrected to 60 minutes everywhere (drainStallBound = 60m, session_drain.go:91) — worklog, PR body, and the in-code comment; the unreachability argument is number-independent but the record must match the code.
