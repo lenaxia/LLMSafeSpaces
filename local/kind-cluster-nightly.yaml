@@ -1,0 +1,62 @@
+# 2-node kind cluster for the NIGHTLY e2e (local/kind-cluster-nightly.yaml).
+#
+# This is the shared local/kind-cluster.yaml shape PLUS one worker node —
+# the run-35550849959 adjudication's class retirement for the nightly's
+# capacity walls (AC-1c 2026-09-19, AC-13 wave 2 2026-09-20, AC-11
+# 2026-09-21: three consecutive FailedScheduling "Insufficient cpu"
+# walls on the hosted runner's single node, whose ~10-standing-workspace
+# request ceiling the us-70 suite's row legs kept hitting). The wall is
+# requests-vs-allocatable, not real CPU: idle row workspaces stack
+# without failing scheduling — a second node doubles the allocatable
+# ceiling.
+#
+# The SHARED kind-cluster.yaml stays single-node on purpose: the pool is
+# calibrated on exactly that topology (dind nesting, #1244-class network
+# sensitivities) and the weekly attachments run shares it — this file
+# exists so the nightly can carry more nodes without re-topologizing
+# them. Keep this file the shared shape plus nodes ONLY: every
+# dind-escape-prevention setting below (serviceSubnet, iptables
+# kube-proxy, certs.d) must stay identical to the shared config, pinned
+# by local/kind_cluster_config_test.go.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: llmsafespaces
+nodes:
+  - role: control-plane
+    # v1.35.5, listed in kind v0.32.0 release notes. Must satisfy the
+    # chart's kubeVersion floor (>=1.35, #863) — same digest on BOTH
+    # nodes so the cluster version never floats or splits.
+    image: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
+    extraPortMappings:
+      # Map host port 8080 to a NodePort on the cluster so the API is
+      # reachable from the host without `kubectl port-forward`.
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
+  - role: worker
+    # No extraPortMappings: the API server lives on the control plane.
+    # Same digest-pinned image as the control plane (pinned by test).
+    image: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
+networking:
+  # Identical to the shared config (see kind-cluster.yaml for the full
+  # #1244 rationale): 10.217.0.0/16 avoids the home cluster's service
+  # range so dind-escapee packets blackhole instead of reaching a
+  # foreign apiserver.
+  apiServerAddress: "127.0.0.1"
+  serviceSubnet: "10.217.0.0/16"
+  podSubnet: "10.244.0.0/16"
+# Local-registry support (same wiring as the shared config): digest-pinned
+# agentd/opencode delivery refs must resolve inside EVERY node — the
+# nightly's post-create step writes the certs.d hosts.toml alias into
+# each node returned by `kind get nodes`.
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
+# kube-proxy stays on iptables mode — identical rationale to the shared
+# config (#1244: nftables DNAT fails the dind nesting).
+kubeadmConfigPatches:
+- |
+  kind: KubeProxyConfiguration
+  apiVersion: kubeproxy.config.k8s.io/v1alpha1
+  mode: iptables

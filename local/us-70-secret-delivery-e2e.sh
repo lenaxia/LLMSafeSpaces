@@ -1140,6 +1140,46 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Mid sweep (run 35550849959): five row workspaces stand at this point
+# (1=AC-1's, 2=AC-2's — reused by AC-17, 3=Chaos's, 4=AC-F's, 5=AC-3's)
+# and were exactly the margin AC-11's ws-010 lacked on the nightly's
+# node. AC-11 and the rows after it re-seed what they need
+# (seed_workspace pre-cleans), so removing 1-5 here is safe. Same
+# verified machinery as the pre/post sweeps — leaks are leaks regardless
+# of node headroom.
+MID_SEL_FAILED=0
+if ! MID_GET=$(kc get workspace -o name 2>/dev/null); then
+    warn "AC-11 mid sweep: selection get failed — cannot confirm the 1-5 range is clear"
+    MID_SEL_FAILED=1
+fi
+MID_SWEPT=$(printf '%s\n' "${MID_GET:-}" \
+    | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=1 && id<=5) print n}')
+MID_N=$(printf '%s' "${MID_SWEPT}" | grep -c . || true)
+if [[ "${MID_N}" -gt 0 ]]; then
+    printf '%s\n' "${MID_SWEPT}" \
+        | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false workspace \
+        || die "AC-11 mid sweep: workspace delete failed"
+    MID_LEFT="unverified"
+    for _ in $(seq 1 30); do
+        if MID_VGET=$(kc get workspace -o name 2>/dev/null); then
+            MID_LEFT=$(printf '%s\n' "${MID_VGET}" \
+                | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=1 && id<=5) print n}')
+            if [[ -z "${MID_LEFT}" ]]; then break; fi
+        fi
+        sleep 2
+    done
+    if [[ -n "${MID_LEFT}" ]]; then
+        die "AC-11 mid sweep: workspaces failed to terminate (or verify) within 60s: ${MID_LEFT}"
+    fi
+    ok "AC-11 mid sweep: ${MID_N} row workspace(s) (ids 1-5) deleted and verified gone"
+else
+    if [[ "${MID_SEL_FAILED}" -eq 1 ]]; then
+        log "AC-11 mid sweep: nothing swept; ids 1-5 state unknown (selection get failed)"
+    else
+        ok "AC-11 mid sweep: nothing to sweep (ids 1-5 already absent)"
+    fi
+fi
+
 # AC-11 — resync endpoint (agentd :4097) = the secrets_resync MCP surface:
 # shape, not_modified on no-change, 429 rate-limit shape on an immediate
 # second call (min-interval 2s). The MCP tool drives this same endpoint

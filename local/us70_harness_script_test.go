@@ -793,6 +793,163 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 	})
 }
 
+// TestUS70MidSweep_CleansRowWorkspacesBeforeAC11 pins the run-35550849959
+// adjudication's row-local hygiene: five row workspaces stand at AC-11's
+// start (1=AC-1's, 2=AC-2's — reused by AC-17, 3=Chaos's, 4=AC-F's,
+// 5=AC-3's; census-verified) and were exactly the margin AC-11's ws-010
+// lacked. The mid sweep removes them with the SAME verified machinery
+// (typed delete, loud failure, verified termination, no
+// unobserved-state claims) before AC-11 recreates its own workspace.
+// Leaks are leaks regardless of node headroom.
+func TestUS70MidSweep_CleansRowWorkspacesBeforeAC11(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	ac11 := strings.Index(src, "AC-11 — POST /v1/resync-secrets")
+	midSweep := strings.LastIndex(src[:ac11], "deleted and verified gone")
+	if ac11 < 0 || midSweep < 0 {
+		t.Fatal("a verified sweep must run before AC-11's row — the five standing row workspaces (1=AC-1's, 2=AC-2's, 3=Chaos's, 4=AC-F's, 5=AC-3's) are the margin ws-010 lacked (run 35550849959)")
+	}
+	blockStart := strings.LastIndex(src[:midSweep], "MID_SEL_FAILED=0")
+	if blockStart < 0 {
+		t.Fatal("mid sweep block start (MID_SEL_FAILED=0) not found before its verdict line")
+	}
+	for _, pin := range []string{
+		"xargs -r -n 20 kubectl --context \"${CTX}\" -n \"${NS}\" delete --wait=false workspace",
+	} {
+		if !strings.Contains(src[blockStart:ac11], pin) {
+			t.Fatalf("the mid sweep must use the verified typed-delete form (%q)", pin)
+		}
+	}
+	if !regexp.MustCompile(`id>=1 && id<=5`).MatchString(src[blockStart:ac11]) {
+		t.Fatal("the mid sweep must cover row workspaces ids 1-5 (the census set: AC-1's 1, AC-2's 2, Chaos's 3, AC-F's 4, AC-3's 5)")
+	}
+}
+
+// TestUS70MidSweep_Executes runs the REAL mid sweep block against the
+// grammar-enforcing fake kubectl: clean sweep verifies gone; wedged
+// termination dies (capacity before AC-11 is load-bearing, same policy
+// as the pre-wave sweep).
+func TestUS70MidSweep_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	block := regexp.MustCompile(`(?s)(?m)^MID_SEL_FAILED=0\nif ! MID_GET=\$\(kc get workspace.*?ok "AC-11 mid sweep: nothing to sweep[^\n]*\n\s*fi\nfi\n`).FindString(src)
+	if block == "" {
+		t.Fatal("mid sweep block not found — did the sweep change shape?")
+	}
+
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "count")
+	fake := "#!/usr/bin/env bash\n" +
+		"seen_del=0\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && seen_del=1; done\n" +
+		"if [[ \"$seen_del\" == \"1\" ]]; then\n" +
+		"  seen_type=0; past_del=0\n" +
+		"  for a in \"$@\"; do\n" +
+		"    [[ \"$a\" == \"delete\" ]] && { past_del=1; continue; }\n" +
+		"    [[ \"$past_del\" == \"1\" && \"$a\" == \"workspace\" ]] && seen_type=1\n" +
+		"  done\n" +
+		"  if [[ \"$seen_type\" == \"0\" ]]; then printf 'fake kubectl: typeless delete (grammar violation)\\n' >&2; exit 9; fi\n" +
+		"  exit ${FAKE_DELETE_EXIT:-0}\n" +
+		"fi\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && {\n" +
+		"  [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}\n" +
+		"  n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
+		"  if [[ \"$n\" -eq 0 ]]; then\n" +
+		"    [[ \"${FAKE_SEL_EMPTY:-}\" != \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000001\\nworkspace/e2e5d000-0000-4000-8000-000000000005\\n'\n" +
+		"    exit 0\n" +
+		"  fi\n" +
+		"  [[ -n \"${FAKE_GET_EXIT_AFTER:-}\" ]] && exit ${FAKE_GET_EXIT_AFTER}\n" +
+		"  [[ \"${FAKE_STUCK:-}\" == \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000001\\n'\n" +
+		"  exit 0\n" +
+		"}; done\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(env string) (string, error) {
+		os.Remove(counter)
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH CTX=kind-x NS=ns\n" + env +
+			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
+ok() { printf 'OK %s\n' "$*"; }
+log() { printf 'LOG %s\n' "$*"; }
+warn() { printf 'WARN %s\n' "$*" >&2; }
+kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
+` + block
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("clean: deletes ids 1-5 typed + verified", func(t *testing.T) {
+		out, err := run("")
+		if err != nil || !strings.Contains(out, "verified gone") {
+			t.Fatalf("clean mid sweep must verify gone, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("wedged: dies (capacity before AC-11 is load-bearing)", func(t *testing.T) {
+		out, err := run("export FAKE_STUCK=1\n")
+		if err == nil || !strings.Contains(out, "failed to terminate") {
+			t.Fatalf("a wedged mid sweep must die, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("nothing standing: states exactly that", func(t *testing.T) {
+		out, err := run("export FAKE_SEL_EMPTY=1\n")
+		if err != nil || !strings.Contains(out, "nothing to sweep") || strings.Contains(out, "verified gone") {
+			t.Fatalf("the unswept path states what it is, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("failed delete dies loudly (fiction-class parity)", func(t *testing.T) {
+		out, err := run("export FAKE_DELETE_EXIT=1\n")
+		if err == nil || !strings.Contains(out, "DIE") {
+			t.Fatalf("a failed mid-sweep delete must die, err=%v\n%s", err, out)
+		}
+	})
+	t.Run("selection failure: state unknown, never a fiction claim", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a selection-get blip warns and continues, got: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "already absent") || strings.Contains(out, "verified gone") || !strings.Contains(out, "state unknown") {
+			t.Fatalf("a failed selection must assert no unobserved state, got: %q", out)
+		}
+	})
+	t.Run("failed verify get never counts as verified", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT_AFTER=1\n")
+		if err == nil || strings.Contains(out, "verified gone") || !strings.Contains(out, "failed to terminate") {
+			t.Fatalf("a never-succeeding verify get must die unverified, err=%v\n%s", err, out)
+		}
+	})
+
+	// Boundary execution (r2 residual): the production MID awk itself is
+	// extract-and-executed against boundary ids — inclusion must be
+	// exactly {1..5}, never 0/6/90/101 (a drift like id>=0 or id<=6
+	// passes every block-level test but breaks here).
+	mid := regexp.MustCompile(`(?s)MID_SWEPT=\$\(printf[^\n]*\n\s*\| awk -F/ '(.*?)'\)`).FindStringSubmatch(src)
+	if mid == nil {
+		t.Fatal("mid sweep awk not found in the expected capture form")
+	}
+	for _, tc := range []struct {
+		id   int
+		want bool
+	}{
+		{0, false}, {1, true}, {2, true}, {3, true}, {4, true}, {5, true}, {6, false}, {90, false}, {101, false},
+	} {
+		name := fmt.Sprintf("e2e5d000-0000-4000-8000-%012d", tc.id)
+		cmd := exec.Command("awk", "-F/", mid[1])
+		cmd.Stdin = strings.NewReader("workspace/" + name + "\n")
+		o, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("mid awk execution failed: %v", err)
+		}
+		got := strings.TrimSpace(string(o)) != ""
+		if got != tc.want {
+			t.Fatalf("PRODUCTION mid awk for id %d: got %v want %v — the sweep range drifted", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestUS70PoolWorkflow_Pins(t *testing.T) {
 	src := mustRead(t, us70PoolWorkflow)
 	for _, pin := range []string{
