@@ -369,6 +369,19 @@ jobs:
           NS: ${{ env.NS }}
         run: bash local/us-68-attachments-e2e.sh
 
+      - name: Run upload staging stress rows (design 0060 §6)
+        # The §6 invariant harness: measured staging residency (gauge
+        # pins), credential isolation under storm, disk-margin edges,
+        # mid-stream kills, ack-latency baseline. Rows whose mechanisms
+        # ride the agentd staging lane (PR 1/2) skip-DOWN loudly until
+        # that lane merges; the API-side 411 row runs now.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18084
+        run: bash local/us-1500-upload-stress-e2e.sh
+
       - name: Run secret-delivery e2e rows (Epic 70 US-70.1 AC-1/2/13/17 + chaos)
         # Cluster-bound spawn-time-pull acceptance rows: cold-create env
         # (AC-1), suspend→resume env ≤90s with no reload (AC-2), concurrent

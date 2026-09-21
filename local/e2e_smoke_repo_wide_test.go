@@ -48,6 +48,7 @@ func TestHarnessExecuteSmoke_RepoWide(t *testing.T) {
 		{"us-70 revisions", "us-70-revisions-e2e.sh", "Active", "minted an empty token", "revisions suite complete", nil},
 		{"dev-preview tunnel", "dev-preview-tunnel-e2e.sh", "Active", "#1333-A: bare port", "ALL LEGS GREEN", nil},
 		{"us-63 v2 behavior", "us-63-v2-behavior-e2e.sh", "Active", "starting long turn", "all V2 behavioral assertions PASSED", nil},
+		{"us-1500 upload stress", "us-1500-upload-stress-e2e.sh", "Active", "SKIP-DOWN: staging gauges absent", "all rows passed", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
