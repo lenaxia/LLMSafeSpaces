@@ -259,7 +259,7 @@ func TestIntegration1342_PendingApplySurfacesOnHealthz(t *testing.T) {
 	require.Eventually(t, func() bool { return pending.snapshot() != nil },
 		2*time.Second, 10*time.Millisecond)
 
-	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil)
+	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil, nil)
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 	assert.Contains(t, rec.Body.String(), "pendingApply")

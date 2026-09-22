@@ -372,3 +372,27 @@ func TestRelayLiveness_RenewedBatchPickedUpWithoutRestart(t *testing.T) {
 	snap := m.snapshot()
 	assert.Equal(t, "rNEW0002", snap.AppliedRevision, "the revision feed tracks the applied batch")
 }
+
+// TestRelayLiveness_FirstPresentHookFiresOnce (US-72.6, r1
+// missing-test): the scrub hook fires EXACTLY once across repeated
+// Present=true evaluations and NEVER when no relay entries are observed.
+func TestRelayLiveness_FirstPresentHookFiresOnce(t *testing.T) {
+	router := newRelayTestRouter(t)
+	path := writeRelayBatch(t, t.TempDir(), router.srv.URL, "rLIV0002", futureRFC3339(t, time.Hour))
+
+	fired := 0
+	m := newRelayLivenessMonitorWithHook(path, &http.Client{Timeout: 500 * time.Millisecond}, func() { fired++ })
+
+	for i := 0; i < 3; i++ {
+		code := m.evaluate(context.Background())
+		require.Equal(t, "", code, "healthy cycle %d", i)
+	}
+	assert.Equal(t, 1, fired, "the scrub hook fires exactly once across repeated Present=true evaluations")
+
+	// Absent batch: no relay entries → Present=false → never fires.
+	fired2 := 0
+	m2 := newRelayLivenessMonitorWithHook(filepath.Join(t.TempDir(), "absent.json"), nil, func() { fired2++ })
+	code := m2.evaluate(context.Background())
+	assert.Equal(t, "absent", code)
+	assert.Equal(t, 0, fired2, "a flag-off pod never scrubs")
+}

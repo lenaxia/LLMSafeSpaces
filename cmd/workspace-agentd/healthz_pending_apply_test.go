@@ -24,7 +24,7 @@ func TestHealthzHandler_PendingApplySurfaces(t *testing.T) {
 	pending := newPendingApplyTracker()
 	pending.begin(2)
 
-	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil)
+	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil, nil)
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 
@@ -39,7 +39,7 @@ func TestHealthzHandler_PendingApplySurfaces(t *testing.T) {
 func TestHealthzHandler_PendingApplyAbsentWhenCleared(t *testing.T) {
 	pending := newPendingApplyTracker()
 
-	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil)
+	handler := healthzHandler(time.Now(), "", nil, pending.snapshot, nil, nil)
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 
@@ -50,7 +50,7 @@ func TestHealthzHandler_PendingApplyAbsentWhenCleared(t *testing.T) {
 }
 
 func TestHealthzHandler_NilPendingApplySnapshotOmitted(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 

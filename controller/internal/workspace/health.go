@@ -196,6 +196,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 			RelayRevision:  relayRevisionOf(healthResp.Relay),
 		}
 	}
+	// US-72.6 (design 0058 §8): the one-time legacy-key scrub report →
+	// the LegacyKeysScrubbed condition (+ the exactly-once event).
+	r.mirrorLegacyScrub(ctx, ws, healthResp.LegacyScrub)
 	// #1342 item 4 (L11): mirror the deferred-credential-apply state so
 	// operators see WHY a credential change has not applied — it rides a
 	// maintenance window behind busy sessions. Absent field (nothing
@@ -211,6 +214,70 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
 		v1.ReasonAgentHealthy, appendAgentWarnings(
 			fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds), healthResp.Warnings))
+}
+
+// mirrorLegacyScrub (US-72.6, design 0058 §8): healthz's (/v1/healthz —
+// the surface checkAgentHealth polls) one-time scrub report → the
+// LegacyKeysScrubbed condition (idempotent by setCondition's
+// status+reason dedupe) + the LegacyKeysScrubbed event EXACT ONCE per
+// report-change (the report is static after the boot scrub, so the
+// event fires on first observation only — a persisted last-observed
+// annotation makes the idempotency survive controller restarts).
+func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Workspace, rep *agentd.LegacyScrubHealth) {
+	if rep == nil {
+		return
+	}
+	summary := fmt.Sprintf("auth=%d config=%d", rep.AuthKeysRemoved, rep.ConfigKeysRemoved)
+	noticeable := rep.AuthKeysRemoved > 0 || rep.ConfigKeysRemoved > 0 || rep.Error != ""
+	if rep.Error != "" {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "False", "ScrubError", rep.Error)
+	} else if noticeable {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "True", "KeysRemoved", "legacy keys removed: "+summary)
+	} else {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "True", "Clean", "clean")
+	}
+	if !noticeable || r.Recorder == nil {
+		return
+	}
+	const annKey = "llmsafespaces.dev/legacy-scrub-reported"
+	stamp := summary
+	if rep.Error != "" {
+		stamp = "error"
+	}
+	if ws.Annotations[annKey] == stamp {
+		return // already reported this exact outcome (in-memory fast path)
+	}
+	// PERSIST the stamp via a FULL object Update on a FRESH fetch — the
+	// health-check's r.Status().Update writes only the status subresource
+	// and DROPS metadata, so an in-memory-only stamp would re-fire the
+	// event on every reconcile (~15s cadence, forever); and updating the
+	// caller's live object directly would clobber its accumulated status
+	// mutations (the fake client resets status on plain Update under a
+	// registered status subresource — the same reason
+	// clearForceRecycleAnnotation updates a fresh object and RV-syncs).
+	var fresh v1.Workspace
+	if err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &fresh); err != nil {
+		return // a later pass retries (the in-memory stamp stays unset)
+	}
+	if fresh.Annotations == nil {
+		fresh.Annotations = map[string]string{}
+	}
+	fresh.Annotations[annKey] = stamp
+	if err := r.Update(ctx, &fresh); err != nil {
+		return // a later pass retries honestly; never silently dropped
+	}
+	ws.ResourceVersion = fresh.ResourceVersion // keep the caller's later Status().Update conflict-free
+	if ws.Annotations == nil {                 // in-memory fast path for this pass
+		ws.Annotations = map[string]string{}
+	}
+	ws.Annotations[annKey] = stamp
+	if rep.Error != "" {
+		r.Recorder.Eventf(ws, "Warning", "LegacyKeysScrubbed",
+			"one-time legacy-key scrub ERRORED: %s", rep.Error)
+	} else {
+		r.Recorder.Eventf(ws, "Normal", "LegacyKeysScrubbed",
+			"one-time legacy-key scrub complete (%s)", summary)
+	}
 }
 
 // relayRevisionOf extracts the applied relay revision from a relay

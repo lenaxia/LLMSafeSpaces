@@ -97,6 +97,10 @@ type serverDeps struct {
 	// healthz/readyz/statusz fields then stay empty (a flag-off pod is
 	// Present=false, never a degrade).
 	relayLiveness *relayLivenessMonitor
+	// legacyScrub (US-72.6, design 0058 §8) carries the one-time
+	// legacy-key scrub's static report to healthz (/v1/healthz — the
+	// surface the controller polls). Nil-safe.
+	legacyScrub *legacyScrubTracker
 	// pendingApply surfaces the deferred credential apply on healthz →
 	// the controller's CredentialsApplyPending condition (#1342 item 4).
 	// Nil-safe by construction (every method tolerates the nil
@@ -522,7 +526,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness)))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubSnapshotFor(deps.legacyScrub)))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 

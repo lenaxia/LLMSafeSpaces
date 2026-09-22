@@ -36,7 +36,7 @@ import (
 // reflects the supplied startedAt.
 func TestHealthzHandler_ReturnsHealthyWithoutOpencode(t *testing.T) {
 	startedAt := time.Now().Add(-42 * time.Second)
-	handler := healthzHandler(startedAt, "", nil, nil, nil)
+	handler := healthzHandler(startedAt, "", nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -72,7 +72,7 @@ func TestHealthzHandler_NeverCallsOpencode(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	const probes = 50
 	maxLatency := time.Duration(0)
@@ -122,7 +122,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 // kubelet + the controller's frequent probe + arbitrary diagnostic clients
 // produce in practice). Run with -race to catch data races.
 func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	const concurrent = 100
 	var wg sync.WaitGroup
@@ -146,7 +146,7 @@ func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
 // fixtures may probe with POST or with a body. The handler should
 // respond identically.
 func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	for _, method := range []string{"GET", "POST", "HEAD", "PUT", "DELETE"} {
 		t.Run(method, func(t *testing.T) {
@@ -163,7 +163,7 @@ func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
 // must show uptime advancing by at least 1 second.
 func TestHealthzHandler_UptimeAdvances(t *testing.T) {
 	startedAt := time.Now()
-	handler := healthzHandler(startedAt, "", nil, nil, nil)
+	handler := healthzHandler(startedAt, "", nil, nil, nil, nil)
 
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -190,7 +190,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 	// healthzHandler takes (startedAt time.Time). It MUST NOT take an
 	// *OpenCodeClient. If a future change adds the dependency, the
 	// signature changes and this test fails to compile — also acceptable.
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 	require.NotNil(t, handler)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
@@ -204,7 +204,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 // ./cmd/workspace-agentd/
 
 func BenchmarkHealthzHandler(b *testing.B) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 
 	b.ResetTimer()
@@ -218,7 +218,7 @@ func BenchmarkHealthzHandler(b *testing.B) {
 // not consult ctx (it has no opencode call to cancel, no goroutine to
 // cancel). A canceled context must still produce a 200 response.
 func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already canceled
@@ -242,7 +242,7 @@ func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
 // binary disassembly. Un-stamped builds report "unknown" (pkg/version
 // defaults); the omitempty tags are inert by design.
 func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -267,7 +267,7 @@ func keys(m map[string]any) []string {
 // high request rate without leaking goroutines. This is a regression
 // test for the implicit assumption that /v1/healthz is essentially free.
 func TestHealthzHandler_BurstThroughput(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	const requests = 10_000
 	deadline := time.Now().Add(2 * time.Second)
@@ -303,7 +303,7 @@ func TestHealthzHandler_SurfacesModelResolutionWarning(t *testing.T) {
 
 	t.Run("marker present", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(warnPath, []byte(`{"defaultModel":"deepseek-v4-flash-free"}`), 0o600))
-		handler := healthzHandler(time.Now(), warnPath, nil, nil, nil)
+		handler := healthzHandler(time.Now(), warnPath, nil, nil, nil, nil)
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -317,7 +317,7 @@ func TestHealthzHandler_SurfacesModelResolutionWarning(t *testing.T) {
 	})
 
 	t.Run("marker absent", func(t *testing.T) {
-		handler := healthzHandler(time.Now(), filepath.Join(dir, "nonexistent.json"), nil, nil, nil)
+		handler := healthzHandler(time.Now(), filepath.Join(dir, "nonexistent.json"), nil, nil, nil, nil)
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -330,7 +330,7 @@ func TestHealthzHandler_SurfacesModelResolutionWarning(t *testing.T) {
 
 	t.Run("marker corrupt", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(warnPath, []byte("not-json"), 0o600))
-		handler := healthzHandler(time.Now(), warnPath, nil, nil, nil)
+		handler := healthzHandler(time.Now(), warnPath, nil, nil, nil, nil)
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -366,7 +366,7 @@ func TestModelResolutionWarning_RoundTrip(t *testing.T) {
 // capability statement only; it must never grow into a convergence
 // signal (secretsreconcile still judges from spawned_rev).
 func TestHealthzHandler_DeliveryCapabilityMarker(t *testing.T) {
-	handler := healthzHandler(time.Now(), "", nil, nil, nil)
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -375,4 +375,32 @@ func TestHealthzHandler_DeliveryCapabilityMarker(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, agentd.DeliveryCapability, resp.Delivery)
 	assert.Equal(t, "v2", resp.Delivery, "the capability constant must stay the v2 marker")
+}
+
+// TestHealthz_RendersLegacyScrubSlice (US-72.6, r3): a non-nil
+// legacyScrub snapshot must actually RENDER in /v1/healthz's JSON — the
+// surface the controller's LegacyKeysScrubbed mirror polls.
+func TestHealthz_RendersLegacyScrubSlice(t *testing.T) {
+	snap := func() *agentd.LegacyScrubHealth {
+		return &agentd.LegacyScrubHealth{RanAt: 1758518400, AuthKeysRemoved: 2, ConfigKeysRemoved: 1}
+	}
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, snap)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v1/healthz", nil)
+	handler(rec, req)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	slice, ok := body["legacyScrub"].(map[string]any)
+	require.True(t, ok, "the legacyScrub slice must render: %s", rec.Body.String())
+	assert.InDelta(t, float64(2), slice["authKeysRemoved"], 0)
+	assert.InDelta(t, float64(1), slice["configKeysRemoved"], 0)
+
+	// And the nil case OMITS the field (a flag-off pod).
+	handler2 := healthzHandler(time.Now(), "", nil, nil, nil, nil)
+	rec2 := httptest.NewRecorder()
+	handler2(rec2, req)
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &body2))
+	assert.NotContains(t, body2, "legacyScrub", "nil snapshot omits the field")
 }

@@ -281,9 +281,14 @@ const (
 	WorkspaceConditionSuspended            WorkspaceConditionType = "Suspended"
 	WorkspaceConditionCredentialsAvailable WorkspaceConditionType = "CredentialsAvailable"
 	WorkspaceConditionAgentHealthy         WorkspaceConditionType = "AgentHealthy"
-	WorkspaceConditionProviderReady        WorkspaceConditionType = "ProviderReady"
-	WorkspaceConditionDiskPressure         WorkspaceConditionType = "DiskPressure"
-	WorkspaceConditionMemoryPressure       WorkspaceConditionType = "MemoryPressure"
+	// WorkspaceConditionLegacyKeysScrubbed (US-72.6, design 0058 §8):
+	// the one-time legacy-key migration scrub's outcome, mirrored from
+	// healthz's (/v1/healthz) legacyScrub slice. True/clean = the steady
+	// state.
+	WorkspaceConditionLegacyKeysScrubbed WorkspaceConditionType = "LegacyKeysScrubbed"
+	WorkspaceConditionProviderReady      WorkspaceConditionType = "ProviderReady"
+	WorkspaceConditionDiskPressure       WorkspaceConditionType = "DiskPressure"
+	WorkspaceConditionMemoryPressure     WorkspaceConditionType = "MemoryPressure"
 	// WorkspaceConditionAgentdVerified reports the integrity state of the
 	// image-volume-delivered workspace-agentd binary (#863). Only set when
 	// agentd overlay delivery is enabled; absent in legacy baked-in mode.
