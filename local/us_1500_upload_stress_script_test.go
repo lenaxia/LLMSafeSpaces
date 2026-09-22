@@ -195,3 +195,69 @@ func TestUploadStress_SR6DeliveryGate(t *testing.T) {
 	assert.Contains(t, wfs, "SR-6 skips-DOWN loudly",
 		"the workflow comment must teach the in-run gate")
 }
+
+// TestUploadStress_SR6Gate_Executes runs the REAL gate + baseline blocks
+// (extracted from the script) across four legs: 507-clean → skip +
+// exit 0; 507 + prior failure → die; non-507 non-201 → note_fail +
+// falls through; 201 → falls through clean. This is the test that
+// would have caught the r2 phantom-fix (the deleted baseline assertion).
+func TestUploadStress_SR6Gate_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	text := string(src)
+
+	// Extract the gate + baseline-assertion block.
+	gateStart := strings.Index(text, `if [[ "${L1_STATUS}" == "507" ]]`)
+	gateEnd := strings.Index(text, "The concurrency boundary")
+	require.Greater(t, gateStart, 0, "gate not found")
+	require.Greater(t, gateEnd, gateStart, "gate end not found")
+	block := text[gateStart:gateEnd]
+
+	dir := t.TempDir()
+	stub := "#!/bin/sh\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sleep"), []byte(stub), 0o755))
+
+	run := func(status string, failures int) (string, error) {
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH\n" +
+			"L1_STATUS=" + status + "\n" +
+			"failures=" + fmt.Sprintf("%d", failures) + "\n" +
+			"sr_skips=0\n" +
+			"note_fail() { failures=$((failures + 1)); echo \"NOTE_FAIL: $*\" >&2; }\n" +
+			"sr_skip() { sr_skips=$((sr_skips + 1)); echo \"SKIP-DOWN: $*\" >&2; }\n" +
+			"log() { echo \"LOG: $*\"; }\n" +
+			"warn() { echo \"WARN: $*\" >&2; }\n" +
+			"die() { echo \"DIE: $*\" >&2; exit 1; }\n" +
+			block + "\necho AFTER-GATE\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("507 clean: skip + exit 0", func(t *testing.T) {
+		out, err := run("507", 0)
+		require.NoError(t, err, "507 with no prior failures must exit clean: %s", out)
+		assert.Contains(t, out, "SKIP-DOWN: SR-6: baseline upload 507")
+		assert.NotContains(t, out, "AFTER-GATE", "the 507 gate must exit, not fall through")
+	})
+
+	t.Run("507 + prior failure: dies", func(t *testing.T) {
+		out, err := run("507", 2)
+		require.Error(t, err, "prior failures must propagate, not be masked green")
+		assert.Contains(t, out, "DIE: upload stress harness: 2 row(s) failed")
+	})
+
+	t.Run("500 (non-507 non-201): note_fail + falls through", func(t *testing.T) {
+		out, err := run("500", 0)
+		require.NoError(t, err, "the baseline assertion is a note_fail, not a die — must fall through")
+		assert.Contains(t, out, "NOTE_FAIL: SR-6: single-upload baseline failed (500)")
+		assert.Contains(t, out, "AFTER-GATE", "a non-507 failure must NOT take the gate exit — it reaches the storms")
+	})
+
+	t.Run("201: clean fall-through", func(t *testing.T) {
+		out, err := run("201", 0)
+		require.NoError(t, err)
+		assert.Contains(t, out, "AFTER-GATE", "a 201 baseline proceeds to the latency rows")
+		assert.NotContains(t, out, "SKIP-DOWN")
+		assert.NotContains(t, out, "NOTE_FAIL")
+	})
+}

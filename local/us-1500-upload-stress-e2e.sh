@@ -398,13 +398,20 @@ if [[ "${L1_STATUS}" == "507" ]]; then
     # regression still reaches the failure path. SR-1–SR-5's clean-fail
     # assertions already ran; the LATENCY rows are meaningless without
     # delivery. Loud skip, never a silent step-level if. A non-507
-    # non-201 falls through to the failure note below.
+    # non-201 hits the baseline-failure note_fail BELOW this gate.
     sr_skip "SR-6: baseline upload ${L1_STATUS} (delivery leg #1518/#1524 absent) — latency + boundary rows skip-DOWN"
     log "upload stress harness: SR-1–SR-5 complete; SR-6 skipped (skips: ${sr_skips})"
     if [[ "${failures}" -ne 0 ]]; then
         die "upload stress harness: ${failures} row(s) failed (skips: ${sr_skips})"
     fi
     exit 0
+fi
+if [[ "${L1_STATUS}" != "201" ]]; then
+    # A non-507 non-201 baseline (500/429/000/502/504) is NOT the
+    # half-stack's designed clean-fail — it's a genuine upload-path
+    # failure and the latency numbers are meaningless for the wrong
+    # reason. This assertion MUST stay BELOW the 507 gate.
+    note_fail "SR-6: single-upload baseline failed (${L1_STATUS}) — latency numbers meaningless"
 fi
 # The concurrency boundary — CONCURRENT uploads with PER-UPLOAD timing
 # (r5 finding: wall-clock-only was conditionally vacuous for fast
