@@ -11,7 +11,7 @@
 1. **jq -rc extraction (R4b, R4d)**: actionResult is a structured JSON object; jq -r pretty-prints objects and head -1 returned just `{`. Both sites now use `-rc` (compact).
 2. **R10's @tsv pipeline**: the misdiagnosis — `-rc` alone was a no-op (r1's catch); @tsv REJECTS objects regardless of compaction mode. The fix is `tostring` on the actionResult member: `[.status, ((.actionResult // "") | tostring)] | @tsv`.
 3. **R4d/R10 loops**: three `[[ ]] && break` sites converted to `if/then` (the repo-banned pattern).
-4. **R8 admin-gate**: org creation now returns 403 for tenants; the row warns loudly citing the #1522 blast-radius choice and falls through to full execution if admin access exists.
+4. **R8 admin-gate**: org creation now returns 403 for tenants; the row checks the NAMED error body (`only platform admins` — not any 403), warns loudly citing the #1522 blast-radius choice, counts 10 skipped rows in `SKIPPED_ROWS` (reported in both the verdict ok and the die line), and falls through to full execution if admin access exists. The `failures + 0` no-op from the first draft removed.
 
 ## Tests Run
 

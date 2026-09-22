@@ -698,7 +698,6 @@ if [[ "${api_status}" == "403" && "${R8_ORG_RESP}" == *"only platform admins"* ]
     # (an auth failure, a rate limit) still fails the row.
     warn "R8: org creation admin-gated (tenant harness user — the #1522 choice); org-scope CRUD rows skipped"
     warn "R8: the #1449 shadowing fix is unit-pinned (org trigger route tests) and runs on the pool"
-    failures=$((failures + 0))  # explicit: the skip is NOT a failure
     warn "R8: skipped rows: R8a-e, R1f x2, R1h, R1i, R1g (10 rows — run on the pool)"
     SKIPPED_ROWS=$((SKIPPED_ROWS + 10))
 elif [[ "${api_status}" != "201" ]]; then
@@ -830,6 +829,6 @@ fi
 # --- verdict ---------------------------------------------------------------
 
 if [[ "${failures}" -ne 0 ]]; then
-    die "automation e2e: ${failures} row(s) failed"
+    die "automation e2e: ${failures} row(s) failed (${SKIPPED_ROWS} skipped)"
 fi
 ok "automation e2e: all rows passed (${SKIPPED_ROWS} skipped — see warnings above)"
