@@ -1,14 +1,12 @@
 name: E2E Attachments (kind, single-container)
 
-# Epic 68 cluster-level attachment rows E2/E10/E11 — the three rows the
-# sidecar-mode nightly (e2e-nightly.yml) cannot execute: it installs with
-# controller.agentdSidecar.enabled=true, where uploads clean-fail by
-# design (epic-68 D1 as-built — the sidecar's /workspace is read-only),
-# so local/us-68-attachments-e2e.sh asserts that clean-fail and skips
-# the rows there. This workflow deploys the same chart in
-# single-container mode (controller.agentdSidecar.enabled=false), where
-# uploads are functional: the script's sidecar gate passes through and
-# the rows run fully —
+# Epic 68 cluster-level attachment rows E2/E10/E11 — the single-container
+# complement to the nightly: since design 0060 the nightly (sidecar mode)
+# runs these rows via its D1 feature-detect gate (#1535: 201 → full rows,
+# 502/503 → the pre-0060 loud skip). This workflow re-runs them against
+# the same chart in single-container mode
+# (controller.agentdSidecar.enabled=false), exercising the direct-write
+# path — mode-uniform coverage of the same contract:
 #
 #   E2  — upload → suspend → resume → file byte-identical on the PVC
 #   E10 — two tenants, simultaneous uploads, cross-user 404, no leakage
@@ -261,11 +259,13 @@ jobs:
       - name: Run attachment e2e rows (Epic 68 E2/E10/E11)
         # The script seeds its own users/API keys/workspaces (postgres
         # via kubectl exec + Workspace CRs), port-forwards the API, and
-        # gates on sidecar mode — the gate passes through here because
-        # the install is single-container, so E2 (PVC persistence across
-        # suspend/resume), E10 (multi-tenant isolation), and E11
-        # (pod-kill chaos) execute fully. No LLM credentials are
-        # involved: uploads + filesystem assertions only, no agent turns.
+        # its D1 gate feature-detects the upload shape (#1535) — this
+        # install exercises the DIRECT-WRITE path (single-container),
+        # complementing the nightly's sidecar stage-and-signal leg. E2
+        # (PVC persistence across suspend/resume), E10 (multi-tenant
+        # isolation, cross-user 403), and E11 (pod-kill chaos) execute
+        # fully. No LLM credentials are involved: uploads + filesystem
+        # assertions only, no agent turns.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}

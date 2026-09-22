@@ -231,7 +231,7 @@ are already folded into the decision text above):
    both modes — the sidecar stages on the budgeted shared tmpfs and the
    supervisor's `upload_apply` writes the PVC (stage-and-signal; the
    pre-0060 RO-mount clean-fail is retired). `local/us-68-attachments-e2e.sh`
-   runs its rows UNMODIFIED in both modes (the mode gate only logs).
+   runs its rows in both modes (the D1 gate feature-detects: 201 → full rows in sidecar mode; 502/503 → the pre-0060 loud skip; else → hard fail).
 2. **Manifest attributes (D7):** v1 lines carry `path` + `name` only — the
    illustrative `bytes=` sketch was dropped because send-time validation is
    shape-only (D8). The golden fixtures in `pkg/session/attachments/testdata/`

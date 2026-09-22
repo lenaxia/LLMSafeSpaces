@@ -1,8 +1,8 @@
 # Worklog: design 0060 PR 4 — the sidecar upload e2e un-skip
 
 **Date:** 2026-09-21
-**Session:** feat/upload-e2e-unskip — §9 PR 4: the nightly's Epic 68 rows flip from assert-clean-fail to assert-delivery (the Rule-0 gate #1518's review holds on)
-**Status:** Complete (this PR; stacked on #1518/#1523)
+**Session:** feat/upload-e2e-unskip — §9 PR 4: the docs retirement on top of #1535's feature-detect gate (the script and its test pins ride main via #1535)
+**Status:** Complete (this PR; REBASED onto post-#1535/#1536 main — docs-only delta on the gate that rides main)
 
 ---
 
