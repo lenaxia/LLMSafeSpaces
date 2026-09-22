@@ -14,7 +14,7 @@
 #
 # SIDECAR MODE GATE (feature-detect, D1 + design 0060): in agentd-sidecar
 # deployments the upload path is PROBED, not assumed. Pre-0060 clusters
-# (the sidecar's /workspace is read-only) see uploads clean-fail with 5xx
+# (the sidecar's /workspace is read-only) see uploads clean-fail with 502 (the designed proxy shape; 503 is a defense-in-depth arm)
 # — that shape asserts the old D1 contract and SKIPS E2/E10/E11 loudly.
 # Post-0060 clusters (staging lane + supervisor apply landed — #1515/#1516/
 # #1518) see uploads SUCCEED (201) — the gate falls through and runs

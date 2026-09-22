@@ -2,13 +2,13 @@
 
 **Date:** 2026-09-22
 **Session:** The scoreboard dispatch found the D1 contract superseded: design 0060's full stack (#1515 staging + #1516 forwarding + #1518 supervisor apply) landed between dispatches and sidecar uploads now SUCCEED. The D1 clean-fail assertion was the pre-0060 contract. Adjudicated: feature-detect (my recommendation, endorsed).
-**Status:** Complete — PR open, iterating review
+**Status:** Complete (r3: 5xx-comment corrections + worklog update shipped) — PR open, iterating review
 
 ---
 
 ## Objective / Work Completed
 
-The gate now distinguishes THREE upload shapes:
+The gate now distinguishes THREE upload shapes (502/503 specifically, not all 5xx; 500 hits the die arm):
 - **201** → design 0060 landed (stage-and-signal works) — falls through and runs E2/E10/E11 FULLY in sidecar mode (the new design's coverage, gained for free)
 - **502/503** → pre-0060 clean-fail (the proxy/sidecar's DESIGNED upload-unavailable response — the old D1 contract) — loud skip, no files, exit 0
 - **anything else** (500, 000, 4xx, corrupt) → hard die ("neither designed-success nor designed-clean-fail") — the detector distinguishes designed outcomes from broken ones, never absorbing the latter
