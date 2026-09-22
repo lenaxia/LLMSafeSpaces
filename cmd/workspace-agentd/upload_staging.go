@@ -201,6 +201,11 @@ type uploadStager struct {
 	mu           sync.Mutex
 	reservations map[string]int64 // uploadID → reserved bytes (held until bytes leave)
 
+	// sweepStarted, when non-nil, is closed synchronously BEFORE the
+	// sweeper goroutine launches (TestBuildSidecarDeps_SweeperPlacement-
+	// Guarded observes it through the real wiring).
+	sweepStarted chan struct{}
+
 	metrics stagingMetrics
 }
 
@@ -497,6 +502,9 @@ func stripTmpSuffix(name string) string {
 func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Minute
+	}
+	if s.sweepStarted != nil {
+		close(s.sweepStarted)
 	}
 	go func() {
 		t := time.NewTicker(interval)

@@ -124,6 +124,9 @@ type WorkspaceReconciler struct {
 	// AgentdImage (validated at startup) — the sidecar runs the same
 	// digest-pinned delivery artifact.
 	AgentdSidecarEnabled bool
+	// UploadStaging (design 0060 PR 2.5): the env knobs landed on BOTH
+	// agentd-bearing containers. Zero value = no env = agentd defaults.
+	UploadStaging UploadStagingConfig
 
 	// Recorder emits Kubernetes events on the Workspace (agentd verify
 	// failures). Injected from mgr.GetEventRecorderFor() in production;

@@ -206,6 +206,49 @@ spec:
             {{- if .Values.controller.agentdSidecar.enabled }}
             - --agentd-sidecar=true
             {{- end }}
+            {{- /* Design 0060 PR 2.5: upload-staging knobs as the
+                   controller's k=v flag (only non-zero fields render;
+                   all-zero renders nothing = agentd defaults). */}}
+            {{- $us := .Values.controller.agentdSidecar.uploadStaging }}
+            {{- $kv := list }}
+            {{- if gt ($us.budgetBytes | int) 0 }}
+            {{- $kv = append $kv (printf "budget=%d" ($us.budgetBytes | int)) }}
+            {{- end }}
+            {{- /* floor: >0 renders the value; -1 is the explicit-zero
+                   sentinel (disable the credential reserve — agentd
+                   honors n≥0); 0 = unset. */}}
+            {{- if or (gt ($us.credentialFloorBytes | int) 0) (eq ($us.credentialFloorBytes | int) -1) }}
+            {{- $kv = append $kv (printf "floor=%d" (max ($us.credentialFloorBytes | int) 0)) }}
+            {{- end }}
+            {{- if gt ($us.maxConcurrent | int) 0 }}
+            {{- $kv = append $kv (printf "concurrent=%d" ($us.maxConcurrent | int)) }}
+            {{- end }}
+            {{- if gt ($us.ttlMilliseconds | int) 0 }}
+            {{- $kv = append $kv (printf "ttlMs=%d" ($us.ttlMilliseconds | int)) }}
+            {{- end }}
+            {{- if gt ($us.applyTimeoutMilliseconds | int) 0 }}
+            {{- $kv = append $kv (printf "applyTimeoutMs=%d" ($us.applyTimeoutMilliseconds | int)) }}
+            {{- end }}
+            {{- if $kv }}
+            - --upload-staging={{ $kv | join "," }}
+            {{- /* Render-time fail guard (the r2 finding): the TTL
+                   sweeper must never reclaim an in-flight apply temp —
+                   reject the violating pair BEFORE the controller
+                   crash-loops post-upgrade. The same arithmetic the
+                   flag parser enforces, with agentd's compiled
+                   defaults (15m TTL / 60s apply) for unset knobs. */}}
+            {{- $effApply := 60000 }}
+            {{- if gt ($us.applyTimeoutMilliseconds | int) 0 }}
+            {{- $effApply = ($us.applyTimeoutMilliseconds | int) }}
+            {{- end }}
+            {{- $effTTL := 900000 }}
+            {{- if gt ($us.ttlMilliseconds | int) 0 }}
+            {{- $effTTL = ($us.ttlMilliseconds | int) }}
+            {{- end }}
+            {{- if le $effTTL (add $effApply 5000) }}
+            {{- fail (printf "controller.agentdSidecar.uploadStaging: ttlMilliseconds=%d must exceed the effective apply bound (%d+5000=%d) — the TTL sweeper would reclaim in-flight apply temps" $effTTL $effApply (add $effApply 5000)) }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.controller.agentdDelivery.image }}
             - --agentd-image={{ . }}
             {{- with $.Values.controller.agentdDelivery.binarySHA256Amd64 }}

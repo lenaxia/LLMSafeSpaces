@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -300,21 +301,28 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	// the stager stays unwired and uploads keep today's clean-fail
 	// rather than staging bytes nothing can deliver.
 	stager := newUploadStager(stagingConfigFromEnv(), pkgOpsMetrics)
+	stager.sweepStarted = make(chan struct{})
 	// §4.1.1: establish the dir contract (0750, gid-1000 by process
 	// inheritance) BEFORE the boot scrub so the scrub observes the same
 	// surface the API will write into. A failure logs loudly and rides
 	// (the per-request MkdirAll in stageStream surfaces it as a clean
 	// 507 — nothing is silently swallowed, just deferred to the seam
-	// that can answer the client).
-	if err := stager.ensureStagingDir(); err != nil {
-		log.Error("upload staging: boot dir establish failed", zap.Error(err))
+	// that can answer the client). The staging surface only exists
+	// where the shared tmpfs does: guarded on the parent
+	// (/sandbox-runtime — pod-only; test runners and single-container
+	// dev shells lack it) so boot never error-logs where the leg cannot
+	// run anyway, and the shared metrics singleton sees no boot-time
+	// staging gauges outside a real staging context.
+	if stagingBootShouldRun(stager.cfg.stagingDir) {
+		if err := stager.ensureStagingDir(); err != nil {
+			log.Error("upload staging: boot dir establish failed", zap.Error(err))
+		}
+		stager.scrubStagingDir(0, time.Time{})
+		stager.RecordGauges()
+		// INSIDE the guard: its tick pushes gauges (the "no shared-
+		// metrics writes without a tmpfs" claim must hold for it too).
+		stager.startStagingSweeper(context.Background(), 10*time.Minute)
 	}
-	stager.scrubStagingDir(0, time.Time{})
-	// The sweeper rides the process lifetime (buildSidecarDeps has no
-	// shutdown context; the goroutine is a ticker that dies with the
-	// process — same lifetime as every other sidecar loop).
-	stager.startStagingSweeper(context.Background(), 10*time.Minute)
-	stager.RecordGauges()
 	if cc != nil {
 		client := cc
 		deps.uploadStager = stager
@@ -412,4 +420,13 @@ func (s *socketRestarter) restart() {
 
 func fmtAgentAddr() string {
 	return fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
+}
+
+// stagingBootShouldRun reports whether the staging boot block (dir
+// establish + boot scrub + boot gauges) should run: only where the
+// shared tmpfs parent exists (pod-only; test runners and
+// single-container dev shells lack it — the CI failure class).
+func stagingBootShouldRun(stagingDir string) bool {
+	info, err := os.Stat(filepath.Dir(stagingDir))
+	return err == nil && info.IsDir()
 }

@@ -173,6 +173,10 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
 	}
+	// Design 0060 PR 2.5: the upload-staging knobs this sidecar's
+	// staging leg consumes (admission + stage + the apply client). Zero
+	// config = no env = agentd defaults.
+	env = append(env, r.UploadStaging.EnvVars()...)
 
 	return corev1.Container{
 		Name:           agentdSidecarContainerName,
