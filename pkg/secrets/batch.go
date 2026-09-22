@@ -96,6 +96,22 @@ func BatchHash(batch Batch) string {
 // JSON or empty. Deterministic under any input ordering (I6); scoped to
 // the owner so identical entry sets never collide across owners.
 func ManifestHash(ownerID string, entries []ManifestEntry) string {
+	return manifestHashLines(ownerID, entries, "")
+}
+
+// ManifestHashWithRelayRevision is ManifestHash plus the relay-only
+// manifest tier line (US-72.4, design 0058 §4.4): "relay|<revision>" is
+// hashed immediately after the owner line, so a staged-handoff revision
+// change (a token renewed at ~TTL/2) changes the manifest hash and the
+// existing conditional-pull machinery delivers the fresh batch — no pod
+// restart, no new delivery path (K6). An empty relayRevision must yield
+// EXACTLY ManifestHash (the tier degrades cleanly to rows-only).
+func ManifestHashWithRelayRevision(ownerID string, entries []ManifestEntry, relayRevision string) string {
+	return manifestHashLines(ownerID, entries, relayRevision)
+}
+
+// manifestHashLines is the shared manifest-hash writer.
+func manifestHashLines(ownerID string, entries []ManifestEntry, relayRevision string) string {
 	sorted := make([]ManifestEntry, len(entries))
 	copy(sorted, entries)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -111,6 +127,10 @@ func ManifestHash(ownerID string, entries []ManifestEntry) string {
 	h := sha256.New()
 	h.Write([]byte("owner|" + ownerID))
 	h.Write([]byte{'\n'})
+	if relayRevision != "" {
+		h.Write([]byte("relay|" + relayRevision))
+		h.Write([]byte{'\n'})
+	}
 	for _, e := range sorted {
 		h.Write([]byte(e.SecretID))
 		h.Write([]byte{0})

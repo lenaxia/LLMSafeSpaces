@@ -123,12 +123,19 @@ type HealthzResponse struct {
 	// evidence is not a degrade. Observability only, like Warnings.
 	SpawnEnv *SpawnEnvHealth `json:"spawnEnv,omitempty"`
 	// PendingApply (#1342, L11) is the deferred-credential-apply state:
-	// a restart-worthy credential change is staged on the pod but its
+	// a restart-worthy credential change staged on the pod but its
 	// applying restart is riding a maintenance window behind busy
 	// sessions. Nil when nothing is pending (the credential applied, or
 	// no restart-worthy change arrived). The controller mirrors it into
 	// the Workspace CRD's CredentialsApplyPending condition.
 	PendingApply *PendingApplyHealth `json:"pendingApply,omitempty"`
+	// Relay (US-72.4, design 0058 §4.5) is the relay-only liveness
+	// slice: cached monitor state over the batch's relay-fronted
+	// providers. Nil when the monitor is not wired (tests); a non-nil
+	// RelayHealth with Present=false is a flag-off pod. Observability
+	// only — a relay degrade never flips Healthy (it must not cascade to
+	// a liveness-probe kill; the §4.8 remedy is bounded re-arm).
+	Relay *RelayHealth `json:"relay,omitempty"`
 }
 
 // PendingApplyHealth is the deferred-apply slice of HealthzResponse.
@@ -158,6 +165,41 @@ type SpawnEnvHealth struct {
 	FilesReason   string `json:"filesReason,omitempty"`
 }
 
+// RelayHealth is the relay-only liveness slice of healthz/readyz/statusz
+// (US-72.4, design 0058 §4.5/§4.6): cached monitor state only — the
+// handlers perform no I/O. The controller mirrors DegradedReason into
+// the Workspace CRD's SecretsDelivery surface the US-72.3 staging
+// classification reads; AppliedRevision feeds the lineage conjunct.
+type RelayHealth struct {
+	// Present reports whether relay-fronted providers were observed in
+	// the applied batch (the entry metadata the US-72.4 builder emits).
+	// False on flag-off pods: nothing to watch, never a degrade.
+	Present bool `json:"present"`
+	// Reachable reports the last credential-level probe outcome (GET
+	// {baseURL}/models with the scoped token — served from the router's
+	// staged catalog, zero upstream).
+	Reachable bool `json:"reachable"`
+	// DegradedReason is the active degrade code ("" healthy):
+	// relay_unreachable | token_expired — plus the router's
+	// machine-readable reject reasons when a probe was rejected
+	// (credential_stale, scope_violation, sanitization_refused,
+	// quota_exceeded) — the CredentialRejected/CredentialStale feeds.
+	DegradedReason string `json:"degradedReason,omitempty"`
+	// RouterURL is the router origin the monitor probes (no path, no
+	// token material).
+	RouterURL string `json:"routerUrl,omitempty"`
+	// TokenExpiresAt is the earliest RFC3339 expiry across the batch's
+	// relay tokens ("" when unknown).
+	TokenExpiresAt string `json:"tokenExpiresAt,omitempty"`
+	// AppliedRevision is the staged relay revision of the applied batch
+	// (the entry metadata's relayRevision) — the controller compares it
+	// against the workspace's staged-revision annotation (the lineage
+	// conjunct of the §4.2 terminator).
+	AppliedRevision string `json:"appliedRevision,omitempty"`
+	// LastProbeAt is the last probe's unix seconds (0 before the first).
+	LastProbeAt int64 `json:"lastProbeAt,omitempty"`
+}
+
 // ReadyzResponse is the response for GET /v1/readyz.
 type ReadyzResponse struct {
 	Ready               bool     `json:"ready"`
@@ -182,6 +224,12 @@ type ReadyzResponse struct {
 	// on every ListModels cache miss — using statusz (which has no
 	// latency upper bound) would be unsafe.
 	RelayInjected bool `json:"relay_injected"`
+	// Relay (US-72.4): the relay-only liveness degrade codes
+	// (relay_unreachable / token_expired / router reject reasons).
+	// Observability only — NEVER gates Ready: a relay outage must not
+	// drop the pod from Service endpoints (that would compound the
+	// outage); the remedy is the bounded re-arm + conditions.
+	Relay *RelayHealth `json:"relay,omitempty"`
 }
 
 // FileUploadResponse is the response for PUT /v1/files (Epic 68 US-68.1).
@@ -291,4 +339,8 @@ type StatuszResponse struct {
 	// spawn_env_unavailable — the child spawned platform-env-only from
 	// the last-good cache because the pull missed its bound.
 	Degraded string `json:"degraded,omitempty"`
+	// Relay (US-72.4): the relay-only liveness slice (cached monitor
+	// state; nil when not wired). Mirrors healthz's field on the deep
+	// status endpoint so a relay degrade is visible between scrapes.
+	Relay *RelayHealth `json:"relay,omitempty"`
 }

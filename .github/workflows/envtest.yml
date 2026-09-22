@@ -79,3 +79,12 @@ jobs:
       # (mutation-proven, review round 3); this is the only CI execution.
       - name: Run envtest agentd pin-resolution tests
         run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestAgentdPins -v
+
+      # US-72.4 (#1529 review, required item 3): the relayRevision status
+      # round-trip. An apiextensions structural schema silently PRUNES
+      # undeclared fields on status writes — the in-memory unit suite
+      # cannot see it; only a real apiserver (loading helm/crds/) can.
+      # This is the regression net for the SecretsDeliveryStatus CRD
+      # drift binding in pkg/repolint.
+      - name: Run envtest relay revision round-trip
+        run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestRelayRevision -v

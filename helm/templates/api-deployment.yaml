@@ -126,6 +126,20 @@ spec:
                 secretKeyRef:
                   name: {{ include "llmsafespaces.secretName" . }}
                   key: internal-token
+            {{/* Epic 72 / US-72.4 (design 0058 §4.5): relay-only token
+                   emission in the API's batch builder — the same
+                   deployment flag the controller consumes. The builder
+                   reads the controller-staged handoff Secret through the
+                   API's existing K8s client; flag off = byte-identical
+                   legacy batches. relayOnlyKeyDelivery.api.enabled=false
+                   is the narrow builder-only rollback lever (controller
+                   staging + router stay up). dig (not `default`) so an
+                   EXPLICIT false is honored — `default true` would
+                   coerce false back to true. */}}
+            {{- if and .Values.relayOnlyKeyDelivery.enabled (dig "api" "enabled" true .Values.relayOnlyKeyDelivery) }}
+            - name: LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED
+              value: "true"
+            {{- end }}
             - name: LLMSAFESPACES_KUBERNETES_PODNAME
               valueFrom:
                 fieldRef:

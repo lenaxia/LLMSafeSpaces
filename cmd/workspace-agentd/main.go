@@ -252,6 +252,18 @@ func main() {
 		pendingApply:       newPendingApplyTracker(),
 		interrupter:        newSessionInterrupter(password),
 	}
+
+	// US-72.4 (design 0058 §4.5/§4.8): relay-only liveness over the
+	// batch's token-emitted providers. The monitor scans the durable
+	// batch file (relayed entries carry relay metadata), honors token
+	// expiry locally, probes the router's credential path, and degrades
+	// loudly + re-arms on outage — never a crashloop. Flag-off pods
+	// observe no relay entries: the loop idles at one file rescan per
+	// tick, zero HTTP.
+	relayLiveness := newRelayLivenessMonitor(bootstrapSecretsOutFromEnv(), nil)
+	deps.relayLiveness = relayLiveness
+	startRelayLiveness(bgCtx, &bgWg, relayLiveness, relayLivenessConfig{})
+
 	// Nil guard: bare `workspace-agentd` (server-only, no --supervise)
 	// runs without a managed process — every deps.proc consumer already
 	// tolerates nil (server.go typed-nil guards, maybeStartRelayInjector);

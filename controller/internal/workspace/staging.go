@@ -670,11 +670,17 @@ func relayRouterRejection(degraded string) string {
 }
 
 // relayLineageIntact is §4.2's spawn-layer conjunct: every desired
-// provider is staged under the CURRENT keyID AND the child spawned with
-// the staged revision — the `spawned_rev`-class TERMINAL signal, not the
-// batch-apply anchor, so the #852 deferral window (fresh token applied,
-// restart waiting behind busy sessions) reads as pending-delivery and
-// never escalates.
+// provider is staged under the CURRENT keyID AND the child is running
+// a batch that carries the CURRENT staged revision — read from the
+// relay liveness slice's applied revision (US-72.4: token entries carry
+// the staged revision in batch metadata; agentd reports it on healthz;
+// the controller mirrors it into SecretsDelivery.RelayRevision). This
+// is the `spawned_rev`-class TERMINAL signal, not the batch-apply
+// anchor, so the #852 deferral window (fresh token applied, restart
+// waiting behind busy sessions) reads as pending-delivery and never
+// escalates. A pre-US-72.4 runtime reports no relay revision (empty) —
+// the conjunct is false and escalation stays structurally suppressed,
+// the documented pre-flip semantics.
 func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState, keyID string) bool {
 	for i := range desired {
 		old, ok := staged[desired[i].pd.Slug]
@@ -687,7 +693,7 @@ func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []rel
 		return false
 	}
 	sd := ws.Status.SecretsDelivery
-	return sd != nil && sd.SpawnedRev != "" && sd.SpawnedRev == stagedRev
+	return sd != nil && sd.RelayRevision != "" && sd.RelayRevision == stagedRev
 }
 
 // relayEscalateRotate fires the bounded rotate escalation. The anti-storm
