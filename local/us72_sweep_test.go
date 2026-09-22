@@ -122,11 +122,15 @@ func TestUS72Sweep_R3PlantIsInitFsSurvivable(t *testing.T) {
 	if !strings.Contains(src, "> /workspace/.local/config/opencode/agent-config.json") {
 		t.Fatal("R3 must plant the Surface-2 copy (agent-config.json under .local/config/opencode/)")
 	}
-	// SEMANTIC (r5): assert against initFSManagedLinks itself — the
-	// function init-fs actually iterates. If a future managed entry
-	// covers the plant path, replaceSymlink deletes the plant before
-	// the boot scrub and this pin fails (the r4 literal-substring form
-	// could not: paths are built with filepath.Join).
+	// SEMANTIC (r5; comment corrected r7 after the reviewer's
+	// mutation proof): asserts against a MIRRORED copy of the managed
+	// table, drift-guarded by TestUS72Sweep_InitFsTableMirrorTracksSource
+	// below. The guarantee is ONE-DIRECTIONAL: modification or removal
+	// of the four KNOWN entries trips the drift guard; ADDITION-direction
+	// drift (a future fifth entry covering the plant path) does NOT fail
+	// these pins — it is backstopped by R3's runtime poll timeout (loud,
+	// but at cluster-run cost, not by this pin). The r4 literal-substring
+	// form could not even see modifications (filepath.Join-built paths).
 	pvcRoot := "/pvc"
 	runtimeDir := "/sandbox-runtime"
 	links := initFSManagedLinksForPin(pvcRoot, runtimeDir)
