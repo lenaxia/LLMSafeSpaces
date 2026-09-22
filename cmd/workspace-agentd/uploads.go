@@ -216,7 +216,11 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 		limited := io.LimitReader(r.Body, cfg.maxBytes+1)
 		for attempt := 0; attempt < uploadCreateAttempts; attempt++ {
 			id := cfg.uuid()
-			tmpPath := filepath.Join(cfg.uploadsDir, id+"-"+name+".tmp")
+			// The staging- prefix is the STRUCTURAL temp marker (design
+			// 0060 r2): finals begin with the upload uuid, temps with the
+			// literal "staging-" — a user upload legitimately named *.tmp
+			// lands as <uuid>-name.tmp (a final) and survives the scrub.
+			tmpPath := filepath.Join(cfg.uploadsDir, "staging-"+id+"-"+name+".tmp")
 			finalPath := filepath.Join(cfg.uploadsDir, id+"-"+name)
 
 			sink, err := cfg.create(tmpPath)
@@ -307,11 +311,13 @@ func uploadCopyErrorStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// scrubUploadTmpFiles removes stale uploads/*.tmp left by a crash
-// mid-upload (design epic-68 D3 boot scrub). Best-effort per file; the
-// count is the number actually removed.
+// scrubUploadTmpFiles removes stale staging-*.tmp temps left by a
+// crash mid-upload (design epic-68 D3 boot scrub; the structural
+// staging- marker per design 0060 r2 — never a bare *.tmp, which would
+// reclaim legitimate user finals named *.tmp). Best-effort per file;
+// the count is the number actually removed.
 func scrubUploadTmpFiles(uploadsDir string) (int, error) {
-	matches, err := filepath.Glob(filepath.Join(uploadsDir, "*.tmp"))
+	matches, err := filepath.Glob(filepath.Join(uploadsDir, "staging-*.tmp"))
 	if err != nil {
 		return 0, fmt.Errorf("upload scrub glob: %w", err)
 	}

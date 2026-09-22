@@ -159,7 +159,7 @@ func TestNewSupervisorControlServer_WiresLiveMetricsSource(t *testing.T) {
 	p.start()
 	defer p.stop()
 
-	srv, err := newSupervisorControlServer("127.0.0.1:0", &managedProcAdapter{p: p})
+	srv, err := newSupervisorControlServer("127.0.0.1:0", &managedProcAdapter{p: p}, uploadApplyEngineFromEnv())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.close() })
 	require.NotNil(t, srv.metricsSource,

@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -74,9 +73,6 @@ func (m *recordingStagingMetrics) RecordUploadBytes(direction string, n int64) {
 }
 
 func (m *recordingStagingMetrics) RecordScrubbed(files int) {}
-
-// statfsT is the platform statfs alias (tests build f_bavail directly).
-type statfsT = syscall.Statfs_t
 
 // fakeStatfs gives tests direct control of f_bavail (Bsize=1 so Bavail
 // IS bytes).

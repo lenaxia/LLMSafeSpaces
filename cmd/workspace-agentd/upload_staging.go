@@ -131,6 +131,9 @@ func stagingConfigFromEnv() stagingConfig {
 	return cfg
 }
 
+// statfsT is the platform statfs alias (tests build f_bavail directly).
+type statfsT = syscall.Statfs_t
+
 func statfsOf(path string) (*syscall.Statfs_t, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {

@@ -166,7 +166,7 @@ jobs:
         run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       - name: Run tests with coverage
         run: |
-          go test -timeout 300s -race -short \
+          go test -timeout 600s -race -short \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./... \

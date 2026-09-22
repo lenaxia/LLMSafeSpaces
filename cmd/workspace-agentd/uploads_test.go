@@ -424,7 +424,7 @@ func TestUploadFilesHandler_TmpSquatSymlink(t *testing.T) {
 
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	require.NoError(t, os.WriteFile(outside, []byte("SENTINEL"), 0o644))
-	symlinkPath := filepath.Join(cfg.uploadsDir, squatUUID+"-target.bin.tmp")
+	symlinkPath := filepath.Join(cfg.uploadsDir, "staging-"+squatUUID+"-target.bin.tmp")
 	require.NoError(t, os.Symlink(outside, symlinkPath))
 
 	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "target.bin", []byte("payload"))
@@ -445,7 +445,7 @@ func TestUploadFilesHandler_TmpSquatPlainFile(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.uuid = fixedUUIDs(squatUUID, nextUUID)
 	require.NoError(t, os.MkdirAll(cfg.uploadsDir, 0o755))
-	squatPath := filepath.Join(cfg.uploadsDir, squatUUID+"-target.bin.tmp")
+	squatPath := filepath.Join(cfg.uploadsDir, "staging-"+squatUUID+"-target.bin.tmp")
 	require.NoError(t, os.WriteFile(squatPath, []byte("ADVERSARY"), 0o644))
 
 	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "target.bin", []byte("payload"))
@@ -466,12 +466,12 @@ func TestUploadFilesHandler_EEXISTExhausted(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.uuid = fixedUUIDs(squatUUID, squatUUID, squatUUID)
 	require.NoError(t, os.MkdirAll(cfg.uploadsDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(cfg.uploadsDir, squatUUID+"-busy.bin.tmp"), []byte("X"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.uploadsDir, "staging-"+squatUUID+"-busy.bin.tmp"), []byte("X"), 0o644))
 
 	w := putUpload(t, uploadFilesHandler(zap.NewNop(), cfg, testAuthPassword, nil, nil), "busy.bin", []byte("payload"))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
-	assert.Equal(t, []string{squatUUID + "-busy.bin.tmp"}, listUploads(t, cfg.uploadsDir))
+	assert.Equal(t, []string{"staging-" + squatUUID + "-busy.bin.tmp"}, listUploads(t, cfg.uploadsDir))
 }
 
 func TestUploadFilesHandler_UploadsDirAutoCreated(t *testing.T) {
@@ -635,14 +635,20 @@ func TestUploadFilesHandler_NoPathLeakInResponses(t *testing.T) {
 
 func TestScrubUploadTmpFiles(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.tmp"), []byte("a"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.tmp"), []byte("b"), 0o644))
+	// The scrub class is the STRUCTURAL staging-* marker (design 0060
+	// r2): crashed temps match; a user final literally named *.tmp
+	// (uuid-prefixed) and ordinary finals never do.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "staging-a.tmp"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "staging-b.tmp"), []byte("b"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "c-report.txt"), []byte("c"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "11111111-2222-4333-8444-555555555555-backup.tmp"), []byte("user"), 0o644))
 
 	removed, err := scrubUploadTmpFiles(dir)
 	require.NoError(t, err)
 	assert.Equal(t, 2, removed)
-	assert.Equal(t, []string{"c-report.txt"}, listUploads(t, dir), "both .tmp gone, real upload untouched")
+	assert.ElementsMatch(t,
+		[]string{"c-report.txt", "11111111-2222-4333-8444-555555555555-backup.tmp"},
+		listUploads(t, dir), "both staging- temps gone; finals — including a user *.tmp — untouched")
 }
 
 func TestScrubUploadTmpFiles_MissingDir(t *testing.T) {

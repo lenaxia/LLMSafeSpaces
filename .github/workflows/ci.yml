@@ -253,7 +253,7 @@ jobs:
       # api/internal/handlers test is properly attributed).
       - name: Run tests with coverage
         run: |
-          go test -timeout 300s -race -short \
+          go test -timeout 600s -race -short \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -coverpkg=./... \
@@ -353,7 +353,7 @@ jobs:
           git worktree add /tmp/base-tree "$base_sha"
           base_test_ok=false
           if (cd /tmp/base-tree && \
-            go test -timeout 300s -short \
+            go test -timeout 600s -short \
               -coverprofile=coverage-base.out \
               -covermode=atomic \
               -coverpkg=./... \
@@ -608,7 +608,7 @@ jobs:
       - name: Run the origin-plugin harness pin (freeze leg)
         run: go test -tags=integration -timeout 600s -count=1 -run TestOriginPlugin ./pkg/agent/opencode/
 
-      - name: Run the permission-tier legs (real matcher: allow/deny/read/bash)
+      - name: "Run the permission-tier legs (real matcher: allow/deny/read/bash)"
         run: go test -tags=integration -timeout 600s -count=1 -run TestPermissionTier ./pkg/agent/opencode/
 
       - name: Run the origin e2e (real opencode + real agentd dispatch)

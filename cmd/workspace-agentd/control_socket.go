@@ -96,6 +96,11 @@ type controlSocketServer struct {
 	// restartMu serializes restart execution (A.3): one at a time,
 	// TryLock for the in_progress report.
 	restartMu sync.Mutex
+
+	// uploadApply is the design-0060 §3.2 method engine — wired by the
+	// supervisor's server construction; nil answers internal (a wiring
+	// bug, never a silent no-op).
+	uploadApply *uploadApplyEngine
 }
 
 func newControlSocketServer(addr string, proc supervisedProcIface) (*controlSocketServer, error) {
@@ -148,6 +153,13 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
+	// The connection's lifetime bounds every method's ctx (§6.3: apply
+	// holds must be cancellable); long-held methods bound themselves
+	// (upload_apply wraps Apply in its own timeout and gives the ack a
+	// fresh deadline arm — the blanket 10s stays for everything else).
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+
 	var req controlRequest
 	dec := json.NewDecoder(conn)
 	if err := dec.Decode(&req); err != nil {
@@ -190,6 +202,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.refreshFiles(req))
 	case "metrics":
 		writeJSON(conn, s.metrics(req.ID))
+	case "upload_apply":
+		writeJSON(conn, s.uploadApplyControlMethod(connCtx, conn, req))
 	default:
 		writeJSON(conn, s.errResp(req.ID, "method_unknown",
 			fmt.Sprintf("method %q is not part of control protocol v1", req.Method)))
