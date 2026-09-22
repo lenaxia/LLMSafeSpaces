@@ -21,4 +21,4 @@
 
 - `local/us-1500-upload-stress-e2e.sh` — the sr_skip + KNOWN ISSUE comment.
 - `local/us_1500_upload_stress_script_test.go` — the structural pins + the executed trip+pass legs.
-- `worklogs/NNNN_2026-09-22_sr6-known-issue-skip.md` — this worklog.
+- `worklogs/1048_2026-09-22_sr6-known-issue-skip.md` — this worklog.
