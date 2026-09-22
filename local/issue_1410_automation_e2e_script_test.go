@@ -231,9 +231,14 @@ func TestIssue1410E2E_ArbitrationFinal5(t *testing.T) {
 	assert.NotContains(t, src, `]] && break`,
 		"the R4d loop must use if/then break — the [[ ]] && break pattern is banned (set -e fragility, the us70 pins)")
 
-	// 3) R8: the 403 admin-gate is handled with a loud skip.
-	assert.Contains(t, src, `api_status}" == "403"`,
-		"R8 must handle the admin-gated 403 on org creation (the tenant-user choice)")
+	// 3) R8: the 403 admin-gate is handled with a loud skip that checks
+	// the NAMED error body (not any 403) and counts the skipped rows.
+	assert.Contains(t, src, `api_status}" == "403" && "${R8_ORG_RESP}" == *"only platform admins"*`,
+		"R8's skip must check the NAMED admin-gate error body — a different 403 (auth, rate-limit) still fails the row")
 	assert.Contains(t, src, "org creation admin-gated",
 		"the skip must be loud and name the reason")
+	assert.Contains(t, src, "SKIPPED_ROWS=$((SKIPPED_ROWS + 10))",
+		"the skip must be COUNTED (10 rows) — a silent skip-growth is the silent-skip class")
+	assert.Contains(t, src, "all rows passed (${SKIPPED_ROWS} skipped",
+		"the verdict must report the skip count")
 }
