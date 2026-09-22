@@ -118,3 +118,7 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 ## Review round 7 (1 LOW: the BoundArms over-claim)
 
 - The BoundArms comment claimed to pin the fresh ack arm too — false (its abort fires inside the blanket 10s; the sibling slow-success test is the actual pin, as the comment's own next sentence conceded). The clause is deleted. The standing gate is e2e (PR 4, now unblocked — #1516 merged).
+
+## Review round 8 (the standing-offer conversion)
+
+- The r7 verdict held the PR solely on the e2e gate with "approvable as-is once the e2e un-skip lands." The un-skip exists and is APPROVED (#1524, 11 rounds). This commit re-triggers the review on the unchanged code head to convert the standing offer; the production diff is byte-identical to the r7-verified state.
