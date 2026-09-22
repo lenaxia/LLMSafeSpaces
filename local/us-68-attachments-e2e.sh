@@ -8,17 +8,23 @@
 #   E2  — Persistence: upload → suspend → resume → file still present,
 #         byte-identical (PVC survives the pod).
 #   E10 — Multi-tenant: two users, two workspaces, simultaneous uploads —
-#         cross-user upload denied (404), no cross-workspace path leakage.
-#   E11 — Chaos: pod killed mid-upload → clean 5xx to the client; pod
-#         restarts; retry succeeds; exactly one intact file, no .tmp.
+#         cross-user upload denied (403), no cross-workspace path leakage.
+#   E11 — Chaos: pod killed mid-upload → clean 5xx/000/201 (if the
+#         upload completes before the kill) to the client; pod restarts;
+#         retry succeeds; one-or-two intact files (D19: retry = new uuid
+#         — both contract-legal), no partial/.tmp.
 #
-# SIDECAR MODE GATE (as-built, D1): in agentd-sidecar deployments the
-# sidecar's /workspace mount is read-only, so uploads fail cleanly with
-# 5xx by design. When sidecar mode is detected this script asserts that
-# clean-fail behavior and SKIPS E2/E10/E11 with an explicit message
-# instead of failing — the rows require single-container mode
-# (`controller.agentdSidecar.enabled=false`; executed weekly + on dispatch
-# by .github/workflows/e2e-attachments-single-container.yml).
+# SIDECAR MODE GATE (feature-detect, D1 + design 0060): in agentd-sidecar
+# deployments the upload path is PROBED, not assumed. Pre-0060 clusters
+# (the sidecar's /workspace is read-only) see uploads clean-fail with 502 (the designed proxy shape; 503 is a defense-in-depth arm)
+# — that shape asserts the old D1 contract and SKIPS E2/E10/E11 loudly.
+# Post-0060 clusters (staging lane + supervisor apply landed — #1515/#1516/
+# #1518) see uploads SUCCEED (201) — the gate falls through and runs
+# E2/E10/E11 FULLY in sidecar mode (the new design's coverage, gained
+# for free). Any OTHER shape (500, timeout, corrupt) is a BROKEN upload
+# path and fails hard — the detector distinguishes designed outcomes
+# from broken ones, never absorbing the latter (run 35697148238). The
+# weekly single-container workflow remains unchanged for both modes.
 #
 # Environment (same as local/test.sh):
 #   CLUSTER_NAME  - kind cluster name (default llmsafespaces)
@@ -210,26 +216,54 @@ POD_A=$(pod_of "${WS_A}")
 # -----------------------------------------------------------------------------
 CONTAINER_NAMES=$(kc -n "${NS}" get pod "${POD_A}" -o jsonpath='{.spec.containers[*].name} {.spec.initContainers[*].name}')
 if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
-    warn "agentd SIDECAR mode detected — /workspace is read-only in the sidecar (design epic-68 D1 as-built)."
-    log "Sidecar clean-fail assertion: upload must fail 5xx and write nothing"
-    printf 'sidecar mode: uploads unavailable\n' > /tmp/us67-sidecar.txt
+    # The D1 gate, feature-detecting (run 35697148238's adjudication):
+    # design 0060 (stage-and-signal) LANDED — sidecar uploads now SUCCEED
+    # via the staging lane + supervisor apply. The fleet is mid-transition
+    # (nightly=main has the stack; pool/weekly=deployed prod does not), so
+    # the gate distinguishes three shapes:
+    #   201  → 0060 landed: run E2/E10/E11 FULLY in sidecar mode (fall
+    #          through to the rows below — the new design's full coverage)
+    #   502/503 → pre-0060 clean-fail (the OLD D1 contract): loud skip as before
+    #   other  → broken (500 IS 5xx and hits here; also timeout/corrupt): hard fail, never absorbed
+    warn "agentd SIDECAR mode detected — probing upload shape (design 0060 feature-detect)"
+    printf 'sidecar mode probe\n' > /tmp/us67-sidecar.txt
     upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt
+    # Transient-502 guard: on a 0060-landed cluster a momentary agentd
+    # blip also maps to 502 (the API's generic agentd-error shape). A
+    # DESIGNED clean-fail is deterministic — retry once before classifying.
+    if [[ "${UPLOAD_STATUS}" == "502" ]]; then
+        sleep 3
+        upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt
+    fi
+    SIDECAR_0060=false
     case "${UPLOAD_STATUS}" in
-        5*)
-            ok "upload rejected cleanly with ${UPLOAD_STATUS} in sidecar mode"
+        201)
+            ok "sidecar upload SUCCEEDED (201) — design 0060 stage-and-signal landed; running E2/E10/E11 fully in sidecar mode"
+            SIDECAR_0060=true
+            ;;
+        502|503)
+            # 502/503 specifically: the proxy/sidecar's DESIGNED
+            # upload-unavailable response (the pre-0060 read-only sidecar).
+            # 500 is absorbed by the wildcard below — a genuine internal
+            # error is BROKEN, not a designed clean-fail.
+            ok "upload rejected cleanly with ${UPLOAD_STATUS} — pre-0060 sidecar (old D1 contract)"
+            FILES=$(exec_ws "${WS_A}" ls /workspace/uploads 2>/dev/null || true)
+            [[ -z "${FILES}" ]] || die "pre-0060 sidecar-mode upload wrote files despite RO mount: ${FILES}"
+            ok "no files written in pre-0060 sidecar mode"
+            warn "SKIPPED E2/E10/E11: this cluster predates design 0060 (uploads clean-fail)"
+            warn "(helm: --set controller.agentdSidecar.enabled=false; runs weekly via e2e-attachments-single-container.yml)"
+            exit 0
             ;;
         *)
-            die "sidecar-mode upload returned ${UPLOAD_STATUS} — expected clean 5xx (D1). Body: ${BODY}"
+            die "sidecar-mode upload returned ${UPLOAD_STATUS} — neither designed-success (201, design 0060) nor designed-clean-fail (502/503, pre-0060 D1). This is a BROKEN shape. Body: ${BODY}"
             ;;
     esac
-    FILES=$(exec_ws "${WS_A}" ls /workspace/uploads 2>/dev/null || true)
-    [[ -z "${FILES}" ]] || die "sidecar-mode upload wrote files despite RO mount: ${FILES}"
-    ok "no files written in sidecar mode"
-    warn "SKIPPED E2/E10/E11: these rows require single-container mode"
-    warn "(helm: --set controller.agentdSidecar.enabled=false; runs weekly via e2e-attachments-single-container.yml)"
-    exit 0
 fi
-ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
+if [[ "${SIDECAR_0060:-false}" != "true" ]]; then
+    ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
+else
+    ok "sidecar mode + design 0060 uploads — running E2/E10/E11 in sidecar mode"
+fi
 
 # -----------------------------------------------------------------------------
 # E2 — Persistence: upload → suspend → resume → file present + identical
@@ -290,12 +324,12 @@ upload_do "${WS_B}" "${KEY_A}" "evil.txt" /tmp/us67-a.txt
 [[ "${UPLOAD_STATUS}" == "403" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 403): ${BODY}"
 ok "cross-user upload denied (403)"
 
-LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a || true")
+LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a | grep -v sidecar.txt || true")
 [[ -z "${LEAK}" ]] || die "E10: workspace A contains foreign files: ${LEAK}"
 ok "no cross-workspace file leakage"
 
 # -----------------------------------------------------------------------------
-# E11 — Chaos: pod killed mid-upload → clean 5xx; retry; exactly one file
+# E11 — Chaos: pod killed mid-upload → clean 5xx/000/201; retry; 1-or-2 intact files
 # -----------------------------------------------------------------------------
 log "E11 — pod killed mid-upload"
 dd if=/dev/zero of=/tmp/us67-chaos.bin bs=1M count=6 2>/dev/null
@@ -318,7 +352,7 @@ case "${CHAOS_STATUS}" in
         ;;
     201)
         # The upload finished before the pod died — acceptable timing
-        # outcome; the assertions below still hold (retry, one intact file).
+        # outcome; the assertions below still hold (retry, 1-or-2 intact files per D19).
         warn "upload completed before the kill took effect (got 201); continuing"
         ;;
     *)
