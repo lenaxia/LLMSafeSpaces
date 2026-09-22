@@ -193,9 +193,12 @@ func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
 		}
 		// A ? anywhere breaks the literal-prefix analysis in BOTH
 		// shapes: compiled to any-char by the matcher, treated as a
-		// literal byte by the TrimSuffix root — r8 closed the
-		// trailing-glob branch (a "/sy?m/*" deny would silently
-		// under-drop a "/sym/*" allow that byte-sorts after it).
+		// literal byte by the TrimSuffix root. Verified empirically
+		// (r9): with a "/sy?m/*" deny, an operator "/symm/*" allow is
+		// KEPT (litPrefix "/symm/" shares no literal prefix with the
+		// raw denyRoot "/sy?m/") while tierMatch("/symm/x", "/sy?m/*")
+		// is true — a live under-drop; "/sym/*" would NOT leak (^/sy.m/
+		// demands a char between "sy" and "m").
 		assert.NotContains(t, k, "?",
 			"deny key %q must carry no ? wildcards (the filter treats its bytes as literal)", k)
 		if strings.Contains(k, "*") {

@@ -255,7 +255,7 @@ interface PermissionRequest {
 
 2. **No ownership check on proxy routes**: Pre-existing — any authenticated user can proxy to any workspace by ID. This epic inherits the same pattern. Multi-tenant isolation depends on workspace IDs being unguessable (UUIDs).
 
-3. **Permission prompts require explicit config**: Default opencode config auto-approves all tool calls. The permission UI will only be exercised when workspaces are configured with `mode.permissions` rules containing `"ask"` actions.
+3. **Permission prompts require explicit config**: Default opencode config auto-approves all tool calls. The permission UI will only be exercised when workspaces are configured with permission rules containing `"ask"` actions *(2026-09-22: in the top-level `permission` key — `mode.permissions` is inert on the pinned opencode)*.
 
 ## Success Criteria
 
