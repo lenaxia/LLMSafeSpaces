@@ -194,11 +194,18 @@ log "R3 — the residue-boot migration row: plant on the PVC, suspend, resume �
 # evidence. Plant while RUNNING (exec), then suspend (the pod dies, the
 # PVC keeps the file), then resume (the fresh pod boots with the
 # residue).
+#
+# SURFACE 2, not Surface 1 (r4): init-fs MANAGES the auth.json path —
+# its replaceSymlink DELETES any pre-existing regular file before
+# installing the #1296 symlink, so a Surface-1 plant never survives to
+# the scrub (AuthPathSkipped/AlreadyClean — the row was structurally
+# unpassable). The agent-config.json COPY under .local/config/opencode/
+# is scrub territory init-fs never touches — the plant that actually
+# reaches the boot scrub.
 kubectl --context "${CTX}" -n "${NS}" exec "${POD}" -c workspace -- bash -c '
-    mkdir -p /workspace/.local/opencode
-    rm -f /workspace/.local/opencode/auth.json
-    printf "{\"legacy2\": {\"type\": \"api\", \"key\": \"%s\"}}" "'"${CANARY_KEY}"'" \
-        > /workspace/.local/opencode/auth.json
+    mkdir -p /workspace/.local/config/opencode
+    printf "{\"provider\": {\"legacy2\": {\"options\": {\"apiKey\": \"%s\"}}}}" "'"${CANARY_KEY}"'" \
+        > /workspace/.local/config/opencode/agent-config.json
 ' >/dev/null 2>&1 || note_fail "R3: planting the PVC residue failed"
 
 api POST "/api/v1/workspaces/${WS}/suspend" >/dev/null
@@ -206,21 +213,24 @@ sleep 5
 api POST "/api/v1/workspaces/${WS}/activate" >/dev/null
 wait_phase "${WS}" Active 300 || note_fail "R3: workspace never Active after the resume"
 
-# The boot scrub fired: the condition carries the KeysRemoved reason
-# with the auth count (give the reconcile a beat).
-boot_status="None"; boot_msg=""
+# The boot scrub fired: poll for the KeysRemoved REASON + the config
+# count — NOT for a non-None status (R2's boot-mirror already left
+# True/Clean "clean" on the pre-suspend pod and nothing removes
+# conditions; a non-None poll would trip on the stale message — r4
+# finding 2).
+boot_reason=""; boot_msg=""
 for _ in $(seq 1 30); do
     boot_row="$( (kc get workspace "${WS}" -o jsonpath='{.status.conditions}' 2>/dev/null || echo '[]') \
-        | jq -r '[.[] | select(.type == "LegacyKeysScrubbed")][0] | .status + " " + (.reason // "") + " " + (.message // "")' 2>/dev/null || echo "None  ")"
-    boot_status="${boot_row%% *}"
+        | jq -r '[.[] | select(.type == "LegacyKeysScrubbed")][0] | (.reason // "") + " " + (.message // "")' 2>/dev/null || echo " ")"
+    boot_reason="${boot_row%% *}"
     boot_msg="${boot_row#* }"
-    [[ "${boot_status}" != "None" ]] && break
+    [[ "${boot_reason}" == "KeysRemoved" ]] && break
     sleep 4
 done
-if [[ "${boot_status}" == "True" && "${boot_msg}" == *"auth=1"* ]]; then
-    ok "R3 PASS: the BOOT scrub fired on the residue-bearing resume (LegacyKeysScrubbed=True/KeysRemoved auth=1)"
+if [[ "${boot_reason}" == "KeysRemoved" && "${boot_msg}" == *"config=1"* ]]; then
+    ok "R3 PASS: the BOOT scrub fired on the residue-bearing resume (LegacyKeysScrubbed=True/KeysRemoved config=1)"
 else
-    note_fail "R3: LegacyKeysScrubbed=${boot_status:-None} msg='${boot_msg}' — the migration trigger did not fire on the residue boot"
+    note_fail "R3: reason='${boot_reason}' msg='${boot_msg}' — the migration trigger did not fire on the residue boot"
 fi
 
 # And the post-boot sweep is clean (the residue is gone).

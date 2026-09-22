@@ -55,7 +55,7 @@ func TestUS72Sweep_RowsInOrder(t *testing.T) {
 		"post-sweep zero",
 		"the scrub's own report shows the removal",
 		"the BOOT scrub fired on the residue-bearing resume",
-		"auth=1",
+		"config=1",
 		"post-boot sweep zero",
 	} {
 		if !strings.Contains(src, marker) {
@@ -108,6 +108,27 @@ func TestUS72Sweep_WorkspaceIsolation(t *testing.T) {
 	src := mustReadUS72Sweep(t)
 	if !strings.Contains(src, `WS_BASE="e2e72600-`) {
 		t.Error("sweep must set its own WS_BASE unconditionally")
+	}
+}
+
+// The R3 plant's SURVIVABILITY (r4 finding 1): init-fs manages the
+// auth.json path (replaceSymlink deletes a pre-existing regular file
+// before installing the #1296 symlink) — a Surface-1 plant never
+// survives to the boot scrub. The R3 plant must be the Surface-2 copy
+// (.local/config/opencode/agent-config.json) — scrub territory init-fs
+// never touches.
+func TestUS72Sweep_R3PlantIsInitFsSurvivable(t *testing.T) {
+	src := mustReadUS72Sweep(t)
+	plant := strings.Index(src, "> /workspace/.local/config/opencode/agent-config.json")
+	if plant < 0 {
+		t.Fatal("R3 must plant the Surface-2 copy (agent-config.json under .local/config/opencode/)")
+	}
+	initSrc, err := os.ReadFile("../cmd/workspace-agentd/init_fs.go")
+	if err != nil {
+		t.Skip("init_fs source not present in this checkout layout")
+	}
+	if strings.Contains(string(initSrc), "config/opencode/agent-config.json") {
+		t.Error("init-fs manages the R3 plant path — the plant would be deleted before the boot scrub (re-check init_fs managed paths)")
 	}
 }
 
