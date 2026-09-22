@@ -22,4 +22,4 @@
 
 - `local/issue-1410-1412-automation-e2e.sh` — the three fixes.
 - `local/issue_1410_automation_e2e_script_test.go` — the ArbitrationFinal5 pin.
-- `worklogs/NNNN_2026-09-22_arbitration-final-5.md` — this worklog.
+- `worklogs/1052_2026-09-22_arbitration-final-5.md` — this worklog.
