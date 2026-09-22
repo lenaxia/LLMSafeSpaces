@@ -22,7 +22,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -48,11 +47,6 @@ type uploadApplyEngine struct {
 	// truncate a legitimate 10-60s apply, and the client's 504 must
 	// bound the hold here too.
 	applyDeadline time.Duration
-
-	// applyMu serializes applies (§8 item 3's simplest choice): the
-	// copies are independent (uuid targets), but a bounded serial queue
-	// keeps fd pressure flat and makes the §6.6 characterization honest.
-	applyMu sync.Mutex
 
 	// seams
 	statfs func(path string) (*statfsT, error)
@@ -113,7 +107,9 @@ func (e *applyError) Error() string { return e.code + ": " + e.msg }
 // Apply validates, gates, streams, verifies, and renames. ctx bounds
 // the hold (§6.3): the copy loop checks it each window; a hard-blocked
 // single write syscall is the documented residual (no portable per-fd
-// deadline) — the bounded queue (TryLock busy) keeps the method live.
+// deadline). Applies run CONCURRENTLY (#1539): targets are uuid-
+// independent, concurrency is bounded upstream by the staging admission
+// cap — the design §8 item 3 resolved to parallel per §6.6's detector.
 func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (map[string]any, *applyError) {
 	id, _ := params["upload_id"].(string)
 	staged, _ := params["staged_name"].(string)
@@ -158,14 +154,6 @@ func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (m
 	// the literal "staging-" prefix — a user upload named *.tmp lands as
 	// <uuid>-name.tmp (a final) and can never match the scrub class.
 	tmpPath := filepath.Join(e.uploadsDir, "staging-"+finalName+".tmp")
-
-	// §4.5: bounded concurrency with the §3.2 busy enum — concurrent
-	// applies REJECT (the 429 semantics agentd maps) rather than queue
-	// behind a held mutex past their deadlines.
-	if !e.applyMu.TryLock() {
-		return nil, &applyError{code: "busy", msg: "an apply is in flight"}
-	}
-	defer e.applyMu.Unlock()
 
 	stagedPath := filepath.Join(e.stagingRoot, staged)
 	openFn := e.open
