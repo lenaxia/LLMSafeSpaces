@@ -49,7 +49,7 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 - `cmd/workspace-agentd/upload_staging_test.go` — the guard pin family + the env-contract pins (both in-pod consumers)
 - `cmd/workspace-agentd/upload_apply.go` / `upload_apply_test.go` — the copy cap + sentinel arms
 - `cmd/workspace-agentd/sidecar_mode.go` — the tmpfs-guarded boot block
-- `worklogs/NNNN_2026-09-21_upload-env-plumbing.md` — this worklog
+- `worklogs/1044_2026-09-21_upload-env-plumbing.md` — this worklog
 
 
 ## Review round 1 (floor=0, cross-validation, duplicate keys, the copy cap, the two missing pin legs)
