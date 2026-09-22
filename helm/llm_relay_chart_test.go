@@ -29,11 +29,35 @@ func docName(t *testing.T, doc map[string]any) string {
 	return meta["name"].(string)
 }
 
-// TestRelayOnlyKeyDelivery_DisabledByDefault: with the flag off (the
-// default until US-72.5) zero llm-relay resources render — flag off means
-// zero behavior change.
-func TestRelayOnlyKeyDelivery_DisabledByDefault(t *testing.T) {
+// TestRelayOnlyKeyDelivery_DefaultFlippedOn (US-72.5): the chart
+// default is NOW true — a default render MUST include the llm-relay
+// namespace + router. This pin is the flip itself; reverting the
+// default silently reverts the epic's exit posture.
+func TestRelayOnlyKeyDelivery_DefaultFlippedOn(t *testing.T) {
 	docs := helmTemplate(t, "")
+	sawNamespace := false
+	sawRouter := false
+	for _, d := range docs {
+		if d["kind"] == "Namespace" {
+			if meta, ok := d["metadata"].(map[string]any); ok && meta["name"] == "llm-relay" {
+				sawNamespace = true
+			}
+		}
+		if d["kind"] == "Deployment" {
+			if meta, ok := d["metadata"].(map[string]any); ok && meta["name"] == "llm-relay-router" {
+				sawRouter = true
+			}
+		}
+	}
+	assert.True(t, sawNamespace, "default values must render the llm-relay namespace (the US-72.5 flip)")
+	assert.True(t, sawRouter, "default values must render the llm-relay router Deployment (the US-72.5 flip)")
+}
+
+// TestRelayOnlyKeyDelivery_ExplicitOffRendersNothing: the ROLLBACK
+// posture — an explicit enabled=false renders zero llm-relay resources;
+// flag off means zero behavior change (the drill's R3 leg).
+func TestRelayOnlyKeyDelivery_ExplicitOffRendersNothing(t *testing.T) {
+	docs := helmTemplate(t, "relayOnlyKeyDelivery.enabled=false")
 	for _, d := range docs {
 		if d["kind"] != "Namespace" {
 			if meta, ok := d["metadata"].(map[string]any); ok {

@@ -1757,11 +1757,15 @@ previewOrigin:
 # provider keys never land in uid-1000 space — the controller seals them
 # into per-workspace envelope Secrets in a dedicated namespace and the
 # BYO resolve router (same binary as the fleet router, ROUTER_MODE=byo)
-# resolves per request. DEFAULT FALSE until the US-72.5 flip (gates:
-# #910 merged via #1401, router SLO-green, CredentialsStaged on canary,
-# sanitization + quota/alerts verified, rollback drill executed).
+# resolves per request. FLIPPED TRUE by US-72.5 (the gates closed:
+# #910 merged via #1401, sanitization + quota/alerts pinned by #1432,
+# staging + conditions by #1448, token-only emission by #1529, the
+# rollback drill is local/us-72-relay-only-flip-drill.sh; the live-fleet
+# canary waves ride docs/runbooks/relay-only-flip.md). Rollback = set
+# enabled=false (staged material goes inert; raw-key batches resume; pods
+# heal on the next batch apply — pinned by the drill's R3 leg).
 relayOnlyKeyDelivery:
-  enabled: false
+  enabled: true
   # Namespace for the router + staged Secrets.
   namespace: "llm-relay"
   # URL workspace pods use (the router FQDN cross-namespace).
