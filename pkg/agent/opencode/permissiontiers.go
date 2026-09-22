@@ -166,9 +166,9 @@ func tierMatch(resource, pattern string) bool {
 // holds iff L is empty, L is itself under "X/", or "X/" extends L
 // (p's wildcard can absorb the rest of X plus the slash). That branch
 // is a live overlap or a CONSERVATIVE OVER-DROP (e.g. "/et?" matches
-// only the bare "/etc", which no deny governs — ambient ask — but
-// dropping the pattern is the safe direction); it is never an
-// under-drop. Patterns outside every deny keep their allow.
+// only bare 4-char "/etX" paths — "/etc", "/etx", "/et/" — none of
+// which any deny governs, but dropping the pattern is the safe
+// direction); it is never an under-drop. Patterns outside every deny keep their allow.
 func allowReopensTierDeny(pattern string) bool {
 	// Normalize EXACTLY like the matcher (r6): tierMatch maps \ → /
 	// before matching, so a backslashed pattern ("\etc/*") IS the

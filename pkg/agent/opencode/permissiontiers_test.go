@@ -191,12 +191,16 @@ func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
 		if v != "deny" {
 			continue
 		}
+		// A ? anywhere breaks the literal-prefix analysis in BOTH
+		// shapes: compiled to any-char by the matcher, treated as a
+		// literal byte by the TrimSuffix root — r8 closed the
+		// trailing-glob branch (a "/sy?m/*" deny would silently
+		// under-drop a "/sym/*" allow that byte-sorts after it).
+		assert.NotContains(t, k, "?",
+			"deny key %q must carry no ? wildcards (the filter treats its bytes as literal)", k)
 		if strings.Contains(k, "*") {
 			assert.True(t, strings.HasSuffix(k, "/*"),
 				"deny key %q must be a trailing-/* prefix glob (the filter's soundness premise)", k)
-		} else {
-			assert.NotContains(t, k, "?",
-				"deny key %q must be wildcard-free (exact-path premise)", k)
 		}
 	}
 }
