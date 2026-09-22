@@ -178,3 +178,37 @@ func TestUS72FlipDrill_JqPathShape(t *testing.T) {
 		t.Errorf("jq apiKey extraction = %q, want tok-123", got)
 	}
 }
+
+// The helpers' optional-argument handling is set -u sensitive: a
+// 2-argument call to a function whose $3 has no default kills the whole
+// script before any curl spawns (the r2 finding — the bind call was
+// exactly that shape). This pin extracts BOTH helper prologues from the
+// drill and executes them under `set -u` with 2-arg + 3-arg shapes
+// against a stub curl.
+func TestUS72FlipDrill_HelpersTolerateOptionalBody(t *testing.T) {
+	src := mustReadUS72Flip(t)
+	for _, fn := range []string{"api()", "api_authed()"} {
+		i := strings.Index(src, "\n"+fn+" {")
+		if i < 0 {
+			t.Fatalf("helper %s not found in the drill", fn)
+		}
+		end := strings.Index(src[i:], "\n}\n")
+		body := src[i+1 : i+end+2]
+		// Neutralize the network + die for the probe: a stub curl that
+		// always succeeds with 200, and mktemp/die shims.
+		shim := "set -u\ndie() { echo \"DIED: $*\"; exit 9; }\n" +
+			"mktemp() { echo /tmp/stub; }\n" +
+			"curl() { echo 200; }\n" +
+			"API_KEY=k; AUTH_TOKEN=t; PORTFWD_PORT=1\n" +
+			body + "\n" +
+			"api POST /x >/dev/null 2>&1 || api_authed POST /x >/dev/null 2>&1\n" +
+			"echo OK-2ARG\n"
+		out, err := exec.Command("bash", "-c", shim).CombinedOutput()
+		if err != nil {
+			t.Errorf("helper %s under set -u with a 2-arg call: %v: %s (the ${3:-} default is missing)", fn, err, out)
+		}
+		if !strings.Contains(string(out), "OK-2ARG") {
+			t.Errorf("helper %s did not survive the 2-arg call: %s", fn, out)
+		}
+	}
+}
