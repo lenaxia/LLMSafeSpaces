@@ -738,22 +738,20 @@ else
         # Status-only 404 cannot discriminate WHICH check fired — the
         # server-ownership arm answers "MCP server not found" before the
         # workspace arm is reached, so this row patrols instance 5's bind
-        # surface (the server resolution), not instance 7. Instance 7's
-        # workspace-existence arm is unit-pinned (the harness would need a
-        # REAL org MCP server for the live face).
+        # surface (the server resolution). Instance 7's live face is the
+        # R1h row below (a REAL org server + ghost workspaceId).
         if [[ "${api_status}" == "404" && "${r1f2_resp}" == *"MCP server not found"* ]]; then
             ok "R1f: org bind ghost serverId answers the named 404 (instance 5's bind face)"
         else
             note_fail "R1f: org bind ghost returned ${api_status} (${r1f2_resp}), expected 404 MCP server not found"
         fi
-        # R1g — the eighth instance (review r8): a ghost userId on
-        # POST /orgs/:id/members previously hit the FK as an opaque 500;
-        # the contract is the named 404.
         # Instance 7's live face: create a REAL org MCP server, then bind
         # it with a GHOST workspaceId — the discriminating body proves the
-        # workspace-existence arm fired (not the server arm).
+        # workspace-existence arm fired (not the server arm). The URL is
+        # a non-resolving public host (validateMCPURL passes it; localhost
+        # is SSRF-rejected).
         api POST "/api/v1/orgs/${R8_ORG}/mcp-servers" \
-            '{"name":"e2e-r8-server","url":"http://localhost:9","transport":"http"}'
+            '{"name":"e2e-r8-server","url":"http://mcp-e2e.invalid","transport":"http"}'
         R8_SRV_RESP="${api_body}"
         if [[ "${api_status}" == "201" || "${api_status}" == "202" ]]; then
             R8_SRV_ID=$(printf '%s' "${R8_SRV_RESP}" | jq -r '.id // .server.id // empty')
@@ -780,6 +778,9 @@ else
             note_fail "R1i: org cred auto-apply ghost returned ${api_status} (${r1i_resp}), expected 404"
         fi
 
+        # R1g — the eighth instance (review r8): a ghost userId on
+        # POST /orgs/:id/members previously hit the FK as an opaque 500;
+        # the contract is the named 404.
         api POST "/api/v1/orgs/${R8_ORG}/members" \
             '{"userId":"deadbeef-0000-4000-8000-000000000000","role":"member"}'
         r1g_resp="${api_body}"

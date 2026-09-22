@@ -64,13 +64,13 @@ None.
 - `api/internal/handlers/workflows.go` — create + update + run-override target-workspace checks; the existencer seam.
 - `api/internal/handlers/triggers.go` — create workspaceId + update PATCHED-target checks; the hoisted V7 merge.
 - `api/internal/handlers/mcp_servers.go` — instance 5 (auto-apply server resolution) + instance 7 (every-scope bind workspace check).
-- `api/internal/handlers/admin_provider_credentials.go` — instance 6
+- `api/internal/handlers/admin_provider_credentials.go` — instance 6 (the (nil,nil)-aware credential resolution).
 - `api/internal/handlers/orgs.go` — instance 8 (the org-member UserExistsByID check).
 - `api/internal/services/database/pg_org_store.go` — the UserExistsByID store method.
-- `api/internal/server/router_orgs_wire_test.go` — the fakeOrgStore interface method. (the (nil,nil)-aware credential resolution).
+- `api/internal/server/router_orgs_wire_test.go` — the fakeOrgStore interface method.
 - `api/internal/app/app.go` — existencer wiring ×4.
-- `local/issue-1410-1412-automation-e2e.sh` — the dummy workspace row seed; R4d retarget; R1c/R1d/R1e/R1f/R1g live rows.
-- `local/issue_1410_automation_e2e_script_test.go` — the R1c–R1g ledger needles + R1/R4 harness pins.
+- `local/issue-1410-1412-automation-e2e.sh` — the dummy workspace row seed; R4d retarget; R1c–R1i live rows.
+- `local/issue_1410_automation_e2e_script_test.go` — the R1c–R1i ledger needles + R1/R4 harness pins.
 - `api/internal/handlers/{workflows,triggers,mcp_servers,admin_provider_credentials,orgs}_test.go` — the audit pins (all eight instances + infra arms + pass arms).
 - `pkg/workflows/store_integration_test.go` — WorkspaceExistsByID against real PG (incl. the soft-deleted face).
 - `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.
