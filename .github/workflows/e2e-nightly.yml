@@ -370,11 +370,16 @@ jobs:
         run: bash local/us-68-attachments-e2e.sh
 
       - name: Run upload staging stress rows (design 0060 §6)
-        # The §6 invariant harness: measured staging residency (gauge
-        # pins), credential isolation under storm, disk-margin edges,
-        # mid-stream kills, ack-latency baseline. Rows whose mechanisms
-        # ride the agentd staging lane (PR 1/2) skip-DOWN loudly until
-        # that lane merges; the API-side 411 row runs now.
+        # PREMATURE ACTIVATION GUARD (run 35679282297): this step was
+        # wired to the nightly by #1516 before its activation stack
+        # completed — the supervisor apply leg (#1518) and the e2e
+        # activation (#1524) are still in review. SR-1–SR-5 pass on the
+        # half-stack (the 507 refusals ARE the designed clean-fail), but
+        # SR-6's baseline-upload requires the full stack and the step
+        # then ran 36 minutes without output before cancellation —
+        # blocking every downstream suite (the R1–R10 arbitration).
+        # Re-enable when #1524 lands (the stack owner's activation).
+        if: false  # TODO(#1524): re-enable when the upload staging stack completes
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
