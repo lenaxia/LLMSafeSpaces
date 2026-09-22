@@ -206,3 +206,30 @@ func TestIssue1410E2EScript_ExecuteSmoke(t *testing.T) {
 	assertSmokeTraversal(t, issue1410Script, combined, exitVal,
 		"row(s) failed", "automation e2e: all rows passed")
 }
+
+// TestIssue1410E2E_ArbitrationFinal5 pins the arbitration's final-five
+// fixes (run 35752548377): the jq extraction uses -rc (jq -r pretty-prints
+// objects — head -1 got just '{'), the R4d loop uses if/then (the
+// banned [[ ]]&& break pattern), and R8 handles the admin-gated 403.
+func TestIssue1410E2E_ArbitrationFinal5(t *testing.T) {
+	raw, err := os.ReadFile(issue1410Script)
+	require.NoError(t, err)
+	src := string(raw)
+
+	// 1) jq extraction: all actionResult pipelines use -rc (compact).
+	badExtraction := strings.Count(src, `jq -r '.fires[] | select(.status=="failed") | .actionResult`)
+	assert.Zero(t, badExtraction,
+		"actionResult extraction must use jq -rc (compact) — jq -r pretty-prints the JSON object and head -1 returns just '{' (run 35752548377)")
+	compactCount := strings.Count(src, `jq -rc '.fires[]`)
+	assert.Greater(t, compactCount, 0, "at least one jq -rc extraction must exist")
+
+	// 2) R4d loop: no [[ ]] && break pattern in the file.
+	assert.NotContains(t, src, `]] && break`,
+		"the R4d loop must use if/then break — the [[ ]] && break pattern is banned (set -e fragility, the us70 pins)")
+
+	// 3) R8: the 403 admin-gate is handled with a loud skip.
+	assert.Contains(t, src, `api_status}" == "403"`,
+		"R8 must handle the admin-gated 403 on org creation (the tenant-user choice)")
+	assert.Contains(t, src, "org creation admin-gated",
+		"the skip must be loud and name the reason")
+}

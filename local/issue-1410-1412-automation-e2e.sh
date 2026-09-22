@@ -279,7 +279,7 @@ else
     ok "R4a: failed fire recorded for missing workflow"
 fi
 r4_result=$(api GET "/api/v1/me/triggers/${R4_ID}/fires" \
-    | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
+    | jq -rc '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
 if [[ "${r4_result}" == *"trigger_has_no_target"* ]]; then
     ok "R4b: failed fire carries the targetless payload (deleted workflow, FK SET NULL)"
 else
@@ -313,7 +313,7 @@ api DELETE "/api/v1/me/workflows/${R4D_WF_ID}" >/dev/null   # FK SET NULL -> tar
 r4d_status=""
 for ((i = 0; i < R4_WAIT_S; i += 10)); do
     r4d_status=$(trigger_field "${R4D_ID}" enabled)
-    [[ "${r4d_status}" == "false" ]] && break
+    if [[ "${r4d_status}" == "false" ]]; then break; fi
     sleep 10
 done
 if [[ "${r4d_status}" == "false" ]]; then
@@ -322,7 +322,7 @@ else
     note_fail "R4d: targetless trigger still enabled — silent zombie regression (#1440)"
 fi
 api GET "/api/v1/me/triggers/${R4D_ID}/fires" >/dev/null
-r4d_result=$(printf '%s' "${api_body}" | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1 || true)
+r4d_result=$(printf '%s' "${api_body}" | jq -rc '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1 || true)
 if [[ "${r4d_result}" == *"trigger_has_no_target"* ]]; then
     ok "R4d: failed fire carries the targetless payload"
 else
@@ -648,8 +648,8 @@ r10_attempt() { # suffix -> sets r10_verdict
     for _ in $(seq 1 30); do
         sleep 2
         fire_result=$(api GET "/api/v1/me/triggers/${trig_id}/fires" \
-            | jq -r '.fires[] | select(.status=="failed" or .status=="delivered") | [.status, (.actionResult // "")] | @tsv' | head -1 || true)
-        [[ -n "${fire_result}" ]] && break
+            | jq -rc '.fires[] | select(.status=="failed" or .status=="delivered") | [.status, (.actionResult // "")] | @tsv' | head -1 || true)
+        if [[ -n "${fire_result}" ]]; then break; fi
     done
     if [[ "${fire_result}" == *"workspace activation failed"* ]]; then
         warn "R10: lost the tick race (attempt ${suffix}) — fire drained before the retarget patch"
@@ -672,7 +672,7 @@ r10_attempt() { # suffix -> sets r10_verdict
 r10_verdict=""
 for sfx in a b; do
     r10_attempt "${sfx}"
-    [[ "${r10_verdict}" != "1" ]] && break
+    if [[ "${r10_verdict}" != "1" ]]; then break; fi
 done
 case "${r10_verdict}" in
     0) ok "R10: drain-targetless fire failed with trigger_has_no_target, accounted, auto-disabled" ;;
@@ -688,7 +688,14 @@ esac
 # org and becomes its admin, then exercises the fixed routes end to end.
 api POST /api/v1/orgs "$(jq -nc '{name:"E2E Automation Org",slug:"e2e-automation-org",ownerEmail:"e2e-automation@example.invalid"}')"
 R8_ORG_RESP="${api_body}"
-if [[ "${api_status}" != "201" ]]; then
+if [[ "${api_status}" == "403" ]]; then
+    # The org-creation route is admin-gated in this build; the harness
+    # user is a tenant by deliberate choice (the #1522 blast-radius
+    # decision). The #1449 org-scope CRUD rows run where admin access
+    # exists (pool/elevated segment); the nightly notes the skip.
+    warn "R8: org creation admin-gated (tenant harness user — the #1522 choice); org-scope CRUD rows skipped"
+    warn "R8: the #1449 shadowing fix is unit-pinned (org trigger route tests) and runs on the pool"
+elif [[ "${api_status}" != "201" ]]; then
     note_fail "R8 setup: org create failed: ${api_status} ${R8_ORG_RESP}"
 else
     R8_ORG=$(printf '%s' "${R8_ORG_RESP}" | jq -r '.id // .org.id // empty')
