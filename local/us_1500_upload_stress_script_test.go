@@ -163,11 +163,13 @@ func TestUploadStressScript_WorkflowRegistered(t *testing.T) {
 }
 
 // TestUploadStress_SR6DeliveryGate pins run 35679282297's adjudication:
-// SR-6 must gate IN-RUN on the baseline upload's status (a non-201
-// baseline means the delivery leg is absent — #1518/#1524 — and the
-// concurrency storms would grind 5×10MiB×120s against 507s for ~36
-// minutes of silence). NEVER a silent step-level `if: false` on the
-// workflow (the #1342 rule, pinned in issue_1342_e2e_script_test.go).
+// SR-6 must gate IN-RUN on the baseline upload's 507 (the half-stack's
+// DESIGNED clean-fail — the delivery leg #1518/#1524 is absent). Keyed
+// on 507 SPECIFICALLY so genuine 500/000/429 baselines reach the
+// failure path. The actual hang of that run was a BARE `wait` at the
+// storm joins (also waiting the immortal port-forward child) — the
+// per-pid-wait + bare-wait-absence pins guard that mechanism. NEVER a
+// silent step-level `if: false` on the workflow (the #1342 rule).
 func TestUploadStress_SR6DeliveryGate(t *testing.T) {
 	raw, err := os.ReadFile(uploadStressScript)
 	require.NoError(t, err)
