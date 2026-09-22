@@ -558,6 +558,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		jwtSessionJanitor = secrets.NewJWTSessionJanitor(jwtSessionStore, 0, log)
 		secretService = secrets.NewSecretService(keyService, asyncAudit)
 
+		// Epic 72 / US-72.4 (design 0058 §4.5): relay-only token
+		// emission. When the deployment flag reaches the API, the one
+		// builder swaps raw provider keys for the controller-staged
+		// relay tokens (handoff Secret in the workspace namespace).
+		// Flag off (default): nil source, byte-identical legacy batches.
+		// (installRelayTokenSource — extracted so the seam is tested.)
+		installRelayTokenSource(secretService, cfg.RelayOnlyKeyDelivery.Enabled,
+			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+			k8sClient.Clientset())
+
 		// M2-a: shared model cache between SecretsHandler (evicts on bind) and
 		// ModelsHandler (reads on ListModels). One cache, two consumers.
 		sharedModelCache := handlers.NewInMemoryModelCache()
@@ -622,6 +632,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgWorkflowsHandler = handlers.NewOrgWorkflowsHandler(wfStore, instanceSettings)
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
+		// Parent-id contract checks (the opaque-500 class audit): the
+		// same pool owns workspaces — the store's unscoped existence
+		// primitive backs the target-workspace 400s on workflow create
+		// and trigger create/update.
+		userWorkflowsHandler.SetWorkspaceExistencer(wfStore)
+		orgWorkflowsHandler.SetWorkspaceExistencer(wfStore)
+		userTriggersHandler.SetWorkspaceExistencer(wfStore)
+		orgTriggersHandler.SetWorkspaceExistencer(wfStore)
 		webhookReceiverHandler = handlers.NewWebhookReceiverHandler(wfStore, providerCredsProv, 1<<20)
 		webhookReceiverHandler.SetRateChecker(svc.GetRateLimiter(), 10, 20)
 

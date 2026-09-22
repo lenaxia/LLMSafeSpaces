@@ -1345,6 +1345,8 @@ func TestTriggerUpdate_TargetPresenceGuard(t *testing.T) {
 
 	t.Run("swapping workspace for workflow keeps a target", func(t *testing.T) {
 		store := newMockTriggerStore()
+		// The update-path parent-id check resolves the swap target.
+		store.workflows["wf-9"] = &wf.WorkflowRow{ID: "wf-9", OwnerType: "user", OwnerID: "test-user"}
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 		w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 			"name": "swap", "sourceType": "cron",
@@ -1413,6 +1415,8 @@ func TestTriggerUpdate_TargetlessRowNonTargetPatchAccepted(t *testing.T) {
 // unrepairable.
 func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
 	store := newMockTriggerStore()
+	// The update-path parent-id check resolves the repair target.
+	store.workflows["wf-repair"] = &wf.WorkflowRow{ID: "wf-repair", OwnerType: "user", OwnerID: "test-user"}
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
 
@@ -1762,4 +1766,166 @@ func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
 		assert.Equal(t, "renamed", store.triggers["t-ghost2"].Prompt)
 	})
+}
+
+// The parent-id audit's trigger arms (run 35617684178's class): the
+// existencer-backed target-workspace checks on create and update.
+func setupTriggerRouterWithExistencer(t *testing.T, store *mockTriggerStore, ex workspaceExistencer) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserTriggersHandler(store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	h.SetWorkspaceExistencer(ex)
+	group := r.Group("/api/v1/me/triggers")
+	group.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	group.POST("", h.UserCreate)
+	group.PUT("/:id", h.UserUpdate)
+	return r
+}
+
+// TestTriggerCreate_NonexistentWorkspace_Named400: a user-supplied
+// workspaceId that does not exist answers the contract 400 (the
+// triggers.workspace_id FK previously answered with the opaque-500
+// class — run 35617684178's finding, second surface).
+func TestTriggerCreate_NonexistentWorkspace_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{exists: map[string]bool{}})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "ghost-ws-target", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "00000000-0000-4000-8000-000000000099", "prompt": "x",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workspace not found")
+	assert.Empty(t, store.triggers, "nothing stored on the rejected path")
+}
+
+// TestTriggerCreate_ExistingWorkspace_Passes: the existencer's pass-arm
+// leaves valid routine creates untouched.
+func TestTriggerCreate_ExistingWorkspace_Passes(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{
+		exists: map[string]bool{"00000000-0000-4000-8000-000000000001": true},
+	})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "real-ws-target", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "00000000-0000-4000-8000-000000000001", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+}
+
+// TestTriggerUpdate_NonexistentWorkflow_Named400 pins #1519's
+// nonexistent-workflow half: an un-opted ghost workflowId PATCH reached
+// the FK as an opaque 500 ("failed to update trigger"); the post-patch
+// merged view now answers the contract 400.
+func TestTriggerUpdate_NonexistentWorkflow_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("00000000-0000-4000-8000-000000000001"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{
+		exists: map[string]bool{"00000000-0000-4000-8000-000000000001": true},
+	})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workflowId": "deadbeef-0000-4000-8000-000000000000",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workflow not found")
+}
+
+// TestTriggerUpdate_NonexistentWorkspace_Named400: the workspace half of
+// the same audit.
+func TestTriggerUpdate_NonexistentWorkspace_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("00000000-0000-4000-8000-000000000001"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{exists: map[string]bool{}})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workspaceId": "00000000-0000-4000-8000-000000000099",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workspace not found")
+}
+
+// TestTriggerUpdate_CrossOwnerWorkflow_Named400 pins #1519 half (b) as
+// IMPLEMENTED: a PATCHED cross-owner workflowId answers the same named
+// 400 as a nonexistent one (owner-scoped GetWorkflow — no existence
+// oracle, matching create). STORED cross-owner targets are deliberately
+// NOT re-validated (legacy rows stay patchable for #1440 mitigation).
+func TestTriggerUpdate_CrossOwnerWorkflow_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("00000000-0000-4000-8000-000000000001"), Prompt: "x"}
+	// The workflow EXISTS — owned by someone else (the owner-scoped mock
+	// returns ErrNotFound for it, exactly as the real store does).
+	store.workflows["wf-foreign"] = &wf.WorkflowRow{ID: "wf-foreign", OwnerType: "user", OwnerID: "someone-else"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{
+		exists: map[string]bool{"00000000-0000-4000-8000-000000000001": true},
+	})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workflowId": "wf-foreign",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workflow not found")
+}
+
+// TestTriggerUpdate_StoredTargetNotRevalidated pins the scope decision:
+// a patch that does NOT touch the targets never re-validates the STORED
+// workflowId — a legacy cross-owner row stays patchable for #1440
+// mitigation (enabled:false).
+func TestTriggerUpdate_StoredTargetNotRevalidated(t *testing.T) {
+	store := newMockTriggerStore()
+	// Stored target is cross-owner (not in this owner's mock map).
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "zombie", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkflowID:   strPtr("wf-legacy-foreign"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{exists: map[string]bool{}})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"enabled": false,
+	})
+	require.Equal(t, 200, w.Code, "stored targets must never be re-validated by unrelated patches: %s", w.Body.String())
+	assert.False(t, store.triggers["t1"].Enabled)
+}
+
+// TestTriggerUpdate_WorkspaceExistencerError_500 pins the infra arm.
+func TestTriggerUpdate_WorkspaceExistencerError_500(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["t1"] = &wf.TriggerRow{ID: "t1", OwnerType: "user", OwnerID: "test-user",
+		Name: "routine", SourceType: "cron", Enabled: true,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  strPtr("ws-1"), Prompt: "x"}
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{err: errors.New("db down")})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t1", map[string]any{
+		"workspaceId": "00000000-0000-4000-8000-000000000002",
+	})
+	require.Equal(t, 500, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "failed to check target workspace")
+}
+
+// TestTriggerCreate_WorkspaceExistencerError_500 pins the create arm.
+func TestTriggerCreate_WorkspaceExistencerError_500(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouterWithExistencer(t, store, &fakeWorkspaceExistencer{err: errors.New("db down")})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "infra-fail", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "00000000-0000-4000-8000-000000000002", "prompt": "x",
+	})
+	require.Equal(t, 500, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "failed to check target workspace")
 }

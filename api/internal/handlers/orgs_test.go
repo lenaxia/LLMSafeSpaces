@@ -15,11 +15,14 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 type mockOrgStore struct {
+	users                 map[string]bool
 	mu                    sync.Mutex
 	orgs                  map[string]*types.Organization
 	members               map[string][]*types.OrgMember
@@ -47,6 +50,7 @@ type mockAuditEvent struct {
 
 func newMockOrgStore() *mockOrgStore {
 	return &mockOrgStore{
+		users:           map[string]bool{"new-user": true, "new-admin": true, "taken-user": true},
 		orgs:            make(map[string]*types.Organization),
 		members:         make(map[string][]*types.OrgMember),
 		billingAccounts: make(map[string]string),
@@ -259,6 +263,10 @@ func (m *mockOrgStore) GetUserOrgID(_ context.Context, userID string) (string, e
 		return "", m.userOrgIDErr
 	}
 	return m.userOrgID[userID], nil
+}
+
+func (m *mockOrgStore) UserExistsByID(_ context.Context, userID string) (bool, error) {
+	return m.users[userID], nil
 }
 
 func (m *mockOrgStore) GetStripeCustomerID(_ context.Context, orgID string) (string, error) {
@@ -1068,4 +1076,25 @@ func TestOrgsHandler_ChangeMemberRole_MissingRoleReturnsDetails(t *testing.T) {
 	if _, ok := details["role"]; !ok {
 		t.Errorf("expected details.role, got: %s", w.Body.String())
 	}
+}
+
+// TestOrgAddMember_GhostUser_Named404 pins the parent-id audit's eighth
+// instance: a nonexistent userId on POST /orgs/:id/members previously
+// fell through both pre-checks ((nil,nil) and ("",nil) on ErrNoRows) and
+// hit the FK as an opaque 500 — the contract is the named 404.
+func TestOrgAddMember_GhostUser_Named404(t *testing.T) {
+	store := newMockOrgStore()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewOrgsHandler(store, nil)
+	g := r.Group("/api/v1/orgs")
+	g.POST("/:id/members", h.AddMember)
+
+	w := httptest.NewRequest("POST", "/api/v1/orgs/org-1/members",
+		strings.NewReader(`{"userId":"deadbeef-0000-4000-8000-000000000000","role":"member"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 404, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "user not found")
 }

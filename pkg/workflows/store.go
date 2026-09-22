@@ -245,6 +245,23 @@ func (s *Store) GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID 
 	return r, err
 }
 
+// WorkspaceExistsByID reports whether a workspace row with the id exists,
+// UNSCOPED — the existence semantics of the workspaces(id) foreign keys
+// (triggers.workspace_id, workflows.target_workspace_id). The handler
+// parent-id contract checks ride this; ownership policy is NOT judged
+// here (cross-owner targets remain the fire-time loud class, #1440).
+// Same pool as the workflows tables — workspaces lives in the same
+// database.
+func (s *Store) WorkspaceExistsByID(ctx context.Context, workspaceID string) (bool, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM workspaces WHERE id = $1", workspaceID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ListWorkflows returns all workflows owned by (ownerType, ownerID), ordered
 // by created_at ASC. Never decrypts — display fields only.
 func (s *Store) ListWorkflows(ctx context.Context, ownerType, ownerID string) ([]*WorkflowRow, error) {

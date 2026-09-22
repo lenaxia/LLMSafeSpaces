@@ -101,16 +101,30 @@ func (s *SecretService) BuildWorkspaceBatch(ctx context.Context, ownerUserID, wo
 		return nil, nil, err
 	}
 
-	manifestHash := ManifestHash(ownerUserID, manifestFromRows(bindings, relevantSecrets, servers))
+	// US-72.4 relay tier: the staged handoff is read ONCE and feeds both
+	// tiers — its revision rides the manifest hash (a token renewal at
+	// ~TTL/2 rotates the manifest → new seq → resync, no pod restart),
+	// and its entries rewrite the llm-provider class (§4.5). Flag off
+	// (nil source): both call sites degrade to the legacy rows-only
+	// behavior without touching the seam.
+	handoff, handoffErr := s.relayHandoffOpt(ctx, workspaceID)
+	manifestHash := s.workspaceManifestHash(ctx, ownerUserID, bindings, relevantSecrets, servers, handoff, handoffErr)
 	seq, err := revStore.EnsureRevision(ctx, workspaceID, manifestHash)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ensure workspace revision: %w", err)
 	}
 
 	dek, degrade := s.workspaceDEK(ctx, ownerUserID, workspaceID, bindings, relevantSecrets, servers)
+	// Under flag-on a missing handoff mutes the whole llm-provider class
+	// (no raw fallback — see buildCredentialEntries) and the relay
+	// degrade takes precedence over a co-present DEK degrade
+	// (staging-not-ready blocks strictly more delivery).
+	if relayDegrade := s.relayBatchDegrade(ctx, ownerUserID, workspaceID, handoff, handoffErr); relayDegrade != nil {
+		degrade = relayDegrade
+	}
 
 	entries := make([]BatchEntry, 0, len(bindings)+len(relevantSecrets)+len(servers))
-	entries = append(entries, s.buildCredentialEntries(ctx, ownerUserID, workspaceID, bindings, dek)...)
+	entries = append(entries, s.buildCredentialEntries(ctx, ownerUserID, workspaceID, bindings, dek, handoff, handoffErr)...)
 	entries = append(entries, s.buildUserSecretEntries(ctx, ownerUserID, workspaceID, relevantSecrets, dek)...)
 	entries = append(entries, s.buildMCPEntries(ctx, ownerUserID, workspaceID, servers, dek)...)
 
@@ -164,12 +178,37 @@ func (s *SecretService) loadWorkspaceRows(ctx context.Context, ownerUserID, work
 // a revision: an unchanged manifest means the stored row already holds
 // the matching seq, and a changed manifest mints its seq in the 200
 // path's build.
+//
+// US-72.4: under the relay-only flag the staged handoff's revision
+// participates (design 0058 §4.4) — identical tiering as the build path
+// (workspaceManifestHash), so a 304 here and a seq mint there can never
+// disagree. A handoff read failure degrades to the rows-only hash: a
+// false 304 is impossible, but under flag-on the rows-only manifest
+// makes the client refetch a batch whose provider class the not-ready
+// build mutes — the resync pull then PERSISTS that provider-less batch
+// to the working pod's durable state, wiping the relay tokens until the
+// handoff read recovers and the next pull restores the class
+// (self-healing, bounded by the resync cadence; the fail-closed choice
+// itself is pinned by TestRelayBatch_HandoffSourceError_TreatedAsNotReady).
 func (s *SecretService) ManifestFor(ctx context.Context, ownerUserID, workspaceID string) (string, error) {
 	bindings, relevantSecrets, servers, err := s.loadWorkspaceRows(ctx, ownerUserID, workspaceID)
 	if err != nil {
 		return "", err
 	}
-	return ManifestHash(ownerUserID, manifestFromRows(bindings, relevantSecrets, servers)), nil
+	handoff, handoffErr := s.relayHandoffOpt(ctx, workspaceID)
+	return s.workspaceManifestHash(ctx, ownerUserID, bindings, relevantSecrets, servers, handoff, handoffErr), nil
+}
+
+// workspaceManifestHash is the single manifest-tier computation shared
+// by ManifestFor and BuildWorkspaceBatch: rows-only when the relay
+// source is nil or the handoff absent/unreadable, rows + the staged
+// revision line when a staged handoff is present.
+func (s *SecretService) workspaceManifestHash(ctx context.Context, ownerUserID string, bindings []CredentialBinding, relevantSecrets []*UserSecret, servers []MCPServerBindingRow, handoff *RelayHandoff, handoffErr error) string {
+	entries := manifestFromRows(bindings, relevantSecrets, servers)
+	if handoffErr != nil || handoff == nil || handoff.Revision == "" {
+		return ManifestHash(ownerUserID, entries)
+	}
+	return ManifestHashWithRelayRevision(ownerUserID, entries, handoff.Revision)
 }
 
 // CurrentRevision returns the workspace's stored revision row (see
@@ -294,10 +333,20 @@ func (s *SecretService) workspaceDEK(ctx context.Context, ownerUserID, workspace
 // "credential_decrypt_failed" and fall through so a lower-priority
 // binding can take over. With dek==nil every user binding is skipped
 // with "credential_skipped_no_session".
-func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID, workspaceID string, bindings []CredentialBinding, dek []byte) []BatchEntry {
+//
+// US-72.4 relay tier: with a staged handoff (flag on), each decrypted
+// provider is looked up by its DECRYPTED slug — present ⇒ apiKey/baseURL
+// are rewritten to token + router before marshal (the raw key value is
+// dropped in the rewrite; the credential still decrypts server-side for
+// the model list so flag-on/off entries stay behavior-identical for the
+// formatter). Absent ⇒ the raw mixed-fleet path continues (US-72.3 D5).
+// With handoffErr != nil (staging not ready) the ENTIRE class is muted:
+// no token batch and never a raw fallback under flag-on.
+func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID, workspaceID string, bindings []CredentialBinding, dek []byte, handoff *RelayHandoff, handoffErr error) []BatchEntry {
 	adminDecrypt := decryptFnFor(s.adminProvider)
 	orgDecrypt := decryptFnFor(s.orgProvider)
 
+	muteClass := s.relayTokens != nil && (handoffErr != nil || handoff == nil)
 	seen := make(map[string]bool)
 	var out []BatchEntry
 	for _, b := range bindings {
@@ -318,8 +367,55 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 				map[string]string{"credentialID": b.ID, "slug": b.Slug, "kind": b.Kind, "ownerType": b.OwnerType, "error": err.Error()})
 			continue
 		}
+		if muteClass {
+			// Staging not ready under flag-on: the provider is skipped
+			// loudly (the class-level degrade already audited) — the raw
+			// key must not leak into a not-ready token batch.
+			s.audit(ctx, ownerUserID, "credential_skipped_relay_not_ready", nil, &workspaceID,
+				map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind})
+			continue
+		}
 		s.applyModelAllowlist(&pd, b)
+		if handoff != nil && seen[pd.Slug] {
+			// RELAY PATH ONLY: two binding rows decrypting to the same
+			// provider slug — the priority-order winner already emitted
+			// (the same pd-slug dedup ResolveLLMProviders applies, so the
+			// staged set and the emitted set are keyed identically). The
+			// legacy flag-off path keeps its historical row-slug-only
+			// dedup — flag off is byte-identical, duplicates included.
+			continue
+		}
+		var relayMeta json.RawMessage
+		if handoff != nil {
+			meta, outcome := applyRelayHandoff(&pd, handoff)
+			switch outcome {
+			case relayEmitted:
+				relayMeta = meta
+			case relayEmptyToken:
+				// Empty staged token: corruption the controller never
+				// writes — skip loudly, no keyless entry, no raw fallback.
+				s.audit(ctx, ownerUserID, "relay_token_missing", nil, &workspaceID,
+					map[string]string{"slug": pd.Slug, "kind": pd.Kind})
+				continue
+			case relayNotStaged:
+				// Mixed-fleet raw path (US-72.3 D5) — but AUDITED: under
+				// flag-on a raw emission is operator-relevant state (a
+				// frontable provider bound after the last staging pass,
+				// or a torn handoff, would land here too and be
+				// unobservable until the US-72.6 sweep otherwise). The
+				// audit names the slug so the row is actionable; the
+				// builder deliberately does NOT gate on kind (it cannot
+				// distinguish non-frontable-by-design from
+				// not-yet-staged — #1529 review ruling).
+				s.audit(ctx, ownerUserID, "relay_raw_emission", nil, &workspaceID,
+					map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind,
+						"reason": "absent from staged handoff"})
+			}
+		}
 		seen[b.Slug] = true
+		if handoff != nil {
+			seen[pd.Slug] = true
+		}
 		plaintext, merr := json.Marshal(pd) //nolint:gosec // marshaling for secrets delivery, not API response
 		if merr != nil {
 			s.audit(ctx, ownerUserID, "credential_decrypt_failed", nil, &workspaceID,
@@ -335,8 +431,9 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 			// opencode persists it as providerID on sessions. It is NOT
 			// the binding row's slug column, which is derived from the
 			// credential name at insert and can differ.
-			Name:  pd.Slug,
-			Value: string(plaintext),
+			Name:     pd.Slug,
+			Value:    string(plaintext),
+			Metadata: relayMeta,
 		})
 	}
 	return out
