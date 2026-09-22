@@ -351,7 +351,7 @@ case "${CHAOS_STATUS}" in
         ;;
     201)
         # The upload finished before the pod died — acceptable timing
-        # outcome; the assertions below still hold (retry, one intact file).
+        # outcome; the assertions below still hold (retry, 1-or-2 intact files per D19).
         warn "upload completed before the kill took effect (got 201); continuing"
         ;;
     *)
