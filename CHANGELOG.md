@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.7] - 2026-09-22
+
+### Features — saved prompts and slash commands (#1496/#1499, PRs #1502/#1503/#1509)
+
+- **User prompt manager, full stack**: a settings surface where users CRUD
+  saved prompts (name + content, owner-scoped storage, typed clients in all
+  four SDKs), recalled in the chat composer via `#` — a popup with live
+  filtering, keyboard navigation, and inline expansion. The `#`-collision
+  matrix is pinned deliberately (markdown headings suppressed, `C#`/`a#b`
+  word-boundaries respected, recursion-guarded expansion).
+
+### Features — file uploads in sidecar mode (design 0060, PRs #1515/#1516/#1518/#1523)
+
+- **Uploads now work in the hardened sidecar configuration** via staged
+  delivery: the sidecar stages bytes on a budgeted memory area (admission by
+  reserved bytes — credential delivery is protected by construction), the
+  supervisor writes the PVC as uid 1000, with write-time disk re-checks,
+  atomic renames, orphan hygiene, and full observability. Disk/memory safety
+  per the owner's binding directive; live-validated end-to-end by the nightly
+  (persistence across suspend/resume, cross-tenant isolation, mid-kill
+  recovery — all green in sidecar mode, first time in history). Operator
+  knobs in Helm with typo-rejection at boot.
+
+### Security — credential-plane hardening (#820, PRs #1526/#1534/#1529)
+
+- **Raw provider keys off workspace pods by default**: relay-only key
+  delivery flips on by default — keys are sealed into per-workspace envelope
+  Secrets in a dedicated namespace with a per-request BYO resolver; the
+  uid-1000 agent space never receives them. Exercised-rollback drill,
+  live-fleet canary waves, and the runbook ship with it.
+- **Permission tiers enforced**: the harness's directory-permission config is
+  written to the live key (the months-inert shape is fixed, live-proven, and
+  CI-tripwired), with the tier floor (pre-allow working paths, hard-deny
+  credential surfaces, ask ambient) and five closed escape classes.
+- **Self-send guard on inter-agent messages**: target==origin delivers with a
+  loud warning — the orchestrator misfire class, closed at send time.
+
+### Fixes — platform behavior
+
+- **Suspend is bounded-graceful everywhere** (#1507/#1510): the busy-session
+  drain gate is removed on suspend paths (a wedged agent can no longer block
+  suspend indefinitely — the flap physics documented in-code); termination
+  grace is explicit and tunable with a loud floor.
+- **Refresh Compute is the force path** (#1505/#1506): the user-consented
+  refresh stamps a generation-keyed force marker; the controller deletes the
+  pod on first reconcile. Automated suspends keep the polite drain.
+- **The parent-id contract, everywhere** (#1517/#1522/#1527): eight
+  production surfaces returning opaque 500s on nonexistent parent references
+  (workspaces, triggers, runs, MCP bindings, credentials, org members) now
+  answer named 4xx — create and update paths, live-patrolled by new nightly
+  rows. Two independent FK sweeps confirm the class is closed.
+- **Session-index ground truth** (#1487): message counts rebuild from harness
+  truth during reconcile (truncation-sentineled, never persisting a floor).
+- **DAG retry-intermediate cleanup** (#1492), **agent-origin badge full-ID
+  wrap** (#1489), **CI release-tag race structurally closed** (#1483).
+
+### Fixes — test infrastructure (the nightly resurrection)
+
+- The full-system nightly now completes end-to-end for the first time in the
+  project's history: four never-executed harness corpses resurrected, sweeps
+  that never swept now verify, the schedule is off-peak (2:17am Pacific),
+  scale rows run at honest envelope, LLM-cred rows gate loudly, attachment
+  rows run fully in both container modes, and the automation arbitration
+  executes on a fully-swept platform. Test-side flake classes closed
+  (Playwright detached-node dispatch, #1520).
+
 ### Fixed
 - **#1519** — Triggers update-path workflow-existence contract: PATCH retargeting to a nonexistent or cross-owner workflowId now answers the named 400 "target workflow not found" (create parity), not the opaque 500 (store FK) or silent persist (cross-owner) of the pre-fix asymmetry. The check fires on the post-patch merged view inside the mapping-touching block — de-opt patches on stored ghosts 400 too; non-mapping patches stay editable.
 
