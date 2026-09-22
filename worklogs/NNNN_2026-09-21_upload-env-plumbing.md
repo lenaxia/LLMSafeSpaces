@@ -29,7 +29,7 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 
 ## Tests Run
 
-- `go test -run 'TestUploadStaging' ./controller/internal/workspace/` — 13 green at the rebased head: flag round trip, empty=default, unknown-key rejection (3 malformed shapes), env exact-name emission (set/unset), the literal name-contract pin, the pod wiring BOTH directions, floor=0 explicitness, the TTL cross-validation (both single-knob arms + both pass arms), and duplicate-key rejection. [Count corrected r9 — the original '7' predates the r1–r5 pin additions.]
+- `go test -run 'TestUploadStaging' ./controller/internal/workspace/` — 10 green at the rebased head (the controller suite): flag round trip, empty=default, unknown-key rejection (3 malformed shapes), env exact-name emission (set/unset), the literal name-contract pin, the pod wiring BOTH directions, floor=0 explicitness, the TTL cross-validation (both single-knob arms + both pass arms), and duplicate-key rejection. [Count corrected r9 — the original '7' predates the r1–r5 pin additions.]
 - Full `./controller/internal/workspace/` — ok (80s). Full `go build ./...` — ok. golangci-lint 0 issues (funlen resolved by extracting the flag helpers, not by nolint).
 
 ---
@@ -101,3 +101,9 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 
 - The sweepStarted field comment now states the deterministic fact (closed BEFORE the goroutine launches) and names the actual pin — no nonexistent seam references.
 - The stale '7 green' count corrected (13 at the rebased head, the additions itemized). Files Modified rebuilt as the complete, duplicate-free list (the chart test included).
+
+
+## Review round 10 (the function-comment seam reference + the real count)
+
+- The startStagingSweeper FUNCTION comment still referenced the deleted onSweepTick seam (a different comment from the field one r9 fixed). Removed.
+- The count corrected to the actual 10 (the r9 '13' overcounted by including chart and agentd-side tests from separate packages).
