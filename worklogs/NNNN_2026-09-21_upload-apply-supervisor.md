@@ -52,7 +52,7 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 
 - `go test -run 'TestUploadApply|TestDestinationScrub' ./cmd/workspace-agentd/` — 9 tests green.
 - Mutations, each witnessed red then restored green: pre-copy gate removed (dest_disk_full pin); verification disabled (checksum + size pins, 2 fails); scrub glob widened to non-.tmp (final-objects-never-scrubbed pin).
-- Full `./cmd/workspace-agentd/` — ok (277s); golangci-lint 0 issues.
+- Full `./cmd/workspace-agentd/` — ok (277s; the r9 review demonstrated the -short CI watchdog at 300s is now insufficient for this package — both ci.yml -short sites raised to 600s); golangci-lint 0 issues.
 
 ---
 
@@ -122,3 +122,9 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 ## Review round 8 (the standing-offer conversion)
 
 - The r7 verdict held the PR solely on the e2e gate with "approvable as-is once the e2e un-skip lands." The un-skip exists and is APPROVED (#1524, 11 rounds). This commit re-triggers the review on the unchanged code head to convert the standing offer; the production diff is byte-identical to the r7-verified state.
+
+
+## Review round 9 (the CI timeout budget + the merge-order correction)
+
+- This PR's added test weight pushed the agentd package past the 300s -short CI watchdog (red on both this head and #1524's approved head, demonstrated twice). Both ci.yml -short sites raised to 600s — the package alone runs ~300s under -short on CI runners; 600s restores the 2× headroom the original 300s had when the package was ~150s.
+- The merge-order correction acknowledged: THIS PR merges first, then #1523/#1524 immediately (the r8 "merge PR 4 first" arm is unsafe under squash-merge — #1524 contains this branch and would revert it).
