@@ -688,12 +688,13 @@ jobs:
         # is an ns-gone wait inside the script (owner-side change).
         #
         # #1541: ARMED on the full prerequisite chain (install + the
-        # us-70 mock-llm rows + the drill-shape pre-step) — an unrelated
-        # earlier-row failure (the SR-6 class) must not skip the drill,
-        # but any PREREQUISITE failure must (a drill against missing
-        # mock-llm or an un-shaped release fails its rows for
-        # infrastructure reasons and poisons the executed-rollback
-        # evidence record — the bare-always() trap).
+        # us-70 mock-llm rows + the router-image build + the drill-shape
+        # pre-step) — an unrelated earlier-row failure (the SR-6 class)
+        # must not skip the drill, but any PREREQUISITE failure must (a
+        # drill against missing mock-llm, a missing router image, or an
+        # un-shaped release fails its rows for infrastructure reasons
+        # and poisons the executed-rollback evidence record — the
+        # bare-always() trap).
         id: relay-drill
         if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' }}
         run: bash local/us-72-relay-only-flip-drill.sh

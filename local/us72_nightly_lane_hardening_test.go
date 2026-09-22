@@ -222,7 +222,7 @@ func evalCond(t *testing.T, expr string, outcomes map[string]string) bool {
 //	scenario           | install | us70 | build | shape | drill | UNRELATED fail | lane
 //	#1541 (tonight)    |   ok    |  ok  |  ok   |  ok   |  ok   |     yes        | RUNS (the fix)
 //	install failed     |   X     |  —   |  —    |  —    |  —    |      —         | skips (no poison)
-//	router build failed|   ok    |  ok  |  X    | skip  | skip  |      —         | shape+ drill+sweep skip (r1)
+//	router build failed|   ok    |  ok  |  X    | skip  | skip  |      —         | shape+drill+sweep skip (r1)
 //	us70 failed        |   ok    |  X   |  ok   |  ok   | skip  |      —         | build/shape run; drill+sweep skip
 //	shape failed       |   ok    |  ok  |  ok   |  X    | skip  |      —         | drill+sweep skip
 //	drill failed       |   ok    |  ok  |  ok   |  ok   |   X   |      —         | sweep skips (flag state unknown)
