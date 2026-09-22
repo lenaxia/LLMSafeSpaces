@@ -79,11 +79,12 @@ func TestUS72SweepWiring_NightlyOrdering(t *testing.T) {
 
 // Pin (b): the sweep step carries its own port-forward port and it is
 // used by NO other step. The lib's cleanup() trap DOES reap its own
-// forward on a normal exit — the isolation is defense against the
-// residual: a script killed hard (runner cancellation SIGKILLs; a
-// set -e death inside a trap-sensitive window) skips the EXIT trap and
-// leaks a bound port. A distinct port means a leaked drill forward can
-// never break the sweep's harness_start.
+// forward on a normal exit — and on errexit too (bash runs the EXIT
+// trap on `set -e` deaths; verified empirically, r2). The isolation is
+// defense against the one case where the trap genuinely never fires:
+// SIGKILL (runner cancellation kills hard) leaks the bound port. A
+// distinct port means a leaked drill forward can never break the
+// sweep's harness_start.
 func TestUS72SweepWiring_PortIsolated(t *testing.T) {
 	src := mustRead(t, us70NightlyWorkflow)
 	if n := strings.Count(src, "18089"); n != 1 {
