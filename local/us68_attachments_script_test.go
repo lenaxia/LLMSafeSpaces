@@ -66,9 +66,11 @@ func TestUS68SidecarGate_ProbesInitContainers(t *testing.T) {
 }
 
 // TestUS68SidecarGate_DetectsNativeSidecar executes the script's ACTUAL
-// gate block with a fake kc across the feature-detect's three legs:
-// pre-0060 (5xx → loud skip + exit 0), 0060-landed (201 → falls through
-// to E2/E10/E11), and broken (500 → hard die). Single-container pods
+// gate block with a fake kc across the feature-detect's seven legs:
+// pre-0060 (503 → loud skip; 502-persistent → same via the retry;
+// 502-transient → retries to 201 and falls through), 0060-landed
+// (201 → falls through to E2/E10/E11), broken (500 → hard die; the
+// 503-RO-mount guard with leaked files → die), and single-container.
 // still fall through. Run 35697148238's adjudication: the gate
 // distinguishes designed outcomes from broken ones, never absorbing
 // the latter.

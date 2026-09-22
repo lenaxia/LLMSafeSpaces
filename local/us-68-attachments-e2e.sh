@@ -221,8 +221,8 @@ if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
     # the gate distinguishes three shapes:
     #   201  → 0060 landed: run E2/E10/E11 FULLY in sidecar mode (fall
     #          through to the rows below — the new design's full coverage)
-    #   5xx  → pre-0060 clean-fail (the OLD D1 contract): loud skip as before
-    #   other → broken (500/timeout/corrupt): hard fail, never absorbed
+    #   502/503 → pre-0060 clean-fail (the OLD D1 contract): loud skip as before
+    #   other  → broken (500 IS 5xx and hits here; also timeout/corrupt): hard fail, never absorbed
     warn "agentd SIDECAR mode detected — probing upload shape (design 0060 feature-detect)"
     printf 'sidecar mode probe\n' > /tmp/us67-sidecar.txt
     upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt

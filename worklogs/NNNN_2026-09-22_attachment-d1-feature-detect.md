@@ -15,7 +15,7 @@ The gate now distinguishes THREE upload shapes (502/503 specifically, not all 5x
 
 The fleet is mid-transition (nightly=main has the 0060 stack; pool/weekly=deployed prod does not) — the feature-detect keeps the harness correct on BOTH surfaces and self-adapts when prod catches up. The weekly single-container workflow is unchanged.
 
-Pins: the existing executable gate test extended from two legs to FOUR (pre-0060 503 → skip; 0060 201 → fall-through; broken 500 → die; single-container → fall-through). The old "upload accepted must die" D1 test is superseded by the 201 fall-through leg. Structural pins updated for the new gate shape.
+Pins: the executable gate test runs SEVEN legs (pre-0060 503 → skip; 502-persistent → same via the retry; 502-transient → retries to 201 and falls through; 0060 201 → fall-through with GATE-FELL-THROUGH + accurate verdict; 503-with-leaked-files → RO-mount die; broken 500 → hard die; single-container → fall-through) plus the structural E10-leak pin (the probe file exclusion). The old two-leg D1 test is superseded.
 
 ### Key decision: 502/503 (not all 5xx) as the clean-fail class
 
@@ -29,11 +29,11 @@ None.
 
 ## Tests Run
 
-- `go test -count=1 -timeout 300s ./local/` — **ok** (26.7s; includes the four-leg gate test + the ExecuteSmoke suite).
+- `go test -count=1 -timeout 300s ./local/` — **ok** (includes the seven-leg gate test + the ExecuteSmoke suite).
 - `bash -n` clean.
 
 ## Files Modified
 
 - `local/us-68-attachments-e2e.sh` — the three-way feature-detect gate.
-- `local/us68_attachments_script_test.go` — the four-leg executable test + structural pins.
+- `local/us68_attachments_script_test.go` — the seven-leg executable test + the E10 leak pin + structural pins.
 - `worklogs/NNNN_2026-09-22_attachment-d1-feature-detect.md` — this worklog.
