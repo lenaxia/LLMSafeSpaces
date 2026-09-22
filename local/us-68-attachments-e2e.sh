@@ -9,8 +9,9 @@
 #         byte-identical (PVC survives the pod).
 #   E10 — Multi-tenant: two users, two workspaces, simultaneous uploads —
 #         cross-user upload denied (403), no cross-workspace path leakage.
-#   E11 — Chaos: pod killed mid-upload → clean 5xx to the client; pod
-#         restarts; retry succeeds; exactly one intact file, no .tmp.
+#   E11 — Chaos: pod killed mid-upload → clean 5xx/000 to the client; pod
+#         restarts; retry succeeds; one-or-two intact files (D19: retry =
+#     new uuid — both contract-legal), no partial/.tmp.
 #
 # SIDECAR MODE GATE (feature-detect, D1 + design 0060): in agentd-sidecar
 # deployments the upload path is PROBED, not assumed. Pre-0060 clusters
@@ -327,7 +328,7 @@ LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep 
 ok "no cross-workspace file leakage"
 
 # -----------------------------------------------------------------------------
-# E11 — Chaos: pod killed mid-upload → clean 5xx; retry; exactly one file
+# E11 — Chaos: pod killed mid-upload → clean 5xx/000; retry; 1-or-2 intact files
 # -----------------------------------------------------------------------------
 log "E11 — pod killed mid-upload"
 dd if=/dev/zero of=/tmp/us67-chaos.bin bs=1M count=6 2>/dev/null
