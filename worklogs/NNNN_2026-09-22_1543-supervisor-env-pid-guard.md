@@ -16,7 +16,7 @@ Determine whether the recurring CI failure is (a) a test-side deadline/cleanup g
 
 **The `watchdog_vitals_test.go:323` anchor is cosmetic.** Every "traceback" line pointing at :323 is a zap STACKTRACE field attached to ordinary WARN logs (`readyz refresh failed`, `health-watchdog deferring restart`) from the watchdog tests' OWN healthy loop goroutines — the `created by` frame of the goroutine spawned by `runWatchdogLoop`. The failing-test output carries other tests' buffered zap output (shared stdout + per-test log attachment), which is why the anchor looks like a hang site. **No goroutine was ever wedged and no watchdog defect exists in either occurrence's evidence.**
 
-**Occurrence 1** (run 35678423373, `-short` + coverage, 02:09Z): a plain package-budget exhaustion — `panic: test timed out after 5m0s` with `running tests: TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess (3s)`: the alarm fired while the CURRENT test was 3 seconds old, i.e. the package as a whole consumed the 300s budget with legitimate work. Log-timeline proof: the last emit-time-stamped log line predates the alarm by ~45s (tests were progressing, just slowly). **Already root-caused and fixed the same morning, 2.5h after this flake, by d82d80f9 ("fix(ci): the -short timeout budget 300s → 600s (the agentd package outgrew it)")** — occurrence 1's head predates that fix. Corroboration: on this pod the full `-short` package run takes 226.7s — near the old 300s budget on slower/loaded runners.
+**Occurrence 1** (run 35678423373, `-short` + coverage, 02:09Z): a plain package-budget exhaustion — `panic: test timed out after 5m0s` with `running tests: TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess (3s)`: the alarm fired while the CURRENT test was 3 seconds old, i.e. the package as a whole consumed the 300s budget with legitimate work. Log-timeline proof: the last emit-time-stamped log line predates the alarm by ~45s (tests were progressing, just slowly). **Already fixed on main: all three CI test legs run `-timeout 600s` today (verified by reading ci.yml at this PR's base; the budget reached main through the design-0060 lane's squash merges — `git log -S 'timeout 600s -short'` resolves to #1518's `1547fb20`).** An earlier revision of this worklog credited `d82d80f9` — that commit is NOT an ancestor of main (it lives on an unmerged feature branch); the r2 review caught the false provenance. Corroboration: on this pod the full `-short` package run takes 226.7s — near the old 300s budget on slower/loaded runners.
 
 **Occurrence 2** (run 35752704051, full-race leg, 600s budget): NOT a hang and NOT the watchdog — `TestSupervisorSubprocess_LifecycleAndContract` failed the platform-env assertion at supervisor_subprocess_test.go:184 ("platform env present on the pre-push child", Should be true, test duration 1.12s). The deferred-restart logs and :313/:323 frames in that output are again cosmetic (buffered zap + stacktraces). The env-composition chain (`buildEnvFrom` → `scrubAdminEnv` → `prependPathEnv` → `opencodeChildEnv`) is purely ADDITIVE w.r.t. the supervisor's env — `GO_TEST_SUPERVISOR=1` cannot be dropped for a real child. Therefore the read observed a pid that was NOT the supervisor's stub child: the assertion read `/proc/<ChildPID>/environ` through an unguarded identity window — if the stub child died (e.g. runner OOM/kill churn) between `Status` and the read, the supervisor's crash recovery has not necessarily moved `ChildPID` yet while the race leg's parallel helper processes recycle pids fast enough for the SAME number to be reallocated — a stranger's environ: readable, alive, missing the var. Exactly the observed failure shape. Single occurrence in the sampled CI history (12 recent failed runs checked: the rest are other lanes).
 
@@ -39,19 +39,22 @@ Determine whether the recurring CI failure is (a) a test-side deadline/cleanup g
 
 ## Blockers
 
-None. Frequency note: occurrence 2 is the only observed instance of this assertion failing in the sampled history; the guard makes the window unexploitable rather than proving the underlying churn.
+None. Frequency note: occurrence 2 is the only observed instance of this assertion failing in the sampled history. **The guard NARROWS the exposure window, it does not close it (r2 honesty fix):** the ppid identity check precedes the environ read and is never re-checked — a recycle landing inside the statPPID→environ interlude, with crash recovery still lagging, can still admit a stranger's env. The window shrinks from the whole Status→read span to a microsecond-scale interlude, which is the right trade for test-side code — but a recurrence is possible in principle and the deadline error's self-triage note is the designed detector for it.
 
 ## Tests Run
 
-- `go test ./cmd/workspace-agentd/ -run 'TestChildEnvironObserver' -count=1 -v` — 4/4 (grown red-first: 2 failed against the first implementation).
-- `go test ./cmd/workspace-agentd/ -run 'TestSupervisorSubprocess_LifecycleAndContract|TestChildEnvironObserver' -race -count=3` — green (also green under an artificial 4-CPU stress load, 25 iterations, though the flake never reproduced locally — expected for a churn-window race).
+*(r2: refreshed to the head's actual state — the r0 count was stale the moment r1 added suites.)*
+
+- `go test ./cmd/workspace-agentd/ -run 'TestChildEnvironObserver' -count=1 -v` — **6/6** seam tests green (stable-child, ppid-mismatch retry, currency retry, persistent-churn, ENOENT-retry, status-abort — the first four grown red-first, 2 failing against the first implementation).
+- `go test ./cmd/workspace-agentd/ -run 'TestParseStatPPID' -count=1 -v` — the 8-case parser edge table + the live-wrapper leg, green (the table caught the r1 off-by-one).
+- `go test ./cmd/workspace-agentd/ -run 'TestChildEnvironObserver|TestParseStatPPID|TestSupervisorSubprocess_LifecycleAndContract' -race -count=2` — green at the r1 head.
 - `go test ./cmd/workspace-agentd/ -short -count=1` — full package green, 226.7s (the occurrence-1 corroboration data point).
 - `gofmt`/`go vet`/`golangci-lint run ./cmd/workspace-agentd/...` (0 issues)/`misspell` — clean; `make repolint` — all checks passed.
 
 ## Next Steps
 
 1. Merge → watch the race leg for recurrence (the guard converts the flake into either a clean pass or a loud, self-triaging failure).
-2. #1543 closes on the diagnosis: occurrence 1 = d82d80f9 (already on main); occurrence 2 = this guard; the "watchdog hang" signature retired as cosmetic log attachment.
+2. #1543 closes via this PR's body ("Fixes #1543" — the substance supports closure: occurrence 1 = the 600s budget already on main; occurrence 2 = this guard; the "watchdog hang" signature retired as cosmetic log attachment).
 3. If the guard's deadline error EVER fires with a stable pid, that is an env-composition bug — production territory (managed_process.go's env chain), owner lane.
 
 ## Files Modified
@@ -65,3 +68,10 @@ None. Frequency note: occurrence 2 is the only observed instance of this asserti
 - **The status-error asymmetry is now explicit + pinned** (finding 1c): `StatusErrorAbortsImmediately` — a control-socket failure aborts with the wrapped error and ZERO retry cycles; the retry budget exists for identity churn, not for a broken socket (surfacing that at once beats 10s of dead retries).
 - **My sentinel violation (finding 2), stated plainly:** I ran `make pre-commit-fix` BEFORE committing; its fix-worklogs pass renamed the NNNN sentinel to 1050 locally and I committed the number — main has since consumed 1050-1052, exactly the hand-pick race the sentinel rule exists to prevent. Corrected: the worklog carries the NNNN_ sentinel and the merge-time hook assigns.
 - Rebased onto current main at the rename (no overlap); gofmt clean.
+
+## r2 — four record-accuracy items, one commit (bot review)
+
+1. **False provenance corrected:** r0 credited `d82d80f9` for the 600s budget — NOT an ancestor of main (it lives on an unmerged feature branch). The end-state is verifiable instead: ci.yml's three test legs all run `-timeout 600s` at this PR's base, reached via the design-0060 lane (`git log -S 'timeout 600s -short'` → #1518's squash `1547fb20`). The r0 text also propagated this hash into my orchestrator reports — corrected there too.
+2. **"Unexploitable" retracted:** the guard narrows the exposure from the whole Status→read span to the statPPID→environ interlude (microsecond-scale, ppid never re-checked after) — substantial, not a closure; the Blockers section now states the residual honestly.
+3. **Tests Run refreshed** to the head's real state (6/6 seam + parser table + the -race and -short runs at r1's head).
+4. **Closure mechanics unified:** PR body upgraded to "Fixes #1543" (occurrence 1 already fixed on main; occurrence 2 = this guard) — matching the worklog instead of contradicting it.
