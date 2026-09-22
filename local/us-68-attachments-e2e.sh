@@ -8,7 +8,7 @@
 #   E2  — Persistence: upload → suspend → resume → file still present,
 #         byte-identical (PVC survives the pod).
 #   E10 — Multi-tenant: two users, two workspaces, simultaneous uploads —
-#         cross-user upload denied (404), no cross-workspace path leakage.
+#         cross-user upload denied (403), no cross-workspace path leakage.
 #   E11 — Chaos: pod killed mid-upload → clean 5xx to the client; pod
 #         restarts; retry succeeds; exactly one intact file, no .tmp.
 #
