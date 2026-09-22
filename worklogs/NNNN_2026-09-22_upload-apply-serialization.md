@@ -53,3 +53,8 @@ None.
 - `cmd/workspace-agentd/upload_apply.go` — applyMu + TryLock removed
 - `cmd/workspace-agentd/upload_apply_test.go` — BusyRejection retired; ConcurrentWallTime added
 - `worklogs/NNNN_2026-09-22_upload-apply-serialization.md` — this worklog
+
+
+## Review round 4 (the PR body fixed to match the worklog's r4 corrections)
+
+- The PR body's doubled phrase and mangled citation fixed (matching the worklog's r4 state — the r4 commit fixed the worklog but not the body).
