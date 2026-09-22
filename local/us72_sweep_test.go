@@ -103,3 +103,18 @@ func TestUS72Sweep_WorkspaceIsolation(t *testing.T) {
 		t.Error("sweep must set its own WS_BASE unconditionally")
 	}
 }
+
+// The plant must break the modern symlink first (r1 finding 3): a bare
+// `>` follows the #1296 link into the live store and the row fails
+// structurally on every modern pod.
+func TestUS72Sweep_PlantBreaksTheSymlink(t *testing.T) {
+	src := mustReadUS72Sweep(t)
+	i := strings.Index(src, "rm -f /workspace/.local/opencode/auth.json")
+	if i < 0 {
+		t.Fatal("the plant must rm -f the symlink before writing the legacy regular file")
+	}
+	plant := strings.Index(src, "> /workspace/.local/opencode/auth.json")
+	if plant >= 0 && i > plant {
+		t.Error("the rm -f must precede the write (order is load-bearing)")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // scrub_legacy_keys.go — US-72.6 (design 0058 §8, Epic 72 close-out):
@@ -85,8 +86,13 @@ func scrubLegacyKeys(root string) (ScrubReport, error) {
 		if d.IsDir() {
 			// Bounded depth: .local/<one-or-two>/agent-config.json covers
 			// the known copy shapes (share/, opencode/, config/opencode/).
+			// strings.Count on the separator — filepath.SplitList splits
+			// PATH LISTS on ':' and never bounds anything (r1 finding 1;
+			// .local hosts the user's whole toolchain tree: MISE_DATA_DIR,
+			// GOPATH, CARGO_HOME... — an unbounded walk would scrub
+			// user-authored copies at any depth).
 			rel, _ := filepath.Rel(walkRoot, path)
-			if len(filepath.SplitList(rel)) > 3 {
+			if strings.Count(rel, string(filepath.Separator)) > 2 {
 				return filepath.SkipDir
 			}
 			return nil

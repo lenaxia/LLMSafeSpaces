@@ -130,8 +130,13 @@ POD=$(pod_of_ws)
 [[ -n "${POD}" ]] || die "R2: no pod"
 
 # Plant the pre-US-35.7 legacy residue: a REGULAR FILE at the auth path.
+# On modern pods init-fs has installed the #1296 SYMLINK there — a bare
+# `>` would FOLLOW it into the live store (rt/auth.json) and the row
+# would fail structurally. rm -f the link first, then write the true
+# legacy regular-file shape.
 kubectl --context "${CTX}" -n "${NS}" exec "${POD}" -c workspace -- bash -c '
     mkdir -p /workspace/.local/opencode
+    rm -f /workspace/.local/opencode/auth.json
     printf "{\"legacy\": {\"type\": \"api\", \"key\": \"%s\"}}" "'"${CANARY_KEY}"'" \
         > /workspace/.local/opencode/auth.json
 ' >/dev/null 2>&1 || die "R2: planting the legacy residue failed"

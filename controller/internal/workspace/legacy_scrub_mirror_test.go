@@ -16,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -122,4 +123,46 @@ func TestCheckAgentHealth_NoLegacyScrubSlice(t *testing.T) {
 
 	cond := conditionOf(ws, v1.WorkspaceConditionLegacyKeysScrubbed)
 	assert.Nil(t, cond, "no slice, no condition — flag-off pods are untouched")
+}
+
+// TestCheckAgentHealth_LegacyScrubRoundTrip (r1 finding 2's pin): the
+// event idempotency must survive the PRODUCTION observation pattern —
+// each reconcile REFETCHES the Workspace from the client (no shared
+// in-memory pointer). The persisted llmsafespaces.dev/legacy-scrub-reported
+// annotation is the only state that makes the second observation quiet.
+func TestCheckAgentHealth_LegacyScrubRoundTrip(t *testing.T) {
+	report := &agentd.LegacyScrubHealth{
+		RanAt:           1758518400,
+		AuthKeysRemoved: 1,
+	}
+	r, ws, _ := setupSpawnEnvHealthTest(t, agentd.HealthzResponse{
+		Healthy:     true,
+		LegacyScrub: report,
+	})
+	rec := record.NewFakeRecorder(32)
+	r.Recorder = rec
+
+	// First reconcile: on the fetched object.
+	r.checkAgentHealth(context.Background(), ws)
+	assert.Equal(t, 1, countEvents(eventsFrom(rec), "LegacyKeysScrubbed"),
+		"first observation fires the event")
+
+	// The annotation must be PERSISTED server-side (the full-object
+	// Update, not the status-only one that drops metadata).
+	var fresh v1.Workspace
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &fresh))
+	assert.Equal(t, "auth=1 config=0", fresh.Annotations["llmsafespaces.dev/legacy-scrub-reported"],
+		"the reported-stamp annotation is persisted via the full-object Update")
+
+	// Second reconcile: the PRODUCTION pattern — a fresh Get per pass.
+	second := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, second))
+	second.Status.PodIP = ws.Status.PodIP
+	second.Status.StartTime = ws.Status.StartTime
+	second.Status.LastHealthCheckAt = nil
+	r.checkAgentHealth(context.Background(), second)
+	assert.Equal(t, 0, countEvents(eventsFrom(rec), "LegacyKeysScrubbed"),
+		"the refetched-observation is quiet — the persisted annotation, not an in-memory pointer, carries the idempotency")
 }

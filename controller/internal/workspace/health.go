@@ -198,7 +198,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	}
 	// US-72.6 (design 0058 §8): the one-time legacy-key scrub report →
 	// the LegacyKeysScrubbed condition (+ the exactly-once event).
-	r.mirrorLegacyScrub(ws, healthResp.LegacyScrub)
+	r.mirrorLegacyScrub(ctx, ws, healthResp.LegacyScrub)
 	// #1342 item 4 (L11): mirror the deferred-credential-apply state so
 	// operators see WHY a credential change has not applied — it rides a
 	// maintenance window behind busy sessions. Absent field (nothing
@@ -225,7 +225,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 // scrub, so the event fires on first observation only — a persisted
 // last-observed annotation makes the idempotency survive controller
 // restarts).
-func (r *WorkspaceReconciler) mirrorLegacyScrub(ws *v1.Workspace, rep *agentd.LegacyScrubHealth) {
+func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Workspace, rep *agentd.LegacyScrubHealth) {
 	if rep == nil {
 		return
 	}
@@ -247,9 +247,29 @@ func (r *WorkspaceReconciler) mirrorLegacyScrub(ws *v1.Workspace, rep *agentd.Le
 		stamp = "error"
 	}
 	if ws.Annotations[annKey] == stamp {
-		return // already reported this exact outcome
+		return // already reported this exact outcome (in-memory fast path)
 	}
-	if ws.Annotations == nil {
+	// PERSIST the stamp via a FULL object Update on a FRESH fetch — the
+	// health-check's r.Status().Update writes only the status subresource
+	// and DROPS metadata, so an in-memory-only stamp would re-fire the
+	// event on every reconcile (~15s cadence, forever); and updating the
+	// caller's live object directly would clobber its accumulated status
+	// mutations (the fake client resets status on plain Update under a
+	// registered status subresource — the same reason
+	// clearForceRecycleAnnotation updates a fresh object and RV-syncs).
+	var fresh v1.Workspace
+	if err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &fresh); err != nil {
+		return // a later pass retries (the in-memory stamp stays unset)
+	}
+	if fresh.Annotations == nil {
+		fresh.Annotations = map[string]string{}
+	}
+	fresh.Annotations[annKey] = stamp
+	if err := r.Update(ctx, &fresh); err != nil {
+		return // a later pass retries honestly; never silently dropped
+	}
+	ws.ResourceVersion = fresh.ResourceVersion // keep the caller's later Status().Update conflict-free
+	if ws.Annotations == nil {                 // in-memory fast path for this pass
 		ws.Annotations = map[string]string{}
 	}
 	ws.Annotations[annKey] = stamp
