@@ -22,9 +22,10 @@ package main
 // on the USER mux (agentd.AgentdPort 4097; see server.go wireHTTPServers
 // and the API's agentpush resync dispatch). This
 // endpoint follows the validated control-plane pattern: user mux, 4097,
-// Basic auth. Sidecar-mode caveat: the sidecar's /workspace mount is
-// read-only (controller agentd_sidecar.go), so uploads fail cleanly
-// with 5xx there until a control-socket write op exists — see worklog.
+// Basic auth. Sidecar mode: uploads DELIVER via design 0060
+// stage-and-signal (upload_staging.go stages on the budgeted shared
+// tmpfs; the supervisor's upload_apply writes the PVC) — the
+// pre-0060 RO-mount clean-fail is retired.
 
 import (
 	"encoding/json"

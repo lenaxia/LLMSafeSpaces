@@ -100,7 +100,7 @@ MCP tool        ── base64 ────┘        streaming, caps, phase+disk
 ## Design Decisions
 
 ### D1 — agentd-mediated ingest (user mux, validated as-built), not exec, not API-direct, not opencode
-The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes behind Basic auth. **Correction (US-68.1 validation):** reload-secrets serves on the agentd **user mux (:4097)**, not the admin port 4098 as originally sketched — `cmd/workspace-agentd/server.go:356`. `PUT /v1/files` follows the validated user-mux pattern. Sidecar mode clean-fails (5xx): the sidecar's `/workspace` is read-only.
+The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes behind Basic auth. **Correction (US-68.1 validation):** reload-secrets serves on the agentd **user mux (:4097)**, not the admin port 4098 as originally sketched — `cmd/workspace-agentd/server.go:356`. `PUT /v1/files` follows the validated user-mux pattern. Sidecar mode (design 0060): uploads DELIVER in both modes (stage-and-signal — the pre-0060 RO clean-fail is retired).
 
 ### D2 — Flat `/workspace/uploads/<uuid>-<name>`, workspace-scoped
 Sessions are lazy (files may precede any session); uploads reusable across sessions; visible to terminal/git/agent tools like any workspace file. Cleanup is the user's/agent's — same as any workspace file.
@@ -227,11 +227,11 @@ are already folded into the decision text above):
 
 1. **agentd port (D1):** `PUT /v1/files` serves on the **user mux (:4097)**,
    symmetric with reload-secrets — not the admin port 4098 sketched in the
-   architecture diagram. **Sidecar mode clean-fails (5xx):** the sidecar's
-   `/workspace` mount is read-only (`controller/internal/workspace/agentd_sidecar.go`);
-   uploads are supported in single-container mode. A control-socket write
-   op for sidecar mode is a tracked follow-up. `local/us-68-attachments-e2e.sh`
-   gates on this and asserts the clean-fail when sidecar mode is detected.
+   architecture diagram. **Sidecar mode (design 0060):** uploads DELIVER in
+   both modes — the sidecar stages on the budgeted shared tmpfs and the
+   supervisor's `upload_apply` writes the PVC (stage-and-signal; the
+   pre-0060 RO-mount clean-fail is retired). `local/us-68-attachments-e2e.sh`
+   runs its rows in both modes (the D1 gate feature-detects: 201 → full rows in sidecar mode; 502/503 → the pre-0060 loud skip; else → hard fail).
 2. **Manifest attributes (D7):** v1 lines carry `path` + `name` only — the
    illustrative `bytes=` sketch was dropped because send-time validation is
    shape-only (D8). The golden fixtures in `pkg/session/attachments/testdata/`
@@ -246,8 +246,8 @@ backend — the pod-side half of E3 is covered by the U1.1/U1.2 Go suites),
 E7 (golden prompt bytes), E8 (external stdio MCP client), E9 (SDK wire
 tests + `make sdk-check` + sdk-contract CI), E12 (README/golden fixture
 consistency) run in CI. E2/E10/E11 are cluster-only (`local/us-68-attachments-e2e.sh`,
-wired into e2e-nightly; rows execute fully only in single-container mode —
-see deviation 1).
+wired into e2e-nightly; rows run UNMODIFIED in both modes since design
+0060 — see deviation 1).
 
 ---
 
@@ -424,7 +424,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | E8 | MCP external: stdio MCP client (CI harness) against deployed API — upload base64 + `session_message(files)` | green |
 | E9 | SDK codegen: regenerated SDKs compile and expose `uploads` + `files` (sdks CI job) | green |
 | E10 | Multi-tenant: two users, two workspaces, simultaneous uploads — no cross-workspace path leakage | green |
-| E11 | Chaos: pod killed mid-upload (upload API call in flight) → client sees clean 5xx; pod restarts; retry succeeds; exactly one intact file on disk (no `.tmp`) | green |
+| E11 | Chaos: pod killed mid-upload (upload API call in flight) → client sees clean 5xx; pod restarts; retry succeeds; one-or-two intact files on disk (D19: retry = new uuid, both contract-legal; no `.tmp`/partial) | green |
 | E12 | Docs-consistency: README-LLM manifest snippet byte-matches the golden fixture (CI grep against `testdata/`) — prevents doc/format drift | green |
 
 ### 4. Non-functional / regression (all stories)

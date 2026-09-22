@@ -168,7 +168,7 @@ curl -X POST "$API/api/v1/workspaces/$WS/sessions/$SID/message" \
 
 ### File uploads (Epic 68)
 
-`POST /workspaces/:id/uploads` streams one `multipart/form-data` part (field name `file`) onto the workspace PVC at `/workspace/uploads/<uuid>-<name>`; the response is `201 {path, name, size}`. Caps: 25 MiB/file, streamed end-to-end (the API never buffers the body). Gates, in order: phase must be `Active` (409 + current phase), disk below the critical threshold (507), body within the cap (413). Single-container agentd mode only — in agentd-sidecar deployments uploads fail cleanly with 5xx (the sidecar's `/workspace` is read-only).
+`POST /workspaces/:id/uploads` streams one `multipart/form-data` part (field name `file`) onto the workspace PVC at `/workspace/uploads/<uuid>-<name>`; the response is `201 {path, name, size}`. Caps: 25 MiB/file, streamed end-to-end (the API never buffers the body). Gates, in order: phase must be `Active` (409 + current phase), disk below the critical threshold (507), body within the cap (413). Works in both agentd modes: single-container writes the PVC directly; sidecar deployments deliver via design-0060 stage-and-signal (the sidecar stages on the budgeted shared tmpfs; the workspace container's supervisor writes the PVC).
 
 Pass returned paths as `files[]` on `/prompt` or `/queue`; the API composes the v1 attachment manifest (`[llmsafespaces:attachment path="…" name="…"]` lines) into the dispatched text exactly once — retries never double-append, and duplicates/out-of-shape paths are rejected with 400 (max 10 files per send). The synchronous `/message` route rejects `files` with an explicit 400.
 

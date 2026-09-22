@@ -365,10 +365,11 @@ jobs:
       - name: Run attachment e2e rows (Epic 68 E2/E10/E11)
         # Cluster-level upload rows: PVC persistence across
         # suspend/resume, multi-tenant isolation, pod-kill chaos. The
-        # nightly installs with agentdSidecar.enabled=true, where uploads
-        # clean-fail by design (epic-68 D1 as-built) — the script asserts
-        # that clean-fail and skips the three rows with an explicit
-        # message; they run fully in single-container deploys.
+        # nightly installs with agentdSidecar.enabled=true; design 0060
+        # (stage-and-signal) ships sidecar upload DELIVERY — the script's
+        # D1 gate feature-detects (#1535): 201 → the rows run fully in
+        # sidecar mode; 502/503 → the pre-0060 loud skip; else → hard
+        # fail (broken, never absorbed).
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
