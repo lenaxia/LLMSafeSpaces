@@ -575,7 +575,7 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("concurrent wall-time pin needs real filesystem timing")
 	}
-	e, staging, uploads, _ := applyEngineFixture(t, 1<<40)
+	e, staging, _, _ := applyEngineFixture(t, 1<<40)
 
 	// N independent staged objects (uuid-shaped names, distinct targets).
 	const n = 4
@@ -603,8 +603,7 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		return aerr
 	}
 
-	// Serial baseline: 1 apply.
-	// Baseline: 1 apply (for the log; the bound uses the injected duration directly).
+	// Baseline: one apply (the concurrent bound uses the injected duration directly).
 	if aerr := applyOne(ids[0]); aerr != nil {
 		t.Fatalf("baseline: %v", aerr)
 	}
@@ -641,5 +640,4 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		t.Fatalf("concurrent %d applies took %v — near the serialized bound %v: the #1539 applyMu serialization signature (parallel should be ~50ms)",
 			n, concurrentWall, serializedBound)
 	}
-	_ = uploads
 }

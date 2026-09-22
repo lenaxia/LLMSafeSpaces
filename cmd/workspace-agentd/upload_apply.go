@@ -103,13 +103,13 @@ func (e *applyError) Error() string { return e.code + ": " + e.msg }
 
 // Apply validates the closed-param set, gates, streams, verifies, and
 // renames. On success the result carries the §3.2 additive ack fields
-// (both computed supervisor-side — it owns the margin parameter).
-// Apply validates, gates, streams, verifies, and renames. ctx bounds
-// the hold (§6.3): the copy loop checks it each window; a hard-blocked
-// single write syscall is the documented residual (no portable per-fd
-// deadline). Applies run CONCURRENTLY (#1539): targets are uuid-
-// independent, concurrency is bounded upstream by the staging admission
-// cap — the design §8 item 3 resolved to parallel per §6.6's detector.
+// (both computed supervisor-side — it owns the margin parameter). ctx
+// bounds the hold (§6.3): the copy loop checks it each window; a
+// hard-blocked single write syscall is the documented residual (no
+// portable per-fd deadline). Applies run CONCURRENTLY (#1539):
+// targets are uuid-independent, concurrency is bounded upstream by
+// the staging admission cap — the design §8 item 3 resolved to
+// parallel per §6.6's detector.
 func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (map[string]any, *applyError) {
 	id, _ := params["upload_id"].(string)
 	staged, _ := params["staged_name"].(string)
