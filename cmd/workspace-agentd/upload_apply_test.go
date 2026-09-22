@@ -287,8 +287,8 @@ func TestUploadApply_FreshWorkspaceGateOrdering(t *testing.T) {
 // staging-side staging_busy (the admission cap) remains live and pinned.)
 
 // TestUploadApply_CtxCancellationBoundsTheHold (§6.3): a canceled ctx
-// aborts the copy mid-stream, leaving nothing visible and releasing
-// the lock for the next apply.
+// aborts the copy mid-stream, leaving nothing visible; the next apply
+// proceeds unimpeded.
 func TestUploadApply_CtxCancellationBoundsTheHold(t *testing.T) {
 	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
@@ -302,7 +302,7 @@ func TestUploadApply_CtxCancellationBoundsTheHold(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("canceled apply left %d artifacts", len(entries))
 	}
-	// The lock is free: a live apply succeeds.
+	// A post-cancel apply succeeds (no shared state poisoned).
 	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
 	if aerr != nil || res["applied"] != true {
 		t.Fatalf("post-cancel apply must succeed, got %+v", aerr)
@@ -566,11 +566,10 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 func (c *countingReadCloser) Close() error { return nil } //nolint:staticcheck // the wrapped file's Close rides the test lifetime
 
 // TestUploadApply_ConcurrentWallTime pins #1539: N concurrent applies
-// (uuid-independent targets, real files) must complete in PARALLEL —
-// the wall time for N×10MiB applies must be < N × the serial single-
-// apply time (the global-lock regression takes ≥ N× single because
-// every apply queues). Uses a truncated write window to make the copy
-// observable without a 10MiB fixture.
+// (uuid-independent targets, 1 MiB real files) must complete in
+// PARALLEL — the injected 50ms rename seam makes each apply's duration
+// observable; the wall bound (< 3/4 of N × duration) catches the
+// global-lock regression where every apply queues (wall ≥ N × duration).
 func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("concurrent wall-time pin needs real filesystem timing")
