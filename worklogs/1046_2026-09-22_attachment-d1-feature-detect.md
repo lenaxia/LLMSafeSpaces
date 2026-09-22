@@ -36,4 +36,4 @@ None.
 
 - `local/us-68-attachments-e2e.sh` — the three-way feature-detect gate.
 - `local/us68_attachments_script_test.go` — the seven-leg executable test + the E10 leak pin + structural pins.
-- `worklogs/NNNN_2026-09-22_attachment-d1-feature-detect.md` — this worklog.
+- `worklogs/1046_2026-09-22_attachment-d1-feature-detect.md` — this worklog.
