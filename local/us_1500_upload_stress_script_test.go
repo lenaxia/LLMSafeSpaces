@@ -161,3 +161,110 @@ func TestUploadStressScript_WorkflowRegistered(t *testing.T) {
 	assert.True(t, strings.Contains(string(raw), "local/"+uploadStressScript),
 		"the stress harness must be registered in the nightly workflow")
 }
+
+// TestUploadStress_SR6DeliveryGate pins run 35679282297's adjudication:
+// SR-6 must gate IN-RUN on the baseline upload's 507 (the half-stack's
+// DESIGNED clean-fail — the delivery leg #1518/#1524 is absent). Keyed
+// on 507 SPECIFICALLY so genuine 500/000/429 baselines reach the
+// failure path. The actual hang of that run was a BARE `wait` at the
+// storm joins (also waiting the immortal port-forward child) — the
+// per-pid-wait + bare-wait-absence pins guard that mechanism. NEVER a
+// silent step-level `if: false` on the workflow (the #1342 rule).
+func TestUploadStress_SR6DeliveryGate(t *testing.T) {
+	raw, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	src := string(raw)
+	assert.Contains(t, src, `if [[ "${L1_STATUS}" == "507" ]]`,
+		"the gate must key on 507 (the DESIGNED clean-fail) — a genuine 500/000/429 baseline reaches the failure path, not the skip")
+	assert.Contains(t, src, `sr_skip "SR-6: baseline upload`,
+		"SR-6's 507 baseline must skip-DOWN loudly (the script's own idiom)")
+	assert.Contains(t, src, "delivery leg #1518/#1524 absent",
+		"the skip must name the missing activation (the stack's own PR refs)")
+	assert.Contains(t, src, `die "upload stress harness: ${failures} row(s) failed`,
+		"the gate's exit must propagate prior row failures (the verdict must not be bypassed)")
+	// The bare-wait hang guard: the SR-6 storms must wait per-pid.
+	perPid := strings.Count(src, `wait "${p}"`)
+	assert.GreaterOrEqual(t, perPid, 4,
+		"the storm joins must be per-pid waits (SR-1, SR-2, SR-6, SR-6B) — a bare `wait` also waits the immortal port-forward child (run 35679282297's actual hang mechanism)")
+	assert.NotContains(t, src, "\nwait\n",
+		"a bare `wait` waits the port-forward child spawned by harness_start — 36 minutes of silence until cancellation")
+
+	wf, err := os.ReadFile("../.github/workflows/e2e-nightly.yml")
+	require.NoError(t, err)
+	wfs := string(wf)
+	assert.NotContains(t, wfs, "if: false  # TODO(#1524)",
+		"the workflow must NOT silently disable the step — the #1342 rule: loud in-run gates, never silent step-level ifs")
+	assert.Contains(t, wfs, "SR-6 skips-DOWN loudly",
+		"the workflow comment must teach the in-run gate")
+}
+
+// TestUploadStress_SR6Gate_Executes runs the REAL gate + baseline
+// blocks (extracted from the script) across four legs: 507-clean →
+// skip + exit 0 (the half-stack's designed path); 507 + prior failure
+// → die (the r1 masking guard); non-507 non-201 (500) → note_fail +
+// falls through to the storms (the r2 phantom-fix guard); 201 → clean
+// fall-through to the latency rows (the happy path). Mutation-verified:
+// deleting the baseline assertion or removing the gate's die or exit
+// each turns a leg red (the bare-wait reversion is caught by the
+// STRUCTURAL pin in TestUploadStress_SR6DeliveryGate — the storm joins
+// sit outside this test's extracted block).
+func TestUploadStress_SR6Gate_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	text := string(src)
+
+	// Extract the gate + baseline-assertion block.
+	gateStart := strings.Index(text, `if [[ "${L1_STATUS}" == "507" ]]`)
+	gateEnd := strings.Index(text, "The concurrency boundary")
+	require.Greater(t, gateStart, 0, "gate not found")
+	require.Greater(t, gateEnd, gateStart, "gate end not found")
+	block := text[gateStart:gateEnd]
+
+	dir := t.TempDir()
+	stub := "#!/bin/sh\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sleep"), []byte(stub), 0o755))
+
+	run := func(status string, failures int) (string, error) {
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH\n" +
+			"L1_STATUS=" + status + "\n" +
+			"failures=" + fmt.Sprintf("%d", failures) + "\n" +
+			"sr_skips=0\n" +
+			"note_fail() { failures=$((failures + 1)); echo \"NOTE_FAIL: $*\" >&2; }\n" +
+			"sr_skip() { sr_skips=$((sr_skips + 1)); echo \"SKIP-DOWN: $*\" >&2; }\n" +
+			"log() { echo \"LOG: $*\"; }\n" +
+			"warn() { echo \"WARN: $*\" >&2; }\n" +
+			"die() { echo \"DIE: $*\" >&2; exit 1; }\n" +
+			block + "\necho AFTER-GATE\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("507 clean: skip + exit 0", func(t *testing.T) {
+		out, err := run("507", 0)
+		require.NoError(t, err, "507 with no prior failures must exit clean: %s", out)
+		assert.Contains(t, out, "SKIP-DOWN: SR-6: baseline upload 507")
+		assert.NotContains(t, out, "AFTER-GATE", "the 507 gate must exit, not fall through")
+	})
+
+	t.Run("507 + prior failure: dies", func(t *testing.T) {
+		out, err := run("507", 2)
+		require.Error(t, err, "prior failures must propagate, not be masked green")
+		assert.Contains(t, out, "DIE: upload stress harness: 2 row(s) failed")
+	})
+
+	t.Run("500 (non-507 non-201): note_fail + falls through", func(t *testing.T) {
+		out, err := run("500", 0)
+		require.NoError(t, err, "the baseline assertion is a note_fail, not a die — must fall through")
+		assert.Contains(t, out, "NOTE_FAIL: SR-6: single-upload baseline failed (500)")
+		assert.Contains(t, out, "AFTER-GATE", "a non-507 failure must NOT take the gate exit — it reaches the storms")
+	})
+
+	t.Run("201: clean fall-through", func(t *testing.T) {
+		out, err := run("201", 0)
+		require.NoError(t, err)
+		assert.Contains(t, out, "AFTER-GATE", "a 201 baseline proceeds to the latency rows")
+		assert.NotContains(t, out, "SKIP-DOWN")
+		assert.NotContains(t, out, "NOTE_FAIL")
+	})
+}

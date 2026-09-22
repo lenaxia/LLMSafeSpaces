@@ -390,13 +390,34 @@ L1_T0=$(date +%s%3N)
 L1_STATUS=$(upload_bytes $((10 * 1024 * 1024)))
 L1_T1=$(date +%s%3N)
 L1=$((L1_T1 - L1_T0))
+if [[ "${L1_STATUS}" == "507" ]]; then
+    # The in-run skip-DOWN gate (run 35679282297's adjudication): a 507
+    # (dest_disk_full — the DESIGNED clean-fail of the half-stack) means
+    # the upload path's DELIVERY leg is absent (the supervisor apply,
+    # #1518/#1524). Keyed on 507 SPECIFICALLY so a genuine 500/000/429
+    # regression still reaches the failure path. SR-1–SR-5's clean-fail
+    # assertions already ran; the LATENCY rows are meaningless without
+    # delivery. Loud skip, never a silent step-level if. A non-507
+    # non-201 hits the baseline-failure note_fail BELOW this gate.
+    sr_skip "SR-6: baseline upload ${L1_STATUS} (delivery leg #1518/#1524 absent) — latency + boundary rows skip-DOWN"
+    log "upload stress harness: SR-1–SR-5 complete; SR-6 skipped (skips: ${sr_skips})"
+    if [[ "${failures}" -ne 0 ]]; then
+        die "upload stress harness: ${failures} row(s) failed (skips: ${sr_skips})"
+    fi
+    exit 0
+fi
 if [[ "${L1_STATUS}" != "201" ]]; then
+    # A non-507 non-201 baseline (500/429/000/502/504) is NOT the
+    # half-stack's designed clean-fail — it's a genuine upload-path
+    # failure and the latency numbers are meaningless for the wrong
+    # reason. This assertion MUST stay BELOW the 507 gate.
     note_fail "SR-6: single-upload baseline failed (${L1_STATUS}) — latency numbers meaningless"
 fi
 # The concurrency boundary — CONCURRENT uploads with PER-UPLOAD timing
 # (r5 finding: wall-clock-only was conditionally vacuous for fast
 # uploads; the design's §6.6 guard is per-upload p95 ≤ 2× single p95).
 SR6_DIR=$(mktemp -d /tmp/sr6-storm-XXXXXX)
+SR6_PIDS=()
 for i in $(seq 1 "${CONCURRENCY}"); do
     (
         _t0=$(date +%s%3N)
@@ -404,8 +425,12 @@ for i in $(seq 1 "${CONCURRENCY}"); do
         _t1=$(date +%s%3N)
         echo $((_t1 - _t0)) > "${SR6_DIR}/ms-${i}"
     ) &
+    SR6_PIDS+=($!)
 done
-wait
+# Per-pid wait (run 35679282297: a BARE `wait` also waits the immortal
+# kc port-forward child that harness_start spawned — the actual hang
+# mechanism, 36 minutes of silence until cancellation).
+for p in "${SR6_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
 REPORT6=$(storm_report "${SR6_DIR}" "${CONCURRENCY}")
 # §6.6 specifies p95; at N≤4 samples the p95 IS the max. The guard's
 # exact-invariance property: max ≤ 2×single ⟺ no job waited > single
@@ -420,10 +445,12 @@ rm -rf "${SR6_DIR}"
 # deterministically 507 instead of 429 — red-by-environment).
 if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
+SR6B_PIDS=()
 for i in 1 2 3 4 5; do
     upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-${i}" &
+    SR6B_PIDS+=($!)
 done
-wait
+for p in "${SR6B_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
 REPORT6B=$(storm_report "${SR6B_DIR}" 5)
 # Parse the refused COUNT (r3 finding 1: *"refused="* matches every
 # report — refused=0 included). The count-cap regression means
