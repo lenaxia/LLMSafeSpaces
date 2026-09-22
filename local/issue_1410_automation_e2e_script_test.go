@@ -206,3 +206,39 @@ func TestIssue1410E2EScript_ExecuteSmoke(t *testing.T) {
 	assertSmokeTraversal(t, issue1410Script, combined, exitVal,
 		"row(s) failed", "automation e2e: all rows passed")
 }
+
+// TestIssue1410E2E_ArbitrationFinal5 pins the arbitration's final-five
+// fixes (run 35752548377): the jq extraction uses -rc (jq -r pretty-prints
+// objects — head -1 got just '{'), the R4d loop uses if/then (the
+// banned [[ ]]&& break pattern), and R8 handles the admin-gated 403.
+func TestIssue1410E2E_ArbitrationFinal5(t *testing.T) {
+	raw, err := os.ReadFile(issue1410Script)
+	require.NoError(t, err)
+	src := string(raw)
+
+	// 1) jq extraction: all actionResult pipelines use -rc (compact).
+	badExtraction := strings.Count(src, `jq -r '.fires[] | select(.status=="failed") | .actionResult`)
+	assert.Zero(t, badExtraction,
+		"actionResult extraction must use jq -rc (compact) — jq -r pretty-prints the JSON object and head -1 returns just '{' (run 35752548377)")
+	compactCount := strings.Count(src, `jq -rc '.fires[]`)
+	assert.Greater(t, compactCount, 0, "at least one jq -rc extraction must exist")
+	// R10's @tsv pipeline must tostring the actionResult member — @tsv
+	// rejects objects regardless of -r/-rc (r1's no-op catch).
+	assert.Contains(t, src, `(.actionResult // "") | tostring`,
+		"R10's @tsv pipeline must tostring the actionResult — @tsv cannot serialize the JSON object the engine writes (engine.go:799)")
+
+	// 2) R4d loop: no [[ ]] && break pattern in the file.
+	assert.NotContains(t, src, `]] && break`,
+		"the R4d loop must use if/then break — the [[ ]] && break pattern is banned (set -e fragility, the us70 pins)")
+
+	// 3) R8: the 403 admin-gate is handled with a loud skip that checks
+	// the NAMED error body (not any 403) and counts the skipped rows.
+	assert.Contains(t, src, `api_status}" == "403" && "${R8_ORG_RESP}" == *"only platform admins"*`,
+		"R8's skip must check the NAMED admin-gate error body — a different 403 (auth, rate-limit) still fails the row")
+	assert.Contains(t, src, "org creation admin-gated",
+		"the skip must be loud and name the reason")
+	assert.Contains(t, src, "SKIPPED_ROWS=$((SKIPPED_ROWS + 10))",
+		"the skip must be COUNTED (10 rows) — a silent skip-growth is the silent-skip class")
+	assert.Contains(t, src, "all rows passed (${SKIPPED_ROWS} skipped",
+		"the verdict must report the skip count")
+}
