@@ -305,9 +305,6 @@ func TestUploadStress_SR6Guard_TripAndPass(t *testing.T) {
 	require.Greater(t, fiIdx, 0, "the guard's fi not found")
 	block := text[ifIdx : skipIdx+fiIdx+3]
 
-	dir := t.TempDir()
-	_ = dir
-
 	run := func(p95, single int) (string, error) {
 		harness := `set -u
 sr_skips=0
