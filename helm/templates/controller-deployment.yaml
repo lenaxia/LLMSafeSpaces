@@ -59,6 +59,9 @@ spec:
             - --watch-namespaces={{ . }}
             {{- end }}
             - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles | default 4 }}
+            {{- if and .Values.controller.workspaceTerminationGraceSeconds (ne (int .Values.controller.workspaceTerminationGraceSeconds) 0) }}
+            - --workspace-termination-grace-seconds={{ .Values.controller.workspaceTerminationGraceSeconds }}
+            {{- end }}
             {{- /* G2 — workspace admission allow-lists. The controller's
                    ValidatingWebhook reads these to gate Spec.Runtime
                    image references and Spec.Storage parameters. Empty

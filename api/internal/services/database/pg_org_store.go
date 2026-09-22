@@ -1949,3 +1949,16 @@ func randomVerificationToken() string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// UserExistsByID reports whether a user row with the id exists — the
+// existence semantics of the users(id) FKs. The org-member parent-id
+// contract check rides this (instance 8 of the opaque-500 audit).
+func (s *PgOrgStore) UserExistsByID(ctx context.Context, userID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM users WHERE id = $1", userID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}

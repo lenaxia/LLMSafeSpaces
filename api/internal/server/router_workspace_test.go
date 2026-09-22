@@ -189,3 +189,21 @@ func TestRefreshComputeRoute_ServiceError_Propagated(t *testing.T) {
 	assert.NotEqual(t, http.StatusAccepted, w.Code)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
 }
+
+// #1505 rework wiring pin: the suspend endpoint routes to
+// SuspendWorkspace — the single bounded-grace variant every suspend
+// source shares since #1510 (#1507). No force variant exists; the only
+// force path is refresh-compute's generation-keyed marker.
+func TestSuspendRoute_UsesSuspendWorkspace(t *testing.T) {
+	router, svc := newRouterFixture(t)
+	svc.workspace.On("SuspendWorkspace", mock.Anything, "test-user", "ws-1").
+		Return(nil).Once()
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/suspend", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	svc.workspace.AssertNumberOfCalls(t, "SuspendWorkspace", 1)
+}

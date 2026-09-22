@@ -75,6 +75,9 @@ type fakeAgentdRecording struct {
 	basicPass string
 	readErr   error
 	received  []byte
+	// declaredBodyBytes captures X-LLS-Declared-Body-Bytes — the design
+	// 0060 §4.1 admission-input header the API hop must carry.
+	declaredBodyBytes string
 }
 
 // newFakeAgentd serves PUT /v1/files the way the real agentd endpoint does:
@@ -99,6 +102,7 @@ func newFakeAgentd(t *testing.T, status int, respBody string) (*fakeAgentdRecord
 		user, pass, _ := r.BasicAuth()
 		rec.basicUser = user
 		rec.basicPass = pass
+		rec.declaredBodyBytes = r.Header.Get("X-LLS-Declared-Body-Bytes")
 		rec.mu.Unlock()
 
 		if user != "opencode" || pass != "test-password" {
@@ -259,6 +263,16 @@ type uploadResponse struct {
 func doUpload(env *uploadEnv, body io.Reader, contentType string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/uploads", body)
+	// Design 0060 §4.1: undeclared bodies 411 — opaqueReader deliberately
+	// hides the length from NewRequest, so tests that mean a DECLARED
+	// upload (the honest-client default) propagate it through the
+	// wrapper. Tests that mean the chunked shape pass a reader with no
+	// known length at all.
+	if op, ok := body.(opaqueReader); ok {
+		if lb, ok := op.r.(interface{ Len() int }); ok {
+			req.ContentLength = int64(lb.Len())
+		}
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -389,9 +403,30 @@ func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
 	_, _ = rand.Read(chunk2)
 	want := append(append(append([]byte{}, chunk1...), chunk2...), chunk3...)
 
+	// Design 0060 §4.1: undeclared bodies 411, so this streaming test
+	// declares. A fixed boundary makes the envelope deterministic: a
+	// measuring pass computes the exact declared total, then the real
+	// streamed pass carries it — streaming itself is unchanged by the
+	// declaration (the producer still blocks until agentd consumes).
+	const fixedBoundary = "lss-stream-test-boundary"
+	var measure bytes.Buffer
+	measureWriter := multipart.NewWriter(&measure)
+	require.NoError(t, measureWriter.SetBoundary(fixedBoundary))
+	hdr := make(textproto.MIMEHeader)
+	hdr.Set("Content-Disposition", `form-data; name="file"; filename="big.bin"`)
+	fwM, err := measureWriter.CreatePart(hdr)
+	require.NoError(t, err)
+	for _, chunk := range [][]byte{chunk1, chunk2, chunk3} {
+		_, err = fwM.Write(chunk)
+		require.NoError(t, err)
+	}
+	require.NoError(t, measureWriter.Close())
+	declaredTotal := int64(measure.Len())
+
 	pr, pw := io.Pipe()
 	producerErr := make(chan error, 1)
 	mw := multipart.NewWriter(pw)
+	require.NoError(t, mw.SetBoundary(fixedBoundary))
 	go func() {
 		hdr := make(textproto.MIMEHeader)
 		hdr.Set("Content-Disposition", `form-data; name="file"; filename="big.bin"`)
@@ -427,6 +462,7 @@ func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/uploads", opaqueReader{pr})
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.ContentLength = declaredTotal
 	handlerDone := make(chan struct{})
 	go func() {
 		defer close(handlerDone)
@@ -472,9 +508,13 @@ func TestUpload_CapRejectedLocally_WhenContentLengthKnown(t *testing.T) {
 	assert.Equal(t, 1.0, uploadMetricValue(t, "cap"))
 }
 
-// --- U1.2.5 / U1.2.14 chunked overrun cut at cap+1 → 413 ---
+// --- U1.2.5 / U1.2.14 chunked overrun: design 0060 §4.1 supersedes the
+// undeclared shape — no Content-Length → 411 BEFORE any cap logic (the
+// admission input is missing). The declared lying-small overrun (mid-
+// stream cut at cap+1) stays pinned by ContentLengthSpoof below; the
+// declared honestly-over-cap shape stays pinned by CapRejectedLocally.
 
-func TestUpload_CapChunkedOverrun_CutAtLimit(t *testing.T) {
+func TestUpload_CapChunkedOverrun_UndeclaredNow411(t *testing.T) {
 	resetUploadMetrics(t)
 	env, _ := newUploadEnvWithFakeAgentd(t, http.StatusCreated, "")
 	env.handler.SetUploadLimitsForTest(1024, 0)
@@ -484,9 +524,11 @@ func TestUpload_CapChunkedOverrun_CutAtLimit(t *testing.T) {
 	content := make([]byte, 4096)
 	body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "big.bin", content: content})
 
-	w := doUpload(env, opaqueReader{body}, ct)
-	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
-	assert.Equal(t, 1.0, uploadMetricValue(t, "cap"))
+	// io.MultiReader exposes no Len — a genuinely undeclared body even
+	// through doUpload's declaration path.
+	w := doUpload(env, io.MultiReader(body), ct)
+	assert.Equal(t, http.StatusLengthRequired, w.Code)
+	assert.Equal(t, 1.0, uploadMetricValue(t, "invalid_declared_length"))
 }
 
 // --- U1.2.14 spoofed Content-Length: claims small, streams big ---
@@ -576,6 +618,11 @@ func TestUpload_ClientDisconnect_AbortsAgentdRequest(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/uploads", opaqueReader{pr}).WithContext(ctx)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	// Design 0060 §4.1: declare the body (any plausible total — the
+	// producer never finishes; the declaration only satisfies the
+	// admission gate so this test keeps exercising disconnect
+	// propagation, not the 411).
+	req.ContentLength = 128 * 1024
 	go func() {
 		defer close(handlerDone)
 		env.router.ServeHTTP(w, req)

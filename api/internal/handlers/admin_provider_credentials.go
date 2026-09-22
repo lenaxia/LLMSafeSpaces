@@ -452,6 +452,20 @@ func (h *AdminProviderCredentialsHandler) CreateAutoApply(c *gin.Context) {
 		return
 	}
 
+	// The parent-id audit (instance 6): a ghost credential id previously
+	// reached the FK unvalidated (opaque 500). Resolve exactly as the
+	// credential CRUD arms do — GetCredential returns (nil, nil) for a
+	// nonexistent row, so BOTH the error and the nil row are checked.
+	row, err := h.store.GetCredential(c.Request.Context(), "admin", "_platform", credID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch credential"})
+		return
+	}
+	if row == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "credential not found"})
+		return
+	}
+
 	var targetID *string
 	if req.TargetType != "all" {
 		if req.TargetID == "" {

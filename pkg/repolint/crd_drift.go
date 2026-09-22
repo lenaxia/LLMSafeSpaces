@@ -425,6 +425,18 @@ func LiveBindings() []CRDBinding {
 				"properties", "status", "properties", "sessions", "items"},
 		},
 		{
+			// SecretsDeliveryStatus is a leaf under status.properties.
+			// Added after the 2026-09-21 review on #1529 (the relayRevision
+			// prune): an unbound leaf lets a Go field ship without its CRD
+			// property, and the apiserver silently drops the field on every
+			// status write — the exact drift class this check exists for.
+			GoFile:   "pkg/apis/llmsafespaces/v1/workspace_types.go",
+			GoStruct: "SecretsDeliveryStatus",
+			CRDFile:  "helm/crds/workspace.yaml",
+			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema",
+				"properties", "status", "properties", "secretsDelivery"},
+		},
+		{
 			GoFile:   "pkg/apis/llmsafespaces/v1/runtimeenvironment_types.go",
 			GoStruct: "RuntimeEnvironmentSpec",
 			CRDFile:  "helm/crds/runtimeenvironment.yaml",

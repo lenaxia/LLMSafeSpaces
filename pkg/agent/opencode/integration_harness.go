@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -116,6 +117,22 @@ const legacyIntegrationConfig = `{
 // provider so sends complete offline).
 func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *opencodeServer {
 	t.Helper()
+
+	// Port ownership (r5): port 0 = claim a FREE port (bind :0, read
+	// it, close, immediately launch the child). A FIXED port can be
+	// held by a foreign or stale server from an earlier leg — the
+	// health probe would then validate THE FOREIGN SERVER and hand the
+	// test a false pass. The claim narrows the window to the
+	// microseconds between close and the child's bind; any taker in
+	// that window makes the child's bind fail loudly (unhealthy →
+	// timeout), never a silent substitution.
+	if port == 0 {
+		var lc net.ListenConfig
+		l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port = l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+	}
 
 	binary := findOrDownloadBinary(t)
 

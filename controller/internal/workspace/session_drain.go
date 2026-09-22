@@ -69,7 +69,6 @@ import (
 // acceptable for a best-effort protection layer.
 
 const (
-	drainReasonSuspend               = "suspend"
 	drainReasonRestartGeneration     = "restart_generation"
 	drainReasonArchitectureDrift     = "architecture_drift"
 	drainReasonPasswordSecretMissing = "password_secret_missing"

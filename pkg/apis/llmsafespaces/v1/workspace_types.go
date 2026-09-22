@@ -23,6 +23,20 @@ const (
 	// user-perceived latency, not just the controller reconcile latency.
 	AnnotationRequestedAt = "llmsafespaces.dev/requested-at"
 
+	// AnnotationForceRecycle is the #1505 user-consent force marker for
+	// pod deletion. Set by the API ONLY on RefreshWorkspaceCompute (the
+	// one action whose UI warns the user that in-flight turns are cut) —
+	// never by automated suspend sources, and not by the suspend path at
+	// all since #1510 (#1507) made every suspend bounded-immediate.
+	// Value semantics: a generation number ("42") applies to the
+	// refresh-compute recycle observing exactly that restartGeneration;
+	// any other value is stale and inert. The controller clears the
+	// annotation in the same reconcile that observes the stamped
+	// generation — at every gen-observe site (Active recycle, Creating,
+	// Failed recovery) — so the force never leaks into a later
+	// automated lifecycle action.
+	AnnotationForceRecycle = "llmsafespaces.dev/force-recycle"
+
 	// AnnotationLastActivityAt stores the last user-activity timestamp
 	// (RFC3339). Written by the API service (activity tracker + activate
 	// flow); read by the controller for idle auto-suspend. Lives in
@@ -439,10 +453,23 @@ type AgentSessionStatus struct {
 // credential set the uid-1000 supervisor actually wrote (ssh keys/config,
 // git-credentials, secret-files) — ownership-by-construction delivery;
 // its degrade rides DegradedReason with the spawn_files_* code family.
+//
+// RelayRevision + the relay degrade codes (US-72.4, design 0058
+// §4.5/§4.6): agentd's relay liveness monitor reports the staged relay
+// revision of the batch it applied (the token entries' metadata) and
+// the active relay degrade code — relay_unreachable / token_expired /
+// the router's reject reasons — through the same healthz surface. The
+// relay reason joins DegradedReason (winning over a co-present
+// spawn_env_* code: its codes are class-critical for the US-72.3
+// staging classification); RelayRevision is the lineage-conjunct input
+// the §4.2 terminator compares against the staged-revision annotation
+// (a pre-US-72.4 runtime reports neither — escalation stays
+// structurally suppressed, the documented pre-flip semantics).
 type SecretsDeliveryStatus struct {
 	SpawnedRev     string `json:"spawnedRev,omitempty"`
 	DegradedReason string `json:"degradedReason,omitempty"`
 	FilesRev       string `json:"filesRev,omitempty"`
+	RelayRevision  string `json:"relayRevision,omitempty"`
 }
 
 // WorkspaceStatus defines the observed state of a Workspace.

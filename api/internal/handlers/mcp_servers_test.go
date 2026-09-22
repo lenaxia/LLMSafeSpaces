@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -28,6 +29,9 @@ type stubMCPStore struct {
 	count    int
 	countErr error
 	bindErr  error
+	// wsUserErr makes GetWorkspaceUserIDForMCP return ErrNoRows — the
+	// nonexistent-workspace shape (the parent-id audit's bind arms).
+	wsUserErr bool
 	// wsOrgID controls the value returned by GetWorkspaceOrgIDForMCP.
 	// Empty (default) means "personal workspace" → resolveWorkspaceQuota
 	// early-returns. Set non-empty to exercise the org-policy quota path.
@@ -81,6 +85,11 @@ func (s *stubMCPStore) GetWorkspaceOrgIDForMCP(_ context.Context, _ string) (str
 	return s.wsOrgID, nil
 }
 func (s *stubMCPStore) GetWorkspaceUserIDForMCP(_ context.Context, _ string) (string, error) {
+	if s.wsUserErr {
+		// The real store maps ErrNoRows here (mcp_store.go:178-186) — the
+		// ghost-workspace shape the parent-id audit's bind check relies on.
+		return "", pgx.ErrNoRows
+	}
 	return "user-1", nil
 }
 func (s *stubMCPStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
@@ -733,4 +742,66 @@ func TestBind_NilOrgChecker_OrgOwnedWorkspace_DoesNotPanic(t *testing.T) {
 	// Bind should succeed (quota not exceeded — stub count is 0, default
 	// quota is > 0), not crash.
 	assert.NotEqual(t, http.StatusInternalServerError, w.Code)
+}
+
+// --- the parent-id audit's instances 5 and 7 -------------------------------
+
+// TestAutoApplyCreate_GhostServer_404 pins instance 5: a nonexistent
+// serverId answers the ownership 404 (Bind's convention), never the FK's
+// opaque 500.
+func TestAutoApplyCreate_GhostServer_404(t *testing.T) {
+	store := &stubMCPStore{servers: []*secrets.MCPServerRow{}}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/servers/:serverId/auto-apply", h.CreateAutoApply)
+
+	w := httptest.NewRequest("POST", "/servers/ghost/auto-apply",
+		strings.NewReader(`{"targetType":"all"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 404, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "MCP server not found")
+}
+
+// TestBind_AdminScope_GhostWorkspace_404 pins instance 7: the org/admin
+// arms now resolve the workspace for existence — a ghost id answers the
+// 404, never the FK's opaque 500.
+func TestBind_AdminScope_GhostWorkspace_404(t *testing.T) {
+	store := &stubMCPStore{servers: []*secrets.MCPServerRow{{
+		ID: "srv-1", OwnerType: types.MCPServerOwnerAdmin, OwnerID: "_platform", Name: "s",
+	}}, wsUserErr: true}
+	h := NewAdminMCPServersHandler(store, nil)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/servers/:id/bind", h.Bind)
+
+	w := httptest.NewRequest("POST", "/servers/srv-1/bind",
+		strings.NewReader(`{"workspaceId":"00000000-0000-4000-8000-000000000099"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 404, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "workspace not found")
+}
+
+// TestAutoApplyCreate_RealServer_Created pins instance 5's pass-arm: a
+// seeded real server reaches the store.
+func TestAutoApplyCreate_RealServer_Created(t *testing.T) {
+	store := &stubMCPStore{servers: []*secrets.MCPServerRow{{
+		ID: "srv-1", OwnerType: types.MCPServerOwnerUser, OwnerID: "user-1", Name: "s",
+	}}}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	r.POST("/servers/:serverId/auto-apply", h.CreateAutoApply)
+
+	w := httptest.NewRequest("POST", "/servers/srv-1/auto-apply",
+		strings.NewReader(`{"targetType":"all"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 201, rec.Code, rec.Body.String())
 }

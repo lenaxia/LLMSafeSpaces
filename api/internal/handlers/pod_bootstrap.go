@@ -118,7 +118,8 @@ type bootstrapAPIResponse struct {
 	AdminPrompt     string          `json:"adminPrompt,omitempty"`
 	// AllowedExternalDirectories is the instance setting that the agentd
 	// bootstrap subcommand materializes into /sandbox-runtime/allowed-dirs.json
-	// and the AgentConfigWriter merges into mode.permissions.external_directory
+	// and the AgentConfigWriter merges into the TOP-LEVEL
+	// permission.external_directory (the LIVE key on pinned opencode)
 	// as "allow" rules (stops agents prompting for /tmp/* on every session).
 	AllowedExternalDirectories []string `json:"allowedExternalDirectories,omitempty"`
 }
@@ -377,7 +378,8 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	// non-fatal — the pod boots without pre-approved allow-rules and agents
 	// prompt for /tmp/* as before. Delivered so the agentd bootstrap
 	// subcommand can materialize /sandbox-runtime/allowed-dirs.json and the
-	// AgentConfigWriter can inject mode.permissions.external_directory rules.
+	// AgentConfigWriter can inject rules into the LIVE top-level
+	// permission.external_directory key.
 	if h.settings != nil {
 		if dirs, err := h.settings.GetStrings(c.Request.Context(), settings.KeyWorkspaceAllowedExternalDirs.Name()); err == nil {
 			resp.AllowedExternalDirectories = dirs

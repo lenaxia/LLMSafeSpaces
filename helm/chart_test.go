@@ -3521,6 +3521,30 @@ func TestControllerArgs_WorkspaceRouterURLOverride(t *testing.T) {
 	t.Fatal("--inference-relay-url must render when fleet is enabled")
 }
 
+// TestControllerArgs_TerminationGraceFlag (#1507): the bounded-grace
+// override renders only when set; the default (0) renders nothing (the
+// controller's in-code 40s default applies).
+func TestControllerArgs_TerminationGraceFlag(t *testing.T) {
+	docs := helmTemplate(t, "")
+	args := findControllerArgs(t, docs)
+	for _, a := range args {
+		if strings.HasPrefix(a, "--workspace-termination-grace-seconds") {
+			t.Fatalf("--workspace-termination-grace-seconds must NOT render by default (in-code 40s); got %q", a)
+		}
+	}
+
+	docs = helmTemplate(t, "controller:\n  workspaceTerminationGraceSeconds: 60\n")
+	args = findControllerArgs(t, docs)
+	for _, a := range args {
+		if strings.HasPrefix(a, "--workspace-termination-grace-seconds=") {
+			require.Equal(t, "--workspace-termination-grace-seconds=60", a,
+				"the explicit grace must propagate to the controller flag")
+			return
+		}
+	}
+	t.Fatal("--workspace-termination-grace-seconds must render when set")
+}
+
 // TestControllerArgs_NoRelayURLByDefault verifies the post-Epic-60 default:
 // with no chart overrides, the controller renders no --inference-relay-url
 // flag at all. The chart's inferenceRelayURL value was removed (the CF Worker

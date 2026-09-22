@@ -61,11 +61,16 @@ const errTriggerMemoryCaptureConstraint = "memoryMode 'last_result' requires cap
 
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
-	store   triggerStore
-	quota   workflowQuotaChecker
-	audit   workflowAuditLogger
-	encrypt triggerEncryptor
+	store        triggerStore
+	quota        workflowQuotaChecker
+	audit        workflowAuditLogger
+	encrypt      triggerEncryptor
+	wsExistencer workspaceExistencer
 }
+
+// SetWorkspaceExistencer wires the target-workspace existence check for
+// the parent-id contract (deferred injection; nil skips).
+func (h *TriggersHandler) SetWorkspaceExistencer(w workspaceExistencer) { h.wsExistencer = w }
 
 // NewUserTriggersHandler constructs a handler for user-scope triggers.
 func NewUserTriggersHandler(store triggerStore, quota workflowQuotaChecker, encrypt triggerEncryptor) *TriggersHandler {
@@ -280,6 +285,40 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		row.NextFireAt = &nextFire
 	}
 
+	// A user-supplied workflowId must resolve at create (the 35597973572
+	// contract ruling): un-opted ghost wiring previously fell through to
+	// the store insert and surfaced as an opaque 500 (FK shape). The
+	// V-matrix pre-fetch above has already answered opted-in ghosts (400)
+	// and ANY non-NotFound lookup fault (500) — the only error reachable
+	// HERE is NotFound on the un-opted path, so this arm carries just the
+	// contract 400 (a hypothetical non-NotFound error falls through to
+	// the insert, where the FK answers identically to the pre-fix 500).
+	// Ordered AFTER the cron validation so an invalid expr answers the
+	// cron error; the FK stays the integrity anchor (ON DELETE SET NULL).
+	if req.WorkflowID != "" {
+		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, req.WorkflowID); errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+			return
+		}
+	}
+
+	// The parent-id audit: a user-supplied workspaceId must EXIST (the
+	// triggers.workspace_id FK answered nonexistent targets with the same
+	// opaque-500 class). Existence only — cross-owner targets remain the
+	// fire-time loud class by design (#1440); nil existencer (legacy
+	// construction) skips.
+	if req.WorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), req.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
+	}
+
 	if err := h.store.CreateTrigger(c.Request.Context(), row); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create trigger"})
 		return
@@ -351,6 +390,24 @@ func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID, triggerID stri
 		return
 	}
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
+}
+
+// validateUpdateMapping runs the 0059 V7 wiring/mapping rules for
+// patches that touch the mapping surface. Extracted from update() —
+// the function exceeded the repo's gocyclo ceiling.
+func (h *TriggersHandler) validateUpdateMapping(c *gin.Context, ownerType, ownerID string, existing *wf.TriggerRow, req *types.UpdateTriggerRequest, mergedWorkflowID string) bool {
+	mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
+	if req.InputFrom != nil {
+		mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
+	}
+	mergedInput := existing.Input
+	if req.Input != nil {
+		// Present key (including JSON null, which clears the static
+		// document) replaces; absent key keeps — discriminated here so
+		// the store keeps its plain CASE WHEN NULL THEN keep shape.
+		mergedInput = req.Input
+	}
+	return h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput)
 }
 
 func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID string) {
@@ -479,32 +536,48 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	// Input mapping (0059 V7): only patches that touch workflowId, input,
-	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
-	// merged view. Patches that remove an opt-in (input → null, inputFrom →
-	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
-	// or schedule change re-runs nothing.
-	if touchesMapping {
-		mergedWorkflowID := ""
+	// The post-patch MERGED workflow target — feeds the V7 mapping rules
+	// below. existing is nil only for patches touching none of
+	// sourceConfig/enabled/target/memory-capture (then the merge is
+	// empty). The parent-id existence checks further down read the
+	// PATCHED req values directly, not this merge.
+	mergedWorkflowID := ""
+	if existing != nil {
 		if existing.WorkflowID != nil {
 			mergedWorkflowID = *existing.WorkflowID
 		}
 		if req.WorkflowID != nil {
 			mergedWorkflowID = *req.WorkflowID
 		}
-		mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
-		if req.InputFrom != nil {
-			mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
-		}
-		mergedInput := existing.Input
-		if req.Input != nil {
-			// Present key (including JSON null, which clears the static
-			// document) replaces; absent key keeps — discriminated here so
-			// the store keeps its plain CASE WHEN NULL THEN keep shape.
-			mergedInput = req.Input
-		}
-		if !h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput) {
+	}
+
+	// Input mapping (0059 V7): only patches that touch workflowId, input,
+	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
+	// merged view. Patches that remove an opt-in (input → null, inputFrom →
+	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
+	// or schedule change re-runs nothing.
+	if touchesMapping {
+		if !h.validateUpdateMapping(c, ownerType, ownerID, existing, &req, mergedWorkflowID) {
 			return
+		}
+		// #1519: workflow-existence check on the POST-PATCH MERGED view —
+		// create's contract (triggers.go create arm), mirrored. The
+		// V-matrix's un-opted NotFound arm deliberately skips (V6's ghost
+		// tolerance); this check closes the hole: a retarget to a
+		// nonexistent workflow or a stored ghost (legacy cross-owner /
+		// pre-#1517 wiring) surfaced by ANY mapping-touching patch answers
+		// the named 400 here, never the store FK's opaque 500 or a silent
+		// persist that fires trigger_has_no_target at drain. As on the
+		// create arm, the V-matrix pre-fetch has already answered
+		// non-NotFound lookup faults (500) — the only error reachable
+		// HERE is NotFound, so this arm carries just the contract 400 (a
+		// hypothetical non-NotFound error falls through to the update,
+		// where the FK answers identically to the pre-fix 500).
+		if mergedWorkflowID != "" {
+			if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, mergedWorkflowID); errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+				return
+			}
 		}
 	}
 
@@ -515,6 +588,29 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	if targetlessAfterPatch {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
 		return
+	}
+
+	// The parent-id audit on the UPDATE view (#1519/#1522): a PATCHED
+	// target must resolve — nonexistent workflowId/workspaceId patches
+	// previously reached the FK as an opaque 500 ("failed to update
+	// trigger"). The workflowId half is answered by the #1519 merged-view
+	// check inside the mapping block above (every workflowId patch
+	// touches mapping, so that check always runs first and additionally
+	// surfaces stored ghosts on de-opt patches); this arm carries the
+	// workspaceId half via the existencer. STORED targets outside
+	// mapping-touching patches stay FK-anchored and untouched (a legacy
+	// row with a cross-owner workflowId remains patchable for mitigation
+	// — the #1440 loud-fire zombie tolerates enabled:false).
+	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
@@ -557,7 +653,10 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID, triggerID stri
 //	    no body key).
 //	V3  an opted-in wiring must be able to reach its schema: a missing
 //	    target workflow cannot be validated (distinct from #1412's
-//	    fire-time ghost, which stays loud for un-opted wiring).
+//	    fire-time ghost — still loud only for legacy rows never
+//	    re-touched after this check; every create and every
+//	    mapping-touching update now 400s at the #1519 existence check
+//	    before the store write).
 //	V4  inputFrom "mapped": the static document must satisfy the
 //	    workflow's inputSchema (absent schema accepts everything).
 //	V5  envelope/body + static input: the static document must be a JSON
@@ -566,9 +665,11 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID, triggerID stri
 //	    names properties beyond the source's envelope key set is rejected
 //	    with the three remedies — the narrowed O1 guard (D4). Legacy
 //	    triggers are never re-scanned; a missing workflow skips the guard
-//	    (nothing to require — reachable via cross-owner references, which
-//	    the owner-scoped fetch misses; the engine records a loud
-//	    missing-workflow failed fire for those at fire time).
+//	    (nothing to require). Cross-owner references no longer reach any
+//	    arm: both #1519 checks (create and update) are owner-scoped
+//	    against the same view and 400 them before the store write; only
+//	    pre-check legacy rows ever persisted a ghost, and the engine
+//	    remains loud for those at fire time.
 func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType, ownerID, sourceType, workflowID, inputFrom string, input json.RawMessage) bool {
 	if !types.ValidTriggerInputFrom(inputFrom) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid inputFrom (want envelope, body, or mapped)"})
@@ -615,7 +716,12 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 			return false
 		}
 		if errors.Is(err, wf.ErrNotFound) {
-			return true // cross-owner/unfetchable workflow: guard skipped, fire stays loud
+			// V3/V6 guard skipped for un-opted wiring. Both callers now
+			// close the hole with their own #1519 existence check on the
+			// same merged view (the create arm at the pre-insert check,
+			// the update arm inside the touchesMapping block) — a ghost
+			// target 400s there before the store write.
+			return true
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
 		return false

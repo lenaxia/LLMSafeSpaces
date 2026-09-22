@@ -64,6 +64,20 @@ const (
 	uploadReasonPhase     = "phase"
 	uploadReasonDisk      = "disk"
 	uploadReasonAgentdErr = "agentd_error"
+	// Design 0060 §4.6 (§9 PR 3): the widened reason enum. The staging
+	// classes label agentd's forwarded 507/429/504 outcomes 1:1
+	// (staging_full/staging_busy/staging_write_error/apply_timeout/
+	// apply_rejected/dest_disk_full); invalid_declared_length labels the
+	// API-generated 411 on undeclared client bodies. agentd_error stays
+	// the true remainder — including a forwarded 507 whose body carries
+	// no recognizable reason.
+	uploadReasonStagingFull     = "staging_full"
+	uploadReasonStagingBusy     = "staging_busy"
+	uploadReasonStagingWriteErr = "staging_write_error"
+	uploadReasonApplyTimeout    = "apply_timeout"
+	uploadReasonApplyRejected   = "apply_rejected"
+	uploadReasonDestDiskFull    = "dest_disk_full"
+	uploadReasonInvalidDeclared = "invalid_declared_length"
 )
 
 var (
@@ -200,6 +214,18 @@ func (h *ProxyHandler) UploadFile(c *gin.Context) {
 		return
 	}
 
+	// Design 0060 §4.1: reservation-before-acceptance needs the body
+	// size BEFORE streaming, so an undeclared (chunked) client body is
+	// rejected up front — the composer's sized FormData always declares.
+	if c.Request.ContentLength < 0 {
+		metrics.RecordUploadRequest(uploadReasonInvalidDeclared)
+		c.JSON(http.StatusLengthRequired, gin.H{
+			"error":  "declared body length required",
+			"reason": uploadReasonInvalidDeclared,
+		})
+		return
+	}
+
 	password, err := h.getPassword(c.Request.Context(), workspaceID)
 	if err != nil {
 		h.logger.Error("upload: failed to get workspace password", err, "workspaceID", workspaceID)
@@ -208,7 +234,7 @@ func (h *ProxyHandler) UploadFile(c *gin.Context) {
 		return
 	}
 
-	resp, fwdErr := h.forwardUploadToAgentd(c.Request.Context(), workspace.Status.PodIP, filename, password, filePart, cap)
+	resp, fwdErr := h.forwardUploadToAgentd(c.Request.Context(), workspace.Status.PodIP, filename, password, filePart, cap, c.Request.ContentLength)
 	if fwdErr != nil {
 		metrics.RecordUploadRequest(fwdErr.reason)
 		c.JSON(fwdErr.status, gin.H{"error": fwdErr.public})
@@ -236,6 +262,22 @@ func (h *ProxyHandler) UploadFile(c *gin.Context) {
 	case http.StatusRequestEntityTooLarge:
 		metrics.RecordUploadRequest(uploadReasonCap)
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file exceeds size cap"})
+
+	case http.StatusInsufficientStorage, http.StatusTooManyRequests, http.StatusGatewayTimeout:
+		// Design 0060 §4.6 (§9 PR 3): agentd's staging/apply pressure
+		// statuses forward VERBATIM — status and reason body untouched
+		// (the 4xx admission-input rejections are deliberately absent:
+		// the 411 is API-generated above; the 400 declared_length_
+		// exceeded is direct-:4097-path only — the API pipes the
+		// LimitReader'd part, so the declared bound always covers the
+		// hop body). The body's reason field labels MY metrics; a
+		// missing/unknown reason degrades to agentd_error, never a
+		// response mutation.
+		fwdBody, _ := io.ReadAll(io.LimitReader(resp.Body, forwardedReasonBodyCap))
+		metrics.RecordUploadRequest(forwardedUploadReason(resp.StatusCode, fwdBody))
+		h.logger.Warn("upload: agentd staging/apply pressure forwarded",
+			"workspaceID", workspaceID, "status", resp.StatusCode, "reason", forwardedUploadReason(resp.StatusCode, fwdBody))
+		c.Data(resp.StatusCode, "application/json", fwdBody)
 
 	default:
 		h.logger.Warn("upload: agentd rejected",
@@ -326,6 +368,46 @@ func rejectExtraUploadFileParts(mr *multipart.Reader) error {
 	}
 }
 
+// forwardedReasonBodyCap bounds the reason body read on forwarded
+// pressure statuses — the bodies are one-line JSON envelopes, never
+// file content.
+const forwardedReasonBodyCap = 4 << 10
+
+// forwardedUploadReason maps a forwarded agentd status+body onto the
+// API-side metrics enum (design 0060 §4.6). The 507 carries four
+// distinct classes distinguished by the body's machine-readable reason
+// field (the frozen agentd wire shapes); anything unrecognized degrades
+// to agentd_error. 429 and 504 are unambiguous by status.
+func forwardedUploadReason(status int, body []byte) string {
+	switch status {
+	case http.StatusTooManyRequests:
+		return uploadReasonStagingBusy
+	case http.StatusGatewayTimeout:
+		return uploadReasonApplyTimeout
+	case http.StatusInsufficientStorage:
+		var parsed struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return uploadReasonAgentdErr
+		}
+		switch parsed.Reason {
+		case "staging_full":
+			return uploadReasonStagingFull
+		case "staging_write_error":
+			return uploadReasonStagingWriteErr
+		case "apply_rejected":
+			return uploadReasonApplyRejected
+		case "dest_disk_full":
+			return uploadReasonDestDiskFull
+		default:
+			return uploadReasonAgentdErr
+		}
+	default:
+		return uploadReasonAgentdErr
+	}
+}
+
 // forwardUploadToAgentd streams the file part into a PUT /v1/files request
 // against the pod's agentd user mux. The body is an io.Pipe fed by a copy
 // goroutine reading the (cap+1-limited) file part; over-cap truncation and
@@ -337,6 +419,7 @@ func (h *ProxyHandler) forwardUploadToAgentd(
 	podIP, filename, password string,
 	filePart *multipart.Part,
 	cap int64,
+	declaredBodyBytes int64,
 ) (*http.Response, *uploadForwardError) {
 	pr, pw := io.Pipe()
 	limited := io.LimitReader(filePart, cap+1)
@@ -381,6 +464,11 @@ func (h *ProxyHandler) forwardUploadToAgentd(
 	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	// Design 0060 §4.1: the admission input for reservation-before-
+	// acceptance. The API→agentd forward is chunked (no Content-Length),
+	// so the client's declaration rides explicitly; agentd 411s without
+	// it and caps its body read at the declared value.
+	req.Header.Set("X-LLS-Declared-Body-Bytes", strconv.FormatInt(declaredBodyBytes, 10))
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {

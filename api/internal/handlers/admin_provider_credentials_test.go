@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -720,4 +721,66 @@ func TestAdminProviderCredentials_Update_InvalidKind_400(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// --- the parent-id audit's instance 6 ---------------------------------------
+
+// fakeAutoApplyStore records whether CreateAutoApply was reached.
+type fakeAutoApplyStore struct {
+	reached bool
+}
+
+func (f *fakeAutoApplyStore) CreateAutoApply(_ context.Context, _, _ string, _ *string, _ int) error {
+	f.reached = true
+	return nil
+}
+func (f *fakeAutoApplyStore) DeleteAutoApply(_ context.Context, _, _ string, _ *string) error {
+	return nil
+}
+func (f *fakeAutoApplyStore) ListAutoApply(_ context.Context, _ string) ([]secrets.AutoApplyRule, error) {
+	return nil, nil
+}
+
+// TestAdminProviderCredentials_AutoApply_GhostCredential_404 pins the
+// audit's instance 6 with the REAL (nil,nil)-not-found contract: a ghost
+// credential id must answer 404 WITHOUT the store being reached (the
+// first draft's err-only check passed ghosts straight through).
+func TestAdminProviderCredentials_AutoApply_GhostCredential_404(t *testing.T) {
+	store := newFakeAdminCredStore()
+	kek := make([]byte, 32)
+	h := NewAdminProviderCredentialsHandler(store, mustStaticProv(kek))
+	aa := &fakeAutoApplyStore{}
+	h.SetAutoApplyStore(aa)
+	g := gin.New()
+	g.POST("/api/v1/admin/provider-credentials/:id/auto-apply", h.CreateAutoApply)
+
+	w := httptest.NewRequest("POST", "/api/v1/admin/provider-credentials/ghost/auto-apply",
+		strings.NewReader(`{"targetType":"all"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, w)
+	require.Equal(t, 404, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "credential not found")
+	assert.False(t, aa.reached, "the FK-bearing store must never be reached with a ghost parent")
+}
+
+// TestAdminProviderCredentials_AutoApply_RealCredential_Created: the
+// pass-arm reaches the store.
+func TestAdminProviderCredentials_AutoApply_RealCredential_Created(t *testing.T) {
+	store := newFakeAdminCredStore()
+	store.creds["cred-1"] = &secrets.CredentialRow{ID: "cred-1", OwnerType: "admin", OwnerID: "_platform", Name: "c"}
+	kek := make([]byte, 32)
+	h := NewAdminProviderCredentialsHandler(store, mustStaticProv(kek))
+	aa := &fakeAutoApplyStore{}
+	h.SetAutoApplyStore(aa)
+	g := gin.New()
+	g.POST("/api/v1/admin/provider-credentials/:id/auto-apply", h.CreateAutoApply)
+
+	w := httptest.NewRequest("POST", "/api/v1/admin/provider-credentials/cred-1/auto-apply",
+		strings.NewReader(`{"targetType":"all"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, w)
+	require.Equal(t, 201, rec.Code, rec.Body.String())
+	assert.True(t, aa.reached)
 }

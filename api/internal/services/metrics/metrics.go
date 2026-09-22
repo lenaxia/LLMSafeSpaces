@@ -505,24 +505,31 @@ func RecordMCPBinding(sourceType string) {
 
 var (
 	// uploadsTotal counts POST /workspaces/:id/uploads resolutions by
-	// outcome reason (design epic-68 Observability; U1.2.21). Reasons are
-	// exhaustively enumerated: "success", "cap", "phase", "disk",
-	// "agentd_error". Auth rejections are counted by the auth layer's own
+	// outcome reason (design epic-68 Observability; U1.2.21; widened by
+	// design 0060 §4.6/§9-PR3). Reasons are exhaustively enumerated:
+	// "success", "cap", "phase", "disk", "agentd_error", plus the
+	// staging/apply classes forwarded verbatim from agentd
+	// ("staging_full", "staging_busy", "staging_write_error",
+	// "apply_timeout", "apply_rejected", "dest_disk_full") and the
+	// API-generated undeclared-body 411 ("invalid_declared_length").
+	// Auth rejections are counted by the auth layer's own
 	// metrics (they occur in middleware, before the upload handler runs);
 	// request-shape 400/415/404 rejections are visible in api_requests_total
 	// by status code.
 	uploadsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmsafespaces_uploads_total",
-			Help: "Total workspace file uploads by outcome reason (success, cap, phase, disk, agentd_error).",
+			Help: "Total workspace file uploads by outcome reason (success, cap, phase, disk, agentd_error, staging_full, staging_busy, staging_write_error, apply_timeout, apply_rejected, dest_disk_full, invalid_declared_length).",
 		},
 		[]string{"reason"},
 	)
 )
 
 // RecordUploadRequest increments the upload outcome counter. reason must be
-// one of "success", "cap", "phase", "disk", "agentd_error"; an empty reason
-// is counted as "unknown".
+// one of "success", "cap", "phase", "disk", "agentd_error",
+// "staging_full", "staging_busy", "staging_write_error",
+// "apply_timeout", "apply_rejected", "dest_disk_full",
+// "invalid_declared_length"; an empty reason is counted as "unknown".
 func RecordUploadRequest(reason string) {
 	if reason == "" {
 		reason = "unknown"

@@ -91,6 +91,12 @@ type serverDeps struct {
 	// by the sidecar's status poller (US-70.1). Nil in single-container
 	// mode (no split supervisor to poll) — healthz then omits the field.
 	spawnEnvSnapshot func() *agentd.SpawnEnvHealth
+	// relayLiveness (US-72.4, design 0058 §4.5) is the relay-only
+	// liveness monitor over the batch's token-emitted providers. Nil in
+	// tests / partial wiring — every consumer is nil-safe and the
+	// healthz/readyz/statusz fields then stay empty (a flag-off pod is
+	// Present=false, never a degrade).
+	relayLiveness *relayLivenessMonitor
 	// pendingApply surfaces the deferred credential apply on healthz →
 	// the controller's CredentialsApplyPending condition (#1342 item 4).
 	// Nil-safe by construction (every method tolerates the nil
@@ -144,6 +150,7 @@ func buildStatuszHandler(
 	sys sysMetricsSource,
 	spawnStatus func() (rev, degraded string),
 	inFlightFn func() int64,
+	relaySnapshot func() *agentd.RelayHealth,
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -207,6 +214,11 @@ func buildStatuszHandler(
 		if inFlightFn != nil {
 			inFlight = inFlightFn()
 		}
+		// US-72.4: the relay liveness slice (cached; never I/O here).
+		var relay *agentd.RelayHealth
+		if relaySnapshot != nil {
+			relay = relaySnapshot()
+		}
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:             healthy,
 			InFlightDeliveries:  inFlight,
@@ -231,6 +243,7 @@ func buildStatuszHandler(
 			Warnings:            modelResolutionWarnings(modelWarnPath),
 			SpawnedRev:          spawnedRev,
 			Degraded:            degraded,
+			Relay:               relay,
 		})
 	})
 }
@@ -279,6 +292,13 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 			status = http.StatusServiceUnavailable
 		}
 		w.WriteHeader(status)
+		// US-72.4: the relay liveness degrade codes on readyz — cached
+		// snapshot, observability only, NEVER gates Ready (a relay
+		// outage must not drop the pod from endpoints).
+		var relay *agentd.RelayHealth
+		if deps.relayLiveness != nil {
+			relay = deps.relayLiveness.snapshot()
+		}
 		_ = json.NewEncoder(w).Encode(agentd.ReadyzResponse{
 			Ready:               ready,
 			ProvidersConnected:  connected,
@@ -293,6 +313,7 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 			// Included in readyz (not statusz) because readyz is cache-based and
 			// lightweight, making it safe to call on every ListModels cache miss.
 			RelayInjected: deps.agentConfigWriter != nil && deps.agentConfigWriter.HasRelay(),
+			Relay:         relay,
 		})
 
 		// S18.10: Record readyz_first_200 gate on first 200 response.
@@ -501,7 +522,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness)))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
@@ -514,7 +535,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight)))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.

@@ -81,16 +81,22 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 	uid := string(workspace.UID)
 	name := podName(workspace.Name, uid)
 
-	// #761: drain in-flight sessions before the pod deletion. This gate
-	// covers every path that funnels into Suspending — user suspend,
-	// org-level suspension, idle auto-suspend, and the spec timeout. While
-	// sessions are busy AND making progress the deletion is deferred; the
-	// phase stays Suspending (established SSE streams keep flowing — the
-	// proxy only 503s NEW requests while not Active). Terminating a
-	// wedged turn is bounded by the drain's stall window.
-	if r.drainBeforePodDeletion(ctx, workspace, drainReasonSuspend) == drainDefer {
-		return ctrl.Result{RequeueAfter: drainPollInterval}, nil
-	}
+	// #1507: NO busy-session gate on the suspend path. The owner-ruled
+	// semantics (incident 2026-09-21, workspace d8bed486: a wedged
+	// opencode at 69h CPU kept sessions re-marked busy forever —
+	// busySessions flapped 4↔5 with progressAge pinned at 0s, so the
+	// #761 deferral never aged toward its 60-minute drainStallBound and
+	// Suspending hung for 1h+): suspend
+	// is a BOUNDED GRACEFUL termination, not a session-completion wait.
+	// The pod deletion below triggers kubelet SIGTERM → agentd's serial
+	// shutdown (HTTP drain 25s → bg wait 5s → opencode child
+	// SIGTERM→SIGKILL 5s), hard-cut at the pod's
+	// terminationGracePeriodSeconds (default 40s,
+	// --workspace-termination-grace-seconds). Busy sessions are NOT
+	// saved by waiting — the pod is deleted either way and the PVC is
+	// retained; the only question is whether in-flight turns get the
+	// grace window, and they do. Waiting provided no value and unbounded
+	// the latency.
 
 	r.deletePodByName(ctx, name, workspace.Namespace)
 

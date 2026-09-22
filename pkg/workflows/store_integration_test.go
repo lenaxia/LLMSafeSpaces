@@ -88,6 +88,31 @@ func (s *StoreIntegrationSuite) newWorkspaceID() string {
 	return id
 }
 
+// --- Workspace existence (the parent-id contract primitive) ----------------
+
+func (s *StoreIntegrationSuite) TestWorkspaceExistsByID() {
+	ctx := context.Background()
+	id := s.newWorkspaceID()
+
+	exists, err := s.store.WorkspaceExistsByID(ctx, id)
+	s.Require().NoError(err)
+	s.True(exists, "a seeded workspace row must exist (unscoped — the FK's semantics)")
+
+	exists, err = s.store.WorkspaceExistsByID(ctx, uuid.New().String())
+	s.Require().NoError(err)
+	s.False(exists, "a random id must not exist")
+
+	// Soft-deleted rows still exist to the FK — pin the deliberate
+	// unscoped semantics (a future AND deleted_at IS NULL refactor would
+	// 400 targets the FK accepts; nothing else would catch it).
+	softID := s.newWorkspaceID()
+	_, err = s.pool.Exec(ctx, "UPDATE workspaces SET deleted_at = now() WHERE id = $1", softID)
+	s.Require().NoError(err)
+	exists, err = s.store.WorkspaceExistsByID(ctx, softID)
+	s.Require().NoError(err)
+	s.True(exists, "a soft-deleted row still exists to the FK (the primitive matches FK semantics, not lifecycle)")
+}
+
 // --- Workflow CRUD ---------------------------------------------------------
 
 func (s *StoreIntegrationSuite) TestWorkflowCRUD() {
@@ -1256,4 +1281,83 @@ func (s *StoreIntegrationSuite) TestTriggerFireResultRoundTrip() {
 	assert.Equal(s.T(), "failed", fires[0].Status)
 	require.NotNil(s.T(), fires[0].Result, "result selected non-NULL")
 	assert.Contains(s.T(), string(fires[0].Result), "deadline exceeded")
+}
+
+// TestUpdateTrigger_WorkflowFK_NonexistentTargetRejected pins the real-DB
+// face of issue #1519 half (a): UpdateTrigger targeting a nonexistent
+// workflow UUID fails at the triggers.workflow_id FK, and the violation
+// surfaces as a generic store error (not ErrNotFound) — the exact source
+// of the opaque 500 the handler-level pre-flight (#1519) now converts
+// into the named 400 "target workflow not found".
+func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_NonexistentTargetRejected() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "fk-ghost-target", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	ghost := "00000000-0000-4000-8000-00000000dead"
+	_, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		WorkflowID: &ghost,
+	})
+	require.Error(s.T(), err,
+		"the FK must reject a nonexistent workflow target at the store layer")
+	assert.NotErrorIs(s.T(), err, ErrNotFound,
+		"FK violations must not masquerade as ErrNotFound; the generic error is the opaque 500's source")
+
+	// Nothing persisted: the row still has no target.
+	got, err := s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	assert.Nil(s.T(), got.WorkflowID, "the rejected retarget must not persist")
+}
+
+// TestUpdateTrigger_WorkflowFK_ForeignTargetSucceedsAtStore pins the
+// real-DB face of issue #1519 half (b): the triggers.workflow_id FK is
+// existence-scoped, NOT ownership-scoped — the store happily persists a
+// cross-owner target (u1's trigger → u2's workflow). This is why the
+// ownership check must live at the handler (#1519): no store-level
+// constraint will ever catch a cross-owner retarget.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_ForeignTargetSucceedsAtStore() {
+	ctx := context.Background()
+	now := time.Now()
+
+	// A workflow owned by a DIFFERENT user (u2).
+	foreignID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateWorkflow(ctx, &WorkflowRow{
+		ID: foreignID, OwnerType: "user", OwnerID: "u2",
+		Name: "u2-workflow", Slug: "u2-workflow",
+		SpecYAML: "name: test\n", SpecJSON: json.RawMessage(`{"name":"test"}`),
+		Status: "draft", CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// A routine trigger owned by u1.
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "fk-foreign-target", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil,
+		Prompt: "p", CaptureMode: "full", AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// The store ACCEPTS the cross-owner wiring — the documented weakness.
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		WorkflowID: &foreignID,
+	})
+	require.NoError(s.T(), err,
+		"the FK is existence-scoped; a foreign-owner target persists at the store layer")
+	require.NotNil(s.T(), updated.WorkflowID)
+	assert.Equal(s.T(), foreignID, *updated.WorkflowID)
+
+	// Verified persisted: a fresh read still carries the foreign target.
+	got, err := s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), got.WorkflowID)
+	assert.Equal(s.T(), foreignID, *got.WorkflowID,
+		"cross-owner wiring persists silently — the handler-level owner-scoped check (#1519) is the only guard")
 }

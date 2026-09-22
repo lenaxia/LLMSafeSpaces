@@ -2,8 +2,12 @@
 # Issues #1410/#1411/#1412/#1413/#1425/#1419 — automation trigger +
 # workflow-run e2e rows for the defects the 2026-09-17 live session proved
 # broken. Rows are API-only (no LLM turns, no workspace pods): the
-# cron/trigger surfaces under test resolve server-side. R1-R4 point at a
-# deliberately nonexistent workflow; R5/R6 use a REAL schema-authored
+# cron/trigger surfaces under test resolve server-side. Creates ride a
+# REAL workflow (the 35597973572 contract: nonexistent-workflowId creates
+# answer a named 400 at the handler — the old ghost-creates were only ever
+# creatable in FK-less mocks); R4's missing-workflow coverage fires via
+# create-valid → delete-workflow (the #1440-loud FK-SET-NULL path, same
+# mechanism as R4d). R5/R6 use REAL schema-authored
 # workflow whose targetWorkspaceId is the dummy workspace, so runs queue
 # but no pod ever executes a DAG node.
 #
@@ -16,10 +20,11 @@
 #        code kept firing at the OLD slot).
 #   R3 — no-op enable keeps the slot (#1410 review guard): enabled:true on
 #        an already-enabled trigger never reschedules an imminent fire.
-#   R4 — missing-workflow fires are loud (#1412): a workflow-targeted
-#        trigger whose DAG does not exist records a FAILED fire with a
-#        workflow-not-found payload and drives consecutiveFailures — the
-#        old code ticked silently forever.
+#   R4 — missing-workflow fires are loud (#1412): a trigger whose target
+#        workflow is deleted mid-life records a FAILED fire with the
+#        trigger_has_no_target payload (the FK SET NULLs — the only
+#        representable missing-workflow class at fire time) and drives
+#        consecutiveFailures — the old code ticked silently forever.
 #   R5 — run input obeys inputSchema (#1413): a workflow with a required
 #        field rejects non-conforming run input with 400 BEFORE queueing;
 #        conforming input progresses past schema validation.
@@ -42,7 +47,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/us70-common.sh
 source "${SCRIPT_DIR}/lib/us70-common.sh"
 
-GHOST_WF="deadbeef-0000-4000-8000-000000000000"
+# The dummy workspace UUID the rows' workflows target (R5's
+# targetWorkspaceId; hoisted — the shared R1-R4 workflow uses it too).
+R5_WS="00000000-0000-4000-8000-000000000001"
 R4_WAIT_S="${R4_WAIT_S:-150}"
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
@@ -95,7 +102,7 @@ api() { # method path [body] -> body on stdout; api_status + api_body globals
 
 create_trigger() { # name expr -> trigger id (echoed), 201 enforced
     local name="$1" expr="$2" body resp
-    body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${GHOST_WF}" \
+    body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${REAL_WF_ID}" \
         '{name:$n,sourceType:"cron",sourceConfig:{expr:$e,tz:"UTC"},workflowId:$w}')
     api POST /api/v1/me/triggers "${body}" >/dev/null
     resp="${api_body}"
@@ -115,11 +122,108 @@ slot_hm() { # rfc3339 -> "HH:MM" (UTC)
 
 # --- R1: create-path validation + first-occurrence slot (#1411) ----------
 
+# The dummy workspace row: the parent-id contract (run 35617684178's
+# audit) resolves every workspaceId/targetWorkspaceId against
+# workspaces(id) — the row never existed, so R4d/R5/R10's creates (never
+# executed before this) would 400/500 against it. Seeded via psql like
+# seed_session's user row; no CR, no pod — runs still queue and no-op
+# against a non-activated target.
+kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
+    psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 -c "
+INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size)
+VALUES ('${R5_WS}', 'e2e-automation-dummy', '${OWNER_ID}', '${NS}', 'python:3.11', '1Gi')
+ON CONFLICT (id) DO NOTHING;
+" >/dev/null
+
+# The shared real workflow every create below targets (R4d's specYaml
+# shape; the 35597973572 ruling made ghost-workflow creates a named 400).
+REAL_WF=$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-real-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:$ws}')
+api POST /api/v1/me/workflows "${REAL_WF}"
+REAL_WF_RESP="${api_body}"
+[[ "${api_status}" == "201" ]] || die "R1 setup: shared workflow create failed: ${api_status} ${REAL_WF_RESP}"
+REAL_WF_ID=$(printf '%s' "${REAL_WF_RESP}" | jq -r '.id')
+created_workflows+=("${REAL_WF_ID}")
+
 api POST /api/v1/me/triggers \
-    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${GHOST_WF}"'"}'
+    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${REAL_WF_ID}"'"}'
 r1_resp="${api_body}"
 if [[ "${api_status}" == "400" ]]; then ok "R1a: invalid cron expr rejected (400)"; else
     note_fail "R1a: invalid cron expr returned ${api_status}, expected 400 (${r1_resp})"
+fi
+
+# R1c — the create contract (35597973572 ruling) + the audit's headline
+# (35617684178): nonexistent workflowId AND targetWorkspaceId answer the
+# named 400, never the pre-fix opaque 500s.
+api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-ghost-target-ws",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:"00000000-0000-4000-8000-000000000099"}')"
+r1w_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1w_resp}" == *"target workspace not found"* ]]; then
+    ok "R1c: ghost targetWorkspaceId workflow create rejected with the named 400"
+else
+    note_fail "R1c: ghost targetWorkspaceId create returned ${api_status} (${r1w_resp}), expected 400"
+fi
+api POST /api/v1/me/triggers \
+    '{"name":"e2e-ghost-wf-contract","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
+r1c_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1c_resp}" == *"target workflow not found"* ]]; then
+    ok "R1c: nonexistent workflowId trigger create rejected with the named 400 (create contract)"
+else
+    note_fail "R1c: ghost-workflow create returned ${api_status} (${r1c_resp}), expected 400 target workflow not found"
+fi
+
+# R1d — the UPDATE faces of the same contract (#1519/#1522): ghost-parent
+# PATCHes answer the named 400, never the opaque 500.
+api PUT "/api/v1/me/workflows/${REAL_WF_ID}" \
+    '{"targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}'
+r1d_w_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1d_w_resp}" == *"target workspace not found"* ]]; then
+    ok "R1d: ghost targetWorkspaceId PATCH on the workflow rejected with the named 400"
+else
+    note_fail "R1d: ghost targetWorkspaceId workflow PATCH returned ${api_status} (${r1d_w_resp}), expected 400"
+fi
+R1D_ID=$(create_trigger "e2e-r1d-trigger" "0 3 1 * *")
+api PUT "/api/v1/me/triggers/${R1D_ID}" \
+    '{"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
+r1d_t_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1d_t_resp}" == *"target workflow not found"* ]]; then
+    ok "R1d: ghost workflowId PATCH on the trigger rejected with the named 400 (#1519)"
+else
+    note_fail "R1d: ghost workflowId trigger PATCH returned ${api_status} (${r1d_t_resp}), expected 400"
+fi
+
+# R1e — the fourth instance (review r3): a ghost workspaceId OVERRIDE on
+# run-create answers the named 400 (was the opaque 500).
+api POST "/api/v1/me/workflows/${REAL_WF_ID}/runs" \
+    '{"input":{},"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+r1e_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1e_resp}" == *"target workspace not found"* ]]; then
+    ok "R1e: ghost workspaceId run override rejected with the named 400"
+else
+    note_fail "R1e: ghost workspaceId run override returned ${api_status} (${r1e_resp}), expected 400"
+fi
+
+# R1d-happy (#1519, this lane): the update contract's accept arm — PATCH
+# retargeting to an EXISTING own workflow 200s and persists.
+R1DH_WF=$(jq -nc --arg w "${R5_WS}" '{name:"e2e-r1dh-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:$w}')
+api POST /api/v1/me/workflows "${R1DH_WF}"
+if [[ "${api_status}" == "201" ]]; then
+    R1DH_WF_ID=$(printf '%s' "${api_body}" | jq -r '.id')
+    created_workflows+=("${R1DH_WF_ID}")
+    R1DH_ID=$(create_trigger "e2e-r1dh-retarget" "0 3 1 * *")
+    api PUT "/api/v1/me/triggers/${R1DH_ID}" \
+        '{"workflowId":"'"${R1DH_WF_ID}"'","workspaceId":""}'
+    if [[ "${api_status}" == "200" ]] && [[ "$(trigger_field "${R1DH_ID}" workflowId)" == "${R1DH_WF_ID}" ]]; then
+        ok "R1d-happy: PATCH retarget to existing workflow 200 + persisted"
+    else
+        note_fail "R1d-happy: retarget returned ${api_status}, workflowId='$(trigger_field "${R1DH_ID}" workflowId)'"
+    fi
+else
+    note_fail "R1d-happy setup: workflow create failed: ${api_status}"
 fi
 
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
@@ -155,8 +259,13 @@ else
 fi
 
 # --- R4: missing workflow → failed fire, failure counter (#1412) ----------
+# Reshaped per the 35597973572 ruling: ghost-workflow CREATES are a named
+# 400 now, so missing-workflow FIRE coverage rides the #1440 path —
+# create against the real workflow, DELETE it (FK SET NULL → targetless),
+# and the imminent slot must fire LOUD.
 
-R4_ID=$(create_trigger "e2e-ghost-workflow" "* * * * *")
+R4_ID=$(create_trigger "e2e-deleted-workflow" "* * * * *")
+api DELETE "/api/v1/me/workflows/${REAL_WF_ID}" >/dev/null   # FK SET NULL
 r4_failed=0
 for _ in $(seq 1 75); do
     sleep 2
@@ -165,14 +274,14 @@ for _ in $(seq 1 75); do
     fi
 done
 if [[ "${r4_failed}" -ne 1 ]]; then
-    note_fail "R4a: no failed fire within ${R4_WAIT_S}s for the ghost-workflow trigger"
+    note_fail "R4a: no failed fire within ${R4_WAIT_S}s for the deleted-workflow trigger"
 else
     ok "R4a: failed fire recorded for missing workflow"
 fi
 r4_result=$(api GET "/api/v1/me/triggers/${R4_ID}/fires" \
     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
-if [[ "${r4_result}" == *"workflow not found"* ]]; then
-    ok "R4b: failed fire carries workflow-not-found payload"
+if [[ "${r4_result}" == *"trigger_has_no_target"* ]]; then
+    ok "R4b: failed fire carries the targetless payload (deleted workflow, FK SET NULL)"
 else
     note_fail "R4b: failed fire payload wrong: '${r4_result}'"
 fi
@@ -187,9 +296,9 @@ fi
 # SET NULLs the trigger's workflow_id (migration 000020 FK), so the
 # scheduler sees a targetless row — which must ALSO fail loudly
 # (trigger_has_no_target) and auto-disable, not tick silently.
-api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
+api POST /api/v1/me/workflows "$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-r4d-target",
     specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
-    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')"
+    targetWorkspaceId:$ws}')"
 R4D_WF="${api_body}"
 [[ "${api_status}" == "201" ]] || die "R4d setup: workflow create failed: ${api_status} ${R4D_WF}"
 R4D_WF_ID=$(printf '%s' "${R4D_WF}" | jq -r '.id')
@@ -226,8 +335,7 @@ fi
 # targetWorkspaceId, R8's routine workspaceId). It was previously
 # referenced by R8 without ever being defined — set -u aborted the
 # script there on every nightly run.
-R5_WS="00000000-0000-4000-8000-000000000001"
-R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",
+R5_BODY=$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-schema-run",targetWorkspaceId:$ws,
     inputSchema:{type:"object",required:["topic"],properties:{topic:{type:"string"}}},
     specYaml:"{\"nodes\":[{\"id\":\"n1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {}\"}}],\"edges\":[]}"}')
 api POST /api/v1/me/workflows "${R5_BODY}"
@@ -629,6 +737,78 @@ else
             else
                 note_fail "R8e: foreign-org trigger GET returned 200 — scoping regression"
             fi
+        fi
+        # R1f/R1h — the org-scope faces of instances 5+7 and the
+        # credential_auto_apply class. The ADMIN-scope twins of instances
+        # 5/6/7 ARE harness-reachable (the role check is DB-loaded per
+        # request and the harness writes psql) — elevating the seeded
+        # user is a DELIBERATE choice we decline (the harness user is a
+        # tenant; keeping it non-admin preserves the nightly's blast
+        # radius), documented here rather than claimed impossible.
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/auto-apply" \
+            '{"targetType":"all"}'
+        r1f_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1f_resp}" == *"MCP server not found"* ]]; then
+            ok "R1f: org auto-apply ghost serverId answers the named 404 (instance 5)"
+        else
+            note_fail "R1f: org auto-apply ghost returned ${api_status} (${r1f_resp}), expected 404"
+        fi
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/bindings" \
+            '{"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+        r1f2_resp="${api_body}"
+        # Status-only 404 cannot discriminate WHICH check fired — the
+        # server-ownership arm answers "MCP server not found" before the
+        # workspace arm is reached, so this row patrols instance 5's bind
+        # surface (the server resolution). Instance 7's live face is the
+        # R1h row below (a REAL org server + ghost workspaceId).
+        if [[ "${api_status}" == "404" && "${r1f2_resp}" == *"MCP server not found"* ]]; then
+            ok "R1f: org bind ghost serverId answers the named 404 (instance 5's bind face)"
+        else
+            note_fail "R1f: org bind ghost returned ${api_status} (${r1f2_resp}), expected 404 MCP server not found"
+        fi
+        # Instance 7's live face: create a REAL org MCP server, then bind
+        # it with a GHOST workspaceId — the discriminating body proves the
+        # workspace-existence arm fired (not the server arm). The URL is
+        # a non-resolving public host (validateMCPURL passes it; localhost
+        # is SSRF-rejected).
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers" \
+            '{"name":"e2e-r8-server","url":"http://mcp-e2e.invalid","transport":"http"}'
+        R8_SRV_RESP="${api_body}"
+        if [[ "${api_status}" == "201" || "${api_status}" == "202" ]]; then
+            R8_SRV_ID=$(printf '%s' "${R8_SRV_RESP}" | jq -r '.id // .server.id // empty')
+            api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/${R8_SRV_ID}/bindings" \
+                '{"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+            r1h_resp="${api_body}"
+            if [[ "${api_status}" == "404" && "${r1h_resp}" == *"workspace not found"* ]]; then
+                ok "R1h: org bind with REAL server + ghost workspaceId answers workspace-not-found (instance 7)"
+            else
+                note_fail "R1h: org bind ghost-ws returned ${api_status} (${r1h_resp}), expected 404 workspace not found"
+            fi
+        else
+            note_fail "R1h setup: org MCP server create returned ${api_status} (${R8_SRV_RESP})"
+        fi
+
+        # The credential_auto_apply class on its reachable face: the org
+        # twin (OrgAdminGuard, zero elevation) resolves the ghost credID.
+        api POST "/api/v1/orgs/${R8_ORG}/credentials/deadbeef-0000-4000-8000-000000000000/auto-apply" \
+            '{"targetType":"all"}'
+        r1i_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1i_resp}" == *"credential not found"* ]]; then
+            ok "R1i: org credential auto-apply ghost credID answers the named 404"
+        else
+            note_fail "R1i: org cred auto-apply ghost returned ${api_status} (${r1i_resp}), expected 404"
+        fi
+
+        # R1g — the eighth instance (review r8): a ghost userId on
+        # POST /orgs/:id/members previously hit the FK as an opaque 500;
+        # the contract is the named 404.
+        api POST "/api/v1/orgs/${R8_ORG}/members" \
+            '{"userId":"deadbeef-0000-4000-8000-000000000000","role":"member"}'
+        r1g_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1g_resp}" == *"user not found"* ]]; then
+            ok "R1g: org member add with ghost userId answers the named 404 (instance 8)"
+        else
+            note_fail "R1g: org member ghost returned ${api_status} (${r1g_resp}), expected 404"
         fi
         api DELETE "/api/v1/orgs/${R8_ORG}" >/dev/null 2>&1 || true
     fi

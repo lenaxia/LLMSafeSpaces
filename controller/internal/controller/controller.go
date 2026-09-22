@@ -47,7 +47,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -86,6 +86,8 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		// Epic 72 / US-72.3: nil (the default, --relay-only-key-delivery
 		// off) means the staging pass is a no-op — zero behavior change.
 		RelayStaging: relayStaging,
+		// #1507: 0 keeps the pod_builder default (40s).
+		WorkspaceTerminationGraceSeconds: workspaceTerminationGrace,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
 		return err

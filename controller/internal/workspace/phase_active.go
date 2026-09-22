@@ -77,8 +77,20 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 	// recycle — the workspace stays Active (and the generation unobserved)
 	// until in-flight turns finish or stall out.
 	if workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration {
-		logger.Info("Restart generation bumped; draining in-flight sessions before pod deletion", "gen", workspace.Spec.RestartGeneration)
-		if r.drainBeforePodDeletion(ctx, workspace, drainReasonRestartGeneration) == drainDefer {
+		// #1505: a USER-consented refresh (Refresh Compute — the UI warned)
+		// stamps AnnotationForceRecycle with the generation it bumped. That
+		// exact-generation match bypasses the drain: in-flight turns die by
+		// design, the warning was the consent. Automated generation bumpers
+		// never set the annotation and keep the polite drain. (Suspend needs
+		// no marker: since #1510/#1507 handleSuspending never drains.)
+		forcedGen := forcedGenerationValue(workspace.Spec.RestartGeneration)
+		if userForcedRecycle(workspace, forcedGen) {
+			r.noteForcedRecycle(ctx, workspace, drainReasonRestartGeneration+"_user_forced")
+			if err := r.clearForceRecycleAnnotation(ctx, workspace); err != nil {
+				logger.Error(err, "failed to clear force-recycle annotation; requeueing")
+				return ctrl.Result{Requeue: true}, nil
+			}
+		} else if r.drainBeforePodDeletion(ctx, workspace, drainReasonRestartGeneration) == drainDefer {
 			return ctrl.Result{RequeueAfter: drainPollInterval}, nil
 		}
 		r.deletePodByName(ctx, name, workspace.Namespace)

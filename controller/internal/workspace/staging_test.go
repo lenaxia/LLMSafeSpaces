@@ -120,6 +120,14 @@ func makeRelayWorkspace(name string) *v1.Workspace {
 		Spec: v1.WorkspaceSpec{
 			Owner:   v1.WorkspaceOwner{UserID: "user-1"},
 			Runtime: "python:3.11",
+			// Satisfies the CRD's required+patterned spec.storage.size on
+			// REAL apiserver admission (envtest legs). The fake-client
+			// suites never validate; an empty size previously made every
+			// envtest create of this fixture fail admission — unnoticed
+			// because the US-72.3 conditions matrix was never wired into
+			// the envtest workflow (found while landing the US-72.4
+			// relayRevision round-trip, #1529 review).
+			Storage: v1.WorkspaceStorageConfig{Size: "10Gi"},
 		},
 		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
 	}
@@ -489,7 +497,7 @@ func TestPubSealtimeGenerationValidated_ReceiptMismatchRefusesSeal(t *testing.T)
 	// rotate receipt names generation 3, but the pub Secret still says 2
 	// (torn rotation) — NOTHING may be sealed against the receipt.
 	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{
-		SpawnedRev:     ws.Annotations[relayStagedRevisionAnnotation],
+		RelayRevision:  ws.Annotations[relayStagedRevisionAnnotation],
 		DegradedReason: "credential_stale",
 	}
 	receiptPub, err := pubKeyForGeneration(t, 3)

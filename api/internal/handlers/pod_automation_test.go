@@ -302,6 +302,10 @@ func TestPodAutomation_WorkflowTargetedTriggerCreate(t *testing.T) {
 	other := "ws-OTHER"
 	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
 	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+	// The create handler's workflow-existence check reads the unified
+	// handler store (trigStore in this mock topology, wfStore in
+	// production) — seed both.
+	trigStore.workflows["wf-ok"] = wfStore.workflows["wf-ok"]
 
 	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
 		"workspaceID":"ws-1",
@@ -461,6 +465,10 @@ func TestPodAutomation_TriggerUpdateWorkflowTargetGating(t *testing.T) {
 	other := "ws-OTHER"
 	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
 	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+	// The create handler's workflow-existence check reads the unified
+	// handler store (trigStore in this mock topology, wfStore in
+	// production) — seed both.
+	trigStore.workflows["wf-ok"] = wfStore.workflows["wf-ok"]
 
 	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
 		"workspaceID":"ws-1","name":"gated","sourceType":"cron",
@@ -563,6 +571,7 @@ func TestPodAutomation_TriggerCreateCaseVariantWorkflowKey(t *testing.T) {
 	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
 	target := "ws-1"
 	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+	trigStore.workflows["wf-ok"] = wfStore.workflows["wf-ok"]
 
 	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
 		"workspaceID":"ws-1","name":"variant-create","sourceType":"cron",

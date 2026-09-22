@@ -44,6 +44,42 @@ func init() {
 	_ = v1.AddToScheme(scheme)
 }
 
+// workspaceTerminationGraceUsage (#1507) is the flag help, hoisted to
+// package scope purely for main()'s funlen bound.
+const workspaceTerminationGraceUsage = "Workspace pods' terminationGracePeriodSeconds override (#1507): the bounded " +
+	"graceful-termination window kubelet gives agentd on pod deletion (HTTP drain " +
+	"25s + bg wait 5s + opencode child SIGTERM→SIGKILL 5s = 35s serial budget). " +
+	"0 keeps the default 40s (budget + margin). Values <36 are rejected at startup — " +
+	"a grace below the serial budget short-circuits agentd's drain mid-flight (the " +
+	"pre-#761 5s bug class)."
+
+// validateWorkspaceTerminationGrace (#1507): a grace below agentd's 35s
+// serial shutdown budget would short-circuit the drain mid-flight — the
+// pre-#761 5s bug class. Extracted from main for the funlen bound.
+func validateWorkspaceTerminationGrace(grace int64) error {
+	if grace < 0 || (grace > 0 && grace < 36) {
+		return fmt.Errorf("--workspace-termination-grace-seconds=%d is below agentd's 35s serial shutdown budget — a short grace cuts in-flight turns that the budget exists to drain", grace)
+	}
+	return nil
+}
+
+// freeModelsFlags registers the free-tier catalog refresher flags
+// (hoisted from main purely for the funlen bound; defaults unchanged).
+func registerFreeModelsFlags() (enable bool, interval time.Duration) {
+	flag.BoolVar(&enable, "enable-free-models-refresher", true,
+		"Periodically fetch the opencode free-tier model catalog from models.dev "+
+			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
+			"this CM to pre-render their relay agent-config.json before opencode "+
+			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
+			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
+			"true; set false to disable and fall back to per-pod fetching.")
+	flag.DurationVar(&interval, "free-models-refresh-interval", 6*time.Hour,
+		"How often the free-models refresher fetches the catalog. The catalog "+
+			"changes ~weekly so 6h is generous; lower values are fine but "+
+			"increase load on models.dev.")
+	return
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -128,6 +164,9 @@ func main() {
 			"Set to 'gvisor' for production multi-tenant isolation. "+
 			"Empty means runc (default K8s runtime). "+
 			"Individual workspaces can override via spec.runtimeClass.")
+	var workspaceTerminationGrace int64
+	flag.Int64Var(&workspaceTerminationGrace, "workspace-termination-grace-seconds", 0,
+		workspaceTerminationGraceUsage)
 	var maxWorkspacesPerTenant int
 	flag.IntVar(&maxWorkspacesPerTenant, "max-workspaces-per-tenant", 0,
 		"Maximum concurrent workspace pods per tenant (Epic 51 S51.2). "+
@@ -140,19 +179,7 @@ func main() {
 	flag.Int64Var(&maxMemoryMiPerTenant, "max-memory-mi-per-tenant", 0,
 		"Maximum aggregate memory requests (MiB) per tenant (Epic 51 S51.2). "+
 			"0 means unlimited. Recommended: 16384 (16GiB) for multi-tenant.")
-	var enableFreeModelsRefresher bool
-	flag.BoolVar(&enableFreeModelsRefresher, "enable-free-models-refresher", true,
-		"Periodically fetch the opencode free-tier model catalog from models.dev "+
-			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
-			"this CM to pre-render their relay agent-config.json before opencode "+
-			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
-			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
-			"true; set false to disable and fall back to per-pod fetching.")
-	var freeModelsRefreshInterval time.Duration
-	flag.DurationVar(&freeModelsRefreshInterval, "free-models-refresh-interval", 6*time.Hour,
-		"How often the free-models refresher fetches the catalog. The catalog "+
-			"changes ~weekly so 6h is generous; lower values are fine but "+
-			"increase load on models.dev.")
+	enableFreeModelsRefresher, freeModelsRefreshInterval := registerFreeModelsFlags()
 	var freeModelsAPIURL string
 	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "",
 		"Override URL for the free-models catalog. Empty defaults to "+
@@ -218,6 +245,11 @@ func main() {
 	// pins). Image-only is the NORMAL (Renovate-friendly) form — hashes
 	// resolve from the image index annotations, covered by the digest.
 	// Hash flags are optional per-image overrides (both or neither).
+	// #1507: below-budget grace refuses startup.
+	if err := validateWorkspaceTerminationGrace(workspaceTerminationGrace); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
 		os.Exit(1)
@@ -392,7 +424,7 @@ func main() {
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
 		BinarySHA256ARM64: opencodeBinarySHA256ARM64,
-	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles), relayStaging); err != nil {
+	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles), relayStaging, workspaceTerminationGrace); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

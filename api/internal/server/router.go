@@ -1384,6 +1384,16 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 	// defaults (resources, security level, storage class, max active sessions)
 	// and bump spec.restartGeneration so the controller rebuilds the pod,
 	// re-resolving spec.runtime to its latest image version.
+	//
+	// #1505 CONTRACT: refresh-compute is the USER-CONSENTED FORCE path.
+	// The generation-keyed force-recycle annotation rides the same write,
+	// so the controller's recycle BYPASSES the #761 session drain — the
+	// pod is deleted immediately even with busy in-flight turns. The UI's
+	// pre-action warning ("in-flight work is lost") is the consent; the
+	// server-side counterpart is this comment + the SessionDrainUserForced
+	// event the controller emits. Automated generation bumpers do NOT set
+	// the marker and keep the polite drain. (The suspend endpoint shares
+	// the single bounded-grace SuspendWorkspace path — #1510/#1507.)
 	idGroup.POST("/refresh-compute", func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {

@@ -245,6 +245,12 @@ api:
 controller:
   enabled: true
   replicaCount: 1
+  # #1507: workspace pods' terminationGracePeriodSeconds — the bounded
+  # graceful-termination window kubelet gives agentd on pod deletion
+  # (agentd's serial shutdown budget: HTTP drain 25s + bg wait 5s +
+  # opencode child SIGTERM→SIGKILL 5s = 35s). 0/empty keeps the default
+  # 40s (budget + margin). Values <36 are rejected at controller startup.
+  workspaceTerminationGraceSeconds: 0
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/controller
     # Tag to deploy. Falls back to .Chart.AppVersion if empty. See api.image.tag
@@ -1780,3 +1786,10 @@ relayOnlyKeyDelivery:
     # Informer resync for the Secret watch.
     informerResync: "5m"
     resources: {}
+  # US-72.4 (design 0058 §4.5): the API-side batch builder rides the
+  # same flag (an env on the api deployment). api.enabled=false is the
+  # narrow rollback lever: controller staging + the router stay up while
+  # the builder resumes raw-key batches (design §6.4 mixed fleet) — pods
+  # heal on the next batch apply.
+  api:
+    enabled: true

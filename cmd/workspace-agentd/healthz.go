@@ -58,7 +58,14 @@ import (
 // restart is riding a maintenance window behind busy sessions. Cached
 // state only — the handler contract is unchanged. The controller
 // mirrors it into the CredentialsApplyPending condition.
-func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth) http.HandlerFunc {
+//
+// relaySnapshot (US-72.4, design 0058 §4.5), when non-nil, supplies the
+// relay-only liveness slice (cached monitor state over the batch's
+// token-emitted providers). A relay degrade surfaces as the relay field
+// AND a `degraded:<reason>` warning — never as Healthy=false (a relay
+// outage must not cascade to a liveness-probe kill; the remedy is the
+// bounded re-arm + conditions, §4.8).
+func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth, relaySnapshot func() *agentd.RelayHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		warnings := modelResolutionWarnings(modelWarnPath)
 		var spawnEnv *agentd.SpawnEnvHealth
@@ -72,6 +79,13 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 		if pendingApplySnapshot != nil {
 			pendingApply = pendingApplySnapshot()
 		}
+		var relay *agentd.RelayHealth
+		if relaySnapshot != nil {
+			relay = relaySnapshot()
+			if w := relayLivenessWarning(relay); w != "" {
+				warnings = append(warnings, w)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
 			Healthy:       true,
@@ -82,6 +96,7 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 			Delivery:      agentd.DeliveryCapability,
 			SpawnEnv:      spawnEnv,
 			PendingApply:  pendingApply,
+			Relay:         relay,
 			Warnings:      warnings,
 		})
 	}

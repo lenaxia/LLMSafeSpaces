@@ -21,6 +21,9 @@ type SecretService struct {
 	store         SecretStore
 	adminProvider RootKeyProvider // US-50.2: wraps deriveServerKey("provider-credentials")
 	orgProvider   RootKeyProvider // US-50.2: wraps deriveServerKey("org-credentials")
+	// relayTokens (US-72.4): the relay-only token source. nil = the
+	// deployment flag is off = byte-identical legacy batch behavior.
+	relayTokens RelayTokenSource
 }
 
 // NewSecretService creates a new SecretService.
