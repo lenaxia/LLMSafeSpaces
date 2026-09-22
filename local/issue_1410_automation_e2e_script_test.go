@@ -54,6 +54,8 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R1f: org auto-apply ghost serverId answers the named 404`,                       // instance 5's reachable face, live-API
 		`R1f: org bind ghost serverId answers the named 404`,                             // instance 5's bind face, live-API
 		`R1g: org member add with ghost userId answers the named 404`,                    // instance 8, live-API
+		`R1h: org bind with REAL server + ghost workspaceId answers workspace-not-found`, // instance 7 live, discriminating body
+		`R1i: org credential auto-apply ghost credID answers the named 404`,              // the credential_auto_apply class, live
 		// R2 — reschedule moves the slot immediately (#1410).
 		`"sourceConfig":{"expr":"0 4 1 * *","tz":"UTC"}`,     // the new schedule
 		`03:00" ]] && [[ "$(slot_hm "${r2_new}")" == "04:00`, // old→new slot asserted

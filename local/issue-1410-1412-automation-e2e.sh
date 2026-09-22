@@ -717,11 +717,13 @@ else
                 note_fail "R8e: foreign-org trigger GET returned 200 — scoping regression"
             fi
         fi
-        # R1f — instances 5 and 7's reachable faces: org-scope MCP
-        # auto-apply with a ghost serverId answers the ownership 404;
-        # org-scope MCP bind with ghost surfaces fails closed. The
-        # admin-scope twins are behind AdminGuard — not harness-reachable
-        # in the nightly (documented; unit-pinned).
+        # R1f/R1h — the org-scope faces of instances 5+7 and the
+        # credential_auto_apply class. The ADMIN-scope twins of instances
+        # 5/6/7 ARE harness-reachable (the role check is DB-loaded per
+        # request and the harness writes psql) — elevating the seeded
+        # user is a DELIBERATE choice we decline (the harness user is a
+        # tenant; keeping it non-admin preserves the nightly's blast
+        # radius), documented here rather than claimed impossible.
         api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/auto-apply" \
             '{"targetType":"all"}'
         r1f_resp="${api_body}"
@@ -747,6 +749,37 @@ else
         # R1g — the eighth instance (review r8): a ghost userId on
         # POST /orgs/:id/members previously hit the FK as an opaque 500;
         # the contract is the named 404.
+        # Instance 7's live face: create a REAL org MCP server, then bind
+        # it with a GHOST workspaceId — the discriminating body proves the
+        # workspace-existence arm fired (not the server arm).
+        api POST "/api/v1/orgs/${R8_ORG}/mcp-servers" \
+            '{"name":"e2e-r8-server","url":"http://localhost:9","transport":"http"}'
+        R8_SRV_RESP="${api_body}"
+        if [[ "${api_status}" == "201" || "${api_status}" == "202" ]]; then
+            R8_SRV_ID=$(printf '%s' "${R8_SRV_RESP}" | jq -r '.id // .server.id // empty')
+            api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/${R8_SRV_ID}/bindings" \
+                '{"workspaceId":"00000000-0000-4000-8000-000000000099"}'
+            r1h_resp="${api_body}"
+            if [[ "${api_status}" == "404" && "${r1h_resp}" == *"workspace not found"* ]]; then
+                ok "R1h: org bind with REAL server + ghost workspaceId answers workspace-not-found (instance 7)"
+            else
+                note_fail "R1h: org bind ghost-ws returned ${api_status} (${r1h_resp}), expected 404 workspace not found"
+            fi
+        else
+            note_fail "R1h setup: org MCP server create returned ${api_status} (${R8_SRV_RESP})"
+        fi
+
+        # The credential_auto_apply class on its reachable face: the org
+        # twin (OrgAdminGuard, zero elevation) resolves the ghost credID.
+        api POST "/api/v1/orgs/${R8_ORG}/credentials/deadbeef-0000-4000-8000-000000000000/auto-apply" \
+            '{"targetType":"all"}'
+        r1i_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1i_resp}" == *"credential not found"* ]]; then
+            ok "R1i: org credential auto-apply ghost credID answers the named 404"
+        else
+            note_fail "R1i: org cred auto-apply ghost returned ${api_status} (${r1i_resp}), expected 404"
+        fi
+
         api POST "/api/v1/orgs/${R8_ORG}/members" \
             '{"userId":"deadbeef-0000-4000-8000-000000000000","role":"member"}'
         r1g_resp="${api_body}"
