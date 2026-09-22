@@ -56,7 +56,7 @@ None.
 
 ## Next Steps
 
-- APPROVED → merge → dispatch → R1–R9 arbitration with the parent-id class retired (the next run should find NO third instance).
+- APPROVED → merge → dispatch → the R1–R10 arbitration with the parent-id class retired (eight instances found and fixed across twelve review rounds; the next run should find NO ninth instance).
 
 ## Files Modified
 
