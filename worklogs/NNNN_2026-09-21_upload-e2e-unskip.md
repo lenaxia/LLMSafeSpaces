@@ -26,7 +26,13 @@ Retire the pre-0060 documentation claims (sidecar uploads clean-fail) across eve
 ## Key Decisions
 
 1. #1535's gate is the canonical script surface — this PR does NOT touch the script or its test pins (they ride main). The docs-only delta avoids any conflict with the live-proven detector.
-2. The D19 retry contract (one-or-two intact files after a mid-upload pod kill) is stated in the workflow header — not the simpler "exactly one" (which the script's E11 row implements but the design's D19 allows to be either).
+2. The D19 retry contract (ONE-OR-TWO intact files after a mid-upload pod kill — retry = new uuid, both contract-legal) is stated consistently in the workflow header, the script's E11 row, and the run-step comment. The pre-D19 "exactly one" simplification is retired everywhere.
+
+---
+
+## Blockers
+
+None.
 
 ---
 
@@ -48,3 +54,10 @@ Retire the pre-0060 documentation claims (sidecar uploads clean-fail) across eve
 - `design/stories/epic-68-chat-file-attachments/README.md` — deviation-1 + line 103 + rows-coverage
 - `docs/api/rest.md` — the upload row's both-modes statement
 - `worklogs/NNNN_2026-09-21_upload-e2e-unskip.md` — this worklog
+
+
+---
+
+## Next Steps
+
+- The serialization fix (the SR-6 finding — the applyMu over-serialization) follows as its own PR once this lands.
