@@ -171,7 +171,7 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 	assert.True(t, allowReopensTierDeny("/et*"))
 	assert.True(t, allowReopensTierDeny("?etc/*"), "a leading ?-wildcard reaches the deny root (r5)")
 	assert.True(t, allowReopensTierDeny("/?tc/*"), "an interior ?-wildcard reaches the deny root (r5)")
-	assert.True(t, allowReopensTierDeny("/et?"), "a trailing ?-wildcard path resolves under /etc (r5)")
+	assert.True(t, allowReopensTierDeny("/et?"), "a trailing ?-wildcard CONSERVATIVE OVER-DROP: /et? matches only bare 4-char paths no deny governs, but its literal prefix /et precedes /etc — dropping is the safe direction (r6 finding 2)")
 	assert.True(t, allowReopensTierDeny(`\etc/*`), "a backslashed pattern normalizes to the deny root — the filter must normalize like the matcher (r6)")
 	assert.True(t, allowReopensTierDeny(`\home\sandbox\.ssh\*`), "backslashed credential-tree glob normalizes into the .ssh deny (r6)")
 	assert.False(t, allowReopensTierDeny(`\opt\cache\*`), "a backslashed allow OUTSIDE every deny keeps its allow (normalization is not denial)")
@@ -180,6 +180,25 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 		"an allow outside every deny keeps its allow")
 	assert.False(t, allowReopensTierDeny("/tmp/build/*"),
 		"pre-allowed roots are not denies — a redundant operator allow is harmless")
+}
+
+// The deny-shape premise: allowReopensTierDeny's literal-prefix analysis
+// is sound ONLY for denies that are exact paths or trailing-"/*"
+// prefix globs. Pin the structure itself — a future mid-glob deny key
+// ("/sys/*/ro") would silently break the analysis and could under-drop.
+func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
+	for k, v := range platformPermissionTiers {
+		if v != "deny" {
+			continue
+		}
+		if strings.Contains(k, "*") {
+			assert.True(t, strings.HasSuffix(k, "/*"),
+				"deny key %q must be a trailing-/* prefix glob (the filter's soundness premise)", k)
+		} else {
+			assert.NotContains(t, k, "?",
+				"deny key %q must be wildcard-free (exact-path premise)", k)
+		}
+	}
 }
 
 // TestPermissionTier_CgroupMountReadOnly — the amended tier ruling's
