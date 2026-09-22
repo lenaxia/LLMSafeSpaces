@@ -73,4 +73,4 @@ None.
 - `local/issue_1410_automation_e2e_script_test.go` — the R1c–R1i ledger needles + R1/R4 harness pins.
 - `api/internal/handlers/{workflows,triggers,mcp_servers,admin_provider_credentials,orgs}_test.go` — the audit pins (all eight instances + infra arms + pass arms).
 - `pkg/workflows/store_integration_test.go` — WorkspaceExistsByID against real PG (incl. the soft-deleted face).
-- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.
+- `worklogs/1037_2026-09-21_parent-id-contract-audit.md` — this worklog.
