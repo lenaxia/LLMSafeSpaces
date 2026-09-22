@@ -128,3 +128,8 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 
 - This PR's added test weight pushed the agentd package past the 300s -short CI watchdog (red on both this head and #1524's approved head, demonstrated twice). Both ci.yml -short sites raised to 600s — the package alone runs ~300s under -short on CI runners; 600s restores the 2× headroom the original 300s had when the package was ~150s.
 - The merge-order correction acknowledged: THIS PR merges first, then #1523/#1524 immediately (the r8 "merge PR 4 first" arm is unsafe under squash-merge — #1524 contains this branch and would revert it).
+
+
+## Review round 10 (the release.yml watchdog + the CI-run proof)
+
+- release.yml:169 — the identical breached 300s watchdog, a hard prerequisite of every release artifact — raised to 600s (the third and last -short site; the fix is now complete across all workflows).
