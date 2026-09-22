@@ -44,16 +44,41 @@ WS="$(ws_id 1)"
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
 
-api() { # method path [json-body] -> response body
-    local method="$1" path="$2" body="${3:-}"
+api() { # method path [json-body] -> response body (dies on non-2xx)
+    # Mutations are CHECKED: a silently-swollen failure (the r1 class)
+    # makes a dead setup indistinguishable from a real verdict.
+    local method="$1" path="$2" body="${3:-}" out code
+    out=$(mktemp)
     if [[ -n "${body}" ]]; then
-        curl -sfm 30 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
+        code=$(curl -sm 30 -o "${out}" -w '%{http_code}' -X "${method}" \
+            -H "Authorization: Bearer ${API_KEY}" \
             -H "Content-Type: application/json" -d "${body}" \
-            "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || echo '{}'
+            "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || code=000)
     else
-        curl -sfm 30 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
-            "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || echo '{}'
+        code=$(curl -sm 30 -o "${out}" -w '%{http_code}' -X "${method}" \
+            -H "Authorization: Bearer ${API_KEY}" \
+            "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || code=000)
     fi
+    if [[ "${code}" != 2* ]]; then
+        die "api ${method} ${path}: HTTP ${code}: $(head -c 300 "${out}")"
+    fi
+    cat "${out}"; rm -f "${out}"
+}
+
+# DEK-gated authoring (credential create/bind) requires the JWT session
+# (the harness rule: API key for resolution ops, JWT for DEK-gated
+# secret authoring — us70-common.sh:202).
+api_authed() { # method path json-body -> response body (dies on non-2xx)
+    local method="$1" path="$2" body="$3" out code
+    out=$(mktemp)
+    code=$(curl -sm 30 -o "${out}" -w '%{http_code}' -X "${method}" \
+        -H "Authorization: Bearer ${AUTH_TOKEN:?login first}" \
+        -H "Content-Type: application/json" -d "${body}" \
+        "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || code=000)
+    if [[ "${code}" != 2* ]]; then
+        die "api_authed ${method} ${path}: HTTP ${code}: $(head -c 300 "${out}")"
+    fi
+    cat "${out}"; rm -f "${out}"
 }
 
 flip() { # true|false
@@ -82,8 +107,10 @@ cycle_pod() { # ws — bounded suspend/resume (the #1087-compliant 5s variant)
 # for that path (the boundary is the property) — but only EACCES/ENOENT
 # unreadability counts; any other grep error fails the row.
 sweep_hits() { # ws -> count of canary hits
-    local ws="$1"
-    kc exec -c workspace "${ws}" -- bash -c '
+    local ws="$1" pod
+    pod=$(pod_of "${ws}")
+    [[ -n "${pod}" ]] || { echo 1; return; } # no pod = cannot prove clean = a hit
+    kc exec "${pod}" -c workspace -- bash -c '
         hits=0
         for p in /sandbox-runtime/agent-config.json \
                  /agentd-config/agent-config.json \
@@ -91,35 +118,32 @@ sweep_hits() { # ws -> count of canary hits
                  /sandbox-cfg/secrets.json \
                  /sandbox-runtime/rt/secrets.json \
                  /sandbox-runtime/rt/auth.json; do
-            if [[ -e "$p" || -L "$p" ]]; then
-                out=$(grep -c "'"${CANARY_KEY}"'" "$p" 2>/dev/null) && hits=$((hits+out)) || {
-                    rc=$?
-                    [[ $rc -eq 2 ]] || hits=$((hits+1))  # EACCES-on-read is the boundary; anything else is a hit-by-suspicion
-                }
-            fi
+            # grep -c prints 0 and exits 1 on ZERO MATCHES (the healthy
+            # case) — so count only NUMERIC outputs; a non-numeric output
+            # is an unreadable path (EACCES/ENOENT-class) = the boundary
+            # working = pass for that path.
+            out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)
+            [[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))
         done
         env_hits=$(grep -a -c "'"${CANARY_KEY}"'" /proc/self/environ 2>/dev/null || true)
+        [[ "${env_hits}" =~ ^[0-9]+$ ]] || env_hits=0
         echo $((hits + env_hits))
     ' 2>/dev/null | tail -1
 }
 
-config_apikey() { # ws -> the agent-config apiKey field (or "")
-    kc exec -c workspace "$1" -- bash -c '
+config_field() { # ws field -> the drill provider's rendered field (or "")
+    local pod
+    pod=$(pod_of "$1")
+    [[ -n "${pod}" ]] || { echo ""; return; }
+    kc exec "${pod}" -c workspace -- bash -c '
         for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
             [[ -r "$p" ]] && cat "$p" && exit 0
         done
         echo "{}"
-    ' 2>/dev/null | jq -r '[.provider[][].options.apiKey // empty][0] // ""'
+    ' 2>/dev/null | jq -r --arg f "$2" '.provider["us72drill"].options[$f] // ""'
 }
-
-config_baseurl() { # ws -> the first provider baseURL (or "")
-    kc exec -c workspace "$1" -- bash -c '
-        for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
-            [[ -r "$p" ]] && cat "$p" && exit 0
-        done
-        echo "{}"
-    ' 2>/dev/null | jq -r '[.provider[][].options.baseURL // empty][0] // ""'
-}
+config_apikey()  { config_field "$1" apiKey; }
+config_baseurl() { config_field "$1" baseURL; }
 
 # -----------------------------------------------------------------------------
 log "R1 — flip ON (relayOnlyKeyDelivery.enabled=true)"
@@ -134,15 +158,23 @@ fi
 # -----------------------------------------------------------------------------
 log "R2 — token-only canary (CredentialsStaged, zero canary bytes, token+router URL in config)"
 
-CRED_ID=$(api POST /api/v1/provider-credentials \
-    "{\"name\":\"us72 drill\",\"kind\":\"llm-provider\",\"slug\":\"us72drill\",\"apiKey\":\"${CANARY_KEY}\",\"baseURL\":\"http://mock-llm.${NS}.svc.cluster.local/v1\",\"modelAllowlist\":[\"mockmodel\"]}" \
-    | jq -r '.id // .credential.id // empty')
-if [[ -z "${CRED_ID}" ]]; then
-    die "setup: credential create failed (no id)"
-fi
-api POST "/api/v1/provider-credentials/${CRED_ID}/bind/${WS}" >/dev/null
-
+# Seed FIRST (bind resolves the workspace through Postgres — binding a
+# not-yet-created workspace 404s, the r1 class (c)).
 seed_workspace "${WS}"
+login_harness_user >/dev/null 2>&1 || true
+[[ -n "${AUTH_TOKEN}" ]] || die "setup: harness JWT login failed (credential authoring is DEK-gated)"
+
+# Author the canary credential: JWT session (DEK-gated), kind
+# openai_compatible (the SDK class the harness's own
+# create_stub_credential uses — "llm-provider" is the SECRET TYPE, not a
+# credential kind), the planted canary key, a code-checked call.
+CRED_ID=$(api_authed POST /api/v1/provider-credentials \
+    "{\"name\":\"us72 drill\",\"kind\":\"openai_compatible\",\"slug\":\"us72drill\",\"apiKey\":\"${CANARY_KEY}\",\"baseURL\":\"http://mock-llm.${NS}.svc.cluster.local/v1\",\"modelAllowlist\":[\"mockmodel\"]}" \
+    | jq -r '.id // .credential.id // empty')
+[[ -n "${CRED_ID}" ]] || die "setup: credential create returned no id"
+
+api_authed POST "/api/v1/provider-credentials/${CRED_ID}/bind/${WS}" >/dev/null
+
 wait_phase "${WS}" Active 300 || note_fail "R2: workspace never Active"
 
 staged="None"

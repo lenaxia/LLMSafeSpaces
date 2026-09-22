@@ -13,6 +13,7 @@ package local
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,74 @@ func TestUS72FlipDrill_WorkspaceIsolation(t *testing.T) {
 	src := mustReadUS72Flip(t)
 	if !strings.Contains(src, `WS_BASE="e2e72500-`) {
 		t.Error("drill must set its own WS_BASE unconditionally (per-script isolation)")
+	}
+}
+
+// The sweep predicate is rc-sensitive (grep -c prints 0 and exits 1 on
+// ZERO matches — the healthy case; a naive rc check counts clean files
+// as hits, the r1 class (e)). This pin executes the sweep's counting
+// branch against a mock directory: clean file -> 0 contribution, dirty
+// file -> +1, unreadable file -> pass-for-that-path.
+func TestUS72FlipDrill_SweepPredicateMockTable(t *testing.T) {
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.json")
+	dirty := filepath.Join(dir, "dirty.json")
+	locked := filepath.Join(dir, "locked.json")
+	if err := os.WriteFile(clean, []byte("clean content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dirty, []byte("apiKey sk-US72-CANARY-0wiggle8harbor"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(locked, []byte("clean"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	script := "set -euo pipefail\n" +
+		"CANARY_KEY=sk-US72-CANARY-0wiggle8harbor\n" +
+		"hits=0\n" +
+		"for p in " + clean + " " + dirty + " " + locked + "; do\n" +
+		"  out=$(grep -ac \"${CANARY_KEY}\" \"$p\" 2>/dev/null || true)\n" +
+		"  [[ \"${out}\" =~ ^[0-9]+$ ]] && hits=$((hits + out))\n" +
+		"done\n" +
+		"echo $hits\n"
+	out, err := exec.Command("bash", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sweep counting run failed: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "1" {
+		t.Errorf("sweep hits = %q, want 1 (clean=0 contribution, dirty=+1, unreadable=pass) — the predicate drifted from the drill's", got)
+	}
+	// The drill's actual loop must be byte-equivalent in its counting
+	// branch (the pin above is worthless if the drill diverges).
+	src := mustReadUS72Flip(t)
+	for _, marker := range []string{
+		`out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)`,
+		`[[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Errorf("drill's sweep must contain the pinned counting branch %q", marker)
+		}
+	}
+}
+
+// The drill's jq extraction must select the drill provider's options BY
+// KEY — the provider section is keyed by slug, and .provider[][] would
+// be a jq type error (the second [] iterates strings — r1 class (d)).
+func TestUS72FlipDrill_JqPathShape(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	src := mustReadUS72Flip(t)
+	if !strings.Contains(src, `.provider["us72drill"].options[$f] // ""`) {
+		t.Fatal(`drill must extract via .provider["us72drill"].options[$f] (keyed, not double-iterated)`)
+	}
+	const cfg = `{"provider":{"us72drill":{"options":{"apiKey":"tok-123","baseURL":"http://llm-relay-router.llm-relay.svc"}}}}`
+	out, err := exec.Command("bash", "-c",
+		"echo '"+cfg+"' | jq -r '.provider[\"us72drill\"].options.apiKey // \"\"'").CombinedOutput()
+	if err != nil {
+		t.Fatalf("jq extraction failed: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "tok-123" {
+		t.Errorf("jq apiKey extraction = %q, want tok-123", got)
 	}
 }

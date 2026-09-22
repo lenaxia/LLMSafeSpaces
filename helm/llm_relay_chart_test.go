@@ -57,7 +57,8 @@ func TestRelayOnlyKeyDelivery_DefaultFlippedOn(t *testing.T) {
 // posture — an explicit enabled=false renders zero llm-relay resources;
 // flag off means zero behavior change (the drill's R3 leg).
 func TestRelayOnlyKeyDelivery_ExplicitOffRendersNothing(t *testing.T) {
-	docs := helmTemplate(t, "relayOnlyKeyDelivery.enabled=false")
+	// helmTemplate takes a VALUES FILE, not --set syntax (r1 finding 1).
+	docs := helmTemplate(t, "relayOnlyKeyDelivery:\n  enabled: false\n")
 	for _, d := range docs {
 		if d["kind"] != "Namespace" {
 			if meta, ok := d["metadata"].(map[string]any); ok {

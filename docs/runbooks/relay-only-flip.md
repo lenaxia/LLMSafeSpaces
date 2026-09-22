@@ -47,12 +47,17 @@ validates mechanics; the fleet waves validate SLO:
      (the drill's `sweep_hits` is the reference sweep);
    - one chat turn through the router (resolve + forward healthy).
 2. **Waves (≤25% of BYO-credential workspaces per wave)**, same
-   verification per wave. Stop conditions — any non-zero value STOPS the
-   rollout (the CounterVec-absent-while-zero semantics apply):
-   - `llmsafespaces_credential_stale_total`
-   - `llmsafespaces_credential_rejected_total`
-   - router 5xx rate / resolve p99 regression vs the pre-flip baseline
-     (the #1432 e2e budget: <10ms added vs direct proxy).
+   verification per wave. Stop conditions — the real router series
+   (`cmd/relay-router/byo_metrics.go`, alert group
+   `llmsafespaces.llm-relay` in `helm/templates/prometheus-rules.yaml`;
+   CounterVec-absent-while-zero semantics apply to the counters):
+   - `llm_relay_byo_requests_total{status=~"401|403|429"}` climbing on
+     canary workspaces (auth/scope/quota rejections — the alert fires at
+     >20 per workspace per 10m);
+   - `llm_relay_byo_requests_total{status=~"5.."}` (router errors — the
+     alert fires at >10 per workspace per 10m);
+   - resolve/forward latency regression vs the pre-flip baseline (the
+     #1432 e2e budget: <10ms added vs direct proxy).
 
 ## Rollback
 
