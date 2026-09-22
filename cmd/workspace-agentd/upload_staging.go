@@ -498,9 +498,7 @@ func stripTmpSuffix(name string) string {
 }
 
 // startStagingSweeper runs the TTL sweep on a bounded ticker and pushes
-// the §4.6 gauge snapshot each tick. The onTick seam exists for the
-// placement pin (the wiring test swaps it for an observer; the
-// production body is the scrub+gauges pair).
+// the §4.6 gauge snapshot each tick.
 func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Minute
