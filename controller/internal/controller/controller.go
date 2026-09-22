@@ -47,7 +47,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, uploadStaging workspace.UploadStagingConfig, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -79,6 +79,7 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
 		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
 		AgentdSidecarEnabled:      agentdSidecarEnabled,
+		UploadStaging:             uploadStaging,
 		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
 		// Clamped upstream (main.go, 1..64); <=0 keeps controller-runtime's
 		// fully-serial default so unit tests that don't set it are unchanged.

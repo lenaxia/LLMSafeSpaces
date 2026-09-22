@@ -201,6 +201,15 @@ type uploadStager struct {
 	mu           sync.Mutex
 	reservations map[string]int64 // uploadID → reserved bytes (held until bytes leave)
 
+	// onSweepTick, when non-nil, replaces the sweeper tick body (the
+	// placement pin's observer seam).
+	onSweepTick func()
+
+	// sweepStarted, when non-nil, is closed when the sweeper goroutine
+	// is launched — the placement pin's observable (inside the guard:
+	// never closed where the parent is absent).
+	sweepStarted chan struct{}
+
 	metrics stagingMetrics
 }
 
@@ -493,10 +502,22 @@ func stripTmpSuffix(name string) string {
 }
 
 // startStagingSweeper runs the TTL sweep on a bounded ticker and pushes
-// the §4.6 gauge snapshot each tick.
+// the §4.6 gauge snapshot each tick. The onTick seam exists for the
+// placement pin (the wiring test swaps it for an observer; the
+// production body is the scrub+gauges pair).
 func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Minute
+	}
+	onTick := s.onSweepTick
+	if onTick == nil {
+		onTick = func() {
+			s.scrubStagingDir(s.cfg.ttl, time.Now())
+			s.RecordGauges()
+		}
+	}
+	if s.sweepStarted != nil {
+		close(s.sweepStarted)
 	}
 	go func() {
 		t := time.NewTicker(interval)
@@ -506,8 +527,7 @@ func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Du
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.scrubStagingDir(s.cfg.ttl, time.Now())
-				s.RecordGauges()
+				onTick()
 			}
 		}
 	}()

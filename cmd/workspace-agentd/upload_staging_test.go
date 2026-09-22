@@ -10,6 +10,7 @@ package main
 // apply seam.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	agentdpkg "github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -736,5 +741,229 @@ func TestStagingAdmission_ConcurrentNeverExceedsBudget(t *testing.T) {
 	}
 	if got := len(s.reservations); got > 64 {
 		t.Fatalf("concurrency cap exceeded: %d", got)
+	}
+}
+
+// TestBuildSidecarDeps_NoErrorLogsWithoutTmpfs pins the CI failure's
+// fix THROUGH the real wiring: buildSidecarDeps with a file where the
+// staging parent should be must NOT error-log (the harness captured
+// "boot dir establish failed" on every CI runner before the guard).
+// Mutation-verified class: the guard removed from buildSidecarDeps
+// makes the captured log non-empty (the stager-level helper tests in
+// the sibling pin cover both helper arms).
+func TestBuildSidecarDeps_NoErrorLogsWithoutTmpfs(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", blocker+"/staged-upload-files")
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "pw")
+
+	var buf bytes.Buffer
+	prev := log
+	log = zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(&buf), zap.ErrorLevel))
+	defer func() { log = prev }()
+
+	_ = buildSidecarDeps(sidecarConfig{password: "pw", controlAddr: "127.0.0.1:1"})
+	if msg := buf.String(); msg != "" {
+		t.Fatalf("buildSidecarDeps must not error-log without a tmpfs (the CI failure class), got: %s", msg)
+	}
+}
+
+// TestStagingBootGuard_BothArms pins the helper itself: a
+// non-directory parent skips the boot block; a real one runs it.
+func TestStagingBootGuard_BothArms(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", blocker+"/staged-upload-files")
+	stager := newUploadStager(stagingConfigFromEnv(), nil)
+	if err := stager.ensureStagingDir(); err == nil {
+		t.Fatal("ensureStagingDir past a file parent must fail — the guard is load-bearing")
+	}
+	if stagingBootShouldRun(stager.cfg.stagingDir) {
+		t.Fatal("a non-directory parent must not trigger the boot block")
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", t.TempDir()+"/staged-upload-files")
+	stager2 := newUploadStager(stagingConfigFromEnv(), nil)
+	if !stagingBootShouldRun(stager2.cfg.stagingDir) {
+		t.Fatal("a real parent must trigger the boot block")
+	}
+	if err := stager2.ensureStagingDir(); err != nil {
+		t.Fatalf("ensureStagingDir with a real parent: %v", err)
+	}
+}
+
+// --- PR 2.5: the agentd side of the env-name contract ---
+
+// TestStagingConfigFromEnv_ParsesKnobs pins the agentd-side env names
+// literally (the PR-2.5 contract's missing half — a one-sided rename of
+// any name on EITHER side of the contract must fail a test; before this
+// pin an agentd-side rename shipped green and silently reverted the
+// knobs to defaults).
+func TestStagingConfigFromEnv_ParsesKnobs(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", "/custom/staging")
+	t.Setenv("UPLOAD_STAGING_BUDGET", "1048576")
+	t.Setenv("UPLOAD_STAGING_CREDENTIAL_FLOOR", "262144")
+	t.Setenv("UPLOAD_STAGING_MAX_CONCURRENT", "9")
+	t.Setenv("UPLOAD_STAGING_TTL_MS", "45000")
+	t.Setenv("UPLOAD_APPLY_TIMEOUT_MS", "30000")
+
+	cfg := stagingConfigFromEnv()
+	if cfg.stagingDir != "/custom/staging" {
+		t.Fatalf("stagingDir: %q", cfg.stagingDir)
+	}
+	if cfg.budget != 1048576 {
+		t.Fatalf("budget: %d", cfg.budget)
+	}
+	if cfg.credentialFloor != 262144 {
+		t.Fatalf("credentialFloor: %d", cfg.credentialFloor)
+	}
+	if cfg.maxConcurrent != 9 {
+		t.Fatalf("maxConcurrent: %d", cfg.maxConcurrent)
+	}
+	if cfg.ttl != 45*time.Second {
+		t.Fatalf("ttl: %v", cfg.ttl)
+	}
+	if cfg.applyTimeout != 30*time.Second {
+		t.Fatalf("applyTimeout: %v", cfg.applyTimeout)
+	}
+}
+
+// TestStagingConfigFromEnv_InvalidFallsToDefaults pins the invalid →
+// default arm (the PR-2.5 contract's parse semantics).
+func TestStagingConfigFromEnv_InvalidFallsToDefaults(t *testing.T) {
+	t.Setenv("UPLOAD_STAGING_BUDGET", "-5")
+	t.Setenv("UPLOAD_STAGING_MAX_CONCURRENT", "notanumber")
+	t.Setenv("UPLOAD_STAGING_TTL_MS", "0")
+
+	cfg := stagingConfigFromEnv()
+	if cfg.budget != defaultStagingBudget {
+		t.Fatalf("invalid budget must default, got %d", cfg.budget)
+	}
+	if cfg.maxConcurrent != defaultMaxConcurrent {
+		t.Fatalf("invalid concurrent must default, got %d", cfg.maxConcurrent)
+	}
+	if cfg.ttl != defaultStagingTTL {
+		t.Fatalf("zero ttl must default, got %v", cfg.ttl)
+	}
+}
+
+// TestUploadApplyEngineFromEnv_ParsesKnobs pins the supervisor side of
+// the SAME names (the two in-pod consumers must not diverge — the
+// divergent-clocks bug class).
+func TestUploadApplyEngineFromEnv_ParsesKnobs(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", "/custom/staging2")
+	t.Setenv("UPLOAD_DEST_MARGIN", "10485760")
+	t.Setenv("UPLOAD_STAGING_TTL_MS", "45000")
+	t.Setenv("UPLOAD_APPLY_TIMEOUT_MS", "30000")
+
+	e := uploadApplyEngineFromEnv()
+	if e.stagingRoot != "/custom/staging2" {
+		t.Fatalf("stagingRoot: %q", e.stagingRoot)
+	}
+	if e.destMargin != 10485760 {
+		t.Fatalf("destMargin: %d", e.destMargin)
+	}
+	if e.ttl != 45*time.Second {
+		t.Fatalf("ttl: %v", e.ttl)
+	}
+	if e.applyDeadline != 30*time.Second {
+		t.Fatalf("applyDeadline: %v", e.applyDeadline)
+	}
+}
+
+// TestBuildSidecarDeps_BootBlockRunsWhenTmpfsParentExists pins the
+// guard's TRUE arm through the real wiring: with an existing staging
+// parent, buildSidecarDeps establishes the dir (0750), boot-scrubs a
+// stale temp, and writes the boot gauges — the §4.1.1 boot-reclaim
+// contract. Deleting the boot block (if false) ships this red.
+func TestBuildSidecarDeps_BootBlockRunsWhenTmpfsParentExists(t *testing.T) {
+	parent := t.TempDir()
+	stagingDir := filepath.Join(parent, "staged-upload-files")
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(stagingDir, "staging-old-id-name.txt.tmp")
+	if err := os.WriteFile(stale, []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", stagingDir)
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "pw")
+
+	_ = buildSidecarDeps(sidecarConfig{password: "pw", controlAddr: "127.0.0.1:1"})
+
+	if _, err := os.Stat(stagingDir); err != nil {
+		t.Fatalf("the staging dir must exist post-boot: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("the boot scrub must reclaim the stale temp (the §4.1.1 boot-reclaim contract)")
+	}
+}
+
+// TestBuildSidecarDeps_NoGaugesWithoutTmpfs pins the gauges half: the
+// shared metrics singleton sees no staging series where the boot block
+// is guarded off.
+func TestBuildSidecarDeps_NoGaugesWithoutTmpfs(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", blocker+"/staged-upload-files")
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "pw")
+
+	before := testutil.CollectAndCount(pkgOpsMetrics.uploadStagingBytes, "workspace_agentd_upload_staging_bytes")
+	_ = buildSidecarDeps(sidecarConfig{password: "pw", controlAddr: "127.0.0.1:1"})
+	after := testutil.CollectAndCount(pkgOpsMetrics.uploadStagingBytes, "workspace_agentd_upload_staging_bytes")
+	if after != before {
+		t.Fatalf("no staging gauge series may appear without a tmpfs: before=%d after=%d", before, after)
+	}
+}
+
+// TestStagingEnvSentinels_ZeroIsValid pins the n ≥ 0 parse arms: a
+// literal "0" is honored (not conflated with unset) for both
+// floor-capable knobs — the agentd half of the controller's floor
+// sentinel.
+func TestStagingEnvSentinels_ZeroIsValid(t *testing.T) {
+	t.Setenv("UPLOAD_STAGING_CREDENTIAL_FLOOR", "0")
+	if cfg := stagingConfigFromEnv(); cfg.credentialFloor != 0 {
+		t.Fatalf("floor=0 must parse as 0 (not the 24Mi default), got %d", cfg.credentialFloor)
+	}
+	t.Setenv("UPLOAD_DEST_MARGIN", "0")
+	if e := uploadApplyEngineFromEnv(); e.destMargin != 0 {
+		t.Fatalf("margin=0 must parse as 0 (not the 64Mi default), got %d", e.destMargin)
+	}
+}
+
+// TestBuildSidecarDeps_SweeperPlacementGuarded pins the sweeper's
+// GUARD PLACEMENT (the r8/r9 gap — mutation B, the exact 55af8d5c
+// revert, passed the full suite): where the staging parent is absent,
+// the sweeper goroutine is NEVER STARTED (the channel stays open);
+// where the parent exists, it starts (the channel closes). Reverting
+// the placement (sweeper outside the guard) closes the channel in the
+// no-tmpfs case and fails this pin.
+func TestBuildSidecarDeps_SweeperPlacementGuarded(t *testing.T) {
+	// No-tmpfs arm: the sweeper must NOT start.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", blocker+"/staged-upload-files")
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "pw")
+	deps := buildSidecarDeps(sidecarConfig{password: "pw", controlAddr: "127.0.0.1:1"})
+	select {
+	case <-deps.uploadStager.sweepStarted:
+		t.Fatal("the sweeper must NOT start where the staging parent is absent (the no-metrics-writes-without-a-tmpfs contract)")
+	default:
+	}
+
+	// Tmpfs arm: the sweeper MUST start.
+	t.Setenv("LLMSAFESPACES_UPLOADS_STAGING_PATH", t.TempDir()+"/staged-upload-files")
+	deps2 := buildSidecarDeps(sidecarConfig{password: "pw", controlAddr: "127.0.0.1:1"})
+	select {
+	case <-deps2.uploadStager.sweepStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweeper must start where the staging parent exists (the boot-reclaim contract)")
 	}
 }

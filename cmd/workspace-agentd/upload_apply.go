@@ -59,6 +59,9 @@ type uploadApplyEngine struct {
 	uuid   func() string
 	rename func(oldpath, newpath string) error
 	now    func() time.Time
+	// open is the staged-object read seam (tests inject counting
+	// readers — the copy-cap behavioral pin).
+	open func(path string) (io.ReadCloser, error)
 }
 
 func uploadApplyEngineFromEnv() *uploadApplyEngine {
@@ -165,7 +168,13 @@ func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (m
 	defer e.applyMu.Unlock()
 
 	stagedPath := filepath.Join(e.stagingRoot, staged)
-	f, err := os.Open(stagedPath) //nolint:gosec // G304: staged is uuid-validated against a fixed root
+	openFn := e.open
+	if openFn == nil {
+		openFn = func(p string) (io.ReadCloser, error) {
+			return os.Open(p) //nolint:gosec // G304: staged is uuid-validated against a fixed root
+		}
+	}
+	f, err := openFn(stagedPath)
 	if err != nil {
 		return nil, &applyError{code: "staged_missing", msg: "staged object not found"}
 	}
@@ -198,6 +207,26 @@ func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (m
 	for {
 		if err := ctx.Err(); err != nil {
 			return abort(&applyError{code: "dest_write_failed", msg: "canceled: " + err.Error()})
+		}
+		// The declared size caps the copy (r1 robustness finding 2): a
+		// lying-small declaration (D14-reachable) must not stream a
+		// large staged object past the gate before size_mismatch fires.
+		// At exactly-written, a 1-byte probe distinguishes EOF (done)
+		// from more-data (size_mismatch).
+		if written >= size {
+			probe := make([]byte, 1)
+			pn, perr := f.Read(probe)
+			if pn > 0 {
+				return abort(&applyError{code: "size_mismatch", msg: fmt.Sprintf("staged object exceeds declared %d", size)})
+			}
+			if perr != nil && perr != io.EOF {
+				return abort(&applyError{code: "dest_write_failed", msg: "staged read failed"})
+			}
+			break
+		}
+		readRemaining := size - written
+		if int64(len(buf)) > readRemaining {
+			buf = buf[:readRemaining]
 		}
 		n, rerr := f.Read(buf)
 		if n > 0 {

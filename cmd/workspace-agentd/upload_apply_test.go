@@ -528,3 +528,46 @@ func TestUploadApplySocket_SlowSuccessPastBlanketDeadline(t *testing.T) {
 		t.Fatalf("ack: %+v", res)
 	}
 }
+
+// TestUploadApply_LyingSmallDeclarationCappedAtSize pins the copy CAP
+// behaviorally (the r2 review proved the r1 pin passed against the
+// uncapped code — both shapes end in size_mismatch): the bytes READ
+// from the staged object stop at the declared boundary, never at the
+// object's full size. The open seam carries a counting reader.
+func TestUploadApply_LyingSmallDeclarationCappedAtSize(t *testing.T) {
+	e, _, _, _ := applyEngineFixture(t, 1<<40)
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, strings.Repeat("x", 4096))
+
+	var readTotal int64
+	e.open = func(path string) (io.ReadCloser, error) {
+		f, err := os.Open(path) //nolint:gosec // G304: test fixture
+		if err != nil {
+			return nil, err
+		}
+		return &countingReadCloser{r: f, n: &readTotal}, nil
+	}
+
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"size": float64(100)}))
+	if aerr == nil || aerr.code != "size_mismatch" {
+		t.Fatalf("got %+v", aerr)
+	}
+	// THE CAP: the staged read stopped at the declared 100 (+at most the
+	// 1-byte probe) — the truncated window cannot overshoot, so anything
+	// beyond 101 IS the uncapped class. The object is 4096.
+	if readTotal > 101 {
+		t.Fatalf("the copy must cap at the declared size: read %d bytes (uncapped class — the object is 4096)", readTotal)
+	}
+}
+
+type countingReadCloser struct {
+	r io.Reader
+	n *int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	*c.n += int64(n)
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error { return nil } //nolint:staticcheck // the wrapped file's Close rides the test lifetime

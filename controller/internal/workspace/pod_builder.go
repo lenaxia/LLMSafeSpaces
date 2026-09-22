@@ -101,6 +101,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		Env: append([]corev1.EnvVar{
 			{Name: "WORKSPACE_ID", Value: workspace.Name},
 			{Name: "WORKSPACE_DIR", Value: agentd.WorkspacePath},
+
 			// Epic 68 prerequisite fix: LLMSAFESPACE_API_URL must be set in the
 			// main container so agentd's mcpDevPreviewURL can emit absolute
 			// bootstrap links. Previously only set in the credential-setup init
@@ -124,7 +125,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 					},
 				}}
 			}(),
-		}, toolParallelismEnv(requirements)...),
+		}, append(toolParallelismEnv(requirements), r.UploadStaging.EnvVars()...)...),
 
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{

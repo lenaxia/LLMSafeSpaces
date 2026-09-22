@@ -396,6 +396,19 @@ controller:
   # convergence).
   agentdSidecar:
     enabled: false
+    # Design 0060 PR 2.5: the upload-staging knobs (sidecar uploads in
+    # sidecar mode; the supervisor consumes the same set). All optional —
+    # unset = agentd defaults (48MiB budget / 24MiB credential floor /
+    # 4 concurrent / 15m TTL / 60s apply timeout). NOTE the typo guard's
+    # boundary: a typo'd key HERE renders silently (no values schema) —
+    # the loud rejection starts at the --upload-staging flag string; use
+    # `helm template | grep upload-staging` to confirm knob rendering.
+    uploadStaging:
+      budgetBytes: 0
+      credentialFloorBytes: 0  # -1 = explicit zero (disable the reserve)
+      maxConcurrent: 0
+      ttlMilliseconds: 0
+      applyTimeoutMilliseconds: 0
 
   # F1.4.3 (Epic 17): pre-fix the controller bound /metrics on
   # 0.0.0.0:8080, reachable from any pod with route to the controller

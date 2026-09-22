@@ -191,20 +191,13 @@ func main() {
 			"workspace pods via a read-only image volume. Empty = legacy mode "+
 			"(binary baked into runtimes/base). Must be digest-pinned; the entrypoint "+
 			"verifies the binary's sha256 against the pins before exec.")
-	var agentdBinarySHA256AMD64 string
-	flag.StringVar(&agentdBinarySHA256AMD64, "agentd-binary-sha256-amd64", "",
-		"#863: OPTIONAL per-image override — sha256 (64 hex) of the amd64 workspace-agentd "+
-			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
-			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
-	var agentdBinarySHA256ARM64 string
-	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
-		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
-			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
 	var agentdSidecarEnabled bool
 	flag.BoolVar(&agentdSidecarEnabled, "agentd-sidecar", false,
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
 			"supervise-opencode PID 1 in the workspace container. Requires --agentd-image. "+
 			"Default false (single-container mode, unchanged).")
+	uploadStagingFlag := registerUploadStagingFlag()
+	agentdHashAMD64, agentdHashARM64 := registerAgentdBinaryHashFlags()
 	var opencodeImage string
 	flag.StringVar(&opencodeImage, "opencode-image", "",
 		"Design 0053 §4.2: digest-pinned opencode image (ghcr.io/.../opencode@sha256:...) delivered to "+
@@ -250,17 +243,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
+	if err := workspace.ValidateAgentdDelivery(agentdImage, *agentdHashAMD64, *agentdHashARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
 		os.Exit(1)
 	}
-	if agentdImage != "" && (agentdBinarySHA256AMD64 == "" || agentdBinarySHA256ARM64 == "") {
+	if agentdImage != "" && (*agentdHashAMD64 == "" || *agentdHashARM64 == "") {
 		// Resolve the missing pins from the digest's index annotations
 		// (with the ConfigMap cache for registry outages). This happens
 		// BEFORE the manager starts so a broken pin fails fast at boot
 		// instead of at first pod build.
 		pinCtx, pinCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		pins, err := workspace.ResolvePinsWithCache(pinCtx, agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64)
+		pins, err := workspace.ResolvePinsWithCache(pinCtx, agentdImage, *agentdHashAMD64, *agentdHashARM64)
 		pinCancel()
 		if err != nil {
 			if errors.Is(err, workspace.ErrAgentdPinsUnavailable) {
@@ -270,10 +263,10 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		agentdBinarySHA256AMD64 = pins.SHA256AMD64
-		agentdBinarySHA256ARM64 = pins.SHA256ARM64
+		*agentdHashAMD64 = pins.SHA256AMD64
+		*agentdHashARM64 = pins.SHA256ARM64
 		setupLog.Info("agentd delivery: binary pins resolved from image index annotations",
-			"image", agentdImage, "sha256Amd64", agentdBinarySHA256AMD64, "sha256Arm64", agentdBinarySHA256ARM64)
+			"image", agentdImage, "sha256Amd64", *agentdHashAMD64, "sha256Arm64", *agentdHashARM64)
 	}
 	// Design 0051 US-2: sidecar mode runs the delivery artifact as a
 	// second container — enabling it without delivery is a startup error.
@@ -416,10 +409,11 @@ func main() {
 	}
 
 	// Set up controllers
-	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, controller.AgentdDelivery{
+	uploadStaging := mustParseUploadStagingFlag(*uploadStagingFlag)
+	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, uploadStaging, controller.AgentdDelivery{
 		Image:             agentdImage,
-		BinarySHA256AMD64: agentdBinarySHA256AMD64,
-		BinarySHA256ARM64: agentdBinarySHA256ARM64,
+		BinarySHA256AMD64: *agentdHashAMD64,
+		BinarySHA256ARM64: *agentdHashARM64,
 	}, controller.OpencodeDelivery{
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
@@ -570,4 +564,43 @@ func registerRelayFlags() relayFlags {
 		"TTL of staged router tokens (design 0058 §4.4). Renewal re-mints at ~TTL/2 via the "+
 			"staging pass. Clamp: 1s..7d (router-enforced).")
 	return f
+}
+
+// mustParseUploadStagingFlag parses the design-0060 upload-staging
+// knob flag or exits loudly (a typo'd knob must never silently default).
+func mustParseUploadStagingFlag(raw string) workspace.UploadStagingConfig {
+	cfg, err := workspace.ParseUploadStagingFlag(raw)
+	if err != nil {
+		setupLog.Error(err, "invalid --upload-staging")
+		os.Exit(1)
+	}
+	return cfg
+}
+
+// registerUploadStagingFlag registers the design-0060 upload-staging
+// knob flag and returns its destination (parsed by
+// mustParseUploadStagingFlag after flag.Parse).
+func registerUploadStagingFlag() *string {
+	v := new(string)
+	flag.StringVar(v, "upload-staging", "",
+		"Design 0060 PR 2.5: the upload-staging knobs as k=v pairs (budget=<bytes>, "+
+			"floor=<bytes>, concurrent=<n>, ttlMs=<ms>, applyTimeoutMs=<ms>) — landed as agentd env "+
+			"on BOTH the sidecar and workspace containers. Empty = agentd defaults "+
+			"(48MiB/24MiB/4/15m/60s). Unknown keys are rejected at boot, not defaulted.")
+	return v
+}
+
+// registerAgentdBinaryHashFlags registers the optional per-image
+// agentd binary hash overrides (#863 — set BOTH or NEITHER).
+func registerAgentdBinaryHashFlags() (amd64, arm64 *string) {
+	amd64, arm64 = new(string), new(string)
+	flag.StringVar(amd64, "agentd-binary-sha256-amd64", "",
+		"#863: OPTIONAL per-image override — sha256 (64 hex) of the amd64 workspace-agentd "+
+			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	flag.StringVar(arm64, "agentd-binary-sha256-arm64", "",
+		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
+			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	return amd64, arm64
 }
