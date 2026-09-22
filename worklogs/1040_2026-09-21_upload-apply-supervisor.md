@@ -70,7 +70,7 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 - `cmd/workspace-agentd/supervise_opencode.go` — engine wiring + the boot/TTL destination scrub
 - `cmd/workspace-agentd/upload_staging.go` — statfsT moved to production (both files share the alias)
 - `cmd/workspace-agentd/upload_staging_test.go` — the alias's test-side duplicate removed
-- `worklogs/NNNN_2026-09-21_upload-apply-supervisor.md` — this worklog
+- `worklogs/1040_2026-09-21_upload-apply-supervisor.md` — this worklog
 
 
 ---
