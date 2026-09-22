@@ -228,3 +228,18 @@ func TestUS72FlipDrill_HelpersTolerateOptionalBody(t *testing.T) {
 		}
 	}
 }
+
+// config_field must not abort under pipefail on a transient exec failure
+// — the same row-verdict philosophy as condition()/sweep_hits (the r4
+// residual: R3's positive control sat on this unguarded pipeline).
+func TestUS72FlipDrill_ConfigFieldTransportGuard(t *testing.T) {
+	src := mustReadUS72Flip(t)
+	i := strings.Index(src, `| jq -r --arg f "$2" '.provider["us72drill"].options[$f] // ""'`)
+	if i < 0 {
+		t.Fatal("config_field's jq pipeline not found")
+	}
+	tail := src[i:]
+	if !strings.HasPrefix(tail, `| jq -r --arg f "$2" '.provider["us72drill"].options[$f] // ""' || echo ""`) {
+		t.Error("config_field must end its pipeline with `|| echo \"\"` — a transport failure must yield an empty verdict (note_fail row), never a set -euo pipefail abort")
+	}
+}

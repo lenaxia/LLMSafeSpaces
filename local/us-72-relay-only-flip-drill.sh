@@ -94,7 +94,10 @@ api_authed() { # method path [json-body] -> response body (dies on non-2xx)
 }
 
 flip() { # true|false
-    helm upgrade --install llmsafespaces "${SCRIPT_DIR}/../helm" \
+    # --kube-context pins the release to the cluster the drill validates
+    # (every kubectl call pins CTX; an ambient kubeconfig current-context
+    # must never flip the wrong cluster's release — r4 minor).
+    helm --kube-context "${CTX}" upgrade --install llmsafespaces "${SCRIPT_DIR}/../helm" \
         -n "${NS}" --reuse-values \
         --set "relayOnlyKeyDelivery.enabled=${1}" \
         --wait --timeout "${FLIP_WAIT_S}s" >/dev/null
@@ -165,7 +168,7 @@ config_field() { # ws field -> the drill provider's rendered field (or "")
             [[ -r "$p" ]] && cat "$p" && exit 0
         done
         echo "{}"
-    ' 2>/dev/null | jq -r --arg f "$2" '.provider["us72drill"].options[$f] // ""'
+    ' 2>/dev/null | jq -r --arg f "$2" '.provider["us72drill"].options[$f] // ""' || echo ""
 }
 config_apikey()  { config_field "$1" apiKey; }
 config_baseurl() { config_field "$1" baseURL; }

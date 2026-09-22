@@ -72,6 +72,20 @@ validates mechanics; the fleet waves validate SLO:
 
 ## Known interactions
 
+- **`rbac.scope=cluster` installs**: the flipped default renders the
+  `llm-relay` RBAC, which hard-fails the render under cluster scope
+  (the fail-loud guard in `helm/templates/llm-relay-rbac.yaml` — cluster
+  scope would grant cluster-wide Secret reads and defeat design 0058
+  §4.3's no-read guarantee). An existing cluster-scope install MUST
+  either pin `relayOnlyKeyDelivery.enabled=false` or migrate to
+  namespaced scope before its next `helm upgrade`. Fail-loud is the
+  right posture; this note is the operational half.
+- **`networkPolicy.enabled=false`**: relay-only's own ingress policy
+  (`llm-relay-router-allow-workspaces`) renders on the relay-only flag,
+  NOT the chart-level networkPolicy master toggle — a networkPolicy=false
+  install still gets the llm-relay policy (the router is otherwise
+  unreachable from workspaces). Pin `relayOnlyKeyDelivery.enabled=false`
+  if the dev posture must omit ALL policies.
 - **Free-tier Zen provider**: untouched (`shouldSkipRelay` is the
   personal-Zen-key concern, orthogonal by verification in US-72.4).
 - **Sidecar mode**: the batch file was already uid-isolated there; the
