@@ -204,8 +204,10 @@ func TestUploadStress_SR6DeliveryGate(t *testing.T) {
 // → die (the r1 masking guard); non-507 non-201 (500) → note_fail +
 // falls through to the storms (the r2 phantom-fix guard); 201 → clean
 // fall-through to the latency rows (the happy path). Mutation-verified:
-// deleting the baseline assertion, removing the gate's die or exit,
-// or reverting a storm join to bare wait each turns a leg red.
+// deleting the baseline assertion or removing the gate's die or exit
+// each turns a leg red (the bare-wait reversion is caught by the
+// STRUCTURAL pin in TestUploadStress_SR6DeliveryGate — the storm joins
+// sit outside this test's extracted block).
 func TestUploadStress_SR6Gate_Executes(t *testing.T) {
 	bash := requireBash(t)
 	src, err := os.ReadFile(uploadStressScript)
