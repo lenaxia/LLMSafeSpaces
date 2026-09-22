@@ -98,7 +98,8 @@ type serverDeps struct {
 	// Present=false, never a degrade).
 	relayLiveness *relayLivenessMonitor
 	// legacyScrub (US-72.6, design 0058 §8) carries the one-time
-	// legacy-key scrub's static report to healthz/statusz. Nil-safe.
+	// legacy-key scrub's static report to healthz (/v1/healthz — the
+	// surface the controller polls). Nil-safe.
 	legacyScrub *legacyScrubTracker
 	// pendingApply surfaces the deferred credential apply on healthz →
 	// the controller's CredentialsApplyPending condition (#1342 item 4).

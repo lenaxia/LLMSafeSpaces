@@ -269,8 +269,9 @@ func main() {
 	// tick, zero HTTP.
 	// US-72.6 (design 0058 §8): the one-time legacy-key scrub rides the
 	// relay monitor's first Present=true observation (a post-flip pod) —
-	// the report lands on healthz/statusz for the controller's
-	// LegacyKeysScrubbed mirror. A flag-off pod never fires it.
+	// the report lands on healthz (/v1/healthz, the surface the
+	// controller polls) for the LegacyKeysScrubbed mirror. A flag-off
+	// pod never fires it.
 	legacyScrub := newLegacyScrubTracker("/workspace")
 	relayLiveness := newRelayLivenessMonitorWithHook(bootstrapSecretsOutFromEnv(), nil, legacyScrub.runOnce)
 	deps.relayLiveness = relayLiveness

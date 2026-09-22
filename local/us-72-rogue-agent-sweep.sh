@@ -186,6 +186,52 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+log "R3 — the residue-boot migration row: plant on the PVC, suspend, resume → the BOOT scrub fires"
+
+# The actual US-72.6 migration scenario: a pod boots WITH legacy PVC
+# residue and the boot-time tracker scrub (the relay monitor's first
+# Present=true hook) removes it — the KeysRemoved condition is the
+# evidence. Plant while RUNNING (exec), then suspend (the pod dies, the
+# PVC keeps the file), then resume (the fresh pod boots with the
+# residue).
+kubectl --context "${CTX}" -n "${NS}" exec "${POD}" -c workspace -- bash -c '
+    mkdir -p /workspace/.local/opencode
+    rm -f /workspace/.local/opencode/auth.json
+    printf "{\"legacy2\": {\"type\": \"api\", \"key\": \"%s\"}}" "'"${CANARY_KEY}"'" \
+        > /workspace/.local/opencode/auth.json
+' >/dev/null 2>&1 || note_fail "R3: planting the PVC residue failed"
+
+api POST "/api/v1/workspaces/${WS}/suspend" >/dev/null
+sleep 5
+api POST "/api/v1/workspaces/${WS}/activate" >/dev/null
+wait_phase "${WS}" Active 300 || note_fail "R3: workspace never Active after the resume"
+
+# The boot scrub fired: the condition carries the KeysRemoved reason
+# with the auth count (give the reconcile a beat).
+boot_status="None"; boot_msg=""
+for _ in $(seq 1 30); do
+    boot_row="$( (kc get workspace "${WS}" -o jsonpath='{.status.conditions}' 2>/dev/null || echo '[]') \
+        | jq -r '[.[] | select(.type == "LegacyKeysScrubbed")][0] | .status + " " + (.reason // "") + " " + (.message // "")' 2>/dev/null || echo "None  ")"
+    boot_status="${boot_row%% *}"
+    boot_msg="${boot_row#* }"
+    [[ "${boot_status}" != "None" ]] && break
+    sleep 4
+done
+if [[ "${boot_status}" == "True" && "${boot_msg}" == *"auth=1"* ]]; then
+    ok "R3 PASS: the BOOT scrub fired on the residue-bearing resume (LegacyKeysScrubbed=True/KeysRemoved auth=1)"
+else
+    note_fail "R3: LegacyKeysScrubbed=${boot_status:-None} msg='${boot_msg}' — the migration trigger did not fire on the residue boot"
+fi
+
+# And the post-boot sweep is clean (the residue is gone).
+hits="$(sweep_hits)"
+if [[ "${hits}" =~ ^[0-9]+$ ]] && (( hits == 0 )); then
+    ok "R3: post-boot sweep zero — the PVC residue is gone"
+else
+    note_fail "R3: canary still present ${hits:-?} time(s) after the residue boot"
+fi
+
+# -----------------------------------------------------------------------------
 if (( failures > 0 )); then
     die "${failures} row(s) failed"
 fi

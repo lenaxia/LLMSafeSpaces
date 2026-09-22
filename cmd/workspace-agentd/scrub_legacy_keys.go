@@ -34,8 +34,8 @@ import (
 // anything outside <root>/.local. Idempotent: a second run removes
 // nothing (AlreadyClean).
 
-// ScrubReport is the scrub outcome — the statusz/controller mirror and
-// the subcommand's JSON output both carry it.
+// ScrubReport is the scrub outcome — the subcommand's JSON output and
+// the tracker's healthz mirror both carry it.
 type ScrubReport struct {
 	// AuthKeysRemoved is the number of `key` fields stripped from the
 	// legacy regular-file auth.json.
@@ -192,8 +192,8 @@ func stripConfigProviderKeys(doc map[string]any) int {
 }
 
 // runScrubLegacyKeysCommand is the `scrub-legacy-keys` subcommand: runs
-// the scrub and prints the report as JSON (the controller/statusz wiring
-// consumes the same ScrubReport type in-process).
+// the scrub and prints the report as JSON (the in-process boot wiring
+// consumes the same ScrubReport type through the tracker).
 func runScrubLegacyKeysCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("scrub-legacy-keys", flag.ContinueOnError)
 	root := fs.String("workspace-root", "/workspace", "workspace root (the PVC mount)")

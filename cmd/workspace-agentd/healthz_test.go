@@ -376,3 +376,31 @@ func TestHealthzHandler_DeliveryCapabilityMarker(t *testing.T) {
 	assert.Equal(t, agentd.DeliveryCapability, resp.Delivery)
 	assert.Equal(t, "v2", resp.Delivery, "the capability constant must stay the v2 marker")
 }
+
+// TestHealthz_RendersLegacyScrubSlice (US-72.6, r3): a non-nil
+// legacyScrub snapshot must actually RENDER in /v1/healthz's JSON — the
+// surface the controller's LegacyKeysScrubbed mirror polls.
+func TestHealthz_RendersLegacyScrubSlice(t *testing.T) {
+	snap := func() *agentd.LegacyScrubHealth {
+		return &agentd.LegacyScrubHealth{RanAt: 1758518400, AuthKeysRemoved: 2, ConfigKeysRemoved: 1}
+	}
+	handler := healthzHandler(time.Now(), "", nil, nil, nil, snap)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v1/healthz", nil)
+	handler(rec, req)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	slice, ok := body["legacyScrub"].(map[string]any)
+	require.True(t, ok, "the legacyScrub slice must render: %s", rec.Body.String())
+	assert.InDelta(t, float64(2), slice["authKeysRemoved"], 0)
+	assert.InDelta(t, float64(1), slice["configKeysRemoved"], 0)
+
+	// And the nil case OMITS the field (a flag-off pod).
+	handler2 := healthzHandler(time.Now(), "", nil, nil, nil, nil)
+	rec2 := httptest.NewRecorder()
+	handler2(rec2, req)
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &body2))
+	assert.NotContains(t, body2, "legacyScrub", "nil snapshot omits the field")
+}

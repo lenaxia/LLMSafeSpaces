@@ -4,6 +4,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,8 +25,15 @@ func TestLegacyScrubTracker(t *testing.T) {
 	tr := newLegacyScrubTracker(root)
 	assert.Nil(t, tr.snapshot(), "nil before the first Present observation")
 
-	tr.runOnce()
-	tr.runOnce() // the sync.Once must make this a no-op
+	// Concurrent invocation: every racer calls runOnce; the sync.Once
+	// must collapse them to exactly one scrub (the comment's claim, now
+	// actually exercised).
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); tr.runOnce() }()
+	}
+	wg.Wait()
 	rep := tr.snapshot()
 	require.NotNil(t, rep)
 	assert.Equal(t, 1, rep.AuthKeysRemoved)

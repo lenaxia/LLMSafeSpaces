@@ -33,24 +33,30 @@ func TestUS72Sweep_BashSyntax(t *testing.T) {
 	}
 }
 
-// The two rows in order: the exit-criterion sweep (zero canary bytes)
-// BEFORE the positive-control row (plant → find → scrub → zero). A
-// sweep without the positive control cannot prove it can fail.
+// The three rows in order: the exit-criterion sweep (zero canary
+// bytes), the positive control (plant, find, scrub, zero), and the
+// residue-boot migration row (plant on the PVC, suspend, resume — the
+// BOOT scrub fires; the actual US-72.6 scenario). A sweep without the
+// positive control cannot prove it can fail; without R3 it never
+// exercises the PR's central trigger.
 func TestUS72Sweep_RowsInOrder(t *testing.T) {
 	src := mustReadUS72Sweep(t)
 	r1 := strings.Index(src, "R1 — the exit-criterion sweep")
 	r2 := strings.Index(src, "R2 — positive control")
-	if r1 < 0 || r2 < 0 {
-		t.Fatal("both rows must exist")
+	r3 := strings.Index(src, "R3 — the residue-boot migration row")
+	if r1 < 0 || r2 < 0 || r3 < 0 {
+		t.Fatal("all three rows must exist")
 	}
-	if r1 > r2 {
-		t.Error("R1 (exit criterion) must precede R2 (positive control)")
+	if r1 >= r2 || r2 >= r3 {
+		t.Error("R1 → R2 → R3 (exit criterion → positive control → residue boot)")
 	}
 	for _, marker := range []string{
 		"the sweep can fail",
 		"post-sweep zero",
 		"the scrub's own report shows the removal",
-		"the BOOT mirror",
+		"the BOOT scrub fired on the residue-bearing resume",
+		"auth=1",
+		"post-boot sweep zero",
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("sweep must assert %q", marker)
