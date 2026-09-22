@@ -424,7 +424,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | E8 | MCP external: stdio MCP client (CI harness) against deployed API — upload base64 + `session_message(files)` | green |
 | E9 | SDK codegen: regenerated SDKs compile and expose `uploads` + `files` (sdks CI job) | green |
 | E10 | Multi-tenant: two users, two workspaces, simultaneous uploads — no cross-workspace path leakage | green |
-| E11 | Chaos: pod killed mid-upload (upload API call in flight) → client sees clean 5xx; pod restarts; retry succeeds; exactly one intact file on disk (no `.tmp`) | green |
+| E11 | Chaos: pod killed mid-upload (upload API call in flight) → client sees clean 5xx; pod restarts; retry succeeds; one-or-two intact files on disk (D19: retry = new uuid, both contract-legal; no `.tmp`/partial) | green |
 | E12 | Docs-consistency: README-LLM manifest snippet byte-matches the golden fixture (CI grep against `testdata/`) — prevents doc/format drift | green |
 
 ### 4. Non-functional / regression (all stories)
