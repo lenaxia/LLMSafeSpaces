@@ -1963,6 +1963,45 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Rollback">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-fast-lever-relayonlykeydeliveryapienabledfalse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The fast lever: relayOnlyKeyDelivery.api.enabled=false
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#namespace-termination-budget-on-the-full-rollback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace-termination budget on the full rollback
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-behaviors-flip-state-accuracy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known behaviors (flip-state accuracy)
+      
+    </span>
+  </a>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2090,6 +2129,63 @@ validates mechanics; the fleet waves validate SLO:</p>
 <li>no data migration to undo — tokens die with their pods, envelopes are
   inert until deleted (GC rides the workspace-unbind path).</li>
 </ul>
+<h3 id="the-fast-lever-relayonlykeydeliveryapienabledfalse">The fast lever: <code>relayOnlyKeyDelivery.api.enabled=false</code><a class="headerlink" href="#the-fast-lever-relayonlykeydeliveryapienabledfalse" title="Permanent link">&para;</a></h3>
+<p>When only the EMISSION side regresses (bad batches, registry fallout)
+and staging + the router are healthy, the narrow lever is
+<code>--set relayOnlyKeyDelivery.api.enabled=false</code>: the API Deployment drops
+the builder env and resumes raw-key batches within one reconcile/resync
+apply, while the controller staging, the envelopes, and the router stay
+up (design 0058 §6.4; pinned by <code>helm/relay_api_emission_chart_test.go</code>
+<code>TestRelayEmission_APIRollbackLever</code>). Staged material is inert the
+moment the builder stops reading it — no namespace teardown, no
+re-seal on the way back. Use the full flag off (above) when the
+controller/router legs themselves are the problem.</p>
+<h3 id="namespace-termination-budget-on-the-full-rollback">Namespace-termination budget on the full rollback<a class="headerlink" href="#namespace-termination-budget-on-the-full-rollback" title="Permanent link">&para;</a></h3>
+<p>The full flag off deletes the chart-gated <code>llm-relay</code> namespace with
+everything in it (envelopes, keypair, mint key). Namespace termination
+waits out the router pods' <code>terminationGracePeriodSeconds</code> (630s — a cap
+that drains in seconds when idle but can take the full window under
+load), and <code>helm --wait</code> does NOT wait for namespace deletion. <strong>Do not
+flip the flag back on until <code>kubectl get ns llm-relay</code> returns NotFound</strong>
+— recreating the namespace while it is Terminating fails. On re-flip,
+the router bootstraps a FRESH keypair; the controller's pub-generation
+check sees the change and force-re-seals every envelope (the design §4.2
+re-seal path — expect one staging pass per workspace).</p>
+<h2 id="known-behaviors-flip-state-accuracy">Known behaviors (flip-state accuracy)<a class="headerlink" href="#known-behaviors-flip-state-accuracy" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Non-frontable provider kinds stay raw under the flag (K1 carve-out,
+  accepted):</strong> <code>bedrock</code> / <code>vertex</code> / <code>azure_openai</code> / <code>opencode</code>-kind
+  credentials cannot ride the router (US-72.3 D5) and keep the raw
+  mixed-fleet path <strong>with the flag ON</strong> — pods with only these kinds are
+  NOT key-free post-flip. Every such raw emission is audited
+  (<code>relay_raw_emission</code> rows: credentialID, slug, kind, reason) — the
+  observable signal for the residual raw window. "The raw provider key
+  never enters the pod" holds for the frontable kinds; the US-72.6 sweep
+  scopes accordingly.</li>
+<li><strong>Relay conditions freeze on flag-off:</strong> the staging pass no-ops when
+  the controller runs without the relay flags, and no cleanup branch
+  removes <code>CredentialsStaged</code>/<code>CredentialStale</code>/<code>CredentialRejected</code>
+  from existing Workspace CRs — they persist as inert metadata after a
+  rollback. Ignore or clear manually.</li>
+<li><strong><code>CredentialStaged=False/PubUnreadable</code> is ambiguous (KMS wiring
+  deferred):</strong> the controller cannot distinguish a KMS-mode deployment
+  (<code>llm-relay-kek</code> present, pub absent) from an unbootstrapped router —
+  design 0058 trade-off (iii) named US-72.5's KMS wiring for the split;
+  the board scope omitted it and it is deferred to an owner decision.
+  Treat PubUnreadable as "router not bootstrapped or unreadable"; check
+  the router pods first.</li>
+<li><strong>No live resolve-latency histogram:</strong> the router exposes counters
+  (<code>llm_relay_byo_requests_total{workspace,provider,status}</code>,
+  <code>…_response_bytes_total</code>, <code>…_internal_requests_total{path,status}</code>,
+  gauge <code>…_envelopes_cached</code>) but no latency histogram — a live resolve
+  p99 is not queryable. The latency gate rides the #1432 e2e overhead
+  budget (&lt;10ms added vs direct proxy); adding a histogram to
+  <code>byo_metrics.go</code> is a small follow-up if SLOs tighten.</li>
+<li><strong>Relay liveness probes consume the router's per-workspace quota</strong>
+  (~1 request/provider per 30s against the 120/60s default budget, ~3%
+  for two providers — US-72.4 sizing): if quotas are tightened, size
+  <code>LLMSAFESPACES_RELAY_LIVENESS_INTERVAL</code> accordingly.</li>
+</ul>
 <h2 id="known-interactions">Known interactions<a class="headerlink" href="#known-interactions" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>rbac.scope=cluster</code> installs</strong>: the flipped default renders the
@@ -2135,7 +2231,7 @@ validates mechanics; the fleet waves validate SLO:</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 22, 2026 09:04:17 UTC"><span class="timeago" datetime="2026-09-22T09:04:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 22, 2026 09:04:17 UTC">2026-09-22</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 22, 2026 12:54:41 UTC"><span class="timeago" datetime="2026-09-22T12:54:41+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 22, 2026 12:54:41 UTC">2026-09-22</span>
   </span>
 
     
