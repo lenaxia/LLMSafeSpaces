@@ -59,7 +59,7 @@ None.
 - `README-LLM.md` — the D1 as-built + version 1.31
 - `design/stories/epic-68-chat-file-attachments/README.md` — deviation-1 + line 103 + rows-coverage
 - `docs/api/rest.md` — the upload row's both-modes statement
-- `worklogs/NNNN_2026-09-21_upload-e2e-unskip.md` — this worklog
+- `worklogs/1050_2026-09-21_upload-e2e-unskip.md` — this worklog
 
 
 ---
