@@ -131,6 +131,30 @@ re-seal path — expect one staging pass per workspace).
   for two providers — US-72.4 sizing): if quotas are tightened, size
   `LLMSAFESPACES_RELAY_LIVENESS_INTERVAL` accordingly.
 
+## Post-flip evidence: the rogue-agent sweep (US-72.6, #820)
+
+The epic's exit criterion — zero provider-key bytes in any
+uid-1000-readable path in a live post-flip pod (K1) — is proven by
+`local/us-72-rogue-agent-sweep.sh`, wired into the nightly AFTER the
+flip drill (it rides the drill's flipped-ON end state: relay on,
+namespaced scope, router up). The step SKIPs loudly until the sweep
+script merges (its vehicle is #1537); a SKIP row means the exit
+criterion is UNVERIFIED for that run, not passed.
+
+- **R1** binds a planted-canary credential (frontable kind), boots a
+  post-flip workspace, and greps every uid-1000-readable surface +
+  `/proc/*/environ` for the canary's bytes: zero hits is the criterion.
+- **R2** is the positive control (the #1505 rule — a negative sweep
+  must prove it can fail): plant the canary in the pre-US-35.7 legacy
+  shape, the sweep FINDS it, the in-pod `scrub-legacy-keys` exec
+  removes it, and the post-sweep read is zero.
+- **K1 carve-out (owner-accepted):** non-frontable kinds
+  (bedrock/vertex/azure_openai/opencode) stay raw under flag-on — the
+  sweep plants and asserts a FRONTABLE canary only; zero-raw-bytes for
+  non-frontables awaits the owner's K1 decision.
+- **#820 closes on the sweep's first recorded green nightly run** —
+  never on a merge (Refs, not Closes, until that run exists).
+
 ## Known interactions
 
 - **`rbac.scope=cluster` installs**: the flipped default renders the

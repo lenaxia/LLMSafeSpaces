@@ -647,6 +647,37 @@ jobs:
         # is an ns-gone wait inside the script (owner-side change).
         run: bash local/us-72-relay-only-flip-drill.sh
 
+      - name: Run the rogue-agent sweep (US-72.6, #820 exit criterion)
+        # Design 0058 §8 line 201 — the epic's exit criterion: exec in a
+        # live post-flip pod, grep every uid-1000-readable surface +
+        # /proc/*/environ for a planted canary's bytes; R2 is the
+        # positive control (the sweep must FIND a planted legacy key
+        # before the zero-assertion can pass). Rides the drill's
+        # flipped-ON end state (relay on, namespaced scope, router up,
+        # mock-llm present) — hence ordered after it and before the
+        # failure dump. The sweep script lands with its own vehicle
+        # (#1537, the US-72.6 scrub+sweep PR); until that merges this
+        # step SKIPs LOUDLY (the F8/#1342 absent-dependency precedent)
+        # instead of failing the nightly — pinned executable in
+        # local/us72_sweep_wiring_test.go.
+        #
+        # K1 carve-out (owner-accepted, #1536 runbook): non-frontable
+        # kinds (bedrock/vertex/azure_openai/opencode) stay raw under
+        # flag-on — the sweep plants/asserts a FRONTABLE canary only
+        # (openai_compatible); zero-raw-bytes is asserted for frontable
+        # kinds pending the owner's K1 decision.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18089
+        run: |
+          if [[ ! -f local/us-72-rogue-agent-sweep.sh ]]; then
+            echo "SKIP: local/us-72-rogue-agent-sweep.sh not on this branch yet (lands with #1537, the US-72.6 scrub+sweep vehicle) — the #820 exit-criterion sweep is UNVERIFIED this run; not gating the teardown that follows."
+            exit 0
+          fi
+          bash local/us-72-rogue-agent-sweep.sh
+
       - name: Dump cluster state on failure
         if: failure()
         run: |
