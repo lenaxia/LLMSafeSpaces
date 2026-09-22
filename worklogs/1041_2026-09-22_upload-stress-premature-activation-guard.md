@@ -31,4 +31,4 @@ Three review rounds sharpened the fix:
 - `local/us-1500-upload-stress-e2e.sh` — the 507 gate, baseline assertion, per-pid waits.
 - `.github/workflows/e2e-nightly.yml` — the step's comment (teaches the gate).
 - `local/us_1500_upload_stress_script_test.go` — the structural pins + the executed four-leg gate test.
-- `worklogs/NNNN_2026-09-22_upload-stress-premature-activation-guard.md` — this worklog.
+- `worklogs/1041_2026-09-22_upload-stress-premature-activation-guard.md` — this worklog.
