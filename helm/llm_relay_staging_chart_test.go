@@ -44,8 +44,11 @@ func controllerArgs(t *testing.T, dep map[string]any) []string {
 
 // TestRelayStaging_ControllerArgsOffByDefault: flag off (the chart default
 // until US-72.5) wires NOTHING — zero behavior change.
-func TestRelayStaging_ControllerArgsOffByDefault(t *testing.T) {
-	dep := controllerDeployment(t, helmTemplate(t, ""))
+// US-72.5 flipped the default ON; the off posture is now EXPLICIT (the
+// rollback lever). The default posture is pinned by
+// TestRelayOnlyKeyDelivery_DefaultFlippedOn.
+func TestRelayStaging_ControllerArgsOffWhenExplicitlyDisabled(t *testing.T) {
+	dep := controllerDeployment(t, helmTemplate(t, "relayOnlyKeyDelivery:\n  enabled: false\n"))
 	for _, arg := range controllerArgs(t, dep) {
 		assert.NotContains(t, arg, "relay-only-key-delivery", "flag-off render must not wire relay staging")
 		assert.NotContains(t, arg, "llm-relay", "flag-off render must not reference llm-relay")

@@ -29,11 +29,36 @@ func docName(t *testing.T, doc map[string]any) string {
 	return meta["name"].(string)
 }
 
-// TestRelayOnlyKeyDelivery_DisabledByDefault: with the flag off (the
-// default until US-72.5) zero llm-relay resources render — flag off means
-// zero behavior change.
-func TestRelayOnlyKeyDelivery_DisabledByDefault(t *testing.T) {
+// TestRelayOnlyKeyDelivery_DefaultFlippedOn (US-72.5): the chart
+// default is NOW true — a default render MUST include the llm-relay
+// namespace + router. This pin is the flip itself; reverting the
+// default silently reverts the epic's exit posture.
+func TestRelayOnlyKeyDelivery_DefaultFlippedOn(t *testing.T) {
 	docs := helmTemplate(t, "")
+	sawNamespace := false
+	sawRouter := false
+	for _, d := range docs {
+		if d["kind"] == "Namespace" {
+			if meta, ok := d["metadata"].(map[string]any); ok && meta["name"] == "llm-relay" {
+				sawNamespace = true
+			}
+		}
+		if d["kind"] == "Deployment" {
+			if meta, ok := d["metadata"].(map[string]any); ok && meta["name"] == "llm-relay-router" {
+				sawRouter = true
+			}
+		}
+	}
+	assert.True(t, sawNamespace, "default values must render the llm-relay namespace (the US-72.5 flip)")
+	assert.True(t, sawRouter, "default values must render the llm-relay router Deployment (the US-72.5 flip)")
+}
+
+// TestRelayOnlyKeyDelivery_ExplicitOffRendersNothing: the ROLLBACK
+// posture — an explicit enabled=false renders zero llm-relay resources;
+// flag off means zero behavior change (the drill's R3 leg).
+func TestRelayOnlyKeyDelivery_ExplicitOffRendersNothing(t *testing.T) {
+	// helmTemplate takes a VALUES FILE, not --set syntax (r1 finding 1).
+	docs := helmTemplate(t, "relayOnlyKeyDelivery:\n  enabled: false\n")
 	for _, d := range docs {
 		if d["kind"] != "Namespace" {
 			if meta, ok := d["metadata"].(map[string]any); ok {
@@ -410,4 +435,26 @@ func relayTestContains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestRelayOnlyKeyDelivery_IngressPolicyIndependentOfMasterToggle (r5):
+// the runbook promises the router's ingress policy renders on the
+// relay-only flag EVEN when the chart-level networkPolicy master toggle
+// is off — without this pin, re-gating the template on the master
+// toggle would keep CI green (both prior tests at this combination were
+// re-targeted away from it) while silently breaking relay-only delivery
+// on every networkPolicy.enabled=false install under default-deny
+// egress.
+func TestRelayOnlyKeyDelivery_IngressPolicyIndependentOfMasterToggle(t *testing.T) {
+	docs := helmTemplate(t, "networkPolicy:\n  enabled: false\n") // relay-only at the flipped DEFAULT (on)
+	found := false
+	for _, d := range docs {
+		if d["kind"] == "NetworkPolicy" {
+			if meta, ok := d["metadata"].(map[string]any); ok && meta["name"] == "llm-relay-router-allow-workspaces" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found,
+		"the llm-relay router ingress policy must render with networkPolicy.enabled=false (it gates on the relay-only flag alone — the runbook's documented interaction)")
 }

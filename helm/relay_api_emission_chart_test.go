@@ -50,11 +50,19 @@ func apiEnv(t *testing.T, dep map[string]any) map[string]string {
 	return out
 }
 
-// TestRelayEmission_APIEnvOffByDefault: the chart default renders no
-// relay-only env on the api Deployment — zero behavior change.
-func TestRelayEmission_APIEnvOffByDefault(t *testing.T) {
-	env := apiEnv(t, apiDeployment(t, helmTemplate(t, "")))
+// TestRelayEmission_APIEnvOffWhenExplicitlyDisabled (US-72.5 re-target):
+// the chart default is now ON; the env-absent posture is the explicit
+// rollback lever, still asserted.
+func TestRelayEmission_APIEnvOffWhenExplicitlyDisabled(t *testing.T) {
+	env := apiEnv(t, apiDeployment(t, helmTemplate(t, "relayOnlyKeyDelivery:\n  enabled: false\n")))
 	assert.NotContains(t, env, "LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED")
+}
+
+// TestRelayEmission_APIEnvOnByDefault (US-72.5): the flipped default
+// wires the builder env.
+func TestRelayEmission_APIEnvOnByDefault(t *testing.T) {
+	env := apiEnv(t, apiDeployment(t, helmTemplate(t, "")))
+	assert.Equal(t, "true", env["LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED"])
 }
 
 // TestRelayEmission_APIEnvWired: flag on wires the env the config's

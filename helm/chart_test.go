@@ -302,7 +302,11 @@ func TestG16_DefaultRender_HasWorkspaceEgressAllowList(t *testing.T) {
 // that already enforce equivalent policies via Cilium CRDs or admission
 // controllers.
 func TestG16_NetworkPolicyDisabled_OmitsResources(t *testing.T) {
-	docs := helmTemplate(t, "networkPolicy:\n  enabled: false\n")
+	// US-72.5: relay-only's ingress policy renders on its own flag, not
+	// networkPolicy.enabled — opt it out to keep this test's premise (the
+	// chart-level lever omits what it governs). Interaction named in
+	// docs/runbooks/relay-only-flip.md.
+	docs := helmTemplate(t, "networkPolicy:\n  enabled: false\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 	policies := findByKind(docs, "NetworkPolicy")
 	require.Empty(t, policies,
 		"setting networkPolicy.enabled=false must omit all chart NetworkPolicies")
@@ -901,7 +905,7 @@ func TestG5_DefaultIsNamespaceScope(t *testing.T) {
 // IS permitted (controller-runtime informer cache requires it);
 // CRUD verbs are still forbidden cluster-wide.
 func TestG5_ClusterScopeOptInRendersClusterRole(t *testing.T) {
-	docs := helmTemplate(t, "rbac:\n  scope: cluster\n")
+	docs := helmTemplate(t, "rbac:\n  scope: cluster\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 	clusterRoles := findResources(docs, "ClusterRole")
 	var sawClusterScope bool
 	mutating := map[string]struct{}{
@@ -1023,6 +1027,8 @@ rbac:
 controller:
   freeModelsRefresher:
     enabled: false
+relayOnlyKeyDelivery:
+  enabled: false
 `)
 		for _, kind := range []string{"Role", "ClusterRole"} {
 			for _, doc := range findResources(docs, kind) {
@@ -1053,7 +1059,7 @@ controller:
 		// Default (refresher on): configmaps grant must be scoped to
 		// what the refresher actually does — no `delete`, no
 		// secrets-style breadth.
-		docs := helmTemplate(t, "rbac:\n  scope: cluster\n")
+		docs := helmTemplate(t, "rbac:\n  scope: cluster\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 		var found bool
 		for _, kind := range []string{"Role", "ClusterRole"} {
 			for _, doc := range findResources(docs, kind) {
@@ -1086,7 +1092,7 @@ controller:
 func TestF137_StorageClassesIsAlwaysClusterRole(t *testing.T) {
 	for _, scope := range []string{"namespace", "cluster"} {
 		t.Run("scope="+scope, func(t *testing.T) {
-			docs := helmTemplate(t, fmt.Sprintf("rbac:\n  scope: %s\n", scope))
+			docs := helmTemplate(t, fmt.Sprintf("rbac:\n  scope: %s\nrelayOnlyKeyDelivery:\n  enabled: false\n", scope))
 			clusterRoles := findResources(docs, "ClusterRole")
 			var sawSC bool
 			for _, cr := range clusterRoles {
@@ -1787,7 +1793,7 @@ func TestF_MCPDisabled_NoResourcesRendered(t *testing.T) {
 // permitted because the controller-runtime informer cache requires
 // cluster-wide watches; CRUD is the dangerous surface (F1.3.3 / G5).
 func TestF133_ControllerSecretsAreNamespaceScoped(t *testing.T) {
-	docs := helmTemplate(t, "rbac:\n  scope: cluster\n")
+	docs := helmTemplate(t, "rbac:\n  scope: cluster\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 	clusterRoles := findResources(docs, "ClusterRole")
 
 	// CRUD verbs that MUST NOT appear cluster-wide on secrets/pods.
@@ -2095,7 +2101,12 @@ func TestRelay_APISecretsCreate_NotResourceNameScoped(t *testing.T) {
 // subsystem (it is disabled by default). Includes the required artifact
 // checksums so the controller-deployment render does not fail on `required`.
 const relayArtifactVals = "    artifact:\n      sha256Arm64: \"aaa\"\n      sha256Amd64: \"bbb\"\n"
-const relayEnabledValues = "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals
+
+// US-72.5: relayOnlyKeyDelivery defaults ON — the Epic-42 FLEET tests
+// opt it out explicitly (their substrate is inferenceRelay; the flipped
+// default was injecting llm-relay resources into their name-substring
+// finds).
+const relayEnabledValues = "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals + "relayOnlyKeyDelivery:\n  enabled: false\n"
 
 // podSpecMap returns the .spec.template.spec (PodSpec) of a Deployment doc.
 func podSpecMap(deploy map[string]any) map[string]any {
@@ -2181,7 +2192,7 @@ func TestRelayRouter_NetworkPolicy_RendersWhenEnabled(t *testing.T) {
 // (parity with the workspace/datastore policies) — it must NOT render when the
 // policy controller is disabled, even if inferenceRelay is enabled.
 func TestRelayRouter_NetworkPolicy_HiddenWhenNetworkPolicyDisabled(t *testing.T) {
-	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals+"networkPolicy:\n  enabled: false\n")
+	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals+"networkPolicy:\n  enabled: false\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 	for _, d := range findByKind(docs, "NetworkPolicy") {
 		require.NotContains(t, metaName(d), "relay-router",
 			"relay-router NetworkPolicy must NOT render when networkPolicy.enabled is false (master-toggle contract)")
@@ -3330,6 +3341,8 @@ func TestRelayRouter_UpstreamAuth_MountsSecretWhenConfigured(t *testing.T) {
         name: relay-upstream-key
         key: key
       header: x-api-key
+relayOnlyKeyDelivery:
+  enabled: false
 `
 	docs := helmTemplate(t, vals)
 	deploy := findDeploymentByNameSubstr(docs, "relay-router")
@@ -4320,6 +4333,8 @@ controller:
         repository: registry.example.com/relay-router
         tag: v1.0.0
         digest: sha256:abc
+relayOnlyKeyDelivery:
+  enabled: false
 `
 	docs := helmTemplate(t, vals)
 
@@ -4410,6 +4425,8 @@ func TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled(t *testing.T) {
 controller:
   freeModelsRefresher:
     enabled: true
+relayOnlyKeyDelivery:
+  enabled: false
 `)
 	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
 	require.NotNil(t, clusterCR, "cluster ClusterRole must be rendered when rbac.scope=cluster")
@@ -4460,6 +4477,8 @@ controller:
     enabled: false
   freeModelsRefresher:
     enabled: false
+relayOnlyKeyDelivery:
+  enabled: false
 `)
 	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
 	require.NotNil(t, clusterCR)
