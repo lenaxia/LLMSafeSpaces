@@ -52,6 +52,7 @@ source "${SCRIPT_DIR}/lib/us70-common.sh"
 R5_WS="00000000-0000-4000-8000-000000000001"
 R4_WAIT_S="${R4_WAIT_S:-150}"
 failures=0
+SKIPPED_ROWS=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
 created_triggers=()
 created_workflows=()
@@ -688,13 +689,18 @@ esac
 # org and becomes its admin, then exercises the fixed routes end to end.
 api POST /api/v1/orgs "$(jq -nc '{name:"E2E Automation Org",slug:"e2e-automation-org",ownerEmail:"e2e-automation@example.invalid"}')"
 R8_ORG_RESP="${api_body}"
-if [[ "${api_status}" == "403" ]]; then
+if [[ "${api_status}" == "403" && "${R8_ORG_RESP}" == *"only platform admins"* ]]; then
     # The org-creation route is admin-gated in this build; the harness
     # user is a tenant by deliberate choice (the #1522 blast-radius
     # decision). The #1449 org-scope CRUD rows run where admin access
     # exists (pool/elevated segment); the nightly notes the skip.
+    # The NAMED error body is checked (not any 403) so a different 403
+    # (an auth failure, a rate limit) still fails the row.
     warn "R8: org creation admin-gated (tenant harness user — the #1522 choice); org-scope CRUD rows skipped"
     warn "R8: the #1449 shadowing fix is unit-pinned (org trigger route tests) and runs on the pool"
+    failures=$((failures + 0))  # explicit: the skip is NOT a failure
+    warn "R8: skipped rows: R8a-e, R1f x2, R1h, R1i, R1g (10 rows — run on the pool)"
+    SKIPPED_ROWS=$((SKIPPED_ROWS + 10))
 elif [[ "${api_status}" != "201" ]]; then
     note_fail "R8 setup: org create failed: ${api_status} ${R8_ORG_RESP}"
 else
@@ -826,4 +832,4 @@ fi
 if [[ "${failures}" -ne 0 ]]; then
     die "automation e2e: ${failures} row(s) failed"
 fi
-ok "automation e2e: all rows passed (R1-R6)"
+ok "automation e2e: all rows passed (${SKIPPED_ROWS} skipped — see warnings above)"
