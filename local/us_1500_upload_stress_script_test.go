@@ -161,3 +161,27 @@ func TestUploadStressScript_WorkflowRegistered(t *testing.T) {
 	assert.True(t, strings.Contains(string(raw), "local/"+uploadStressScript),
 		"the stress harness must be registered in the nightly workflow")
 }
+
+// TestUploadStress_SR6DeliveryGate pins run 35679282297's adjudication:
+// SR-6 must gate IN-RUN on the baseline upload's status (a non-201
+// baseline means the delivery leg is absent — #1518/#1524 — and the
+// concurrency storms would grind 5×10MiB×120s against 507s for ~36
+// minutes of silence). NEVER a silent step-level `if: false` on the
+// workflow (the #1342 rule, pinned in issue_1342_e2e_script_test.go).
+func TestUploadStress_SR6DeliveryGate(t *testing.T) {
+	raw, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	src := string(raw)
+	assert.Contains(t, src, `sr_skip "SR-6: baseline upload`,
+		"SR-6's non-201 baseline must skip-DOWN loudly (the script's own idiom), not fail into a 36-minute storm grind")
+	assert.Contains(t, src, "delivery leg #1518/#1524 absent",
+		"the skip must name the missing activation (the stack's own PR refs)")
+
+	wf, err := os.ReadFile("../.github/workflows/e2e-nightly.yml")
+	require.NoError(t, err)
+	wfs := string(wf)
+	assert.NotContains(t, wfs, "if: false  # TODO(#1524)",
+		"the workflow must NOT silently disable the step — the #1342 rule: loud in-run gates, never silent step-level ifs")
+	assert.Contains(t, wfs, "SR-6 skips-DOWN loudly",
+		"the workflow comment must teach the in-run gate")
+}

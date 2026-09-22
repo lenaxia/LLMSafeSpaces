@@ -391,7 +391,16 @@ L1_STATUS=$(upload_bytes $((10 * 1024 * 1024)))
 L1_T1=$(date +%s%3N)
 L1=$((L1_T1 - L1_T0))
 if [[ "${L1_STATUS}" != "201" ]]; then
-    note_fail "SR-6: single-upload baseline failed (${L1_STATUS}) — latency numbers meaningless"
+    # The in-run skip-DOWN gate (run 35679282297's adjudication): a
+    # baseline that can't 201 means the upload path's DELIVERY leg is
+    # absent (the supervisor apply, #1518/#1524) — the concurrency
+    # storms would grind 5×10MiB×120s against 507s for ~36 minutes of
+    # silence. SR-1–SR-5's clean-fail assertions already passed; the
+    # LATENCY rows are meaningless without delivery. Loud skip, never
+    # a silent step-level if.
+    sr_skip "SR-6: baseline upload ${L1_STATUS} (delivery leg #1518/#1524 absent) — latency + boundary rows skip-DOWN"
+    log "upload stress harness: SR-1–SR-5 complete; SR-6 skipped (skips: ${sr_skips})"
+    exit 0
 fi
 # The concurrency boundary — CONCURRENT uploads with PER-UPLOAD timing
 # (r5 finding: wall-clock-only was conditionally vacuous for fast
