@@ -35,6 +35,7 @@ type orgStore interface {
 	ListOrgWorkspaces(ctx context.Context, orgID string, limit, offset int) ([]*types.WorkspaceMetadata, *types.PaginationMetadata, error)
 	GetUserIDByEmail(ctx context.Context, email string) (string, error)
 	GetUserOrgID(ctx context.Context, userID string) (string, error)
+	UserExistsByID(ctx context.Context, userID string) (bool, error)
 	GetStripeCustomerID(ctx context.Context, orgID string) (string, error)
 	UpdateOrgStatus(ctx context.Context, orgID string, status *types.OrgStatus, subStatus *types.OrgSubscriptionStatus, planID *types.OrgPlan) error
 	// MarkUserEmailVerified bypasses the email-verification token flow and
@@ -421,6 +422,19 @@ func (h *OrgsHandler) AddMember(c *gin.Context) {
 
 	if req.Role != types.OrgRoleAdmin && req.Role != types.OrgRoleMember {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "role must be 'admin' or 'member'"})
+		return
+	}
+
+	// The parent-id audit (instance 8): a ghost userId previously fell
+	// through both pre-checks (GetOrgMember -> (nil,nil), GetUserOrgID ->
+	// ("",nil) on ErrNoRows) and hit the FK as an opaque 500.
+	exists, err := h.orgStore.UserExistsByID(ctx, req.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check user"})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
 

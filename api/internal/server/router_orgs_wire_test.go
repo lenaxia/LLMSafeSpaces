@@ -150,6 +150,10 @@ func (s *fakeOrgStore) ListOrgWorkspaces(ctx context.Context, orgID string, limi
 func (s *fakeOrgStore) GetUserIDByEmail(ctx context.Context, email string) (string, error) {
 	return "", fmt.Errorf("owner not found")
 }
+func (s *fakeOrgStore) UserExistsByID(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
 func (s *fakeOrgStore) GetUserOrgID(ctx context.Context, userID string) (string, error) {
 	return "", nil
 }
