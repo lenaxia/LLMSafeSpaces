@@ -66,12 +66,12 @@ func TestUS68SidecarGate_ProbesInitContainers(t *testing.T) {
 }
 
 // TestUS68SidecarGate_DetectsNativeSidecar executes the script's ACTUAL
-// gate block with a fake kc: a sidecar-mode pod (an init container named
-// agentd — the #980 native-sidecar shape, which a containers-only probe
-// cannot see) must take the sidecar path (D1 clean-fail assert + LOUD
-// skip + exit 0 so the nightly proceeds), and a single-container pod
-// must fall through to the rows. The D1 assertion must still die on a
-// non-5xx upload.
+// gate block with a fake kc across the feature-detect's three legs:
+// pre-0060 (5xx → loud skip + exit 0), 0060-landed (201 → falls through
+// to E2/E10/E11), and broken (500 → hard die). Single-container pods
+// still fall through. Run 35697148238's adjudication: the gate
+// distinguishes designed outcomes from broken ones, never absorbing
+// the latter.
 func TestUS68SidecarGate_DetectsNativeSidecar(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us68AttachmentsScript)
@@ -96,25 +96,42 @@ echo GATE-FELL-THROUGH`
 		return string(out), err
 	}
 
-	t.Run("native sidecar (init container) detected -> loud skip, exit 0", func(t *testing.T) {
-		// What kubectl prints for the combined jsonpath on a sidecar-mode
-		// pod: main container + init containers incl. the agentd native
-		// sidecar appended by applyAgentdSidecar.
+	t.Run("pre-0060 sidecar (503) -> loud skip, exit 0", func(t *testing.T) {
 		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "503")
 		if err != nil {
-			t.Fatalf("sidecar path must exit 0 (the nightly proceeds past the skip), got: %v\n%s", err, out)
+			t.Fatalf("pre-0060 sidecar path must exit 0 (the nightly proceeds past the skip), got: %v\n%s", err, out)
 		}
 		for _, want := range []string{
 			"agentd SIDECAR mode detected",
-			"upload rejected cleanly with 503",
+			"upload rejected cleanly with 503 — pre-0060 sidecar",
 			"SKIPPED E2/E10/E11",
 		} {
 			if !strings.Contains(out, want) {
-				t.Fatalf("sidecar path must print %q, got: %q", want, out)
+				t.Fatalf("pre-0060 sidecar path must print %q, got: %q", want, out)
 			}
 		}
 		if strings.Contains(out, "GATE-FELL-THROUGH") {
-			t.Fatalf("sidecar mode must NOT fall through to the rows: %q", out)
+			t.Fatalf("pre-0060 sidecar mode must NOT fall through to the rows: %q", out)
+		}
+	})
+
+	t.Run("0060-landed sidecar (201) -> falls through to the rows", func(t *testing.T) {
+		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "201")
+		if err != nil {
+			t.Fatalf("0060-landed sidecar must fall through to E2/E10/E11, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "design 0060 stage-and-signal landed") {
+			t.Fatalf("the 201 leg must name design 0060, got: %q", out)
+		}
+	})
+
+	t.Run("broken shape (500) -> hard fail", func(t *testing.T) {
+		out, err := run("workspace agentd", "500")
+		if err == nil {
+			t.Fatalf("a 500 upload is BROKEN, not a designed outcome — must die, got: %q", out)
+		}
+		if !strings.Contains(out, "neither designed-success") {
+			t.Fatalf("the death must name the broken shape, got: %q", out)
 		}
 	})
 
@@ -128,15 +145,8 @@ echo GATE-FELL-THROUGH`
 		}
 	})
 
-	t.Run("sidecar upload accepted must die (D1 clean-fail assertion)", func(t *testing.T) {
-		out, err := run("workspace agentd", "201")
-		if err == nil {
-			t.Fatalf("a non-5xx sidecar-mode upload must die (D1), got: %q", out)
-		}
-		if !strings.Contains(out, "expected clean 5xx") {
-			t.Fatalf("the D1 assertion must name the violation, got: %q", out)
-		}
-	})
+	// The old "upload accepted must die" test is superseded by the
+	// 0060-landed leg above (201 now falls through by design).
 }
 
 // us68F8Step slices the nightly workflow down to the F8 step body so
