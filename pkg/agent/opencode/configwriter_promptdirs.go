@@ -156,3 +156,100 @@ func sanitizeAllowedDirs(in []string) []string {
 	}
 	return out
 }
+
+// stripTierExternalDirs removes the platform tier keys from a legacy
+// mode block's external_directory — the tier-ruling wire finding moved the
+// live rules to the TOP-LEVEL permission key, so tier keys previously
+// rendered into mode.permissions (by the superseded shape) are dead
+// weight that must not survive rebuilds.
+func stripTierExternalDirs(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || len(platformPermissionTiers) == 0 {
+		return raw
+	}
+	var mode map[string]json.RawMessage
+	if json.Unmarshal(raw, &mode) != nil || mode == nil {
+		return raw
+	}
+	permsRaw, ok := mode["permissions"]
+	if !ok {
+		return raw
+	}
+	var perms map[string]json.RawMessage
+	if json.Unmarshal(permsRaw, &perms) != nil || perms == nil {
+		return raw
+	}
+	extRaw, ok := perms["external_directory"]
+	if !ok {
+		return raw
+	}
+	var ext map[string]string
+	if json.Unmarshal(extRaw, &ext) != nil || ext == nil {
+		return raw
+	}
+	changed := false
+	for k := range platformPermissionTiers {
+		if _, present := ext[k]; present {
+			delete(ext, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	extJSON, err := json.Marshal(ext)
+	if err != nil {
+		return raw
+	}
+	perms["external_directory"] = extJSON
+	permsJSON, err := json.Marshal(perms)
+	if err != nil {
+		return raw
+	}
+	mode["permissions"] = permsJSON
+	modeJSON, err := json.Marshal(mode)
+	if err != nil {
+		return raw
+	}
+	return modeJSON
+}
+
+// stripFlatInjectedExternalDirs is stripInjectedExternalDirs for the
+// LIVE top-level permission shape: {"external_directory": {...}}
+// directly (no mode/permissions wrapper).
+func stripFlatInjectedExternalDirs(raw json.RawMessage, keys []string) json.RawMessage {
+	if len(raw) == 0 || len(keys) == 0 {
+		return raw
+	}
+	var perm map[string]json.RawMessage
+	if json.Unmarshal(raw, &perm) != nil || perm == nil {
+		return raw
+	}
+	extRaw, ok := perm["external_directory"]
+	if !ok {
+		return raw
+	}
+	var ext map[string]string
+	if json.Unmarshal(extRaw, &ext) != nil || ext == nil {
+		return raw
+	}
+	changed := false
+	for _, k := range keys {
+		if _, present := ext[k]; present {
+			delete(ext, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	extJSON, err := json.Marshal(ext)
+	if err != nil {
+		return raw
+	}
+	perm["external_directory"] = extJSON
+	permJSON, err := json.Marshal(perm)
+	if err != nil {
+		return raw
+	}
+	return permJSON
+}

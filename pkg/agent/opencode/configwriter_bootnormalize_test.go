@@ -65,11 +65,9 @@ func TestConfigWriter_ApplyEmpty_StampsMissingBlocks(t *testing.T) {
 				Prompt string `json:"prompt"`
 			} `json:"build"`
 		} `json:"agent"`
-		Mode struct {
-			Permissions struct {
-				ExternalDirectory map[string]string `json:"external_directory"`
-			} `json:"permissions"`
-		} `json:"mode"`
+		Permission struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
 		MCP map[string]json.RawMessage `json:"mcp"`
 	}
 	require.NoError(t, json.Unmarshal(written, &cfg))
@@ -77,7 +75,7 @@ func TestConfigWriter_ApplyEmpty_StampsMissingBlocks(t *testing.T) {
 	assert.Contains(t, cfg.Provider, "openai", "provider source must survive empty Apply")
 	assert.Equal(t, "openai/gpt-4o", cfg.Model, "model source must survive empty Apply")
 	assert.Equal(t, "PLATFORM PROMPT", cfg.Agent.Build.Prompt, "admin prompt must be stamped")
-	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"], "allowed dirs must be stamped")
+	assert.Equal(t, "allow", cfg.Permission.ExternalDirectory["/tmp/*"], "allowed dirs must be stamped (the LIVE top-level permission key)")
 	assert.Contains(t, cfg.MCP, "llmsafespaces", "built-in MCP server must be stamped")
 }
 

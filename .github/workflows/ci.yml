@@ -608,6 +608,9 @@ jobs:
       - name: Run the origin-plugin harness pin (freeze leg)
         run: go test -tags=integration -timeout 600s -count=1 -run TestOriginPlugin ./pkg/agent/opencode/
 
+      - name: Run the permission-tier legs (real matcher: allow/deny/read/bash)
+        run: go test -tags=integration -timeout 600s -count=1 -run TestPermissionTier ./pkg/agent/opencode/
+
       - name: Run the origin e2e (real opencode + real agentd dispatch)
         run: go test -tags=integration -timeout 600s -count=1 -run TestOriginE2E ./cmd/workspace-agentd/
 

@@ -25,7 +25,8 @@ import (
 // (F1 — previously delivered via the K8s Secret's workspace-config.json key);
 // AdminPrompt is the merged platform→org→role→user system prompt;
 // AllowedExternalDirectories is the instance setting that the AgentConfigWriter
-// merges into mode.permissions.external_directory as "allow" rules (stops
+// merges into the TOP-LEVEL permission.external_directory (the LIVE key on
+// pinned opencode — mode.permissions is inert) as "allow" rules (stops
 // agents prompting for /tmp/* on every session).
 type bootstrapResponse struct {
 	Secrets                    json.RawMessage `json:"secrets"`
@@ -93,8 +94,9 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	// allowedDirsOut is the file the bootstrap subcommand writes the instance's
 	// allowedExternalDirectories setting to (as a JSON array of glob patterns),
 	// if the API returns a non-empty list. The AgentConfigWriter reads it via
-	// loadAllowedDirs and merges each pattern into mode.permissions.external_directory
-	// as an "allow" rule. Defaults to agentd.AllowedDirsPath. Symmetric with
+	// loadAllowedDirs and merges each pattern into the LIVE top-level
+	// permission.external_directory as an "allow" rule. Defaults to
+	// agentd.AllowedDirsPath. Symmetric with
 	// --admin-prompt-out; exposed as a flag so tests can target a t.TempDir().
 	allowedDirsOut := fs.String("allowed-dirs-out", agentd.AllowedDirsPath, "output allowed-dirs.json path")
 

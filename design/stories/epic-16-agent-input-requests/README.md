@@ -90,7 +90,7 @@ interface PermissionRequest {
 2. **Reply/reject are idempotent** — unknown IDs return `200 true` (no 404)
 3. **Permission reject cascades** — rejecting one permission rejects ALL pending permissions for that session
 4. **`custom` defaults to `true`** — "Type your own answer" is always available unless explicitly disabled
-5. **Permissions require explicit config** — default opencode config auto-approves everything; permissions only fire when workspace has `mode.permissions` configured with `"ask"` rules
+5. **Permissions require explicit config** — default opencode config auto-approves everything; permissions only fire when the workspace has the TOP-LEVEL `permission` config with `"ask"` rules *(corrected 2026-09-22: the epic-era `mode.permissions` shape was proven inert on the pinned opencode — the tier-ruling wire finding; the platform now renders `permission.external_directory` on every boot)*
 6. **Questions work out of the box** — the LLM calls the `question` tool when it needs user input; no config required
 
 ## Assumptions (Epic-Level)
@@ -104,7 +104,7 @@ interface PermissionRequest {
 | EA5 | Epic 15 will be completed before the frontend stories in this epic | ✅ | Decision: backend work parallelizes; frontend depends on Epic 15 |
 | EA6 | MCP `SendMessage` SSE parsing is BROKEN — looks for `"session.idle"` event type but real wire format is `{"type":"session.status","status":"idle"}` | ❌ BUG | Verified: `client.go:248` checks `event.Type == "session.idle"` but broker emits `WorkspaceSSEEvent{Type:"session.status", Status:"idle"}`. Tests pass only because mocks emit fake event type. Must fix in US-16.0. |
 | EA7 | `validID` regex in MCP client rejects opencode IDs — underscores not matched | ❌ BUG | `validID = ^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,252}$` excludes `_`. Real IDs: `ses_18b28260affeoxXrX1iwPH8wFg`. Must fix in US-16.0. |
-| EA8 | Permissions only fire when workspace has explicit `mode.permissions` config with `"ask"` rules | ✅ | Verified live (worklog 0069): default config auto-approves everything. Permission prompts require explicit configuration. |
+| EA8 | Permissions only fire when workspace has explicit permission config with `"ask"` rules | ✅ | Verified live (worklog 0069): default config auto-approves everything. Permission prompts require explicit configuration. *(2026-09-22: the live shape is the top-level `permission` key — `mode.permissions` is inert on the pinned opencode.)* |
 | EA9 | A second agent (claude-code or similar) will be added soon | ✅ | Decision from user: keep Dialect interface for extensibility |
 
 ## Design Decisions
@@ -243,7 +243,7 @@ interface PermissionRequest {
 
 ## Non-Goals
 
-- **Permission rule configuration UI** — Permissions only fire when the workspace has explicit `mode.permissions` config. Configuring these rules is out of scope (can be done via workspace settings in Epic 9/13).
+- **Permission rule configuration UI** — Permissions only fire when the workspace has explicit permission config (the top-level `permission` key — `mode.permissions` is inert on the pinned opencode, corrected 2026-09-22). Configuring these rules is out of scope (can be done via workspace settings in Epic 9/13).
 - **Question tool invocation** — We don't control when the LLM calls the question tool. We only render and respond.
 - **Multi-tab coordination for questions** — If two tabs are open, both show the prompt. First to answer wins; second gets 200 (idempotent no-op) and the prompt dismisses via the `question.replied` SSE event.
 - **Custom question tool registration** — We use opencode's built-in question tool as-is.
@@ -255,7 +255,7 @@ interface PermissionRequest {
 
 2. **No ownership check on proxy routes**: Pre-existing — any authenticated user can proxy to any workspace by ID. This epic inherits the same pattern. Multi-tenant isolation depends on workspace IDs being unguessable (UUIDs).
 
-3. **Permission prompts require explicit config**: Default opencode config auto-approves all tool calls. The permission UI will only be exercised when workspaces are configured with `mode.permissions` rules containing `"ask"` actions.
+3. **Permission prompts require explicit config**: Default opencode config auto-approves all tool calls. The permission UI will only be exercised when workspaces are configured with permission rules containing `"ask"` actions *(2026-09-22: in the top-level `permission` key — `mode.permissions` is inert on the pinned opencode)*.
 
 ## Success Criteria
 
