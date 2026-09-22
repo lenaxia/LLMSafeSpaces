@@ -104,8 +104,18 @@ func TestEnvtestRelayStaging_ConditionsMatrix(t *testing.T) {
 	require.NotNil(t, findCond(ws, v1.WorkspaceConditionCredentialsStaged))
 	assert.Equal(t, v1.ReasonStalePubUnreadable, findCond(ws, v1.WorkspaceConditionCredentialsStaged).Reason)
 
-	// Leg 3 — recovery: pub restored; staged returns True.
-	require.NoError(t, r.Update(ctx, pubSec))
+	// Leg 3 — recovery: pub restored; staged returns True. The restore
+	// must re-get first: leg 2's real Update bumped the resourceVersion,
+	// and the real API server rejects the stale in-memory pubSec with a
+	// Conflict. (The fake client enforces RV conflicts too — the reason
+	// this never surfaced is the //go:build envtest tag: the file never
+	// compiled into any untagged run, and no CI workflow EXECUTED this
+	// suite until it was wired into the envtest workflow; the -run
+	// filters execution, not compilation.)
+	freshPub := &corev1.Secret{}
+	require.NoError(t, r.Get(ctx, types.NamespacedName{Namespace: relayTestNamespace, Name: secrets.RelayPubSecretName}, freshPub))
+	freshPub.Data = pubSec.Data
+	require.NoError(t, r.Update(ctx, freshPub))
 	require.NoError(t, r.reconcileRelayStaging(ctx, ws))
 	assert.Equal(t, v1.ReasonCredentialsStaged, findCond(ws, v1.WorkspaceConditionCredentialsStaged).Reason)
 

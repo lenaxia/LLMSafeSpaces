@@ -88,3 +88,15 @@ jobs:
       # drift binding in pkg/repolint.
       - name: Run envtest relay revision round-trip
         run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestRelayRevision -v
+
+      # US-72.5 (unit 0, #820): the US-72.3 staging conditions matrix —
+      # written in #1448 behind //go:build envtest but never wired here
+      # (the workflow pinned only four steps at that base: three original
+      # suites + #1529's RelayRevision step), so no CI workflow EXECUTED
+      # it and it had drifted red (leg 3 restored the pub Secret from a
+      # stale-resourceVersion copy; a write the API server rejects — the
+      # build tag had kept the file out of every untagged run too, so
+      # nowhere did the suite run before this wiring). The default flip
+      # must not ride on a controller matrix CI has never executed.
+      - name: Run envtest relay staging conditions matrix
+        run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestRelayStaging -v
