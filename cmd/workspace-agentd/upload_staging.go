@@ -201,9 +201,9 @@ type uploadStager struct {
 	mu           sync.Mutex
 	reservations map[string]int64 // uploadID → reserved bytes (held until bytes leave)
 
-	// sweepStarted, when non-nil, is closed when the sweeper goroutine
-	// is launched — the placement pin's observable (inside the guard:
-	// never closed where the parent is absent).
+	// sweepStarted, when non-nil, is closed synchronously BEFORE the
+	// sweeper goroutine launches (TestBuildSidecarDeps_SweeperPlacement-
+	// Guarded observes it through the real wiring).
 	sweepStarted chan struct{}
 
 	metrics stagingMetrics

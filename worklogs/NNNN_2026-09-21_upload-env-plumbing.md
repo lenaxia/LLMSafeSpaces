@@ -29,26 +29,26 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 
 ## Tests Run
 
-- `go test -run 'TestUploadStaging' ./controller/internal/workspace/` — 7 green: flag round trip, empty=default, unknown-key rejection (3 malformed shapes), env exact-name emission (set/unset), the literal name-contract pin, and the pod wiring BOTH directions (set → both containers carry it; zero → NO container carries any UPLOAD_* env, sidecar AND single-container modes).
+- `go test -run 'TestUploadStaging' ./controller/internal/workspace/` — 13 green at the rebased head: flag round trip, empty=default, unknown-key rejection (3 malformed shapes), env exact-name emission (set/unset), the literal name-contract pin, the pod wiring BOTH directions, floor=0 explicitness, the TTL cross-validation (both single-knob arms + both pass arms), and duplicate-key rejection. [Count corrected r9 — the original '7' predates the r1–r5 pin additions.]
 - Full `./controller/internal/workspace/` — ok (80s). Full `go build ./...` — ok. golangci-lint 0 issues (funlen resolved by extracting the flag helpers, not by nolint).
 
 ---
 
 ## Files Modified
 
-- `controller/internal/workspace/upload_staging_env.go` — new
-- `controller/internal/workspace/upload_staging_env_test.go` — new (7 tests)
-- `controller/main.go` — flag + helpers (funlen: agentd-hash flag pair extracted too)
-- `controller/internal/controller/controller.go` — signature + reconciler field
-- `controller/internal/workspace/reconciler.go` — the field
+- `controller/internal/workspace/upload_staging_env.go` — new: the config + flag parse + env emission
+- `controller/internal/workspace/upload_staging_env_test.go` — new: 10 controller tests (round trip, malformed, names, wiring, floor, TTL, duplicates)
+- `helm/upload_staging_chart_test.go` — new: 5 chart render tests (default, set, typo'd-key, violating-pair, floor sentinel)
+- `controller/main.go` — the flag + parse helpers (funlen: the agentd-hash pair extracted)
+- `controller/internal/controller/controller.go` — SetupControllers signature + reconciler field
+- `controller/internal/workspace/reconciler.go` — the UploadStaging field
 - `controller/internal/workspace/pod_builder.go` — workspace-container env
 - `controller/internal/workspace/agentd_sidecar.go` — sidecar env
-- `helm/values.yaml` + `helm/templates/controller-deployment.yaml` — the knobs + render
-- `cmd/workspace-agentd/sidecar_mode.go` — the tmpfs-guarded staging boot block + the sweeper inside it (r2's post-approval CI fix + r3)
-- `cmd/workspace-agentd/upload_staging_test.go` — the agentd-side env pins + the guard pin family (r1/r4/r5)
-- `cmd/workspace-agentd/upload_staging.go` — the sweeper-placement seam + guard (the PR-2-adjacent agentd changes that rode the branch)
-- `cmd/workspace-agentd/upload_staging_test.go` — the guard pin family (wiring-level, mutation-verified)
-- `cmd/workspace-agentd/upload_apply.go` / `upload_apply_test.go` — the copy cap + sentinel arms (the env-plumbing robustness finds)
+- `helm/values.yaml` + `helm/templates/controller-deployment.yaml` — the knobs + render + fail guard
+- `cmd/workspace-agentd/upload_staging.go` — the sweeper-placement signal + guard (the agentd-adjacent changes)
+- `cmd/workspace-agentd/upload_staging_test.go` — the guard pin family + the env-contract pins (both in-pod consumers)
+- `cmd/workspace-agentd/upload_apply.go` / `upload_apply_test.go` — the copy cap + sentinel arms
+- `cmd/workspace-agentd/sidecar_mode.go` — the tmpfs-guarded boot block
 - `worklogs/NNNN_2026-09-21_upload-env-plumbing.md` — this worklog
 
 
@@ -95,3 +95,9 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 - The dead onSweepTick seam (zero assignors, disprovable comment — the r8 review on the pre-rebase head flagged it; the rebase carried it) — deleted; sweepStarted is the placement pin's only seam.
 - The worklog staleness corrected: the header/Files-Modified now state the rebase truth (post-#1518 main; the plumbing-only delta).
 - The sweeper-placement delta record: the placement pin (TestBuildSidecarDeps_SweeperPlacementGuarded — sweepStarted closed BEFORE the goroutine launches; mutation B red) was the r5-r9 chain's load-bearing find; it rides this branch's agentd files.
+
+
+## Review round 9 (the comment + the counts)
+
+- The sweepStarted field comment now states the deterministic fact (closed BEFORE the goroutine launches) and names the actual pin — no nonexistent seam references.
+- The stale '7 green' count corrected (13 at the rebased head, the additions itemized). Files Modified rebuilt as the complete, duplicate-free list (the chart test included).
