@@ -164,6 +164,11 @@ jobs:
           kubectl -n $NS rollout status deployment/valkey --timeout=180s
 
       - name: Helm install LLMSafeSpaces
+        # id: the epic-72 evidence lane's conditions reference this
+        # step's outcome (#1541: the lane must run after unrelated row
+        # failures, but NEVER against a failed install — a broken
+        # install would poison the drill/sweep evidence record).
+        id: helm-install
         run: |
           # MCP is disabled in the nightly e2e: the cmd/mcp binary has no
           # Dockerfile yet so there is no image to pull. The MCP pod readiness
@@ -393,6 +398,15 @@ jobs:
         # gVisor/runsc leg are gated behind env/flags for the US-70.0 staged
         # pool (the script SKIPs the runsc leg loudly when no RuntimeClass
         # is advertised). Seed-created user + API key via local postgres.
+        #
+        # #1541: this step is ARMED (!cancelled() + install-success) — it
+        # creates the mock-llm Service the epic-72 drill depends on, so an
+        # unrelated earlier-row failure (tonight's SR-6 class, run
+        # 35737624754) must not skip it and hostage the epic-72 evidence
+        # lane downstream. It still skips on a failed install (its own
+        # prerequisite).
+        id: us70-suite
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' }}
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
@@ -608,6 +622,24 @@ jobs:
         # router.image, which defaults to the ghcr.io registry — the kind
         # cluster cannot pull that, so the drill's flipped release deploys
         # a locally built image (the api/controller pattern above).
+        #
+        # #1541: ARMED — the epic-72 evidence lane (this build → drill
+        # shape → drill → sweep) runs after unrelated row failures
+        # (tonight's SR-6 class skipped all four steps with zero drill
+        # rows executed); it still skips on a failed install, and a bare
+        # always() is deliberately NOT used — a failed install must not
+        # produce a bogus drill/sweep failure against missing
+        # infrastructure (poisoned evidence).
+        #
+        # id'd (r1): the downstream shape/drill/sweep conditions gate on
+        # this step too — on a fresh per-run kind cluster the ONLY
+        # delivery path for this run's image tag is the kind load here,
+        # so a failed build must SKIP the shape step, not let its helm
+        # --wait burn ~10 minutes on guaranteed ImagePullBackOff and
+        # record an infrastructure-failure row (the noise class #1541
+        # exists to eliminate).
+        id: router-build
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' }}
         run: |
           docker build --network host --build-arg VERSION="${{ env.IMAGE_TAG }}" --build-arg COMMIT_SHA="${{ github.sha }}" \
             -f cmd/relay-router/Dockerfile -t llmsafespaces/relay-router:$IMAGE_TAG .
@@ -626,6 +658,15 @@ jobs:
         # an idempotent re-set under --reuse-values, R3/R4 cycle within
         # namespaced scope, and it ends flipped (the runbook's target
         # posture; the kind teardown below disposes of the cluster).
+        #
+        # #1541: ARMED (install-success + the router image build — the
+        # shape step DEPLOYS that image, and on a fresh per-run cluster
+        # a missing build means guaranteed ImagePullBackOff), and id'd —
+        # the drill and sweep gate on this step's outcome (sweeping an
+        # un-shaped, flag-off install would read the raw canary and
+        # poison the K1 record).
+        id: drill-shape
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.router-build.outcome == 'success' }}
         run: |
           helm --kube-context kind-$CLUSTER_NAME upgrade --install llmsafespaces helm \
             -n $NS --reuse-values \
@@ -645,6 +686,17 @@ jobs:
         # termination (router pods' 630s grace cap; helm --wait does not
         # wait for namespace deletion) — if it flakes there, the remedy
         # is an ns-gone wait inside the script (owner-side change).
+        #
+        # #1541: ARMED on the full prerequisite chain (install + the
+        # us-70 mock-llm rows + the router-image build + the drill-shape
+        # pre-step) — an unrelated earlier-row failure (the SR-6 class)
+        # must not skip the drill, but any PREREQUISITE failure must (a
+        # drill against missing mock-llm, a missing router image, or an
+        # un-shaped release fails its rows for infrastructure reasons
+        # and poisons the executed-rollback evidence record — the
+        # bare-always() trap).
+        id: relay-drill
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' }}
         run: bash local/us-72-relay-only-flip-drill.sh
 
       - name: Run the rogue-agent sweep (US-72.6, #820 exit criterion)
@@ -661,10 +713,18 @@ jobs:
         # instead of failing the nightly — pinned executable in
         # local/us72_sweep_wiring_test.go.
         #
+        # #1541: ARMED on the drill's full chain PLUS the drill itself —
+        # the sweep rides the drill's flipped-ON end state; a failed
+        # drill (e.g. dead at the R3 rollback leg) leaves the release in
+        # an unknown flag state, and sweeping a flag-off pod would read
+        # the raw canary as a K1 violation — a false epic-criterion
+        # failure. Unrelated-row failures do NOT gate it.
+        #
         # K1 carve-out (owner-accepted, #1536 runbook): zero-raw-bytes
         # is ASSERTED for frontable kinds only; non-frontable kinds
         # (bedrock/vertex/azure_openai/opencode) are EXCLUDED pending
         # the owner's K1 decision.
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
