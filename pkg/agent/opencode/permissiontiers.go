@@ -164,11 +164,19 @@ func tierMatch(resource, pattern string) bool {
 // both of which the ported matcher compiles to match-any runes — r5
 // closed the ? gap: a leading-? pattern's bytes are NOT literal), that
 // holds iff L is empty, L is itself under "X/", or "X/" extends L
-// (p's wildcard can absorb the rest of X plus the slash — provably a
-// live overlap in every such case, since L + (X minus L) + "/" +
-// p's-tail matches both patterns). Patterns outside every deny keep
-// their allow.
+// (p's wildcard can absorb the rest of X plus the slash). That branch
+// is a live overlap or a CONSERVATIVE OVER-DROP (e.g. "/et?" matches
+// only the bare "/etc", which no deny governs — ambient ask — but
+// dropping the pattern is the safe direction); it is never an
+// under-drop. Patterns outside every deny keep their allow.
 func allowReopensTierDeny(pattern string) bool {
+	// Normalize EXACTLY like the matcher (r6): tierMatch maps \ → /
+	// before matching, so a backslashed pattern ("\etc/*") IS the
+	// deny-root pattern to the engine while its raw bytes share no
+	// prefix with the deny key — and \ (0x5C) sorts after every
+	// /-prefixed key, making the reopen live under findLast. The filter
+	// and the matcher must agree on the string they analyze.
+	pattern = strings.ReplaceAll(pattern, "\\", "/")
 	wild := strings.IndexAny(pattern, "*?")
 	litPrefix := pattern
 	if wild >= 0 {

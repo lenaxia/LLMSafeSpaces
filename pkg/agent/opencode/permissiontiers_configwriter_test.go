@@ -211,12 +211,14 @@ func TestConfigWriter_RenderDropsQuestionMarkReopens(t *testing.T) {
 	_, err := w.Apply(agentapi.AgentConfigInput{AllowedDirs: &agentapi.AllowedDirsChange{Dirs: []string{
 		"?etc/*", // leading single-char wildcard — must DROP
 		"/?tc/*", // interior single-char wildcard — must DROP
+		`\etc/*`, // backslash-carried — normalizes to the deny root — must DROP (r6)
 	}}})
 	require.NoError(t, err)
 
 	ext := readRenderedExtDir(t, path)
 	assert.NotContains(t, ext, "?etc/*", "a ?-wildcard pattern reaching a deny root must not render")
 	assert.NotContains(t, ext, "/?tc/*", "an interior ?-wildcard reaching a deny root must not render")
+	assert.NotContains(t, ext, `\etc/*`, "a BACKSLASHED pattern reaching a deny root must not render (r6 — sorts after every /-key)")
 	assert.Equal(t, "deny", ext["/etc/*"], "the floor still renders")
 }
 
@@ -228,7 +230,7 @@ func TestConfigWriter_RenderDropsSeededReopeningAllows(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
 	// Seeded live key: a reopening allow (the r5-demonstrated ingress).
-	writeTiersConfig(t, path, `{"permission": {"external_directory": {"/etc/latency/*": "allow", "/custom/*": "allow"}}}`)
+	writeTiersConfig(t, path, `{"permission": {"external_directory": {"/etc/latency/*": "allow", "\\etc/*": "allow", "/custom/*": "allow"}}}`)
 
 	w := NewConfigWriter(path)
 	_, err := w.Apply(agentapi.AgentConfigInput{}) // NO AllowedDirs source — pure artifact ingress
@@ -237,6 +239,8 @@ func TestConfigWriter_RenderDropsSeededReopeningAllows(t *testing.T) {
 	ext := readRenderedExtDir(t, path)
 	assert.NotContains(t, ext, "/etc/latency/*",
 		"a seeded allow that reopens a tier deny must not re-render (the artifact is agent-writable)")
+	assert.NotContains(t, ext, `\etc/*`,
+		"a seeded BACKSLASHED allow must not re-render either (r6 — the same filter, normalized)")
 	assert.Equal(t, "allow", ext["/custom/*"],
 		"a seeded NON-reopening allow survives (render idempotency — a prior legit render re-renders)")
 	assert.Equal(t, "deny", ext["/etc/*"], "the floor still renders")

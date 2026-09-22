@@ -172,6 +172,9 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 	assert.True(t, allowReopensTierDeny("?etc/*"), "a leading ?-wildcard reaches the deny root (r5)")
 	assert.True(t, allowReopensTierDeny("/?tc/*"), "an interior ?-wildcard reaches the deny root (r5)")
 	assert.True(t, allowReopensTierDeny("/et?"), "a trailing ?-wildcard path resolves under /etc (r5)")
+	assert.True(t, allowReopensTierDeny(`\etc/*`), "a backslashed pattern normalizes to the deny root — the filter must normalize like the matcher (r6)")
+	assert.True(t, allowReopensTierDeny(`\home\sandbox\.ssh\*`), "backslashed credential-tree glob normalizes into the .ssh deny (r6)")
+	assert.False(t, allowReopensTierDeny(`\opt\cache\*`), "a backslashed allow OUTSIDE every deny keeps its allow (normalization is not denial)")
 	assert.True(t, allowReopensTierDeny("/home/sandbox/.ssh/id_rsa"))
 	assert.False(t, allowReopensTierDeny("/opt/cache/*"),
 		"an allow outside every deny keeps its allow")
