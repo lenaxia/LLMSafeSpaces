@@ -200,6 +200,7 @@ jobs:
             --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
             --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
             --set rbac.scope=cluster \
+            --set relayOnlyKeyDelivery.enabled=false \
             --set api.config.logging.development=true \
             --set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \
             --set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \
@@ -601,6 +602,50 @@ jobs:
             /tmp/bench-resume.txt
             /tmp/bench-create.txt
           retention-days: 90
+
+      - name: Build + load the llm-relay router image (US-72.5 drill)
+        # The BYO router (US-72.2) reuses controller.inferenceRelay.
+        # router.image, which defaults to the ghcr.io registry — the kind
+        # cluster cannot pull that, so the drill's flipped release deploys
+        # a locally built image (the api/controller pattern above).
+        run: |
+          docker build --network host --build-arg VERSION="${{ env.IMAGE_TAG }}" --build-arg COMMIT_SHA="${{ github.sha }}" \
+            -f cmd/relay-router/Dockerfile -t llmsafespaces/relay-router:$IMAGE_TAG .
+          kind load docker-image llmsafespaces/relay-router:$IMAGE_TAG --name $CLUSTER_NAME
+
+      - name: Put the release into the drill's valid shape (relay on, namespaced scope)
+        # The owner's drill (#1534, local/us-72-relay-only-flip-drill.sh)
+        # flips ONLY relayOnlyKeyDelivery.enabled — but the nightly
+        # installs with rbac.scope=cluster, and the chart refuses
+        # relay-on + cluster scope at render (the §4.3 no-read guard;
+        # the runbook's "Known interactions" remedy for cluster-scope
+        # installs is pinning the flag off, which the install step above
+        # now does). This pre-step moves the release into the valid
+        # drill posture — relay ON + namespaced scope + the local router
+        # image — WITHOUT touching the script: its R1 flip(true) is then
+        # an idempotent re-set under --reuse-values, R3/R4 cycle within
+        # namespaced scope, and it ends flipped (the runbook's target
+        # posture; the kind teardown below disposes of the cluster).
+        run: |
+          helm --kube-context kind-$CLUSTER_NAME upgrade --install llmsafespaces helm \
+            -n $NS --reuse-values \
+            --set relayOnlyKeyDelivery.enabled=true \
+            --set rbac.scope=namespace \
+            --set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \
+            --set controller.inferenceRelay.router.image.tag=$IMAGE_TAG \
+            --wait --timeout 10m
+          kubectl -n $NS rollout status deployment/llmsafespaces-controller --timeout=10m
+          kubectl -n llm-relay rollout status deployment/llm-relay-router --timeout=10m
+
+      - name: Run the relay-only flip + rollback drill (US-72.5, owner's #1534 script)
+        # The drill depends on the mock-llm Service the us-70 suite step
+        # creates above — it must stay ordered after those rows. Watch
+        # item (first-run flake candidate, recorded in the worklog): the
+        # drill's tight R3→R4 cycle may race llm-relay namespace
+        # termination (router pods' 630s grace cap; helm --wait does not
+        # wait for namespace deletion) — if it flakes there, the remedy
+        # is an ns-gone wait inside the script (owner-side change).
+        run: bash local/us-72-relay-only-flip-drill.sh
 
       - name: Dump cluster state on failure
         if: failure()

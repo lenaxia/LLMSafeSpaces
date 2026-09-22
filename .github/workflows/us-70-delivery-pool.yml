@@ -369,6 +369,7 @@ jobs:
             --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
             --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
             --set rbac.scope=cluster \
+            --set relayOnlyKeyDelivery.enabled=false \
             --set api.config.logging.development=true \
             --set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \
             --set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \

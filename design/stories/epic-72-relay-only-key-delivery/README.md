@@ -57,7 +57,7 @@ design §4.1/§9).
 | US-72.2 | `llm-relay` namespace + 2-replica BYO resolve router (token mint/verify, per-request local resolve, sanitization, drain) | done (#1432 merged) | L | US-72.1 |
 | US-72.3 | Controller staging + Workspace conditions (`CredentialsStaged`/`CredentialStale`/`CredentialRejected`) + policy flag + quota/alerts | done (#1448 merged) | M | US-72.1, US-72.2 |
 | US-72.4 | agentd token-only emission (builder rewrite) + relay-only liveness + degrade codes | done (#1529) | M | US-72.0, US-72.2, US-72.3 |
-| US-72.5 | Lifecycle/policy gates + default flip + canary + rollback drill | open | M | US-72.0–.4 |
+| US-72.5 | Lifecycle/policy gates + default flip + canary + rollback drill | done (envtest-matrix repair #1531; flip + runbook + drill #1534; reconciliation — consumer pins + nightly drill wiring #1536) | M | US-72.0–.4 |
 | US-72.6 | Migration: PVC scrub of legacy `auth.json` keys + e2e rogue-agent sweep (#820 close-out) | open | S/M | US-72.5 |
 
 Sequencing (fixed by the decision record): **#910 first** — a relay-only default

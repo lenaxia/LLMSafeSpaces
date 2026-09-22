@@ -76,6 +76,15 @@ webhooks:
 rbac:
   scope: cluster
 
+# This deployment stays on raw-key delivery for now: the US-72.5 chart
+# default flipped relay-only ON, but relay-only refuses rbac.scope=cluster
+# (design 0058 §4.3 no-read guarantee — chart-refused combination). Moving
+# this deployment to relay-only is an operator flip per the runbook
+# (docs/runbooks/relay-only-flip.md §1 gate 6: switch scope to namespace
+# in the same change). Until then, relay stays explicitly OFF here.
+relayOnlyKeyDelivery:
+  enabled: false
+
 # Monitoring: Grafana dashboards, Prometheus alerting rules, and
 # ServiceMonitors for API and controller. The cluster runs
 # kube-prometheus-stack in the `monitoring` namespace with empty

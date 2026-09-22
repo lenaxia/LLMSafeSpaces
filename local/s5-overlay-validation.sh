@@ -203,7 +203,8 @@ HELM_PIN_ARGS=(
 )
 HELM_LEAN_ARGS=(
   --set api.enabled=false --set mcp.enabled=false --set migrations.enabled=false
-  --set rbac.scope=cluster
+  --set rbac.scope=cluster \
+    --set relayOnlyKeyDelivery.enabled=false
   --set "webhooks.allowedImageRegistries[0]=$REG/llmsafespaces/"
   --set externalSecret.create=true
   --set "externalSecret.postgresPassword=s5-pg"

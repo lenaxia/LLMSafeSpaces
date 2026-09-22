@@ -216,12 +216,17 @@ kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout
 # the controller Deployment resolves LLMSAFESPACES_INTERNAL_TOKEN from that
 # Secret regardless of api.enabled.
 log "installing controller-lean chart (api/mcp/migrations off; webhooks on)"
+# (US-72.5 flip: relay-only is now the chart default but refuses
+# rbac.scope=cluster — this controller-lean harness is not a relay
+# surface, so it stays explicitly off. NOTE: no mid-continuation
+# comments — see the e2e-nightly helm command's warning.)
 helm upgrade --install "$RELEASE" helm \
   -n "$NS" --create-namespace \
   --set api.enabled=false \
   --set mcp.enabled=false \
   --set migrations.enabled=false \
   --set rbac.scope=cluster \
+  --set relayOnlyKeyDelivery.enabled=false \
   --set "webhooks.allowedImageRegistries[0]=$REG/llmsafespaces/" \
   --set externalSecret.create=true \
   --set "externalSecret.postgresPassword=us2int-pg" \
