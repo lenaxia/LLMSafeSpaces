@@ -201,10 +201,6 @@ type uploadStager struct {
 	mu           sync.Mutex
 	reservations map[string]int64 // uploadID → reserved bytes (held until bytes leave)
 
-	// onSweepTick, when non-nil, replaces the sweeper tick body (the
-	// placement pin's observer seam).
-	onSweepTick func()
-
 	// sweepStarted, when non-nil, is closed when the sweeper goroutine
 	// is launched — the placement pin's observable (inside the guard:
 	// never closed where the parent is absent).
@@ -509,13 +505,6 @@ func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Du
 	if interval <= 0 {
 		interval = 10 * time.Minute
 	}
-	onTick := s.onSweepTick
-	if onTick == nil {
-		onTick = func() {
-			s.scrubStagingDir(s.cfg.ttl, time.Now())
-			s.RecordGauges()
-		}
-	}
 	if s.sweepStarted != nil {
 		close(s.sweepStarted)
 	}
@@ -527,7 +516,8 @@ func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Du
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				onTick()
+				s.scrubStagingDir(s.cfg.ttl, time.Now())
+				s.RecordGauges()
 			}
 		}
 	}()

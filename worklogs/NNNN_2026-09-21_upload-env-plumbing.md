@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-21
 **Session:** feat/upload-env-plumbing — §9 PR 2.5 (routed from worker 2's #1516 review): values.yaml knobs → controller flag → agentd env on both containers
-**Status:** Complete (this PR; stacked on #1518)
+**Status:** Complete (this PR; REBASED onto post-#1518 main — the PR-2 supervisor content rides main via the squash, this is the plumbing-only delta)
 
 ---
 
@@ -46,6 +46,9 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 - `helm/values.yaml` + `helm/templates/controller-deployment.yaml` — the knobs + render
 - `cmd/workspace-agentd/sidecar_mode.go` — the tmpfs-guarded staging boot block + the sweeper inside it (r2's post-approval CI fix + r3)
 - `cmd/workspace-agentd/upload_staging_test.go` — the agentd-side env pins + the guard pin family (r1/r4/r5)
+- `cmd/workspace-agentd/upload_staging.go` — the sweeper-placement seam + guard (the PR-2-adjacent agentd changes that rode the branch)
+- `cmd/workspace-agentd/upload_staging_test.go` — the guard pin family (wiring-level, mutation-verified)
+- `cmd/workspace-agentd/upload_apply.go` / `upload_apply_test.go` — the copy cap + sentinel arms (the env-plumbing robustness finds)
 - `worklogs/NNNN_2026-09-21_upload-env-plumbing.md` — this worklog
 
 
@@ -85,3 +88,10 @@ Nothing flows UPLOAD_STAGING_BUDGET / CREDENTIAL_FLOOR / MAX_CONCURRENT / TTL_MS
 - The gauges half: TestBuildSidecarDeps_NoGaugesWithoutTmpfs — testutil.CollectAndCount on the shared singleton before/after buildSidecarDeps without a tmpfs: no staging series may appear.
 - The sentinel-parse arms: TestStagingEnvSentinels_ZeroIsValid — literal "0" honored for UPLOAD_STAGING_CREDENTIAL_FLOOR and UPLOAD_DEST_MARGIN (the agentd half of the controller's floor sentinel).
 - The commit-name cosmetic fixed here in the record: the r4 test is TestBuildSidecarDeps_NoErrorLogsWithoutTmpfs.
+
+
+## Review round 8 (the rebase round — the dead seam + the worklog staleness)
+
+- The dead onSweepTick seam (zero assignors, disprovable comment — the r8 review on the pre-rebase head flagged it; the rebase carried it) — deleted; sweepStarted is the placement pin's only seam.
+- The worklog staleness corrected: the header/Files-Modified now state the rebase truth (post-#1518 main; the plumbing-only delta).
+- The sweeper-placement delta record: the placement pin (TestBuildSidecarDeps_SweeperPlacementGuarded — sweepStarted closed BEFORE the goroutine launches; mutation B red) was the r5-r9 chain's load-bearing find; it rides this branch's agentd files.
