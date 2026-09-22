@@ -661,11 +661,10 @@ jobs:
         # instead of failing the nightly — pinned executable in
         # local/us72_sweep_wiring_test.go.
         #
-        # K1 carve-out (owner-accepted, #1536 runbook): non-frontable
-        # kinds (bedrock/vertex/azure_openai/opencode) stay raw under
-        # flag-on — the sweep plants/asserts a FRONTABLE canary only
-        # (openai_compatible); zero-raw-bytes is asserted for frontable
-        # kinds pending the owner's K1 decision.
+        # K1 carve-out (owner-accepted, #1536 runbook): zero-raw-bytes
+        # is ASSERTED for frontable kinds only; non-frontable kinds
+        # (bedrock/vertex/azure_openai/opencode) are EXCLUDED pending
+        # the owner's K1 decision.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}

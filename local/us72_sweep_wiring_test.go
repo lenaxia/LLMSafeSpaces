@@ -78,9 +78,12 @@ func TestUS72SweepWiring_NightlyOrdering(t *testing.T) {
 }
 
 // Pin (b): the sweep step carries its own port-forward port and it is
-// used by NO other step — a shared port would race the drill's leftover
-// forward (harness_start backgrounds one per script and never reaps it),
-// and the sweep's API calls would die mid-script.
+// used by NO other step. The lib's cleanup() trap DOES reap its own
+// forward on a normal exit — the isolation is defense against the
+// residual: a script killed hard (runner cancellation SIGKILLs; a
+// set -e death inside a trap-sensitive window) skips the EXIT trap and
+// leaks a bound port. A distinct port means a leaked drill forward can
+// never break the sweep's harness_start.
 func TestUS72SweepWiring_PortIsolated(t *testing.T) {
 	src := mustRead(t, us70NightlyWorkflow)
 	if n := strings.Count(src, "18089"); n != 1 {
@@ -101,6 +104,7 @@ func TestUS72SweepWiring_PortIsolated(t *testing.T) {
 		"PORTFWD_PORT: 18089",
 		"CTX: kind-${{ env.CLUSTER_NAME }}",
 		"NS: ${{ env.NS }}",
+		"CLUSTER_NAME: ${{ env.CLUSTER_NAME }}",
 	} {
 		if !strings.Contains(step, want) {
 			t.Errorf("the sweep step env must carry %q (step env missing/broken)", want)
@@ -130,7 +134,7 @@ func TestUS72SweepWiring_SkipGuardExecutable(t *testing.T) {
 	if !strings.Contains(out, "SKIP") || !strings.Contains(out, "#1537") {
 		t.Fatalf("the skip must be LOUD and name the pending vehicle #1537 (got: %q)", strings.TrimSpace(out))
 	}
-	if strings.Contains(out, "us-72-rogue-agent-sweep.sh not on this branch yet") == false {
+	if !strings.Contains(out, "us-72-rogue-agent-sweep.sh not on this branch yet") {
 		t.Fatalf("the skip message must name the missing script path (got: %q)", strings.TrimSpace(out))
 	}
 

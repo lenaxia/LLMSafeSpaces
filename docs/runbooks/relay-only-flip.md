@@ -148,12 +148,17 @@ criterion is UNVERIFIED for that run, not passed.
   must prove it can fail): plant the canary in the pre-US-35.7 legacy
   shape, the sweep FINDS it, the in-pod `scrub-legacy-keys` exec
   removes it, and the post-sweep read is zero.
-- **K1 carve-out (owner-accepted):** non-frontable kinds
-  (bedrock/vertex/azure_openai/opencode) stay raw under flag-on — the
-  sweep plants and asserts a FRONTABLE canary only; zero-raw-bytes for
-  non-frontables awaits the owner's K1 decision.
-- **#820 closes on the sweep's first recorded green nightly run** —
-  never on a merge (Refs, not Closes, until that run exists).
+- **K1 carve-out (owner-accepted):** zero-raw-bytes is ASSERTED for
+  frontable kinds only; non-frontable kinds
+  (bedrock/vertex/azure_openai/opencode) are EXCLUDED pending the
+  owner's K1 decision.
+- **#820 state (recorded 2026-09-22):** the issue was AUTO-CLOSED at
+  #1534's merge (09:04Z, its body said "closes #820") — BEFORE the
+  sweep ever executed. The design's exit criterion (a recorded green
+  sweep run) therefore remains UNMET; reopening #820 is an owner
+  decision. This nightly row is the evidence lane either way: the
+  first green run satisfies the criterion, a red run is the
+  regression signal.
 
 ## Known interactions
 
