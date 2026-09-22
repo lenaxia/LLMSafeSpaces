@@ -35,7 +35,9 @@ func TestIssue1410E2EScript_BashSyntax(t *testing.T) {
 // missing-workflow fire (R4), run-input schema enforcement (R5), and
 // trigger input mapping (R6 — envelope-wiring guard, mapped static input,
 // webhook body mode over the rotated HMAC secret), the update-path
-// memory/capture cross-constraint (R9 — #1467).
+// memory/capture cross-constraint (R9 — #1467), and the update-path
+// workflow-existence contract (R1d/R1d-happy — #1519: ghost retarget
+// rejected with the named 400, retarget to an existing workflow accepted).
 func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
@@ -50,6 +52,7 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R1c: nonexistent workflowId trigger create rejected with the named 400`,         // the create contract, live-API (35597973572)
 		`R1d: ghost targetWorkspaceId PATCH on the workflow rejected with the named 400`, // the audit's update face, live-API
 		`R1d: ghost workflowId PATCH on the trigger rejected with the named 400 (#1519)`, // the #1519 update face, live-API
+		`R1d-happy: PATCH retarget to existing workflow`,                                 // the #1519 update contract's accept arm, live-API
 		`R1e: ghost workspaceId run override rejected with the named 400`,                // the run-override face (instance 4), live-API
 		`R1f: org auto-apply ghost serverId answers the named 404`,                       // instance 5's reachable face, live-API
 		`R1f: org bind ghost serverId answers the named 404`,                             // instance 5's bind face, live-API

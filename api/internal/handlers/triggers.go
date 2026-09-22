@@ -560,6 +560,25 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		if !h.validateUpdateMapping(c, ownerType, ownerID, existing, &req, mergedWorkflowID) {
 			return
 		}
+		// #1519: workflow-existence check on the POST-PATCH MERGED view —
+		// create's contract (triggers.go create arm), mirrored. The
+		// V-matrix's un-opted NotFound arm deliberately skips (V6's ghost
+		// tolerance); this check closes the hole: a retarget to a
+		// nonexistent workflow or a stored ghost (legacy cross-owner /
+		// pre-#1517 wiring) surfaced by ANY mapping-touching patch answers
+		// the named 400 here, never the store FK's opaque 500 or a silent
+		// persist that fires trigger_has_no_target at drain. As on the
+		// create arm, the V-matrix pre-fetch has already answered
+		// non-NotFound lookup faults (500) — the only error reachable
+		// HERE is NotFound, so this arm carries just the contract 400 (a
+		// hypothetical non-NotFound error falls through to the update,
+		// where the FK answers identically to the pre-fix 500).
+		if mergedWorkflowID != "" {
+			if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, mergedWorkflowID); errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+				return
+			}
+		}
 	}
 
 	// #1442: the post-patch row must keep an execution target. The 0059
@@ -571,22 +590,17 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		return
 	}
 
-	// The parent-id audit on the UPDATE view (#1519): a PATCHED target
-	// must resolve — nonexistent workflowId/workspaceId patches
+	// The parent-id audit on the UPDATE view (#1519/#1522): a PATCHED
+	// target must resolve — nonexistent workflowId/workspaceId patches
 	// previously reached the FK as an opaque 500 ("failed to update
-	// trigger"). Named 400s, scoped to the PATCHED value ONLY: STORED
-	// targets are FK-anchored and stay untouched (a legacy row with a
-	// cross-owner workflowId remains patchable for mitigation — the
-	// #1440 loud-fire zombie tolerates enabled:false; re-validating
-	// stored state on every patch would take that away). Cross-owner
-	// PATCHED targets answer the same named 400 as nonexistent ones
-	// (owner-scoped GetWorkflow; no existence oracle, matching create).
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, *req.WorkflowID); errors.Is(err, wf.ErrNotFound) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
-			return
-		}
-	}
+	// trigger"). The workflowId half is answered by the #1519 merged-view
+	// check inside the mapping block above (every workflowId patch
+	// touches mapping, so that check always runs first and additionally
+	// surfaces stored ghosts on de-opt patches); this arm carries the
+	// workspaceId half via the existencer. STORED targets outside
+	// mapping-touching patches stay FK-anchored and untouched (a legacy
+	// row with a cross-owner workflowId remains patchable for mitigation
+	// — the #1440 loud-fire zombie tolerates enabled:false).
 	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
 		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
 		if err != nil {
@@ -639,9 +653,10 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID, triggerID stri
 //	    no body key).
 //	V3  an opted-in wiring must be able to reach its schema: a missing
 //	    target workflow cannot be validated (distinct from #1412's
-//	    fire-time ghost — still loud for wiring that PERSISTED before
-//	    this check, i.e. update-path rows and legacy triggers; new
-//	    un-opted ghost creates answer the create contract's 400 below).
+//	    fire-time ghost — still loud only for legacy rows never
+//	    re-touched after this check; every create and every
+//	    mapping-touching update now 400s at the #1519 existence check
+//	    before the store write).
 //	V4  inputFrom "mapped": the static document must satisfy the
 //	    workflow's inputSchema (absent schema accepts everything).
 //	V5  envelope/body + static input: the static document must be a JSON
@@ -650,11 +665,11 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID, triggerID stri
 //	    names properties beyond the source's envelope key set is rejected
 //	    with the three remedies — the narrowed O1 guard (D4). Legacy
 //	    triggers are never re-scanned; a missing workflow skips the guard
-//	    (nothing to require). Cross-owner references skip the guard (the
-//	    owner-scoped fetch misses them) wherever the wiring PERSISTS —
-//	    legacy rows and untouched stored targets; PATCHING or CREATING
-//	    one answers the parent-id contract's named 400. The engine
-//	    records a loud missing-workflow failed fire for persisted ones.
+//	    (nothing to require). Cross-owner references no longer reach any
+//	    arm: both #1519 checks (create and update) are owner-scoped
+//	    against the same view and 400 them before the store write; only
+//	    pre-check legacy rows ever persisted a ghost, and the engine
+//	    remains loud for those at fire time.
 func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType, ownerID, sourceType, workflowID, inputFrom string, input json.RawMessage) bool {
 	if !types.ValidTriggerInputFrom(inputFrom) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid inputFrom (want envelope, body, or mapped)"})
@@ -701,10 +716,11 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 			return false
 		}
 		if errors.Is(err, wf.ErrNotFound) {
-			// Guard skipped — the callers' parent-id checks answer a
-			// PATCHED/CREATED ghost right after; only STORED targets
-			// (legacy rows, untouched by a patch) persist onward to the
-			// loud fire-time ghost.
+			// V3/V6 guard skipped for un-opted wiring. Both callers now
+			// close the hole with their own #1519 existence check on the
+			// same merged view (the create arm at the pre-insert check,
+			// the update arm inside the touchesMapping block) — a ghost
+			// target 400s there before the store write.
 			return true
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
