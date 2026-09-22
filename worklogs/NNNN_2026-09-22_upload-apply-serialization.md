@@ -8,7 +8,7 @@
 
 ## Objective
 
-The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×single = 622ms. Triage: `applyMu`'s TryLock was a REAL DEFECT — a capacity-1 instant-reject a capacity-1 instant-reject — the shape §6.6's detector exists to catch (§8 item 3 is INDIFFERENT, and a capacity-1 lock silently forecloses the parallel arm) — but the issue's own evidence (`refused=0` on the measured row) proves it was INERT during the 891ms: TryLock has no wait path, so with zero rejections it contributed zero latency. The 891ms residual is I/O contention (4 parallel 10MiB streams on tmpfs/PVC), untracked by this diff. The lock removal fixes the defect class; the latency guard re-measures post-merge.
+The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×single = 622ms. Triage: `applyMu`'s TryLock was a REAL DEFECT — a capacity-1 instant-reject, the shape §6.6's detector exists to catch (§8 item 3 is INDIFFERENT, and a capacity-1 lock silently forecloses the parallel arm) — but the issue's own evidence (`refused=0` on the measured row) proves it was INERT during the 891ms: TryLock has no wait path, so with zero rejections it contributed zero latency. The 891ms residual is I/O contention (4 parallel 10MiB streams on tmpfs/PVC), untracked by this diff. The lock removal fixes the defect class; the latency guard re-measures post-merge.
 
 ---
 

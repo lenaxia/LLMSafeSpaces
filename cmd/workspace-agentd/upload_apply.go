@@ -108,8 +108,8 @@ func (e *applyError) Error() string { return e.code + ": " + e.msg }
 // hard-blocked single write syscall is the documented residual (no
 // portable per-fd deadline). Applies run CONCURRENTLY (#1539):
 // targets are uuid-independent, concurrency is bounded upstream by
-// the staging admission cap — the design §8 item 3 resolved to
-// parallel per §6.6's detector.
+// the staging admission cap (§8 item 3 is indifferent; §6.6's
+// detector caught the capacity-1 lock foreclosing the parallel arm).
 func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (map[string]any, *applyError) {
 	id, _ := params["upload_id"].(string)
 	staged, _ := params["staged_name"].(string)
