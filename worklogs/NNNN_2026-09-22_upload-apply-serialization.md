@@ -8,7 +8,7 @@
 
 ## Objective
 
-The design-0060 §6.6 SR-6 guard fired on first full-stack contact: concurrent upload p95@4 = 891ms > 2×single = 622ms. The root cause: `applyMu sync.Mutex` at upload_apply.go serialized ALL applies globally via TryLock — an implementation defect (the design §8 item 3 was indifferent; §6.6's characterization guard exists precisely to detect this class). Remove the lock, pin the parallel behavior.
+The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×single = 622ms. Triage: `applyMu`'s TryLock was a REAL DEFECT — a capacity-1 instant-reject violating §8 item 3's independence mandate — but the issue's own evidence (`refused=0` on the measured row) proves it was INERT during the 891ms: TryLock has no wait path, so with zero rejections it contributed zero latency. The 891ms residual is I/O contention (4 parallel 10MiB streams on tmpfs/PVC), untracked by this diff. The lock removal fixes the defect class; the latency guard re-measures post-merge.
 
 ---
 
@@ -24,7 +24,7 @@ The design-0060 §6.6 SR-6 guard fired on first full-stack contact: concurrent u
 
 1. The lock's stated rationale ("fd pressure flat") was redundant: the staging admission already caps concurrent uploads at UPLOAD_STAGING_MAX_CONCURRENT (default 4). The supervisor sees at most 4 concurrent applies by construction.
 2. The §3.2 `busy` enum member kept in the protocol mapping (a future supervisor could re-emit it for a real bounded queue); only the Go-level lock removed.
-3. The mutation's insertion point matters: the ORIGINAL lock sat after param validation but before the staged open. The mutation verified at the `stagedPath` insertion — the correct serialization point (before any I/O).
+3. [CORRECTED r2 — the r1 note was factually wrong] The original TryLock sat IMMEDIATELY BEFORE `stagedPath := filepath.Join(...)` — exactly the staged-open insertion point the mutation used. Same location; no "different point" existed.
 
 ---
 
@@ -44,7 +44,7 @@ None.
 
 ## Next Steps
 
-- The SR-6 e2e guard auto-tightens when this lands (the known-issue skip on #1540).
+- The SR-6 known-issue override does NOT auto-tighten: it requires manual removal in a follow-up after the nightly confirms the pass state (the convention pinned by TestUploadStress_SR6KnownIssueSkip). If the guard re-trips post-merge, the latency triage continues — the lock removal fixed a real defect but the 891ms row's residual cause is I/O contention (4 parallel 10MiB streams), untracked by this diff.
 
 ---
 
