@@ -54,7 +54,7 @@ None.
 - `local/issue_1410_automation_e2e_script_test.go` — R1d/R1d-happy ledger needles
 - `design/0059_2026-09-17_trigger-input-mapping.md` — §8 OQ2 amended RESOLVED (both halves)
 - `CHANGELOG.md` — [Unreleased] entry
-- `worklogs/NNNN_2026-09-22_update-path-workflow-contract.md`
+- `worklogs/1039_2026-09-22_update-path-workflow-contract.md`
 
 ## Review Round 1 (the contract was too narrow — the ruling's merged-view scope adopted)
 
