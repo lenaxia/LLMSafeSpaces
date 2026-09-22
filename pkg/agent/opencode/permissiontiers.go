@@ -157,7 +157,11 @@ func tierMatch(resource, pattern string) bool {
 // never weakened by operator input.
 //
 // Soundness: every tier deny is an exact path or a trailing-"/\*"
-// prefix glob. An exact deny D intersects pattern p iff p matches D
+// prefix glob — AND carries NO "?" bytes (the deny-shape premise pin
+// enforces both test-side; a "?-bearing deny would under-approximate
+// here: the exact branch feeds its bytes to tierMatch as a literal
+// resource while the live matcher compiles them as any-char). An exact
+// deny D intersects pattern p iff p matches D
 // (single concrete string — complete check). A deny "X/\*" intersects
 // p iff p can match some string beginning "X/": with L the literal
 // prefix of p before its FIRST WILDCARD of either kind ("\*" or "?",
