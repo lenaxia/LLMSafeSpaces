@@ -169,6 +169,12 @@ type relayLivenessMonitor struct {
 	stateMu sync.Mutex
 	state   agentd.RelayHealth
 
+	// US-72.6: the one-time legacy scrub hook — fired on the first
+	// Present=true observation (a post-flip pod); scrubOnce guarantees
+	// exactly one execution for the monitor's lifetime.
+	onFirstPresent func()
+	scrubOnce      sync.Once
+
 	// armed is the single-re-arm CAS guard (0 = no re-arm loop in
 	// flight). Set when arming; cleared by the re-arm loop itself on
 	// success/already-applied (the only paths that end it while the
@@ -177,13 +183,20 @@ type relayLivenessMonitor struct {
 }
 
 func newRelayLivenessMonitor(batchPath string, client *http.Client) *relayLivenessMonitor {
+	return newRelayLivenessMonitorWithHook(batchPath, client, nil)
+}
+
+// newRelayLivenessMonitorWithHook wires the US-72.6 first-present scrub
+// hook alongside the monitor.
+func newRelayLivenessMonitorWithHook(batchPath string, client *http.Client, onFirstPresent func()) *relayLivenessMonitor {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &relayLivenessMonitor{
-		registry: newRelayRegistry(batchPath),
-		client:   client,
-		now:      time.Now,
+		registry:       newRelayRegistry(batchPath),
+		client:         client,
+		now:            time.Now,
+		onFirstPresent: onFirstPresent,
 	}
 }
 
@@ -221,6 +234,13 @@ func (m *relayLivenessMonitor) evaluate(ctx context.Context) string {
 		return relayEvalAbsent
 	}
 	next.Present = true
+	// US-72.6: the first observation of relay-fronted providers marks
+	// this a post-flip pod — run the one-time legacy-key scrub (the
+	// sync.Once makes re-evaluations no-ops; a scrub error is recorded,
+	// never fatal — the migration is best-effort with a loud report).
+	if m.onFirstPresent != nil {
+		m.scrubOnce.Do(m.onFirstPresent)
+	}
 	next.RouterURL = routerOrigin(refs[0].BaseURL)
 
 	// Local expiry first (honor ExpiresAt — no probe needed to know).

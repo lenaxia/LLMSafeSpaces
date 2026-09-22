@@ -110,7 +110,7 @@ func TestRelayEmission_HealthzSurfacesRelayDegrade(t *testing.T) {
 			RouterURL: "http://router.invalid", LastProbeAt: time.Now().Unix(),
 		}
 	}
-	handler := healthzHandler(time.Now(), "", nil, nil, relaySnap)
+	handler := healthzHandler(time.Now(), "", nil, nil, relaySnap, nil)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
@@ -214,7 +214,7 @@ func TestRelayEmission_EnricherResolvesModelsThroughRouter(t *testing.T) {
 // wiring) keeps every surface empty — the flag-off pod contract.
 func TestRelayEmission_NilMonitorIsSilent(t *testing.T) {
 	assert.Nil(t, relayLivenessSnapshotFor(nil)())
-	handler := healthzHandler(time.Now(), "", nil, nil, relayLivenessSnapshotFor(nil))
+	handler := healthzHandler(time.Now(), "", nil, nil, relayLivenessSnapshotFor(nil), nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 	var resp agentd.HealthzResponse

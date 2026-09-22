@@ -138,6 +138,22 @@ type HealthzResponse struct {
 	// only — a relay degrade never flips Healthy (it must not cascade to
 	// a liveness-probe kill; the §4.8 remedy is bounded re-arm).
 	Relay *RelayHealth `json:"relay,omitempty"`
+	// LegacyScrub (US-72.6, design 0058 §8) is the one-time legacy-key
+	// migration scrub's outcome: run at boot the first time the batch
+	// observes relay-fronted providers (a post-flip pod). Nil when the
+	// scrub has not run (flag-off pods). Observability only.
+	LegacyScrub *LegacyScrubHealth `json:"legacyScrub,omitempty"`
+}
+
+// LegacyScrubHealth is the US-72.6 scrub slice of HealthzResponse: the
+// one-time removal counts and any error. The controller mirrors it into
+// the LegacyKeysScrubbed condition and emits the event on first
+// observation (idempotent thereafter — the report is static).
+type LegacyScrubHealth struct {
+	RanAt             int64  `json:"ranAt"`
+	AuthKeysRemoved   int    `json:"authKeysRemoved"`
+	ConfigKeysRemoved int    `json:"configKeysRemoved"`
+	Error             string `json:"error,omitempty"`
 }
 
 // PendingApplyHealth is the deferred-apply slice of HealthzResponse.

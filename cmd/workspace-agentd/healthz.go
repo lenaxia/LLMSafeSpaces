@@ -65,7 +65,7 @@ import (
 // AND a `degraded:<reason>` warning — never as Healthy=false (a relay
 // outage must not cascade to a liveness-probe kill; the remedy is the
 // bounded re-arm + conditions, §4.8).
-func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth, relaySnapshot func() *agentd.RelayHealth) http.HandlerFunc {
+func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth, relaySnapshot func() *agentd.RelayHealth, legacyScrubSnapshot func() *agentd.LegacyScrubHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		warnings := modelResolutionWarnings(modelWarnPath)
 		var spawnEnv *agentd.SpawnEnvHealth
@@ -86,6 +86,10 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 				warnings = append(warnings, w)
 			}
 		}
+		var legacyScrub *agentd.LegacyScrubHealth
+		if legacyScrubSnapshot != nil {
+			legacyScrub = legacyScrubSnapshot()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
 			Healthy:       true,
@@ -97,6 +101,7 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 			SpawnEnv:      spawnEnv,
 			PendingApply:  pendingApply,
 			Relay:         relay,
+			LegacyScrub:   legacyScrub,
 			Warnings:      warnings,
 		})
 	}

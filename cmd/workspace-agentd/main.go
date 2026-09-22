@@ -132,6 +132,13 @@ func main() {
 		os.Exit(runRedactCommand(os.Args[2:]))
 	}
 
+	// Epic 72 US-72.6 (design 0058 §8): the legacy-key migration scrub —
+	// removes pre-flip provider-key plaintext from the two platform-shaped
+	// PVC residue surfaces (the design 0051 §3 boundary: nothing else).
+	if len(os.Args) > 1 && os.Args[1] == "scrub-legacy-keys" {
+		os.Exit(runScrubLegacyKeysCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	// Design 0053 S3: the pod execs this binary directly (the baked
 	// entrypoint's verify_and_select_agentd is deleted). Same
 	// fail-closed self-verify as supervise-opencode — exit 81 keeps the
@@ -260,8 +267,14 @@ func main() {
 	// loudly + re-arms on outage — never a crashloop. Flag-off pods
 	// observe no relay entries: the loop idles at one file rescan per
 	// tick, zero HTTP.
-	relayLiveness := newRelayLivenessMonitor(bootstrapSecretsOutFromEnv(), nil)
+	// US-72.6 (design 0058 §8): the one-time legacy-key scrub rides the
+	// relay monitor's first Present=true observation (a post-flip pod) —
+	// the report lands on healthz/statusz for the controller's
+	// LegacyKeysScrubbed mirror. A flag-off pod never fires it.
+	legacyScrub := newLegacyScrubTracker("/workspace")
+	relayLiveness := newRelayLivenessMonitorWithHook(bootstrapSecretsOutFromEnv(), nil, legacyScrub.runOnce)
 	deps.relayLiveness = relayLiveness
+	deps.legacyScrub = legacyScrub
 	startRelayLiveness(bgCtx, &bgWg, relayLiveness, relayLivenessConfig{})
 
 	// Nil guard: bare `workspace-agentd` (server-only, no --supervise)

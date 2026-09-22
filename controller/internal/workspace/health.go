@@ -196,6 +196,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 			RelayRevision:  relayRevisionOf(healthResp.Relay),
 		}
 	}
+	// US-72.6 (design 0058 §8): the one-time legacy-key scrub report →
+	// the LegacyKeysScrubbed condition (+ the exactly-once event).
+	r.mirrorLegacyScrub(ws, healthResp.LegacyScrub)
 	// #1342 item 4 (L11): mirror the deferred-credential-apply state so
 	// operators see WHY a credential change has not applied — it rides a
 	// maintenance window behind busy sessions. Absent field (nothing
@@ -215,6 +218,45 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 // relayRevisionOf extracts the applied relay revision from a relay
 // liveness slice (nil-safe).
+// mirrorLegacyScrub (US-72.6, design 0058 §8): statusz's one-time
+// scrub report → the LegacyKeysScrubbed condition (idempotent by
+// setCondition's status+reason dedupe) + the LegacyKeysScrubbed event
+// EXACT ONCE per report-change (the report is static after the boot
+// scrub, so the event fires on first observation only — a persisted
+// last-observed annotation makes the idempotency survive controller
+// restarts).
+func (r *WorkspaceReconciler) mirrorLegacyScrub(ws *v1.Workspace, rep *agentd.LegacyScrubHealth) {
+	if rep == nil {
+		return
+	}
+	summary := fmt.Sprintf("auth=%d config=%d", rep.AuthKeysRemoved, rep.ConfigKeysRemoved)
+	noticeable := rep.AuthKeysRemoved > 0 || rep.ConfigKeysRemoved > 0 || rep.Error != ""
+	if rep.Error != "" {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "False", "ScrubError", rep.Error)
+	} else if noticeable {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "True", "KeysRemoved", "legacy keys removed: "+summary)
+	} else {
+		r.setCondition(ws, v1.WorkspaceConditionLegacyKeysScrubbed, "True", "Clean", "clean")
+	}
+	if !noticeable || r.Recorder == nil {
+		return
+	}
+	const annKey = "llmsafespaces.dev/legacy-scrub-reported"
+	stamp := summary
+	if rep.Error != "" {
+		stamp = "error"
+	}
+	if ws.Annotations[annKey] == stamp {
+		return // already reported this exact outcome
+	}
+	if ws.Annotations == nil {
+		ws.Annotations = map[string]string{}
+	}
+	ws.Annotations[annKey] = stamp
+	r.Recorder.Eventf(ws, "Normal", "LegacyKeysScrubbed",
+		"one-time legacy-key scrub complete (%s)", summary)
+}
+
 func relayRevisionOf(relay *agentd.RelayHealth) string {
 	if relay == nil {
 		return ""
