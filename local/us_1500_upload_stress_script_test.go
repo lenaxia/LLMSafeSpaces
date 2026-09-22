@@ -268,3 +268,71 @@ func TestUploadStress_SR6Gate_Executes(t *testing.T) {
 		assert.NotContains(t, out, "NOTE_FAIL")
 	})
 }
+
+// TestUploadStress_SR6KnownIssueSkip pins the #1539 known-issue override:
+// the serialization guard's failure path is a sr_skip referencing the
+// issue (the nightly proceeds past a known-and-filed finding), NOT a
+// note_fail — and the override must be REMOVED when #1539 closes.
+func TestUploadStress_SR6KnownIssueSkip(t *testing.T) {
+	src, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	s := string(src)
+	assert.Contains(t, s, "KNOWN ISSUE #1539",
+		"the serialization guard's catch is a known-issue skip referencing #1539 — the finding is real and filed")
+	assert.Contains(t, s, "tighten on fix",
+		"the skip must carry the tighten-back instruction")
+	assert.NotContains(t, s, `note_fail "SR-6: per-upload max`,
+		"the serialization guard's catch must NOT be a note_fail while #1539 is open — the nightly would stay red behind a filed finding")
+}
+
+// TestUploadStress_SR6Guard_TripAndPass executes the REAL SR-6 guard
+// block (extracted past the concurrency boundary — the region the gate
+// test doesn't reach): trip values produce the LOUD, COUNTED skip (never
+// a silent log/warn downgrade); pass values produce the ok. This is the
+// only test that catches sr_skip -> log/warn silent-downgrade regressions.
+func TestUploadStress_SR6Guard_TripAndPass(t *testing.T) {
+	bash := requireBash(t)
+	src, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	text := string(src)
+
+	// Extract the SR-6 regression guard: the if/le/else/sr_skip/fi block.
+	skipIdx := strings.Index(text, "sr_skip \"SR-6: per-upload max")
+	require.Greater(t, skipIdx, 0, "the SR-6 skip not found in the script")
+	ifIdx := strings.LastIndex(text[:skipIdx], "SR6_GUARD=$((2 * L1))")
+	require.Greater(t, ifIdx, 0, "the guard's SR6_GUARD line not found")
+	fiIdx := strings.Index(text[skipIdx:], "fi\n")
+	require.Greater(t, fiIdx, 0, "the guard's fi not found")
+	block := text[ifIdx : skipIdx+fiIdx+3]
+
+	run := func(p95, single int) (string, error) {
+		harness := `set -u
+sr_skips=0
+failures=0
+note_fail() { failures=$((failures + 1)); echo "NOTE_FAIL: $*" >&2; }
+sr_skip() { sr_skips=$((sr_skips + 1)); echo "SKIP-DOWN: $*" >&2; }
+ok() { echo "OK: $*" >&2; }
+`
+		vars := "SR6_P95=" + fmt.Sprintf("%d", p95) + " L1=" + fmt.Sprintf("%d", single) + " SR6_GUARD=" + fmt.Sprintf("%d", single*2) + "\n"
+		script := vars + harness + block + "\necho sr_skips=$sr_skips failures=$failures"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("trip (891 > 622 guard): loud counted skip, never note_fail", func(t *testing.T) {
+		out, err := run(891, 311)
+		require.NoError(t, err, "the known-issue skip must exit clean: %s", out)
+		assert.Contains(t, out, "SKIP-DOWN: SR-6: per-upload max(p95@N≤4) 891ms > 2×single (311ms → guard 622ms) — serialization? KNOWN ISSUE #1539",
+			"the trip must produce the exact loud skip message")
+		assert.NotContains(t, out, "NOTE_FAIL", "the trip must NOT be a note_fail while #1539 is open")
+		assert.Contains(t, out, "sr_skips=1", "the skip must be COUNTED (sr_skip increments the ledger — a log/warn downgrade does not)")
+	})
+
+	t.Run("pass (400 ≤ 622 guard): ok, no skip", func(t *testing.T) {
+		out, err := run(400, 311)
+		require.NoError(t, err)
+		assert.Contains(t, out, "OK: SR-6: regression guard", "the pass path must produce the ok")
+		assert.NotContains(t, out, "SKIP-DOWN")
+		assert.Contains(t, out, "sr_skips=0")
+	})
+}
