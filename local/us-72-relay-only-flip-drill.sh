@@ -78,6 +78,15 @@ api_authed() { # method path [json-body] -> response body (dies on non-2xx)
         -H "Authorization: Bearer ${AUTH_TOKEN:?login first}" \
         -H "Content-Type: application/json" -d "${body}" \
         "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || code=000)
+    if [[ "${code}" == "401" ]]; then
+        # Long drill dwells outlive sessions — re-login once and retry
+        # (the lib's bind_env precedent).
+        login_harness_user >/dev/null 2>&1 || true
+        code=$(curl -sm 30 -o "${out}" -w '%{http_code}' -X "${method}" \
+            -H "Authorization: Bearer ${AUTH_TOKEN:?re-login failed}" \
+            -H "Content-Type: application/json" -d "${body}" \
+            "http://127.0.0.1:${PORTFWD_PORT}${path}" 2>/dev/null || code=000)
+    fi
     if [[ "${code}" != 2* ]]; then
         die "api_authed ${method} ${path}: HTTP ${code}: $(head -c 300 "${out}")"
     fi
@@ -91,11 +100,22 @@ flip() { # true|false
         --wait --timeout "${FLIP_WAIT_S}s" >/dev/null
     kubectl --context "${CTX}" -n "${NS}" rollout status deployment/llmsafespaces-controller --timeout=180s >/dev/null
     kubectl --context "${CTX}" -n "${NS}" rollout status deployment/llmsafespaces-api --timeout=180s >/dev/null
+    # The api pod template is gated on the flag — EVERY flip rolls the
+    # deployment and severs the harness port-forward (kubectl binds a
+    # forward to ONE pod; it does not re-resolve). Re-establish it or
+    # every API call after the first flip dies with HTTP 000 (the r3
+    # fatal finding).
+    api_portforward_restart
+    # The harness JWT survives the roll, but re-login is cheap and
+    # keeps the DEK session fresh across the drill's dwell.
+    login_harness_user >/dev/null 2>&1 || true
 }
 
 condition() { # ws cond-type -> "True"/"False"/"None"
-    kc get workspace "$1" -o jsonpath='{.status.conditions}' 2>/dev/null \
-        | jq -r --arg t "$2" '[.[] | select(.type == $t)][0].status // "None"'
+    # A transport failure yields None (the caller's note_fail), never a
+    # pipefail abort mid-row.
+    (kc get workspace "$1" -o jsonpath='{.status.conditions}' 2>/dev/null \
+        || echo '[]') | jq -r --arg t "$2" '[.[] | select(.type == $t)][0].status // "None"'
 }
 
 cycle_pod() { # ws — bounded suspend/resume (the #1087-compliant 5s variant)
@@ -113,6 +133,8 @@ sweep_hits() { # ws -> count of canary hits
     local ws="$1" pod
     pod=$(pod_of "${ws}")
     [[ -n "${pod}" ]] || { echo 1; return; } # no pod = cannot prove clean = a hit
+        # A transport failure counts as a HIT (cannot prove clean = fail
+    # the row) — a row verdict, never a pipefail abort mid-drill.
     kc exec "${pod}" -c workspace -- bash -c '
         hits=0
         for p in /sandbox-runtime/agent-config.json \
@@ -131,7 +153,7 @@ sweep_hits() { # ws -> count of canary hits
         env_hits=$(grep -a -c "'"${CANARY_KEY}"'" /proc/self/environ 2>/dev/null || true)
         [[ "${env_hits}" =~ ^[0-9]+$ ]] || env_hits=0
         echo $((hits + env_hits))
-    ' 2>/dev/null | tail -1
+    ' 2>/dev/null | tail -1 || echo 1
 }
 
 config_field() { # ws field -> the drill provider's rendered field (or "")
@@ -151,11 +173,20 @@ config_baseurl() { config_field "$1" baseURL; }
 # -----------------------------------------------------------------------------
 log "R1 — flip ON (relayOnlyKeyDelivery.enabled=true)"
 flip true
-if kubectl --context "${CTX}" -n "${RELAY_NS}" get deployment llm-relay-router >/dev/null 2>&1 \
-    && [[ "$(kubectl --context "${CTX}" -n "${RELAY_NS}" get deploy llm-relay-router -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)" -ge 1 ]]; then
-    ok "llm-relay router deployed and ready"
+router_ready() {
+    local ready spec
+    ready=$(kubectl --context "${CTX}" -n "${RELAY_NS}" get deploy llm-relay-router \
+        -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+    spec=$(kubectl --context "${CTX}" -n "${RELAY_NS}" get deploy llm-relay-router \
+        -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 2)
+    [[ "${ready}" =~ ^[0-9]+$ ]] || ready=0
+    [[ "${spec}" =~ ^[0-9]+$ ]] || spec=2
+    (( ready >= spec ))
+}
+if kubectl --context "${CTX}" -n "${RELAY_NS}" get deployment llm-relay-router >/dev/null 2>&1 && router_ready; then
+    ok "llm-relay router deployed with ALL replicas ready"
 else
-    note_fail "R1: llm-relay router not ready — the flip gate is broken"
+    note_fail "R1: llm-relay router not fully ready — the flip gate is broken (a half-ready router is not a passed gate)"
 fi
 
 # -----------------------------------------------------------------------------

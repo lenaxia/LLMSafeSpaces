@@ -97,8 +97,24 @@ func TestUS72FlipDrill_ReusesStandingValues(t *testing.T) {
 	if !strings.Contains(src, "--reuse-values") {
 		t.Error("every helm upgrade in the drill must --reuse-values — otherwise the harness install's pinned values are reset mid-drill")
 	}
-	if strings.Contains(src, "helm upgrade --install llmsafespaces") && !strings.Contains(src, "--reuse-values") {
-		t.Error("unreachable (belt+braces)")
+}
+
+// flip() must re-establish the API port-forward after the rollouts: the
+// api pod template is gated on the flag, so EVERY flip rolls the
+// deployment and severs the forward (kubectl binds to one pod and never
+// re-resolves — the r3 fatal finding). Without this call every API
+// request after the first flip dies with HTTP 000 and R3/R4 — the
+// rollback positive control — are unreachable.
+func TestUS72FlipDrill_FlipRestoresPortForward(t *testing.T) {
+	src := mustReadUS72Flip(t)
+	flipStart := strings.Index(src, "flip() {")
+	if flipStart < 0 {
+		t.Fatal("flip() not found")
+	}
+	flipEnd := strings.Index(src[flipStart:], "\n}")
+	flipBody := src[flipStart : flipEnd+flipStart]
+	if !strings.Contains(flipBody, "api_portforward_restart") {
+		t.Error("flip() must call api_portforward_restart after the rollouts — every flip severs the harness forward (the api template is flag-gated)")
 	}
 }
 
