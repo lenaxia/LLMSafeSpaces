@@ -648,7 +648,7 @@ r10_attempt() { # suffix -> sets r10_verdict
     for _ in $(seq 1 30); do
         sleep 2
         fire_result=$(api GET "/api/v1/me/triggers/${trig_id}/fires" \
-            | jq -rc '.fires[] | select(.status=="failed" or .status=="delivered") | [.status, (.actionResult // "")] | @tsv' | head -1 || true)
+            | jq -rc '.fires[] | select(.status=="failed" or .status=="delivered") | [.status, ((.actionResult // "") | tostring)] | @tsv' | head -1 || true)
         if [[ -n "${fire_result}" ]]; then break; fi
     done
     if [[ "${fire_result}" == *"workspace activation failed"* ]]; then

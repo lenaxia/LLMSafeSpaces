@@ -222,6 +222,10 @@ func TestIssue1410E2E_ArbitrationFinal5(t *testing.T) {
 		"actionResult extraction must use jq -rc (compact) — jq -r pretty-prints the JSON object and head -1 returns just '{' (run 35752548377)")
 	compactCount := strings.Count(src, `jq -rc '.fires[]`)
 	assert.Greater(t, compactCount, 0, "at least one jq -rc extraction must exist")
+	// R10's @tsv pipeline must tostring the actionResult member — @tsv
+	// rejects objects regardless of -r/-rc (r1's no-op catch).
+	assert.Contains(t, src, `(.actionResult // "") | tostring`,
+		"R10's @tsv pipeline must tostring the actionResult — @tsv cannot serialize the JSON object the engine writes (engine.go:799)")
 
 	// 2) R4d loop: no [[ ]] && break pattern in the file.
 	assert.NotContains(t, src, `]] && break`,
