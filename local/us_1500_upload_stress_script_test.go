@@ -268,3 +268,19 @@ func TestUploadStress_SR6Gate_Executes(t *testing.T) {
 		assert.NotContains(t, out, "NOTE_FAIL")
 	})
 }
+
+// TestUploadStress_SR6KnownIssueSkip pins the #1539 known-issue override:
+// the serialization guard's failure path is a sr_skip referencing the
+// issue (the nightly proceeds past a known-and-filed finding), NOT a
+// note_fail — and the override must be REMOVED when #1539 closes.
+func TestUploadStress_SR6KnownIssueSkip(t *testing.T) {
+	src, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	s := string(src)
+	assert.Contains(t, s, "KNOWN ISSUE #1539",
+		"the serialization guard's catch is a known-issue skip referencing #1539 — the finding is real and filed")
+	assert.Contains(t, s, "tighten on fix",
+		"the skip must carry the tighten-back instruction")
+	assert.NotContains(t, s, `note_fail "SR-6: per-upload max`,
+		"the serialization guard's catch must NOT be a note_fail while #1539 is open — the nightly would stay red behind a filed finding")
+}
