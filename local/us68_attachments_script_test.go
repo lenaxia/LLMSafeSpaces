@@ -80,7 +80,7 @@ func TestUS68SidecarGate_DetectsNativeSidecar(t *testing.T) {
 		t.Fatal("sidecar gate block not found in us-68-attachments-e2e.sh — did the gate change shape?")
 	}
 
-	run := func(containers, uploadStatus string) (string, error) {
+	run := func(containers, uploadStatuses, wsFiles string) (string, error) {
 		script := `set -u
 NS=ns; POD_A=pod-a; WS_A=ws-a; KEY_A=key
 kc() { printf '%s\n' '` + containers + `'; }
@@ -88,8 +88,16 @@ warn() { printf 'WARN %s\n' "$*"; }
 log()  { printf 'LOG %s\n' "$*"; }
 ok()   { printf 'OK %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*" >&2; exit 1; }
-upload_do() { UPLOAD_STATUS='` + uploadStatus + `'; BODY=stub-body; }
-exec_ws() { return 0; }
+_UPSEQ="` + uploadStatuses + `"
+_UPN=0
+upload_do() {
+	_UPN=$((_UPN + 1))
+	UPLOAD_STATUS=$(printf '%s' "${_UPSEQ}" | cut -d'|' -f${_UPN})
+	[ -z "${UPLOAD_STATUS}" ] && UPLOAD_STATUS=$(printf '%s' "${_UPSEQ}" | cut -d'|' -f$((${_UPN} - 1)))
+	BODY=stub-body
+}
+exec_ws() { printf '%s\n' '` + wsFiles + `'; }
+sleep() { :; }
 ` + gate + `
 echo GATE-FELL-THROUGH`
 		out, err := exec.Command(bash, "-c", script).CombinedOutput()
@@ -97,7 +105,7 @@ echo GATE-FELL-THROUGH`
 	}
 
 	t.Run("pre-0060 sidecar (503) -> loud skip, exit 0", func(t *testing.T) {
-		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "503")
+		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "503", "")
 		if err != nil {
 			t.Fatalf("pre-0060 sidecar path must exit 0 (the nightly proceeds past the skip), got: %v\n%s", err, out)
 		}
@@ -116,7 +124,7 @@ echo GATE-FELL-THROUGH`
 	})
 
 	t.Run("0060-landed sidecar (201) -> falls through to the rows", func(t *testing.T) {
-		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "201")
+		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup agentd", "201", "")
 		if err != nil {
 			t.Fatalf("0060-landed sidecar must fall through to E2/E10/E11, got: %v\n%s", err, out)
 		}
@@ -134,8 +142,44 @@ echo GATE-FELL-THROUGH`
 		}
 	})
 
+	t.Run("502 persistent (retries to same) -> loud skip", func(t *testing.T) {
+		out, err := run("workspace agentd", "502|502", "")
+		if err != nil {
+			t.Fatalf("persistent 502 must be the designed pre-0060 clean-fail, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "upload rejected cleanly with 502") {
+			t.Fatalf("502 leg must print the clean-fail verdict, got: %q", out)
+		}
+		if strings.Contains(out, "GATE-FELL-THROUGH") {
+			t.Fatalf("persistent 502 must skip, not fall through: %q", out)
+		}
+	})
+
+	t.Run("502 transient (retries to 201) -> falls through", func(t *testing.T) {
+		out, err := run("workspace agentd", "502|201", "")
+		if err != nil {
+			t.Fatalf("a transient 502 blip that clears to 201 must fall through, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "GATE-FELL-THROUGH") {
+			t.Fatalf("the retry-to-success path must reach the rows, got: %q", out)
+		}
+		if !strings.Contains(out, "design 0060 stage-and-signal landed") {
+			t.Fatalf("the 201-after-retry must name design 0060, got: %q", out)
+		}
+	})
+
+	t.Run("503 with leaked files -> RO-mount die", func(t *testing.T) {
+		out, err := run("workspace agentd", "503", "abc123-sidecar.txt")
+		if err == nil {
+			t.Fatalf("files on disk despite the clean-fail must die, got: %q", out)
+		}
+		if !strings.Contains(out, "wrote files despite RO mount") {
+			t.Fatalf("the RO-mount die must name the violation, got: %q", out)
+		}
+	})
+
 	t.Run("broken shape (500) -> hard fail", func(t *testing.T) {
-		out, err := run("workspace agentd", "500")
+		out, err := run("workspace agentd", "500", "")
 		if err == nil {
 			t.Fatalf("a 500 upload is BROKEN, not a designed outcome — must die, got: %q", out)
 		}
@@ -145,7 +189,7 @@ echo GATE-FELL-THROUGH`
 	})
 
 	t.Run("single-container pod (init containers, no agentd) falls through", func(t *testing.T) {
-		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup", "201")
+		out, err := run("workspace platform-init platform-dirs workspace-setup credential-setup", "201", "")
 		if err != nil {
 			t.Fatalf("single-container path must fall through clean, got: %v\n%s", err, out)
 		}
@@ -542,4 +586,14 @@ func TestUS68NightlyF8_StepExecutes(t *testing.T) {
 			t.Fatalf("no probe pod may be created when the Service is absent, trace: %q", trace)
 		}
 	})
+}
+
+// TestUS68SidecarGate_E10LeakFilterPinsProbeFile pins the r1 blocker
+// fix: E10's leak filter must exclude the gate's own probe file — the
+// 201 fall-through's first full run would have died at E10 otherwise.
+func TestUS68SidecarGate_E10LeakFilterPinsProbeFile(t *testing.T) {
+	src := mustRead(t, us68AttachmentsScript)
+	if !strings.Contains(src, "grep -v sidecar.txt") {
+		t.Fatal("E10's leak filter must exclude the gate's probe file (grep -v sidecar.txt) — without it the 201 fall-through dies at E10 (r1's blocker)")
+	}
 }
