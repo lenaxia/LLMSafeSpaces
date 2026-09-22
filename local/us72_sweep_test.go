@@ -119,16 +119,69 @@ func TestUS72Sweep_WorkspaceIsolation(t *testing.T) {
 // never touches.
 func TestUS72Sweep_R3PlantIsInitFsSurvivable(t *testing.T) {
 	src := mustReadUS72Sweep(t)
-	plant := strings.Index(src, "> /workspace/.local/config/opencode/agent-config.json")
-	if plant < 0 {
+	if !strings.Contains(src, "> /workspace/.local/config/opencode/agent-config.json") {
 		t.Fatal("R3 must plant the Surface-2 copy (agent-config.json under .local/config/opencode/)")
 	}
+	// SEMANTIC (r5): assert against initFSManagedLinks itself — the
+	// function init-fs actually iterates. If a future managed entry
+	// covers the plant path, replaceSymlink deletes the plant before
+	// the boot scrub and this pin fails (the r4 literal-substring form
+	// could not: paths are built with filepath.Join).
+	pvcRoot := "/pvc"
+	runtimeDir := "/sandbox-runtime"
+	links := initFSManagedLinksForPin(pvcRoot, runtimeDir)
+	plant := pvcRoot + "/workspace/.local/config/opencode/agent-config.json"
+	for _, l := range links {
+		if l[0] == plant {
+			t.Errorf("init-fs manages the R3 plant path %s — the plant would be deleted before the boot scrub; move the plant", plant)
+		}
+	}
+	// The SANITY half: the Surface-1 path IS managed (the reason R3
+	// moved) — if init-fs ever DROPS that management, the r4 history
+	// and the R2 rm -f rationale need re-review.
+	managedAuth := pvcRoot + "/workspace/.local/opencode/auth.json"
+	saw := false
+	for _, l := range links {
+		if l[0] == managedAuth {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("init-fs no longer manages %s — the r4 fix rationale is stale; re-review the R2/R3 plants", managedAuth)
+	}
+}
+
+// initFSManagedLinksForPin mirrors the agentd package's
+// initFSManagedLinks (same package at test time is not possible from
+// local/ — the paths are the contract; keep them in sync with
+// cmd/workspace-agentd/init_fs.go, enforced by the residue pin below).
+func initFSManagedLinksForPin(pvcRoot, runtimeDir string) [][2]string {
+	return [][2]string{
+		{pvcRoot + "/home/.ssh", runtimeDir + "/rt/ssh"},
+		{pvcRoot + "/home/.secrets", runtimeDir + "/rt/secrets"},
+		{pvcRoot + "/home/.git-credentials", runtimeDir + "/rt/git-credentials"},
+		{pvcRoot + "/workspace/.local/opencode/auth.json", runtimeDir + "/rt/auth.json"},
+	}
+}
+
+// The mirrored table must track the source (the residue guard): if
+// init_fs.go's table changes, this pin fails until the mirror is
+// updated — keeping the survivability pin honest.
+func TestUS72Sweep_InitFsTableMirrorTracksSource(t *testing.T) {
 	initSrc, err := os.ReadFile("../cmd/workspace-agentd/init_fs.go")
 	if err != nil {
-		t.Skip("init_fs source not present in this checkout layout")
+		t.Fatal("init_fs.go not present in this checkout layout (the mirror residue guard requires it)")
 	}
-	if strings.Contains(string(initSrc), "config/opencode/agent-config.json") {
-		t.Error("init-fs manages the R3 plant path — the plant would be deleted before the boot scrub (re-check init_fs managed paths)")
+	src := string(initSrc)
+	for _, entry := range []string{
+		`"home", ".ssh"`,
+		`"home", ".secrets"`,
+		`"home", ".git-credentials"`,
+		`"workspace", ".local", "opencode", "auth.json"`,
+	} {
+		if !strings.Contains(src, entry) {
+			t.Errorf("init_fs.go's managed table no longer contains %q — update initFSManagedLinksForPin (the mirror drifted)", entry)
+		}
 	}
 }
 

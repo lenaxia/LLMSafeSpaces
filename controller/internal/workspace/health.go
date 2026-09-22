@@ -216,9 +216,6 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 			fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds), healthResp.Warnings))
 }
 
-// relayRevisionOf extracts the applied relay revision from a relay
-// liveness slice (nil-safe).
-//
 // mirrorLegacyScrub (US-72.6, design 0058 §8): healthz's (/v1/healthz —
 // the surface checkAgentHealth polls) one-time scrub report → the
 // LegacyKeysScrubbed condition (idempotent by setCondition's
@@ -283,6 +280,8 @@ func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Work
 	}
 }
 
+// relayRevisionOf extracts the applied relay revision from a relay
+// liveness slice (nil-safe).
 func relayRevisionOf(relay *agentd.RelayHealth) string {
 	if relay == nil {
 		return ""

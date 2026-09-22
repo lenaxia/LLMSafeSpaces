@@ -72,6 +72,7 @@ sweep_hits() {
         for p in /sandbox-runtime/agent-config.json \
                  /agentd-config/agent-config.json \
                  /workspace/.local/opencode/auth.json \
+                 /workspace/.local/config/opencode/agent-config.json \
                  /sandbox-cfg/secrets.json \
                  /sandbox-runtime/rt/secrets.json \
                  /sandbox-runtime/rt/auth.json; do
