@@ -172,10 +172,20 @@ func TestUploadStress_SR6DeliveryGate(t *testing.T) {
 	raw, err := os.ReadFile(uploadStressScript)
 	require.NoError(t, err)
 	src := string(raw)
+	assert.Contains(t, src, `if [[ "${L1_STATUS}" == "507" ]]`,
+		"the gate must key on 507 (the DESIGNED clean-fail) — a genuine 500/000/429 baseline reaches the failure path, not the skip")
 	assert.Contains(t, src, `sr_skip "SR-6: baseline upload`,
-		"SR-6's non-201 baseline must skip-DOWN loudly (the script's own idiom), not fail into a 36-minute storm grind")
+		"SR-6's 507 baseline must skip-DOWN loudly (the script's own idiom)")
 	assert.Contains(t, src, "delivery leg #1518/#1524 absent",
 		"the skip must name the missing activation (the stack's own PR refs)")
+	assert.Contains(t, src, `die "upload stress harness: ${failures} row(s) failed`,
+		"the gate's exit must propagate prior row failures (the verdict must not be bypassed)")
+	// The bare-wait hang guard: the SR-6 storms must wait per-pid.
+	perPid := strings.Count(src, `wait "${p}"`)
+	assert.GreaterOrEqual(t, perPid, 4,
+		"the storm joins must be per-pid waits (SR-1, SR-2, SR-6, SR-6B) — a bare `wait` also waits the immortal port-forward child (run 35679282297's actual hang mechanism)")
+	assert.NotContains(t, src, "\nwait\n",
+		"a bare `wait` waits the port-forward child spawned by harness_start — 36 minutes of silence until cancellation")
 
 	wf, err := os.ReadFile("../.github/workflows/e2e-nightly.yml")
 	require.NoError(t, err)
