@@ -1356,6 +1356,9 @@ func TestTriggerUpdate_TargetPresenceGuard(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
 		id := created["id"].(string)
 
+		// Seed carries the caller's owner fields — the mock's GetWorkflow
+		// is owner-scoped with NO #1517 OWNER-OVERRIDE, so the #1519
+		// retarget check resolves it for this caller.
 		store.workflows["wf-9"] = &wf.WorkflowRow{
 			ID: "wf-9", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
 		}
@@ -1419,8 +1422,9 @@ func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
 		Name: "zombie2", Enabled: true, SourceType: types.TriggerSourceCron,
 		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
 	}
-	// The repair target must exist for the caller's owner scope (#1519's
-	// existence check fires on retargeting patches).
+	// Seed carries the caller's owner fields — the mock's GetWorkflow is
+	// owner-scoped with NO #1517 OWNER-OVERRIDE, so the #1519 retarget
+	// check resolves it for this caller.
 	store.workflows["wf-repair"] = &wf.WorkflowRow{
 		ID: "wf-repair", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
 	}
@@ -1697,6 +1701,9 @@ func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 		// cannot silently persist onward to a loud drain fire.
 		store := newMockTriggerStore()
 		store.triggers["t-ghost"] = seedRow("t-ghost", wsPtr("wf-ghost"))
+		// Opt the row in with a static document so "de-opt" is literal:
+		// the patch's input:null clears it (touchesMapping fires).
+		store.triggers["t-ghost"].Input = json.RawMessage(`{"x":1}`)
 		// wf-ghost is NOT in the mock store — the owner-scoped GetWorkflow
 		// returns NotFound.
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
@@ -1707,6 +1714,14 @@ func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 			map[string]any{"input": nil})
 		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
 		assert.Contains(t, w.Body.String(), "target workflow not found")
+		// Nothing persisted: the stored ghost wiring is unchanged (still
+		// rejected — it just stays loud at drain rather than silently
+		// re-affirmed), and the static input was not cleared.
+		require.NotNil(t, store.triggers["t-ghost"].WorkflowID)
+		assert.Equal(t, "wf-ghost", *store.triggers["t-ghost"].WorkflowID,
+			"rejected de-opt must not alter the row")
+		assert.NotNil(t, store.triggers["t-ghost"].Input,
+			"the static input must survive the rejected de-opt")
 	})
 
 	t.Run("org-scope retarget to ghost → named 400 (shared handler, same arm)", func(t *testing.T) {
@@ -1728,6 +1743,9 @@ func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 		// GetWorkflow finds nothing → the named 400.
 		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
 		assert.Contains(t, w.Body.String(), "target workflow not found")
+		// Nothing persisted: the row still targets the workspace.
+		assert.Nil(t, store.triggers["t-org"].WorkflowID,
+			"rejected org-scope retarget must not persist")
 	})
 
 	t.Run("non-mapping patch on stored ghost stays editable", func(t *testing.T) {

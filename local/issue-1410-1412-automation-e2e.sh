@@ -166,9 +166,12 @@ fi
 
 # R1d-happy — the update contract's accept arm: PATCH retargeting to an
 # EXISTING own workflow 200s and persists.
-R1DH_WF=$(api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-r1dh-target",specYaml:"{\\\"nodes\\\":[{\\\"id\\\":\\\"n\\\",\\\"type\\\":\\\"script\\\",\\\"data\\\":{\\\"language\\\":\\\"python\\\",\\\"handler\\\":\\\"def handler(input): return {}\\\"}}],\\\"edges\\\":[]}",targetWorkspaceId:$w}')")
+R1DH_WF=$(jq -nc --arg w "${R5_WS}" '{name:"e2e-r1dh-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:$w}')
+api POST /api/v1/me/workflows "${R1DH_WF}"
 if [[ "${api_status}" == "201" ]]; then
-    R1DH_WF_ID=$(printf '%s' "${R1DH_WF}" | jq -r '.id')
+    R1DH_WF_ID=$(printf '%s' "${api_body}" | jq -r '.id')
     created_workflows+=("${R1DH_WF_ID}")
     R1DH_ID=$(create_trigger "e2e-r1dh-retarget" "0 3 1 * *")
     api PUT "/api/v1/me/triggers/${R1DH_ID}" \

@@ -35,7 +35,9 @@ func TestIssue1410E2EScript_BashSyntax(t *testing.T) {
 // missing-workflow fire (R4), run-input schema enforcement (R5), and
 // trigger input mapping (R6 — envelope-wiring guard, mapped static input,
 // webhook body mode over the rotated HMAC secret), the update-path
-// memory/capture cross-constraint (R9 — #1467).
+// memory/capture cross-constraint (R9 — #1467), and the update-path
+// workflow-existence contract (R1d/R1d-happy — #1519: ghost retarget
+// rejected with the named 400, retarget to an existing workflow accepted).
 func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
@@ -47,6 +49,8 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R1a: invalid cron expr rejected`,                         // 400 asserted
 		`R1b: nextFireAt is a future scheduled occurrence`,        // first-slot, not creation time
 		`R1c: nonexistent workflowId rejected with the named 400`, // the create contract, live-API (35597973572)
+		`R1d: ghost-workflow PATCH rejected with the named 400`,   // the update contract (#1519), live-API
+		`R1d-happy: PATCH retarget to existing workflow`,          // the update contract's accept arm (#1519)
 		// R2 — reschedule moves the slot immediately (#1410).
 		`"sourceConfig":{"expr":"0 4 1 * *","tz":"UTC"}`,     // the new schedule
 		`03:00" ]] && [[ "$(slot_hm "${r2_new}")" == "04:00`, // old→new slot asserted
