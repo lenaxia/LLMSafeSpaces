@@ -282,6 +282,7 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "${RELEASE_NAME}" \
     --set "externalSecret.postgresPassword=dev-pg-pw-2026" \
     --set "externalSecret.redisPassword=dev-redis-pw-2026" \
     --set "rbac.scope=cluster" \
+    --set relayOnlyKeyDelivery.enabled=false \
     --set "api.config.logging.development=true" \
     --set "controller.agentdDelivery.image=${AGENTD_REF}" \
     --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_BINARY_SHA}" \
