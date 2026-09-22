@@ -70,8 +70,8 @@ func TestUS68SidecarGate_ProbesInitContainers(t *testing.T) {
 // pre-0060 (503 → loud skip; 502-persistent → same via the retry;
 // 502-transient → retries to 201 and falls through), 0060-landed
 // (201 → falls through to E2/E10/E11), broken (500 → hard die; the
-// 503-RO-mount guard with leaked files → die), and single-container.
-// still fall through. Run 35697148238's adjudication: the gate
+// 503-RO-mount guard with leaked files → die), and single-container
+// pods still fall through. Run 35697148238's adjudication: the gate
 // distinguishes designed outcomes from broken ones, never absorbing
 // the latter.
 func TestUS68SidecarGate_DetectsNativeSidecar(t *testing.T) {
