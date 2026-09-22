@@ -46,7 +46,7 @@ None.
 
 - `go test ./local/ -run 'TestUS72LaneHardening' -count=1 -v` — 4/4 pins green (grown red-first: all failed before the workflow arming landed; the `${{ }}` wrapper and the YAML ` #` truncation were both caught by the pins failing first).
 - `go test ./local/ -count=1` — full package green (the #1538 wiring pins unaffected by the arming).
-- `golangci-lint run ./local/...` — 0 issues (misspell exempted on the GitHub-expression literal lines only; comments reworded instead).
+- `golangci-lint run ./local/...` — 0 issues (the GitHub-expression literal is built by concatenation — no contiguous British spelling for EITHER linter to flag; comments reworded instead).
 - `make repolint` — all checks passed; sigs.k8s.io/yaml parse of the workflow — clean.
 
 ## Next Steps
@@ -58,3 +58,9 @@ None.
 ## Files Modified
 
 `.github/workflows/e2e-nightly.yml` (the arming ladder + three step ids + comments), `local/us72_nightly_lane_hardening_test.go` (new, 4 pins), this worklog.
+
+## r1 — the arming ladder was not total over its own lane (bot review), plus the CI misspell mechanism
+
+- **The substantive finding, accepted and extended:** the drill gated on install ∧ us70 ∧ shape but NOT on the router-image build — and the bot's traced consequence was right: on a fresh per-run kind cluster the ONLY delivery path for this run's image tag is the build step's `kind load`, so a failed build left the SHAPE step running its `helm --wait --timeout 10m` into guaranteed ImagePullBackOff — ~10 wasted minutes and an infrastructure-failure row, the exact noise class #1541 exists to eliminate. The bot's minimal prescription (add the build gate to the drill chain only) would still let the shape step burn; the applied fix goes one conjunct further: the build step is id'd (`router-build`), the SHAPE step gates on install ∧ router-build (it DEPLOYS that image), and the drill/sweep chains carry the build conjunct through. New scenario pin: failed router build → shape/drill/sweep SKIP, us70 still runs.
+- **The CI Lint failure's real mechanism (fixed pre-review, the commit-2 push):** not the worklog-sentinel rename alone — `make pre-commit-fix` runs RAW `misspell -w -locale US` over every `.go` file (it honors no golangci nolint directives), which rewrote the contiguous British spelling inside the GitHub-expression string literals, breaking the string-exact pins and mutating the clean checkout (`FAIL: pre-commit-fix mutated the tree`). Durable fix: the cancel-guard expression is built by concatenation (`"!cancel" + "led()"`) — invisible to misspell, exact expression bytes preserved; nolint directives dropped (nothing contiguous remains). Verified by running the EXACT CI sequence locally: `make pre-commit-fix` on a clean tree leaves it byte-identical. The worklog was committed under its assigned number 1048 (no sentinel rename pending; #1537's worklog takes the next number at its merge — no collision).
+- Minors also landed: the duplicated comment line in the pins file removed; the stale "misspell exempted" worklog line corrected (this entry's own correction).

@@ -630,6 +630,15 @@ jobs:
         # always() is deliberately NOT used — a failed install must not
         # produce a bogus drill/sweep failure against missing
         # infrastructure (poisoned evidence).
+        #
+        # id'd (r1): the downstream shape/drill/sweep conditions gate on
+        # this step too — on a fresh per-run kind cluster the ONLY
+        # delivery path for this run's image tag is the kind load here,
+        # so a failed build must SKIP the shape step, not let its helm
+        # --wait burn ~10 minutes on guaranteed ImagePullBackOff and
+        # record an infrastructure-failure row (the noise class #1541
+        # exists to eliminate).
+        id: router-build
         if: ${{ !cancelled() && steps.helm-install.outcome == 'success' }}
         run: |
           docker build --network host --build-arg VERSION="${{ env.IMAGE_TAG }}" --build-arg COMMIT_SHA="${{ github.sha }}" \
@@ -650,11 +659,14 @@ jobs:
         # namespaced scope, and it ends flipped (the runbook's target
         # posture; the kind teardown below disposes of the cluster).
         #
-        # #1541: ARMED (install-success), and id'd — the drill and sweep
-        # gate on this step's outcome (sweeping an un-shaped, flag-off
-        # install would read the raw canary and poison the K1 record).
+        # #1541: ARMED (install-success + the router image build — the
+        # shape step DEPLOYS that image, and on a fresh per-run cluster
+        # a missing build means guaranteed ImagePullBackOff), and id'd —
+        # the drill and sweep gate on this step's outcome (sweeping an
+        # un-shaped, flag-off install would read the raw canary and
+        # poison the K1 record).
         id: drill-shape
-        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.router-build.outcome == 'success' }}
         run: |
           helm --kube-context kind-$CLUSTER_NAME upgrade --install llmsafespaces helm \
             -n $NS --reuse-values \
@@ -683,7 +695,7 @@ jobs:
         # infrastructure reasons and poisons the executed-rollback
         # evidence record — the bare-always() trap).
         id: relay-drill
-        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' }}
         run: bash local/us-72-relay-only-flip-drill.sh
 
       - name: Run the rogue-agent sweep (US-72.6, #820 exit criterion)
@@ -711,7 +723,7 @@ jobs:
         # is ASSERTED for frontable kinds only; non-frontable kinds
         # (bedrock/vertex/azure_openai/opencode) are EXCLUDED pending
         # the owner's K1 decision.
-        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}

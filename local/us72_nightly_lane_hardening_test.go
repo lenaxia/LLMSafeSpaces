@@ -90,11 +90,17 @@ func stepByNamePrefix(t *testing.T, steps []nightStep, prefix string) nightStep 
 const cancelGuard = "!cancel" + "led()"
 
 // The exact arming conditions (the cancel guard composed with
-// step-outcome conjuncts).
+// step-outcome conjuncts). The drill-shape step gates on the router
+// image build too (r1): on a fresh per-run kind cluster the ONLY
+// delivery path for this run's image tag is the build step's kind
+// load — a failed build must SKIP the shape step, not let its helm
+// --wait burn ~10 minutes on guaranteed ImagePullBackOff and record
+// an infrastructure-failure row.
 const (
 	installOK  = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' }}"
-	drillChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' }}"
-	sweepChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}"
+	shapeChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.router-build.outcome == 'success' }}"
+	drillChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' }}"
+	sweepChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}"
 )
 
 // armedStep names the five #1541-armed steps and the exact condition
@@ -114,9 +120,9 @@ var armedSteps = []struct {
 	{"Run secret-delivery e2e rows (Epic 70 US-70.1 AC-1/2/13/17 + chaos)",
 		"Run secret-delivery e2e rows (Epic 70 US-70.1 AC-1/2/13/17 + chaos)", "us70-suite", installOK},
 	{"Build + load the llm-relay router image (US-72.5 drill)",
-		"Build + load the llm-relay router image (US-72.5 drill)", "", installOK},
+		"Build + load the llm-relay router image (US-72.5 drill)", "router-build", installOK},
 	{"Put the release into the drill's valid shape (relay on, namespaced scope)",
-		"Put the release into the drill's valid shape (relay on, namespaced scope)", "drill-shape", installOK},
+		"Put the release into the drill's valid shape (relay on, namespaced scope)", "drill-shape", shapeChain},
 	{"Run the relay-only flip + rollback drill (US-72.5, owner's",
 		"Run the relay-only flip + rollback drill (US-72.5, owner's #1534 script)", "relay-drill", drillChain},
 	{"Run the rogue-agent sweep (US-72.6,",
@@ -135,7 +141,7 @@ func TestUS72LaneHardening_ArmedConditionsExact(t *testing.T) {
 			ids[s.ID] = true
 		}
 	}
-	for _, want := range []string{"helm-install", "us70-suite", "drill-shape", "relay-drill"} {
+	for _, want := range []string{"helm-install", "us70-suite", "router-build", "drill-shape", "relay-drill"} {
 		require.True(t, ids[want], "step id %q must exist — every condition referencing it silently evaluates false (the lane skips forever) if it is renamed", want)
 	}
 	for _, a := range armedSteps {
@@ -156,7 +162,6 @@ func TestUS72LaneHardening_ArmedConditionsExact(t *testing.T) {
 
 // Pin (b): the armed set is EXACTLY the five steps — no other step may
 // silently gain a cancel-guard arming (scope creep changes unrelated
-// lanes' skip semantics) and none of the five may lose theirs.
 // lanes' skip semantics) and none of the five may lose theirs.
 func TestUS72LaneHardening_ArmedSetIsExact(t *testing.T) {
 	steps := parseNightly(t)
@@ -214,12 +219,13 @@ func evalCond(t *testing.T, expr string, outcomes map[string]string) bool {
 
 // Pin (c): the simulated-run scenarios — the behavioral heart of #1541.
 //
-//	scenario           | install | us70 | shape | drill | UNRELATED fail | lane
-//	#1541 (tonight)    |   ok    |  ok  |  ok   |  ok   |     yes        | RUNS (the fix)
-//	install failed     |   X     |  —   |  —    |  —    |      —         | skips (no poison)
-//	us70 failed        |   ok    |  X   |  ok   | skip  |      —         | build/shape run; drill+sweep skip
-//	shape failed       |   ok    |  ok  |  X    | skip  |      —         | drill+sweep skip
-//	drill failed       |   ok    |  ok  |  ok   |   X   |      —         | sweep skips (flag state unknown)
+//	scenario           | install | us70 | build | shape | drill | UNRELATED fail | lane
+//	#1541 (tonight)    |   ok    |  ok  |  ok   |  ok   |  ok   |     yes        | RUNS (the fix)
+//	install failed     |   X     |  —   |  —    |  —    |  —    |      —         | skips (no poison)
+//	router build failed|   ok    |  ok  |  X    | skip  | skip  |      —         | shape+ drill+sweep skip (r1)
+//	us70 failed        |   ok    |  X   |  ok   |  ok   | skip  |      —         | build/shape run; drill+sweep skip
+//	shape failed       |   ok    |  ok  |  ok   |  X    | skip  |      —         | drill+sweep skip
+//	drill failed       |   ok    |  ok  |  ok   |  ok   |   X   |      —         | sweep skips (flag state unknown)
 //
 // "skip" outcomes propagate exactly as GitHub's would (a step whose
 // `if` evaluates false is skipped, and downstream `== 'success'` gates
@@ -288,6 +294,14 @@ func TestUS72LaneHardening_Scenarios(t *testing.T) {
 		ran := run(t, map[string]string{"helm-install": "success", "us70-suite": "success", "drill-shape": "failure"})
 		require.False(t, ran["Run the relay-only flip + rollback drill (US-72.5, owner's"], "the drill against an un-shaped (flag-off, cluster-scope) release fails structurally")
 		require.False(t, ran["Run the rogue-agent sweep (US-72.6,"], "the sweep needs the shaped release")
+	})
+	t.Run("failed router build: shape/drill/sweep skip (r1 — no ImagePullBackOff burn)", func(t *testing.T) {
+		ran := run(t, map[string]string{"helm-install": "success", "router-build": "failure"})
+		require.True(t, ran["Run secret-delivery e2e rows (Epic 70 US-70.1 AC-1/2/13/17 + chaos)"], "us70 has no router-build dependency")
+		require.False(t, ran["Put the release into the drill's valid shape (relay on, namespaced scope)"],
+			"the shape step DEPLOYS the build's image — on a fresh per-run cluster a missing build means guaranteed ImagePullBackOff; it must SKIP, not burn helm --wait's 10m and record an infrastructure-failure row")
+		require.False(t, ran["Run the relay-only flip + rollback drill (US-72.5, owner's"], "the drill needs the shaped release")
+		require.False(t, ran["Run the rogue-agent sweep (US-72.6,"], "the sweep rides the drill")
 	})
 	t.Run("failed drill: sweep skips (flag state unknown)", func(t *testing.T) {
 		ran := run(t, map[string]string{"helm-install": "success", "us70-suite": "success", "drill-shape": "success", "relay-drill": "failure"})
