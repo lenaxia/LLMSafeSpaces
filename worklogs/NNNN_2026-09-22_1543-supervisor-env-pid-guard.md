@@ -56,4 +56,12 @@ None. Frequency note: occurrence 2 is the only observed instance of this asserti
 
 ## Files Modified
 
-`cmd/workspace-agentd/supervisor_subprocess_test.go` (the observer seam + 4 tests + the guarded assertion), this worklog.
+`cmd/workspace-agentd/supervisor_subprocess_test.go` (the observer seam + tests + the guarded assertion), this worklog.
+
+## r1 — coverage gaps, the parser split, and my sentinel violation
+
+- **The parser is now split + table-tested** (bot finding 1a): `procPPID` is the I/O wrapper; `parseStatPPID` is pure and carries the 8-case edge table (plain comm; comm with spaces; comm with parens — the last-`)` rule; comm that is just parens; no terminator; empty tail; whitespace-only tail; non-numeric ppid) plus one live-wrapper leg against this process. Writing the table caught a real off-by-one in my first guard (`at+2 > len` misclassified an empty tail as "no comm terminator" — the slice is `stat[at+1:]` and Fields eats the leading space; malformed is reserved for a missing terminator).
+- **The ENOENT retry path is pinned** (finding 1b): `RetriesOnEnvironReadError` — a transient environ-read failure (the child died between identity check and read) retries exactly once and captures the good reading.
+- **The status-error asymmetry is now explicit + pinned** (finding 1c): `StatusErrorAbortsImmediately` — a control-socket failure aborts with the wrapped error and ZERO retry cycles; the retry budget exists for identity churn, not for a broken socket (surfacing that at once beats 10s of dead retries).
+- **My sentinel violation (finding 2), stated plainly:** I ran `make pre-commit-fix` BEFORE committing; its fix-worklogs pass renamed the NNNN sentinel to 1050 locally and I committed the number — main has since consumed 1050-1052, exactly the hand-pick race the sentinel rule exists to prevent. Corrected: the worklog carries the NNNN_ sentinel and the merge-time hook assigns.
+- Rebased onto current main at the rename (no overlap); gofmt clean.

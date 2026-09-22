@@ -159,26 +159,32 @@ func (sp *supervisorProc) verifiedChildEnviron(t *testing.T, cc *controlClient) 
 	return string(data)
 }
 
-// procPPID reads field 4 of /proc/<pid>/stat (the parent pid). The comm
-// field (2nd, parenthesized) may contain spaces and parens — parse from
-// the LAST ')' so the split can never misalign on a weird process name.
+// procPPID reads field 4 of /proc/<pid>/stat (the parent pid) via the
+// pure parser below.
 func procPPID(pid int) (int, error) {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return 0, err
 	}
-	s := string(raw)
-	at := strings.LastIndex(s, ")")
-	if at < 0 || at+2 > len(s) {
-		return 0, fmt.Errorf("procPPID: malformed /proc/%d/stat", pid)
+	return parseStatPPID(string(raw))
+}
+
+// parseStatPPID extracts the ppid field from a /proc/<pid>/stat line.
+// The comm field (2nd, parenthesized) may contain spaces and parens —
+// parse from the LAST ')' so the split can never misalign on a weird
+// process name. Pure: table-tested.
+func parseStatPPID(stat string) (int, error) {
+	at := strings.LastIndex(stat, ")")
+	if at < 0 {
+		return 0, fmt.Errorf("parseStatPPID: malformed stat line (no comm terminator)")
 	}
-	fields := strings.Fields(s[at+2:])
+	fields := strings.Fields(stat[at+1:])
 	if len(fields) < 2 {
-		return 0, fmt.Errorf("procPPID: short /proc/%d/stat", pid)
+		return 0, fmt.Errorf("parseStatPPID: short stat tail: %q", stat[at+1:])
 	}
 	ppid, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, fmt.Errorf("procPPID: bad ppid field in /proc/%d/stat: %w", pid, err)
+		return 0, fmt.Errorf("parseStatPPID: bad ppid field %q: %w", fields[1], err)
 	}
 	return ppid, nil
 }
@@ -549,4 +555,90 @@ func TestChildEnvironObserver_FailsLoudlyOnPersistentChurn(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "pid churned")
 	require.Contains(t, err.Error(), "#1543")
+}
+
+// TestChildEnvironObserver_RetriesOnEnvironReadError (r1): a transient
+// environ read failure (ENOENT — the child died between identity check
+// and read) RETRIES like any other churn shape; a stranger-free env is
+// eventually captured once the new child is observable.
+func TestChildEnvironObserver_RetriesOnEnvironReadError(t *testing.T) {
+	var environCalls int
+	obs := childEnvironObserver{
+		status: func() (int, int, error) { return 4242, 7, nil },
+		environ: func(int) ([]byte, error) {
+			environCalls++
+			if environCalls == 1 {
+				return nil, os.ErrNotExist
+			}
+			return []byte("GOOD=1"), nil
+		},
+		statPPID: func(int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) {},
+		deadline: 2 * time.Second,
+		interval: time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err)
+	require.Contains(t, string(data), "GOOD=1")
+	require.Equal(t, 2, environCalls, "exactly one retry after the ENOENT")
+}
+
+// TestChildEnvironObserver_StatusErrorAbortsImmediately (r1): a Status
+// failure aborts WITHOUT consuming the retry deadline — the deliberate
+// retry asymmetry (identity churn is retried; the control socket being
+// BROKEN is the test's real failure and must surface at once, not
+// after 10s of dead retries).
+func TestChildEnvironObserver_StatusErrorAbortsImmediately(t *testing.T) {
+	var sleepCalls int
+	obs := childEnvironObserver{
+		status: func() (int, int, error) { return 0, 0, os.ErrClosed },
+		environ: func(int) ([]byte, error) {
+			t.Fatal("environ must never be consulted when status fails")
+			return nil, nil
+		},
+		statPPID: func(int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) { sleepCalls++ },
+		deadline: 10 * time.Second,
+		interval: 50 * time.Millisecond,
+	}
+	_, err := obs.observeVerified()
+	require.ErrorIs(t, err, os.ErrClosed)
+	require.Zero(t, sleepCalls, "no retry cycle may run — status failure is immediate")
+}
+
+// TestParseStatPPID (r1): the parser's edge table — the comm field may
+// contain spaces and parens (parse from the LAST ')'), and the
+// malformed/short/non-numeric tails fail with named causes.
+func TestParseStatPPID(t *testing.T) {
+	cases := []struct {
+		name    string
+		stat    string
+		want    int
+		wantErr string
+	}{
+		{"plain comm", "4242 (sleep) S 7 4242 4242 0 -1 ...", 7, ""},
+		{"comm with spaces", "1 (a b c) R 55 1 1 0 -1 ...", 55, ""},
+		{"comm with parens (the last-) rule)", "1 (weird)(name)) R 99 1 1 0 -1 ...", 99, ""},
+		{"comm that is just parens", "9 ()) R 13 9 9 0 -1 ...", 13, ""},
+		{"no comm terminator", "4242 sleep S 7 ...", 0, "no comm terminator"},
+		{"empty tail after comm", "4242 (sleep)", 0, "short stat tail"},
+		{"whitespace-only tail", "4242 (sleep)   ", 0, "short stat tail"},
+		{"non-numeric ppid", "4242 (sleep) S notapid 4242 4242 0 -1 ...", 0, "bad ppid field"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseStatPPID(tc.stat)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+	// The live reader against THIS process (the I/O wrapper's one leg).
+	ppid, err := procPPID(os.Getpid())
+	require.NoError(t, err)
+	require.Equal(t, os.Getppid(), ppid, "procPPID must return the test binary's real parent")
 }
