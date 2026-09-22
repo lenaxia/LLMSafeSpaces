@@ -8,7 +8,7 @@
 
 ## Objective
 
-The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×single = 622ms. Triage: `applyMu`'s TryLock was a REAL DEFECT — a capacity-1 instant-reject violating §8 item 3's independence mandate — but the issue's own evidence (`refused=0` on the measured row) proves it was INERT during the 891ms: TryLock has no wait path, so with zero rejections it contributed zero latency. The 891ms residual is I/O contention (4 parallel 10MiB streams on tmpfs/PVC), untracked by this diff. The lock removal fixes the defect class; the latency guard re-measures post-merge.
+The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×single = 622ms. Triage: `applyMu`'s TryLock was a REAL DEFECT — a capacity-1 instant-reject a capacity-1 instant-reject — the shape §6.6's detector exists to catch (§8 item 3 is INDIFFERENT, and a capacity-1 lock silently forecloses the parallel arm) — but the issue's own evidence (`refused=0` on the measured row) proves it was INERT during the 891ms: TryLock has no wait path, so with zero rejections it contributed zero latency. The 891ms residual is I/O contention (4 parallel 10MiB streams on tmpfs/PVC), untracked by this diff. The lock removal fixes the defect class; the latency guard re-measures post-merge.
 
 ---
 
@@ -16,7 +16,7 @@ The SR-6 §6.6 guard fired on first full-stack contact: p95@4 = 891ms > 2×singl
 
 - Removed `applyMu sync.Mutex` (the field) + the `TryLock`/`Unlock` block from `Apply`.
 - Retired `TestUploadApply_BusyRejection` WITH the lock (its only producer was the TryLock; the staging-side `staging_busy` from the admission cap remains live and pinned).
-- Added `TestUploadApply_ConcurrentWallTime`: 4 concurrent applies with a 50ms-per-apply injected rename delay must complete in < 3/4 of the serialized bound (~50ms parallel vs ~200ms serialized). Mutation-verified: the lock re-added at the correct insertion point (just before the staged open, not the param-validation block where the original TryLock sat) → the pin fails.
+- Added `TestUploadApply_ConcurrentWallTime`: 4 concurrent applies with a 50ms-per-apply injected rename delay must complete in < 3/4 of the serialized bound (~50ms parallel vs ~200ms serialized). Mutation-verified: the lock re-added at the staged-open insertion (the same location the original TryLock sat — see Key Decision 3) → the pin fails.
 
 ---
 
