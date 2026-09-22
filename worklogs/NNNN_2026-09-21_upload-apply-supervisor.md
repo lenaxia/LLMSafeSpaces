@@ -133,3 +133,8 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 ## Review round 10 (the release.yml watchdog + the CI-run proof)
 
 - release.yml:169 — the identical breached 300s watchdog, a hard prerequisite of every release artifact — raised to 600s (the third and last -short site; the fix is now complete across all workflows).
+
+
+## Review round 11 (the main CI break repaired on the branch)
+
+- The r10 remedy's second half (one green CI run) was blocked by a MAIN break: e06090aa (#1526) shipped an unquoted 'matcher: allow' colon in a ci.yml step name — YAML-invalid, zero CI runs repo-wide since 04:38Z. Merged main onto the branch (clean merge) and quoted the name; the file parses. This branch now carries the repair the stack lands through — the orchestrator may prefer a separate main hotfix; if so this commit reverts cleanly.
