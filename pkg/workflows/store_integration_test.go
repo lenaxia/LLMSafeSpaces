@@ -1272,7 +1272,7 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_NonexistentTargetRe
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "fk-ghost-target", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -1316,7 +1316,7 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_ForeignTargetSuccee
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "fk-foreign-target", Enabled: true, SourceType: "cron",
 		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil,
-		Prompt: "p", CaptureMode: "full",
+		Prompt: "p", CaptureMode: "full", AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
