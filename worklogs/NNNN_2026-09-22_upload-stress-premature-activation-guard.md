@@ -11,9 +11,9 @@
 FAST triage: SR-1–SR-5 all PASS on the half-stack (the 507 refusals ARE the designed clean-fail); SR-6's baseline-upload requires the full stack, got 507, and then **36 minutes of silence** (02:47:38 → 03:23:59 cancellation). The actual hang mechanism (r2's finding): a BARE `wait` at the SR-6/SR-6B storm joins also waits the IMMORTAL `kc port-forward` child spawned by harness_start (the script's trap replaced the lib's PF-killing trap). The hang was armed on the HAPPY path too — once #1518/#1524 land and the baseline 201s, the same bare wait fires.
 
 Three review rounds sharpened the fix:
-- r1: the in-run 507-keyed gate (the script's own sr_skip idiom), not a silent step-level `if: false` (the #1342 rule).
+- r1: the in-run gate (keyed on any non-201 — corrected to 507-specific in r2) (the script's own sr_skip idiom), not a silent step-level `if: false` (the #1342 rule).
 - r2: the gate's exit-0 now propagates prior row failures (a masked-green was introduced and fixed); both storm joins converted to per-pid waits (disarming the actual hang permanently); keyed on 507 SPECIFICALLY so non-507 failures reach the failure path.
-- r3: the baseline failure assertion restored BELOW the gate (r2 deleted it — a 500/429/000 baseline with passing storms went green); the four-leg executed gate test (507-clean/507+prior-fail/500/201) mutation-verified against every blind spot.
+- r3: the baseline failure assertion restored BELOW the gate (r1 deleted it — a 500/429/000 baseline with passing storms went green); the four-leg executed gate test (507-clean/507+prior-fail/500/201) mutation-verified against every blind spot.
 
 ## Key Decisions
 
