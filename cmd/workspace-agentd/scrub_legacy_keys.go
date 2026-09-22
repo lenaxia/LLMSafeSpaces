@@ -100,6 +100,13 @@ func scrubLegacyKeys(root string) (ScrubReport, error) {
 		if d.Name() != "agent-config.json" || !d.Type().IsRegular() {
 			return nil
 		}
+		// The depth bound applies to FILES too (r2 finding 1): the
+		// directory SkipDir at >2 separators never fires for a file
+		// DIRECTLY at 3 separators (its parent dir has only 2) — a user
+		// copy at .local/a/b/c/agent-config.json was still scrubbed.
+		if rel, rerr := filepath.Rel(walkRoot, path); rerr == nil && strings.Count(rel, string(filepath.Separator)) > 2 {
+			return nil
+		}
 		removed, serr := stripKeysFromFile(path, stripConfigProviderKeys)
 		if serr != nil {
 			return nil // a malformed COPY never aborts the scrub; it is residue

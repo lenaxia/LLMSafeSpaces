@@ -49,7 +49,8 @@ func TestUS72Sweep_RowsInOrder(t *testing.T) {
 	for _, marker := range []string{
 		"the sweep can fail",
 		"post-sweep zero",
-		"LegacyKeysScrubbed=True",
+		"the scrub's own report shows the removal",
+		"the BOOT mirror",
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("sweep must assert %q", marker)

@@ -4,7 +4,7 @@
 package workspace
 
 // US-72.6 (design 0058 §8): the controller mirror of the one-time
-// legacy-key scrub report — statusz's LegacyScrub slice becomes the
+// legacy-key scrub report — healthz's LegacyScrub slice becomes the
 // LegacyKeysScrubbed condition, and the EVENT fires exactly once (on
 // first observation of a report that removed something or errored);
 // re-observations of the static report never re-emit (idempotent).
@@ -113,7 +113,20 @@ func TestCheckAgentHealth_LegacyScrubErrorSurfaces(t *testing.T) {
 	require.NotNil(t, cond)
 	assert.Equal(t, "False", cond.Status)
 	assert.Contains(t, cond.Message, "unexpected EOF")
-	assert.Equal(t, 1, countEvents(eventsFrom(rec), "LegacyKeysScrubbed"))
+	events := eventsFrom(rec)
+	assert.Equal(t, 1, countEvents(events, "LegacyKeysScrubbed"))
+	// r2 finding 2: the error path's event must SAY it errored — not
+	// "complete (auth=0 config=0)".
+	found := false
+	for _, e := range events {
+		if strings.Contains(e, "LegacyKeysScrubbed") {
+			found = true
+			assert.Contains(t, e, "ERRORED", "the error event names the error")
+			assert.Contains(t, e, "unexpected EOF")
+			assert.NotContains(t, e, "complete", "the error event must not claim completion")
+		}
+	}
+	assert.True(t, found, "the scrub event fired")
 }
 
 // TestCheckAgentHealth_NoLegacyScrubSlice: a flag-off pod (nil slice)

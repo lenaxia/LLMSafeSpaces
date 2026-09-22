@@ -148,10 +148,18 @@ else
     note_fail "R2: the planted legacy canary was NOT found — the sweep is decorative (a false-pass machine)"
 fi
 
-# Scrub: the agentd subcommand, in-pod.
-kubectl --context "${CTX}" -n "${NS}" exec "${POD}" -c workspace -- \
+# Scrub: the agentd subcommand, in-pod — CAPTURING its JSON report (the
+# row's direct evidence of the removal; the running agentd's boot-time
+# tracker fired AlreadyClean on this clean pod and its sync.Once is
+# spent, so the subcommand's own report is the authoritative outcome).
+SCRUB_OUT="$(kubectl --context "${CTX}" -n "${NS}" exec "${POD}" -c workspace -- \
     /agentd/usr/local/bin/workspace-agentd scrub-legacy-keys --workspace-root /workspace \
-    >/dev/null 2>&1 || note_fail "R2: the scrub subcommand exited non-zero"
+    2>/dev/null || true)"
+if printf '%s' "${SCRUB_OUT}" | jq -e '.authKeysRemoved >= 1' >/dev/null 2>&1; then
+    ok "R2: the scrub's own report shows the removal ($(printf '%s' "${SCRUB_OUT}" | jq -c '{authKeysRemoved, configKeysRemoved}'))"
+else
+    note_fail "R2: the scrub report shows no removal: ${SCRUB_OUT:-<no output>}"
+fi
 
 hits="$(sweep_hits)"
 if [[ "${hits}" =~ ^[0-9]+$ ]] && (( hits == 0 )); then
@@ -160,8 +168,11 @@ else
     note_fail "R2: canary still present ${hits:-?} time(s) after the scrub"
 fi
 
-# The scrub's condition mirror (the report rides statusz → the
-# controller; give the reconcile a beat).
+# The BOOT mirror's condition (independent evidence this row does NOT
+# claim: the running agentd's boot-time scrub of a CLEAN pod reports
+# AlreadyClean → True/Clean — it cannot and must not reflect the R2
+# subcommand's separate-process scrub). Assert only that the boot
+# mirror EXISTS and is healthy-shaped.
 scrub_status="None"
 for _ in $(seq 1 30); do
     scrub_status="$(condition_status LegacyKeysScrubbed)"
@@ -169,9 +180,9 @@ for _ in $(seq 1 30); do
     sleep 4
 done
 if [[ "${scrub_status}" == "True" ]]; then
-    ok "LegacyKeysScrubbed=True on the Workspace (the statusz mirror landed)"
+    ok "LegacyKeysScrubbed=True on the Workspace (the BOOT mirror, already clean at pod start)"
 else
-    note_fail "R2: LegacyKeysScrubbed=${scrub_status} (never observed)"
+    note_fail "R2: LegacyKeysScrubbed=${scrub_status} (the boot mirror never landed)"
 fi
 
 # -----------------------------------------------------------------------------

@@ -13,7 +13,8 @@ import (
 // legacy_scrub_tracker.go — US-72.6: the one-shot holder for the
 // legacy-key scrub's outcome. runOnce is wired as the relay monitor's
 // first-Present hook (a post-flip pod); the report is static thereafter
-// and surfaces on healthz/statusz for the controller's mirror.
+// and surfaces on healthz (/v1/healthz — the surface the controller
+// polls) for the LegacyKeysScrubbed mirror.
 
 type legacyScrubTracker struct {
 	once   sync.Once

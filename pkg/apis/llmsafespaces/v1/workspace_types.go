@@ -283,7 +283,8 @@ const (
 	WorkspaceConditionAgentHealthy         WorkspaceConditionType = "AgentHealthy"
 	// WorkspaceConditionLegacyKeysScrubbed (US-72.6, design 0058 §8):
 	// the one-time legacy-key migration scrub's outcome, mirrored from
-	// statusz's legacyScrub slice. True/clean = the steady state.
+	// healthz's (/v1/healthz) legacyScrub slice. True/clean = the steady
+	// state.
 	WorkspaceConditionLegacyKeysScrubbed WorkspaceConditionType = "LegacyKeysScrubbed"
 	WorkspaceConditionProviderReady      WorkspaceConditionType = "ProviderReady"
 	WorkspaceConditionDiskPressure       WorkspaceConditionType = "DiskPressure"

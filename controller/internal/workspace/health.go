@@ -218,13 +218,14 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 // relayRevisionOf extracts the applied relay revision from a relay
 // liveness slice (nil-safe).
-// mirrorLegacyScrub (US-72.6, design 0058 §8): statusz's one-time
-// scrub report → the LegacyKeysScrubbed condition (idempotent by
-// setCondition's status+reason dedupe) + the LegacyKeysScrubbed event
-// EXACT ONCE per report-change (the report is static after the boot
-// scrub, so the event fires on first observation only — a persisted
-// last-observed annotation makes the idempotency survive controller
-// restarts).
+//
+// mirrorLegacyScrub (US-72.6, design 0058 §8): healthz's (/v1/healthz —
+// the surface checkAgentHealth polls) one-time scrub report → the
+// LegacyKeysScrubbed condition (idempotent by setCondition's
+// status+reason dedupe) + the LegacyKeysScrubbed event EXACT ONCE per
+// report-change (the report is static after the boot scrub, so the
+// event fires on first observation only — a persisted last-observed
+// annotation makes the idempotency survive controller restarts).
 func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Workspace, rep *agentd.LegacyScrubHealth) {
 	if rep == nil {
 		return
@@ -273,8 +274,13 @@ func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Work
 		ws.Annotations = map[string]string{}
 	}
 	ws.Annotations[annKey] = stamp
-	r.Recorder.Eventf(ws, "Normal", "LegacyKeysScrubbed",
-		"one-time legacy-key scrub complete (%s)", summary)
+	if rep.Error != "" {
+		r.Recorder.Eventf(ws, "Warning", "LegacyKeysScrubbed",
+			"one-time legacy-key scrub ERRORED: %s", rep.Error)
+	} else {
+		r.Recorder.Eventf(ws, "Normal", "LegacyKeysScrubbed",
+			"one-time legacy-key scrub complete (%s)", summary)
+	}
 }
 
 func relayRevisionOf(relay *agentd.RelayHealth) string {

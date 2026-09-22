@@ -148,6 +148,12 @@ func TestScrubLegacyKeys_Idempotent(t *testing.T) {
 // and must NOT be scrubbed.
 func TestScrubLegacyKeys_DepthBoundStopsAtKnownShapes(t *testing.T) {
 	root := t.TempDir()
+	// BOTH boundary depths: 3 separators (the r2 hole — its parent dir
+	// has only 2, so the directory SkipDir never shielded it) and 4
+	// (the SkipDir case).
+	deep3 := root + "/.local/a/b/c/agent-config.json"
+	require.NoError(t, mkdirAllFor(deep3))
+	require.NoError(t, writeRaw(deep3, `{"provider":{"x":{"options":{"apiKey":"sk-DEPTH3-USER-KEY"}}}}`))
 	deep := root + "/.local/a/b/c/d/agent-config.json" // 4 levels — user toolchain depth
 	require.NoError(t, mkdirAllFor(deep))
 	original := `{"provider":{"x":{"options":{"apiKey":"sk-DEEP-USER-KEY"}}}}`
@@ -160,6 +166,8 @@ func TestScrubLegacyKeys_DepthBoundStopsAtKnownShapes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, report.ConfigKeysRemoved, "only the known-shape copy is scrubbed")
 	assert.Equal(t, original, readRaw(t, deep), "the deep user file is untouched (the walk is bounded)")
+	assert.Equal(t, `{"provider":{"x":{"options":{"apiKey":"sk-DEPTH3-USER-KEY"}}}}`, readRaw(t, deep3),
+		"the 3-separator user copy is untouched (the file-level bound — the r2 hole)")
 }
 
 // A malformed legacy auth.json surfaces loudly (an elected-to-scrub
