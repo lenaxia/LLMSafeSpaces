@@ -79,13 +79,22 @@ func stepByNamePrefix(t *testing.T, steps []nightStep, prefix string) nightStep 
 	return found[0]
 }
 
-// GitHub's expression function is the British-spelled cancel guard
-// (NOT a typo of the American spelling — it is the platform's own
-// function name; the misspell lint is exempted on the literal lines).
+// cancelGuard is GitHub Actions' cancel-guard expression function —
+// the platform's own British spelling. Split so the contiguous word
+// never appears in the source: the repo's pre-commit-fix runs RAW
+// misspell -w -locale US over every .go file (it honors no golangci
+// nolint directives), which rewrites the contiguous spelling in place
+// — breaking the string-exact pins below AND mutating a clean checkout
+// (the #1542 CI Lint failure). Concatenation is invisible to misspell
+// and the constant remains the exact expression bytes.
+const cancelGuard = "!cancel" + "led()"
+
+// The exact arming conditions (the cancel guard composed with
+// step-outcome conjuncts).
 const (
-	installOK  = "${{ !cancelled() && steps.helm-install.outcome == 'success' }}"                                                                                                                              //nolint:misspell
-	drillChain = "${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' }}"                                           //nolint:misspell
-	sweepChain = "${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}" //nolint:misspell
+	installOK  = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' }}"
+	drillChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' }}"
+	sweepChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}"
 )
 
 // armedStep names the five #1541-armed steps and the exact condition
@@ -157,7 +166,7 @@ func TestUS72LaneHardening_ArmedSetIsExact(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, s := range steps {
-		if strings.Contains(s.If, "!cancelled()") { //nolint:misspell // GitHub's expression function name
+		if strings.Contains(s.If, cancelGuard) {
 			got[s.Name] = true
 		}
 	}
@@ -187,9 +196,9 @@ func evalCond(t *testing.T, expr string, outcomes map[string]string) bool {
 	e := strings.TrimSpace(expr)
 	e = strings.TrimPrefix(strings.TrimSuffix(e, "}}"), "${{")
 	e = strings.TrimSpace(e)
-	require.True(t, strings.HasPrefix(e, "!cancelled()"), //nolint:misspell // GitHub's expression function name
+	require.True(t, strings.HasPrefix(e, cancelGuard),
 		"unsupported condition shape (must start with the cancel guard): %q", expr)
-	for _, conjunct := range strings.Split(strings.TrimPrefix(e, "!cancelled()"), "&&") { //nolint:misspell // GitHub's expression function name
+	for _, conjunct := range strings.Split(strings.TrimPrefix(e, cancelGuard), "&&") {
 		c := strings.TrimSpace(conjunct)
 		if c == "" {
 			continue
