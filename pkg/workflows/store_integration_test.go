@@ -1282,7 +1282,7 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_NonexistentTargetRe
 	})
 	require.Error(s.T(), err,
 		"the FK must reject a nonexistent workflow target at the store layer")
-	assert.ErrorIs(s.T(), err, ErrNotFound,
+	assert.NotErrorIs(s.T(), err, ErrNotFound,
 		"FK violations must not masquerade as ErrNotFound; the generic error is the opaque 500's source")
 
 	// Nothing persisted: the row still has no target.
