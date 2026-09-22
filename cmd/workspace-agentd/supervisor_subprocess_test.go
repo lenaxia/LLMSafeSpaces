@@ -131,6 +131,64 @@ func (sp *supervisorProc) exited() bool {
 	return sp.cmd.ProcessState != nil
 }
 
+// verifiedChildEnviron (#1543) captures the supervisor's CURRENT stub
+// child's environ through the pid-identity guard: /proc/<pid>/stat's
+// ppid must name the supervisor and a re-Status must still report the
+// same pid — a recycled or moved-on pid is retried, never trusted.
+func (sp *supervisorProc) verifiedChildEnviron(t *testing.T, cc *controlClient) string {
+	t.Helper()
+	obs := childEnvironObserver{
+		status: func() (int, int, error) {
+			st, err := cc.Status(context.Background())
+			if err != nil {
+				return 0, 0, err
+			}
+			return st.ChildPID, sp.cmd.Process.Pid, nil
+		},
+		environ: func(pid int) ([]byte, error) {
+			return os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+		},
+		statPPID: func(pid int) (int, error) {
+			return procPPID(pid)
+		},
+		deadline: 10 * time.Second,
+		interval: 50 * time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err, "verified child-environ observation failed")
+	return string(data)
+}
+
+// procPPID reads field 4 of /proc/<pid>/stat (the parent pid) via the
+// pure parser below.
+func procPPID(pid int) (int, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, err
+	}
+	return parseStatPPID(string(raw))
+}
+
+// parseStatPPID extracts the ppid field from a /proc/<pid>/stat line.
+// The comm field (2nd, parenthesized) may contain spaces and parens —
+// parse from the LAST ')' so the split can never misalign on a weird
+// process name. Pure: table-tested.
+func parseStatPPID(stat string) (int, error) {
+	at := strings.LastIndex(stat, ")")
+	if at < 0 {
+		return 0, fmt.Errorf("parseStatPPID: malformed stat line (no comm terminator)")
+	}
+	fields := strings.Fields(stat[at+1:])
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("parseStatPPID: short stat tail: %q", stat[at+1:])
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, fmt.Errorf("parseStatPPID: bad ppid field %q: %w", fields[1], err)
+	}
+	return ppid, nil
+}
+
 // stop SIGTERMs the supervisor and waits for a CLEAN (0) exit.
 func (sp *supervisorProc) stop() {
 	if sp.cmd.ProcessState != nil {
@@ -178,12 +236,16 @@ func TestSupervisorSubprocess_LifecycleAndContract(t *testing.T) {
 	// fast-fails with spawn_env_no_credential — the loud degraded boot.
 	// The healthy pulled-delta first spawn is pinned in
 	// spawn_env_pull_exec_test.go.
+	//
+	// #1543: the environ read is PID-IDENTITY-GUARDED — under the race
+	// CI leg's helper-process churn, an unguarded read can catch a
+	// recycled pid (readable, alive, a stranger's env — the observed
+	// flake). The guard verifies parentage + currency before accepting.
 	{
-		data, err := os.ReadFile("/proc/" + strconv.Itoa(firstPID) + "/environ")
-		require.NoError(t, err)
-		require.True(t, strings.Contains(string(data), "GO_TEST_SUPERVISOR=1"),
+		data := sp.verifiedChildEnviron(t, cc)
+		require.True(t, strings.Contains(data, "GO_TEST_SUPERVISOR=1"),
 			"platform env present on the pre-push child")
-		require.False(t, strings.Contains(string(data), "PROBE_VAR="),
+		require.False(t, strings.Contains(data, "PROBE_VAR="),
 			"no delta on the pre-push child — platform-env-only is the degraded boot state")
 	}
 
@@ -336,3 +398,247 @@ func TestSupervisorSubprocess_BadRequestOverWire(t *testing.T) {
 // delta from the sidecar mux, a dead mux degrades loudly, spawn never
 // blocks — are pinned in spawn_env_pull_exec_test.go against the REAL
 // subcommand.
+
+// --- #1543: pid-identity-guarded child-environ observation ---------------
+//
+// The lifecycle test's platform-env assertion reads
+// /proc/<ChildPID>/environ. That read has an unguarded identity window:
+// if the stub child dies between Status and the read, the supervisor's
+// crash recovery has not necessarily run yet (Status still reports the
+// dead pid) while the runner's parallel test helpers churn pids fast
+// enough for the SAME number to be reallocated — the read then returns
+// a stranger's environ: readable, alive, and missing GO_TEST_SUPERVISOR
+// (the observed occurrence-2 failure: "Should be true" with a healthy
+// Read). The guard below verifies the observed pid is still the
+// supervisor's OWN child (by /proc/<pid>/stat ppid) and still the
+// CURRENT child (by re-Status) before accepting the reading, retrying
+// through the churn otherwise.
+
+// childEnvironObserver is the injectable seam for the guard's tests.
+type childEnvironObserver struct {
+	status   func() (childPID int, supervisorPID int, err error)
+	environ  func(pid int) ([]byte, error)
+	statPPID func(pid int) (int, error)
+	sleep    func(time.Duration)
+	deadline time.Duration
+	interval time.Duration
+}
+
+// observeVerified returns the environ of the supervisor's current stub
+// child, accepting a reading only when BOTH identity checks hold at
+// read time: the pid's parent is the supervisor, and a re-Status still
+// names the same pid (crash recovery has not moved on). Retries until
+// the deadline; the returned error names the pid-confusion mechanism so
+// a genuine env bug is never misread as flake churn.
+func (o childEnvironObserver) observeVerified() ([]byte, error) {
+	start := time.Now()
+	for {
+		pid, supPID, err := o.status()
+		if err != nil {
+			return nil, fmt.Errorf("status: %w", err)
+		}
+		ppid, statErr := o.statPPID(pid)
+		if statErr == nil && ppid == supPID {
+			data, readErr := o.environ(pid)
+			if readErr == nil {
+				// Re-status: the child must STILL be current — a read
+				// accepted against a pid crash-recovery has already
+				// replaced is a stale-env reading.
+				if pidNow, _, err2 := o.status(); err2 == nil && pidNow == pid {
+					return data, nil
+				}
+			}
+		}
+		if time.Since(start) > o.deadline {
+			return nil, fmt.Errorf("could not capture a verified child-environ reading within %s — the child pid churned (died + recycled by parallel test helpers) on every attempt; if this repeats with a stable pid, the env composition itself is broken (#1543)", o.deadline)
+		}
+		if o.sleep != nil {
+			o.sleep(o.interval) // the injected sleep models wait + world-advance
+		} else {
+			time.Sleep(o.interval)
+		}
+	}
+}
+
+// TestChildEnvironObserver_AcceptsStableChild: identity + currency both
+// hold on the first attempt — the reading returns without retry.
+func TestChildEnvironObserver_AcceptsStableChild(t *testing.T) {
+	calls := 0
+	obs := childEnvironObserver{
+		status: func() (int, int, error) { calls++; return 4242, 7, nil },
+		environ: func(pid int) ([]byte, error) {
+			return []byte("GO_TEST_SUPERVISOR=1\x00PATH=/stub"), nil
+		},
+		statPPID: func(pid int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) {},
+		deadline: 2 * time.Second,
+		interval: time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err)
+	require.Contains(t, string(data), "GO_TEST_SUPERVISOR=1")
+	require.Equal(t, 2, calls, "exactly the initial + currency re-status calls — no retry churn on a stable child")
+}
+
+// TestChildEnvironObserver_RetriesOnPPidMismatch: a recycled pid (wrong
+// parent) is rejected and the retry captures the supervisor's real
+// child — the occurrence-2 shape cannot pass a stranger's environ
+// through.
+func TestChildEnvironObserver_RetriesOnPPidMismatch(t *testing.T) {
+	var statusCalls int
+	pid := 4242
+	obs := childEnvironObserver{
+		status: func() (int, int, error) {
+			statusCalls++
+			return pid, 7, nil
+		},
+		environ: func(int) ([]byte, error) { return []byte("STRANGER_ENV=1"), nil },
+		statPPID: func(p int) (int, error) {
+			if p == 4242 {
+				return 99, nil // recycled: parent is NOT the supervisor
+			}
+			return 7, nil
+		},
+		sleep:    func(time.Duration) { pid = 5151 }, // churn resolves on the first retry
+		deadline: 2 * time.Second,
+		interval: time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err)
+	require.Contains(t, string(data), "STRANGER_ENV=1", "the second attempt's (legitimate) reading is returned")
+	require.Greater(t, statusCalls, 2, "the mismatch must have caused at least one retry cycle")
+}
+
+// TestChildEnvironObserver_RetriesOnCurrencyFailure: ppid checks out but
+// the child died and crash recovery moved on (re-Status names a new pid)
+// — the stale reading is discarded and the new child captured.
+func TestChildEnvironObserver_RetriesOnCurrencyFailure(t *testing.T) {
+	var statusCalls int
+	pid := 4242
+	obs := childEnvironObserver{
+		status: func() (int, int, error) {
+			statusCalls++
+			// Every OTHER call reports the moved-on child: the FIRST
+			// status sees 4242, the currency re-status sees 5151, the
+			// next full attempt sees 5151 consistently.
+			if statusCalls%2 == 1 && pid == 4242 {
+				return 4242, 7, nil
+			}
+			return 5151, 7, nil
+		},
+		environ: func(p int) ([]byte, error) {
+			return []byte(fmt.Sprintf("PID_%d=1", p)), nil
+		},
+		statPPID: func(int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) { pid = 5151 },
+		deadline: 2 * time.Second,
+		interval: time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err)
+	require.Contains(t, string(data), "PID_5151", "only the CURRENT child's reading may be returned")
+}
+
+// TestChildEnvironObserver_FailsLoudlyOnPersistentChurn: never-verifying
+// readings exhaust the deadline with the mechanism named — a bounded,
+// honest failure instead of an unguarded stranger's environ.
+func TestChildEnvironObserver_FailsLoudlyOnPersistentChurn(t *testing.T) {
+	obs := childEnvironObserver{
+		status:   func() (int, int, error) { return 4242, 7, nil },
+		environ:  func(int) ([]byte, error) { return []byte("STRANGER=1"), nil },
+		statPPID: func(int) (int, error) { return 99, nil }, // never ours
+		sleep:    func(d time.Duration) {},
+		deadline: 5 * time.Millisecond,
+		interval: time.Millisecond,
+	}
+	_, err := obs.observeVerified()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pid churned")
+	require.Contains(t, err.Error(), "#1543")
+}
+
+// TestChildEnvironObserver_RetriesOnEnvironReadError (r1): a transient
+// environ read failure (ENOENT — the child died between identity check
+// and read) RETRIES like any other churn shape; a stranger-free env is
+// eventually captured once the new child is observable.
+func TestChildEnvironObserver_RetriesOnEnvironReadError(t *testing.T) {
+	var environCalls int
+	obs := childEnvironObserver{
+		status: func() (int, int, error) { return 4242, 7, nil },
+		environ: func(int) ([]byte, error) {
+			environCalls++
+			if environCalls == 1 {
+				return nil, os.ErrNotExist
+			}
+			return []byte("GOOD=1"), nil
+		},
+		statPPID: func(int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) {},
+		deadline: 2 * time.Second,
+		interval: time.Millisecond,
+	}
+	data, err := obs.observeVerified()
+	require.NoError(t, err)
+	require.Contains(t, string(data), "GOOD=1")
+	require.Equal(t, 2, environCalls, "exactly one retry after the ENOENT")
+}
+
+// TestChildEnvironObserver_StatusErrorAbortsImmediately (r1): a Status
+// failure aborts WITHOUT consuming the retry deadline — the deliberate
+// retry asymmetry (identity churn is retried; the control socket being
+// BROKEN is the test's real failure and must surface at once, not
+// after 10s of dead retries).
+func TestChildEnvironObserver_StatusErrorAbortsImmediately(t *testing.T) {
+	var sleepCalls int
+	obs := childEnvironObserver{
+		status: func() (int, int, error) { return 0, 0, os.ErrClosed },
+		environ: func(int) ([]byte, error) {
+			t.Fatal("environ must never be consulted when status fails")
+			return nil, nil
+		},
+		statPPID: func(int) (int, error) { return 7, nil },
+		sleep:    func(time.Duration) { sleepCalls++ },
+		deadline: 10 * time.Second,
+		interval: 50 * time.Millisecond,
+	}
+	_, err := obs.observeVerified()
+	require.ErrorIs(t, err, os.ErrClosed)
+	require.Zero(t, sleepCalls, "no retry cycle may run — status failure is immediate")
+}
+
+// TestParseStatPPID (r1): the parser's edge table — the comm field may
+// contain spaces and parens (parse from the LAST ')'), and the
+// malformed/short/non-numeric tails fail with named causes.
+func TestParseStatPPID(t *testing.T) {
+	cases := []struct {
+		name    string
+		stat    string
+		want    int
+		wantErr string
+	}{
+		{"plain comm", "4242 (sleep) S 7 4242 4242 0 -1 ...", 7, ""},
+		{"comm with spaces", "1 (a b c) R 55 1 1 0 -1 ...", 55, ""},
+		{"comm with parens (the last-) rule)", "1 (weird)(name)) R 99 1 1 0 -1 ...", 99, ""},
+		{"comm that is just parens", "9 ()) R 13 9 9 0 -1 ...", 13, ""},
+		{"no comm terminator", "4242 sleep S 7 ...", 0, "no comm terminator"},
+		{"empty tail after comm", "4242 (sleep)", 0, "short stat tail"},
+		{"whitespace-only tail", "4242 (sleep)   ", 0, "short stat tail"},
+		{"non-numeric ppid", "4242 (sleep) S notapid 4242 4242 0 -1 ...", 0, "bad ppid field"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseStatPPID(tc.stat)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+	// The live reader against THIS process (the I/O wrapper's one leg).
+	ppid, err := procPPID(os.Getpid())
+	require.NoError(t, err)
+	require.Equal(t, os.Getppid(), ppid, "procPPID must return the test binary's real parent")
+}
