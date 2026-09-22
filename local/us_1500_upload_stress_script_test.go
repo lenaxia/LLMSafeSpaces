@@ -196,11 +196,14 @@ func TestUploadStress_SR6DeliveryGate(t *testing.T) {
 		"the workflow comment must teach the in-run gate")
 }
 
-// TestUploadStress_SR6Gate_Executes runs the REAL gate + baseline blocks
-// (extracted from the script) across four legs: 507-clean → skip +
-// exit 0; 507 + prior failure → die; non-507 non-201 → note_fail +
-// falls through; 201 → falls through clean. This is the test that
-// would have caught the r2 phantom-fix (the deleted baseline assertion).
+// TestUploadStress_SR6Gate_Executes runs the REAL gate + baseline
+// blocks (extracted from the script) across four legs: 507-clean →
+// skip + exit 0 (the half-stack's designed path); 507 + prior failure
+// → die (the r1 masking guard); non-507 non-201 (500) → note_fail +
+// falls through to the storms (the r2 phantom-fix guard); 201 → clean
+// fall-through to the latency rows (the happy path). Mutation-verified:
+// deleting the baseline assertion, removing the gate's die or exit,
+// or reverting a storm join to bare wait each turns a leg red.
 func TestUploadStress_SR6Gate_Executes(t *testing.T) {
 	bash := requireBash(t)
 	src, err := os.ReadFile(uploadStressScript)

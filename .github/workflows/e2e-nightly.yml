@@ -373,7 +373,7 @@ jobs:
         # The §6 invariant harness: measured staging residency (gauge
         # pins), credential isolation under storm, disk-margin edges,
         # mid-stream kills, ack-latency baseline. SR-6 skips-DOWN loudly
-        # when the baseline upload 507s (the half-stack's designed't succeed (the supervisor apply leg,
+        # when the baseline upload 507s (the half-stack's designed clean-fail — the supervisor apply leg,
         # #1518/#1524, not yet merged) — the in-run gate, not a silent
         # step-level if (run 35679282297's adjudication).
         env:
