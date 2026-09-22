@@ -68,8 +68,11 @@ api() { # method path [json-body] -> response body (dies on non-2xx)
 # DEK-gated authoring (credential create/bind) requires the JWT session
 # (the harness rule: API key for resolution ops, JWT for DEK-gated
 # secret authoring — us70-common.sh:202).
-api_authed() { # method path json-body -> response body (dies on non-2xx)
-    local method="$1" path="$2" body="$3" out code
+api_authed() { # method path [json-body] -> response body (dies on non-2xx)
+    # body is OPTIONAL (the bind call passes none — and under set -u a
+    # defaulted-less $3 kills the script before the curl spawns; the r2
+    # finding). ${3:-} is load-bearing.
+    local method="$1" path="$2" body="${3:-}" out code
     out=$(mktemp)
     code=$(curl -sm 30 -o "${out}" -w '%{http_code}' -X "${method}" \
         -H "Authorization: Bearer ${AUTH_TOKEN:?login first}" \
