@@ -9,8 +9,9 @@ name: E2E Attachments (kind, single-container)
 # path — mode-uniform coverage of the same contract:
 #
 #   E2  — upload → suspend → resume → file byte-identical on the PVC
-#   E10 — two tenants, simultaneous uploads, cross-user 404, no leakage
-#   E11 — pod killed mid-upload → clean 5xx, restart, retry, no .tmp
+#   E10 — two tenants, simultaneous uploads, cross-user 403, no leakage
+#   E11 — pod killed mid-upload → clean 5xx, restart, retry; one-or-two
+#         intact files (D19: retry = new uuid), no partial/.tmp
 #
 # Same bootstrap as the nightly (kind cluster from local/kind-cluster.yaml,
 # images built + kind-loaded, cert-manager, seeded Postgres/Redis, same
@@ -25,7 +26,7 @@ name: E2E Attachments (kind, single-container)
 #     assertions only, no agent turns (verified: zero LLM_* references
 #     in local/us-68-attachments-e2e.sh). The workflow must run without
 #     them so the rows finally execute.
-# The sidecar nightly is intentionally left untouched.
+# The sidecar nightly step comment is updated for the feature-detect reality.
 
 on:
   schedule:
