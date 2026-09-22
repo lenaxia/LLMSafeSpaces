@@ -226,9 +226,18 @@ if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
     warn "agentd SIDECAR mode detected — probing upload shape (design 0060 feature-detect)"
     printf 'sidecar mode probe\n' > /tmp/us67-sidecar.txt
     upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt
+    # Transient-502 guard: on a 0060-landed cluster a momentary agentd
+    # blip also maps to 502 (the API's generic agentd-error shape). A
+    # DESIGNED clean-fail is deterministic — retry once before classifying.
+    if [[ "${UPLOAD_STATUS}" == "502" ]]; then
+        sleep 3
+        upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt
+    fi
+    SIDECAR_0060=false
     case "${UPLOAD_STATUS}" in
         201)
             ok "sidecar upload SUCCEEDED (201) — design 0060 stage-and-signal landed; running E2/E10/E11 fully in sidecar mode"
+            SIDECAR_0060=true
             ;;
         502|503)
             # 502/503 specifically: the proxy/sidecar's DESIGNED
@@ -248,7 +257,11 @@ if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
             ;;
     esac
 fi
-ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
+if [[ "${SIDECAR_0060:-false}" != "true" ]]; then
+    ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
+else
+    ok "sidecar mode + design 0060 uploads — running E2/E10/E11 in sidecar mode"
+fi
 
 # -----------------------------------------------------------------------------
 # E2 — Persistence: upload → suspend → resume → file present + identical
@@ -309,7 +322,7 @@ upload_do "${WS_B}" "${KEY_A}" "evil.txt" /tmp/us67-a.txt
 [[ "${UPLOAD_STATUS}" == "403" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 403): ${BODY}"
 ok "cross-user upload denied (403)"
 
-LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a || true")
+LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a | grep -v sidecar.txt || true")
 [[ -z "${LEAK}" ]] || die "E10: workspace A contains foreign files: ${LEAK}"
 ok "no cross-workspace file leakage"
 

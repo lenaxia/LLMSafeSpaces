@@ -75,7 +75,7 @@ func TestUS68SidecarGate_ProbesInitContainers(t *testing.T) {
 func TestUS68SidecarGate_DetectsNativeSidecar(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us68AttachmentsScript)
-	gate := regexp.MustCompile(`(?s)(?m)CONTAINER_NAMES=\$\(kc.*?\nok "single-container mode confirmed[^\n]*`).FindString(src)
+	gate := regexp.MustCompile(`(?s)(?m)CONTAINER_NAMES=\$\(kc.*?ok "sidecar mode \+ design 0060 uploads[^\n]*\nfi\n`).FindString(src)
 	if gate == "" {
 		t.Fatal("sidecar gate block not found in us-68-attachments-e2e.sh — did the gate change shape?")
 	}
@@ -122,6 +122,15 @@ echo GATE-FELL-THROUGH`
 		}
 		if !strings.Contains(out, "design 0060 stage-and-signal landed") {
 			t.Fatalf("the 201 leg must name design 0060, got: %q", out)
+		}
+		if !strings.Contains(out, "GATE-FELL-THROUGH") {
+			t.Fatalf("the 201 leg MUST fall through to the rows (not silently skip) — an exit-0 regression is the silent-skip class: %q", out)
+		}
+		if strings.Contains(out, "single-container mode confirmed") {
+			t.Fatalf("the 201 fall-through must NOT print the false single-container verdict: %q", out)
+		}
+		if !strings.Contains(out, "sidecar mode + design 0060 uploads") {
+			t.Fatalf("the 201 path must print the accurate sidecar verdict: %q", out)
 		}
 	})
 
