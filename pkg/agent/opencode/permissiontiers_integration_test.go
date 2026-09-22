@@ -150,7 +150,10 @@ func tierBoot(t *testing.T, prov *httptest.Server) *opencodeServer {
 	}
 	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
 	require.NoError(t, err)
-	return StartIntegrationServer(t, 14420, string(cfgJSON))
+	// Port 0: the harness claims a free port (r5 ownership guard) — a
+	// fixed port can hand a stale server from an earlier leg the
+	// live-proof role.
+	return StartIntegrationServer(t, 0, string(cfgJSON))
 }
 
 // lastToolResult scans the newest session message for a tool part whose

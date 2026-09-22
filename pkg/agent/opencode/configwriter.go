@@ -573,6 +573,18 @@ func (w *ConfigWriter) rebuildLocked() error {
 		if extDir == nil {
 			extDir = map[string]string{}
 		}
+		// Floor dominance at the ARTIFACT ingress (r5): the artifact is
+		// agent-writable by the threat model (the bare-string self-tamper
+		// conversion) — a seeded allow that reopens a tier deny must not
+		// re-render, exactly as if it had arrived through the operator
+		// source. Non-reopening entries survive (render idempotency: a
+		// prior legit render re-renders); ask/deny values are not
+		// weakenings and survive.
+		for k, v := range extDir {
+			if v == "allow" && allowReopensTierDeny(k) {
+				delete(extDir, k)
+			}
+		}
 		for _, p := range w.allowedDirs {
 			// Floor dominance (r4): DROP any operator allow that can
 			// match a path a tier deny governs — not just exact-key

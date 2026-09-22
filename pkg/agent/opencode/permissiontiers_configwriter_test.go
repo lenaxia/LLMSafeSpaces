@@ -198,3 +198,46 @@ func TestConfigWriter_RenderDropsReopeningOperatorAllows(t *testing.T) {
 	assert.Equal(t, "allow", ext["/opt/cache/*"], "a legitimate operator allow survives")
 	assert.Equal(t, "allow", ext["/tmp/*"], "the tier floor still renders")
 }
+
+// r5 finding 1 — the ?-wildcard rows: a single-char wildcard in the
+// operator pattern must not slip the literal-prefix filter ("?etc/*"
+// sorts AFTER every deny — 0x3F > 0x2F — and reopens /etc/* live).
+func TestConfigWriter_RenderDropsQuestionMarkReopens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	writeTiersConfig(t, path, `{}`)
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agentapi.AgentConfigInput{AllowedDirs: &agentapi.AllowedDirsChange{Dirs: []string{
+		"?etc/*", // leading single-char wildcard — must DROP
+		"/?tc/*", // interior single-char wildcard — must DROP
+	}}})
+	require.NoError(t, err)
+
+	ext := readRenderedExtDir(t, path)
+	assert.NotContains(t, ext, "?etc/*", "a ?-wildcard pattern reaching a deny root must not render")
+	assert.NotContains(t, ext, "/?tc/*", "an interior ?-wildcard reaching a deny root must not render")
+	assert.Equal(t, "deny", ext["/etc/*"], "the floor still renders")
+}
+
+// r5 finding 2 — the artifact ingress: a seeded (agent-tampered or
+// stale) allow that reopens a tier deny must not re-render. The
+// artifact is agent-writable by the threat model; the render is the
+// last line of defense.
+func TestConfigWriter_RenderDropsSeededReopeningAllows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	// Seeded live key: a reopening allow (the r5-demonstrated ingress).
+	writeTiersConfig(t, path, `{"permission": {"external_directory": {"/etc/latency/*": "allow", "/custom/*": "allow"}}}`)
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agentapi.AgentConfigInput{}) // NO AllowedDirs source — pure artifact ingress
+	require.NoError(t, err)
+
+	ext := readRenderedExtDir(t, path)
+	assert.NotContains(t, ext, "/etc/latency/*",
+		"a seeded allow that reopens a tier deny must not re-render (the artifact is agent-writable)")
+	assert.Equal(t, "allow", ext["/custom/*"],
+		"a seeded NON-reopening allow survives (render idempotency — a prior legit render re-renders)")
+	assert.Equal(t, "deny", ext["/etc/*"], "the floor still renders")
+}

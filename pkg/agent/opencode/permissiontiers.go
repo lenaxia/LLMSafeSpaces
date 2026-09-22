@@ -160,16 +160,19 @@ func tierMatch(resource, pattern string) bool {
 // prefix glob. An exact deny D intersects pattern p iff p matches D
 // (single concrete string — complete check). A deny "X/\*" intersects
 // p iff p can match some string beginning "X/": with L the literal
-// prefix of p before its first \*, that holds iff L is empty, L is
-// itself under "X/", or "X/" extends L (p's star can absorb the rest
-// of X plus the slash — provably a live overlap in every such case,
-// since L + (X minus L) + "/" + p's-tail matches both patterns).
-// Patterns outside every deny keep their allow.
+// prefix of p before its FIRST WILDCARD of either kind ("\*" or "?",
+// both of which the ported matcher compiles to match-any runes — r5
+// closed the ? gap: a leading-? pattern's bytes are NOT literal), that
+// holds iff L is empty, L is itself under "X/", or "X/" extends L
+// (p's wildcard can absorb the rest of X plus the slash — provably a
+// live overlap in every such case, since L + (X minus L) + "/" +
+// p's-tail matches both patterns). Patterns outside every deny keep
+// their allow.
 func allowReopensTierDeny(pattern string) bool {
-	star := strings.IndexByte(pattern, '*')
+	wild := strings.IndexAny(pattern, "*?")
 	litPrefix := pattern
-	if star >= 0 {
-		litPrefix = pattern[:star]
+	if wild >= 0 {
+		litPrefix = pattern[:wild]
 	}
 	for k, v := range platformPermissionTiers {
 		if v != "deny" {

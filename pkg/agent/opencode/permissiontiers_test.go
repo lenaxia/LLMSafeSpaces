@@ -169,6 +169,9 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 	// The filter's own predicates, independent of the model.
 	assert.True(t, allowReopensTierDeny("/etc/latency/*"))
 	assert.True(t, allowReopensTierDeny("/et*"))
+	assert.True(t, allowReopensTierDeny("?etc/*"), "a leading ?-wildcard reaches the deny root (r5)")
+	assert.True(t, allowReopensTierDeny("/?tc/*"), "an interior ?-wildcard reaches the deny root (r5)")
+	assert.True(t, allowReopensTierDeny("/et?"), "a trailing ?-wildcard path resolves under /etc (r5)")
 	assert.True(t, allowReopensTierDeny("/home/sandbox/.ssh/id_rsa"))
 	assert.False(t, allowReopensTierDeny("/opt/cache/*"),
 		"an allow outside every deny keeps its allow")
