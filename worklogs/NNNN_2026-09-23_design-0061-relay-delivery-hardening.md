@@ -32,6 +32,10 @@ Write design/0061 at the 0058 level: the four binding mechanisms (crash-loud arm
 
 None — the two trimming rulings and the four-mechanism boundary are recorded as binding; the design does not re-litigate.
 
+## Tests Run
+
+None executed — docs/design-only session (`bash -n` n/a; the design and README are markdown). Repolint green via the pre-commit hook at commit time.
+
 ## Next Steps
 
 1. Reviewer iteration to APPROVED; owner final read; then the implementation stories (M3's #1546 fixes first — the gate's first catch).
@@ -41,3 +45,10 @@ None — the two trimming rulings and the four-mechanism boundary are recorded a
 
 - `design/0061_2026-09-23_relay-delivery-hardening.md` (new)
 - `README-LLM.md` (the design registered)
+
+## r1 — two design premises corrected, the hygiene items
+
+- **Defect 3 re-derived and DROPPED as a shipped defect** (review finding 1, fully correct): the refresher is flag-gated in every merged tree and the chart renders flag+RBAC from the same values key — consistent by construction. My r0 draft cited the #1548 RCA establishing this and then contradicted it to justify a GRANT; the unconditional grant is OUT (it would widen the shipped posture to fix a class correct provenance eliminates). Replaced by: the gate's zero-forbidden assertion (generic coverage) + a render-pin that flag and RBAC stay key-coupled.
+- **Assertion 4's envelope stated honestly** (finding 2): the same-run label is the same attestation class as the build-arg — it catches running-something-other-than-the-tag's-artifact, NOT the wrong-bits-inside-the-tag drift; the wiring-drift class is caught by assertion 2 (the armed line is behavioral); the residue (wrong-bits WITH the wiring) is named and left owner-side until signing. The gate no longer claims what it cannot detect.
+- **The README fragilities renumbering fixed** (1,2,3,3,4,5 → 1..6; finding 3) and the stale "refresher grant" phrase in my own item updated to the key-coupling pin.
+- This worklog's Tests Run section added (finding 4).
