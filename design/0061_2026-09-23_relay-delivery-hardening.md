@@ -128,8 +128,8 @@ Four mechanisms. No fifth. The trimmed candidates are recorded in §9 with their
 - [ ] #1548's disposition map: AC1 (root cause + enable line + first handoff) ← M1 + the parity PR + the M2/M4 e2e story's first-handoff assertion; AC2 ← M2/M4 (the heartbeat class rejected, §9); AC3 ← M4; AC4 ← the M2/M4 e2e story (literal text superseded by M2, recorded above); AC5 ← §8.4 (mooted-by-gate); AC6 ← §8.2 (owner-side); AC7 ← this worklog. The cluster-side digest checks remain owner-side per the #1548 thread.
 - [ ] Worklog per repo rules; design doc registered in README-LLM.
 
-## 11. Open questions (for review)
+## 11. Open questions — RESOLVED (owner rulings, 2026-09-23; design fully approved)
 
-1. **M2's handoff-absence read:** the builder reads the workspace's handoff Secret presence directly (a Secrets LIST in the release namespace per batch build — the API's existing client) vs. the controller pushing readiness into the batch manifest. The design leans **direct read** (one source of truth, no new push path); reviewer confirm.
-2. **M1's exit code:** 85 extends the ladder cleanly — confirm no collision in the runbook's grep surface.
-3. **M3's trigger breadth:** `helm/**` + `controller/**` only, or also `api/**` (the builder is posture-relevant post-M2)? The design leans adding `api/**`.
+1. **M2's handoff-absence read: DIRECT READ, confirmed** — with the scale rationale on record: the read rides existing per-batch work (amortized; no standing cost; the stateless API is preserved). Noted, not designed: if sustained batch-build rates ever make live GETs hot, an informer cache is the standard implementation detail behind the same read seam.
+2. **M1's exit code: 85, confirmed** — no collisions in the doctrine ladder or the runbook grep surface.
+3. **M3's trigger breadth: ALL THREE PATHS (`helm/**` + `controller/**` + `api/**`), confirmed** — with the owner's scale answer on record: the gate has ZERO workspace footprint (one cold install; control-plane pods only); its cost is CI minutes; and the four mechanisms collectively carry NO standing per-workspace cost. Cardinality note (M2's counters): ~10k series at 5k workspaces × 2 providers — routine for Prometheus; a one-line label-drop if it ever matters.
