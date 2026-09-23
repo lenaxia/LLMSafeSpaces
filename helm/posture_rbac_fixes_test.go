@@ -94,19 +94,20 @@ func TestRelayRouterKeypairRuleSplit(t *testing.T) {
 		}
 	}
 
-	// The unscoped create exists.
+	// The unscoped create exists — on SECRETS in the core group (the
+	// verbs-on-wrong-resource drift class, r1 finding 3).
 	create := ruleFor(rules, func(m map[string]any) bool {
 		vs := verbSet(m)
-		return vs["create"] && !vs["update"]
+		return vs["create"] && !vs["update"] && onSecrets(m)
 	})
-	require.NotNil(t, create, "the split unscoped create rule must exist")
+	require.NotNil(t, create, "the split unscoped create rule must exist (on secrets)")
 
 	// The name-scoped update covers exactly the two keypair Secrets.
 	update := ruleFor(rules, func(m map[string]any) bool {
 		vs := verbSet(m)
-		return vs["update"] && !vs["create"]
+		return vs["update"] && !vs["create"] && onSecrets(m)
 	})
-	require.NotNil(t, update, "the split name-scoped update rule must exist")
+	require.NotNil(t, update, "the split name-scoped update rule must exist (on secrets)")
 	assert.True(t, hasResourceName(update, "llm-relay-hpke-key"))
 	assert.True(t, hasResourceName(update, "llm-relay-hpke-pub"))
 	ns, _ := update["resourceNames"].([]any)
@@ -139,10 +140,50 @@ func TestPinsRoleGrantsInformerListWatch(t *testing.T) {
 				}
 				return cm && vs["list"] && vs["watch"] && vs["get"]
 			})
-			assert.NotNil(t, lw,
-				"the %s pins block must grant get/list/watch on configmaps — the cached informer LISTs on first Get (#1546 Defect 2)", pin)
+			if assert.NotNil(t, lw,
+				"the %s pins block must grant get/list/watch on configmaps — the cached informer LISTs on first Get (#1546 Defect 2)", pin) {
+				assert.Empty(t, lw["resourceNames"],
+					"the informer grant must be UNSCOPED — an informer LIST cannot be resourceNames-scoped (the same dead-RBAC semantics as create, r1 finding 2)")
+			}
 		})
 	}
+}
+
+func onSecrets(rule map[string]any) bool {
+	if rule == nil {
+		return false
+	}
+	res, _ := rule["resources"].([]any)
+	secs := false
+	for _, r := range res {
+		if s, ok := r.(string); ok && s == "secrets" {
+			secs = true
+		}
+	}
+	ags, _ := rule["apiGroups"].([]any)
+	core := false
+	for _, a := range ags {
+		if s, ok := a.(string); ok && s == "" {
+			core = true
+		}
+	}
+	return secs && core
+}
+
+// The ClusterRole renders UNCONDITIONALLY under namespace scope (the
+// design §8.1 letter: the posture never depends on the fleet flag).
+func TestInferenceRelayClusterRoleUnconditional(t *testing.T) {
+	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: false\n") // default scope = namespace
+	for _, d := range docs {
+		if d["kind"] == "ClusterRole" {
+			if meta, ok := d["metadata"].(map[string]any); ok {
+				if name, _ := meta["name"].(string); strings.HasSuffix(name, "relay-safe-crd-watch") {
+					return // present with the fleet OFF — unconditional
+				}
+			}
+		}
+	}
+	t.Fatal("the relay-safe ClusterRole must render with the fleet DISABLED (unconditional — the posture never depends on the fleet flag)")
 }
 
 func leaderElectionRole(t *testing.T, docs []map[string]any) map[string]any {
@@ -194,19 +235,33 @@ func TestInferenceRelayNamespaceScopeClusterRole(t *testing.T) {
 		if !ok {
 			continue
 		}
+		// apiGroups pinned EXACTLY (r1 finding 1: a wrong apiGroup renders
+		// a dead grant — the forbidden flood returns — and nothing else
+		// catches it; this is the CRD's actual group, helm/crds/).
+		ags, _ := m["apiGroups"].([]any)
+		require.Len(t, ags, 1)
+		assert.Equal(t, "llmsafespaces.dev", ags[0])
 		res, _ := m["resources"].([]any)
 		for _, rr := range res {
 			if s, ok := rr.(string); ok {
-				assert.Equal(t, "inferencerelays", s,
-					"the relay-safe ClusterRole touches ONLY the CRD — never Secrets (§4.3)")
+				assert.Contains(t, []string{"inferencerelays", "inferencerelays/status", "inferencerelays/finalizers"}, s,
+					"the relay-safe ClusterRole touches ONLY the CRD and its subresources — never Secrets (§4.3)")
 			}
 		}
 		vs := verbSet(m)
 		for v := range vs {
-			assert.Contains(t, []string{"get", "list", "watch"}, v,
-				"read-only verbs only")
+			assert.Contains(t, []string{"get", "list", "watch", "update"}, v,
+				"the reconciler's CRD-lifecycle verbs only (watch + finalizer/status writes)")
 		}
 	}
+	// The binding's subject is the CONTROLLER SA (r1 finding 4, the
+	// api-inferencerelay precedent).
+	subj, _ := binding["subjects"].([]any)
+	require.NotEmpty(t, subj)
+	first, _ := subj[0].(map[string]any)
+	require.NotNil(t, first)
+	assert.Equal(t, "ServiceAccount", first["kind"])
+	assert.Contains(t, first["name"], "controller")
 }
 
 // The flag↔RBAC key-coupling pin (design 0061 §5's Defect-3

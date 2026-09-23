@@ -571,15 +571,21 @@ subjects:
 {{- end }}
 
 {{- /* #1546 design gap (design 0061 §8.1): inferencerelays is a
-        cluster-scoped CRD watch; its grant existed only inside the
-        opt-in rbac.scope=cluster block, which the relay-only guard
-        REFUSES — so the fleet reconciler could not coexist with the
-        mandated namespace posture (forbidden-flood). The relay-only-SAFE
-        grant: an always-created ClusterRole over the CRD alone
-        (get/list/watch — a read, no Secrets, no §4.3 conflict), rendered
-        under NAMESPACE scope whenever the fleet is enabled. The cluster
-        block keeps its broader version for cluster installs. */}}
-{{- if and (.Values.controller.inferenceRelay.enabled) (ne (.Values.rbac.scope | default "namespace") "cluster") }}
+        cluster-scoped CRD; its grant existed only inside the opt-in
+        rbac.scope=cluster block, which the relay-only guard REFUSES —
+        so the fleet reconciler could not run under the mandated
+        namespace posture. The relay-only-SAFE grant: an
+        ALWAYS-CREATED ClusterRole (unconditional — the posture never
+        depends on the fleet flag; no informer registers without the
+        reconciler) covering the reconciler's complete CRD lifecycle:
+        watch (get/list/watch) + the finalizer add/remove and status
+        writes (update on the CRD and its /status + /finalizers
+        subresources — reconciler.go:129/363/832). Secrets NEVER
+        (§4.3): the fleet's VM-key Secret writes ride the NAMESPACED
+        inferenceRelay grant (rbac.yaml's controller Role), same as
+        before. Rendered under NAMESPACE scope only; the cluster block
+        keeps its broader version for cluster installs. */}}
+{{- if ne (.Values.rbac.scope | default "namespace") "cluster" }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -589,7 +595,10 @@ metadata:
 rules:
   - apiGroups: ["llmsafespaces.dev"]
     resources: ["inferencerelays"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["llmsafespaces.dev"]
+    resources: ["inferencerelays/status", "inferencerelays/finalizers"]
+    verbs: ["update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

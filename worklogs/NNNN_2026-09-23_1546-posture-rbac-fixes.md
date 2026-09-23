@@ -47,3 +47,10 @@ None.
 - `helm/templates/llm-relay-rbac.yaml` (Defect 1)
 - `helm/templates/rbac.yaml` (Defect 2 + the design-gap ClusterRole)
 - `helm/posture_rbac_fixes_test.go` (new: the four render pins)
+
+## r1 — the pins hardened, the ClusterRole completed
+
+- **The pin-vacuity findings (1–3, mutation-demonstrated by the reviewer)**: the split rules now pin resource+apiGroup (onSecrets — core group, secrets); the informer grant must be UNSCOPED (resourceNames EMPTY — the dead-LIST semantics); the ClusterRole pins apiGroups EXACTLY ["llmsafespaces.dev"] (my own first-guess wrong-group error is now the caught class). Finding 4: the binding's subject asserted (ServiceAccount, controller SA — the api-inferencerelay precedent).
+- **The overclaim (5), fixed in the GRANT not the comment**: the reconciler's complete CRD lifecycle is now covered — update on the CRD (the finalizer add/remove, reconciler.go:129/832) + update on /status + /finalizers (the status writes :363/711/749). Secrets NEVER (§4.3): the fleet's VM-key Secret writes ride the NAMESPACED inferenceRelay grant as before. "Coexists" is now true for a full reconcile of a real CR.
+- **The unconditional letter (6)**: the ClusterRole renders under namespace scope REGARDLESS of the fleet flag (the design's stated rationale — the posture never depends on the fleet flag; no informer registers without the reconciler). Pinned by TestInferenceRelayClusterRoleUnconditional (fleet-off render still carries it).
+- The template comment states the lifecycle verbs with the reconciler.go line anchors and the Secrets-ride-the-namespaced-grant routing.
