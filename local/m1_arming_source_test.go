@@ -42,12 +42,12 @@ func TestM1_MainExitsDistinctCodeOnStagingFailure(t *testing.T) {
 	if i < 0 {
 		t.Fatal("the staging refusal site not found in main.go")
 	}
-	window := src[i-400 : i+400]
-	if !strings.Contains(window, "os.Exit(controller.RelayStagingNotArmedExitCode)") {
-		t.Fatalf("the staging-error path must exit with the DISTINCT constant (design 0061 §3) — found:\n%s", window)
-	}
-	if strings.Contains(window, "os.Exit(1)") {
-		t.Fatalf("a bare os.Exit(1) survives at the staging site — the #1548 ambiguity class")
+	// TIGHT window (r1 finding 4): the refusal line through the exit —
+	// the call and its argument are adjacent; a ±400-char window tripped
+	// on a foreign Exit(1) ~286 chars away.
+	window := src[i : i+400]
+	if !strings.Contains(window, "os.Exit(controller.RelayStagingExitCodeFor(err))") {
+		t.Fatalf("the staging-error path must exit through the seam (design 0061 §3) — found:\n%s", window)
 	}
 }
 

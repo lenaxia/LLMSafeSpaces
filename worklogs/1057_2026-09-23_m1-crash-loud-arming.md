@@ -49,3 +49,10 @@ None.
 - `controller/main.go` (exit 85, the not-armed refusal)
 - `controller/internal/controller/controller_arming_test.go` (new, 3 pins)
 - `local/m1_arming_source_test.go` (new, 3 source-truth pins)
+
+## r1 — the seam; the shapes executed
+
+- **The decision seam** (the reviewer's ask, the opencodeOverlayDecision precedent): `RelayStagingExitCodeFor(err) int` — nil→0, ANY enabled failure→85 (one code, one meaning, the design's armed conjunction); main.go exits THROUGH it; the mapping is unit-tabled (flag/config/guard classes).
+- **The shapes EXECUTED** (arming_behavior_test.go, hermetic — no envtest dependency): the manager stub (embedded nil interface: only the three touched methods; a GetConfig panic means production reached around the seam — by design); the guard-client seam (`newStartupGuardClient`, the house DI pattern) letting the fake client serve the pub-Secret read + mint-key create; ARMED = stub router + valid pub Secret + fake API → non-nil cfg + exit-0 mapping + the line literal pinned IN THIS TREE (the r1 finding: the release-smoke citation was dangling — that branch is unmerged; this is the armed contract's only in-tree coverage until it or the gate lands); UNARMABLE = dead router → error WITHIN the window (elapsed-bounded — "not 1, not a hang" now tested), refusal language, 85 via the seam.
+- **The two inaccurate PR-body/worklog claims corrected**: the fail-loud matrix does NOT read the named window (the diff touched no guard test — the WINDOW is bound by the constant + the guard's source; the behavioral test bounds the elapsed); the release-smoke markers do not exist on main (the literal pin moved here).
+- The grep-window finding: the refusal→exit call is now a TIGHT window (the refusal line through the adjacent exit — no foreign Exit(1) can trip it).

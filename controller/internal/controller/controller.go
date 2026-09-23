@@ -123,6 +123,29 @@ type RelayArtifactConfig struct {
 // this code makes undeployable.
 const RelayStagingNotArmedExitCode = 85
 
+// newStartupGuardClient builds the guard's DIRECT (non-cached) client
+// from the manager's rest config. A package-level seam so the M1
+// behavioral tests can substitute a fake client (the manager stub
+// carries no rest config — and the armed/unarmable shapes must run
+// hermetically in the default suite, not only under envtest).
+var newStartupGuardClient = func(mgr ctrl.Manager) (client.Client, error) {
+	return client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+}
+
+// RelayStagingExitCodeFor maps a SetupRelayStaging outcome to the
+// controller's exit code — the decision seam the 81–84 ladder's
+// opencodeOverlayDecision precedent sets (a RETURNED code, unit-asserted,
+// not an inlined os.Exit in an untestable main). One code, one meaning:
+// ANY error while enabled is "deployed relay-only but not armed" → 85
+// (the design §3 armed conjunction: flags valid → constructed → guard
+// green — a failure at any rung is not-armed).
+func RelayStagingExitCodeFor(err error) int {
+	if err == nil {
+		return 0
+	}
+	return RelayStagingNotArmedExitCode
+}
+
 // ArmingStartupGuardWindow (design 0061 §3): the bounded startup window
 // within which enabled=true must reach armed state — the startup
 // guard's existing 30s budget, named here as the design's constant (no
@@ -169,7 +192,7 @@ func SetupRelayStaging(mgr ctrl.Manager, enabled bool, routerURL, namespace stri
 	if err != nil {
 		return nil, err
 	}
-	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	directClient, err := newStartupGuardClient(mgr)
 	if err != nil {
 		return nil, fmt.Errorf("building startup-guard client: %w", err)
 	}

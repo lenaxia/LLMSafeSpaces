@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,4 +52,20 @@ func TestArmingWindow_IsTheStartupGuardBudget(t *testing.T) {
 	// design fixes.
 	assert.Equal(t, 30*time.Second, ArmingStartupGuardWindow,
 		"the design's bounded startup window — the guard's existing timeout, no new timer")
+}
+
+// The decision seam (r1's ask, the opencodeOverlayDecision precedent):
+// the error→code mapping is unit-asserted, not source-grepped. One
+// code, one meaning — any enabled failure class maps to 85.
+func TestRelayStagingExitCodeFor_MapsEveryEnabledFailureToTheRung(t *testing.T) {
+	assert.Equal(t, 0, RelayStagingExitCodeFor(nil), "armed: exit 0")
+	for name, err := range map[string]error{
+		"flag-invalid (ttl out of range)": fmt.Errorf("--relay-token-ttl must be within 1s..7d"),
+		"config construction":             fmt.Errorf("relay staging redactor: boom"),
+		"startup guard (router dead)":     fmt.Errorf("startup guard FAILED — refusing to start: router unreachable"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, 85, RelayStagingExitCodeFor(err))
+		})
+	}
 }

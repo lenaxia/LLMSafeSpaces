@@ -354,9 +354,11 @@ func main() {
 	if err != nil {
 		// Design 0061 §3 (M1, crash-loud arming): the DISTINCT code, not
 		// bare 1 — the CrashLoop's reason becomes one describe-pod away
-		// (the 81/82-agentd, 83/84-opencode ladder's fifth rung).
+		// (the 81/82-agentd, 83/84-opencode ladder's fifth rung). The
+		// mapping lives in the testable seam (RelayStagingExitCodeFor —
+		// the opencodeOverlayDecision precedent).
 		setupLog.Error(err, "relay-only key delivery: refusing to start (not armed)")
-		os.Exit(controller.RelayStagingNotArmedExitCode)
+		os.Exit(controller.RelayStagingExitCodeFor(err))
 	}
 
 	// US-65.6-followup: register the agent runtime explicitly.
