@@ -415,7 +415,7 @@ The controller manages 3 CRDs in the `llmsafespaces.dev/v1` API group:
 |-----|------|-------|-------|---------|
 | `workspace.yaml` | `Workspace` | Namespaced | `ws` | PVC-backed persistent environment + pod running `opencode serve` |
 | `runtimeenvironment.yaml` | `RuntimeEnvironment` | Cluster | `rte` | Defines a runtime image (Python, Node.js, Go) |
-| `inferencerelay.yaml` | `InferenceRelay` | Cluster | `irelay` | Managed fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference — feature-gated (`controller.inferenceRelay.enabled`), requires `rbac.scope=cluster` |
+| `inferencerelay.yaml` | `InferenceRelay` | Cluster | `irelay` | Managed fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference — feature-gated (`controller.inferenceRelay.enabled`); namespace scope additionally requires `controller.watchNamespaces` (install-time guard) |
 
 Legacy CRDs (Sandbox, SandboxProfile, WarmPool, WarmPod) have been removed. The Workspace CRD absorbs all sandbox and profile functionality. `InferenceRelay` is the only CRD beyond the core Workspace/RuntimeEnvironment pair and is opt-in.
 
@@ -686,7 +686,7 @@ Disabled by default. Enable via Helm:
 
 | Value | Purpose |
 |-------|---------|
-| `controller.inferenceRelay.enabled` | Feature gate. Requires `rbac.scope=cluster` (cluster-scoped CRD). |
+| `controller.inferenceRelay.enabled` | Feature gate. Under namespace scope additionally requires `controller.watchNamespaces` (install-time guard; cluster scope grants the broader original set). |
 | `controller.inferenceRelay.routerURL` | Router `/metrics` scrape URL (controller → router, in-cluster). |
 | `controller.inferenceRelay.workspaceRouterURL` | URL workspace pods use to reach the router. Empty → derived cross-namespace FQDN. |
 | `controller.inferenceRelay.artifact.{urls,sha256Arm64,sha256Amd64}` | relay-proxy binary distribution (cloud-init downloads + verifies). |

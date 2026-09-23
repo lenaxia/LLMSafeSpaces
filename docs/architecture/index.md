@@ -41,7 +41,7 @@ Everything long-lived is a Kubernetes custom resource in the `llmsafespaces.dev/
 |---|---|---|---|
 | `Workspace` | Namespaced | `ws` | PVC-backed persistent environment + pod running `opencode serve`. The unit of suspend/resume. |
 | `RuntimeEnvironment` | Cluster | `rte` | Mapping from a runtime name (e.g. `python:3.11`) to a container image. |
-| `InferenceRelay` | Cluster | `irelay` | Opt-in fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference. Requires `rbac.scope=cluster`. |
+| `InferenceRelay` | Cluster | `irelay` | Opt-in fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference. Works under both scopes; namespace scope additionally requires `controller.watchNamespaces` (install-time guard). |
 
 Legacy CRDs (`Sandbox`, `SandboxProfile`, `WarmPool`, `WarmPod`) have been removed — `Workspace` absorbs all sandbox and profile functionality, and warm pools were dropped entirely (the PVC *is* the warm state). See the [CRD reference](../reference/crds.md) for the authoritative schema.
 

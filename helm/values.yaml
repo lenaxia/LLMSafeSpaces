@@ -427,8 +427,12 @@ controller:
   # providers. Requires the InferenceRelay CRD to be installed and
   # provider credentials (Secrets) to be present in the release namespace.
   #
-  # NOTE: InferenceRelay is a cluster-scoped CRD, so enabling this feature
-  # requires rbac.scope=cluster for the controller to watch/manage CRs.
+  # NOTE: InferenceRelay is a cluster-scoped CRD. Works under both
+  # scopes: under rbac.scope=namespace (the default) enabling this
+  # additionally requires controller.watchNamespaces (install-time
+  # guard — the fleet's cluster-wide Secret informer needs the scoped
+  # cache; the relay-safe ClusterRole covers the CRD lifecycle);
+  # rbac.scope=cluster grants the broader original set.
   # The RBAC rules for inferencerelays + configmaps are conditionally
   # added to the cluster-scoped ClusterRole when this is enabled.
   inferenceRelay:

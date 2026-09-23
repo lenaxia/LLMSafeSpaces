@@ -133,7 +133,7 @@ The controller-runtime operator. Single leader-elected replica by default.
 
 ### `controller.inferenceRelay` (opt-in, Epic 42)
 
-The self-hosted multi-cloud relay fleet. Disabled by default. **Requires `rbac.scope=cluster`** (InferenceRelay is cluster-scoped).
+The self-hosted multi-cloud relay fleet. Disabled by default. Works under both scopes: under `rbac.scope=namespace` (the default) it additionally **requires `controller.watchNamespaces`** (the install-time guard — the fleet's cluster-wide Secret informer needs the scoped cache; the relay-safe ClusterRole covers the CRD lifecycle); `rbac.scope=cluster` grants the broader original set.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -340,7 +340,7 @@ blockedEgressCIDRs:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `rbac.create` | bool | `true` | Create (Cluster)Role + (Cluster)RoleBinding. |
-| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): Role + RoleBinding scoped to the release namespace. **`cluster`**: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch. Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. **Required `cluster`** for `controller.inferenceRelay.enabled`. Even in cluster mode, no mutating verbs on secrets/pods (chart_test.go:1411). |
+| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): Role + RoleBinding scoped to the release namespace. **`cluster`**: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch. Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. Under `namespace` scope, `controller.inferenceRelay.enabled` additionally requires `controller.watchNamespaces` (install-time guard); `cluster` scope is the broader original posture. Even in cluster mode, no mutating verbs on secrets/pods (TestG5_ClusterScopeOptInRendersClusterRole, chart_test.go:903). |
 
 ## `webhooks`
 

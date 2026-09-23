@@ -302,7 +302,7 @@ status:
 
 ## InferenceRelay
 
-An `InferenceRelay` describes a managed fleet of relay VMs (AWS/OCI/GCP) that proxy free-tier inference so workspace pods never hold the upstream secret. **Opt-in** — disabled unless `controller.inferenceRelay.enabled: true` and requires `rbac.scope=cluster` (cluster-scoped CRD).
+An `InferenceRelay` describes a managed fleet of relay VMs (AWS/OCI/GCP) that proxy free-tier inference so workspace pods never hold the upstream secret. **Opt-in** — disabled unless `controller.inferenceRelay.enabled: true`. Cluster-scoped CRD; under `rbac.scope=namespace` it additionally requires `controller.watchNamespaces` (install-time guard; the relay-safe ClusterRole covers the CRD lifecycle).
 
 See the [inference relay fleet README](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-42-multi-cloud-inference-relay/README.md) for the full design.
 

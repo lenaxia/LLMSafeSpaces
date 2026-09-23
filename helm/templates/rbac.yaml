@@ -138,6 +138,19 @@ rules:
     resources: ["configmaps"]
     verbs: ["create"]
 {{- end }}
+{{- if or .Values.controller.agentdDelivery.image .Values.controller.opencodeDelivery.image }}
+  # #1546 Defect 2 (design 0061 §5): the first CACHED ConfigMap Get
+  # starts a reflector that LISTs configmaps in the release namespace —
+  # the resourceNames-scoped get/update above never granted list/watch,
+  # and the least-privilege posture (namespace scope, no fleet grant)
+  # left the informer forbidden. UNSCOPED reads on configmaps (release
+  # ns only — this is the leader-election Role): the informer's actual
+  # requirement. Note an informer LIST cannot be resourceNames-scoped
+  # either (same apiserver semantics as create).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
 {{- if .Values.controller.opencodeDelivery.image }}
   # Design 0053 §4.2: the opencode-pins cache ConfigMap — same
   # least-privilege shape as the agentd-pins grant above (scoped
@@ -554,5 +567,64 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "llmsafespaces.api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+
+{{- /* #1546 design gap (design 0061 §8.1): inferencerelays is a
+        cluster-scoped CRD; its grant existed only inside the opt-in
+        rbac.scope=cluster block, which the relay-only guard REFUSES —
+        so the fleet reconciler could not run under the mandated
+        namespace posture. The relay-only-SAFE grant: an
+        ALWAYS-CREATED ClusterRole (unconditional — the posture never
+        depends on the fleet flag; no informer registers without the
+        reconciler) covering the reconciler's complete CRD lifecycle:
+        watch (get/list/watch) + update on the CRD itself (the finalizer
+        add/remove — controller-runtime Update PUTs the MAIN resource)
+        and update on the /status subresource (reconciler.go:129/363/832;
+        no /finalizers subresource grant: it would be inert). Secrets NEVER
+        (§4.3): the fleet's VM-key Secret writes ride the NAMESPACED
+        inferenceRelay grant (rbac.yaml's controller Role), same as
+        before. Rendered under NAMESPACE scope only; the cluster block
+        keeps its broader version for cluster installs. */}}
+{{- if ne (.Values.rbac.scope | default "namespace") "cluster" }}
+{{- /* F5 residual, fail-loud (the relay-only guard precedent): the
+        fleet reconciler Owns(&Secret{}) (reconciler.go:850) — a
+        cluster-wide Secret informer when controller.watchNamespaces is
+        empty (the default cluster-wide cache). Under the mandated
+        namespace posture that reflector LIST is granted nowhere and the
+        controller crash-loops (rbac.yaml's own cluster-block comment
+        documents the failure). Refuse at INSTALL TIME; the operator
+        sets controller.watchNamespaces (scoping the cache) or runs the
+        fleet under cluster scope. Tracked wedge: #1551 family. */}}
+{{- if and (.Values.controller.inferenceRelay.enabled) (not .Values.controller.watchNamespaces) }}
+{{- fail "controller.inferenceRelay.enabled under rbac.scope=namespace requires controller.watchNamespaces: the fleet's cluster-wide Secret informer cannot LIST under the mandated posture (design 0061 §8.1 residual) — scope the cache or use rbac.scope=cluster" }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-controller-relay-safe-crd-watch
+  labels:
+    {{- include "llmsafespaces.controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["llmsafespaces.dev"]
+    resources: ["inferencerelays"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["llmsafespaces.dev"]
+    resources: ["inferencerelays/status"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-controller-relay-safe-crd-watch
+  labels:
+    {{- include "llmsafespaces.controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llmsafespaces.fullname" . }}-controller-relay-safe-crd-watch
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llmsafespaces.controller.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
