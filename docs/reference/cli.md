@@ -66,7 +66,7 @@ go run ./controller
 
 | Flag | Helm value | Purpose |
 |---|---|---|
-| `--watch-namespaces` | `controller.watchNamespaces` | Comma-separated namespaces to watch. `""`/`"*"` = cluster-wide. |
+| `--watch-namespaces` | `controller.watchNamespaces` | Comma-separated namespaces to watch. `""` derives the workspace namespace under the default `rbac.scope=namespace`; `""`/`"*"` mean cluster-wide only under `rbac.scope=cluster` (`"*"` fails the render under namespace scope). |
 | `--metrics-addr` | `controller.metricsAddr` | Metrics bind (loopback default — run `kube-rbac-proxy` for Prometheus). |
 | `--health-probe-bind-address` | `controller.probeAddr` | Health probe port. |
 | `--enable-inference-relay` | `controller.inferenceRelay.enabled` | Enable the InferenceRelay reconciler. Requires `rbac.scope=cluster`. |
