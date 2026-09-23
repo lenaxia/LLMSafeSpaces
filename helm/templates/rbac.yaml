@@ -578,9 +578,10 @@ subjects:
         ALWAYS-CREATED ClusterRole (unconditional — the posture never
         depends on the fleet flag; no informer registers without the
         reconciler) covering the reconciler's complete CRD lifecycle:
-        watch (get/list/watch) + the finalizer add/remove and status
-        writes (update on the CRD and its /status + /finalizers
-        subresources — reconciler.go:129/363/832). Secrets NEVER
+        watch (get/list/watch) + update on the CRD itself (the finalizer
+        add/remove — controller-runtime Update PUTs the MAIN resource)
+        and update on the /status subresource (reconciler.go:129/363/832;
+        no /finalizers subresource grant: it would be inert). Secrets NEVER
         (§4.3): the fleet's VM-key Secret writes ride the NAMESPACED
         inferenceRelay grant (rbac.yaml's controller Role), same as
         before. Rendered under NAMESPACE scope only; the cluster block

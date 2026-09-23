@@ -201,12 +201,16 @@ func leaderElectionRole(t *testing.T, docs []map[string]any) map[string]any {
 	return nil
 }
 
-// The design gap (§8.1): inferenceRelay (a cluster-scoped CRD watch)
-// cannot coexist with the namespace posture — the grant exists only
-// inside the opt-in cluster block, which the relay-only guard refuses.
-// The fix: an always-created, relay-only-safe ClusterRole (inferencerelays
-// get/list/watch ONLY — a CRD read, no Secrets, no §4.3 conflict) that
-// renders under NAMESPACE scope whenever inferenceRelay is enabled.
+// The design gap (§8.1): inferenceRelay (a cluster-scoped CRD) could
+// not run under the namespace posture — the grant existed only inside
+// the opt-in cluster block, which the relay-only guard refuses. The
+// fix: an always-created relay-safe ClusterRole rendered UNCONDITIONALLY
+// under namespace scope, covering the reconciler's complete CRD
+// lifecycle: watch (get/list/watch) + update on the main resource (the
+// finalizer add/remove) + update on /status — Secrets NEVER (§4.3; the
+// fleet's Secret writes ride the namespaced grant). Coexistence with a
+// real CR additionally requires controller.watchNamespaces (the r2
+// install-time guard — see TestInferenceRelayFleetGuardFailsRender).
 func TestInferenceRelayNamespaceScopeClusterRole(t *testing.T) {
 	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n  watchNamespaces: llmsafespaces\n") // default scope = namespace; watchNamespaces per the r2 guard
 	var cr map[string]any
@@ -356,4 +360,19 @@ func TestFreeModelsRefresherFlagRBACKeyCoupling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The F5 guard's failure-mode test (the helmTemplateErr precedent every
+// other render guard carries): fleet + namespace scope + NO
+// watchNamespaces must FAIL the render — deleting the guard block must
+// turn this red, not pass green.
+func TestInferenceRelayFleetGuardFailsRender(t *testing.T) {
+	require.Error(t, helmTemplateErr(t, "controller:\n  inferenceRelay:\n    enabled: true\n"), // no watchNamespaces
+		"fleet + namespace scope without watchNamespaces must fail the render (the Secret-informer residual made install-time loud)")
+	// The two remedies each lift the guard (the cluster-scope case must
+	// also opt OUT of relay-only: the default-on relay-only + cluster
+	// scope combination fails the pre-existing render guard, which is
+	// not this test's subject).
+	require.NoError(t, helmTemplateErr(t, "controller:\n  inferenceRelay:\n    enabled: true\n  watchNamespaces: llmsafespaces\n"))
+	require.NoError(t, helmTemplateErr(t, "rbac:\n  scope: cluster\nrelayOnlyKeyDelivery:\n  enabled: false\ncontroller:\n  inferenceRelay:\n    enabled: true\n"))
 }
