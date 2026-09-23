@@ -275,9 +275,7 @@ security over availability.
 
 ### RBAC scope
 
-`rbac.scope=namespace` (default) gives the controller a namespace-scoped Role
-on the workspace namespace (plus the always-created read-only storageclasses
-ClusterRole — the one cluster-wide grant under this scope). The manager's
+`rbac.scope=namespace` (default) keeps the controller's WRITES namespace-bound: the workspace-lifecycle Role binds in the workspace namespace (the read-only storageclasses ClusterRole is always created regardless of scope; the complete grant set is the chart's rbac.yaml rules blocks, which are authoritative). The manager's
 cache is scoped to match: with
 `controller.watchNamespaces` empty (the default) the chart DERIVES
 `--watch-namespaces` to the workspace namespace — a cluster-wide cache cannot

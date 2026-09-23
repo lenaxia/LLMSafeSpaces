@@ -12,29 +12,29 @@
 # scope=cluster shipped, secrets and pods were granted cluster-wide,
 # violating least-privilege (G5 + F1.3.3).
 #
-# Post-fix layout:
-#  1. A namespace-scoped Role for the workspace lifecycle — workspaces
-#     (the CRD), pods, secrets, serviceaccounts, PVCs, NetworkPolicies,
-#     events. Lives in the workspace namespace; this is true regardless
-#     of rbac.scope. (NOT leases — those live in item 2's Role.)
-#  2. A Role for the controller's release namespace (where the
-#     controller pod runs) for events + leases (leader election), plus
-#     the conditional grants templated below (agentd pin-cache
-#     configmaps; relay-credential secrets under inferenceRelay).
-#  3. A ClusterRole for workspaces (the CRD itself is namespaced but
-#     the controller may need to watch ALL namespaces — which requires
-#     rbac.scope=cluster: with watchNamespaces unset under the default
-#     namespace scope the chart DERIVES --watch-namespaces to the
-#     workspace namespace instead; the cluster grant is bound only
-#     under scope=cluster anyway). The gated cluster grant covers:
-#     llmsafespaces.dev/* full CRUD (workspaces + runtimeenvironments,
-#     + inferencerelays under inferenceRelay); cluster-wide READ-ONLY
-#     (get/list/watch) on pods, secrets, PVCs, events, serviceaccounts,
-#     and networkpolicies (writes on those stay namespace-bound); and
-#     configmaps CONDITIONALLY — read-only under the default
-#     free-models refresher, FULL CRUD (cluster-wide writes) when
-#     inferenceRelay.enabled. storageclasses is NOT part of it: the
-#     separate always-created read-only ClusterRole below (F1.3.7).
+# Post-fix layout (grant MEMBERS live in the rules blocks below — they
+# are the authoritative enumeration; this header states invariants and
+# pointers only, because prose restatements of rule sets have historically
+# drifted from them):
+#  1. A namespace-scoped Role for the workspace lifecycle, in the
+#     WORKSPACE namespace (the api.config.kubernetes.namespace override,
+#     else the release namespace) — the workspace-lifecycle rules below.
+#  2. A Role in the controller's RELEASE namespace for events + leases
+#     (leader election), plus delivery- and relay-conditional grants —
+#     see the conditional branches in its rules block.
+#  3. A gated ClusterRole (bound only under rbac.scope=cluster) for
+#     watching across all namespaces. INVARIANTS: under the default
+#     rbac.scope=namespace, WRITES are namespace-bound (and an unset
+#     controller.watchNamespaces DERIVES --watch-namespaces to the
+#     workspace namespace — a cluster-wide cache cannot sync informers
+#     against namespaced RBAC and the controller CrashLoopBackOffs;
+#     nightly run 35872827066). Under rbac.scope=cluster the grant adds
+#     cluster-wide READS across the resource families its rules list,
+#     and its CONDITIONAL branches (delivery/relay/refresher) extend
+#     both reads and writes cluster-wide when active — the complete
+#     grant set is the rules block of this ClusterRole, which is
+#     authoritative. The read-only storageclasses ClusterRole below is
+#     separate, always created, and never part of this grant (F1.3.7).
 #  4. Bindings: the namespace Role is bound in the WORKSPACE namespace;
 #     the cluster grant is bound only when rbac.scope == "cluster".
 #
@@ -44,7 +44,7 @@
 #   F1.3.2 (leases moved to namespace Role).
 #   F1.3.3 (secrets/pods WRITES scoped to the workspace namespace,
 #          never cluster — under scope=cluster the gated grant above
-#          still adds cluster-wide READS; see the cache-scope note).
+#          still adds cluster-wide READS; see its rules).
 #   F1.3.7 (storageclasses split into its own cluster grant so it
 #          doesn't silently disappear in namespace mode).
 #   G5    (default scope flipped to "namespace"; the cluster grant is
@@ -247,13 +247,12 @@ subjects:
 # and the apiserver denies it because secrets/pods aren't in the
 # cluster-scope grant. The reflector enters CrashLoopBackOff. To make
 # the namespace-scoped CRUD Role work AS WELL AS allow the cluster-
-# wide informer watches, the cluster ClusterRole here grants
-# **read-only** (get/list/watch) on pods, secrets, PVCs, events,
-# serviceaccounts, and NetworkPolicies — plus the conditional
-# configmaps rule in the rules below (read-only under the default
-# free-models refresher; full CRUD under inferenceRelay) — while CRUD
-# is still restricted to the workspace namespace by the
-# per-namespace Role above.
+# wide informer watches, this ClusterRole's rules grant the cluster-
+# wide read-only watches (and, in its conditional branches, more —
+# see the rules block immediately below, which is authoritative);
+# CRUD stays restricted to the workspace namespace by the
+# per-namespace Role above except where a conditional branch says
+# otherwise.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

@@ -121,13 +121,16 @@ controller.watchNamespaces and/or rbac.scope=namespace.
 RBAC SCOPE: namespace
 =====================
 
-The controller's WRITING Role is scoped to the WORKSPACE namespace
+The controller's WRITES are namespace-bound: the workspace-lifecycle
+Role binds in the WORKSPACE namespace
 ({{ include "llmsafespaces.workspaceNamespace" . }} — the release
 namespace when api.config.kubernetes.namespace is unset; with the
 split-ns override set, the workspace Role lives THERE and the release
-namespace holds only the leader-election Role's leases/events/
-configmaps). One grant is cluster-wide even here: the always-created
-read-only storageclasses ClusterRole. The manager's cache is scoped to
+namespace holds the leader-election Role). The always-created
+read-only storageclasses ClusterRole is the one base grant that spans
+clusters regardless of scope; the complete grant set is the rules
+blocks in the chart's rbac.yaml, which are authoritative. The
+manager's cache is scoped to
 match (the derived --watch-namespaces); resources in other namespaces
 will not be reconciled.
 {{- end }}

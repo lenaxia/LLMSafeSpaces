@@ -189,14 +189,14 @@ The chart's `rbac.scope` controls how the controller's Kubernetes RBAC is grante
 | Scope | RBAC granted | Use when |
 |---|---|---|
 | **`namespace`** (default, G5) | Role + RoleBinding scoped to the WORKSPACE namespace (the `api.config.kubernetes.namespace` override, else the release namespace) | Single-namespace deployments. Tightest least-privilege. |
-| **`cluster`** | Adds ClusterRole + ClusterRoleBinding for `llmsafespaces.dev/*` (the read-only `storageclasses` ClusterRole is always created regardless of scope) | Multi-namespace deployments (controller watches multiple namespaces) or the self-hosted relay fleet (cluster-scoped `InferenceRelay` CRD). |
+| **`cluster`** | Adds the gated ClusterRole + ClusterRoleBinding: cluster-wide reads across the resource families its rules list, plus conditional branches that extend reads AND writes cluster-wide when active (the chart's `rbac.yaml` rules blocks are the authoritative enumeration; the read-only `storageclasses` ClusterRole is always created regardless of scope) | Multi-namespace deployments (controller watches multiple namespaces) or the self-hosted relay fleet (cluster-scoped `InferenceRelay` CRD). |
 
 ```yaml
 rbac:
   scope: "namespace"   # default
 ```
 
-Even in `cluster` mode, WRITES to Pods, Secrets, PVCs, and NetworkPolicies remain namespace-bound — but note the gated ClusterRole grants cluster-wide READS (get/list/watch) on them, so cluster scope widens the read blast radius, not the write one. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from `cluster` to `namespace` in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.
+Even in `cluster` mode, WRITES stay namespace-bound — but cluster scope widens the READ blast radius (the gated ClusterRole grants cluster-wide reads across the resource families its rules list), and its CONDITIONAL branches (delivery/relay/refresher) extend reads AND writes cluster-wide when active: audit `helm/templates/rbac.yaml`'s rules blocks — they are the authoritative grant enumeration, not any prose summary. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from `cluster` to `namespace` in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.
 
 ### Combining with `watchNamespaces`
 

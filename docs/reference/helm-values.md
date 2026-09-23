@@ -340,7 +340,7 @@ blockedEgressCIDRs:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `rbac.create` | bool | `true` | Create (Cluster)Role + (Cluster)RoleBinding. |
-| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): Role + RoleBinding scoped to the WORKSPACE namespace (the `api.config.kubernetes.namespace` override, else the release namespace). **`cluster`**: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch (the read-only `storageclasses` ClusterRole is always created regardless of scope). Pod/Secret/PVC/NetworkPolicy WRITES stay namespace-bound — under `cluster` the gated ClusterRole grants cluster-wide READS (get/list/watch) on them. **Required `cluster`** for `controller.inferenceRelay.enabled`. Even in cluster mode, no mutating verbs on secrets/pods (chart_test.go:1796-1826). |
+| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): WRITES namespace-bound — the workspace-lifecycle Role binds in the WORKSPACE namespace (the `api.config.kubernetes.namespace` override, else the release namespace). **`cluster`**: adds the gated ClusterRole + binding — cluster-wide READS across the resource families its rules list, plus conditional branches that extend reads AND writes cluster-wide when active; `rbac.yaml`'s rules blocks are the authoritative enumeration. (The read-only `storageclasses` ClusterRole is always created regardless of scope.) **Required `cluster`** for `controller.inferenceRelay.enabled`. Even in cluster mode, no mutating verbs on secrets/pods in the base (non-conditional) rules (chart_test.go:1796-1826). |
 
 ## `webhooks`
 
