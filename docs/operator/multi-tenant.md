@@ -196,7 +196,7 @@ rbac:
   scope: "namespace"   # default
 ```
 
-Even in `cluster` mode, Pods, Secrets, PVCs, and NetworkPolicies remain namespace-scoped. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from `cluster` to `namespace` in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.
+Even in `cluster` mode, WRITES to Pods, Secrets, PVCs, and NetworkPolicies remain namespace-bound — but note the gated ClusterRole grants cluster-wide READS (get/list/watch) on them, so cluster scope widens the read blast radius, not the write one. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from `cluster` to `namespace` in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.
 
 ### Combining with `watchNamespaces`
 

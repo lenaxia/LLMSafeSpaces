@@ -20,10 +20,16 @@
 #  2. A Role for the controller's release namespace (where the
 #     controller pod runs) for events + leases (leader election).
 #  3. A ClusterRole for workspaces (the CRD itself is namespaced but
-#     the controller may need to watch ALL namespaces when
-#     watchNamespaces is unset). The cluster grant is scoped to
-#     llmsafespaces.dev/* and storageclasses (read-only) — the
-#     two resource classes that genuinely span the cluster.
+#     the controller may need to watch ALL namespaces — which requires
+#     rbac.scope=cluster: with watchNamespaces unset under the default
+#     namespace scope the chart DERIVES --watch-namespaces to the
+#     workspace namespace instead; the cluster grant is bound only
+#     under scope=cluster anyway). The gated cluster grant covers
+#     llmsafespaces.dev/* (full CRUD) PLUS cluster-wide READ-ONLY
+#     (get/list/watch) on pods, secrets, PVCs, events, serviceaccounts,
+#     and networkpolicies (writes stay namespace-bound; see the
+#     cache-scope note below) — storageclasses is NOT part of it: the
+#     separate always-created read-only ClusterRole below (F1.3.7).
 #  4. Bindings: the namespace Role is bound in the WORKSPACE namespace;
 #     the cluster grant is bound only when rbac.scope == "cluster".
 #
@@ -31,7 +37,9 @@
 #   F1.3.1 (5 unused permissions removed: services, configmaps,
 #          runtimeenvironments/status).
 #   F1.3.2 (leases moved to namespace Role).
-#   F1.3.3 (secrets/pods scoped to workspace namespace, never cluster).
+#   F1.3.3 (secrets/pods WRITES scoped to the workspace namespace,
+#          never cluster — under scope=cluster the gated grant above
+#          still adds cluster-wide READS; see the cache-scope note).
 #   F1.3.7 (storageclasses split into its own cluster grant so it
 #          doesn't silently disappear in namespace mode).
 #   G5    (default scope flipped to "namespace"; the cluster grant is
@@ -217,8 +225,12 @@ subjects:
 ---
 # Cluster-wide grant (opt-in via rbac.scope=cluster): lets the
 # controller watch workspaces and runtimeenvironments across all
-# namespaces. This is needed when controller.watchNamespaces is unset
-# OR contains namespaces other than the release namespace. Single-
+# namespaces. This is needed when watching namespaces beyond those the
+# controller's RBAC covers — under the default rbac.scope=namespace an
+# UNSET controller.watchNamespaces DERIVES to the workspace namespace
+# (see the derivation in controller-deployment.yaml), so this block is
+# for explicit multi-namespace watching (with operator-created
+# per-namespace RoleBindings) or unset-under-cluster-scope. Single-
 # namespace deployments should keep rbac.scope=namespace (the default
 # post-G5) which omits this block entirely.
 #
