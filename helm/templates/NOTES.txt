@@ -121,8 +121,14 @@ controller.watchNamespaces and/or rbac.scope=namespace.
 RBAC SCOPE: namespace
 =====================
 
-The controller has Role-scoped permissions in {{ .Release.Namespace }} only.
-Resources in other namespaces will not be reconciled.
+The controller has Role-scoped permissions in the WORKSPACE namespace
+only ({{ include "llmsafespaces.workspaceNamespace" . }} — the release
+namespace when api.config.kubernetes.namespace is unset; with the
+split-ns override set, the workspace Role lives THERE and the release
+namespace holds only the leader-election Role's leases/events/
+configmaps). The manager's cache is scoped to match (the derived
+--watch-namespaces); resources in other namespaces will not be
+reconciled.
 {{- end }}
 
 {{- if .Values.externalSecret.create }}

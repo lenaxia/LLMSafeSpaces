@@ -284,7 +284,7 @@ controller:
   # leaves the free-models refresher's ConfigMap upsert unreachable — the
   # cached read errors (the namespace is outside the cache set; not
   # IsNotFound), the upsert never runs, and the catalog NEVER exists
-  # (a per-tick "ConfigMap sync failed" error; refresher.go:234-236,
+  # (a per-tick "ConfigMap sync failed" error; refresher.go:232-234,
   # non-fatal). Listing BOTH namespaces is the remedy ONLY under
   # rbac.scope=cluster (or wherever the RBAC actually covers both) —
   # under rbac.scope=namespace the release-ns Role grants just
