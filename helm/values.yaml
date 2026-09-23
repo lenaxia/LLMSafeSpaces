@@ -271,6 +271,14 @@ controller:
   # Combine with namespace-scoped RoleBindings (see rbac.scope below) for
   # defense-in-depth: even if the controller is given cluster-wide RBAC,
   # cache.DefaultNamespaces narrows what it actually reconciles.
+  #
+  # Under rbac.scope=namespace (the default), leaving this empty DERIVES
+  # --watch-namespaces to the workspace namespace (the workspaceNamespace
+  # helper) — a cluster-wide cache cannot sync its informers against a
+  # namespaced Role (Forbidden LIST/WATCH outside the namespace →
+  # CrashLoopBackOff; nightly run 35872827066, the first-ever exercise of
+  # the runbook's cluster→namespace migration path). Set explicitly to
+  # override; cluster scope keeps the cluster-wide cache.
   watchNamespaces: ""
 
   # How many different workspaces reconcile in parallel (1..64, clamped

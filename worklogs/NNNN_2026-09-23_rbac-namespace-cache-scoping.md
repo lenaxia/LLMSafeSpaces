@@ -1,0 +1,54 @@
+# Worklog: rbac namespace-scope cache-scoping derivation — the drill-shape crashloop fix (run 35872827066)
+
+**Date:** 2026-09-23
+**Session:** Standby assignment from the orchestrator after the monitor's report: the nightly's drill-shape pre-step (its FIRST-EVER execution — every prior nightly died upstream, so the hardened lane from #1542 carried it here for the first time) failed `helm upgrade --wait` with a 10m `context deadline exceeded`. Diagnosis first (no rerun, no push), then GO on the fix PR.
+**Status:** Complete
+
+---
+
+## Objective
+
+Make the runbook's own prescribed `rbac.scope=cluster → namespace` migration path actually work: under namespace scope the controller must not run a cluster-wide manager cache against namespaced RBAC.
+
+## Work Completed
+
+### The diagnosis (reported with evidence before any code)
+
+- **Pod status at the deadline:** `llmsafespaces-controller 0/1 CrashLoopBackOff, 3 restarts in 10m` — the sole unready resource; everything else (api ×2, five workspaces, mock-llm, postgres, valkey) healthy. helm `--wait` burned its full 10m on that one deployment.
+- **Controller logs (the failure dump):** `Could not wait for Cache to sync` (workspace controller, `kind source: *v1.ServiceAccount`) + `failed waiting for *v1.Secret Informer to sync` → manager exit → crashloop.
+- **The causal chain, verified in code:** `values.yaml controller.watchNamespaces: ""` → `controller/main.go` builds a CLUSTER-WIDE cache when the flag is absent ("watching all namespaces") → the drill-shape flip deletes the ClusterRole/Binding (namespace Role covers one namespace) → `SetupWithManager`'s informers (For(Workspace) + Owns(Pod/Secret/ServiceAccount/PVC)) need list/watch across ALL namespaces → Forbidden outside the workspace namespace → informer sync never completes → exit(1) → CrashLoopBackOff.
+- **Not relay-specific, not #1537:** the informer RBAC deficit is flag-independent; the relay startup guard PASSED (llm-relay reads ride the direct API reader by design §4.3 — the design's no-informer posture held while the informers died). Latent chart bug: the G5 default posture (namespace scope) itself carries it; nothing ever exercised the namespace-scope RUNTIME until the hardened lane reached the drill-shape step.
+
+### The fix (TDD)
+
+- **RED first:** `helm/rbac_cache_scope_chart_test.go` — the two derivation pins failed against the unfixed chart (no `--watch-namespaces` arg rendered).
+- **The derivation** (`controller-deployment.yaml`): `controller.watchNamespaces` set → passes through verbatim (unchanged); unset AND namespace scope → `--watch-namespaces={{ workspaceNamespace helper }}` (the release namespace by default, `api.config.kubernetes.namespace` override honored — the helper's contract); cluster scope → NO arg (byte-identical off-path).
+- **Five pins:** the derivation; the custom-namespace override; explicit-wins; cluster-scope-absent (the off-path regression pin, the repo's flag-landing convention); explicit-under-cluster-scope (pre-existing behavior unchanged).
+- **Docs:** `values.yaml` comment + the `helm-values.md` reference row + a runbook "Known interactions" entry citing the full crash chain (the migration's first exercise = the nightly's exact signature) and noting the guard/direct-reader distinction.
+
+Two template-assembly defects caught by the red/green cycle itself: Go templates do not chain `else if` on `with` (restructured as `if/else if`), and a both-side-trimmed inline comment glued the emitted arg onto the neighbor line (the tests' arg extraction returned "" — the comment moved above the conditional).
+
+## Key Decisions
+
+1. **Chart-level derivation, not a pre-step flag** (the orchestrator's ruling): the symptom fix would leave every operator's real migration broken; the derivation fixes the default posture (G5) and the runbook path everywhere.
+2. **Explicit `watchNamespaces` always wins** — the derivation is a default, never a clobber; cluster scope renders byte-identically (pinned).
+3. **The derivation follows the `workspaceNamespace` helper** (not `.Release.Namespace` directly) — one namespace-resolution point, honoring the `api.config.kubernetes.namespace` override.
+
+## Blockers
+
+None. This PR unblocks the #820 evidence checklist (the drill-shape step is the gate to rows 2-4: the drill run, the CredentialsStaged observation, the sweep run).
+
+## Tests Run
+
+- `go test ./helm/ -run 'TestRBAC' -count=1 -v` — 5/5 (grown red-first: the two derivation pins failed pre-fix).
+- `go test ./helm/ -count=1` — FULL package green, 30.0s with real helm v3.16.4 (the #1534 lesson: default-posture template changes get checked against every sibling pin, not a scoped run).
+- `make repolint` — all checks passed; `golangci-lint run ./helm/...` — 0 issues.
+
+## Next Steps
+
+1. Merge → the orchestrator's schedule-vs-manual decision for the evidence run (monitor r3 armed); the drill-shape step should now converge and the drill + sweep execute for the first time.
+2. If the next run still crashloops: the derivation emitted but something else denies informer sync — the failure dump's controller logs will say which Kind; the chart's Role coverage is the next suspect (not expected: the Role grants list/watch on all five informer kinds in the workspace namespace).
+
+## Files Modified
+
+`helm/templates/controller-deployment.yaml` (the derivation + comment), `helm/rbac_cache_scope_chart_test.go` (new, 5 pins), `helm/values.yaml` (comment), `docs/reference/helm-values.md` (row), `docs/runbooks/relay-only-flip.md` (Known-interactions entry), this worklog.
