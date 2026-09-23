@@ -75,7 +75,7 @@ The self-hosted fleet provisions and health-checks relay VMs across AWS (paid pr
 ```yaml
 controller:
   inferenceRelay:
-    enabled: true              # requires rbac.scope=cluster (cluster-scoped CRD)
+    enabled: true              # namespace scope: also set watchNamespaces (install-time guard)
     routerURL: "http://relay-router:8080"
     workspaceRouterURL: ""     # empty → derived cross-namespace FQDN
 
@@ -93,11 +93,13 @@ controller:
       header: ""     # "" → Authorization (Bearer <key>); set "x-api-key" for Anthropic-native
 
 rbac:
-  scope: "cluster"   # required: InferenceRelay is cluster-scoped
+  scope: "namespace"   # works; the fleet additionally needs watchNamespaces
+controller:
+  watchNamespaces: "llmsafespaces"   # install-time guard requirement (cluster scope = broader original set)
 ```
 
 !!! warning "Feature gate requires cluster RBAC"
-    `InferenceRelay` is a cluster-scoped CRD. Enabling `controller.inferenceRelay.enabled` requires `rbac.scope=cluster` so the controller can watch/manage CRs across namespaces. The RBAC rules for `inferencerelays` + `configmaps` are conditionally added to the cluster-scoped ClusterRole when this is enabled.
+    `InferenceRelay` is a cluster-scoped CRD. The controller can watch/manage CRs under BOTH scopes: under `rbac.scope=namespace` (the default) enabling `controller.inferenceRelay.enabled` additionally requires `controller.watchNamespaces` (the install-time guard — the fleet's cluster-wide Secret informer needs the scoped cache; the always-created relay-safe ClusterRole covers the CRD lifecycle). `rbac.scope=cluster` grants the broader original set.
 
 ### Driver configuration
 
@@ -157,7 +159,7 @@ Publish these to a mirror (GitHub Release asset is the default), then set `artif
 | Cloud spend | None | AWS paid + OCI free tier + optional GCP |
 | Ops complexity | None (chart default) | High (VMs across clouds, router, drivers, CRD) |
 | Failover | N/A (direct upstream) | Automatic (weighted router + direct-upstream fallback) |
-| Setup | None | Multi-cloud accounts + `rbac.scope=cluster` |
+| Setup | None | Multi-cloud accounts + scoped watch (namespace scope: `controller.watchNamespaces`; cluster scope: the original broader set) |
 | Scale | Low–medium | Medium–high |
 | Best for | Homelab, small team | Multi-tenant SaaS, 429 resilience at scale |
 

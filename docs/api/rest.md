@@ -364,7 +364,7 @@ There is also the soft-unlock endpoint (Epic 56) for re-deriving the DEK without
 
 ## Relay fleet (admin)
 
-The operator setup wizard and status dashboard for the self-hosted multi-cloud relay fleet (Epic 42/48). These routes are only registered when the relay admin handler is wired (`controller.inferenceRelay.enabled`), which also requires `rbac.scope=cluster` because `InferenceRelay` is cluster-scoped. All routes require `AuthMiddleware` + `AdminGuard`.
+The operator setup wizard and status dashboard for the self-hosted multi-cloud relay fleet (Epic 42/48). These routes are only registered when the relay admin handler is wired (`controller.inferenceRelay.enabled`; under namespace scope additionally `controller.watchNamespaces` — the install-time guard; `rbac.scope=cluster` remains the broader original set). All routes require `AuthMiddleware` + `AdminGuard`.
 
 | Method | Path | Description |
 |--------|------|-------------|

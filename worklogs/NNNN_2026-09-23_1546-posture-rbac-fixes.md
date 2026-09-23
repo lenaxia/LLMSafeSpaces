@@ -71,6 +71,13 @@ None.
 
 ## r4 — the five stale doc lines; the error-message assertion
 
-- The five operator-facing lines corrected (helm-values ×2, crds.md, README-LLM ×2 — the fifth the r3 pass missed): the fleet now reads as what it is — supported under BOTH scopes, with namespace scope additionally requiring controller.watchNamespaces (the install-time guard). The misconception the PR retires is retired in the docs too.
+- The five operator-facing lines NAMED BY THE r4 REVIEW corrected (helm-values ×2, crds.md, README-LLM ×2 — the fifth the r3 pass missed) — [r5 correction: the r4 enumeration was a sample of the class, not the class; nine more sites survived and the "retired in the docs too" claim below was false until the r5 sweep]. The fleet now reads as what it is — supported under BOTH scopes, with namespace scope additionally requiring controller.watchNamespaces (the install-time guard).
 - The guard test asserts the error names watchNamespaces (a different guard failing the same values no longer keeps it green for the wrong reason — the egress-precedent one-liner).
 - The "*" precision note is accepted into the #1551-family wedge record (the worklog's rationale covered namespace names, not the star; one value check is trivial whenever that wedge is worked).
+
+## r5 — the class sweep, not the sample
+
+- NINE more operator-facing sites corrected with the same sentence pattern: README.md:85, helm/values.yaml:430-432 (the chart's OWN shipped comment — the worst of the nine), docs/operator/inference-relay.md ×4 (the values snippet, the warning block, the setup table, and the rbac: example — now the namespace-scope shape), docs/architecture/index.md, docs/reference/cli.md, docs/api/rest.md. Verified by the claim-shaped grep: zero surviving "requires rbac.scope=cluster" assertions for the fleet outside the both-scopes/broader-original-set context.
+- The worklog's r4 "retired in the docs too" claim corrected in place (the bracketed r5 note): the r4 fix addressed the REVIEW'S sample, and the class survived — the sampling-an-enumeration failure mode, same root as the r3 miss.
+- The chart_test.go:1411 pointer fixed (the referenced test moved to :903 — named by function now).
+- The "\*" wedge and the cluster block's dead /finalizers stay recorded in their accepted homes (#1551 family; next-touch sweep).

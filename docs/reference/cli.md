@@ -69,7 +69,7 @@ go run ./controller
 | `--watch-namespaces` | `controller.watchNamespaces` | Comma-separated namespaces to watch. `""`/`"*"` = cluster-wide. |
 | `--metrics-addr` | `controller.metricsAddr` | Metrics bind (loopback default — run `kube-rbac-proxy` for Prometheus). |
 | `--health-probe-bind-address` | `controller.probeAddr` | Health probe port. |
-| `--enable-inference-relay` | `controller.inferenceRelay.enabled` | Enable the InferenceRelay reconciler. Requires `rbac.scope=cluster`. |
+| `--enable-inference-relay` | `controller.inferenceRelay.enabled` | Enable the InferenceRelay reconciler. Namespace scope additionally requires `controller.watchNamespaces` (install-time guard). |
 | `--relay-router-url` | `controller.inferenceRelay.routerURL` | Router `/metrics` scrape URL. |
 | `--relay-artifact-url` | `controller.inferenceRelay.artifact.urls[0]` | Relay-proxy binary mirror URL. |
 | `--relay-artifact-sha256-arm64` / `-amd64` | `...artifact.sha256*` | SHA-256 for cloud-init verification. |
