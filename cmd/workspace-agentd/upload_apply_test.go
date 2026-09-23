@@ -11,10 +11,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -280,22 +282,13 @@ func TestUploadApply_FreshWorkspaceGateOrdering(t *testing.T) {
 	}
 }
 
-// TestUploadApply_BusyRejection: a held apply lock rejects with the
-// §3.2 busy enum (bounded queueing — the 429 semantics agentd maps).
-func TestUploadApply_BusyRejection(t *testing.T) {
-	e, _, _, _ := applyEngineFixture(t, 1<<40)
-	e.applyMu.Lock()
-	defer e.applyMu.Unlock()
-	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
-	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
-	if aerr == nil || aerr.code != "busy" {
-		t.Fatalf("expected busy, got %+v", aerr)
-	}
-}
+// (TestUploadApply_BusyRejection retired WITH the applyMu lock (#1539):
+// the busy enum's only producer was the TryLock the fix removes — the
+// staging-side staging_busy (the admission cap) remains live and pinned.)
 
 // TestUploadApply_CtxCancellationBoundsTheHold (§6.3): a canceled ctx
-// aborts the copy mid-stream, leaving nothing visible and releasing
-// the lock for the next apply.
+// aborts the copy mid-stream, leaving nothing visible; the next apply
+// proceeds unimpeded.
 func TestUploadApply_CtxCancellationBoundsTheHold(t *testing.T) {
 	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
@@ -309,7 +302,7 @@ func TestUploadApply_CtxCancellationBoundsTheHold(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("canceled apply left %d artifacts", len(entries))
 	}
-	// The lock is free: a live apply succeeds.
+	// A post-cancel apply succeeds (no shared state poisoned).
 	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
 	if aerr != nil || res["applied"] != true {
 		t.Fatalf("post-cancel apply must succeed, got %+v", aerr)
@@ -571,3 +564,79 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 }
 
 func (c *countingReadCloser) Close() error { return nil } //nolint:staticcheck // the wrapped file's Close rides the test lifetime
+
+// TestUploadApply_ConcurrentWallTime pins #1539: N concurrent applies
+// (uuid-independent targets, 1 MiB real files) must complete in
+// PARALLEL — the injected 50ms rename seam makes each apply's duration
+// observable; the wall bound (< 3/4 of N × duration) catches the
+// global-lock regression where every apply queues (wall ≥ N × duration).
+func TestUploadApply_ConcurrentWallTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("concurrent wall-time pin needs real filesystem timing")
+	}
+	e, staging, _, _ := applyEngineFixture(t, 1<<40)
+
+	// N independent staged objects (uuid-shaped names, distinct targets).
+	const n = 4
+	ids := make([]string, n)
+	payload := strings.Repeat("x", 1<<20) // 1 MiB: the copy takes measurable wall time per apply
+	for i := range ids {
+		ids[i] = fmt.Sprintf("0000000%d-0000-4000-8000-00000000000%d", i, i)
+		stageTestObject(t, staging, ids[i], payload)
+	}
+
+	// The rename seam injects a measurable per-apply duration: with the
+	// lock removed, N applies overlap their 50ms renames (wall ≈ 50ms);
+	// with the lock, they serialize (wall ≥ N×50ms). This makes the
+	// serialization signature observable without a large fixture.
+	e.rename = func(oldpath, newpath string) error {
+		time.Sleep(50 * time.Millisecond)
+		return os.Rename(oldpath, newpath)
+	}
+
+	applyOne := func(id string) *applyError {
+		_, aerr := e.Apply(context.Background(), applyParams(map[string]any{
+			"upload_id": id, "staged_name": id,
+			"size": float64(len(payload)), "sha256": applyTestDigest(t, payload), "target_name": "f.txt",
+		}))
+		return aerr
+	}
+
+	// Baseline: one apply (the concurrent bound uses the injected duration directly).
+	if aerr := applyOne(ids[0]); aerr != nil {
+		t.Fatalf("baseline: %v", aerr)
+	}
+
+	// Concurrent: N applies in parallel. With the global lock removed,
+	// wall ≈ one apply's duration (they overlap); with the lock,
+	// wall ≥ N× the duration.
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make([]*applyError, n)
+	for i := range ids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = applyOne(ids[i])
+		}(i)
+	}
+	wg.Wait()
+	concurrentWall := time.Since(start)
+
+	for i, aerr := range errs {
+		if aerr != nil {
+			t.Fatalf("concurrent apply %d: %v", i, aerr)
+		}
+	}
+
+	// The wall-time bound: concurrent must be well under N × the
+	// per-apply duration (the lock's signature is wall ≥ N×duration).
+	// The injected 50ms per apply × 4 concurrent = 200ms serialized;
+	// parallel = ~50ms. Assert < 150ms (a 3× margin under the serialized
+	// bound, generous for scheduler noise).
+	serializedBound := time.Duration(n) * 50 * time.Millisecond
+	if concurrentWall > serializedBound*3/4 {
+		t.Fatalf("concurrent %d applies took %v — near the serialized bound %v: the #1539 applyMu serialization signature (parallel should be ~50ms)",
+			n, concurrentWall, serializedBound)
+	}
+}
