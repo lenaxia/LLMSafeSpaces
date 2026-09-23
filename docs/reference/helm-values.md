@@ -123,7 +123,7 @@ The controller-runtime operator. Single leader-elected replica by default.
 | `controller.image.repository` | string | `ghcr.io/lenaxia/llmsafespaces/controller` | |
 | `controller.image.tag` | string | `""` | Same pinning recommendation as `api.image.tag`. |
 | `controller.image.digest` | string | `""` | Same semantics as `api.image.digest` (#476). |
-| `controller.watchNamespaces` | string | `""` | Comma-separated namespaces to watch. `""` or `"*"` = cluster-wide. Combine with namespace-scoped RBAC for defense-in-depth. |
+| `controller.watchNamespaces` | string | `""` | Comma-separated namespaces to watch. `""` or `"*"` = cluster-wide under `rbac.scope=cluster`; under `rbac.scope=namespace` (the default) an empty value DERIVES the watch namespace from the workspace namespace (a cluster-wide cache cannot sync informers against namespaced RBAC — run 35872827066). Combine with namespace-scoped RBAC for defense-in-depth. |
 | `controller.leaderElection.enabled` | bool | `true` | |
 | `controller.apiServiceURL` | string | `""` | In-cluster API URL the controller polls (30s, cached) for org-level suspension (D20). Empty derives from release name + namespace. |
 | `controller.apiPublicURL` | string | `""` | Publicly reachable API origin for user-facing dev-preview URLs (`LLMSAFESPACE_API_PUBLIC_URL` on workspace pods, #1332). Not the in-cluster service URL. Empty derives `https://api.<previewOrigin.baseDomain>` when preview origins are enabled; agentd refuses cluster-internal origins either way. |

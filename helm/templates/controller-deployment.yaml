@@ -55,8 +55,21 @@ spec:
             {{- if .Values.controller.leaderElection.enabled }}
             - --enable-leader-election=true
             {{- end }}
-            {{- with .Values.controller.watchNamespaces }}
-            - --watch-namespaces={{ . }}
+            {{- /* #820 / nightly run 35872827066: under rbac.scope=namespace the
+                   ClusterRole/Binding are gone (the workspace-namespace Role
+                   covers one namespace), so a cluster-wide manager cache can
+                   never sync its informers there (Forbidden LIST/WATCH outside
+                   the namespace → "Could not wait for Cache to sync" →
+                   CrashLoopBackOff). Derive the cache scope from the
+                   workspaceNamespace helper when the operator has not pinned
+                   watchNamespaces — the runbook's prescribed cluster→namespace
+                   migration path and the chart's own default posture (G5) both
+                   depend on it. Cluster scope renders byte-identically (no
+                   derivation on that path). */ -}}
+            {{- if .Values.controller.watchNamespaces }}
+            - --watch-namespaces={{ .Values.controller.watchNamespaces }}
+            {{- else if not (eq (.Values.rbac.scope | default "namespace") "cluster") }}
+            - --watch-namespaces={{ include "llmsafespaces.workspaceNamespace" . }}
             {{- end }}
             - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles | default 4 }}
             {{- if and .Values.controller.workspaceTerminationGraceSeconds (ne (int .Values.controller.workspaceTerminationGraceSeconds) 0) }}
