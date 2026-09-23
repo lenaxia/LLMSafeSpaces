@@ -6,8 +6,10 @@ nameOverride: ""
 fullnameOverride: ""
 
 # Namespace where the platform's own components run.
-# Workspaces are created in the same namespace by default; controller can be
-# configured to watch additional namespaces via .controller.watchNamespaces.
+# Workspaces are created in the same namespace by default (override with
+# .api.config.kubernetes.namespace); watching ADDITIONAL namespaces requires
+# .controller.watchNamespaces — and, under the default rbac.scope=namespace,
+# operator-created RoleBindings there (the chart creates none).
 namespace:
   # If create: true, the chart will create the release namespace.
   # If you install with --namespace and --create-namespace, set this to false.
@@ -1188,17 +1190,23 @@ serviceAccount:
 rbac:
   create: true
   # scope controls how the controller's RBAC is granted:
-  #   "namespace" (default, G5)  Role + RoleBinding scoped to .Release.Namespace
-  #                              and the workspace namespace only. The
+  #   "namespace" (default, G5)  Role + RoleBinding scoped to the WORKSPACE
+  #                              namespace (the api.config.kubernetes.namespace
+  #                              override, else .Release.Namespace) only. The
   #                              controller can manage workspaces ONLY in the
-  #                              configured namespace(s). Use this with
-  #                              controller.watchNamespaces unset (or set to
-  #                              the workspace namespace) for tightest
-  #                              least-privilege.
+  #                              configured namespace(s) — with
+  #                              controller.watchNamespaces unset (the
+  #                              default) the chart derives --watch-namespaces
+  #                              to that namespace (see the watchNamespaces
+  #                              derivation note); listing additional
+  #                              namespaces requires operator-created
+  #                              RoleBindings there (the chart creates none).
   #   "cluster"                  Adds a ClusterRole + ClusterRoleBinding for
-  #                              llmsafespaces.dev/* + storageclasses, letting
-  #                              the controller watch workspaces across all
-  #                              namespaces. Pods, secrets, PVCs, and
+  #                              llmsafespaces.dev/*, letting the controller
+  #                              watch workspaces across all namespaces (the
+  #                              read-only storageclasses ClusterRole is
+  #                              ALWAYS created regardless of scope).
+  #                              Pods, secrets, PVCs, and
   #                              NetworkPolicies remain namespace-scoped
   #                              regardless — operators running multi-
   #                              namespace deployments must per-namespace-bind

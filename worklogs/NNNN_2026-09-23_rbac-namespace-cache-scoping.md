@@ -51,7 +51,9 @@ None. This PR unblocks the #820 evidence checklist (the drill-shape step is the 
 
 ## Files Modified
 
-`helm/templates/controller-deployment.yaml` (the derivation + fail guard + comment), `helm/rbac_cache_scope_chart_test.go` (new — 10 pin functions; the honest count, corrected r4 from "8"), `helm/values.yaml` (comment), `docs/reference/helm-values.md` (row), `docs/runbooks/relay-only-flip.md` (Known-interactions entry), this worklog.
+*(r8 refresh — the r0 list no longer matched the accumulated diff.)*
+
+`helm/templates/controller-deployment.yaml` (the derivation + fail guard + comments), `helm/templates/NOTES.txt` (the workspace-namespace scope statement), `helm/rbac_cache_scope_chart_test.go` (new — 10 pin functions; the honest count, corrected r4 from "8"), `helm/values.yaml` (watchNamespaces comment + derivation note + split-ns caveat + the rbac.scope block's storageclasses/derivation corrections + the namespace-block note), `helm/README.md` (values row + RBAC-scope section), `docs/reference/helm-values.md` (two rows), `docs/reference/cli.md` (the --watch-namespaces flag row), `docs/operator/multi-tenant.md` (two prescription sites + the scope table), `docs/runbooks/relay-only-flip.md` (Known-interactions entry), this worklog.
 
 ## r1 — the watch-all hole, the contradicting bullets, the split-ns caveat (bot review)
 
@@ -92,3 +94,9 @@ None. This PR unblocks the #820 evidence checklist (the drill-shape step is the 
 1. **`docs/operator/multi-tenant.md` "Combining with watchNamespaces" + "How to deploy per-tenant namespaces":** both prescribed `rbac.scope=namespace` + multi-tenant `watchNamespaces` with no RoleBinding qualification — that config RENDERS but CrashLoops at runtime (the chart's workspace Role binds only in the workspace namespace; the watched tenant namespaces' informers hit Forbidden LIST/WATCH — the run-35872827066 death class). Both sites now carry the load-bearing caveat: the chart creates NO per-tenant RoleBindings; bind the workspace Role in every listed namespace yourself.
 2. **`docs/reference/helm-values.md` + `multi-tenant.md` scope tables:** "scoped to the release namespace" → the workspace-namespace geography (the `api.config.kubernetes.namespace` override); the storageclasses ClusterRole misattribution fixed (read-only, ALWAYS created regardless of scope — rbac.yaml:186).
 3. The r6 commit message amended to the true cli.md story; the orchestrator's directive file (accidentally swept by an add-all) removed from the tree.
+
+## r8 — the values.yaml rbac.scope block (the last survivor), two weak phrasings, the Files-Modified refresh
+
+1. **`values.yaml:1194-1196` (the `rbac.scope` comment block):** storageclasses ClusterRole still misattributed to cluster scope there — contradicting the sibling doc corrected in r7. Fixed: the cluster bullet now says the read-only storageclasses ClusterRole is ALWAYS created regardless of scope; the cluster grant itself is `llmsafespaces.dev/*` only.
+2. **The same block's weak phrasings tightened** (the same family, minimal wording): the namespace bullet now states the WORKSPACE-namespace geography (the override), the derivation default, and the operator-RoleBindings rule for additional namespaces; the top-of-file namespace block's "controller can be configured to watch additional namespaces" now carries the same qualifier (under the default namespace scope, additional namespaces need operator-created RoleBindings — the chart creates none).
+3. **Files Modified refreshed** to match the accumulated ten-file diff (it still described the r0 three-file PR).
