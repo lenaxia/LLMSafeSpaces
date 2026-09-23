@@ -92,13 +92,16 @@ controller:
         key: "key"
       header: ""     # "" → Authorization (Bearer <key>); set "x-api-key" for Anthropic-native
 
+  # The install-time guard's requirement under namespace scope — ONE
+  # controller: block (a duplicate top-level key would silently drop
+  # the fleet enablement above, YAML last-wins).
+  watchNamespaces: "llmsafespaces"   # cluster scope = the broader original set instead
+
 rbac:
-  scope: "namespace"   # works; the fleet additionally needs watchNamespaces
-controller:
-  watchNamespaces: "llmsafespaces"   # install-time guard requirement (cluster scope = broader original set)
+  scope: "namespace"   # works under the guard above
 ```
 
-!!! warning "Feature gate requires cluster RBAC"
+!!! warning "Feature gate: both scopes supported; namespace scope needs watchNamespaces"
     `InferenceRelay` is a cluster-scoped CRD. The controller can watch/manage CRs under BOTH scopes: under `rbac.scope=namespace` (the default) enabling `controller.inferenceRelay.enabled` additionally requires `controller.watchNamespaces` (the install-time guard — the fleet's cluster-wide Secret informer needs the scoped cache; the always-created relay-safe ClusterRole covers the CRD lifecycle). `rbac.scope=cluster` grants the broader original set.
 
 ### Driver configuration

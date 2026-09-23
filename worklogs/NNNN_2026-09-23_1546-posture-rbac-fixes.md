@@ -81,3 +81,9 @@ None.
 - The worklog's r4 "retired in the docs too" claim corrected in place (the bracketed r5 note): the r4 fix addressed the REVIEW'S sample, and the class survived — the sampling-an-enumeration failure mode, same root as the r3 miss.
 - The chart_test.go:1411 pointer fixed (the referenced test moved to :903 — named by function now).
 - The "\*" wedge and the cluster block's dead /finalizers stay recorded in their accepted homes (#1551 family; next-touch sweep).
+
+## r6 — the title; the paste bug; the validated snippet
+
+- The warning block's TITLE corrected ("Feature gate: both scopes supported; namespace scope needs watchNamespaces") — the body was fixed in r5, the title asserted the pre-PR posture against it.
+- The paste bug (the r6 review's robustness finding, real): my r5 rewrite of the rbac example shipped TWO top-level `controller:` keys — YAML last-wins silently dropped the fleet enablement from every operator paste (the guide's own example would disable the fleet it documents; the inverse of this PR's fail-loud thesis). Fixed: ONE controller block, watchNamespaces folded in with the duplicate-key warning in the comment.
+- The corrected snippet is MACHINE-VALIDATED this round (yaml.safe_load on the extracted block asserting inferenceRelay.enabled AND watchNamespaces coexist in one controller map) — the validation my r5 edit lacked. Recorded: the sampling-vs-class failure mode now has a second instance where the fix was INSIDE a site the disposition counted corrected — the lesson is validate-the-artifact (parse the snippet), not just grep the sentence.
