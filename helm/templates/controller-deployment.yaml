@@ -71,12 +71,15 @@ spec:
                    mirrors the controller's own parseWatchNamespaces — a value
                    containing "*" ANYWHERE (bare, "*,", "*,ns1", "**") either
                    parses to a cluster-wide cache or builds informers for a
-                   bogus "*" namespace; a whitespace-only value (Go TrimSpace
-                   class: [[:space:]] + U+0085 + Zs) parses to cluster-wide.
-                   All crashloop identically against namespaced RBAC. */ -}}
+                   bogus "*" namespace; a value whose comma-split collapses to
+                   ZERO non-empty entries (whitespace-only, ",", " , ", ",,,")
+                   ALSO parses to cluster-wide (the nil branch at
+                   watch_namespaces.go:38-40); all crashloop identically
+                   against namespaced RBAC. The whitespace class is Go
+                   TrimSpace's ([[:space:]] + U+0085 + Zs/Zl/Zp). */ -}}
             {{- $wnsRaw := default "" .Values.controller.watchNamespaces | toString }}
-            {{- if and (ne (.Values.rbac.scope | default "namespace") "cluster") (or (contains "*" $wnsRaw) (and (ne $wnsRaw "") (regexMatch "^[[:space:]\\x{85}\\p{Zs}]*$" $wnsRaw))) }}
-            {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: watch-all parses to a cluster-wide cache (or a bogus \"*\" namespace) that cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Remedies: set controller.watchNamespaces to namespaces your RBAC actually covers (under namespace scope that is the workspace namespace ONLY — NOT the release namespace), or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
+            {{- if and (ne (.Values.rbac.scope | default "namespace") "cluster") (or (contains "*" $wnsRaw) (and (ne $wnsRaw "") (regexMatch "^[[:space:],\\x{85}\\p{Zs}\\p{Zl}\\p{Zp}]*$" $wnsRaw))) }}
+            {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: it contains \"*\" or collapses to no namespaces, which parses to a cluster-wide cache (or a bogus \"*\" namespace) that cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Remedies: set controller.watchNamespaces to namespaces your RBAC actually covers (under namespace scope that is the workspace namespace ONLY — NOT the release namespace), or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
             {{- end }}
             {{- if .Values.controller.watchNamespaces }}
             - --watch-namespaces={{ .Values.controller.watchNamespaces }}
@@ -116,8 +119,10 @@ spec:
                    here (the controller never sets InferenceRelaySecret in
                    fleet mode; per-VM tokens are managed by the router).
                    The URL MUST be the cross-namespace FQDN: workspace pods
-                   may run in any namespace (controller watches cluster-wide
-                   by default), while the relay-router Service lives in the
+                   may run in any namespace the cache watches (cluster-wide
+                   under rbac.scope=cluster; the workspace namespace under
+                   the default namespace scope — see the derivation above),
+                   while the relay-router Service lives in the
                    release namespace — a short name would fail to resolve
                    cross-ns. workspaceRouterURL overrides for the
                    separate-ns-router case. */}}

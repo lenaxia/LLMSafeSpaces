@@ -154,3 +154,39 @@ func TestRBACNamespaceScope_WatchAllGuardLeakShapes(t *testing.T) {
 		})
 	}
 }
+
+// TestRBACNamespaceScope_CommaCollapseFailsRender (r3): the nil branch
+// of parseWatchNamespaces (watch_namespaces.go:38-40, pinned by the
+// repo's own TestParseWatchNamespaces_AllEmptyEntriesReturnsNil) — a
+// value whose comma-split yields ZERO non-empty entries collapses to
+// nil = cluster-wide cache. No "*", not whitespace-only: the r2 guard
+// passed them verbatim into the crashloop. All must fail the render.
+func TestRBACNamespaceScope_CommaCollapseFailsRender(t *testing.T) {
+	for _, value := range []string{",", " , ", ",,,"} {
+		t.Run("value="+value, func(t *testing.T) {
+			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
+			require.Error(t, err,
+				"watchNamespaces=%q collapses to zero namespaces (parseWatchNamespaces nil branch) — cluster-wide cache, the run-35872827066 death", value)
+		})
+	}
+	// The TrimSpace edge the r2 class missed: U+2028/U+2029 (Zl/Zp) are
+	// trimmed by Go TrimSpace → nil → cluster-wide.
+	for _, value := range []string{"\\u2028", "\\u2029"} {
+		t.Run("value="+value, func(t *testing.T) {
+			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
+			require.Error(t, err, "watchNamespaces=%q (Zl/Zp) trims to empty under Go TrimSpace — must fail the render", value)
+		})
+	}
+}
+
+// TestRBACDefaultRender_DerivesWatchNamespaces (r3, the pure-defaults
+// pin): NO rbac.scope key in the values at all — the `| default
+// "namespace"` fallback must flow through the derivation identically.
+// Every other pin sets scope explicitly, so a silent values-default
+// flip would otherwise change the default render uncaught.
+func TestRBACDefaultRender_DerivesWatchNamespaces(t *testing.T) {
+	docs := helmTemplate(t, "controller:\n  watchNamespaces: \"\"\n")
+	got := controllerWatchNamespacesArg(t, docs)
+	assert.Equal(t, "test-ns", got,
+		"the pure-defaults render (no rbac.scope key) must carry the derived --watch-namespaces — the | default \"namespace\" fallback is the path real default installs take")
+}
