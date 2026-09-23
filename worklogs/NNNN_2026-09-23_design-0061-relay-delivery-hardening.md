@@ -12,14 +12,14 @@ Write design/0061 at the 0058 level: the four binding mechanisms (crash-loud arm
 
 ## Work Completed
 
-- `design/0061_2026-09-23_relay-delivery-hardening.md`: problem anatomy from both evidence chains (the common shape: every failure quiet at its moment); the four mechanisms each specified to implementation depth (M1's armed-state definition reusing SetupRelayStaging's existing conjunction + exit 85 in the 81–84 doctrine ladder; M2's precise not-ready semantics — handoff-Secret presence at the builder's decision point, per-workspace/per-provider, counter labels, audit action, the migration→strict flip criteria; M3's four assertions + the #1546 fixes carried in order with the gate-or-grant DECISION recorded; M4 as the honestly-marked preference item); the binding rejected-alternatives table; the dispositions; acceptance criteria; three open questions for review.
+- `design/0061_2026-09-23_relay-delivery-hardening.md`: problem anatomy from both evidence chains (the common shape: every failure quiet at its moment); the four mechanisms each specified to implementation depth (M1's armed-state definition reusing SetupRelayStaging's existing conjunction + exit 85 in the 81–84 doctrine ladder; M2's precise not-ready semantics — handoff-Secret presence at the builder's decision point, per-workspace/per-provider, counter labels, audit action, the migration→strict flip criteria; M3's four assertions + the shipped #1546 fixes carried in order, with Defect 3's disposition RE-DERIVED at r1 — dropped as a shipped defect, no grant lands, a flag↔RBAC key-coupling pin instead; M4 as the honestly-marked preference item); the binding rejected-alternatives table; the dispositions (incl. r2's: the operational-note mooting, #1541's mooted-by-gate fate, the AC4 e2e story); acceptance criteria with the full #1548 AC map; three open questions for review.
 - README-LLM.md: the design registered in the relay section with the one-paragraph summary.
 
 ## Key Decisions
 
 1. M1 defines NO new armed-state — the existing startup-guard conjunction, made un-skippable; the enable line is the contract M3 asserts cluster-side.
 2. M2 leans direct handoff-Secret reads at batch time (open question 1) — one source of truth, no push path.
-3. M3's Defect-3 resolution is GRANT not gate (the refresher's RBAC becomes unconditional; the flag governs cadence) — recorded as a decision for review, with the smaller-diff alternative named.
+3. [r0 decision, RETRACTED at r1 — kept for the record with its retraction inline] M3's Defect-3 resolution was drafted as GRANT-not-gate; the r1 review correctly showed the premise false (flag-gated by construction, consistent from the same values key) — the CURRENT decision: no grant lands; the gate's zero-forbidden assertion + the flag↔RBAC key-coupling render-pin carry the class.
 4. M4 reuses the existing CredentialsStaged condition fed by the batch outcome — no new type, no new surface.
 
 ## Assumptions → validation record

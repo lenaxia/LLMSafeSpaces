@@ -26,7 +26,7 @@ Four mechanisms. No fifth. The trimmed candidates are recorded in §9 with their
 |---|---|---|---|
 | M1 | Crash-loud arming | the absent/inert staging producer (#1548) | controller boot |
 | M2 | Fail-open fallback + `relay_fallback_deliveries_total` | staging not ready at batch time (migration) | the exact batch that would have been degraded |
-| M3 | Posture gate (one CI job) | the shipped-default posture being broken (#1546), provenance drift, flip-evidence debt | every default-posture change, pre-merge |
+| M3 | Posture gate (one CI job) | the shipped-default posture being broken (#1546); wiring drift + wrong-artifact-for-tag (provenance's two detectable classes — §5.4's envelope) | every default-posture change, pre-merge |
 | M4 | `CredentialsStaged=False` CRD condition | per-workspace user visibility of batch degrade | the workspace object |
 
 ## 3. M1 — Crash-loud arming
@@ -80,7 +80,7 @@ Four mechanisms. No fifth. The trimmed candidates are recorded in §9 with their
 
 **Home:** a new `.github/workflows/posture-gate.yml`, `workflow_dispatch` + `pull_request` paths on `helm/**` + `controller/**` (the posture surface), reusing the e2e-nightly kind bootstrap steps verbatim (the established image-build + kind + helm sequence). The **contribution rule** (§9's replacement for a flip-manifest system): *a PR flipping any multi-component default must include posture-gate evidence covering the new default posture* — the gate is that evidence, mechanically.
 
-**Tests:** the workflow's own shape pinned (`local/posture_gate_workflow_test.go`: the four assertions present, the default-posture install command pinned, the helm/controller path triggers); each #1546 fix pinned by a helm-render test (the split rule, the pins verbs, the refresher grant, the always-created ClusterRole).
+**Tests:** the workflow's own shape pinned (`local/posture_gate_workflow_test.go`: the four assertions present, the default-posture install command pinned, the helm/controller path triggers); each shipped #1546 fix pinned by a helm-render test (the split keypair rule, the pins verbs, the always-created ClusterRole) plus the refresher flag↔RBAC key-coupling render-pin (§5's Defect-3 replacement).
 
 ## 6. M4 — `CredentialsStaged=False` CRD condition
 
@@ -103,6 +103,10 @@ Four mechanisms. No fifth. The trimmed candidates are recorded in §9 with their
 
 **8.1 The #1546 design gap (inferenceRelay coexistence).** Namespace-scope installs need the `inferencerelays` watch for the fleet reconciler to coexist with relay-only. The fix ships WITH M3 (an always-created ClusterRole: `get/list/watch` on `inferencerelays` only — a CRD read, no Secrets, no §4.3 conflict; created unconditionally so the posture never depends on the fleet being enabled). Production's interim (`inferenceRelay.enabled=false`) is documented in the runbook as the pre-gate workaround.
 
+**8.3 The #1546 operational note (helm rollback cascades the chart-created llm-relay Namespace and any out-of-band RBAC patches with it).** Mooted by this design: the cascade's payload was the out-of-band patches operators needed because the chart lacked the grants — with the grants in-chart (M3's fixes), there is nothing out-of-band to lose, and a rollback/retry cycle is just a namespace re-create away from a clean bootstrap. Recorded so the mooting is explicit, not implicit.
+
+**8.4 The #1541 nightly drill lane (AC5's clause).** The posture gate SUBSUMES the drill lane's evidence role (M3 asserts, pre-merge and on every posture change, what the nightly drill asserted post-hoc) — the "#1541 unblocked or the flip reverted" precondition is therefore MOOTED-BY-GATE for future flips, recorded here. The nightly lane itself remains useful as soak (the #1456 wiring lane's scope); it is no longer the flip-evidence gate. If the owner prefers the lane unblocked anyway, that is an owner-side call, not a design dependency.
+
 **8.2 The Epic-42 values drift (#1548's secondary regression).** Release 508 dropped `inferenceRelayURL`/`inferenceRelay.enabled` during the 506-fail → 507-rollback → 508-retry sequence — reconstructed values, not reviewed ones. **Recommendation (out of repo scope, stated for the owner's ops repo):** the wiring lives in ONE reviewed values file; rollback/retry sequences re-apply that file verbatim and never reconstruct values ad hoc. Recorded as a talos-ops-prod note; the repo-side half is M3's contribution rule (posture-affecting changes carry evidence, and values reconstruction is a posture change).
 
 ## 9. Rejected alternatives (binding, with reasons)
@@ -118,9 +122,10 @@ Four mechanisms. No fifth. The trimmed candidates are recorded in §9 with their
 
 - [ ] M1: enabled-but-unarmable controller exits 85 within the 30s window; the enable line is the armed contract; parity failures take the same code; flag-off byte-identical.
 - [ ] M2: the builder table (absent/expired handoff → raw-key + counter + audit; present → token); strict mode preserves the fail-closed zero-entry behavior; the alert renders and fires; the migration-mode default lands with the flip criteria in the runbook.
-- [ ] M3: the gate cold-installs the shipped defaults all-Ready and asserts the four checks; the four #1546 fixes land first and are each render-pinned; the workflow shape is pinned; the contribution rule lands in README-LLM.
+- [ ] M3: the gate cold-installs the shipped defaults all-Ready and asserts the four checks; the three shipped #1546 fixes land first and are each render-pinned (Defect 3 re-derived: no fix ships, the key-coupling pin does); the workflow shape is pinned; the contribution rule lands in README-LLM.
+- [ ] M2/M4 e2e (owns #1548 AC4, closes AC1's first-handoff clause): the migration scenario on the kind cluster — credentials bound pre-flip stage on the first post-flip Creating/Active reconcile, the batch carries TOKENS, the first `workspace-relay-*` handoff appears, and zero `relay_staging_not_ready`/`relay_fallback_delivery` degrades fire (the not-ready arm exercised separately by killing the staging Secret: the raw-key fallback delivers, the counter increments, `CredentialsStaged=False/relay_fallback_delivery` lands on the CRD). The literal AC4 text ("no relay_staging_not_ready") is SUPERSEDED by M2 — in migration mode the not-ready outcome is a counted fallback delivery, not a degrade; that supersession is recorded HERE, not left implicit.
 - [ ] M4: degrade/clean transitions on `CredentialsStaged`; the fallback reason is per-workspace visible.
-- [ ] #1548's remaining cluster-side criteria (the digest checks, the Epic-42 values restore) are owned there, not here — this design's stories close the repo-side four.
+- [ ] #1548's disposition map: AC1 (root cause + enable line + first handoff) ← M1 + the parity PR + the M2/M4 e2e story's first-handoff assertion; AC2 ← M2/M4 (the heartbeat class rejected, §9); AC3 ← M4; AC4 ← the M2/M4 e2e story (literal text superseded by M2, recorded above); AC5 ← §8.4 (mooted-by-gate); AC6 ← §8.2 (owner-side); AC7 ← this worklog. The cluster-side digest checks remain owner-side per the #1548 thread.
 - [ ] Worklog per repo rules; design doc registered in README-LLM.
 
 ## 11. Open questions (for review)
