@@ -52,7 +52,7 @@ None.
 
 - `cmd/workspace-agentd/upload_apply.go` — applyMu + TryLock removed
 - `cmd/workspace-agentd/upload_apply_test.go` — BusyRejection retired; ConcurrentWallTime added
-- `worklogs/NNNN_2026-09-22_upload-apply-serialization.md` — this worklog
+- `worklogs/1054_2026-09-22_upload-apply-serialization.md` — this worklog
 
 
 ## Review round 4 (the PR body fixed to match the worklog's r4 corrections)
