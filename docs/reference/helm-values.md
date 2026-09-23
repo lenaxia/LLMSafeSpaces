@@ -340,7 +340,7 @@ blockedEgressCIDRs:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `rbac.create` | bool | `true` | Create (Cluster)Role + (Cluster)RoleBinding. |
-| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): Role + RoleBinding scoped to the release namespace. **`cluster`**: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch. Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. **Required `cluster`** for `controller.inferenceRelay.enabled`. Even in cluster mode, no mutating verbs on secrets/pods (chart_test.go:1411). |
+| `rbac.scope` | string | `"namespace"` | **`namespace`** (default, G5): Role + RoleBinding scoped to the WORKSPACE namespace (the `api.config.kubernetes.namespace` override, else the release namespace). **`cluster`**: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch (the read-only `storageclasses` ClusterRole is always created regardless of scope). Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. **Required `cluster`** for `controller.inferenceRelay.enabled`. Even in cluster mode, no mutating verbs on secrets/pods (chart_test.go:1411). |
 
 ## `webhooks`
 
