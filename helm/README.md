@@ -275,8 +275,10 @@ security over availability.
 
 ### RBAC scope
 
-`rbac.scope=namespace` (default) gives the controller only namespace-scoped Role
-on the workspace namespace. The manager's cache is scoped to match: with
+`rbac.scope=namespace` (default) gives the controller a namespace-scoped Role
+on the workspace namespace (plus the always-created read-only storageclasses
+ClusterRole — the one cluster-wide grant under this scope). The manager's
+cache is scoped to match: with
 `controller.watchNamespaces` empty (the default) the chart DERIVES
 `--watch-namespaces` to the workspace namespace — a cluster-wide cache cannot
 sync its informers against namespaced RBAC and the controller would
