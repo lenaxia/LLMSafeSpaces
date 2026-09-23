@@ -280,9 +280,11 @@ on the workspace namespace. The manager's cache is scoped to match: with
 `controller.watchNamespaces` empty (the default) the chart DERIVES
 `--watch-namespaces` to the workspace namespace — a cluster-wide cache cannot
 sync its informers against namespaced RBAC and the controller would
-CrashLoopBackOff (nightly run 35872827066). Set `controller.watchNamespaces`
-explicitly only for additional namespaces your RBAC covers. Resources in other
-namespaces will not be reconciled.
+CrashLoopBackOff (nightly run 35872827066). Under namespace scope the chart's
+RBAC covers the workspace namespace ONLY: listing additional namespaces
+requires operator-created RoleBindings there (the chart creates none), or the
+same Forbidden-informer crashloop follows. Resources in other namespaces will
+not be reconciled.
 
 `rbac.scope=cluster` gives the controller cluster-wide permissions and is what
 cluster-wide WATCHING now requires — set the scope explicitly; an empty

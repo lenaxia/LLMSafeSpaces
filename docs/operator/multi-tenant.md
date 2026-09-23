@@ -188,8 +188,8 @@ The chart's `rbac.scope` controls how the controller's Kubernetes RBAC is grante
 
 | Scope | RBAC granted | Use when |
 |---|---|---|
-| **`namespace`** (default, G5) | Role + RoleBinding scoped to the release namespace | Single-namespace deployments. Tightest least-privilege. |
-| **`cluster`** | Adds ClusterRole + ClusterRoleBinding for `llmsafespaces.dev/*` + `storageclasses` | Multi-namespace deployments (controller watches multiple namespaces) or the self-hosted relay fleet (cluster-scoped `InferenceRelay` CRD). |
+| **`namespace`** (default, G5) | Role + RoleBinding scoped to the WORKSPACE namespace (the `api.config.kubernetes.namespace` override, else the release namespace) | Single-namespace deployments. Tightest least-privilege. |
+| **`cluster`** | Adds ClusterRole + ClusterRoleBinding for `llmsafespaces.dev/*` (the read-only `storageclasses` ClusterRole is always created regardless of scope) | Multi-namespace deployments (controller watches multiple namespaces) or the self-hosted relay fleet (cluster-scoped `InferenceRelay` CRD). |
 
 ```yaml
 rbac:
@@ -200,16 +200,19 @@ Even in `cluster` mode, Pods, Secrets, PVCs, and NetworkPolicies remain namespac
 
 ### Combining with `watchNamespaces`
 
-For tightest isolation in a multi-namespace deployment, combine `rbac.scope=namespace` with explicit `controller.watchNamespaces`:
+For tightest isolation in a multi-namespace deployment, combine `rbac.scope=namespace` with explicit `controller.watchNamespaces` — **plus the per-namespace RoleBindings the chart does NOT create**:
 
 ```yaml
 controller:
   watchNamespaces: "tenant-acme,tenant-globex"
 rbac:
   scope: "namespace"
+# REQUIRED, created out-of-band by the operator: a RoleBinding of the
+# chart's controller-workspace Role (or an equivalent) in EVERY listed
+# tenant namespace.
 ```
 
-The controller's `--watch-namespaces` flag narrows what it actually reconciles, and `cache.DefaultNamespaces` further narrows the informer cache. This is defense-in-depth: even if the controller is granted cluster-wide RBAC elsewhere, it only watches the listed namespaces.
+**The RoleBinding caveat is load-bearing at runtime:** the chart's workspace Role binds only in the workspace namespace (the release namespace by default). The config above RENDERS but CrashLoops without the per-tenant bindings — the manager cache watches both tenant namespaces while the informers' LIST/WATCH is Forbidden outside the workspace namespace ("Could not wait for Cache to sync"; nightly run 35872827066 is the single-namespace instance of exactly this death). The controller's `--watch-namespaces` flag narrows what it actually reconciles, and `cache.DefaultNamespaces` further narrows the informer cache — but neither grants RBAC; bind the Role in each watched namespace yourself.
 
 ---
 
@@ -326,7 +329,7 @@ rbac:
   scope: "namespace"
 ```
 
-The controller's `--watch-namespaces` flag narrows what it reconciles. Combine with namespace-scoped RoleBindings for least-privilege. Resources in unwatched namespaces will not be reconciled.
+**This renders but CrashLoops without out-of-band RBAC:** the chart creates no per-tenant RoleBindings — its workspace Role binds only in the workspace namespace — so the watched tenant namespaces' informers hit Forbidden LIST/WATCH and the controller never syncs its cache (the run-35872827066 death class). Bind the workspace Role (or an equivalent) in EVERY listed namespace yourself. The controller's `--watch-namespaces` flag narrows what it reconciles; the RoleBindings are what make those namespaces reachable. Resources in unwatched namespaces will not be reconciled.
 
 !!! note "Per-tenant namespaces do not replace gVisor"
     Even with per-tenant namespaces, a kernel exploit still crosses the namespace boundary via the host node. gVisor remains the primary kernel-isolation control regardless of namespace topology. Namespaces are a bulkhead, not a sandbox.
