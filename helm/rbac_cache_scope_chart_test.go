@@ -125,9 +125,9 @@ func TestRBACClusterScope_WatchAllStillValid(t *testing.T) {
 // remedies. The migration population uses precisely this spelling; a
 // verbatim pass-through would deploy a controller that cannot start.
 func TestRBACNamespaceScope_WatchAllFailsRender(t *testing.T) {
-	for _, value := range []string{"*", "  ", "\t"} {
+	for _, value := range []string{"*", "  ", "\\t"} {
 		t.Run("value="+value, func(t *testing.T) {
-			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+strings.ReplaceAll(value, "\t", "\\t")+"\"\n")
+			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
 			require.Error(t, err,
 				"watchNamespaces=%q under namespace scope must fail the render — a watch-all cache crashloops against namespaced RBAC", value)
 			msg := err.Error()
@@ -135,6 +135,22 @@ func TestRBACNamespaceScope_WatchAllFailsRender(t *testing.T) {
 			assert.Contains(t, msg, "CrashLoopBackOff", "the failure must name the consequence")
 			assert.Contains(t, msg, "controller.watchNamespaces=", "the failure must name the setting to change")
 			assert.Contains(t, msg, "rbac.scope=cluster", "the failure must name the keep-cluster remedy")
+		})
+	}
+}
+
+// TestRBACNamespaceScope_WatchAllGuardLeakShapes (r2): the guard
+// mirrors the controller's parseWatchNamespaces — embedded "*"
+// ("*,"/"*,ns1"/"**") parses to cluster-wide or a bogus "*" NAMESPACE,
+// and Go-TrimSpace whitespace classes beyond ASCII space/tab
+// (newline, NBSP) trim to cluster-wide. Every shape crashloops
+// identically under namespace scope; every one must fail the render.
+func TestRBACNamespaceScope_WatchAllGuardLeakShapes(t *testing.T) {
+	for _, value := range []string{"*,", "*,ns1", "**", "\\n", "\\u00a0"} {
+		t.Run("value="+value, func(t *testing.T) {
+			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
+			require.Error(t, err,
+				"watchNamespaces=%q under namespace scope must fail the render (the run-35872827066 death class)", value)
 		})
 	}
 }

@@ -66,15 +66,17 @@ spec:
                    migration path and the chart's own default posture (G5) both
                    depend on it. Cluster scope renders byte-identically (no
                    derivation on that path).
-                   WATCH-ALL under namespace scope is INCOHERENT ("*" or
-                   whitespace-only parses to a cluster-wide cache — the exact
-                   crashloop above) and fails the render loudly (the
-                   llm-relay-rbac fail-loud convention) instead of deploying a
-                   controller that cannot start. */ -}}
+                   WATCH-ALL under namespace scope is INCOHERENT and fails the
+                   render loudly (the llm-relay-rbac convention): the guard
+                   mirrors the controller's own parseWatchNamespaces — a value
+                   containing "*" ANYWHERE (bare, "*,", "*,ns1", "**") either
+                   parses to a cluster-wide cache or builds informers for a
+                   bogus "*" namespace; a whitespace-only value (Go TrimSpace
+                   class: [[:space:]] + U+0085 + Zs) parses to cluster-wide.
+                   All crashloop identically against namespaced RBAC. */ -}}
             {{- $wnsRaw := default "" .Values.controller.watchNamespaces | toString }}
-            {{- $wns := trimAll " \t" $wnsRaw }}
-            {{- if and (ne (.Values.rbac.scope | default "namespace") "cluster") (or (eq $wns "*") (and (ne $wnsRaw "") (eq $wns ""))) }}
-            {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: a watch-all cache cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Either set explicit namespaces (controller.watchNamespaces=\"ns1,ns2\") or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
+            {{- if and (ne (.Values.rbac.scope | default "namespace") "cluster") (or (contains "*" $wnsRaw) (and (ne $wnsRaw "") (regexMatch "^[[:space:]\\x{85}\\p{Zs}]*$" $wnsRaw))) }}
+            {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: watch-all parses to a cluster-wide cache (or a bogus \"*\" namespace) that cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Remedies: set controller.watchNamespaces to namespaces your RBAC actually covers (under namespace scope that is the workspace namespace ONLY — NOT the release namespace), or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
             {{- end }}
             {{- if .Values.controller.watchNamespaces }}
             - --watch-namespaces={{ .Values.controller.watchNamespaces }}
