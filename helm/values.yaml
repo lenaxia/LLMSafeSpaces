@@ -1189,31 +1189,29 @@ serviceAccount:
 # ----------------------------------------------------------------------------
 rbac:
   create: true
-  # scope controls how the controller's RBAC is granted:
-  #   "namespace" (default, G5)  Role + RoleBinding scoped to the WORKSPACE
-  #                              namespace (the api.config.kubernetes.namespace
-  #                              override, else .Release.Namespace) only. The
-  #                              controller can manage workspaces ONLY in the
-  #                              configured namespace(s) — with
+  # scope controls how the controller's RBAC is granted (grant MEMBERS
+  # live in helm/templates/rbac.yaml's rules blocks — the authoritative
+  # enumeration; this comment states invariants and pointers only):
+  #   "namespace" (default, G5)  WRITES are namespace-bound: the
+  #                              workspace-lifecycle Role binds in the
+  #                              WORKSPACE namespace (the
+  #                              api.config.kubernetes.namespace override,
+  #                              else .Release.Namespace). With
   #                              controller.watchNamespaces unset (the
-  #                              default) the chart derives --watch-namespaces
-  #                              to that namespace (see the watchNamespaces
-  #                              derivation note); listing additional
-  #                              namespaces requires operator-created
-  #                              RoleBindings there (the chart creates none).
-  #   "cluster"                  Adds a ClusterRole + ClusterRoleBinding for
-  #                              llmsafespaces.dev/*, letting the controller
-  #                              watch workspaces across all namespaces (the
-  #                              read-only storageclasses ClusterRole is
-  #                              ALWAYS created regardless of scope).
-  #                              Pods, secrets, PVCs, and NetworkPolicies:
-  #                              WRITES remain namespace-bound regardless,
-  #                              but under scope=cluster the gated
-  #                              ClusterRole grants cluster-wide READS
-  #                              (get/list/watch) on them — operators
-  #                              running multi-
-  #                              namespace deployments must per-namespace-bind
-  #                              the workspace Role themselves.
+  #                              default) the chart derives
+  #                              --watch-namespaces to that namespace (see
+  #                              the watchNamespaces derivation note);
+  #                              listing additional namespaces requires
+  #                              operator-created RoleBindings there (the
+  #                              chart creates none).
+  #   "cluster"                  Adds the gated ClusterRole + binding:
+  #                              cluster-wide READS across the resource
+  #                              families its rules list, plus conditional
+  #                              branches (delivery/relay/refresher) that
+  #                              extend reads AND writes cluster-wide when
+  #                              active — the rules block is authoritative.
+  #                              (The read-only storageclasses ClusterRole
+  #                              is ALWAYS created regardless of scope.)
   #
   # SECURITY (G5, Epic 17): the default flipped from "cluster" to
   # "namespace" in worklog 0107. Pre-flip the chart-default install
