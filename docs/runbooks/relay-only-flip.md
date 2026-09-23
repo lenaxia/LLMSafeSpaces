@@ -182,14 +182,19 @@ criterion is UNVERIFIED for that run, not passed.
   nightly signature). The chart now derives
   `--watch-namespaces=<workspace namespace>` under namespace scope
   whenever `controller.watchNamespaces` is unset (explicit values win;
-  cluster scope renders byte-identically). `controller.watchNamespaces:
-  "*"` under namespace scope fails the render loudly — watch-all is
-  incoherent against namespaced RBAC (the same crashloop); set explicit
-  namespaces or keep cluster scope. Split-namespace topologies
-  (`api.config.kubernetes.namespace` ≠ release namespace) should set
-  `watchNamespaces` to BOTH namespaces — the derived single-namespace
-  cache otherwise leaves the free-models refresher's release-namespace
-  reads unreachable (the catalog stops refreshing; non-fatal). The
+  cluster scope renders byte-identically). Any value containing `"*"`
+  under namespace scope fails the render loudly — watch-all and a
+  bogus `"*"` namespace are both incoherent against namespaced RBAC
+  (the same crashloop); set covered namespaces or keep cluster scope.
+  Split-namespace topologies
+  (`api.config.kubernetes.namespace` ≠ release namespace) accept the
+  free-models refresher caveat instead: the derived single-namespace
+  cache leaves the refresher's catalog upsert unreachable (the cached
+  read errors — not IsNotFound — so no ConfigMap ever exists;
+  non-fatal). Listing BOTH namespaces remedies it ONLY under cluster
+  scope or wherever RBAC covers both — under namespace scope the
+  release-ns Role grants just leases/events/configmaps, so a
+  release-ns informer is the same Forbidden CrashLoopBackOff. The
   relay startup guard and all llm-relay reads are unaffected — they
   ride the direct API reader by design (§4.3), which is why the guard
   passed while the informers died.
