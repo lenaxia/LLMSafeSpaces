@@ -1,0 +1,51 @@
+# Worklog: M1 crash-loud arming (design 0061 §3, implementation PR2)
+
+**Date:** 2026-09-23
+**Session:** Design 0061's first mechanism, per the recorded order after PR1 (#1552, the posture RBAC fixes). The #1548 split-brain's class — an enabled-but-inert staging binary booting green — becomes structurally undeployable: a DISTINCT exit code the CrashLoop carries.
+**Status:** Complete
+
+---
+
+## Objective
+
+Exit 85 (the doctrine ladder's fifth rung: 81/82 agentd verify, 83/84 opencode verify) for "deployed relay-only but not armed"; the enable line as the armed contract; no new armed-state notion (the existing SetupRelayStaging conjunction); the existing 30s guard budget as the window; flag-off byte-identical.
+
+## Work Completed
+
+- `controller/internal/controller/controller.go`: `RelayStagingNotArmedExitCode = 85` with the ladder + #1548-class doc block; `ArmingStartupGuardWindow = 30s` (the design's named constant — the guard's existing budget, now the single source: `context.WithTimeout(..., ArmingStartupGuardWindow)`; NO new timer machinery).
+- `controller/main.go`: the staging-error path exits with the constant (not bare 1) and the refusal message says "(not armed)".
+- Unit pins (`controller_arming_test.go`): 85-is-distinct-from-81–84; the flag-off nil-nil shape with a NIL manager (safe iff the !enabled branch returns before any mgr deref — a future reorder panics the test instead of every flag-off boot); the window==guard-budget semantic constant.
+- Source-truth pins (`local/m1_arming_source_test.go`, the release-smoke precedent): main.go's wiring exits THE constant with no surviving bare Exit(1) at the site; the constant's value + ladder comment + guard-reads-the-window bindings; the parity reconciliation contract recorded (the #1548 provenance PR's verifyRelayStagingParity takes THIS code when it merges — the pin asserts the contract is carried at the constant until then).
+
+## The four design shapes — where each is pinned
+
+1. unarmable→85-in-window: the wiring (source-truth pin) + the window (the guard's existing fail-loud matrix, staging_guard_client_test.go, now reading the named constant).
+2. armed→line+exit-0: the line exists (controller.go:164); the release-smoke binary markers pin its literal; the posture gate asserts it cluster-side (PR5).
+3. parity→85: the reconciliation contract (the parity PR is not yet merged on main; its failure path reconciles onto this constant — noted here and pinned as the contract).
+4. flag-off→byte-identical: the nil-nil unit pin.
+
+## Key Decisions
+
+1. NO new armed-state — the design's §3 scoping: the existing conjunction, made un-skippable by giving its failure a name (the code) and its success an existing contract (the line).
+2. Source-truth pins for the main() wiring (not unit-runnable) — the established local/ precedent; the needles match across line-wraps after the first red (two needles failed on wrapped comments — fixed to unwrapped substrings, a small instance of the needle-must-match-the-artifact class).
+
+## Blockers
+
+None.
+
+## Tests Run
+
+- `go test ./controller/...` — all green (incl. the three new unit pins).
+- `go test ./local/ -run TestM1_` — 3/3 source-truth pins green.
+- `go build ./...` — clean.
+
+## Next Steps
+
+1. Review; then PR3 per the recorded order: M2 fallback + both counters.
+
+## Files Modified
+
+- `controller/internal/controller/controller.go` (the constant, the window constant, the guard reads it)
+- `controller/main.go` (exit 85, the not-armed refusal)
+- `controller/internal/controller/controller_arming_test.go` (new, 3 pins)
+- `local/m1_arming_source_test.go` (new, 3 source-truth pins)

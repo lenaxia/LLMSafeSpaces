@@ -112,6 +112,23 @@ type RelayArtifactConfig struct {
 	SHA256Amd64 string
 }
 
+// RelayStagingNotArmedExitCode (design 0061 §3, M1 — crash-loud arming):
+// the controller's distinct exit code for "deployed relay-only but not
+// armed" — the fifth rung of the fail-closed doctrine's ladder
+// (81/82: agentd verify; 83/84: opencode verify; 85: relay staging not
+// armed). A CrashLoop with this code is one describe-pod away from its
+// reason; the enable line ("relay-only key delivery enabled") is the
+// armed contract its absence betrays. The #1548 split-brain (an inert
+// staging binary booted green while workspaces starved) is the class
+// this code makes undeployable.
+const RelayStagingNotArmedExitCode = 85
+
+// ArmingStartupGuardWindow (design 0061 §3): the bounded startup window
+// within which enabled=true must reach armed state — the startup
+// guard's existing 30s budget, named here as the design's constant (no
+// new timer machinery; the guard's context construction reads THIS).
+var ArmingStartupGuardWindow = 30 * time.Second
+
 // SetupRelayStaging constructs the US-72.3 relay staging config from the
 // deployment flags and runs the FAIL-LOUD startup guard (the
 // rbac.scope=cluster gate precedent): enabled without a reachable,
@@ -156,7 +173,7 @@ func SetupRelayStaging(mgr ctrl.Manager, enabled bool, routerURL, namespace stri
 	if err != nil {
 		return nil, fmt.Errorf("building startup-guard client: %w", err)
 	}
-	guardCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	guardCtx, cancel := context.WithTimeout(context.Background(), ArmingStartupGuardWindow)
 	defer cancel()
 	if err := workspace.ValidateRelayStagingStartup(guardCtx, cfg, directClient); err != nil {
 		return nil, fmt.Errorf("startup guard FAILED — refusing to start (fix the router/namespace/RBAC configuration or disable --relay-only-key-delivery): %w", err)
