@@ -68,3 +68,9 @@ None.
 - TestInferenceRelayFleetGuardFailsRender (the helmTemplateErr precedent): fleet+namespace+no-watchNamespaces FAILS the render; both remedies lift it (the cluster-scope remedy also opts out of relay-only — the pre-existing guard fires on that combination, not this test's subject). Deleting the guard block now turns CI red — the r2 review's mutation class closed.
 - The r2 "F4 fixed" claim was FALSE (the fix landed on the wrong comment — the stale get/list/watch-ONLY block survived; the recurring claim class, caught by r3's diff check). Corrected for real: the test's design-gap comment now states the shipped grant (lifecycle verbs, unconditional render, the watchNamespaces precondition) and the TEMPLATE comment no longer claims the /finalizers subresource (dropped in r2 — controller-runtime PUTs the main resource).
 - The coarse-heuristic note (minor, unaddressed by choice): the guard accepts any non-empty watchNamespaces; naming accepted values in the fail message would require the template to know the workspace-namespace scheme — left as the #1551-family wedge with the guard's message already naming both remedies.
+
+## r4 — the five stale doc lines; the error-message assertion
+
+- The five operator-facing lines corrected (helm-values ×2, crds.md, README-LLM ×2 — the fifth the r3 pass missed): the fleet now reads as what it is — supported under BOTH scopes, with namespace scope additionally requiring controller.watchNamespaces (the install-time guard). The misconception the PR retires is retired in the docs too.
+- The guard test asserts the error names watchNamespaces (a different guard failing the same values no longer keeps it green for the wrong reason — the egress-precedent one-liner).
+- The "*" precision note is accepted into the #1551-family wedge record (the worklog's rationale covered namespace names, not the star; one value check is trivial whenever that wedge is worked).

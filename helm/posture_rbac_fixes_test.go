@@ -367,8 +367,11 @@ func TestFreeModelsRefresherFlagRBACKeyCoupling(t *testing.T) {
 // watchNamespaces must FAIL the render — deleting the guard block must
 // turn this red, not pass green.
 func TestInferenceRelayFleetGuardFailsRender(t *testing.T) {
-	require.Error(t, helmTemplateErr(t, "controller:\n  inferenceRelay:\n    enabled: true\n"), // no watchNamespaces
+	err := helmTemplateErr(t, "controller:\n  inferenceRelay:\n    enabled: true\n") // no watchNamespaces
+	require.Error(t, err,
 		"fleet + namespace scope without watchNamespaces must fail the render (the Secret-informer residual made install-time loud)")
+	assert.Contains(t, err.Error(), "watchNamespaces",
+		"the failure must be THIS guard (a different guard failing the same values would keep the test green for the wrong reason)")
 	// The two remedies each lift the guard (the cluster-scope case must
 	// also opt OUT of relay-only: the default-on relay-only + cluster
 	// scope combination fails the pre-existing render guard, which is
