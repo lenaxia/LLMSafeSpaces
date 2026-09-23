@@ -1,8 +1,14 @@
 {{- /* RBAC for relay-only key delivery (design 0058 §4.3 + its US-72.3
         deviation note):
         - the router SA: get/list/watch Secrets in llm-relay, plus the
-          name-scoped WRITE carve-out for exactly the two HPKE keypair
-          Secrets (§4.2 bootstrap/rotation/DR needs it, and nothing else);
+          WRITE carve-out for exactly the two HPKE keypair Secrets,
+          SPLIT per #1546 Defect 1 (design 0061 §5): an UNSCOPED create
+          (the apiserver ignores resourceNames for create — a scoped
+          create rule is dead RBAC that left the router CrashLooping on
+          bootstrap; the router is the llm-relay Secrets key owner with
+          get/list/watch already, so unscoped create adds no meaningful
+          surface — the #863/#890 agentd-pins precedent) + a NAME-SCOPED
+          update for exactly the two keypair Secrets;
         - the controller SA: create/update/delete the OTHER llm-relay
           Secrets (staged envelopes, written BLIND — delete+create, no
           read), plus name-scoped get on llm-relay-hpke-pub (it seals
@@ -43,8 +49,11 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
     resourceNames: ["llm-relay-hpke-key", "llm-relay-hpke-pub"]
-    verbs: ["create", "update"]
+    verbs: ["update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
