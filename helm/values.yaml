@@ -263,14 +263,29 @@ controller:
 
   # Comma-separated list of namespaces the controller should watch.
   # Wired to the controller's --watch-namespaces flag.
-  #   ""       (default) — watch all namespaces (cluster-wide)
-  #   "*"                — explicit form, equivalent to empty
+  #   ""       (default) — under rbac.scope=namespace (the chart
+  #             default): DERIVED to the workspace namespace (see the
+  #             derivation note below); under rbac.scope=cluster:
+  #             watch all namespaces (cluster-wide cache)
   #   "ns1"              — watch only ns1
   #   "ns1,ns2"          — watch ns1 and ns2
+  #   "*"                — FORBIDDEN under rbac.scope=namespace (the
+  #             render fails: a watch-all cache cannot sync its
+  #             informers against namespaced RBAC — the exact
+  #             CrashLoopBackOff of nightly run 35872827066); valid
+  #             only under rbac.scope=cluster
   #
   # Combine with namespace-scoped RoleBindings (see rbac.scope below) for
   # defense-in-depth: even if the controller is given cluster-wide RBAC,
   # cache.DefaultNamespaces narrows what it actually reconciles.
+  #
+  # CAVEAT (split-namespace override): when api.config.kubernetes.namespace
+  # differs from the release namespace, the derived single-namespace cache
+  # leaves the free-models refresher reading its ConfigMap in the release
+  # namespace unreachable — the catalog stops refreshing with per-tick
+  # NotFound noise (refresher.go:139-163, non-fatal). Set
+  # controller.watchNamespaces to BOTH namespaces ("release-ns,workspace-ns")
+  # in that topology.
   #
   # Under rbac.scope=namespace (the default), leaving this empty DERIVES
   # --watch-namespaces to the workspace namespace (the workspaceNamespace

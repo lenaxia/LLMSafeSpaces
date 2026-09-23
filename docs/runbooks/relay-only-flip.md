@@ -182,10 +182,17 @@ criterion is UNVERIFIED for that run, not passed.
   nightly signature). The chart now derives
   `--watch-namespaces=<workspace namespace>` under namespace scope
   whenever `controller.watchNamespaces` is unset (explicit values win;
-  cluster scope renders byte-identically). The relay startup guard and
-  all llm-relay reads are unaffected — they ride the direct API reader
-  by design (§4.3), which is why the guard passed while the informers
-  died.
+  cluster scope renders byte-identically). `controller.watchNamespaces:
+  "*"` under namespace scope fails the render loudly — watch-all is
+  incoherent against namespaced RBAC (the same crashloop); set explicit
+  namespaces or keep cluster scope. Split-namespace topologies
+  (`api.config.kubernetes.namespace` ≠ release namespace) should set
+  `watchNamespaces` to BOTH namespaces — the derived single-namespace
+  cache otherwise leaves the free-models refresher's release-namespace
+  reads unreachable (the catalog stops refreshing; non-fatal). The
+  relay startup guard and all llm-relay reads are unaffected — they
+  ride the direct API reader by design (§4.3), which is why the guard
+  passed while the informers died.
 - **`networkPolicy.enabled=false`**: relay-only's own ingress policy
   (`llm-relay-router-allow-workspaces`) renders on the relay-only flag,
   NOT the chart-level networkPolicy master toggle — a networkPolicy=false

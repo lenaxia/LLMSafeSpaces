@@ -106,3 +106,35 @@ func TestRBACClusterScope_ExplicitWatchNamespacesStillHonored(t *testing.T) {
 	assert.Equal(t, "only-this-one", got,
 		"explicit watchNamespaces under cluster scope must keep passing through (pre-existing behavior, unchanged)")
 }
+
+// TestRBACClusterScope_WatchAllStillValid (r1): "*" under CLUSTER scope
+// stays the valid explicit watch-all spelling — the r1 fail guard must
+// scope to the namespace posture only.
+func TestRBACClusterScope_WatchAllStillValid(t *testing.T) {
+	docs := helmTemplate(t, "rbac:\n  scope: cluster\nrelayOnlyKeyDelivery:\n  enabled: false\ncontroller:\n  watchNamespaces: \"*\"\n")
+	got := controllerWatchNamespacesArg(t, docs)
+	assert.Equal(t, "*", got,
+		"\"*\" remains the valid watch-all spelling under cluster scope (the controller parses it to a cluster-wide cache, which the ClusterRole there covers)")
+}
+
+// TestRBACNamespaceScope_WatchAllFailsRender (r1): "*" (or a
+// whitespace-only value) under namespace scope is INCOHERENT — it
+// parses to a cluster-wide cache that cannot sync informers against
+// namespaced RBAC (the exact run-35872827066 crashloop) — so the render
+// must FAIL LOUDLY (the llm-relay-rbac convention) naming both
+// remedies. The migration population uses precisely this spelling; a
+// verbatim pass-through would deploy a controller that cannot start.
+func TestRBACNamespaceScope_WatchAllFailsRender(t *testing.T) {
+	for _, value := range []string{"*", "  ", "\t"} {
+		t.Run("value="+value, func(t *testing.T) {
+			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+strings.ReplaceAll(value, "\t", "\\t")+"\"\n")
+			require.Error(t, err,
+				"watchNamespaces=%q under namespace scope must fail the render — a watch-all cache crashloops against namespaced RBAC", value)
+			msg := err.Error()
+			assert.Contains(t, msg, "rbac.scope=namespace", "the failure must name the incoherent combination")
+			assert.Contains(t, msg, "CrashLoopBackOff", "the failure must name the consequence")
+			assert.Contains(t, msg, "controller.watchNamespaces=", "the failure must name the setting to change")
+			assert.Contains(t, msg, "rbac.scope=cluster", "the failure must name the keep-cluster remedy")
+		})
+	}
+}
