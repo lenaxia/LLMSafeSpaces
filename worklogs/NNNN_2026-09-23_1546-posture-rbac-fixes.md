@@ -54,3 +54,11 @@ None.
 - **The overclaim (5), fixed in the GRANT not the comment**: the reconciler's complete CRD lifecycle is now covered — update on the CRD (the finalizer add/remove, reconciler.go:129/832) + update on /status + /finalizers (the status writes :363/711/749). Secrets NEVER (§4.3): the fleet's VM-key Secret writes ride the NAMESPACED inferenceRelay grant as before. "Coexists" is now true for a full reconcile of a real CR.
 - **The unconditional letter (6)**: the ClusterRole renders under namespace scope REGARDLESS of the fleet flag (the design's stated rationale — the posture never depends on the fleet flag; no informer registers without the reconciler). Pinned by TestInferenceRelayClusterRoleUnconditional (fleet-off render still carries it).
 - The template comment states the lifecycle verbs with the reconciler.go line anchors and the Secrets-ride-the-namespaced-grant routing.
+
+## r2 — the completion pinned; the residual made fail-loud; the deviation recorded
+
+- **F1**: the grant's COMPLETION is now required — update on the main resource (finalizer add/remove via main-resource Update: reconciler.go:129/832) and the /status rule are require-assertions; a revert to the read-only r0 shape fails CI (the reviewer's mutation reproduced the green-revert; the pin now catches it).
+- **F2**: the binding's roleRef pinned (kind ClusterRole + name == the rendered Role's name — the inert-binding drift class).
+- **F3**: design 0061 §8.1 carries the deviation note (per the design's own §5 precedent): the wider grant's reconciler anchors, the /finalizers drop (controller-runtime PUTs the main resource — the subresource grant was inert beyond the letter), and the honest residual.
+- **F4**: the stale "read-only verbs only" comment reworded to the lifecycle-verbs truth.
+- **F5**: the residual is FIXED AS A GUARD, not a comment: the chart REFUSES inferenceRelay.enabled under namespace scope without controller.watchNamespaces (Owns(&Secret{})'s cluster-wide informer cannot LIST under the posture — the crash-loop becomes an install-time failure, the relay-only guard's pattern). The fleet test family's renders carry watchNamespaces (the operational requirement the guard encodes — each edit annotated); my own ClusterRole test too.

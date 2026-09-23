@@ -586,6 +586,18 @@ subjects:
         before. Rendered under NAMESPACE scope only; the cluster block
         keeps its broader version for cluster installs. */}}
 {{- if ne (.Values.rbac.scope | default "namespace") "cluster" }}
+{{- /* F5 residual, fail-loud (the relay-only guard precedent): the
+        fleet reconciler Owns(&Secret{}) (reconciler.go:850) — a
+        cluster-wide Secret informer when controller.watchNamespaces is
+        empty (the default cluster-wide cache). Under the mandated
+        namespace posture that reflector LIST is granted nowhere and the
+        controller crash-loops (rbac.yaml's own cluster-block comment
+        documents the failure). Refuse at INSTALL TIME; the operator
+        sets controller.watchNamespaces (scoping the cache) or runs the
+        fleet under cluster scope. Tracked wedge: #1551 family. */}}
+{{- if and (.Values.controller.inferenceRelay.enabled) (not .Values.controller.watchNamespaces) }}
+{{- fail "controller.inferenceRelay.enabled under rbac.scope=namespace requires controller.watchNamespaces: the fleet's cluster-wide Secret informer cannot LIST under the mandated posture (design 0061 §8.1 residual) — scope the cache or use rbac.scope=cluster" }}
+{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -597,7 +609,7 @@ rules:
     resources: ["inferencerelays"]
     verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["llmsafespaces.dev"]
-    resources: ["inferencerelays/status", "inferencerelays/finalizers"]
+    resources: ["inferencerelays/status"]
     verbs: ["update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

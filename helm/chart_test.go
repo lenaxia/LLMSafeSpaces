@@ -2106,7 +2106,11 @@ const relayArtifactVals = "    artifact:\n      sha256Arm64: \"aaa\"\n      sha2
 // opt it out explicitly (their substrate is inferenceRelay; the flipped
 // default was injecting llm-relay resources into their name-substring
 // finds).
-const relayEnabledValues = "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals + "relayOnlyKeyDelivery:\n  enabled: false\n"
+// The fleet fixture carries controller.watchNamespaces: the fleet's
+// cluster-wide Secret informer (Owns(&Secret{})) cannot LIST under the
+// namespace posture — the rbac.yaml install-time guard refuses the
+// combination without it (design 0061 §8.1 residual, #1552 r2).
+const relayEnabledValues = "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals + "  watchNamespaces: llmsafespaces\nrelayOnlyKeyDelivery:\n  enabled: false\n"
 
 // podSpecMap returns the .spec.template.spec (PodSpec) of a Deployment doc.
 func podSpecMap(deploy map[string]any) map[string]any {
@@ -2192,7 +2196,7 @@ func TestRelayRouter_NetworkPolicy_RendersWhenEnabled(t *testing.T) {
 // (parity with the workspace/datastore policies) — it must NOT render when the
 // policy controller is disabled, even if inferenceRelay is enabled.
 func TestRelayRouter_NetworkPolicy_HiddenWhenNetworkPolicyDisabled(t *testing.T) {
-	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals+"networkPolicy:\n  enabled: false\nrelayOnlyKeyDelivery:\n  enabled: false\n")
+	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals+"  watchNamespaces: llmsafespaces\nnetworkPolicy:\n  enabled: false\nrelayOnlyKeyDelivery:\n  enabled: false\n")
 	for _, d := range findByKind(docs, "NetworkPolicy") {
 		require.NotContains(t, metaName(d), "relay-router",
 			"relay-router NetworkPolicy must NOT render when networkPolicy.enabled is false (master-toggle contract)")
@@ -3153,7 +3157,7 @@ func TestRelayRouter_NoWGTemplatesRender(t *testing.T) {
 // worklog 0442. The namespace can now stay locked-down even with the relay
 // fleet active.
 func TestNamespace_StaysRestrictedWhenRelayEnabled(t *testing.T) {
-	docs := helmTemplate(t, "namespace:\n  create: true\n  podSecurityEnforce: \"restricted\"\ncontroller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals)
+	docs := helmTemplate(t, "namespace:\n  create: true\n  podSecurityEnforce: \"restricted\"\ncontroller:\n  inferenceRelay:\n    enabled: true\n"+relayArtifactVals+"  watchNamespaces: llmsafespaces\n")
 
 	ns := findNamespace(docs)
 	require.NotNil(t, ns, "Namespace must render when namespace.create=true")
@@ -3341,6 +3345,7 @@ func TestRelayRouter_UpstreamAuth_MountsSecretWhenConfigured(t *testing.T) {
         name: relay-upstream-key
         key: key
       header: x-api-key
+  watchNamespaces: llmsafespaces
 relayOnlyKeyDelivery:
   enabled: false
 `
@@ -3521,7 +3526,7 @@ func TestControllerArgs_RoutesWorkspacesThroughRouterWhenFleetEnabled(t *testing
 // controller.inferenceRelay.workspaceRouterURL overrides the derived FQDN
 // (for the separate-namespace-router deploy case).
 func TestControllerArgs_WorkspaceRouterURLOverride(t *testing.T) {
-	vals := "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals + "    workspaceRouterURL: http://my-router.privileged-ns.svc:8080\n"
+	vals := "controller:\n  inferenceRelay:\n    enabled: true\n" + relayArtifactVals + "    workspaceRouterURL: http://my-router.privileged-ns.svc:8080\n  watchNamespaces: llmsafespaces\n"
 	docs := helmTemplate(t, vals)
 	args := findControllerArgs(t, docs)
 	for _, a := range args {
@@ -3591,6 +3596,7 @@ func TestControllerArgs_RelayArtifactFlags_RenderWhenEnabled(t *testing.T) {
         - "https://s3.amazonaws.com/llmsafespace-artifacts"
       sha256Arm64: "aaa"
       sha256Amd64: "bbb"
+  watchNamespaces: llmsafespaces
 `
 	docs := helmTemplate(t, vals)
 	args := findControllerArgs(t, docs)
@@ -4333,6 +4339,7 @@ controller:
         repository: registry.example.com/relay-router
         tag: v1.0.0
         digest: sha256:abc
+  watchNamespaces: llmsafespaces
 relayOnlyKeyDelivery:
   enabled: false
 `

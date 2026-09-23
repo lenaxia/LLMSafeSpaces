@@ -208,7 +208,7 @@ func leaderElectionRole(t *testing.T, docs []map[string]any) map[string]any {
 // get/list/watch ONLY — a CRD read, no Secrets, no §4.3 conflict) that
 // renders under NAMESPACE scope whenever inferenceRelay is enabled.
 func TestInferenceRelayNamespaceScopeClusterRole(t *testing.T) {
-	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n") // default scope = namespace
+	docs := helmTemplate(t, "controller:\n  inferenceRelay:\n    enabled: true\n  watchNamespaces: llmsafespaces\n") // default scope = namespace; watchNamespaces per the r2 guard
 	var cr map[string]any
 	var binding map[string]any
 	for _, d := range docs {
@@ -251,9 +251,54 @@ func TestInferenceRelayNamespaceScopeClusterRole(t *testing.T) {
 		vs := verbSet(m)
 		for v := range vs {
 			assert.Contains(t, []string{"get", "list", "watch", "update"}, v,
-				"the reconciler's CRD-lifecycle verbs only (watch + finalizer/status writes)")
+				"the reconciler's CRD-lifecycle verbs only (watch + the finalizer/status writes)")
 		}
 	}
+	// F1 (r2): the COMPLETION is required, not just permitted — a revert
+	// to the read-only r0 shape (the state r0 found functionally broken)
+	// must FAIL here, not pass green (mutation-reproduced by review).
+	main := ruleFor(rules, func(m map[string]any) bool {
+		res, _ := m["resources"].([]any)
+		for _, r := range res {
+			if s, ok := r.(string); ok && s == "inferencerelays" {
+				return true
+			}
+		}
+		return false
+	})
+	require.NotNil(t, main, "the main-resource rule must exist")
+	assert.True(t, verbSet(main)["update"],
+		"update on the CRD is REQUIRED — the finalizer add/remove rides main-resource Update (reconciler.go:129/832); without it a real CR's first reconcile fails")
+	status := ruleFor(rules, func(m map[string]any) bool {
+		res, _ := m["resources"].([]any)
+		for _, r := range res {
+			if s, ok := r.(string); ok && s == "inferencerelays/status" {
+				return true
+			}
+		}
+		return false
+	})
+	require.NotNil(t, status, "the /status rule must exist — Status().Update is the status subresource (reconciler.go:363/711/749)")
+	// /finalizers is deliberately ABSENT: controller-runtime's Update
+	// PUTs the MAIN resource (finalizers are metadata on it) — a
+	// /finalizers subresource grant is inert beyond the design letter.
+	for _, r := range rules {
+		m, _ := r.(map[string]any)
+		res, _ := m["resources"].([]any)
+		for _, rr := range res {
+			if s, ok := rr.(string); ok && s == "inferencerelays/finalizers" {
+				t.Error("the /finalizers subresource grant is inert (controller-runtime Update PUTs the main resource) — dropped per r2")
+			}
+		}
+	}
+	// F2 (r2): the binding's roleRef must point at THIS ClusterRole (an
+	// inert-binding drift — e.g. roleRef to a non-rendered Role — is a
+	// dead grant that ships green; mutation-reproduced by review).
+	roleRef, _ := binding["roleRef"].(map[string]any)
+	require.NotNil(t, roleRef)
+	assert.Equal(t, "ClusterRole", roleRef["kind"])
+	crName, _ := cr["metadata"].(map[string]any)["name"].(string)
+	assert.Equal(t, crName, roleRef["name"], "the binding must reference the rendered ClusterRole by name")
 	// The binding's subject is the CONTROLLER SA (r1 finding 4, the
 	// api-inferencerelay precedent).
 	subj, _ := binding["subjects"].([]any)
