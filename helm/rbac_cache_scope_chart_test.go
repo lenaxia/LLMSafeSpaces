@@ -24,6 +24,7 @@ package chart_test
 // namespace (the workspaceNamespace helper).
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -145,36 +146,51 @@ func TestRBACNamespaceScope_WatchAllFailsRender(t *testing.T) {
 // and Go-TrimSpace whitespace classes beyond ASCII space/tab
 // (newline, NBSP) trim to cluster-wide. Every shape crashloops
 // identically under namespace scope; every one must fail the render.
+//
+// r4: subtest names are INDEX-BASED — raw operator input (commas!)
+// must never reach t.Run names: the name lands in t.TempDir()'s path,
+// and helm's -f is a pflag StringSlice that splits on the comma — the
+// truncated path then errors as a HARNESS failure and require.Error
+// passes vacuously without evaluating any template (the r3 pins were
+// exactly that; mutation-verified red after the fix).
 func TestRBACNamespaceScope_WatchAllGuardLeakShapes(t *testing.T) {
-	for _, value := range []string{"*,", "*,ns1", "**", "\\n", "\\u00a0"} {
-		t.Run("value="+value, func(t *testing.T) {
+	for i, value := range []string{"*,", "*,ns1", "**", "\\n", "\\u00a0"} {
+		t.Run(fmt.Sprintf("case%02d", i), func(t *testing.T) {
 			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
 			require.Error(t, err,
 				"watchNamespaces=%q under namespace scope must fail the render (the run-35872827066 death class)", value)
+			require.Contains(t, err.Error(), "CrashLoopBackOff",
+				"the error must be the guard's template fail, not a harness failure (the r4 vacuity class)")
 		})
 	}
 }
 
-// TestRBACNamespaceScope_CommaCollapseFailsRender (r3): the nil branch
-// of parseWatchNamespaces (watch_namespaces.go:38-40, pinned by the
-// repo's own TestParseWatchNamespaces_AllEmptyEntriesReturnsNil) — a
-// value whose comma-split yields ZERO non-empty entries collapses to
-// nil = cluster-wide cache. No "*", not whitespace-only: the r2 guard
-// passed them verbatim into the crashloop. All must fail the render.
+// TestRBACNamespaceScope_CommaCollapseFailsRender (r3, de-vacuumed r4):
+// the nil branch of parseWatchNamespaces (watch_namespaces.go:38-40,
+// pinned by the repo's own TestParseWatchNamespaces_AllEmptyEntriesReturnsNil)
+// — a value whose comma-split yields ZERO non-empty entries collapses
+// to nil = cluster-wide cache. No "*", not whitespace-only: the r2
+// guard passed them verbatim into the crashloop. All must fail the
+// render — and the subtest names are index-based because the raw
+// values contain commas (see the r4 note above).
 func TestRBACNamespaceScope_CommaCollapseFailsRender(t *testing.T) {
-	for _, value := range []string{",", " , ", ",,,"} {
-		t.Run("value="+value, func(t *testing.T) {
+	for i, value := range []string{",", " , ", ",,,"} {
+		t.Run(fmt.Sprintf("case%02d", i), func(t *testing.T) {
 			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
 			require.Error(t, err,
 				"watchNamespaces=%q collapses to zero namespaces (parseWatchNamespaces nil branch) — cluster-wide cache, the run-35872827066 death", value)
+			require.Contains(t, err.Error(), "CrashLoopBackOff",
+				"the error must be the guard's template fail, not a harness failure (the r4 vacuity class)")
 		})
 	}
 	// The TrimSpace edge the r2 class missed: U+2028/U+2029 (Zl/Zp) are
 	// trimmed by Go TrimSpace → nil → cluster-wide.
-	for _, value := range []string{"\\u2028", "\\u2029"} {
-		t.Run("value="+value, func(t *testing.T) {
+	for i, value := range []string{"\\u2028", "\\u2029"} {
+		t.Run(fmt.Sprintf("unicode%02d", i), func(t *testing.T) {
 			err := helmTemplateErr(t, "rbac:\n  scope: namespace\ncontroller:\n  watchNamespaces: \""+value+"\"\n")
 			require.Error(t, err, "watchNamespaces=%q (Zl/Zp) trims to empty under Go TrimSpace — must fail the render", value)
+			require.Contains(t, err.Error(), "CrashLoopBackOff",
+				"the error must be the guard's template fail, not a harness failure (the r4 vacuity class)")
 		})
 	}
 }

@@ -467,8 +467,10 @@ controller:
     # URL workspace pods use to reach the relay-router for free-model
     # inference (Design Principle 6, Epic 42). Empty → the chart derives the
     # cross-namespace FQDN `http://relay-router.<release-ns>.svc.cluster.local:8080`
-    # so it resolves from workspace pods in ANY namespace (the controller
-    # watches cluster-wide by default). Set this only if you deploy the router
+    # so it resolves from workspace pods in ANY namespace the cache watches
+    # (cluster-wide under rbac.scope=cluster; the workspace namespace under
+    # the default namespace scope — see the watchNamespaces derivation).
+    # Set this only if you deploy the router
     # in a namespace other than the release namespace (the documented
     # out-of-band privileged-namespace case).
     workspaceRouterURL: ""
