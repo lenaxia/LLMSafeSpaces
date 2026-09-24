@@ -223,6 +223,19 @@ jobs:
       # failed step already fails the job).
       # ------------------------------------------------------------------
 
+      # #1566 peel: the api-leader-election BINDING rendered locally
+      # but was absent live while its Role applied (the Role applied).
+      # Post-install truth probe, one cycle: helm's own manifest vs the
+      # cluster + the engine version — a render/apply divergence class.
+      # Diagnosis-only (never gates): the assertions stay authoritative.
+      - name: Truth probe — api-leader-election manifest vs live
+        run: |
+          helm version --short || true
+          echo "--- manifest doc-name count for api-leader-election:"
+          helm --kube-context kind-$CLUSTER_NAME get manifest llmsafespaces -n $NS | grep -c "name: llmsafespaces-api-leader-election" || true
+          echo "--- live rolebindings (leader):"
+          kubectl -n $NS get rolebindings | grep -i leader || echo "(none)"
+
       - name: Assert 1 — every Deployment Ready (rendered namespaces)
         # All-Ready: the release namespace AND llm-relay (the chart
         # renders both). This alone kills the #1546 Defect-1 class — a
