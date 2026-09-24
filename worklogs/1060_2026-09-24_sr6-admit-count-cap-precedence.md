@@ -65,4 +65,4 @@ None.
 - `cmd/workspace-agentd/upload_staging.go` — Admit's cap-before-budget order; file-header precedence note
 - `cmd/workspace-agentd/upload_staging_test.go` — `TestStagingAdmission_CountCapPreemptsBudgetAtTheBoundary`, `TestStagedUpload_CountCapBusy429`
 - `local/us-1500-upload-stress-e2e.sh` — SR-6B row comment: the verified history
-- `worklogs/NNNN_2026-09-24_sr6-admit-count-cap-precedence.md` — this worklog
+- `worklogs/1060_2026-09-24_sr6-admit-count-cap-precedence.md` — this worklog
