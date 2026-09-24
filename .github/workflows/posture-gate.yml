@@ -189,10 +189,10 @@ jobs:
           helm upgrade --install llmsafespaces helm \
             -n $NS --create-namespace \
             --set api.image.repository=llmsafespaces/api \
-            --set api.image.tag=$IMAGE_TAG \
+            --set "api.image.tag=$IMAGE_TAG" \
             --set api.image.pullPolicy=IfNotPresent \
             --set controller.image.repository=llmsafespaces/controller \
-            --set controller.image.tag=$IMAGE_TAG \
+            --set "controller.image.tag=$IMAGE_TAG" \
             --set controller.image.pullPolicy=IfNotPresent \
             --set mcp.enabled=false \
             --set postgresql.host=postgres \
@@ -212,7 +212,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \
-            --set controller.inferenceRelay.router.image.tag=$IMAGE_TAG \
+            --set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \
             --wait --timeout 10m
 
       # ------------------------------------------------------------------

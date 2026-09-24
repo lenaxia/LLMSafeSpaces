@@ -131,14 +131,20 @@ type gateStep struct {
 	If              string            `json:"if"`
 	Run             string            `json:"run"`
 	Env             map[string]string `json:"env"`
+	Shell           string            `json:"shell"`
 	ContinueOnError *bool             `json:"continue-on-error"`
 }
 
 type gateWorkflow struct {
 	Jobs map[string]struct {
-		If    string            `json:"if"`
-		Env   map[string]string `json:"env"`
-		Steps []gateStep        `json:"steps"`
+		If      string            `json:"if"`
+		Env     map[string]string `json:"env"`
+		Default *struct {
+			Run *struct {
+				Shell string `json:"shell"`
+			} `json:"run"`
+		} `json:"defaults"`
+		Steps []gateStep `json:"steps"`
 	} `json:"jobs"`
 }
 
@@ -191,6 +197,13 @@ func TestPostureGate_Triggers(t *testing.T) {
 	require.NotContains(t, keysOf(top), "defaults",
 		"the workflow must carry no `defaults:` block — a defaults.run.shell silently re-scopes every step")
 
+	// r17 finding 5: the permissions block exact-pinned (r3's
+	// least-privilege note, unpinned until now).
+	var perms map[string]string
+	require.NoError(t, json.Unmarshal(top["permissions"], &perms))
+	require.Equal(t, map[string]string{"contents": "read"}, perms,
+		"the workflow's permissions must be exactly contents: read — least privilege, pinned")
+
 	var onMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(onBlock, &onMap))
 	_, hasDispatch := onMap["workflow_dispatch"]
@@ -199,6 +212,11 @@ func TestPostureGate_Triggers(t *testing.T) {
 	// The pull_request block must carry ONLY the paths filter — a
 	// `types:`/`branches:` filter silently narrows which PR events arm
 	// the gate (e.g. types: [opened] stops re-runs on pushes).
+	// r17 finding 5: the top-level trigger set is EXACT — an added
+	// `push:` (or any other) trigger gates surface the owner did not
+	// confirm (pin (a)'s own rationale).
+	require.ElementsMatch(t, []string{"workflow_dispatch", "pull_request"}, keysOf(onMap),
+		"the trigger set must be exactly workflow_dispatch + pull_request")
 	var prKeys map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(onMap["pull_request"], &prKeys))
 	require.ElementsMatch(t, []string{"paths"}, keysOf(prKeys),
@@ -665,13 +683,18 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	for i := headIdx + 1; i < tailIdx; i++ {
 		require.True(t, strings.HasSuffix(lines[i], "\\"),
 			"install chain line %d must end with a raw backslash — blank, comment, or CR-corrupted continuations amputate the command (a pin-green dead install): %q", i+1, lines[i])
-		// r16 finding 1: a comment mid-chain amputates even WITH a
-		// trailing backslash (bash ends comments at the newline — the
-		// backslash does not continue them); the chain carries no
-		// comments after the head line.
-		require.False(t, strings.HasPrefix(strings.TrimSpace(lines[i]), "#"),
-			"install chain line %d must not be a comment — a mid-chain comment amputates the command regardless of its trailing backslash: %q", i+1, lines[i])
+		// r16/r17: a comment mid-chain amputates even WITH a trailing
+		// backslash (bash ends comments at the newline — the backslash
+		// does not continue them) — full-line AND trailing spellings
+		// both banned: no `#` anywhere in a chain line.
+		require.NotContains(t, lines[i], "#",
+			"install chain line %d must carry no comment — a mid-chain comment (full-line or trailing) amputates the command regardless of its trailing backslash: %q", i+1, lines[i])
 	}
+	// r17 finding 3: the install's namespace line exact-pinned (an
+	// accidental `-n` drift re-scopes the release; runtime fail-closed
+	// via the postgres manifests, but pinned is pinned).
+	requireExactLine(t, install.Run, "-n $NS --create-namespace \\",
+		"the install's namespace line must be exactly this")
 	// r16 finding 1 (CR spelling): YAML normalizes CRLF inside the
 	// parsed scalar, so the CR corruption is invisible post-parse —
 	// ban CR anywhere in the raw file (a shell workflow line ending
@@ -735,6 +758,12 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		require.False(t, valuesFileFlagRe.MatchString(view),
 			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view)")
 	}
+	// r17 finding 4: the fourth view its sibling operator ban gained in
+	// r16 — the empty join, then whitespace stripped; the extra-indent
+	// mid-token split forms `-f` only there (runtime fail-closed via
+	// helm's arg validation, but the close should not be indent-blind).
+	require.False(t, valuesFileFlagRe.MatchString(regexp.MustCompile(`\s+`).ReplaceAllString(strings.ReplaceAll(install.Run, "\\\n", ""), "")),
+		"the install must take no values files even in the whitespace-stripped join view — the extra-indent split spelling forms -f only there")
 	// THE structural close (r5): every --set key must be allowlisted,
 	// every allowlist entry must be used (dead entries are drift), and
 	// the parser must have found the full override set (a silently
@@ -788,6 +817,22 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 	} {
 		require.Contains(t, joined, literal, "the nightly bootstrap must contribute %q", literal)
 	}
+	// r17 finding 3: the $GITHUB_ENV runtime channel — exactly the four
+	// legitimate delivery-pin writes, exact-pinned; any other write to
+	// the runner env file is drift (an accidental NS/IMAGE_TAG overwrite
+	// re-scopes or word-splits downstream steps).
+	raw := mustRead(t, postureGateWorkflow)
+	for _, write := range []string{
+		`echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"`,
+		`echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"`,
+		`echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"`,
+		`echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"`,
+	} {
+		require.Contains(t, raw, write,
+			"the legitimate GITHUB_ENV write must be exactly this line: %q", write)
+	}
+	require.Equal(t, 4, strings.Count(raw, ">> \"$GITHUB_ENV\""),
+		"exactly the four delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
 }
 
 // Pin (f): a failed cold install IS a red gate — the assertions carry
@@ -812,6 +857,16 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// the helm line smuggles past every run-text ban the same way.
 		require.Empty(t, j.Env,
 			"the gate job %q must carry no env block — job-level env is a value-carrier channel that evades the run-text bans", jobName)
+		// r17 finding 2: the defaults/shell tier close — a job-level
+		// `defaults:` or a step-level `shell:` re-scopes the runner's
+		// shell wrapper (the r16 workflow-level ban one tier down; the
+		// r9 step-env tier-inconsistency class).
+		require.Nil(t, j.Default,
+			"the gate job %q must carry no `defaults:` block — it silently re-scopes every step's shell", jobName)
+		for _, st := range j.Steps {
+			require.Empty(t, st.Shell,
+				"no step may carry a `shell:` override (found in job %q) — it re-scopes that step's shell wrapper", jobName)
+		}
 	}
 	steps := parsePostureGate(t)
 	for _, spec := range assertionSpecs {
