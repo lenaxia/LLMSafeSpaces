@@ -316,15 +316,6 @@ jobs:
               fi
               if grep -i 'forbidden' /tmp/gate-pod.log; then
                 echo "FAIL: forbidden line in $GATE_NS/$POD — RBAC starvation under the shipped posture"
-                # #1566 peel: name the authorizer's view — the chart's
-                # render provably carries the grants, so a live denial
-                # needs the cluster's actual RBAC state in the record.
-                grep -i forbidden /tmp/gate-pod.log | head -5
-                echo "--- live RBAC for the pod's SA:"
-                SA=$(kubectl -n "$GATE_NS" get pod "${POD#pod/}" -o jsonpath='{.spec.serviceAccountName}' 2>/dev/null || echo "?")
-                echo "SA=$SA"
-                kubectl -n "$GATE_NS" get role,rolebinding -o name 2>/dev/null | grep -iE "leader|api" || echo "(no matching role/bindings in $GATE_NS)"
-                kubectl -n "$GATE_NS" auth can-i get leases --as "system:serviceaccount:${GATE_NS}:${SA}" 2>/dev/null || true
                 exit 1
               fi
               if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then
@@ -366,6 +357,25 @@ jobs:
             exit 1
           fi
           echo "OK: running binary carries this run's commit stamp"
+
+      # #1566 peel: on any red, capture the authorizer's view for the
+      # API-lease denial class — the chart's render provably carries
+      # the grants, so a live denial needs the cluster's actual RBAC
+      # state in the record (diagnosis rides the failure path; the
+      # assertions themselves stay untouched).
+      - name: Dump RBAC state on failure
+        if: failure()
+        run: |
+          for GATE_NS in "$NS" "llm-relay"; do
+            echo "=== Roles/Bindings in $GATE_NS (leader/api) ==="
+            kubectl -n "$GATE_NS" get role,rolebinding -o name 2>/dev/null | grep -iE "leader|api" || echo "(none)"
+            echo "=== SA lease checks in $GATE_NS ==="
+            for SA in $(kubectl -n "$GATE_NS" get serviceaccounts -o name 2>/dev/null); do
+              SA_NAME=${SA#serviceaccount/}
+              printf '%s get leases: ' "$SA_NAME"
+              kubectl -n "$GATE_NS" auth can-i get leases --as "system:serviceaccount:${GATE_NS}:${SA_NAME}" 2>/dev/null || echo "check-failed"
+            done
+          done
 
       - name: Dump cluster state on failure
         if: failure()
