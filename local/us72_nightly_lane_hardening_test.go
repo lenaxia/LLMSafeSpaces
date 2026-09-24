@@ -100,6 +100,11 @@ const (
 	installOK  = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' }}"
 	shapeChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.router-build.outcome == 'success' }}"
 	drillChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' }}"
+	// The design-0061 migration scripts arm on the drill's OWN success
+	// too (the flipped end state is their precondition — drillChain
+	// alone stops at drill-shape).
+	drillDone  = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}"
+	m2Chain    = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' && steps.m2-fallback.outcome == 'success' }}"
 	sweepChain = "${{ " + cancelGuard + " && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}"
 )
 
@@ -127,6 +132,15 @@ var armedSteps = []struct {
 		"Run the relay-only flip + rollback drill (US-72.5, owner's #1534 script)", "relay-drill", drillChain},
 	{"Run the rogue-agent sweep (US-72.6,",
 		"Run the rogue-agent sweep (US-72.6, #820 exit criterion)", "", sweepChain},
+	// Design 0061 §10 (the #1546/#1548 closure): the migration scripts
+	// join the armed set — same cancel-guard discipline, drill-chain
+	// armed, the recovery arc additionally gated on the fallback arm
+	// (a broken relay plane makes posture assertions infrastructure
+	// noise, not evidence).
+	{"Run the M2/M4 migration-fallback e2e (design 0061 §10,",
+		"Run the M2/M4 migration-fallback e2e (design 0061 §10, #1548 AC1/AC4)", "m2-fallback", drillDone},
+	{"Run the migration-recovery + exit-85 + posture e2e (design 0061 §10/§11, closes",
+		"Run the migration-recovery + exit-85 + posture e2e (design 0061 §10/§11, closes #1546/#1548)", "", m2Chain},
 }
 
 // Pin (a): every armed step carries its EXACT condition (string-exact —
