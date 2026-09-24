@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r12 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r13 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r12 fixes pushed; awaiting re-review.
+**Status:** r13 fixes pushed; awaiting re-review.
 
 ---
 
@@ -150,6 +150,16 @@ r12's review (~68 mutations again) found eleven escapes, five inside classes r11
 
 All eight r12 mutation families re-verified RED (K2's exact-string count missed the interior-space sibling — caught by my own gauntlet, fixed to the semantic count, re-verified); pristine baseline checksummed before and after.
 
+## r13 round record (the statement inventory — the assertion blocks' allowlist moment)
+
+r13's review found seven more escapes, three inside r12's own declared classes, and named the three-round-old lesson outright: the r5 allowlist ended the install channel's war because it is SEMANTIC; the assertion blocks had no analogue. They do now:
+
+**`TestPostureGate_StatementInventory`** — the four assertion blocks are pinned as COMPLETE golden inventories: every non-comment line, in sequence. Any insertion, deletion, or sibling-spelling edit fails in one check regardless of spelling (the thirteen rounds' every escape class — injections, rebinding spellings, dead-branch padding, duplicate producers, backgrounded sleeps — is an inventory diff). Legitimate changes to a block update its golden deliberately; the diff shows exactly what changed.
+
+Semantic backstops kept as belt (and because they document the WHY): Contains-scoped exactly-once assignment counts for the snapshot variables (export/declare forms included — HasPrefix had missed them); regex-scoped write counts for all four capture files (any redirect spacing — `>file` and tab forms escaped the single-spelling match); exactly-one producer definition; the POD loop-variable rebind ban; the `if false` dead-branch ban; and the FAIL-context tightened to a real `echo "FAIL…` line (a comment containing FAIL satisfied the loose form).
+
+All seven r13 classes re-verified RED (each caught twice — inventory and backstop); pristine baseline checksummed before and after. The write-tool ban's comment no longer overclaims: its prefix class misses `&& tee` (fail-closed payload per the sub-agent's analysis); the INVENTORY is the close for that surface.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -169,7 +179,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r12 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r13 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -177,7 +187,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r12 verdict pending).
+1. Re-review (r13 verdict pending).
 2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

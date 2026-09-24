@@ -322,8 +322,10 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 		require.NotRegexp(t, `exit\s+1\s*&`, s.Run,
 			"%s must not background an exit — `exit 1 &` abandons the verdict", spec.prefix)
 		// r12 finding 6: every exit-1 carrier must sit in a FAIL branch
-		// (a FAIL-echo within three lines above) — a dead `if false`
-		// block's exit launders the floor without carrying any verdict.
+		// (a real `echo "FAIL…` line — non-comment — within three lines
+		// above; r13 RC-C: a comment containing FAIL satisfied the loose
+		// form) — a dead block's exit launders the floor without
+		// carrying any verdict.
 		exit1Ctx := 0
 		linesA := strings.Split(s.Run, "\n")
 		for i, line := range linesA {
@@ -332,7 +334,8 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 			}
 			inFail := false
 			for j := i - 1; j >= 0 && j >= i-3; j-- {
-				if strings.Contains(linesA[j], "FAIL") {
+				trimmed := strings.TrimSpace(linesA[j])
+				if strings.HasPrefix(trimmed, "echo \"FAIL") {
 					inFail = true
 					break
 				}
@@ -379,13 +382,14 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	require.Equal(t, 1, readers, "Assert 3 must carry exactly one `read -r` consumer — a stray reader swallows pods")
 	require.Equal(t, 1, podLogWrites, "/tmp/gate-pod.log must be written exactly once — a second write truncates the primary capture")
 	require.Equal(t, 1, prevLogWrites, "/tmp/gate-pod-prev.log must be written exactly once")
-	// r11 finding 3: the write-count close extended to Assert 2/4's
-	// capture files — an `echo <expected-line> > file` between fetch
-	// and detector flips either detector to always-green.
+	// r11 finding 3 + r13 RC-B: the write-count close, regex-scoped for
+	// ANY redirect spacing (`>file`, `>  file`, tab) — the single-
+	// spelling `"> "+file` form missed the no-space injection.
 	countWrites := func(run, file string) int {
+		re := regexp.MustCompile(`>\s*` + regexp.QuoteMeta(file))
 		n := 0
 		for _, line := range strings.Split(run, "\n") {
-			if strings.Contains(line, "> "+file) {
+			if re.MatchString(line) {
 				n++
 			}
 		}
@@ -397,22 +401,36 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 		"/tmp/gate-armed.log must be written exactly once — injection between fetch and detector is always-green")
 	require.Equal(t, 1, countWrites(a4.Run, "/tmp/gate-controller.log"),
 		"/tmp/gate-controller.log must be written exactly once — injection before the extraction is always-green")
+	require.Equal(t, 1, countWrites(a3.Run, "/tmp/gate-pod.log"),
+		"/tmp/gate-pod.log must be written exactly once (regex-scoped)")
+	require.Equal(t, 1, countWrites(a3.Run, "/tmp/gate-pod-prev.log"),
+		"/tmp/gate-pod-prev.log must be written exactly once (regex-scoped)")
+	// r13 RC-D: the loop variable may not be rebound — `POD=$(… head -n 1)`
+	// after the pinned while re-scans only the first pod forever.
+	require.NotRegexp(t, `(?m)^\s*POD=`, a3.Run,
+		"Assert 3 must not rebind POD — every iteration must consume the feed's next pod")
+	// r13 RC-C: no dead branches — `if false` laundered the exit floor.
+	for _, spec := range assertionSpecs {
+		s := gateStepByPrefix(t, steps, spec.prefix)
+		require.NotContains(t, s.Run, "if false",
+			"%s must carry no dead branches — `if false` launders the exit-1 floor", spec.prefix)
+	}
 	// r11 finding 1: exactly-one counts on the four snapshot
 	// assignments — a duplicate AFTER the window re-snapshots and the
 	// restarts during the sleep become invisible.
 	a1r := gateStepByPrefix(t, steps, "Assert 1").Run
-	// r12 finding 2: SEMANTIC assignment counts — the exact-string count
-	// missed an interior-space sibling (`"$NS" )`) that re-snapshotted
-	// past the window; count assignments to the VARIABLE, any spelling.
+	// r12 finding 2 + r13 RC-A: SEMANTIC assignment counts, Contains-
+	// scoped — any spelling, including export/declare forms (the
+	// HasPrefix scope missed `export AFTER_NS="$BEFORE_NS"`).
 	for _, varName := range []string{"BEFORE_NS", "BEFORE_RELAY", "AFTER_NS", "AFTER_RELAY"} {
-		n := 0
-		for _, line := range strings.Split(a1r, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), varName+"=") {
-				n++
-			}
-		}
-		require.Equal(t, 1, n, "%s must be assigned exactly once (a duplicate re-snapshots past the window)", varName)
+		n := strings.Count(a1r, varName+"=")
+		require.Equal(t, 1, n, "%s must be assigned exactly once, any spelling — a duplicate (or an export alias) re-snapshots or neuters the window", varName)
 	}
+	// r13 N1: exactly one definition of the producer — a pasted
+	// `restarts_snapshot() { true; }` after the pinned line makes all
+	// four snapshots constant (BEFORE==AFTER by construction).
+	require.Equal(t, 1, strings.Count(a1r, "restarts_snapshot() {"),
+		"the snapshot producer must be defined exactly once — a duplicate constant producer neuters the restart-diff")
 	// r12 finding 1: Assert 4's verdict variable — exactly one
 	// assignment (the pinned extraction); a rebind below it made both
 	// provenance verdicts unfireable.
@@ -442,9 +460,114 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	}
 }
 
-// requireExactLine fails unless `want` appears as an exact (trimmed)
-// line of `run` — the r9 uniform close: exact lines have no sibling
-// spellings.
+// goldenInventories is r13's structural close for the assertion blocks —
+// the analog of the r5 install allowlist. A verdict is a block; the
+// blocks are pinned as COMPLETE statement inventories: every non-comment
+// line, in sequence. Any insertion, deletion, or sibling-spelling edit —
+// the thirteen-round mutation war's every escape class — fails here in
+// one check, regardless of spelling. Legitimate changes to a block
+// update its golden deliberately (the diff shows exactly what changed).
+var goldenInventories = map[string][]string{
+	"Assert 1": {
+		"set -euo pipefail",
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
+		"restarts_snapshot() {",
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort`,
+		"}",
+		`BEFORE_NS=$(restarts_snapshot "$NS")`,
+		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
+		"sleep 45",
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s",
+		`AFTER_NS=$(restarts_snapshot "$NS")`,
+		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
+		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
+		`echo "FAIL: pods restarted during the 45s stability window — the Available condition is flapping (crashloop class)"`,
+		`diff <(echo "$BEFORE_NS"; echo "$BEFORE_RELAY") <(echo "$AFTER_NS"; echo "$AFTER_RELAY") || true`,
+		"exit 1",
+		"fi",
+		`echo "OK: all Deployments Ready and stable under the shipped defaults"`,
+	},
+	"Assert 2": {
+		"set -euo pipefail",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
+		`echo "FAIL: could not fetch controller logs — the armed line cannot be verified"`,
+		"cat /tmp/gate-armed.err || true",
+		"exit 1",
+		"fi",
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
+		`echo "FAIL: armed line absent — the controller is deployed relay-only but not armed (M1's exit-85 class)"`,
+		"tail -50 /tmp/gate-armed.log || true",
+		"exit 1",
+		"fi",
+		`echo "OK: controller armed under the shipped default"`,
+	},
+	"Assert 3": {
+		"set -euo pipefail",
+		`for GATE_NS in "$NS" "llm-relay"; do`,
+		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
+		"while read -r POD; do",
+		`if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then`,
+		`echo "FAIL: could not fetch logs for $GATE_NS/$POD — a pod whose logs cannot be read cannot be cleared"`,
+		"cat /tmp/gate-pod.err || true",
+		"exit 1",
+		"fi",
+		"if grep -i 'forbidden' /tmp/gate-pod.log; then",
+		`echo "FAIL: forbidden line in $GATE_NS/$POD — RBAC starvation under the shipped posture"`,
+		"exit 1",
+		"fi",
+		`if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then`,
+		"if grep -i 'forbidden' /tmp/gate-pod-prev.log; then",
+		`echo "FAIL: forbidden line in $GATE_NS/$POD (previous container) — RBAC starvation under the shipped posture"`,
+		"exit 1",
+		"fi",
+		"fi",
+		`done <<< "$PODS"`,
+		"done",
+		`echo "OK: zero forbidden lines"`,
+	},
+	"Assert 4": {
+		"set -euo pipefail",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
+		`echo "FAIL: could not fetch controller logs — the commit stamp cannot be verified"`,
+		"cat /tmp/gate-controller.err || true",
+		"exit 1",
+		"fi",
+		"RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \\",
+		`| grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)`,
+		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
+		`echo "FAIL: no commit stamp found on the controller startup line — unstamped artifact class"`,
+		"exit 1",
+		"fi",
+		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
+		`echo "FAIL: running controller commit '$RUNNING_COMMIT' != this run's build sha '${{ github.sha }}' — wrong-artifact class"`,
+		"exit 1",
+		"fi",
+		`echo "OK: running binary carries this run's commit stamp"`,
+	},
+}
+
+// TestPostureGate_StatementInventory holds the four assertion blocks as
+// complete golden inventories — every non-comment line, in sequence.
+func TestPostureGate_StatementInventory(t *testing.T) {
+	steps := parsePostureGate(t)
+	for prefix, golden := range goldenInventories {
+		t.Run(prefix, func(t *testing.T) {
+			s := gateStepByPrefix(t, steps, prefix)
+			var got []string
+			for _, line := range strings.Split(s.Run, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				got = append(got, trimmed)
+			}
+			require.Equal(t, golden, got,
+				"the statement inventory: every non-comment line of %s is pinned in sequence — insertions, deletions, and sibling spellings all fail here; legitimate changes update the golden deliberately", prefix)
+		})
+	}
+}
 func requireExactLine(t *testing.T, run, want, msg string, args ...interface{}) {
 	t.Helper()
 	for _, line := range strings.Split(run, "\n") {
