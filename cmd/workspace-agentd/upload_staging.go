@@ -21,6 +21,12 @@ package main
 // adversary junk convert to clean pre-acceptance 507s (junk arriving
 // after admission is the §3.5 clean-abort case).
 //
+// Precedence (0060 §6.6): the count cap (UPLOAD_STAGING_MAX_CONCURRENT,
+// default 4) is checked FIRST — at len ≥ cap the rejection is 429
+// staging_busy even when clause (A) would also fire (higher concurrency
+// is unreachable by design; §4.2 keeps the cap's 429 "distinct from
+// budget exhaustion"). See Admit for the boundary arithmetic.
+//
 // Lifecycle (0060 §4.1, load-bearing for the §6.1 residency bound):
 // reservations are HELD UNTIL THE BYTES LEAVE THE TMPFS — released on
 // ack (after the post-ack unlink), on abort (the error path unlinks the

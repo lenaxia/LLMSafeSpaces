@@ -172,8 +172,11 @@ func TestStagingAdmission_ConcurrencyCap(t *testing.T) {
 }
 
 func TestStagingAdmission_CountCapPreemptsBudgetAtTheBoundary(t *testing.T) {
-	// The §6.6 double-violation point, on the DEFAULT arithmetic the
-	// nightly's SR-6 storm exercises: cap=4, budget=48MiB, 5×10MiB.
+	// The §6.6 double-violation point, on the shipped cap/budget
+	// arithmetic the nightly's SR-6 storm exercises: cap=4,
+	// budget=48MiB, 5×10MiB (clause B non-binding by construction:
+	// floor=0 and a huge fake f_bavail, unlike the shipped 24MiB
+	// floor — immaterial here, this pin is the A-vs-cap precedence).
 	// The 5th Admit violates BOTH clauses (40+10 > 48 budget AND
 	// len=4 ≥ cap) — §6.6 fixes the class: "the count cap's default IS
 	// 4 — higher concurrency is unreachable by design … the 5th
@@ -516,6 +519,36 @@ func TestStagedUpload_BudgetExhausted507(t *testing.T) {
 	}
 	if len(rec.calls) != 0 {
 		t.Fatalf("no apply may run on admission rejection")
+	}
+}
+
+func TestStagedUpload_CountCapBusy429(t *testing.T) {
+	// The admission-busy arm at the handler level (§4.6: cap → 429
+	// staging_busy), pinned because the nightly SR-6 row was the only
+	// thing catching a wrong rejection CLASS at the boundary — the
+	// apply-busy test shares only the status mapping, not this branch
+	// (upload_staging.go's Admit-busy → 429). Budget and f_bavail huge:
+	// the cap is the ONLY binding clause.
+	s, rec, h, _ := stagingHandlerFixture(t, 1<<30, 1<<30)
+	for i, id := range []string{"held-1", "held-2", "held-3", "held-4"} {
+		if c := s.Admit(id, 1); c != "" {
+			t.Fatalf("held admission %d: %q", i+1, c)
+		}
+	}
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", "5"))
+	code, resp := decodeStagingBody(t, w)
+	if code != http.StatusTooManyRequests || resp.Reason != "staging_busy" {
+		t.Fatalf("5th concurrent at the cap must 429 staging_busy (§6.6 boundary), got %d %q", code, resp.Reason)
+	}
+	if len(rec.calls) != 0 {
+		t.Fatalf("no apply may run on admission rejection")
+	}
+	s.Release("held-1")
+	w2 := httptest.NewRecorder()
+	h(w2, stagingRequest(t, "hello", "5"))
+	if code, _ := decodeStagingBody(t, w2); code != http.StatusCreated {
+		t.Fatalf("after a release the slot reopens (retryable 429), got %d", code)
 	}
 }
 
