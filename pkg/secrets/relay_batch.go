@@ -46,6 +46,26 @@ import (
 // completed a pass, or the Secret was deleted out-of-band).
 const DegradeRelayStagingNotReady = "relay_staging_not_ready"
 
+// IsRelayDegrade reports whether a BuildDegrade belongs to the relay
+// tier (design 0061 §6/M4): the CredentialsStaged condition mirrors
+// the RELAY outcome only — a DEK-tier degrade (dek_unwrap_failed,
+// owner_no_keys) says nothing about relay staging (admin/org providers
+// were still relay-rewritten and delivered) and must NOT surface as a
+// relay-staging condition. The vocabulary lives HERE behind the
+// builder seam: M2's relay_fallback_delivery joins this set in one
+// place, and consumers never enumerate reasons themselves.
+func IsRelayDegrade(d *BuildDegrade) bool {
+	if d == nil {
+		return false
+	}
+	switch d.Reason {
+	case DegradeRelayStagingNotReady:
+		return true
+	default:
+		return false
+	}
+}
+
 // Relay batch-entry metadata keys (string-valued — the materializer's
 // wire shape flattens metadata to map[string]string). agentd's relay
 // liveness registry reads these off the durable batch file.

@@ -10,8 +10,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
+	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
+	kmocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	lmocks "github.com/lenaxia/llmsafespaces/mocks/logger"
+	crdv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -135,4 +143,81 @@ func TestPodBootstrap_RelayCondition_SinkErrorStillBootstraps(t *testing.T) {
 
 	code := doRelayCondRequest(t, r)
 	assert.Equal(t, http.StatusOK, code, "a visibility write failure must not gate the boot")
+}
+
+// Finding 1 arm (r1): a DEK-tier degrade under flag-on writes NEITHER
+// arm — the condition mirrors the relay tier only. The builder's
+// IsRelayDegrade owns the vocabulary; a non-relay degrade's signal
+// rides the existing degrade log + audit, not a relay-staging
+// condition whose message would be factually false (admin/org
+// providers were still relay-delivered).
+func TestPodBootstrap_RelayCondition_NonRelayDegradeNeverWrites(t *testing.T) {
+	inj := &relayInjector{relayEnabled: true}
+	inj.degrade = &secrets.BuildDegrade{Reason: "dek_unwrap_failed"}
+	sink := &captureSink{}
+
+	r := newRelayCondRouter(t, inj, sink)
+	code := doRelayCondRequest(t, r)
+	require.Equal(t, http.StatusOK, code)
+	assert.Zero(t, sink.calls,
+		"a DEK-tier degrade must not surface as a relay-staging condition")
+}
+
+// Real-wiring arm (r1): handler → REAL *workspace.Service → mocked
+// WorkspaceInterface — the seam the unit layers each fake separately
+// (Rule 0: "every layer mocked the next" shipped the org-provider
+// regression). A flag-on degraded bootstrap must land the condition
+// through the production writer, not a captureSink.
+func TestPodBootstrap_RelayCondition_RealServiceWritesCondition(t *testing.T) {
+	log := lmocks.NewMockLogger()
+	log.On("Info", mock.Anything, mock.Anything).Maybe()
+	log.On("Warn", mock.Anything, mock.Anything).Maybe()
+	log.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	log.On("With", mock.Anything).Return(log).Maybe()
+
+	k8s := kmocks.NewMockKubernetesClient()
+	v1i := kmocks.NewMockLLMSafespacesV1Interface()
+	wsIface := kmocks.NewMockWorkspaceInterface()
+	k8s.On("LlmsafespacesV1").Return(v1i, nil)
+	v1i.On("Workspaces", "default").Return(wsIface)
+	k8s.On("Clientset").Return(k8sfake.NewSimpleClientset())
+	wsSvc, err := workspace.New(log, k8s, &imocks.MockDatabaseService{},
+		&imocks.MockCacheService{}, &imocks.MockMetricsService{},
+		&workspace.Config{Namespace: "default", OpencodePort: 4096})
+	require.NoError(t, err)
+
+	wsIface.On("Get", mock.Anything, "ws-cond", mock.Anything).
+		Return(&crdv1.Workspace{
+			ObjectMeta: metav1.ObjectMeta{Name: "ws-cond", Namespace: "default"},
+			Status:     crdv1.WorkspaceStatus{Phase: crdv1.WorkspacePhaseActive},
+		}, nil)
+	var persisted *crdv1.Workspace
+	wsIface.On("UpdateStatus", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { persisted = args.Get(1).(*crdv1.Workspace) }).
+		Return(nil, nil).Once()
+
+	inj := &relayInjector{relayEnabled: true}
+	inj.degrade = &secrets.BuildDegrade{Reason: "relay_staging_not_ready"}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewPodBootstrapHandler(
+		&fakeTokenReviewer{username: "system:serviceaccount:" + testBootstrapNamespace + ":workspace-ws-cond"},
+		inj,
+		&fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-cond", UserID: "u1"}},
+		nil, testBootstrapNamespace)
+	h.SetRelayOutcomeSink(wsSvc) // the REAL service
+	r.POST("/internal/v1/pod-bootstrap", h.Bootstrap)
+
+	code := doRelayCondRequest(t, r)
+	require.Equal(t, http.StatusOK, code)
+	require.NotNil(t, persisted, "the real writer must persist via UpdateStatus")
+	for _, c := range persisted.Status.Conditions {
+		if c.Type == crdv1.WorkspaceConditionCredentialsStaged {
+			assert.Equal(t, "False", c.Status)
+			assert.Equal(t, "relay_staging_not_ready", c.Reason)
+			return
+		}
+	}
+	t.Fatal("CredentialsStaged condition not written through the real service")
 }

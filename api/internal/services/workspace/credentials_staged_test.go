@@ -172,3 +172,94 @@ func findStagedCond(t *testing.T, ws *v1.Workspace) v1.WorkspaceCondition {
 	t.Fatal("CredentialsStaged condition not found on persisted status")
 	return v1.WorkspaceCondition{}
 }
+
+// r1 arms — the flip paths and the no-op/preservation contracts.
+
+// False→True (and True→False) on an existing condition bumps
+// LastTransitionTime — the transition clock is real state, not an
+// artifact of append-order.
+func TestReportRelayBatchOutcome_FalseToTrueBumpsTransitionTime(t *testing.T) {
+	f := newStagedCondFixture(t)
+	first := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	crd := stagedCondCRD("ws-1")
+	crd.Status.Conditions = []v1.WorkspaceCondition{{
+		Type: v1.WorkspaceConditionCredentialsStaged, Status: "False",
+		Reason: "relay_staging_not_ready", Message: "degraded",
+		LastTransitionTime: first,
+	}}
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
+	var persisted *v1.Workspace
+	f.ws.On("UpdateStatus", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { persisted = args.Get(1).(*v1.Workspace) }).
+		Return(nil, nil).Once()
+
+	require.NoError(t, f.svc.ReportRelayBatchOutcome(context.Background(), "ws-1", ""))
+	cond := findStagedCond(t, persisted)
+	assert.Equal(t, "True", cond.Status)
+	assert.True(t, cond.LastTransitionTime.After(first.Time),
+		"a False→True heal is a real transition")
+}
+
+func TestReportRelayBatchOutcome_TrueToFalseBumpsTransitionTime(t *testing.T) {
+	f := newStagedCondFixture(t)
+	first := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	crd := stagedCondCRD("ws-1")
+	crd.Status.Conditions = []v1.WorkspaceCondition{{
+		Type: v1.WorkspaceConditionCredentialsStaged, Status: "True",
+		Reason: v1.ReasonCredentialsStaged, Message: "3 provider(s) staged at revision r7",
+		LastTransitionTime: first,
+	}}
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
+	var persisted *v1.Workspace
+	f.ws.On("UpdateStatus", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { persisted = args.Get(1).(*v1.Workspace) }).
+		Return(nil, nil).Once()
+
+	require.NoError(t, f.svc.ReportRelayBatchOutcome(context.Background(), "ws-1", "relay_staging_not_ready"))
+	cond := findStagedCond(t, persisted)
+	assert.Equal(t, "False", cond.Status)
+	assert.True(t, cond.LastTransitionTime.After(first.Time),
+		"a True→False degrade is a real transition")
+}
+
+// The revision-in-message contract (workspace_types.go: "True carries
+// the staged revision in its message"): True already standing at
+// ReasonCredentialsStaged is a NO-OP — no UpdateStatus at all, so the
+// controller's revision-carrying message stands until its next pass.
+// The API's True exists to heal a prior False, not to re-assert.
+func TestReportRelayBatchOutcome_AlreadyTrueIsANoWrite(t *testing.T) {
+	f := newStagedCondFixture(t)
+	crd := stagedCondCRD("ws-1")
+	crd.Status.Conditions = []v1.WorkspaceCondition{{
+		Type: v1.WorkspaceConditionCredentialsStaged, Status: "True",
+		Reason: v1.ReasonCredentialsStaged, Message: "3 provider(s) staged at revision r7",
+		LastTransitionTime: metav1.NewTime(metav1.Now().Add(-time.Minute)),
+	}}
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
+	// No UpdateStatus expectation at all: any call fails the test.
+
+	require.NoError(t, f.svc.ReportRelayBatchOutcome(context.Background(), "ws-1", ""))
+	f.ws.AssertNumberOfCalls(t, "UpdateStatus", 0)
+}
+
+// The client-initialization failure propagates as a loud error, not a
+// silent skip (the workspaceCRDClient error path).
+func TestReportRelayBatchOutcome_ClientInitFailurePropagates(t *testing.T) {
+	log := lmocks.NewMockLogger()
+	log.On("Info", mock.Anything, mock.Anything).Maybe()
+	log.On("Warn", mock.Anything, mock.Anything).Maybe()
+	log.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	log.On("With", mock.Anything).Return(log).Maybe()
+
+	k8s := kmocks.NewMockKubernetesClient()
+	k8s.On("Clientset").Return(k8sfake.NewSimpleClientset())
+	k8s.On("LlmsafespacesV1").Return(nil, assert.AnError) // init fails
+
+	svc, err := New(log, k8s, &imocks.MockDatabaseService{}, &imocks.MockCacheService{},
+		&imocks.MockMetricsService{}, &Config{Namespace: "default", OpencodePort: 4096})
+	require.NoError(t, err)
+
+	err = svc.ReportRelayBatchOutcome(context.Background(), "ws-1", "relay_staging_not_ready")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "initialize workspace client")
+}

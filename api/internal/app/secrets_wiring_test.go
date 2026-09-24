@@ -397,6 +397,51 @@ func (f *fakeBootstrapSettingsReader) GetStrings(_ context.Context, _ string) ([
 	return nil, nil
 }
 
+// TestPodBootstrapHandler_RelaySinkWired is the regression guard for
+// the SetRelayOutcomeSink wiring app.go adds (design 0061 §6/M4).
+// Without it, deleting the app.go call compiles, passes every handler
+// test (which wire their own sink), and silently kills the
+// CredentialsStaged condition on flag-on deployments — the exact
+// silent-death class LoggerWired/SettingsReaderWired guard against.
+// Mirrors their approach.
+func TestPodBootstrapHandler_RelaySinkWired(t *testing.T) {
+	keyStore := &dbKeyStoreAdapter{}
+	dekCache := &memDEKCache{store: make(map[string][]byte)}
+	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
+	secretStore := &dbSecretStoreAdapter{}
+	secretService := secrets.NewSecretService(keyService, secretStore)
+
+	fakeClientset := k8sfake.NewSimpleClientset()
+	dbSvc := &fakeAppDBLookup{}
+	h := handlers.NewPodBootstrapHandlerFromClientset(
+		fakeClientset, secretService, dbSvc, nil, "test-namespace",
+	)
+	if h.HasRelayOutcomeSink() {
+		t.Fatalf("freshly-constructed PodBootstrapHandler must not have a relay outcome sink before SetRelayOutcomeSink is called")
+	}
+
+	// Mirror the exact call app.go makes. Production passes the
+	// concrete *workspace.Service (whose ReportRelayBatchOutcome writes
+	// the condition via UpdateStatus); a minimal fake satisfies the
+	// same structural interface for the wiring assertion.
+	h.SetRelayOutcomeSink(&fakeRelayOutcomeSink{})
+
+	if !h.HasRelayOutcomeSink() {
+		t.Fatalf("SetRelayOutcomeSink must populate the handler so the relay batch outcome reaches the CredentialsStaged condition; " +
+			"otherwise design 0061 M4 is dead code in production")
+	}
+}
+
+// fakeRelayOutcomeSink satisfies handlers.relayOutcomeSink for the
+// wiring test (structural: the unexported interface's one method).
+type fakeRelayOutcomeSink struct{}
+
+func (f *fakeRelayOutcomeSink) ReportRelayBatchOutcome(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // fakeAppCRDGetter / fakeAppDBLookup are placeholders used only to
 // confirm the resolver constructor accepts compatible adapter types.
 // Behavioral tests live in secrets_podip_resolver_test.go.

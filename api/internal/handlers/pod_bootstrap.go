@@ -194,6 +194,13 @@ func (h *PodBootstrapHandler) SetRelayOutcomeSink(sink relayOutcomeSink) {
 	h.relaySink = sink
 }
 
+// HasRelayOutcomeSink reports whether the condition writer is wired —
+// the wiring-guard seam (TestPodBootstrapHandler_RelaySinkWired
+// mirrors app.go's construction, the LoggerWired/SettingsReaderWired
+// precedent): deleting the app.go wiring must fail a test, not kill
+// the feature silently on flag-on deployments.
+func (h *PodBootstrapHandler) HasRelayOutcomeSink() bool { return h.relaySink != nil }
+
 // SetSettingsReader wires the instance settings reader used to resolve the
 // workspace.allowedExternalDirectories setting into the bootstrap response.
 // Optional — when nil, no allow-rules are delivered and agents prompt for
@@ -360,19 +367,25 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		h.logger.Warn("pod-bootstrap: secret batch degraded",
 			"workspaceID", req.WorkspaceID, "reason", degrade.Reason)
 	}
-	// Design 0061 §6 (M4): surface the batch outcome on the Workspace
-	// CRD as the existing CredentialsStaged condition — False/<reason>
-	// on a degrade, True on a clean batch. Flag-gated by the injector
-	// (relay-only off ⇒ the condition stays absent, the W15 contract)
-	// and sink-gated by construction (tests/local without the writer
-	// stay byte-identical). Best-effort by design — this is
-	// user-facing visibility on an object the controller owns, never a
-	// gate on the boot: a write failure logs and the batch still
-	// delivers. The reason is passed through verbatim
-	// (relay_staging_not_ready; M2's relay_fallback_delivery lands in
-	// the same seam).
+	// Design 0061 §6 (M4): surface the RELAY batch outcome on the
+	// Workspace CRD as the existing CredentialsStaged condition —
+	// False/<reason> on a relay degrade, True on a clean batch. The
+	// condition mirrors the relay tier ONLY (secrets.IsRelayDegrade —
+	// the builder owns the vocabulary): a DEK-tier degrade under flag-on
+	// (dek_unwrap_failed/owner_no_keys) says nothing about relay
+	// staging — admin/org providers were still relay-delivered — so it
+	// writes NEITHER arm (its signal rides the existing degrade log +
+	// audit rows). Flag-gated by the injector (relay-only off ⇒ the
+	// condition stays absent, the W15 contract) and sink-gated by
+	// construction (tests/local without the writer stay
+	// byte-identical). Best-effort by design — this is user-facing
+	// visibility on an object the controller owns, never a gate on the
+	// boot: a write failure logs and the batch still delivers. The
+	// reason is passed through verbatim (relay_staging_not_ready; M2's
+	// relay_fallback_delivery joins IsRelayDegrade's set in the same
+	// seam).
 	if h.relaySink != nil {
-		if flagAware, ok := h.injector.(relayFlagAware); ok && flagAware.RelayOnlyEnabled() {
+		if flagAware, ok := h.injector.(relayFlagAware); ok && flagAware.RelayOnlyEnabled() && (degrade == nil || secrets.IsRelayDegrade(degrade)) {
 			reason := ""
 			if degrade != nil {
 				reason = degrade.Reason

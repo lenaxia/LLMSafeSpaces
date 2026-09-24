@@ -37,7 +37,17 @@ None.
 ## Next Steps
 
 - Review loop to APPROVED; M4 merges per the recorded order (M1 → M2 → M4 → gate → e2e).
-- On M2's PR: verify the seam (fallback surfaces a non-nil BuildDegrade with Reason=relay_fallback_delivery); pin the real constant then if needed.
+- On M2's PR: verify the seam (fallback surfaces a non-nil BuildDegrade with Reason=relay_fallback_delivery AND joins IsRelayDegrade's set); pin the real constant then if needed.
+
+## Review Round 1 (three findings, all adopted)
+
+1. **Non-relay degrades wrote a false relay condition**: the hook's `degrade != nil` keying let DEK-tier degrades (`dek_unwrap_failed`/`owner_no_keys`) surface as `CredentialsStaged=False` with a factually false "no relay credentials delivered" message (admin/org providers WERE relay-delivered; remediation pointed at the wrong subsystem) and collided with the controller-owned reason vocabulary. Fixed: `secrets.IsRelayDegrade(*BuildDegrade)` — the vocabulary lives behind the builder seam (M2's reason joins in one place); the hook fires only on relay-class degrades or clean batches; a DEK degrade writes NEITHER arm (pinned). The M2 seam contract updated accordingly (see the coordination note below).
+2. **Clean-batch True erased the revision-in-message**: the same-state True write replaced the controller's revision-carrying message (workspace_types.go: "True carries the staged revision") with generic text until the next reconcile. Fixed: True already standing at ReasonCredentialsStaged is a NO-WRITE (no UpdateStatus at all — the API's True exists to heal a prior False; when there is nothing to heal it defers to the controller's richer message). Same-state False still refreshes the degrade message (freshness matters there).
+3. **Wiring guard missing**: `HasRelayOutcomeSink()` accessor + `TestPodBootstrapHandler_RelaySinkWired` in app (the LoggerWired/SettingsReaderWired precedent) — deleting the app.go wiring now fails a test instead of killing the feature silently.
+
+New test arms: non-relay no-write (hook), False→True and True→False LTT bumps (writer), already-True no-write (writer), client-init failure propagation (writer), handler→REAL Service→mocked-k8s real-wiring arm (the Rule 0 "every layer mocked the next" class closed for this seam). Comment overstatement (transition-clock mirror holds for reason-matched writes only) corrected in the writer's doc. Mutation-verified: IsRelayDegrade→false fails exactly the two relay-degrade arms.
+
+**Coordination note (seam contract change, told to the M1/M2 lane)**: the contract is no longer "hook keys on degrade != nil" — it is "the hook consults secrets.IsRelayDegrade; M2's relay_fallback_delivery must join IsRelayDegrade's set (one place, behind the builder seam) and surface a non-nil BuildDegrade". Their enrichment field stays declined; reason-string parity still holds inside the relay-class set.
 
 ## Files Modified
 
