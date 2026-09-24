@@ -2235,6 +2235,36 @@ criterion is UNVERIFIED for that run, not passed.</p>
   either pin <code>relayOnlyKeyDelivery.enabled=false</code> or migrate to
   namespaced scope before its next <code>helm upgrade</code>. Fail-loud is the
   right posture; this note is the operational half.</li>
+<li><strong>Namespaced scope implies cache scoping (the migration's first
+  exercise, nightly run 35872827066)</strong>: migrating
+  <code>rbac.scope=cluster → namespace</code> deletes the ClusterRole/Binding —
+  and until the chart derived it, the controller's manager kept a
+  CLUSTER-WIDE cache whose Secret/ServiceAccount/Pod/PVC informers need
+  list/watch across ALL namespaces. Against the namespaced Role those
+  LISTs are Forbidden → <code>Could not wait for Cache to sync</code> →
+  CrashLoopBackOff → the <code>helm upgrade --wait</code> that performed the
+  migration times out (10m <code>context deadline exceeded</code>, the exact
+  nightly signature). The chart now derives
+  <code>--watch-namespaces=&lt;workspace namespace&gt;</code> under namespace scope
+  whenever <code>controller.watchNamespaces</code> is unset (explicit values win;
+  cluster scope renders byte-identically). Any value containing <code>"*"</code>
+  under namespace scope fails the render loudly — watch-all and a
+  bogus <code>"*"</code> namespace are both incoherent against namespaced RBAC
+  (the same crashloop); set covered namespaces or keep cluster scope.
+  Split-namespace topologies
+  (<code>api.config.kubernetes.namespace</code> ≠ release namespace) accept the
+  free-models refresher caveat instead: the derived single-namespace
+  cache leaves the refresher's catalog upsert unreachable (the cached
+  read errors — not IsNotFound — so no ConfigMap ever exists;
+  non-fatal). Listing BOTH namespaces remedies it ONLY under cluster
+  scope or wherever RBAC covers both — under namespace scope the
+  release-ns Role does not cover the workspace-lifecycle core
+  resources (its exact grants are conditional; rbac.yaml's rules are
+  authoritative), so a release-ns informer is the same Forbidden
+  CrashLoopBackOff. The
+  relay startup guard and all llm-relay reads are unaffected — they
+  ride the direct API reader by design (§4.3), which is why the guard
+  passed while the informers died.</li>
 <li><strong><code>networkPolicy.enabled=false</code></strong>: relay-only's own ingress policy
   (<code>llm-relay-router-allow-workspaces</code>) renders on the relay-only flag,
   NOT the chart-level networkPolicy master toggle — a networkPolicy=false
@@ -2270,7 +2300,7 @@ criterion is UNVERIFIED for that run, not passed.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 22, 2026 14:54:11 UTC"><span class="timeago" datetime="2026-09-22T14:54:11+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 22, 2026 14:54:11 UTC">2026-09-22</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 24, 2026 16:21:22 UTC"><span class="timeago" datetime="2026-09-24T16:21:22+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 24, 2026 16:21:22 UTC">2026-09-24</span>
   </span>
 
     

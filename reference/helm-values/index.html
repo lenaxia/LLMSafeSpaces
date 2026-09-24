@@ -3363,7 +3363,7 @@
 <td><code>controller.watchNamespaces</code></td>
 <td>string</td>
 <td><code>""</code></td>
-<td>Comma-separated namespaces to watch. <code>""</code> or <code>"*"</code> = cluster-wide. Combine with namespace-scoped RBAC for defense-in-depth.</td>
+<td>Comma-separated namespaces to watch. <code>""</code> under <code>rbac.scope=cluster</code> = cluster-wide; under <code>rbac.scope=namespace</code> (the default) it DERIVES the workspace namespace (a cluster-wide cache cannot sync informers against namespaced RBAC — run 35872827066). Any value containing <code>"*"</code> fails the render under namespace scope (watch-all or a bogus <code>"*"</code> namespace — both crashloop there; valid under cluster scope only). Split-namespace topologies (<code>api.config.kubernetes.namespace</code> ≠ release ns): the derived cache leaves the free-models refresher's catalog unreachable (no ConfigMap at all, non-fatal) — listing BOTH namespaces remedies it ONLY under cluster scope; under namespace scope the release-ns Role cannot cover a release-ns informer (same crashloop).</td>
 </tr>
 <tr>
 <td><code>controller.leaderElection.enabled</code></td>
@@ -4148,7 +4148,7 @@
 <td><code>rbac.scope</code></td>
 <td>string</td>
 <td><code>"namespace"</code></td>
-<td><strong><code>namespace</code></strong> (default, G5): Role + RoleBinding scoped to the release namespace. <strong><code>cluster</code></strong>: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch. Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. Under <code>namespace</code> scope, <code>controller.inferenceRelay.enabled</code> additionally requires <code>controller.watchNamespaces</code> (install-time guard); <code>cluster</code> scope is the broader original posture. Even in cluster mode, no mutating verbs on secrets/pods (TestG5_ClusterScopeOptInRendersClusterRole, chart_test.go:903).</td>
+<td><strong><code>namespace</code></strong> (default, G5): WRITES namespace-bound — the workspace-lifecycle Role binds in the WORKSPACE namespace (the <code>api.config.kubernetes.namespace</code> override, else the release namespace). <strong><code>cluster</code></strong>: adds the gated ClusterRole + binding — full CRUD cluster-wide on the <code>llmsafespaces.dev</code> CR families, cluster-wide READS on the core resource families its rules list (writes on those stay namespace-bound), plus conditional branches that differ — RELAY extends reads AND writes cluster-wide, REFRESHER (default-active) extends configmap READS only (its writes ride the release-ns Role); <code>rbac.yaml</code>'s rules blocks are the authoritative enumeration. (The read-only <code>storageclasses</code> ClusterRole is always created regardless of scope.) Under <code>namespace</code> scope, <code>controller.inferenceRelay.enabled</code> additionally requires <code>controller.watchNamespaces</code> (install-time guard). Even in cluster mode, no mutating verbs on secrets/pods in the base (non-conditional) rules (chart_test.go:1796-1826).</td>
 </tr>
 </tbody>
 </table>
@@ -4681,7 +4681,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 23, 2026 22:23:55 UTC"><span class="timeago" datetime="2026-09-23T22:23:55+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 23, 2026 22:23:55 UTC">2026-09-23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 24, 2026 16:21:22 UTC"><span class="timeago" datetime="2026-09-24T16:21:22+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 24, 2026 16:21:22 UTC">2026-09-24</span>
   </span>
 
     

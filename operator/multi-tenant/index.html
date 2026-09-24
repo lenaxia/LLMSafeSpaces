@@ -2869,12 +2869,12 @@
 <tbody>
 <tr>
 <td><strong><code>namespace</code></strong> (default, G5)</td>
-<td>Role + RoleBinding scoped to the release namespace</td>
+<td>Role + RoleBinding scoped to the WORKSPACE namespace (the <code>api.config.kubernetes.namespace</code> override, else the release namespace)</td>
 <td>Single-namespace deployments. Tightest least-privilege.</td>
 </tr>
 <tr>
 <td><strong><code>cluster</code></strong></td>
-<td>Adds ClusterRole + ClusterRoleBinding for <code>llmsafespaces.dev/*</code> + <code>storageclasses</code></td>
+<td>Adds the gated ClusterRole + ClusterRoleBinding: full CRUD cluster-wide on the llmsafespaces.dev CR families; cluster-wide reads on the core resource families its rules list (writes on those stay namespace-bound); plus conditional branches that differ — RELAY extends reads AND writes cluster-wide, REFRESHER (default-active) extends configmap READS only, its writes riding the release-ns Role (the chart's <code>rbac.yaml</code> rules blocks are the authoritative enumeration; the read-only <code>storageclasses</code> ClusterRole is always created regardless of scope)</td>
 <td>Multi-namespace deployments (controller watches multiple namespaces) or the self-hosted relay fleet (cluster-scoped <code>InferenceRelay</code> CRD).</td>
 </tr>
 </tbody>
@@ -2882,15 +2882,18 @@
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">rbac</span><span class="p">:</span>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span><span class="w">   </span><span class="c1"># default</span>
 </span></code></pre></div>
-<p>Even in <code>cluster</code> mode, Pods, Secrets, PVCs, and NetworkPolicies remain namespace-scoped. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from <code>cluster</code> to <code>namespace</code> in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.</p>
+<p>Even in <code>cluster</code> mode, writes to the CORE (non-CR) resources stay namespace-bound — but cluster scope grants cluster-wide full CRUD on the llmsafespaces.dev CR families (workspaces, runtimeenvironments, + inferencerelays under relay), cluster-wide reads on the core families, and its CONDITIONAL branches differ — RELAY extends reads AND writes cluster-wide, REFRESHER (default-active) extends configmap READS only: audit <code>helm/templates/rbac.yaml</code>'s rules blocks — they are the authoritative grant enumeration, not any prose summary. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from <code>cluster</code> to <code>namespace</code> in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.</p>
 <h3 id="combining-with-watchnamespaces">Combining with <code>watchNamespaces</code><a class="headerlink" href="#combining-with-watchnamespaces" title="Permanent link">&para;</a></h3>
-<p>For tightest isolation in a multi-namespace deployment, combine <code>rbac.scope=namespace</code> with explicit <code>controller.watchNamespaces</code>:</p>
+<p>For tightest isolation in a multi-namespace deployment, combine <code>rbac.scope=namespace</code> with explicit <code>controller.watchNamespaces</code> — <strong>plus the per-namespace RoleBindings the chart does NOT create</strong>:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">controller</span><span class="p">:</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">watchNamespaces</span><span class="p">:</span><span class="w"> </span><span class="s">"tenant-acme,tenant-globex"</span>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">rbac</span><span class="p">:</span>
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># REQUIRED, created out-of-band by the operator: a RoleBinding of the</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># chart's controller-workspace Role (or an equivalent) in EVERY listed</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># tenant namespace.</span>
 </span></code></pre></div>
-<p>The controller's <code>--watch-namespaces</code> flag narrows what it actually reconciles, and <code>cache.DefaultNamespaces</code> further narrows the informer cache. This is defense-in-depth: even if the controller is granted cluster-wide RBAC elsewhere, it only watches the listed namespaces.</p>
+<p><strong>The RoleBinding caveat is load-bearing at runtime:</strong> the chart's workspace Role binds only in the workspace namespace (the release namespace by default). The config above RENDERS but CrashLoops without the per-tenant bindings — the manager cache watches both tenant namespaces while the informers' LIST/WATCH is Forbidden outside the workspace namespace ("Could not wait for Cache to sync"; nightly run 35872827066 is the single-namespace instance of exactly this death). The controller's <code>--watch-namespaces</code> flag narrows what it actually reconciles, and <code>cache.DefaultNamespaces</code> further narrows the informer cache — but neither grants RBAC; bind the Role in each watched namespace yourself.</p>
 <hr />
 <h2 id="a-multi-tenant-deployment-example">A multi-tenant deployment example<a class="headerlink" href="#a-multi-tenant-deployment-example" title="Permanent link">&para;</a></h2>
 <p>A reference values file for a multi-tenant SaaS deployment:</p>
@@ -3017,7 +3020,7 @@
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="nt">rbac</span><span class="p">:</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span>
 </span></code></pre></div>
-<p>The controller's <code>--watch-namespaces</code> flag narrows what it reconciles. Combine with namespace-scoped RoleBindings for least-privilege. Resources in unwatched namespaces will not be reconciled.</p>
+<p><strong>This renders but CrashLoops without out-of-band RBAC:</strong> the chart creates no per-tenant RoleBindings — its workspace Role binds only in the workspace namespace — so the watched tenant namespaces' informers hit Forbidden LIST/WATCH and the controller never syncs its cache (the run-35872827066 death class). Bind the workspace Role (or an equivalent) in EVERY listed namespace yourself. The controller's <code>--watch-namespaces</code> flag narrows what it reconciles; the RoleBindings are what make those namespaces reachable. Resources in unwatched namespaces will not be reconciled.</p>
 <div class="admonition note">
 <p class="admonition-title">Per-tenant namespaces do not replace gVisor</p>
 <p>Even with per-tenant namespaces, a kernel exploit still crosses the namespace boundary via the host node. gVisor remains the primary kernel-isolation control regardless of namespace topology. Namespaces are a bulkhead, not a sandbox.</p>
@@ -3052,7 +3055,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 24, 2026 16:21:22 UTC"><span class="timeago" datetime="2026-09-24T16:21:22+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 24, 2026 16:21:22 UTC">2026-09-24</span>
   </span>
 
     
