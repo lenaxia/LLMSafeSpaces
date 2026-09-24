@@ -229,6 +229,10 @@ var assertionSpecs = []struct {
 		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
 		`AFTER_NS=$(restarts_snapshot "$NS")`,
 		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
+		// r11 finding 1: the PRODUCER — a constant producer (a jsonpath
+		// typo evaluating empty, an appended `| head -n 0`) makes BEFORE
+		// and AFTER equal by construction; the comparison can never fire.
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort`,
 		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
 	}, 1,
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
@@ -260,6 +264,11 @@ var assertionSpecs = []struct {
 		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
 		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
+		// r11 finding 1: the comparison's INPUT — the extraction's first
+		// line (gutting the pipeline while retaining a no-op grep and a
+		// pinned-sha assignment made the comparison unfireable with
+		// every literal green).
+		"RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \\",
 	}, 3,
 		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
 }
@@ -285,16 +294,29 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 		// r9 pinned the conditions; deleting the body's exit 1 turned
 		// every FAIL branch into echo-and-continue, five for five. A
 		// floor, not an equality: additional fail-closed branches are
-		// legitimate drift; fewer is a neuter.
-		exit1s := strings.Count(s.Run, "exit 1")
+		// legitimate drift; fewer is a neuter. r11 finding 2: count
+		// NON-COMMENT lines only — `# exit 1` padding satisfied the
+		// plain substring count.
+		exit1s := 0
+		for _, line := range strings.Split(s.Run, "\n") {
+			if strings.TrimSpace(line) == "exit 1" {
+				exit1s++
+			}
+		}
 		require.GreaterOrEqual(t, exit1s, spec.minExit1,
 			"%s must carry at least %d `exit 1` verdict carriers (found %d) — a FAIL branch without its exit is echo-and-continue", spec.prefix, spec.minExit1, exit1s)
-		// r10 sub-agent (i): no assertion may rebind NS — an in-block
-		// `NS=llm-relay` after the prefix silently re-scopes both wait
-		// targets (the env ban closed the parsed channel; assignment
-		// rebinding is the same class one level down).
+		// r10 sub-agent (i) + r11 finding 4: no assertion may rebind NS
+		// or GATE_NS — an in-block rebinding silently re-scopes the
+		// verdict's targets (both loop iterations scanning llm-relay
+		// left the release namespace's pods forever unchecked). The
+		// env ban closed the parsed channel; assignment and export
+		// rebinding are the same class one level down.
 		require.NotRegexp(t, `(?m)^\s*NS=`, s.Run,
 			"%s must not rebind NS — the namespace targets are the verdict's scope", spec.prefix)
+		require.NotRegexp(t, `(?m)^\s*GATE_NS=`, s.Run,
+			"%s must not rebind GATE_NS — both loop iterations must scan their own namespace", spec.prefix)
+		require.NotContains(t, normalizeRunText(s.Run), "export NS=",
+			"%s must not export-rebind NS", spec.prefix)
 		idx := indexOfStep(t, steps, s)
 		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
 		last = idx
@@ -331,6 +353,42 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	require.Equal(t, 1, readers, "Assert 3 must carry exactly one `read -r` consumer — a stray reader swallows pods")
 	require.Equal(t, 1, podLogWrites, "/tmp/gate-pod.log must be written exactly once — a second write truncates the primary capture")
 	require.Equal(t, 1, prevLogWrites, "/tmp/gate-pod-prev.log must be written exactly once")
+	// r11 finding 3: the write-count close extended to Assert 2/4's
+	// capture files — an `echo <expected-line> > file` between fetch
+	// and detector flips either detector to always-green.
+	countWrites := func(run, file string) int {
+		n := 0
+		for _, line := range strings.Split(run, "\n") {
+			if strings.Contains(line, "> "+file) {
+				n++
+			}
+		}
+		return n
+	}
+	a2 := gateStepByPrefix(t, steps, "Assert 2")
+	a4 := gateStepByPrefix(t, steps, "Assert 4")
+	require.Equal(t, 1, countWrites(a2.Run, "/tmp/gate-armed.log"),
+		"/tmp/gate-armed.log must be written exactly once — injection between fetch and detector is always-green")
+	require.Equal(t, 1, countWrites(a4.Run, "/tmp/gate-controller.log"),
+		"/tmp/gate-controller.log must be written exactly once — injection before the extraction is always-green")
+	// r11 finding 1: exactly-one counts on the four snapshot
+	// assignments — a duplicate AFTER the window re-snapshots and the
+	// restarts during the sleep become invisible.
+	a1r := gateStepByPrefix(t, steps, "Assert 1").Run
+	for _, assign := range []string{
+		`BEFORE_NS=$(restarts_snapshot "$NS")`,
+		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
+		`AFTER_NS=$(restarts_snapshot "$NS")`,
+		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
+	} {
+		n := 0
+		for _, line := range strings.Split(a1r, "\n") {
+			if strings.TrimSpace(line) == assign {
+				n++
+			}
+		}
+		require.Equal(t, 1, n, "snapshot assignment must appear exactly once (a duplicate re-snapshots past the window): %q", assign)
+	}
 	// r9 finding 5: exactly FOUR kubectl wait lines in Assert 1 — the
 	// 300s pair and the 60s settle-window re-assertion pair.
 	a1 := gateStepByPrefix(t, steps, "Assert 1")
