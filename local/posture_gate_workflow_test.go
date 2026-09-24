@@ -29,6 +29,7 @@ package local_test
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -36,6 +37,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
 )
+
+// valuesFileFlagRe matches any -f flag spelling against the install
+// run block: space- or tab-delimited, or =-joined, at line start or
+// after any whitespace (r4's tab-form escape of the literal bans).
+var valuesFileFlagRe = regexp.MustCompile(`(?m)(^|\s)-f[\s=]`)
 
 var postureGateWorkflow = filepath.Join("..", ".github", "workflows", "posture-gate.yml")
 
@@ -220,16 +226,18 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		// past the --set ban list (r0 raised it, r2 re-demonstrated: a
 		// posture-override.yaml passed via --values kept every pin
 		// green). The install takes its posture from the chart alone.
-		// `-f=` covers the pflag shorthand-with-= form (r3's escape of
-		// the space-delimited " -f " ban).
+		// -f is banned as a REGEX over the run block (r4): the literal
+		// spellings missed the tab-delimited `-f<TAB>file` form — tab
+		// is IFS whitespace to the shell, so the smuggle was live helm
+		// behavior with every pin green.
 		"--values",
-		" -f ",
-		"-f=",
 		"--set-json",
 	} {
 		require.NotContains(t, install.Run, banned,
 			"the gate must never set %s — the shipped default IS the posture under test", banned)
 	}
+	require.False(t, valuesFileFlagRe.MatchString(install.Run),
+		"the install must take no values files in ANY flag spelling — the regex covers space, tab, and = delimiters (the r4 tab-form escape)")
 }
 
 // Pin (d): the provenance basis is ONE sha — the controller image
@@ -297,13 +305,29 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// literal surface is unchanged, so only a pin sees the neuter.
 		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
 			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
-		// r3 finding 2: the pinned prefix alone is presence, not
-		// persistence — `set +e` on a later line countermands it while
-		// every literal stays green.
-		require.NotContains(t, s.Run, "set +e",
-			"%s must not countermand set -e (a later `set +e` neuters every check under the pinned prefix)", spec.prefix)
-		require.NotContains(t, s.Run, "set +o pipefail",
-			"%s must not countermand pipefail", spec.prefix)
+		// r3/r4: the pinned prefix alone is presence, not persistence —
+		// a later countermand neuters it under the pinned prefix. The
+		// family is banned with WHITESPACE NORMALIZED (collapse runs of
+		// spaces/tabs to one space first): exact-spelling bans missed
+		// `set +o errexit` and double-space `set  +e` (r4's escapes).
+		norm := regexp.MustCompile(`[ \t]+`).ReplaceAllString(s.Run, " ")
+		for _, countermand := range []string{
+			"set +e", "set +o errexit", "set +o pipefail", "set +o nounset",
+		} {
+			require.NotContains(t, norm, countermand,
+				"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)
+		}
+		// r4 finding 4: `|| true` appended to the Assert 1 waits neuters
+		// the Ready checks with every literal intact — the wait lines
+		// must be bare.
+		if spec.prefix == "Assert 1" {
+			for _, line := range strings.Split(s.Run, "\n") {
+				if strings.Contains(line, "kubectl wait") {
+					require.NotContains(t, line, "|| true",
+						"Assert 1's wait lines must be bare — `|| true` on a kubectl wait neuters the Ready check with zero literal drift: %q", line)
+				}
+			}
+		}
 	}
 	for _, s := range steps {
 		require.Nil(t, s.ContinueOnError,
