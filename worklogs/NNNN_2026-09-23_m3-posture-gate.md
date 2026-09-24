@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r6 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r7 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r6 fixes pushed; awaiting re-review.
+**Status:** r7 fixes pushed; awaiting re-review.
 
 ---
 
@@ -69,7 +69,21 @@ r6's mutation gauntlet (41 mutations, review + skeptical sub-agent cross-validat
 3. **Root cause D — unpinned payloads (REAL, closed):** `sleep 45` → `sleep 1` (the window's duration is the crashloop catch's teeth) and the `forbidden` grep pattern were pinned nowhere. Now pinned — the grep on BOTH files (a Contains-anywhere pin passed while only the current-container grep was swapped; the partial swap neuters half the detector — re-verified red both partial and full).
 4. **`exit 0` (REAL, closed):** strictly larger blast radius than the trap ban's class — it neuters the restart-diff too, re-opening the #1546 Defect-1 path (crashlooping router, zero forbidden, armed controller) through every remaining assertion. Banned in all assertion blocks; failure paths use `exit 1` only (false-positive-free).
 5. **The env-carrier channel (REAL, closed):** a step-level `env:` block feeding `${GATE_EXTRA}` into the helm line evaded every run-text ban. The install step's env block is now required EMPTY (parsed via the step's `env` key).
-6. **Root cause A — the backslash-newline join (REFUTED for this context, with executed evidence):** the claim was that `se\<NL>t +e` / `--valu\<NL>es=` join into live neuter/smuggle forms. Executed test (`/tmp/opencode/jointest/t.sh`): inside a YAML literal block scalar the continuation line must be indented, and the indent SURVIVES the backslash-newline removal as separator whitespace — `--valu` and `es=…` stay separate argv (`helm: unknown flag` → install fails → gate red, fail-closed), and `se` + indent + `t +e` is `se: command not found` under `set -e` (fail-closed red). The zero-indent form that DOES join a token is invalid inside a block scalar (r6's own discarded-candidates note). The prescribed empty-join view (`banViews`' third view) is KEPT as belt — it closes any future non-block scalar form (`run: >`, single-line) where a true zero-indent join could occur — but the live-form claim for the current workflow shape is refuted, on the record.
+6. **Root cause A — the backslash-newline join (CLOSED BY THE BELT VIEW; the extra-indent form is fail-closed — this corrects r6's own "REFUTED" claim, which r7's review counter-demonstrated):** a continuation line at the BLOCK-MINIMUM indent is valid YAML, and after YAML strips the block indentation bash joins `se\`+newline+`t +e` with NOTHING — `set +e` executes (errexit verifiably off). The extra-indent form leaves the indent as separator whitespace (argv splits, `unknown flag` / `command not found` → fail-closed red — my executed test at `/tmp/opencode/jointest/t.sh` demonstrated this form correctly). The `banViews` empty-join view models bash's join exactly, so BOTH forms go red under the pins — the class is closed by the mechanism, not refuted. The r6 record's "REFUTED for this context" claim was wrong and is corrected here.
+
+## r7 round record (the committed-mutation incident — owned, reverted, pinned)
+
+r7's review found the r6 head BROKEN: my root-cause-A debug mutation (`--valu\`+newline+`es=/tmp/posture-override.yaml` on the install head line) was left IN the committed workflow. Root cause of the incident, on the record: my r6 mutation gauntlet's baseline (`/tmp/opencode/pg6b.yml`) was captured AFTER the debug mutation was applied — every subsequent "restore" faithfully re-applied the broken state, six rounds of pins stayed green over it (the tokens never form a banned shape), and `bash -n` passes it (syntactically valid). The review executed it end-to-end: `helm: unknown flag: --valu` — the gate was dead on every tree. This is the exact "final-tree state, not the syntax check, is the instrument" lesson.
+
+Fixes this round:
+1. **The revert** — the head line restored; a full audit (diff r5→r6 head + stray-text grep) confirmed the single stray mutation was the only one.
+2. **The regression pin** — the install's FIRST command line must be exactly `helm upgrade --install llmsafespaces helm \` (the head-of-line shape pin; the append class defeated every ban view, the allowlist parse, and the `-f` regex at once).
+3. **Continuations banned in Assert 1** (the sub-agent's split escape: `kubectl \`+newline+`wait … || true` never enters the shape guard).
+4. **Job-level env required empty** (the step-env close pinned only the step; the job-level carrier smuggled a values file to a live render).
+5. **Inversion pins** — Assert 3's detector greps pinned in the positive `if grep` shape (a `!`-inversion kept every literal while inverting green/red), and its fetch guard pinned as `if ! kubectl` (negation removal = silent pass on fetch failure).
+6. **The record corrections** — the false REFUTED claim fixed (above); the dependency record refreshed from a live scan: **M1 (#1553) MERGED 03:27Z; M2 now exists — #1559, OPEN; the defect fix #1558 OPEN; M4 (#1557) merged**. The gate's remaining red-drivers: #1558 and (per the recorded order) M2.
+
+All five r7 mutation classes (head-append, split-wait, job-env, bang-inversion, fetch-guard-denial) re-verified RED by my own mutations; the pristine baseline is md5-verified after the gauntlet. Mutation-hygiene rule adopted in practice: the baseline is checksummed before every gauntlet and verified after it.
 
 ## Key Decisions
 
@@ -84,13 +98,13 @@ r6's mutation gauntlet (41 mutations, review + skeptical sub-agent cross-validat
 **The gate is RED on current main — by design and by an open defect, and this is the live-scanned dependency record (r4 refresh, 2026-09-24 ~02:45Z — supersedes r1–r3's versions, two of which asserted states that had flipped before their pushes):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **#1555 was closed UNMERGED at 02:05:56Z; the fix now rides #1558 (OPEN, "namespace-scope cache-scoping derivation")**. Assertions 1/3 stay red until #1558 (or successor) lands. The red IS the gate working — first contact detected a real shipped-posture defect, retroactively validating design 0061.
-2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r4: **M4 (#1557) MERGED 01:50Z** (the recorded order has already diverged — the orchestrator's call); **M1 (#1553) still OPEN**; **M2 has no PR yet**. The gate's assertion 2 is satisfiable without M1 (the armed line already emits from `controller.go:164` on main; M1 adds the exit-85 crash-loudness), but the recorded order names M1 and M2 before the gate.
+2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r7 (2026-09-24 ~05:2xZ): **M1 (#1553) MERGED 03:27Z**; **M2 exists — #1559, OPEN**; **M4 (#1557) MERGED**; the defect fix **#1558 OPEN**. The remaining red-drivers before the gate can green: #1558 and, per the recorded order, M2.
 
-The merge call (ship the red gate as the detector it is vs. wait for #1558/M1/M2) is the orchestrator's.
+The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r6 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r7 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -98,8 +112,8 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M1/M2
 
 ## Next Steps
 
-1. Re-review (r6 verdict pending).
-2. The orchestrator sequences the merge — live scan at r4: #1558 (the defect fix) and M1 (#1553) open, M2 unopened, M4 merged; the #1548 recorded order names M1 and M2 before the gate. Then the gate's first dispatched green run closes the loop.
+1. Re-review (r7 verdict pending).
+2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
 ## Files Modified

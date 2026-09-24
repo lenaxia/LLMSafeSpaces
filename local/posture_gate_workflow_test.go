@@ -130,8 +130,9 @@ type gateStep struct {
 
 type gateWorkflow struct {
 	Jobs map[string]struct {
-		If    string     `json:"if"`
-		Steps []gateStep `json:"steps"`
+		If    string            `json:"if"`
+		Env   map[string]string `json:"env"`
+		Steps []gateStep        `json:"steps"`
 	} `json:"jobs"`
 }
 
@@ -224,11 +225,13 @@ var assertionSpecs = []struct {
 		`for GATE_NS in "$NS" "llm-relay"`,
 		"--previous",
 		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
-		// r6's root cause D: the payload itself, pinned on BOTH greps —
-		// a Contains-anywhere pin passed while only the current-container
-		// grep was swapped (the partial swap neuters half the detector).
-		"grep -i 'forbidden' /tmp/gate-pod.log",
-		"grep -i 'forbidden' /tmp/gate-pod-prev.log",
+		// r6's root cause D + r7's inversion finding: the payload pinned
+		// on BOTH greps in the POSITIVE `if grep` shape — a Contains-
+		// anywhere pin passed a partial swap, and a `!`-inversion (green
+		// on broken, red on healthy) kept every literal intact.
+		"if grep -i 'forbidden' /tmp/gate-pod.log",
+		"if grep -i 'forbidden' /tmp/gate-pod-prev.log",
+		`if ! kubectl -n "$GATE_NS" logs`, // the fetch guard is negated: a fetch failure must be red
 	},
 		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; the pod-LIST fetch is failure-checked too (a process-substitution feed is invisible to set -e — r2's silent-skip)"},
 	{"Assert 4", []string{
@@ -276,6 +279,23 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	require.Equal(t, "posture-install", install.ID, "install step must carry the id the run keys on")
 	require.Contains(t, install.Run, "helm upgrade --install llmsafespaces helm",
 		"the nightly's install command shape, verbatim")
+	// r7 finding 1 — the head-of-line shape pin (the regression pin for
+	// the committed-mutation incident): the install's FIRST command
+	// line must be exactly the nightly's head line. A left-in mutation
+	// appending tokens to the head line defeats every ban view, the
+	// allowlist parse, and the -f regex at once (the tokens never form
+	// — six rounds of pins stayed green over a provably broken install).
+	first := ""
+	for _, line := range strings.Split(install.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		first = trimmed
+		break
+	}
+	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
+		"the install's first command line must be exactly the nightly's head line — anything else is an unreviewed append (the r7 committed-mutation class)")
 	// The two value-bearing environmental pins: mcp MUST be off (issue
 	// #28 — no image exists to pull) and the install MUST wait (the
 	// nightly's shape; the assertions still carry the verdict).
@@ -386,6 +406,11 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 	for jobName, j := range wf.Jobs {
 		require.Empty(t, strings.TrimSpace(j.If),
 			"the gate job %q must carry no `if:` — one edit could disarm the whole gate", jobName)
+		// r7 (the sub-agent's job-level carrier): the r6 close pinned
+		// only the STEP env; a job-level env block feeding $VARS into
+		// the helm line smuggles past every run-text ban the same way.
+		require.Empty(t, j.Env,
+			"the gate job %q must carry no env block — job-level env is a value-carrier channel that evades the run-text bans", jobName)
 	}
 	steps := parsePostureGate(t)
 	for _, spec := range assertionSpecs {
@@ -421,8 +446,13 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// r6's root cause C: the shape checks' entry condition keys on
 		// `kubectl wait` — a double-space `kubectl   wait` skipped them
 		// entirely (the guard, not the ban, was the hole). Collapse
-		// whitespace per line before matching.
+		// whitespace per line before matching. r7 (the sub-agent's
+		// split escape): a continuation `kubectl \`+newline+`wait …`
+		// never enters the guard either — Assert 1 carries no
+		// legitimate continuations, so they are banned outright.
 		if spec.prefix == "Assert 1" {
+			require.NotContains(t, s.Run, "\\\n",
+				"Assert 1 must carry no line continuations — a split command never enters the shape guard (r7)")
 			collapse := regexp.MustCompile(`[ \t]+`)
 			for _, line := range strings.Split(s.Run, "\n") {
 				collapsed := collapse.ReplaceAllString(strings.TrimSpace(line), " ")
