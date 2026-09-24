@@ -596,6 +596,42 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 
 // --- send_message ---------------------------------------------------------
 
+// splitDuplicatedArgFragment detects the #1530 emission-duplication
+// shape in a session_id argument: the value carries an escaped JSON
+// tail — `TARGET","lsp_injected_session":"ORIGIN"}` (trailing brace
+// optional) — the bytes a model emits when it duplicates the tail of
+// a similar prior send_message call visible in its context. Probes
+// (scripts/1530-arg-mutation-probe.mjs) falsified the plugin/
+// serializer race: the escapes exist only in JSON SOURCE TEXT, so
+// the corruption predates serialization. Both extracted ids must be
+// well-formed session ids; anything else is NOT the shape and
+// returns ok=false (the caller keeps the original value and its
+// normal error path — the guard never mangles clean input).
+const dupFragmentMark = `","lsp_injected_session":"`
+
+// sesIDPattern is deliberately permissive (the recovered target is
+// re-validated by SessionExists immediately after; the embedded
+// origin is cosmetic, untrusted data): it exists to reject shapes
+// that merely CONTAIN the fragment mark by accident, not to
+// second-guess the id format.
+var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_]+$`)
+
+func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok bool) {
+	i := strings.Index(v, dupFragmentMark)
+	if i <= 0 {
+		return "", "", false
+	}
+	target = v[:i]
+	if !sesIDPattern.MatchString(target) {
+		return "", "", false
+	}
+	rest := strings.TrimSuffix(strings.TrimSuffix(v[i+len(dupFragmentMark):], "}"), `"`)
+	if !sesIDPattern.MatchString(rest) {
+		return "", "", false
+	}
+	return target, rest, true
+}
+
 // mcpSendMessage delivers a text message to another session in this
 // workspace, fire-and-forget: the reply (if any) stays in the target
 // session — nothing returns to the caller (the same philosophy as
@@ -634,42 +670,6 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // in scripts/1530-arg-mutation-probe.mjs) is recovered to its leading
 // id, delivered, and warned — never silently lost to a resolution
 // error. See splitDuplicatedArgFragment for the exact shape contract.
-// splitDuplicatedArgFragment detects the #1530 emission-duplication
-// shape in a session_id argument: the value carries an escaped JSON
-// tail — `TARGET","lsp_injected_session":"ORIGIN"}` (trailing brace
-// optional) — the bytes a model emits when it duplicates the tail of
-// a similar prior send_message call visible in its context. Probes
-// (scripts/1530-arg-mutation-probe.mjs) falsified the plugin/
-// serializer race: the escapes exist only in JSON SOURCE TEXT, so
-// the corruption predates serialization. Both extracted ids must be
-// well-formed session ids; anything else is NOT the shape and
-// returns ok=false (the caller keeps the original value and its
-// normal error path — the guard never mangles clean input).
-const dupFragmentMark = `","lsp_injected_session":"`
-
-// sesIDPattern is deliberately permissive (the recovered target is
-// re-validated by SessionExists immediately after; the embedded
-// origin is cosmetic, untrusted data): it exists to reject shapes
-// that merely CONTAIN the fragment mark by accident, not to
-// second-guess the id format.
-var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_]+$`)
-
-func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok bool) {
-	i := strings.Index(v, dupFragmentMark)
-	if i <= 0 {
-		return "", "", false
-	}
-	target = v[:i]
-	if !sesIDPattern.MatchString(target) {
-		return "", "", false
-	}
-	rest := strings.TrimSuffix(strings.TrimSuffix(v[i+len(dupFragmentMark):], "}"), `"`)
-	if !sesIDPattern.MatchString(rest) {
-		return "", "", false
-	}
-	return target, rest, true
-}
-
 func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedSession, declaredSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
