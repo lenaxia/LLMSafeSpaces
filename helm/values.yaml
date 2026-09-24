@@ -289,10 +289,10 @@ controller:
   # (a per-tick "ConfigMap sync failed" error; refresher.go:232-234,
   # non-fatal). Listing BOTH namespaces is the remedy ONLY under
   # rbac.scope=cluster (or wherever the RBAC actually covers both) —
-  # under rbac.scope=namespace the release-ns Role grants just
-  # leases/events/configmaps, so a release-ns informer hits the same
-  # Forbidden-informer CrashLoopBackOff; accept the refresher caveat
-  # (or extend the Role) instead.
+  # under rbac.scope=namespace the release-ns Role does not cover the
+  # workspace-lifecycle core resources, so a release-ns informer hits
+  # the same Forbidden-informer CrashLoopBackOff; accept the refresher
+  # caveat (or extend the Role) instead.
   #
   # Under rbac.scope=namespace (the default), leaving this empty DERIVES
   # --watch-namespaces to the workspace namespace (the workspaceNamespace
@@ -1205,10 +1205,13 @@ rbac:
   #                              operator-created RoleBindings there (the
   #                              chart creates none).
   #   "cluster"                  Adds the gated ClusterRole + binding:
-  #                              cluster-wide READS across the resource
-  #                              families its rules list, plus conditional
-  #                              branches (delivery/relay/refresher) that
-  #                              extend reads AND writes cluster-wide when
+  #                              full CRUD cluster-wide on the
+  #                              llmsafespaces.dev CR families; cluster-
+  #                              wide READS on the CORE resource families
+  #                              its rules list (writes on those stay
+  #                              namespace-bound); plus conditional
+  #                              branches (relay/refresher) that extend
+  #                              reads AND writes cluster-wide when
   #                              active — the rules block is authoritative.
   #                              (The read-only storageclasses ClusterRole
   #                              is ALWAYS created regardless of scope.)

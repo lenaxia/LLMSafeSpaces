@@ -28,13 +28,15 @@
 #     controller.watchNamespaces DERIVES --watch-namespaces to the
 #     workspace namespace — a cluster-wide cache cannot sync informers
 #     against namespaced RBAC and the controller CrashLoopBackOffs;
-#     nightly run 35872827066). Under rbac.scope=cluster the grant adds
-#     cluster-wide READS across the resource families its rules list,
-#     and its CONDITIONAL branches (delivery/relay/refresher) extend
-#     both reads and writes cluster-wide when active — the complete
-#     grant set is the rules block of this ClusterRole, which is
-#     authoritative. The read-only storageclasses ClusterRole below is
-#     separate, always created, and never part of this grant (F1.3.7).
+#     nightly run 35872827066). Under rbac.scope=cluster the grant
+#     gives: full CRUD cluster-wide on the llmsafespaces.dev CR
+#     families; cluster-wide READS on the CORE resource families its
+#     rules list (writes on those stay namespace-bound); and its
+#     CONDITIONAL branches (relay/refresher) extend reads and writes
+#     cluster-wide when active — the complete grant set is the rules
+#     block of this ClusterRole, which is authoritative. The read-only
+#     storageclasses ClusterRole below is separate, always created,
+#     and never part of this grant (F1.3.7).
 #  4. Bindings: the namespace Role is bound in the WORKSPACE namespace;
 #     the cluster grant is bound only when rbac.scope == "cluster".
 #
@@ -261,11 +263,13 @@ subjects:
 # cluster-scope grant. The reflector enters CrashLoopBackOff. To make
 # the namespace-scoped CRUD Role work AS WELL AS allow the cluster-
 # wide informer watches, this ClusterRole's rules grant the cluster-
-# wide read-only watches (and, in its conditional branches, more —
-# see the rules block immediately below, which is authoritative);
-# CRUD stays restricted to the workspace namespace by the
-# per-namespace Role above except where a conditional branch says
-# otherwise.
+# wide read-only watches on the core resource families (and full CRUD
+# on the llmsafespaces.dev CR families — plus more in its conditional
+# branches; see the rules block immediately below, which is
+# authoritative). Writes on the CORE resources stay restricted to the
+# workspace namespace by the per-namespace Role above; writes on the
+# CR families and anything a conditional branch grants are
+# cluster-wide under this scope.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

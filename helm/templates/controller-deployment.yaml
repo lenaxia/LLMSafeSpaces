@@ -78,11 +78,13 @@ spec:
                    against namespaced RBAC. The whitespace class is Go
                    TrimSpace's ([[:space:]] + U+0085 + Zs/Zl/Zp). */ -}}
             {{- $wnsRaw := default "" .Values.controller.watchNamespaces | toString }}
-            {{- /* rbac.create=false gates the guard: with the chart creating
-                   no RBAC at all, rbac.scope is grant-inert and the operator
-                   owns grant coherence out-of-band (self-managed ClusterRole
-                   + watch-all is coherent); the guard polices the chart's
-                   OWN grant posture only. */ -}}
+            {{- /* rbac.create=false gates the guard: with the chart
+                   creating none of the workspace-lifecycle grants (the
+                   rbac.create-gated Role/ClusterRole set — the always-created
+                   storageclass/relay-safe ClusterRoles aside), grant
+                   coherence is the operator's out-of-band contract
+                   (self-managed ClusterRole + watch-all is coherent); the
+                   guard polices the chart's OWN gated grant posture only. */ -}}
             {{- if and .Values.rbac.create (ne (.Values.rbac.scope | default "namespace") "cluster") (or (contains "*" $wnsRaw) (and (ne $wnsRaw "") (regexMatch "^[[:space:],\\x{85}\\p{Zs}\\p{Zl}\\p{Zp}]*$" $wnsRaw))) }}
             {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: it contains \"*\" or collapses to no namespaces, which parses to a cluster-wide cache (or a bogus \"*\" namespace) that cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Remedies: set controller.watchNamespaces to namespaces your RBAC actually covers (under namespace scope that is the workspace namespace ONLY — NOT the release namespace), or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
             {{- end }}

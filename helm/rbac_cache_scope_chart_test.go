@@ -209,14 +209,43 @@ func TestRBACDefaultRender_DerivesWatchNamespaces(t *testing.T) {
 
 // TestRBACCreateFalse_GuardSkipped (r5 finding 1): rbac.create=false +
 // namespace scope + watchNamespaces="*" RENDERS — in that combination the
-// chart creates no RBAC at all, rbac.scope is inert for grants, and the
-// operator owns grant coherence out-of-band (e.g. a self-managed
-// ClusterRole + watch-all). The render guard polices the chart's OWN
-// grant posture only; blocking an out-of-band posture was an over-block
-// with a false-premise message.
+// chart creates none of the workspace-lifecycle grants (rbac.create gates
+// the Role/ClusterRole set; the always-created storageclass/relay-safe
+// ClusterRoles aside), grant coherence is the operator's out-of-band
+// contract (e.g. a self-managed ClusterRole + watch-all). The render
+// guard polices the chart's OWN gated grant posture only; blocking an
+// out-of-band posture was an over-block with a false-premise message.
 func TestRBACCreateFalse_GuardSkipped(t *testing.T) {
 	docs := helmTemplate(t, "rbac:\n  create: false\n  scope: namespace\ncontroller:\n  watchNamespaces: \"*\"\n")
 	got := controllerWatchNamespacesArg(t, docs)
 	assert.Equal(t, "*", got,
-		"rbac.create=false: the chart creates no RBAC, scope is grant-inert, and the operator owns coherence out-of-band — the guard must not block")
+		"rbac.create=false: the chart creates none of the workspace-lifecycle grants, coherence is the operator's out-of-band contract — the guard must not block")
+}
+
+// TestRBACCreateFalse_UnsetStillDerives (the r13 asymmetry pin): with
+// rbac.create=false + namespace scope + watchNamespaces UNSET the
+// derivation still applies — the cache scoping is posture-correct
+// regardless of who owns the grants. A future "symmetric" refactor that
+// gates the derivation on rbac.create too would silently re-widen the
+// create=false cache against the operator's own namespaced grants:
+// this pin goes red.
+func TestRBACCreateFalse_UnsetStillDerives(t *testing.T) {
+	docs := helmTemplate(t, "rbac:\n  create: false\n  scope: namespace\ncontroller:\n  watchNamespaces: \"\"\n")
+	got := controllerWatchNamespacesArg(t, docs)
+	assert.Equal(t, "test-ns", got,
+		"create=false + namespace scope + unset watchNamespaces must still derive — the cache scoping is correct independent of grant ownership")
+}
+
+// TestRBACDefaultRender_WatchAllFails (the r13 pure-defaults guard
+// shape): "*" with NO rbac.scope key at all — the guard's
+// | default \"namespace\" fallback is pinned for the derivation but was
+// never pinned for the GUARD; a mutation keying the guard on an exact
+// scope match (dropping the fallback) would re-open the crashloop on
+// the default-install population with every existing pin green.
+func TestRBACDefaultRender_WatchAllFails(t *testing.T) {
+	err := helmTemplateErr(t, "controller:\n  watchNamespaces: \"*\"\n")
+	require.Error(t, err,
+		"watchNamespaces=\"*\" with NO rbac.scope key must fail the render — the default posture is namespace scope and the guard must key off the same fallback as the derivation")
+	require.Contains(t, err.Error(), "CrashLoopBackOff",
+		"the error must be the guard's template fail, not a harness failure (the r4 vacuity class)")
 }

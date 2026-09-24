@@ -193,8 +193,10 @@ criterion is UNVERIFIED for that run, not passed.
   read errors — not IsNotFound — so no ConfigMap ever exists;
   non-fatal). Listing BOTH namespaces remedies it ONLY under cluster
   scope or wherever RBAC covers both — under namespace scope the
-  release-ns Role grants just leases/events/configmaps, so a
-  release-ns informer is the same Forbidden CrashLoopBackOff. The
+  release-ns Role does not cover the workspace-lifecycle core
+  resources (its exact grants are conditional; rbac.yaml's rules are
+  authoritative), so a release-ns informer is the same Forbidden
+  CrashLoopBackOff. The
   relay startup guard and all llm-relay reads are unaffected — they
   ride the direct API reader by design (§4.3), which is why the guard
   passed while the informers died.
