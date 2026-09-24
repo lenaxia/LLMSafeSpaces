@@ -127,8 +127,9 @@ Role binds in the WORKSPACE namespace
 namespace when api.config.kubernetes.namespace is unset; with the
 split-ns override set, the workspace Role lives THERE and the release
 namespace holds the leader-election Role). The always-created
-read-only storageclasses ClusterRole is the one base grant that spans
-clusters regardless of scope; the complete grant set is the rules
+read-only storageclasses ClusterRole is the one base grant that is
+cluster-scoped (spans namespaces) regardless of rbac.scope; the
+complete grant set is the rules
 blocks in the chart's rbac.yaml, which are authoritative. The
 manager's cache is scoped to
 match (the derived --watch-namespaces); resources in other namespaces

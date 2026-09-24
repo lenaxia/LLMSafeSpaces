@@ -206,3 +206,17 @@ func TestRBACDefaultRender_DerivesWatchNamespaces(t *testing.T) {
 	assert.Equal(t, "test-ns", got,
 		"the pure-defaults render (no rbac.scope key) must carry the derived --watch-namespaces — the | default \"namespace\" fallback is the path real default installs take")
 }
+
+// TestRBACCreateFalse_GuardSkipped (r5 finding 1): rbac.create=false +
+// namespace scope + watchNamespaces="*" RENDERS — in that combination the
+// chart creates no RBAC at all, rbac.scope is inert for grants, and the
+// operator owns grant coherence out-of-band (e.g. a self-managed
+// ClusterRole + watch-all). The render guard polices the chart's OWN
+// grant posture only; blocking an out-of-band posture was an over-block
+// with a false-premise message.
+func TestRBACCreateFalse_GuardSkipped(t *testing.T) {
+	docs := helmTemplate(t, "rbac:\n  create: false\n  scope: namespace\ncontroller:\n  watchNamespaces: \"*\"\n")
+	got := controllerWatchNamespacesArg(t, docs)
+	assert.Equal(t, "*", got,
+		"rbac.create=false: the chart creates no RBAC, scope is grant-inert, and the operator owns coherence out-of-band — the guard must not block")
+}
