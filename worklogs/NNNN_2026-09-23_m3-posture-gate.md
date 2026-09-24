@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r4 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r5 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r4 fixes pushed; awaiting re-review.
+**Status:** r5 fixes pushed; awaiting re-review.
 
 ---
 
@@ -48,6 +48,18 @@ r2's verdict: design sound, every mechanical fix since r0 verified, 5/5 new muta
 
 r3's closes were incomplete within their own classes (both mutation-demonstrated by the review): the exact-spelling `set +e` ban missed `set +o errexit`/`set +o nounset`/double-space variants — now the whole countermand family is banned against WHITESPACE-NORMALIZED run text; the literal ` -f `/`-f=` bans missed the tab-delimited `-f<TAB>file` form (tab is IFS whitespace — a live smuggle) — replaced by the regex `(^|\s)-f[\s=]` over the install run block. Plus r4's optional finding adopted: Assert 1's `kubectl wait` lines must be bare (`|| true` appends now red). And the record-accuracy lesson landed for good: r3's push asserted `#1555 (OPEN)` and `M4 (#1557, open)` AFTER both had flipped (merged 01:50, closed-unmerged 02:05 vs push 02:08) — the r4 refresh above is a LIVE scan at write time, and the worklog now states scan time.
 
+## r5 round record (the structural close — the spelling war ends)
+
+r5's twelve live one-liner escapes (shell/helm-proven by the review and its skeptical sub-agent, each cross-validated) demonstrated the whack-a-mole failure mode: five rounds of exact-spelling closes, each falsified within one round. The required close was structural, and is now in:
+
+1. **The `--set` ALLOWLIST** (pin c's core): every `--set` key parsed out of the install (continuations joined, quotes stripped, key = value-before-first-`=`) must be on the environmental allowlist; every allowlist entry must be used (dead entries are drift); the parse must find the full set (≥20 keys — a silently empty parse is a vacuous pass). Quote-split (`--set rbac.scope"=cluster"` → key `rbac.scope"`), variable indirection (`--set "${KEY}=cluster"` → key `${KEY}`), and any future lever fail in ONE check regardless of spelling.
+2. **The values channels banned outright**: `-f` in ANY spelling (regex `(^|\s)-f` — attached, delimited, tab, continuation), `--values`, `--set-json`, `--set-string`, `--reuse-values`, and `--post-renderer` (a whole-manifest rewrite channel, helm-proven live).
+3. **Shape-pinned wait lines**: each Assert-1 `kubectl wait` line must START the line bare (no `!`/`if`/assignment prefix) and carry no shell operator (`||`, `&&`, `;`, backtick) and no continuation.
+4. **The countermand family, structurally**: normalization now joins backslash-newline continuations (the `set +o\`+newline+`errexit` form), and the bans are `set +o` as a PREFIX (all long forms), bare `+o errexit`/`+o pipefail`/`+o nounset` (the mixed `set -e +o pipefail` form), `set +e`, and `trap ` (a `trap 'exit 0' EXIT` is a complete neuter that is no set-spelling at all).
+5. **The residual threat model, stated** (pin-file header): the pins deter ACCIDENTAL DRIFT on maintainer PRs — not adversarial shell evasion (eval, function overrides, PATH shims, chart rewrites are out of scope; the reviewed diff is the control for those). The pin comments no longer claim class-completeness beyond this.
+
+All twelve r5 escapes re-verified red by my own mutations after the close (S1–S6 install-channel; A1–A6 assertion-disarm). The worklog's stale duplicate merge-call line (r5's minor finding) is deleted.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -65,11 +77,9 @@ r3's closes were incomplete within their own classes (both mutation-demonstrated
 
 The merge call (ship the red gate as the detector it is vs. wait for #1558/M1/M2) is the orchestrator's.
 
-The merge call (ship the red gate as the detector it is, once #1555/M2/M4 resolve, vs. wait) is the orchestrator's.
-
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r4 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r5 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -77,7 +87,7 @@ The merge call (ship the red gate as the detector it is, once #1555/M2/M4 resolv
 
 ## Next Steps
 
-1. Re-review (r4 verdict pending).
+1. Re-review (r5 verdict pending).
 2. The orchestrator sequences the merge — live scan at r4: #1558 (the defect fix) and M1 (#1553) open, M2 unopened, M4 merged; the #1548 recorded order names M1 and M2 before the gate. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

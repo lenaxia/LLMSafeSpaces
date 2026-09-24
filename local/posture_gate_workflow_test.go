@@ -19,12 +19,24 @@ package local_test
 // The pins hold: the three-path trigger breadth (§11 ruling 3: helm/**
 // + controller/** + api/**), the four assertions present and ordered,
 // the default-posture install command (environmental overrides ONLY —
-// image refs, delivery pins, mcp off (issue #28, no image exists),
-// test DB/Redis — with the posture levers BANNED from the install:
-// a gate that pins rbac.scope or relayOnlyKeyDelivery to any value is
-// testing an override, not the shipped posture, and must fail here),
-// and the provenance basis (the controller image build stamps the SAME
-// `${{ github.sha }}` literal assertion 4 compares against).
+// an ALLOWLIST over the --set channel, the values channels banned
+// outright), and the provenance basis (the controller image build
+// stamps the SAME `${{ github.sha }}` literal assertion 4 compares
+// against).
+//
+// Residual threat model (stated, r5 — so the pins' claims stop
+// outrunning their mechanism): these pins deter ACCIDENTAL DRIFT on
+// maintainer PRs — a renamed flag, a dropped namespace, a pasted
+// override, a refactor that amputates a check. They are NOT an
+// adversarial-shell-evasion defense: eval strings, function overrides,
+// PATH-shimmed kubectl, or a workflow step that rewrites the chart
+// itself can defeat any text-level pin and are out of scope (the
+// workflow diff is the reviewed artifact; r2's ruling on the
+// chart-mutation class stands). Five rounds of spelling-list closes
+// were each falsified within one round — the allowlist/channel-ban/
+// shape-pin structure is the close for the drift classes; what remains
+// beyond it is adversarial, and the review of the diff itself is the
+// control for that.
 
 import (
 	"encoding/json"
@@ -38,10 +50,60 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// valuesFileFlagRe matches any -f flag spelling against the install
-// run block: space- or tab-delimited, or =-joined, at line start or
-// after any whitespace (r4's tab-form escape of the literal bans).
-var valuesFileFlagRe = regexp.MustCompile(`(?m)(^|\s)-f[\s=]`)
+// valuesFileFlagRe matches ANY -f flag spelling against the install
+// run block — attached (`-fov.yaml`), delimited (`-f file`, `-f=file`,
+// tab), or continuation (`-f\` + newline). r5's ruling: the shell
+// cannot be enumerated by spelling lists; any `-f` after whitespace
+// is a values channel, period.
+var valuesFileFlagRe = regexp.MustCompile(`(?m)(^|\s)-f`)
+
+// installSetAllowlist is the COMPLETE environmental override surface —
+// the only keys the install may carry. This is the structural close
+// (r5): an allowlist over the --set channel ends the spelling war —
+// quote-split (`--set rbac.scope"=cluster"`), variable indirection
+// (`--set "${KEY}=cluster"`), and every future lever fail HERE, in one
+// check, regardless of how they are spelled.
+var installSetAllowlist = map[string]bool{
+	"api.image.repository": true, "api.image.tag": true, "api.image.pullPolicy": true,
+	"controller.image.repository": true, "controller.image.tag": true, "controller.image.pullPolicy": true,
+	"mcp.enabled":     true,
+	"postgresql.host": true, "postgresql.port": true, "postgresql.user": true, "postgresql.database": true,
+	"redis.host": true, "redis.port": true,
+	"externalSecret.create": true, "externalSecret.postgresPassword": true, "externalSecret.redisPassword": true,
+	"api.config.logging.development":              true,
+	"controller.agentdDelivery.image":             true,
+	"controller.agentdDelivery.binarySHA256Amd64": true, "controller.agentdDelivery.binarySHA256Arm64": true,
+	"controller.opencodeDelivery.image":             true,
+	"controller.opencodeDelivery.binarySHA256Amd64": true, "controller.opencodeDelivery.binarySHA256Arm64": true,
+	"controller.inferenceRelay.router.image.repository": true, "controller.inferenceRelay.router.image.tag": true,
+}
+
+// extractSetKeys parses the install run block and returns the KEY of
+// every --set argument: continuation lines joined, whitespace-tokenized,
+// `--set <value>` and `--set=<value>` forms, surrounding quotes
+// stripped, key = value up to the first `=`. A quote-split or indirected
+// key arrives mangled (`rbac.scope"`, `${KEY}`) and fails the allowlist.
+func extractSetKeys(t *testing.T, run string) []string {
+	t.Helper()
+	joined := strings.ReplaceAll(run, "\\\n", " ")
+	var keys []string
+	fields := strings.Fields(joined)
+	for i, tok := range fields {
+		var value string
+		switch {
+		case tok == "--set":
+			require.True(t, i+1 < len(fields), "--set must be followed by a value token")
+			value = fields[i+1]
+		case strings.HasPrefix(tok, "--set="):
+			value = strings.TrimPrefix(tok, "--set=")
+		default:
+			continue
+		}
+		value = strings.Trim(value, `"`)
+		keys = append(keys, strings.SplitN(value, "=", 2)[0])
+	}
+	return keys
+}
 
 var postureGateWorkflow = filepath.Join("..", ".github", "workflows", "posture-gate.yml")
 
@@ -199,45 +261,56 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	require.Equal(t, "posture-install", install.ID, "install step must carry the id the run keys on")
 	require.Contains(t, install.Run, "helm upgrade --install llmsafespaces helm",
 		"the nightly's install command shape, verbatim")
+	// The two value-bearing environmental pins: mcp MUST be off (issue
+	// #28 — no image exists to pull) and the install MUST wait (the
+	// nightly's shape; the assertions still carry the verdict).
+	require.Contains(t, install.Run, "--set mcp.enabled=false",
+		"mcp.enabled must be OFF — the mcp image does not exist (issue #28)")
+	require.Contains(t, install.Run, "--wait", "the install must wait")
 
-	for _, env := range []string{
-		"api.image.repository=llmsafespaces/api",
-		"controller.image.repository=llmsafespaces/controller",
-		"mcp.enabled=false", // issue #28: no mcp image exists to pull
-		"controller.agentdDelivery.image=",
-		"controller.opencodeDelivery.image=",                                           // delivery pins: #1546 Defect-2 posture
-		"controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router", // kind cannot pull the ghcr default (drill-shape precedent)
-		"externalSecret.create=true",
-		"--wait",
-	} {
-		require.Contains(t, install.Run, env, "install must keep the environmental override %q", env)
-	}
 	for _, banned := range []string{
 		"rbac.scope=",
 		"relayOnlyKeyDelivery.enabled=",
 		"agentdSidecar.enabled=",
 		"allowRelayRouterEgress=",
 		// watchNamespaces: scoping the informer to a namespace would
-		// silence the exact #1555 crashloop class (cluster-wide list →
+		// silence the exact #1555-class crashloop (cluster-wide list →
 		// forbidden → red gate) the gate exists to catch — tuning the
 		// gate green while the shipped posture is broken (r2 finding 1).
 		"watchNamespaces=",
-		// Values files and --set-json smuggle whole posture overrides
-		// past the --set ban list (r0 raised it, r2 re-demonstrated: a
-		// posture-override.yaml passed via --values kept every pin
-		// green). The install takes its posture from the chart alone.
-		// -f is banned as a REGEX over the run block (r4): the literal
-		// spellings missed the tab-delimited `-f<TAB>file` form — tab
-		// is IFS whitespace to the shell, so the smuggle was live helm
-		// behavior with every pin green.
+		// The values channels beyond --set (r2–r5): the install takes
+		// its posture from the chart alone. --set-string and
+		// --reuse-values are value channels too; --post-renderer is a
+		// whole-manifest rewrite channel (r5, helm-proven live).
 		"--values",
 		"--set-json",
+		"--set-string",
+		"--reuse-values",
+		"--post-renderer",
 	} {
 		require.NotContains(t, install.Run, banned,
 			"the gate must never set %s — the shipped default IS the posture under test", banned)
 	}
 	require.False(t, valuesFileFlagRe.MatchString(install.Run),
-		"the install must take no values files in ANY flag spelling — the regex covers space, tab, and = delimiters (the r4 tab-form escape)")
+		"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form")
+	// THE structural close (r5): every --set key must be allowlisted,
+	// every allowlist entry must be used (dead entries are drift), and
+	// the parser must have found the full override set (a silently
+	// empty parse would be a vacuous pass). Any spelling of any other
+	// key — quote-split, indirected, or a future lever — fails here.
+	keys := extractSetKeys(t, install.Run)
+	require.GreaterOrEqual(t, len(keys), 20,
+		"the --set parse must find the full environmental override set (found %d — a silent parse failure would vacuously pass)", len(keys))
+	seen := map[string]bool{}
+	for _, k := range keys {
+		require.True(t, installSetAllowlist[k],
+			"--set key %q is NOT on the environmental allowlist — the install may carry no posture lever in ANY spelling", k)
+		seen[k] = true
+	}
+	for allowed := range installSetAllowlist {
+		require.True(t, seen[allowed],
+			"allowlist entry %q is unused — dead entries are drift; remove it or use it", allowed)
+	}
 }
 
 // Pin (d): the provenance basis is ONE sha — the controller image
@@ -305,26 +378,40 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// literal surface is unchanged, so only a pin sees the neuter.
 		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
 			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
-		// r3/r4: the pinned prefix alone is presence, not persistence —
-		// a later countermand neuters it under the pinned prefix. The
-		// family is banned with WHITESPACE NORMALIZED (collapse runs of
-		// spaces/tabs to one space first): exact-spelling bans missed
-		// `set +o errexit` and double-space `set  +e` (r4's escapes).
-		norm := regexp.MustCompile(`[ \t]+`).ReplaceAllString(s.Run, " ")
+		// r3/r4/r5: the pinned prefix alone is presence, not
+		// persistence — a later countermand neuters it under the pinned
+		// prefix. The family is banned with WHITESPACE NORMALIZED
+		// (runs of spaces/tabs collapsed, backslash-newline continuations
+		// joined — r5's continuation form `set +o\` + newline defeats
+		// plain space normalization): `set +o` as a PREFIX (covers every
+		// long form), bare `+o errexit`/`+o pipefail`/`+o nounset`
+		// (covers the mixed `set -e +o pipefail` form), `set +e`, and
+		// `trap` (a trap 'exit 0' EXIT is a complete neuter that is not
+		// a set-spelling at all — r5, bash-proven).
+		norm := normalizeRunText(s.Run)
 		for _, countermand := range []string{
-			"set +e", "set +o errexit", "set +o pipefail", "set +o nounset",
+			"set +e", "set +o", "+o errexit", "+o pipefail", "+o nounset", "trap ",
 		} {
 			require.NotContains(t, norm, countermand,
 				"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)
 		}
-		// r4 finding 4: `|| true` appended to the Assert 1 waits neuters
-		// the Ready checks with every literal intact — the wait lines
-		// must be bare.
+		// r5 finding 1c: the Assert 1 wait lines must be BARE command
+		// lines — `!`-prefix, `if`-wrap, `var=$(…)`-assignment, and
+		// `|| :`/`&& :`/`;` suffixes all escape errexit while keeping
+		// every literal green. A line starting with `kubectl wait` and
+		// carrying no shell operator is the only shape that cannot.
 		if spec.prefix == "Assert 1" {
 			for _, line := range strings.Split(s.Run, "\n") {
 				if strings.Contains(line, "kubectl wait") {
-					require.NotContains(t, line, "|| true",
-						"Assert 1's wait lines must be bare — `|| true` on a kubectl wait neuters the Ready check with zero literal drift: %q", line)
+					trimmed := strings.TrimSpace(line)
+					require.True(t, strings.HasPrefix(trimmed, "kubectl wait"),
+						"Assert 1's wait lines must start the line bare (no !/if/assignment prefix): %q", line)
+					for _, op := range []string{"||", "&&", ";", "`"} {
+						require.NotContains(t, trimmed, op,
+							"Assert 1's wait lines must carry no shell operators (bare lines only — || :/&& :/; all escape errexit): %q", line)
+					}
+					require.False(t, strings.HasSuffix(trimmed, "\\"),
+						"Assert 1's wait lines must not continue (a continuation hides what follows): %q", line)
 				}
 			}
 		}
@@ -340,6 +427,15 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 }
 
 // --- helpers ---------------------------------------------------------
+
+// normalizeRunText collapses runs of spaces/tabs to one space AND joins
+// backslash-newline continuations — continuation-joined text is the
+// same argv to the shell, so countermand bans must see through it
+// (r5's `set +o\` + newline + `errexit` form).
+func normalizeRunText(s string) string {
+	s = strings.ReplaceAll(s, "\\\n", " ")
+	return regexp.MustCompile(`[ \t]+`).ReplaceAllString(s, " ")
+}
 
 // keysOf returns the sorted key set of a JSON object (for the
 // exact-keys pins).
