@@ -29,6 +29,7 @@ package local_test
 import (
 	"encoding/json"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -39,15 +40,20 @@ import (
 var postureGateWorkflow = filepath.Join("..", ".github", "workflows", "posture-gate.yml")
 
 // gateStep/gateWorkflow mirror the nightly pins' parse shape.
+// ContinueOnError is captured (as *bool) so pin (f) can ban it outright
+// — `continue-on-error: true` on an assertion step is a failed
+// assertion with a green job.
 type gateStep struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
-	If   string `json:"if"`
-	Run  string `json:"run"`
+	Name            string `json:"name"`
+	ID              string `json:"id"`
+	If              string `json:"if"`
+	Run             string `json:"run"`
+	ContinueOnError *bool  `json:"continue-on-error"`
 }
 
 type gateWorkflow struct {
 	Jobs map[string]struct {
+		If    string     `json:"if"`
 		Steps []gateStep `json:"steps"`
 	} `json:"jobs"`
 }
@@ -100,29 +106,49 @@ func TestPostureGate_Triggers(t *testing.T) {
 	_, hasDispatch := onMap["workflow_dispatch"]
 	require.True(t, hasDispatch, "workflow_dispatch must be a trigger (manual posture re-checks)")
 
-	var pr struct {
+	// The pull_request block must carry ONLY the paths filter — a
+	// `types:`/`branches:` filter silently narrows which PR events arm
+	// the gate (e.g. types: [opened] stops re-runs on pushes).
+	var prKeys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(onMap["pull_request"], &prKeys))
+	require.ElementsMatch(t, []string{"paths"}, keysOf(prKeys),
+		"pull_request must filter by paths only — types/branches filters silently disarm the gate")
+	var prPaths struct {
 		Paths []string `json:"paths"`
 	}
-	require.NoError(t, json.Unmarshal(onMap["pull_request"], &pr))
-	require.ElementsMatch(t, []string{"helm/**", "controller/**", "api/**"}, pr.Paths,
+	require.NoError(t, json.Unmarshal(onMap["pull_request"], &prPaths))
+	require.ElementsMatch(t, []string{"helm/**", "controller/**", "api/**"}, prPaths.Paths,
 		"pull_request paths must be exactly the ruling-3 breadth: helm/** + controller/** + api/**")
 }
 
 // assertionSpec is one of the four §5 assertions: the parsed-name
-// prefix of its step and a literal its run block must contain.
+// prefix of its step and the literals its run block must contain
+// (multiple where one literal alone would let a mutation through —
+// r1: deleting the llm-relay half of assertions 1/3 kept every pin
+// green while gutting the both-namespace scope the why-text claims).
 var assertionSpecs = []struct {
-	prefix  string
-	literal string
-	why     string
+	prefix   string
+	literals []string
+	why      string
 }{
-	{"Assert 1", "rollout status deployment --all",
-		"all-Ready: every Deployment in every rendered namespace (the release ns AND llm-relay — a CrashLooping router is the #1546 Defect-1 catch)"},
-	{"Assert 2", "relay-only key delivery enabled",
+	{"Assert 1", []string{
+		"--for=condition=available deployment --all -n $NS",
+		"--for=condition=available deployment --all -n llm-relay",
+		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
+	},
+		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
+	{"Assert 2", []string{"relay-only key delivery enabled"},
 		"the armed line — M1's boot-time contract, asserted cluster-side"},
-	{"Assert 3", "forbidden",
-		"zero forbidden: no RBAC-denial line in any pod log (Defect 2's class, generically)"},
-	{"Assert 4", "github.sha",
-		"provenance: the running commit stamp compared against this run's build sha"},
+	{"Assert 3", []string{
+		`for GATE_NS in "$NS" "llm-relay"`,
+		"--previous",
+	},
+		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included"},
+	{"Assert 4", []string{
+		`!= '${{ github.sha }}'`, // the comparison shape, not the FAIL-echo's literal
+		"starting controller",
+	},
+		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin)"},
 }
 
 // Pin (b): the four assertions are present, in §5's order, each in its
@@ -135,7 +161,9 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	for _, spec := range assertionSpecs {
 		s := gateStepByPrefix(t, steps, spec.prefix)
 		require.NotEmpty(t, s.Run, "%s must carry a run block", spec.prefix)
-		require.Contains(t, s.Run, spec.literal, "%s run must contain %q — %s", spec.prefix, spec.literal, spec.why)
+		for _, lit := range spec.literals {
+			require.Contains(t, s.Run, lit, "%s run must contain %q — %s", spec.prefix, lit, spec.why)
+		}
 		idx := indexOfStep(t, steps, s)
 		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
 		last = idx
@@ -195,8 +223,8 @@ func TestPostureGate_ProvenanceSameShaBasis(t *testing.T) {
 	require.Contains(t, raw, `--build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile`,
 		"the controller image must be stamped from this run's github.sha")
 	a4 := gateStepByPrefix(t, parsePostureGate(t), "Assert 4")
-	require.Contains(t, a4.Run, `'${{ github.sha }}'`,
-		"assertion 4 must compare the running stamp against the same github.sha literal the build stamps")
+	require.Contains(t, a4.Run, `!= '${{ github.sha }}'`,
+		"assertion 4's COMPARISON must be against the same github.sha literal the build stamps (not merely an echo that mentions it — the r1 mutation)")
 	require.Contains(t, a4.Run, "starting controller",
 		"assertion 4 reads the running binary's own startup line (the label channel §5 r1 names)")
 }
@@ -222,14 +250,32 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 // Pin (f): a failed cold install IS a red gate — the assertions carry
 // NO skip conditions (the #1541 arming exists to keep EVIDENCE lanes
 // running past unrelated failures; here the install is the thing under
-// test), and the failure dump + teardown keep the crash-loud culture
-// (logs on failure, cluster disposed always).
+// test), no assertion step may carry `continue-on-error` (a failed
+// assertion with a green job — the silent-disarm mutation the r1
+// review enumerates), the job itself carries no `if:` (a job-level
+// condition disarms the whole gate in one edit), and the failure dump
+// + teardown keep the crash-loud culture (logs on failure, cluster
+// disposed always).
 func TestPostureGate_FailureSemantics(t *testing.T) {
+	raw := []byte(mustRead(t, postureGateWorkflow))
+	var wf gateWorkflow
+	require.NoError(t, yaml.Unmarshal(raw, &wf))
+	require.Len(t, wf.Jobs, 1, "the gate is ONE job (0061 §5)")
+	for jobName, j := range wf.Jobs {
+		require.Empty(t, strings.TrimSpace(j.If),
+			"the gate job %q must carry no `if:` — one edit could disarm the whole gate", jobName)
+	}
 	steps := parsePostureGate(t)
 	for _, spec := range assertionSpecs {
 		s := gateStepByPrefix(t, steps, spec.prefix)
 		require.Empty(t, strings.TrimSpace(s.If),
 			"%s must be unconditional — a failed install must fail the gate, not skip its assertions", spec.prefix)
+		require.Nil(t, s.ContinueOnError,
+			"%s must not carry continue-on-error — a failed assertion must fail the job", spec.prefix)
+	}
+	for _, s := range steps {
+		require.Nil(t, s.ContinueOnError,
+			"no step may carry continue-on-error (found on %q) — failures must propagate", s.Name)
 	}
 	dump := gateStepByPrefix(t, steps, "Dump cluster state on failure")
 	require.Contains(t, dump.If, "failure()")
@@ -238,6 +284,17 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 }
 
 // --- helpers ---------------------------------------------------------
+
+// keysOf returns the sorted key set of a JSON object (for the
+// exact-keys pins).
+func keysOf(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func indexOfStep(t *testing.T, steps []gateStep, want gateStep) int {
 	t.Helper()

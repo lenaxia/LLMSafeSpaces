@@ -173,7 +173,9 @@ jobs:
         # relayOnlyKeyDelivery.enabled, agentdSidecar.enabled and every
         # other posture lever reach helm UNTOUCHED: if the shipped
         # defaults cannot go all-Ready, the gate is red. That is the
-        # point.
+        # point. NOTE: `helm --wait`'s rc=0 is NOT the verdict — a
+        # transient Available window satisfied it mid-crashloop in the
+        # r1 live run; the four assertions below carry the verdict.
         id: posture-install
         run: |
           # NOTE: the helm command's backslash continuation must stay
@@ -220,10 +222,36 @@ jobs:
         # All-Ready: the release namespace AND llm-relay (the chart
         # renders both). This alone kills the #1546 Defect-1 class — a
         # CrashLooping router at first cold install — at the source.
+        # NOTE the idiom: `rollout status deployment --all` does NOT
+        # exist in kubectl (unknown flag) — the wait-on-condition form
+        # is the verified one.
         run: |
-          kubectl -n $NS rollout status deployment --all --timeout=300s
-          kubectl -n llm-relay rollout status deployment --all --timeout=300s
-          echo "OK: all Deployments Ready under the shipped defaults"
+          set -euo pipefail
+          kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s
+          kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s
+          # Stability window: `helm --wait` can return rc=0 mid-crashloop
+          # (a transient Available window satisfied it — observed live in
+          # review r1). Re-assert Available after the settle window and
+          # require ZERO NEW restarts inside it: a crashlooping pod (exit
+          # cycles under 30s) cannot stay quiet for 45s, while a healthy
+          # cold install — even one that restarted during first-boot
+          # arming waits — records no new restarts.
+          restarts_snapshot() {
+            kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort
+          }
+          BEFORE_NS=$(restarts_snapshot "$NS")
+          BEFORE_RELAY=$(restarts_snapshot llm-relay)
+          sleep 45
+          kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s
+          kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s
+          AFTER_NS=$(restarts_snapshot "$NS")
+          AFTER_RELAY=$(restarts_snapshot llm-relay)
+          if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then
+            echo "FAIL: pods restarted during the 45s stability window — the Available condition is flapping (crashloop class)"
+            diff <(echo "$BEFORE_NS"; echo "$BEFORE_RELAY") <(echo "$AFTER_NS"; echo "$AFTER_RELAY") || true
+            exit 1
+          fi
+          echo "OK: all Deployments Ready and stable under the shipped defaults"
 
       - name: Assert 2 — the armed line (relay-only key delivery enabled)
         # M1's boot-time contract, asserted cluster-side: the shipped
@@ -241,14 +269,28 @@ jobs:
         # The generic silent-RBAC-starvation catch: no pod in any
         # rendered namespace may log a `forbidden` (RBAC-denial) line.
         # Defect 2's class, and the refresher-starvation class, both
-        # land here as a red gate instead of a silent degrade.
+        # land here as a red gate instead of a silent degrade. A log
+        # fetch FAILURE is itself a red verdict — a pod whose logs
+        # cannot be read cannot be cleared — and prior crashed
+        # containers count too (a restart must not launder denials).
         run: |
           set -euo pipefail
           for GATE_NS in "$NS" "llm-relay"; do
             while read -r POD; do
-              if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true 2>/dev/null | grep -i 'forbidden'; then
+              if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then
+                echo "FAIL: could not fetch logs for $GATE_NS/$POD — a pod whose logs cannot be read cannot be cleared"
+                cat /tmp/gate-pod.err || true
+                exit 1
+              fi
+              if grep -i 'forbidden' /tmp/gate-pod.log; then
                 echo "FAIL: forbidden line in $GATE_NS/$POD — RBAC starvation under the shipped posture"
                 exit 1
+              fi
+              if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then
+                if grep -i 'forbidden' /tmp/gate-pod-prev.log; then
+                  echo "FAIL: forbidden line in $GATE_NS/$POD (previous container) — RBAC starvation under the shipped posture"
+                  exit 1
+                fi
               fi
             done < <(kubectl -n "$GATE_NS" get pods -o name)
           done

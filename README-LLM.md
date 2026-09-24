@@ -934,6 +934,10 @@ List every file created or modified in this session.
 
 This applies to humans and AI agents equally. No exceptions. The review-iterate-approve-merge cycle is the quality gate — skipping it defeats the purpose of having it.
 
+### The posture-gate contribution rule (design 0061 §5)
+
+**A PR that flips any multi-component default must include posture-gate evidence covering the new default posture.** The gate (`.github/workflows/posture-gate.yml`) cold-installs the chart under its own shipped defaults on kind and asserts the four 0061 §5 checks — all-Ready across both rendered namespaces, the relay-only armed line, zero `forbidden` lines in any pod log, and the running controller's commit stamp equal to the build sha. It arms on `workflow_dispatch` and on PRs touching `helm/**`, `controller/**`, or `api/**`; for a default flip outside those paths, run it by dispatch and link the green run in the PR body. The mechanical rule replaces a flip-manifest system: the gate IS the evidence, every default-posture change, no record-keeping to forget.
+
 ### During work
 
 1. Write tests first — TDD, always
