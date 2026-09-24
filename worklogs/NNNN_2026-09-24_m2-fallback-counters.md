@@ -65,3 +65,12 @@ None.
 ## r0-fix — the CI-red my local run couldn't see (no promtool here)
 
 The alerts insert landed INSIDE LlmRelayRouterRejectSpike's multi-line expr block (my python anchor was the CONTINUATION line of a folded expression, not a rule boundary — the inserted `- alert:` lines became expression text, and promtool caught it: "could not parse expression: unexpected identifier RelayFallbackDeliveryActive"). The local run couldn't catch it — TestPromtoolRules SKIPS without the promtool binary, the exact silent-skip shape the orchestrator flagged on #1534. Fixed: the two alerts re-inserted as complete rules at the group head, before the first alert. Structural validation added locally (a rendered-YAML walk asserting every rule in the group has a clean alert name and an uncontaminated expr — the class closed without the binary).
+
+## r1 — the four unit-level gaps closed; the structural walk in-tree
+
+- **Promtool fire scenarios**: both alerts now have input_series + alert_rule_test cases in alerts_promtool_test.yaml (the #906-never-fire class; the design's own "fires in the unit harness" bar).
+- **The registration observability**: TestInstallRelay_CountersRegistered asserts BOTH counters are gatherable from the default registry after the install seam — with the CounterVec-emits-nothing-until-a-child probe documented (the reviewer's deletion mutation now goes red).
+- **Strict+expired**: TestRelayFallback_StrictExpiredDeliversToken pins the token-delivers-unchanged promise; the unreachable else arm REMOVED (applyRelayHandoff returns relayExpired only under migration — the comment now states the actual strict mechanism: the expiry check is skipped THERE).
+- **Key Decision 3 pinned**: the present-handoff test now asserts fallbackDelta(aws-bedrock) == 0 (the not-staged class is NOT fallback — staging is ready).
+- **The r0-fix "structural walk" claim**: now a real test (TestRelayFallbackMode_RulesStructurallyClean — the parsed-rules walk catching the folded-expr insertion class the Contains pins cannot).
+- The e2e gap stands per the RECORDED ORDER — the M2/M4 e2e migration story is the next queue item (design 0061 §10's assignment; not evaporating — stated here and in the PR).

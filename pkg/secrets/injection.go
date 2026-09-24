@@ -404,18 +404,15 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 			case relayEmitted:
 				relayMeta = meta
 			case relayExpired:
-				// M2: an expired staged token is not-ready at batch time.
-				// Migration: the raw fallback DELIVERS + counts (the
-				// availability trade). Strict: fall through to the token
-				// emission (applyRelayHandoff performed the rewrite — the
-				// existing renewal path owns expiry there).
-				if s.relayFallback {
-					s.audit(ctx, ownerUserID, "relay_fallback_delivery", nil, &workspaceID,
-						map[string]string{"slug": pd.Slug, "kind": pd.Kind, "reason": "token_expired"})
-					relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
-				} else {
-					relayMeta = meta
-				}
+				// M2: an expired staged token is not-ready at batch time —
+				// MIGRATION only (applyRelayHandoff returns this outcome
+				// solely when fallbackAllowed; under STRICT the expiry
+				// check is skipped THERE and the rewrite delivers the
+				// token via relayEmitted — the renewal path owns expiry,
+				// unchanged). The raw fallback DELIVERS + counts.
+				s.audit(ctx, ownerUserID, "relay_fallback_delivery", nil, &workspaceID,
+					map[string]string{"slug": pd.Slug, "kind": pd.Kind, "reason": "token_expired"})
+				relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
 			case relayEmptyToken:
 				// Empty staged token: corruption the controller never
 				// writes — skip loudly, no keyless entry, no raw fallback.

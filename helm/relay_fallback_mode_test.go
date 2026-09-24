@@ -75,3 +75,47 @@ func prometheusRulesRaw(t *testing.T, values string) string {
 	}
 	return ""
 }
+
+// The structural walk (the r0-fix record's claimed artifact, now IN the
+// tree): every rule in the llm-relay group must be a complete alert
+// struct — a re-insertion inside another rule's folded expr (the r0 CI
+// class) leaves substrings the Contains pins still match, but a walk of
+// the PARSED rules catches it. The local promtool-skip stand-in.
+func TestRelayFallbackMode_RulesStructurallyClean(t *testing.T) {
+	raw := prometheusRulesRaw(t, "monitoring:\n  enabled: true\n")
+	require.NotEmpty(t, raw)
+	for _, d := range helmTemplate(t, "monitoring:\n  enabled: true\n") {
+		if d["kind"] != "PrometheusRule" {
+			continue
+		}
+		spec, _ := d["spec"].(map[string]any)
+		groups, _ := spec["groups"].([]any)
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			if name, _ := gm["name"].(string); name != "llmsafespaces.llm-relay" {
+				continue
+			}
+			rules, _ := gm["rules"].([]any)
+			require.NotEmpty(t, rules)
+			for i, r := range rules {
+				rm, _ := r.(map[string]any)
+				alert, _ := rm["alert"].(string)
+				require.NotEmpty(t, alert, "rule[%d] must be a complete alert struct", i)
+				expr, _ := rm["expr"].(string)
+				assert.NotContains(t, expr, "alert:", "rule[%d] (%s): expr contaminated with rule text — the folded-expr insertion class", i, alert)
+				assert.NotContains(t, expr, "severity:", "rule[%d] (%s): labels leaked into expr", i, alert)
+			}
+			sawFallback, sawDegraded := false, false
+			for _, r := range rules {
+				rm, _ := r.(map[string]any)
+				switch rm["alert"] {
+				case "RelayFallbackDeliveryActive":
+					sawFallback = true
+				case "RelayDegradedBatchesActive":
+					sawDegraded = true
+				}
+			}
+			assert.True(t, sawFallback && sawDegraded, "both M2 alerts present as complete rules")
+		}
+	}
+}

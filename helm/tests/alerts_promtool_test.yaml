@@ -835,3 +835,32 @@ tests:
               description: >-
                 Workspace ws-canary saw 20 upstream-class
                 failures in 10m — resolve path or provider availability issue.
+
+  # ── M2 (design 0061 §4): the fallback + degraded-batch detectors ──────
+  - interval: 1m
+    input_series:
+      - series: 'relay_fallback_deliveries_total{workspace="ws-a",provider_slug="openai"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RelayFallbackDeliveryActive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: credential-delivery
+            exp_annotations:
+              summary: "Relay fallback delivery active (migration mode delivering raw keys)"
+
+  - interval: 1m
+    input_series:
+      - series: 'relay_degraded_batches_total{workspace="ws-b",reason="relay_staging_not_ready"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RelayDegradedBatchesActive
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: credential-delivery
+            exp_annotations:
+              summary: "Fail-closed relay batches (zero LLM credentials delivered)"

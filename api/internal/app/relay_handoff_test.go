@@ -4,6 +4,8 @@
 package app
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
+
 	"context"
 	"encoding/json"
 	"testing"
@@ -152,4 +154,30 @@ func TestInstallRelay_FallbackModeThreads(t *testing.T) {
 	if off.RelayTokensForTest() != nil || off.RelayFallbackForTest() {
 		t.Error("flag off must not install the source or arm the fallback")
 	}
+}
+
+// Counter-registration observability (r1 finding 2): deleting the
+// registerRelayMetricsOnce block must fail a test — the alerts can only
+// fire if the collectors are GATHERABLE. The pkg/secrets tests read the
+// unexported collectors directly; THIS asserts the default registry
+// exposure after the install seam.
+func TestInstallRelay_CountersRegistered(t *testing.T) {
+	installRelayTokenSource(secrets.NewSecretService(nil, nil), true, "migration", fakeRelayWorkspaceGetter{}, k8sfake.NewSimpleClientset())
+	// A CounterVec emits NO family until a child exists — probe both so
+	// gatherability is observable (the production increments are the
+	// children; the probe uses throwaway label values).
+	fb, deg := secrets.RelayFallbackMetrics()
+	fb.WithLabelValues("probe", "probe").Inc()
+	deg.WithLabelValues("probe", "probe").Inc()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	saw := map[string]bool{}
+	for _, mf := range mfs {
+		name := mf.GetName()
+		if name == "relay_fallback_deliveries_total" || name == "relay_degraded_batches_total" {
+			saw[name] = true
+		}
+	}
+	assert.True(t, saw["relay_fallback_deliveries_total"], "the fallback counter must be gatherable after relay install (else the alert is permanently dark on a green tree)")
+	assert.True(t, saw["relay_degraded_batches_total"], "the degraded counter must be gatherable after relay install")
 }

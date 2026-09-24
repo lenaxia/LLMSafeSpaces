@@ -162,6 +162,13 @@ func TestRelayFallback_PresentHandoffUnchanged(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, llm.Value, "lrt_fresh")
 	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "openai"), "no fallback counter on the token path")
+
+	// Key Decision 3, PINNED (r1 finding 4): the bedrock binding (a
+	// NOT-STAGED slug under a PRESENT handoff — the #1529 mixed-fleet
+	// raw class) does NOT count as a fallback delivery: staging is
+	// READY; only absent-handoff and expired-token emissions count.
+	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "aws-bedrock"),
+		"a not-staged raw emission under a PRESENT handoff is NOT a fallback delivery (Key Decision 3)")
 }
 
 // The seam contract (wt-1453's M4): the fallback reason JOINS
@@ -172,4 +179,28 @@ func TestIsRelayDegrade_IncludesFallback(t *testing.T) {
 	assert.True(t, IsRelayDegrade(&BuildDegrade{Reason: DegradeRelayStagingNotReady}))
 	assert.False(t, IsRelayDegrade(&BuildDegrade{Reason: "dek_unwrap_failed"}))
 	assert.False(t, IsRelayDegrade(nil))
+}
+
+// STRICT + expired token: the token DELIVERS UNCHANGED (applyRelayHandoff
+// skips the expiry check when !fallbackAllowed — the existing renewal
+// path owns expiry; no behavior change under strict).
+func TestRelayFallback_StrictExpiredDeliversToken(t *testing.T) {
+	resetRelayCounters(t)
+	expired := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	handoff := testHandoff("rEXPSTR1", RelayHandoffProvider{
+		ProviderSlug: "openai", Kind: "openai", Token: "lrt_expired_strict", RouterPath: "/w/ws-1/openai/v1", ExpiresAt: expired,
+	})
+	svc, _, _ := installRelayEnv(t, &fakeRelayTokenSource{handoff: handoff})
+	// strict: the zero value — NO SetRelayDeliveryFallback call.
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Nil(t, degrade, "strict expired: no class degrade (the handoff exists)")
+
+	llm, ok := findEntry(batch, SecretTypeLLMProvider, "openai")
+	require.True(t, ok)
+	assert.Contains(t, llm.Value, "lrt_expired_strict",
+		"STRICT delivers the (expired) token UNCHANGED — the renewal path owns expiry")
+	assert.NotNil(t, llm.Metadata, "token metadata (with the expiry the agentd liveness reads)")
+	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "openai"), "no fallback delivery under strict")
 }
