@@ -68,9 +68,19 @@ func TestM1_ExitConstantSourceTruth(t *testing.T) {
 		!strings.Contains(src, "85: relay staging not") {
 		t.Fatal("the ladder comment must name the doctrine (the runbook's grep surface)")
 	}
-	// The window constant feeds the guard's context (no new timer).
+	// The window constant feeds the guard's context (no new timer) —
+	// this check enforces the guard's USE of the constant.
 	if !strings.Contains(src, "context.WithTimeout(context.Background(), ArmingStartupGuardWindow)") {
 		t.Fatal("the startup guard must read ArmingStartupGuardWindow — the design's window IS the guard's budget")
+	}
+	// r5: VALUE-enforcement added — the r4 attribution credited this
+	// pin with the value while its third check was identifier-only
+	// (a 10-minute mutation passed it; the unit twin
+	// TestArmingWindow_IsTheStartupGuardBudget was the only value pin
+	// and had been demoted to "documentation"). The const's VALUE is
+	// now enforced HERE too — both dimensions in one place.
+	if !strings.Contains(src, "const ArmingStartupGuardWindow = 30 * time.Second") {
+		t.Fatal("ArmingStartupGuardWindow must be the const 30 * time.Second (the design's fixed budget — a value change is a design amendment)")
 	}
 }
 
