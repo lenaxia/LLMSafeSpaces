@@ -297,7 +297,7 @@ llmsafespaces/
 ├── mocks/         # Shared test mocks
 ├── sdks/          # Client SDKs (Go, TypeScript, Python, Java, VS Code extension) from OpenAPI spec
 ├── frontend/      # React 19 + TypeScript + Vite SPA
-├── helm/        # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks, optional relay-router)
+├── helm/          # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks, optional relay-router)
 ├── design/        # Design documents — 0021_evolution-v2.md is authoritative
 ├── hack/          # Build and code generation scripts
 ├── local/         # kind bootstrap/test/teardown scripts

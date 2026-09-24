@@ -220,8 +220,11 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		// past the --set ban list (r0 raised it, r2 re-demonstrated: a
 		// posture-override.yaml passed via --values kept every pin
 		// green). The install takes its posture from the chart alone.
+		// `-f=` covers the pflag shorthand-with-= form (r3's escape of
+		// the space-delimited " -f " ban).
 		"--values",
 		" -f ",
+		"-f=",
 		"--set-json",
 	} {
 		require.NotContains(t, install.Run, banned,
@@ -294,6 +297,13 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// literal surface is unchanged, so only a pin sees the neuter.
 		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
 			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
+		// r3 finding 2: the pinned prefix alone is presence, not
+		// persistence — `set +e` on a later line countermands it while
+		// every literal stays green.
+		require.NotContains(t, s.Run, "set +e",
+			"%s must not countermand set -e (a later `set +e` neuters every check under the pinned prefix)", spec.prefix)
+		require.NotContains(t, s.Run, "set +o pipefail",
+			"%s must not countermand pipefail", spec.prefix)
 	}
 	for _, s := range steps {
 		require.Nil(t, s.ContinueOnError,

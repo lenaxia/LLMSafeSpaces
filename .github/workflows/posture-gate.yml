@@ -10,6 +10,11 @@ concurrency:
   group: posture-gate-${{ github.ref }}
   cancel-in-progress: true
 
+# The job checks out code and builds images — nothing else of the
+# token's surface is needed (the r3 hardening note).
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   pull_request:
