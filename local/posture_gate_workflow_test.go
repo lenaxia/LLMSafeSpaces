@@ -212,12 +212,18 @@ var assertionSpecs = []struct {
 	{"Assert 1", []string{
 		"--for=condition=available deployment --all -n $NS",
 		"--for=condition=available deployment --all -n llm-relay",
-		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
-		"sleep 45",     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
+		"restartCount",                 // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
+		"sleep 45",                     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
+		"AFTER_NS=$(restarts_snapshot", // r8 finding 4: the COMPARISON block — deleting it left a 45s delay and every literal green (the gut-the-comparison class r1 closed for Assert 4)
 	},
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
 	{"Assert 2", []string{
 		"relay-only key delivery enabled",
+		// r8 finding 1: the DETECTOR line pinned whole — polarity AND
+		// target. Dropping the ! inverts green/red; swapping the file to
+		// the (empty-on-healthy) stderr capture vacates the check — both
+		// kept every bare literal intact.
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log",
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller >",
 	},
 		"the armed line — M1's boot-time contract, cluster-side; the log FETCH is failure-checked (a pod whose logs cannot be read cannot be cleared)"},
@@ -225,6 +231,11 @@ var assertionSpecs = []struct {
 		`for GATE_NS in "$NS" "llm-relay"`,
 		"--previous",
 		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
+		// r8 finding 2: the FEED — without it the pinned fetch is dead
+		// code (read consumes empty stdin, both namespaces silently
+		// cleared). The herestring form is pinned; the process-
+		// substitution form stays banned by absence.
+		`done <<< "$PODS"`,
 		// r6's root cause D + r7's inversion finding: the payload pinned
 		// on BOTH greps in the POSITIVE `if grep` shape — a Contains-
 		// anywhere pin passed a partial swap, and a `!`-inversion (green
@@ -279,23 +290,43 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	require.Equal(t, "posture-install", install.ID, "install step must carry the id the run keys on")
 	require.Contains(t, install.Run, "helm upgrade --install llmsafespaces helm",
 		"the nightly's install command shape, verbatim")
-	// r7 finding 1 — the head-of-line shape pin (the regression pin for
-	// the committed-mutation incident): the install's FIRST command
-	// line must be exactly the nightly's head line. A left-in mutation
-	// appending tokens to the head line defeats every ban view, the
-	// allowlist parse, and the -f regex at once (the tokens never form
-	// — six rounds of pins stayed green over a provably broken install).
+	// r8 finding 7: the comparison must be on the RAW parsed line —
+	// TrimSpace defeated the pin for the trailing-space spelling
+	// (`helm … \ ` — an escaped space, not a continuation: helm gets a
+	// positional arg and the install fails on every tree with all pins
+	// green, the r6 dead-gate class through the pin's own normalization).
 	first := ""
 	for _, line := range strings.Split(install.Run, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		first = trimmed
+		first = line
 		break
 	}
 	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
-		"the install's first command line must be exactly the nightly's head line — anything else is an unreviewed append (the r7 committed-mutation class)")
+		"the install's first command line must be exactly the nightly's head line, RAW — trailing/leading whitespace drift is an unreviewed change (the r7 committed-mutation class; the r8 escaped-space class)")
+	// r8 finding 6: the install is ONE operator-free command (the
+	// nightly's shape) — any shell operator opens a post-install
+	// channel (`… && kubectl set env …`) that no allowlist or -f regex
+	// sees. False-positive-free against the current block.
+	for _, op := range []string{"&&", ";", "|", "`", "$("} {
+		require.NotContains(t, install.Run, op,
+			"the install run block must carry no shell operators — the nightly's shape is one operator-free command; `%s` opens an unreviewed channel", op)
+	}
+	// r8 finding 3: the WORKFLOW-level env block is a carrier channel
+	// one tier above the step/job closes — its values reach helm as
+	// unquoted ${VARS} past every run-text ban. It legitimately exists
+	// (the three cluster-identity vars); anything else is drift.
+	var top struct {
+		Env map[string]string `json:"env"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(mustRead(t, postureGateWorkflow)), &top))
+	require.Equal(t, map[string]string{
+		"CLUSTER_NAME": "llmsafespaces-posture",
+		"IMAGE_TAG":    "posture",
+		"NS":           "llmsafespaces",
+	}, top.Env,
+		"the workflow-level env must be exactly the three cluster-identity vars — any added entry is a value-carrier channel that evades the run-text bans")
 	// The two value-bearing environmental pins: mcp MUST be off (issue
 	// #28 — no image exists to pull) and the install MUST wait (the
 	// nightly's shape; the assertions still carry the verdict).
@@ -438,6 +469,11 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		for _, view := range banViews(s.Run) {
 			for _, countermand := range []string{
 				"set +e", "set +o", "+o errexit", "+o pipefail", "+o nounset", "trap ", "exit 0",
+				// r8 finding 5: `break`/`continue` abandon the loop and
+				// print OK with every literal intact (exit 1 → break in
+				// the detector branch fires the grep, drops the verdict).
+				// No assertion block legitimately uses either.
+				"break", "continue",
 			} {
 				require.NotContains(t, view, countermand,
 					"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)

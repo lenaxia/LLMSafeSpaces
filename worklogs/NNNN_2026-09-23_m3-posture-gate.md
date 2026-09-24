@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r7 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r8 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r7 fixes pushed; awaiting re-review.
+**Status:** r8 fixes pushed; awaiting re-review.
 
 ---
 
@@ -69,7 +69,7 @@ r6's mutation gauntlet (41 mutations, review + skeptical sub-agent cross-validat
 3. **Root cause D — unpinned payloads (REAL, closed):** `sleep 45` → `sleep 1` (the window's duration is the crashloop catch's teeth) and the `forbidden` grep pattern were pinned nowhere. Now pinned — the grep on BOTH files (a Contains-anywhere pin passed while only the current-container grep was swapped; the partial swap neuters half the detector — re-verified red both partial and full).
 4. **`exit 0` (REAL, closed):** strictly larger blast radius than the trap ban's class — it neuters the restart-diff too, re-opening the #1546 Defect-1 path (crashlooping router, zero forbidden, armed controller) through every remaining assertion. Banned in all assertion blocks; failure paths use `exit 1` only (false-positive-free).
 5. **The env-carrier channel (REAL, closed):** a step-level `env:` block feeding `${GATE_EXTRA}` into the helm line evaded every run-text ban. The install step's env block is now required EMPTY (parsed via the step's `env` key).
-6. **Root cause A — the backslash-newline join (CLOSED BY THE BELT VIEW; the extra-indent form is fail-closed — this corrects r6's own "REFUTED" claim, which r7's review counter-demonstrated):** a continuation line at the BLOCK-MINIMUM indent is valid YAML, and after YAML strips the block indentation bash joins `se\`+newline+`t +e` with NOTHING — `set +e` executes (errexit verifiably off). The extra-indent form leaves the indent as separator whitespace (argv splits, `unknown flag` / `command not found` → fail-closed red — my executed test at `/tmp/opencode/jointest/t.sh` demonstrated this form correctly). The `banViews` empty-join view models bash's join exactly, so BOTH forms go red under the pins — the class is closed by the mechanism, not refuted. The r6 record's "REFUTED for this context" claim was wrong and is corrected here.
+6. **Root cause A — the backslash-newline join (CLOSED BY THE BELT VIEW; the extra-indent form is fail-closed — this corrects r6's own "REFUTED" claim, which r7's review counter-demonstrated):** a continuation line at the BLOCK-MINIMUM indent is valid YAML, and after YAML strips the block indentation bash joins `se\`+newline+`t +e` with NOTHING — `set +e` executes (errexit verifiably off). The extra-indent form leaves the indent as separator whitespace (argv splits, `unknown flag` / `command not found` → fail-closed red — my executed test at `/tmp/opencode/jointest/t.sh` demonstrated this form correctly). The `banViews` empty-join view models bash's join exactly, so the block-minimum form goes red under the pins; the extra-indent form is pin-GREEN but fail-closed at RUNTIME (argv splits — `unknown flag` / `command not found` → red gate). The class is closed — by the belt view for the live form, by fail-closure for the inert form — not refuted. The r6 record's "REFUTED for this context" claim was wrong and is corrected here.
 
 ## r7 round record (the committed-mutation incident — owned, reverted, pinned)
 
@@ -84,6 +84,21 @@ Fixes this round:
 6. **The record corrections** — the false REFUTED claim fixed (above); the dependency record refreshed from a live scan: **M1 (#1553) MERGED 03:27Z; M2 now exists — #1559, OPEN; the defect fix #1558 OPEN; M4 (#1557) merged**. The gate's remaining red-drivers: #1558 and (per the recorded order) M2.
 
 All five r7 mutation classes (head-append, split-wait, job-env, bang-inversion, fetch-guard-denial) re-verified RED by my own mutations; the pristine baseline is md5-verified after the gauntlet. Mutation-hygiene rule adopted in practice: the baseline is checksummed before every gauntlet and verified after it.
+
+## r8 round record (eight adjacent-shape escapes closed)
+
+r8's review confirmed the r7 closes real (29 mutations, 23 RED spot-checks; the head-of-line pin re-caught the exact incident replay; the revert verified by empty diff and a live rc=0 render) — and found eight more GREEN escapes, all small test-side closes, three of them one line short of classes r7 itself declared:
+
+1. **Assert 2's detector line pinned whole** (`if ! grep -F '…' /tmp/gate-armed.log`) — polarity AND target: dropping the `!` inverted green/red; swapping the file to the empty-on-healthy stderr capture vacated the check.
+2. **Assert 3's loop FEED pinned** (`done <<< "$PODS"`) — without it the pinned fetch is dead code (read consumes empty stdin, both namespaces silently cleared); the process-substitution form stays banned by absence.
+3. **The WORKFLOW-level env allowlisted** (exactly {CLUSTER_NAME, IMAGE_TAG, NS}) — the carrier channel was closed at step and job levels but open one tier up; the review live-proved a `GATE_EXTRA` watchNamespaces smuggle rendering into the deployed controller.
+4. **Assert 1's AFTER-block pinned** (`AFTER_NS=$(restarts_snapshot`) — deleting the comparison block left a 45s delay with every literal green (the gut-the-comparison class r1 closed for Assert 4).
+5. **`break`/`continue` banned** in assertion blocks — `exit 1` → `break` in the detector branch fires the grep, abandons the loop, prints OK.
+6. **The install's operator surface banned** (`&&`, `;`, `|`, backtick, `$(`) — the nightly's shape is ONE operator-free command; a tail append (`--wait … && kubectl set env …`) opened a post-install channel no allowlist saw.
+7. **The head-line pin compares RAW** — TrimSpace defeated it for the escaped-space spelling (`… \ ` — helm gets a positional arg, install fails on every tree, all pins green; live-proven rc=1).
+8. **The worklog overclaim corrected** — "BOTH forms go red under the pins" was wrong: the extra-indent form is pin-green and fail-closed at runtime; the record now says exactly that.
+
+All eight re-verified RED by my own mutations (F5's first attempt hit the registry step's exit 1 — outside the pinned scope by design; the redo targeted the assertion block). Pristine baseline checksummed before and verified after the gauntlet.
 
 ## Key Decisions
 
@@ -104,7 +119,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r7 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r8 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -112,7 +127,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r7 verdict pending).
+1. Re-review (r8 verdict pending).
 2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
