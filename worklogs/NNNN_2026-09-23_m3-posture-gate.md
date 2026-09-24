@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r14 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r15 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r14 fixes pushed; awaiting re-review.
+**Status:** r15 fixes pushed; awaiting re-review.
 
 ---
 
@@ -126,7 +126,7 @@ All ten r10 classes re-verified RED by my own mutations; pristine baseline check
 
 ## r11 round record (the inputs one tier deeper, the comment-padding neuter, and the injection channel)
 
-r11's review (~68 mutations, review + skeptical sub-agent) found the verdict inputs BELOW r10's pins: the snapshot PRODUCER (a constant producer — jsonpath typo evaluating empty, or an appended `| head -n 0` — makes BEFORE and AFTER equal by construction; the comparison can never fire), Assert 4's extraction (gutted to a no-op grep + a pinned-sha assignment — the comparison unfireable with every literal green), the exit-1 floor counting `# exit 1` comments, capture-file injection on Assert 2/4's files (an `echo <expected> > file` between fetch and detector is always-green), and two rebind spellings (`GATE_NS=` in the loop — both iterations scan llm-relay, the release namespace never checked; `export NS=`). All closed:
+r11's review (~68 mutations, review + skeptical sub-agent) found the verdict inputs BELOW r10's pins: the snapshot PRODUCER (a constant producer — jsonpath typo evaluating empty, or an appended `| head -n 0` — makes BEFORE and AFTER equal by construction; the comparison can never fire), Assert 4's extraction (gutted to a no-op grep + a pinned-sha assignment — the comparison unfireable with every literal green), the exit-1 floor counting `# exit 1` comments, capture-file injection on Assert 2/4's files (an `echo <expected> > file` between fetch and detector is always-green), and two rebind spellings (`GATE_NS=` in the loop — both iterations scan llm-relay, the release namespace never checked; `export NS=`). All closed: [CORRECTED r15: "All closed" is HISTORICAL — r12's own record documents that five of its eleven escapes were inside classes this round declared closed (the write-count single spelling, the HasPrefix count scope, the loose FAIL-context, the POD variable, the duplicate producer).]
 
 1. **The producer's jsonpath line exact-pinned** and **exactly-one counts on all four snapshot assignments** (a duplicate AFTER the window re-snapshots past the sleep).
 2. **Assert 4's extraction first line exact-pinned** (the comparison's input, r10-RC-A precedent — Assert 1's inputs were pinned, Assert 4's left open).
@@ -134,7 +134,7 @@ r11's review (~68 mutations, review + skeptical sub-agent) found the verdict inp
 4. **Write-count pins extended to `/tmp/gate-armed.log` and `/tmp/gate-controller.log`** (exactly one write each).
 5. **`GATE_NS=` and `export NS=` banned** alongside the r10 `NS=` rebind ban.
 
-All nine r11 classes re-verified RED (J1a's first sed misfired on the pipe character — the python redo verified applied-and-caught); pristine baseline checksummed before and after.
+All nine r11 mutation REPLAYS re-verified RED — nine replays of the review's five named findings, not nine distinct closes [CORRECTED r15: the count was mine, from the J-series gauntlet; the section lists five closes] (J1a's first sed misfired on the pipe character — the python redo verified applied-and-caught); pristine baseline checksummed before and after.
 
 ## r12 round record (the assertion-block spelling war ends the same way the install's did)
 
@@ -164,7 +164,11 @@ All seven r13 classes re-verified RED (each caught twice — inventory and backs
 
 r14's review (47 mutations) delivered the verdict the thirteen rounds were building toward: **the first round with zero assertion-block escapes** — every r13 replay and all fourteen prior classes RED. One escape remained (install-channel): the process-substitution spelling `< <(kubectl patch clusterrole …)` inside the continuation chain executed mid-install and evaded the r8 operator ban (r9 closed the newline twin). Closed: `<(`, `>(`, and `&` added to the install's banned operators (mutation re-verified red).
 
-The record pass, delivered IN PLACE this time (the r13 narration-without-correction lapse): the falsified claims in the r9–r12 sections are annotated where they stand ("[CORRECTED r14: …]" — history kept, the falsehood no longer uncorrected); the "latest scan: r7" label that survived five rounds of flags is replaced by a live r14 scan; and the material state change is recorded: **#1558 (the defect fix) MERGED 16:21:22Z** — the gate's primary red-driver has landed, M2 (#1559) is the one remaining recorded-order predecessor, and the merge framing now reads "the gate could now run green for the first time" rather than "the gate is red by design." The PR body's sequencing section carries the same refresh.
+The record pass, delivered IN PLACE this time (the r13 narration-without-correction lapse): the falsified claims in the r9–r12 sections are annotated where they stand ("[CORRECTED r14: …]" — history kept, the falsehood no longer uncorrected; r15 completed the pass: the r11 section's two claims, missed by the r14 pass, are now annotated too); the "latest scan: r7" label that survived five rounds of flags is replaced by a live r14 scan; and the material state change is recorded: **#1558 (the defect fix) MERGED 16:21:22Z** — the gate's primary red-driver has landed, M2 (#1559) is the one remaining recorded-order predecessor, and the merge framing now reads "the gate could now run green for the first time" rather than "the gate is red by design." The PR body's sequencing section carries the same refresh.
+
+## r15 round record (the view inconsistency, closed with the mechanism the file already had)
+
+r15's finding 1 was an inconsistency, not a new mechanism: the operator ban ran over RAW install text while the lever bans and the -f regex in the SAME test ran over `banViews` — whose empty-join view exists precisely because bash removes backslash-newline with no space. The composed spellings (`<\`+NL+`(`, `>\`+NL+`(`, `$\`+NL+`(`) executed live substitutions mid-install with all pins green (not silent-green — helm fails arg validation — but the r8-finding-7 pin-green-dead-install class, the fourth escape round on this channel). Closed: the operator ban now runs over every `banViews` view; the double-backslash-newline spelling (`\\`+NL — an escaped backslash that ends the command) joins the ban per the adjudicated finding; and `extractSetKeys` parses BOTH join views (the symmetric close for the split-`--set` parse — posture-neutral per the adjudication, but symmetry is cheap). Findings 2+3: the r11 section's two missed annotations are delivered, and the r14 record's completeness claim now states the pass it actually made.
 
 ## Key Decisions
 
@@ -185,7 +189,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r14 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r15 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -193,7 +197,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Next Steps
 
-1. Re-review (r14 verdict pending).
+1. Re-review (r15 verdict pending).
 2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

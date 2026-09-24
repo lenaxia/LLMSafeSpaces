@@ -89,23 +89,29 @@ var installSetAllowlist = map[string]bool{
 // `${KEY}`) and fails the allowlist.
 func extractSetKeys(t *testing.T, run string) []string {
 	t.Helper()
-	joined := strings.ReplaceAll(run, "\\\n", " ")
+	// Both bash-join views (r15's symmetric close): the space join and
+	// the EMPTY join — a split `--se\`+NL+`t key=val` never forms the
+	// flag in the space-join parse but does in bash's own join.
 	var keys []string
-	fields := strings.Fields(joined)
-	for i, tok := range fields {
-		var value string
-		switch {
-		case tok == "--set":
-			require.True(t, i+1 < len(fields), "--set must be followed by a value token")
-			value = fields[i+1]
-		case strings.HasPrefix(tok, "--set="):
-			value = strings.TrimPrefix(tok, "--set=")
-		default:
-			continue
-		}
-		for _, seg := range strings.Split(value, ",") {
-			seg = strings.Trim(seg, `"`)
-			keys = append(keys, strings.SplitN(seg, "=", 2)[0])
+	for _, joined := range []string{
+		strings.ReplaceAll(run, "\\\n", " "),
+		strings.ReplaceAll(run, "\\\n", ""),
+	} {
+		for i, tok := range strings.Fields(joined) {
+			var value string
+			switch {
+			case tok == "--set":
+				require.True(t, i+1 < len(strings.Fields(joined)), "--set must be followed by a value token")
+				value = strings.Fields(joined)[i+1]
+			case strings.HasPrefix(tok, "--set="):
+				value = strings.TrimPrefix(tok, "--set=")
+			default:
+				continue
+			}
+			for _, seg := range strings.Split(value, ",") {
+				seg = strings.Trim(seg, `"`)
+				keys = append(keys, strings.SplitN(seg, "=", 2)[0])
+			}
 		}
 	}
 	return keys
@@ -605,14 +611,20 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	}
 	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
 		"the install's first command line must be exactly the nightly's head line, RAW — trailing/leading whitespace drift is an unreviewed change (the r7 committed-mutation class; the r8 escaped-space class)")
-	// r8 finding 6 + r14 finding 1: the install is one operator-free
-	// command (the nightly's shape) — any shell operator opens a
-	// post-install channel that no allowlist or -f regex sees. The
-	// process-substitution spellings `<(`/`>(` execute mid-install and
-	// closed r8's list's third spelling (r9 closed the newline twin).
-	for _, op := range []string{"&&", ";", "|", "`", "$(", "<(", ">(", "&"} {
-		require.NotContains(t, install.Run, op,
-			"the install run block must carry no shell operators — the nightly's shape is one operator-free command; `%s` opens an unreviewed channel", op)
+	// r8 finding 6 + r14/r15: the install is one operator-free command
+	// (the nightly's shape) — any shell operator opens a post-install
+	// channel that no allowlist or -f regex sees. Checked over EVERY
+	// bash-join view (r15: the raw-text-only check missed the composed
+	// spellings — `<\`+NL+`(` etc. execute as live substitutions mid-
+	// install while never forming the substring in raw text). The
+	// double-backslash-newline spelling joins r15's adjudicated list:
+	// bash treats `\\`+NL as an escaped backslash ending the command —
+	// a pin-green dead install (the r8-finding-7 class).
+	for _, op := range []string{"&&", ";", "|", "`", "$(", "<(", ">(", "&", "\\\\\n"} {
+		for _, view := range banViews(install.Run) {
+			require.NotContains(t, view, op,
+				"the install run block must carry no shell operators in any join view — `%s` opens an unreviewed channel", op)
+		}
 	}
 	// r9 finding 1: the TAIL — a newline-separated second command has
 	// no operator and escaped the operator ban (live-demonstrated RBAC
