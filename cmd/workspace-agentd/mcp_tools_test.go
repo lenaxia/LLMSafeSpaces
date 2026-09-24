@@ -2027,3 +2027,101 @@ func TestMCPSendMessage_SelfSendGuard_AbsentOnNormalSend(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, `"warning"`, "a normal cross-session send carries NO warning — the guard must not fire")
 }
+
+// --- send_message emission-duplication recovery (#1530) -------------------
+//
+// The 13-misfire evidence class (the orchestrator's 11 + this
+// worker's 2, all while REPORTING the #1525 fix): the model emits
+// send_message with session_id carrying an ESCAPED JSON tail
+// fragment — `TARGET","lsp_injected_session":"ORIGIN"}` — a
+// duplication slip over a similar prior call made visible in
+// context. Probes (scripts/1530-arg-mutation-probe.mjs,
+// 1530-corrupt-args-liveprobe.sh) FALSIFIED the plugin/serializer
+// race: V8's synchronous stringify cannot emit the shape; the
+// escapes prove the corruption predates serialization (model
+// emission). agentd currently hard-fails these — the message is
+// LOST though the intent (leading target id) is mechanically
+// recoverable. The guard: detect the exact fragment mark, recover
+// the target from the leading id, deliver, and warn LOUDLY
+// (omit-when-clean, the #1525 pattern).
+
+// The exact instance shape: escaped tail fragment WITH the trailing
+// brace, injected origin matching the fragment's embedded copy.
+func TestMCPSendMessage_EmissionDuplicationGuard_RecoversTargetAndWarns(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("worker")
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	corrupt := target + `","lsp_injected_session":"` + caller + `"}`
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	require.NoError(t, err, "recovery is a WARNING + delivery, never a refusal")
+	assert.Contains(t, out, `"warning"`, "the warning field must be present on a recovered send")
+	assert.Contains(t, out, "duplicated-argument fragment", "the warning names the condition")
+	assert.Contains(t, out, `"session_id":"`+target+`"`, "the result reports the RECOVERED target id")
+
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(target)) == 1
+	}, 5*time.Second, 50*time.Millisecond, "the recovered send delivers to the intended target")
+	parts := f.sentFor(target)[0]["parts"].([]any)
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.Contains(t, delivered, "lane report")
+	assert.NotContains(t, delivered, "lsp_injected_session", "no fragment bytes bleed into the delivered payload")
+}
+
+// The no-brace variant (probe v2): everything else identical.
+func TestMCPSendMessage_EmissionDuplicationGuard_NoBraceVariant(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("worker")
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	corrupt := target + `","lsp_injected_session":"` + caller + `"`
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"warning"`)
+	assert.Contains(t, out, `"session_id":"`+target+`"`)
+
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(target)) == 1
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// The fragment's embedded origin copy is NOT trusted: a mismatch is
+// cosmetic (the resolved origin — injected or declared — wins), but
+// the warning names it so the odd shape is visible at send time.
+func TestMCPSendMessage_EmissionDuplicationGuard_MismatchedEmbeddedOriginStillDelivers(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("worker")
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	corrupt := target + `","lsp_injected_session":"` + `ses_SOMEONE_ELSE` + `"}`
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"warning"`)
+	assert.Contains(t, out, "differs from the resolved origin", "the mismatch is surfaced, not silently ignored")
+	assert.Contains(t, out, `"origin":"`+caller+`"`, "the RESOLVED origin wins attribution")
+
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(target)) == 1
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// The guard must not mangle clean ids: a normal send carries no
+// warning, and a clean bogus id still fails naming the CLEAN value.
+func TestMCPSendMessage_EmissionDuplicationGuard_AbsentOnCleanIDs(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("worker")
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller, "")
+	require.NoError(t, err)
+	assert.NotContains(t, out, `"warning"`, "a normal send carries NO warning — the recovery must not fire")
+
+	_, err = mcpSendMessage(context.Background(), mcpTestPassword, "ses_CLEAN_BOGUS", "hi", caller, "")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "fragment", "clean bogus ids take the plain not-found path")
+	assert.Contains(t, err.Error(), "ses_CLEAN_BOGUS", "the error names the clean id")
+}
