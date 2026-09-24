@@ -23,11 +23,14 @@ package secrets
 //     worklog D5) keeps the raw-key mixed-fleet path until US-72.5
 //     decides coverage; the controller names these in
 //     CredentialsStaged's message.
-//   - A MISSING handoff under flag-on is staging-not-ready: NO
-//     llm-provider entries at all (never a raw-key fallback — the
-//     design's central property), a machine-readable BuildDegrade
-//     (relay_staging_not_ready) and an audit row. Non-provider classes
-//     (env-secrets, MCP) still deliver.
+//   - A MISSING handoff under flag-on is staging-not-ready: in STRICT
+//     mode NO llm-provider entries at all (the fail-closed posture —
+//     the design's central property, keyed relay_staging_not_ready); in
+//     MIGRATION mode (design 0061 §4, the chart default) the pre-flip
+//     RAW-key entries deliver — counted by
+//     relay_fallback_deliveries_total, audited, and surfaced as the
+//     relay_fallback_delivery degrade. Non-provider classes
+//     (env-secrets, MCP) still deliver in both modes.
 //   - The handoff revision participates in the manifest tier
 //     (ManifestHashWithRelayRevision): a token renewal at ~TTL/2
 //     changes the staged revision, which changes the manifest hash,
@@ -191,8 +194,9 @@ func (h *RelayHandoff) Find(slug string) (RelayHandoffProvider, bool) {
 // RelayTokenSource resolves the controller-staged handoff for a
 // workspace (production: the k8s `workspace-relay-<wsName>` Secret in
 // the workspace namespace, data key `handoff`). A nil handoff with a
-// nil error means "staged Secret absent" — staging not ready, never a
-// raw fallback. A nil RelayTokenSource on the service means the
+// nil error means "staged Secret absent" — staging not ready (strict
+// mutes; migration falls back to raw keys, counted — M2). A nil
+// RelayTokenSource on the service means the
 // deployment flag is OFF: legacy behavior, byte-identical.
 type RelayTokenSource interface {
 	RelayHandoff(ctx context.Context, workspaceID string) (*RelayHandoff, error)
@@ -289,7 +293,8 @@ const (
 	relayEmitted
 	// relayEmptyToken: a handoff entry exists with an empty token —
 	// corruption the controller never writes; skip loudly, never a
-	// keyless entry and never a raw fallback under flag-on.
+	// keyless entry (and never a fallback: an empty token is corrupt,
+	// not not-ready — the design's fallback class is absent/expired).
 	relayEmptyToken
 	// relayExpired (M2): the staged token's expiry is past at batch
 	// time — not-ready for THIS provider (per-provider granularity).

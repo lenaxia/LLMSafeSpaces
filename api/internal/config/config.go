@@ -434,6 +434,9 @@ func Load(path string) (*Config, error) {
 	if err := applyPreviewOriginEnv(&config); err != nil {
 		return nil, err
 	}
+	if err := validateRelayFallbackMode(&config); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	if err := validateCanary(&config); err != nil {
 		return nil, err
 	}
@@ -505,6 +508,20 @@ func applyCanaryEnv(config *Config) {
 			}
 		}
 		config.Canary.Classes = classes
+	}
+}
+
+// validateRelayFallbackMode (M2, design 0061 §4): the enum is
+// fail-loud — a typo ("srtict") must REFUSE boot, not silently arm the
+// fail-open raw-key path for an operator who intended fail-closed
+// (fallbackMode != "strict" arms migration; the bar is the repo's own
+// config-load convention).
+func validateRelayFallbackMode(config *Config) error {
+	switch config.RelayOnlyKeyDelivery.FallbackMode {
+	case "migration", "strict":
+		return nil
+	default:
+		return fmt.Errorf("relayOnlyKeyDelivery.fallbackMode must be \"migration\" or \"strict\", got %q", config.RelayOnlyKeyDelivery.FallbackMode)
 	}
 }
 

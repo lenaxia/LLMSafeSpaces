@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,20 @@ func TestRelayOnlyKeyDelivery_FallbackModeDefaultMigration(t *testing.T) {
 	}
 	if cfg.RelayOnlyKeyDelivery.FallbackMode != "strict" {
 		t.Fatalf("fallbackMode env must thread, got %q", cfg.RelayOnlyKeyDelivery.FallbackMode)
+	}
+}
+
+// M2: the enum is fail-loud — a typo must refuse boot, not silently
+// arm the fail-open raw-key path.
+func TestRelayOnlyKeyDelivery_FallbackModeEnumFailLoud(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("auth:\n  jwtSecret: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE", "srtict")
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `must be "migration" or "strict"`) {
+		t.Fatalf("a typo must refuse boot, got: %v", err)
 	}
 }

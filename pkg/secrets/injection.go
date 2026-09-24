@@ -115,10 +115,11 @@ func (s *SecretService) BuildWorkspaceBatch(ctx context.Context, ownerUserID, wo
 	}
 
 	dek, degrade := s.workspaceDEK(ctx, ownerUserID, workspaceID, bindings, relevantSecrets, servers)
-	// Under flag-on a missing handoff mutes the whole llm-provider class
-	// (no raw fallback — see buildCredentialEntries) and the relay
-	// degrade takes precedence over a co-present DEK degrade
-	// (staging-not-ready blocks strictly more delivery).
+	// Under flag-on a missing handoff: STRICT mutes the whole
+	// llm-provider class (see buildCredentialEntries); MIGRATION
+	// delivers the pre-flip raw entries, counted (M2, design 0061 §4).
+	// Either way the relay degrade takes precedence over a co-present
+	// DEK degrade (staging-not-ready blocks strictly more delivery).
 	if relayDegrade := s.relayBatchDegrade(ctx, ownerUserID, workspaceID, handoff, handoffErr); relayDegrade != nil {
 		degrade = relayDegrade
 	}
@@ -342,7 +343,7 @@ func (s *SecretService) workspaceDEK(ctx context.Context, ownerUserID, workspace
 // formatter). Absent ⇒ the raw mixed-fleet path continues (US-72.3 D5).
 // With handoffErr != nil (staging not ready) and NO fallback (strict —
 // the zero value and the steady-state posture) the ENTIRE class is muted:
-// no token batch and never a raw fallback under flag-on.
+// no token batch (strict) / the counted raw fallback (migration).
 func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID, workspaceID string, bindings []CredentialBinding, dek []byte, handoff *RelayHandoff, handoffErr error) []BatchEntry {
 	adminDecrypt := decryptFnFor(s.adminProvider)
 	orgDecrypt := decryptFnFor(s.orgProvider)

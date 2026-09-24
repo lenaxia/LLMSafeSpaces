@@ -12,7 +12,8 @@ package app
 //
 // Semantics the builder relies on:
 //   - Secret absent            → (nil, nil): staging not ready (loud
-//     degrade; never a raw fallback under flag-on).
+//     degrade; the batch falls back to raw keys only in MIGRATION mode
+//     — design 0061 §4 — never silently).
 //   - Empty/unparseable `handoff` data → (nil, nil)/(nil, err): the
 //     same not-ready class — an unusable handoff must not half-deliver.
 //   - No token or workspace material is ever logged.
@@ -60,7 +61,8 @@ func (s *k8sRelayTokenSource) RelayHandoff(ctx context.Context, workspaceID stri
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Staging has not completed a pass (or the Secret was removed
-			// out-of-band): not-ready, never a raw fallback.
+			// out-of-band): not-ready; raw fallback only in migration
+			// mode (M2), always counted.
 			return nil, nil
 		}
 		return nil, fmt.Errorf("relay handoff: read secret: %w", err)

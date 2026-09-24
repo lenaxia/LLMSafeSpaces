@@ -74,3 +74,10 @@ The alerts insert landed INSIDE LlmRelayRouterRejectSpike's multi-line expr bloc
 - **Key Decision 3 pinned**: the present-handoff test now asserts fallbackDelta(aws-bedrock) == 0 (the not-staged class is NOT fallback — staging is ready).
 - **The r0-fix "structural walk" claim**: now a real test (TestRelayFallbackMode_RulesStructurallyClean — the parsed-rules walk catching the folded-expr insertion class the Contains pins cannot).
 - The e2e gap stands per the RECORDED ORDER — the M2/M4 e2e migration story is the next queue item (design 0061 §10's assignment; not evaporating — stated here and in the PR).
+
+## r2 — the red-on-arrival promtool expectations; the enum; the stale comments
+
+- The r1 promtool scenarios were RED (the reviewer reproduced with the pinned v3.4.1): promtool compares the FULL label set — increase() preserves the input labels, so exp_labels needed workspace+provider_slug / workspace+reason, and exp_annotations the complete descriptions. Fixed (CI-red closed).
+- The fallbackMode enum is FAIL-LOUD at load (validateRelayFallbackMode — "srtict" refuses boot, never silently arming the fail-open path; the repo's config convention). Pinned.
+- The four stale "never a raw fallback" comments corrected to the two-mode truth (relay_batch.go ×2, injection.go, relay_handoff.go ×2) — each now names strict-mute vs migration-counted.
+- The e2e gate: STANDING per the recorded order (the M2/M4 story owns it — next in my queue, not deferred into nothing; the disposition stated in the PR body since r0).
