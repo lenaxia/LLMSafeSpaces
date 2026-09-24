@@ -8,6 +8,7 @@ package controller
 // guard-client DI seam, hermetically (no envtest, no cluster).
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
@@ -83,14 +86,16 @@ func withGuardClient(t *testing.T, fc client.Client) {
 }
 
 // THE ARMED SHAPE (design §3 shape 2): enabled + a reachable, booted
-// router → non-nil config and exit-0 through the seam. The LINE's
-// emission is pinned STRUCTURALLY (ArmedLineLivesInArmedPath — scoped
-// to SetupRelayStaging's body, after the guard's success): a real logr
-// sink capture was attempted and is NOT possible here — the package
-// binary's controller-runtime root logger is already fulfilled before
-// any test runs (empirically verified: SetLogger + a direct probe
-// captures nothing), so the honest coverage is the body-scoped pin.
-func TestSetupRelayStaging_ArmedReturnsConfig(t *testing.T) {
+// router → non-nil config, exit-0 through the seam, AND the armed line
+// EMITTED — captured at a real sink. [r3 correction: the r2 round
+// claimed this capture "impossible" on a fabricated empirical record —
+// one flawed probe (a hand-rolled logr sink) recorded as an
+// impossibility proof; the reviewer reproduced the capture twice with
+// the controller-runtime zap adapter. This test is THEIR approach.]
+func TestSetupRelayStaging_ArmedReturnsConfigAndEmitsLine(t *testing.T) {
+	var buf bytes.Buffer
+	logf.SetLogger(zap.New(zap.WriteTo(&buf)))
+
 	router := armingRouterStub(t)
 	ns := "llm-relay"
 	fc := fake.NewClientBuilder().WithScheme(armingScheme(t)).
@@ -102,6 +107,8 @@ func TestSetupRelayStaging_ArmedReturnsConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg, "armed: the staging config is returned (main proceeds to exit 0)")
 	assert.Equal(t, 0, RelayStagingExitCodeFor(err), "armed maps to exit 0")
+	assert.Contains(t, buf.String(), `"msg":"relay-only key delivery enabled"`,
+		"the armed line IS emitted at runtime (the armed contract, captured at the sink)")
 }
 
 // THE UNARMABLE SHAPE (design §3 shape 1): enabled + an unreachable

@@ -150,7 +150,8 @@ func RelayStagingExitCodeFor(err error) int {
 // within which enabled=true must reach armed state — the startup
 // guard's existing 30s budget, named here as the design's constant (no
 // new timer machinery; the guard's context construction reads THIS).
-var ArmingStartupGuardWindow = 30 * time.Second
+// A const (r3): the window is a design-fixed budget, not a tunable.
+const ArmingStartupGuardWindow = 30 * time.Second
 
 // SetupRelayStaging constructs the US-72.3 relay staging config from the
 // deployment flags and runs the FAIL-LOUD startup guard (the
