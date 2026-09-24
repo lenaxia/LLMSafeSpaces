@@ -242,7 +242,7 @@ jobs:
           # cold install — even one that restarted during first-boot
           # arming waits — records no new restarts.
           restarts_snapshot() {
-            kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort
+            kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{end}' | sort
           }
           BEFORE_NS=$(restarts_snapshot "$NS")
           BEFORE_RELAY=$(restarts_snapshot llm-relay)
@@ -259,20 +259,37 @@ jobs:
           echo "OK: all Deployments Ready and stable under the shipped defaults"
 
       - name: Assert 2 — the armed line (relay-only key delivery enabled)
-        # M1's boot-time contract, asserted cluster-side: the shipped
-        # relayOnlyKeyDelivery.enabled=true posture must actually ARM —
-        # the enable line is the observable proof the producer exists.
+        # M1's boot-time contract, asserted cluster-side — with the
+        # deployment TRUTH first: the flag must be ON the pod spec.
+        # Absent → the render lied (a chart/values defect). Present +
+        # healthy pod + no armed line + no exit-85 → the deployed-
+        # relay-only-but-not-armed class: wiring drift until proven
+        # otherwise (the wrong-bits residue §5 r1 names — stamp≠
+        # behavior, the 0.34.7 incident class). A post-arming restart
+        # moves the boot-time line into the previous container's log;
+        # the stability window tolerates cold-start restarts, so both
+        # containers are consulted (Assert 3's --previous rule, one
+        # tier up).
         run: |
           set -euo pipefail
+          ARGS=$(kubectl -n $NS get deployment llmsafespaces-controller -o jsonpath='{.spec.template.spec.containers[0].args}')
+          if ! grep -F -- '--relay-only-key-delivery=true' <<<"$ARGS"; then
+            echo "FAIL: --relay-only-key-delivery=true absent from the controller pod spec — the shipped posture's flag did not reach the deployment"
+            echo "args: $ARGS"
+            exit 1
+          fi
           if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then
             echo "FAIL: could not fetch controller logs — the armed line cannot be verified"
             cat /tmp/gate-armed.err || true
             exit 1
           fi
+          kubectl -n $NS logs deployment/llmsafespaces-controller --previous > /tmp/gate-armed-prev.log 2>/dev/null || true
           if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then
-            echo "FAIL: armed line absent — the controller is deployed relay-only but not armed (M1's exit-85 class)"
-            tail -50 /tmp/gate-armed.log || true
-            exit 1
+            if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed-prev.log; then
+              echo "FAIL: armed line absent in both containers (flag ON the pod spec) — deployed relay-only but not armed: wiring drift until proven otherwise"
+              tail -50 /tmp/gate-armed.log || true
+              exit 1
+            fi
           fi
           echo "OK: controller armed under the shipped default"
 

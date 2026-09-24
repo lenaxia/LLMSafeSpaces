@@ -262,7 +262,7 @@ var assertionSpecs = []struct {
 		// r11 finding 1: the PRODUCER — a constant producer (a jsonpath
 		// typo evaluating empty, an appended `| head -n 0`) makes BEFORE
 		// and AFTER equal by construction; the comparison can never fire.
-		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort`,
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{end}' | sort`,
 		// r12 finding 7: exact-line — `sleep 45 &` backgrounds the
 		// window away with the Contains literal intact.
 		"sleep 45",
@@ -272,10 +272,18 @@ var assertionSpecs = []struct {
 	{"Assert 2", []string{
 		"relay-only key delivery enabled",
 	}, []string{
+		// r18 (the #1566 handoff): the DEPLOYMENT TRUTH first — the flag
+		// on the pod spec discriminates the render-lied defect from the
+		// wiring-drift residue; then the armed line in current OR
+		// previous containers (a post-arming restart moves the boot-time
+		// line; the stability window tolerates cold-start restarts).
+		`ARGS=$(kubectl -n $NS get deployment llmsafespaces-controller -o jsonpath='{.spec.template.spec.containers[0].args}')`,
+		`if ! grep -F -- '--relay-only-key-delivery=true' <<<"$ARGS"; then`,
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
+		"kubectl -n $NS logs deployment/llmsafespaces-controller --previous > /tmp/gate-armed-prev.log 2>/dev/null || true",
 		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
-	}, 2,
-		"the armed line — M1's boot-time contract, cluster-side; the log FETCH is failure-checked (a pod whose logs cannot be read cannot be cleared)"},
+	}, 3,
+		"the armed line — M1's boot-time contract, cluster-side; the FLAG on the pod spec first (the deployment truth), then the line in any container ever run"},
 	{"Assert 3", []string{
 		`for GATE_NS in "$NS" "llm-relay"`,
 	}, []string{
@@ -429,6 +437,8 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	a4 := gateStepByPrefix(t, steps, "Assert 4")
 	require.Equal(t, 1, countWrites(a2.Run, "/tmp/gate-armed.log"),
 		"/tmp/gate-armed.log must be written exactly once — injection between fetch and detector is always-green")
+	require.Equal(t, 1, countWrites(a2.Run, "/tmp/gate-armed-prev.log"),
+		"/tmp/gate-armed-prev.log must be written exactly once (the previous-container consult)")
 	require.Equal(t, 1, countWrites(a4.Run, "/tmp/gate-controller.log"),
 		"/tmp/gate-controller.log must be written exactly once — injection before the extraction is always-green")
 	require.Equal(t, 1, countWrites(a3.Run, "/tmp/gate-pod.log"),
@@ -503,7 +513,7 @@ var goldenInventories = map[string][]string{
 		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
 		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
 		"restarts_snapshot() {",
-		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort`,
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{end}' | sort`,
 		"}",
 		`BEFORE_NS=$(restarts_snapshot "$NS")`,
 		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
@@ -521,15 +531,24 @@ var goldenInventories = map[string][]string{
 	},
 	"Assert 2": {
 		"set -euo pipefail",
+		`ARGS=$(kubectl -n $NS get deployment llmsafespaces-controller -o jsonpath='{.spec.template.spec.containers[0].args}')`,
+		`if ! grep -F -- '--relay-only-key-delivery=true' <<<"$ARGS"; then`,
+		`echo "FAIL: --relay-only-key-delivery=true absent from the controller pod spec — the shipped posture's flag did not reach the deployment"`,
+		`echo "args: $ARGS"`,
+		"exit 1",
+		"fi",
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
 		`echo "FAIL: could not fetch controller logs — the armed line cannot be verified"`,
 		"cat /tmp/gate-armed.err || true",
 		"exit 1",
 		"fi",
+		"kubectl -n $NS logs deployment/llmsafespaces-controller --previous > /tmp/gate-armed-prev.log 2>/dev/null || true",
 		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
-		`echo "FAIL: armed line absent — the controller is deployed relay-only but not armed (M1's exit-85 class)"`,
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed-prev.log; then",
+		`echo "FAIL: armed line absent in both containers (flag ON the pod spec) — deployed relay-only but not armed: wiring drift until proven otherwise"`,
 		"tail -50 /tmp/gate-armed.log || true",
 		"exit 1",
+		"fi",
 		"fi",
 		`echo "OK: controller armed under the shipped default"`,
 	},

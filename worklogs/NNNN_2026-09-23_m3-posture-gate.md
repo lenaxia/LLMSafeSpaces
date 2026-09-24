@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r17 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r18 fixes: 2026-09-24/25)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r17 fixes pushed; awaiting re-review.
+**Status:** r18 fixes pushed (the #1566 handoff adopted); awaiting re-review.
 
 ---
 
@@ -194,6 +194,20 @@ r17 confirmed the second consecutive no-false-green round; the findings were sib
 
 All eight r17 classes re-verified RED; pristine baseline checksummed before and after.
 
+## r18 round record (the #1566 handoff: the gate's first true execution caught the gate itself)
+
+The gate ran for real on w2's #1566 (its api/** changes trigger the paths) — and its FIRST-EVER execution of Assert 1 caught a defect in the gate: the restart-snapshot jsonpath used `{/end}` (invalid — the terminator is `{end}`), so the stability step could never run. My authoring error from r0, pinned verbatim by r13's golden; sixteen rounds of mutation war never executed the line (the reviews' live runs stopped at r0's earlier syntax failure). w2 fixed it on their branch (8e1a85bd + the pin unfreeze 5f214d8c); both ADOPTED here — Assert 1 passed for the first time ever (all-Ready + 45s stability, live on kind).
+
+**The remaining red — Assert 2 — probed with the run's own evidence (run 36053803876):**
+- **Suspect (a) REFUTED**: the failure dump shows controller RESTARTS=0 — there IS no previous container; the armed line was never emitted by any container (restart-laundering cannot be the story THIS run).
+- **Suspect (b) sharpened by reading the tree**: SetupRelayStaging has NO silent nil path for enabled=true (every path emits the armed line or returns an error → the refusing-to-start exit); the call at main.go:353 is unconditional; registerRelayFlags() precedes flag.Parse() (main.go:220-221); SetLogger precedes the call (231 < 353 — no delegating-sink discard). A healthy, 0-restart, no-line pod with the flag ON THE SPEC is impossible on this tree — it is the wrong-bits residue §5 r1 names (stamp≠behavior, the 0.34.7 class) until another explanation lands.
+
+**The Assert 2 fix (an M3-layer correctness fix — the gate was asserting the wrong thing):**
+1. **The deployment TRUTH first**: the pod spec's args must contain `--relay-only-key-delivery=true` — absent → the render lied (chart/values defect, named); present + healthy + no line + no exit-85 → wiring drift, NAMED as such. The gate now discriminates the two defect classes instead of conflating them.
+2. **Both containers consulted**: the armed line is a boot-time emission; a post-arming restart (which the gate's own stability window LEGITIMATELY tolerates) moves it to the previous container — Assert 2 now greps current AND previous (Assert 3's --previous rule, one tier up). The r18 mutation checks: flag-check deletion, previous-consult deletion, and the `{end}` regression all RED (each caught twice — inventory and backstop).
+
+The stability window's first live contact: PASSED (45s, no new restarts, on a genuinely all-Ready cold install). w2 rebases #1566 onto this head; both PRs' gate runs should then agree.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -213,7 +227,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r17 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r18 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -221,7 +235,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Next Steps
 
-1. Re-review (r17 verdict pending).
+1. Re-review (r18 verdict pending); w2 rebases #1566 onto this head.
 2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
