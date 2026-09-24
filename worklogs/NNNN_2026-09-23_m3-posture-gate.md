@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r18 fixes: 2026-09-24/25)
-**Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r18 fixes pushed (the #1566 handoff adopted); awaiting re-review.
+**Date:** 2026-09-23 (r1–r19 fixes: 2026-09-24/25)
+**Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins (seven test functions) + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
+**Status:** r19 fixes pushed; awaiting re-review.
 
 ---
 
@@ -208,6 +208,17 @@ The gate ran for real on w2's #1566 (its api/** changes trigger the paths) — a
 
 The stability window's first live contact: PASSED (45s, no new restarts, on a genuinely all-Ready cold install). w2 rebases #1566 onto this head; both PRs' gate runs should then agree.
 
+## r19 round record (the vacuous view removed, the convention pinned, the count de-spelled, the record uncontradicted)
+
+r19's review live-verified the r18 story (the `{/end}` parse error proven, the run's step list confirmed: Assert 1 SUCCESS for the first time) and found four findings:
+
+1. **The r17 `-f` "fourth view" was VACUOUS** — whitespace-stripping destroys the `(^|\s)` boundary, so the regex could never fire on that view; the inert extra-indent split was pin-green. Removed the vacuous view; the honest close for the inert class is the outright ban on `-\` line endings; view 3 remains what catches the LIVE block-minimum splits (the comment and this record now say exactly that).
+2. **The quoted tag values exact-pinned** — the r17 quoting was convention-only; unquoting was pins-green.
+3. **The GITHUB_ENV count regex-scoped** — a single-`>` truncate write evaded the exact-string count; the channel is the pinned surface, not one spelling of it.
+4. **The record uncontradicted** — the three stale lines (stability-window "awaits first contact" in Tests Run/Blockers/Next Steps) corrected to the passed r18 contact; the inner scan labels refreshed (r19: M1, M2, M4, #1558 ALL MERGED — the recorded order is clear for the gate; #1566 rebases onto this head); "six structural pins" → seven.
+
+All three r19 mutation classes re-verified RED; pristine baseline checksummed before and after.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -218,26 +229,26 @@ The stability window's first live contact: PASSED (45s, no new restarts, on a ge
 
 ## Blockers
 
-**The dependency record, live-scanned at r17 (2026-09-24 ~20:5xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
+**The dependency record, live-scanned at r19 (2026-09-24 ~22:0xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **The fix (#1558, "namespace-scope cache-scoping derivation") MERGED 2026-09-24T16:21:22Z** — the gate's primary red-driver has landed; the first green contact should now be reachable. The r0 red was the gate working: first contact detected a real shipped-posture defect, retroactively validating design 0061.
-2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r14 (2026-09-24 ~18:2xZ): **M1 (#1553) MERGED**; **M4 (#1557) MERGED**; **the defect fix #1558 MERGED**; **M2 (#1559) OPEN** — the one remaining recorded-order predecessor. The gate's stability window still awaits its first live contact (Next Steps).
+2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r19: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
 
 The merge call (the gate could now run green for the first time, though the recorded order names M2 first) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r18 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r19 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
-- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics, r2's fetch shapes, r3's permissions block, and r4's pin changes are newly authored and NOT yet live-validated — first live contact rides the next review run or the gate's own first dispatch after merge.
+- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics are NOW live-validated (Assert 1 passed, run 36053803876 — r18); the r18 Assert 2 deployment-truth/prev-consult lines are render-validated but await their first live cluster contact (rides the next gate run).
 
 ## Next Steps
 
-1. Re-review (r18 verdict pending); w2 rebases #1566 onto this head.
+1. Re-review (r19 verdict pending); w2 rebases #1566 onto this head.
 2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
-3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
+3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
 
 ## Files Modified
 

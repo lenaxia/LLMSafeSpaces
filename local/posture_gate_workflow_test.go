@@ -714,6 +714,17 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	// via the postgres manifests, but pinned is pinned).
 	requireExactLine(t, install.Run, "-n $NS --create-namespace \\",
 		"the install's namespace line must be exactly this")
+	// r19 finding 2: the three tag values QUOTED and exact-pinned — the
+	// unquoted spelling was the word-split amplifier the r17 review
+	// argv-proved; convention alone held it.
+	for _, quoted := range []string{
+		`--set "api.image.tag=$IMAGE_TAG" \`,
+		`--set "controller.image.tag=$IMAGE_TAG" \`,
+		`--set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \`,
+	} {
+		requireExactLine(t, install.Run, quoted,
+			"the tag value must be QUOTED and exactly this line — the unquoted spelling is the word-split amplifier")
+	}
 	// r16 finding 1 (CR spelling): YAML normalizes CRLF inside the
 	// parsed scalar, so the CR corruption is invisible post-parse —
 	// ban CR anywhere in the raw file (a shell workflow line ending
@@ -775,14 +786,17 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		"the install step must carry no env block — an env-carried flag value evades every run-text ban (r6's carrier channel)")
 	for _, view := range banViews(install.Run) {
 		require.False(t, valuesFileFlagRe.MatchString(view),
-			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view)")
+			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view; view 3 is what catches the LIVE block-minimum split)")
 	}
-	// r17 finding 4: the fourth view its sibling operator ban gained in
-	// r16 — the empty join, then whitespace stripped; the extra-indent
-	// mid-token split forms `-f` only there (runtime fail-closed via
-	// helm's arg validation, but the close should not be indent-blind).
-	require.False(t, valuesFileFlagRe.MatchString(regexp.MustCompile(`\s+`).ReplaceAllString(strings.ReplaceAll(install.Run, "\\\n", ""), "")),
-		"the install must take no values files even in the whitespace-stripped join view — the extra-indent split spelling forms -f only there")
+	// r19 finding 1: the LIVE composed spellings form in view 3 (bash
+	// joins block-minimum continuations to column 0); the extra-indent
+	// splits are runtime-INERT (bash reads them as tokens `-` and `f` —
+	// helm rejects the argv) but were pin-green, so the inert `-\`
+	// line ending is banned outright. The r17 "fourth view" was
+	// VACUOUS (whitespace-stripping destroys the (^|\s) boundary) —
+	// removed; this ban is the honest close for the inert class.
+	require.NotRegexp(t, `(?m)-\\$`, install.Run,
+		"no install chain line may end with a bare `-` before the continuation backslash — the inert split spelling (helm rejects the amputated argv, but pin-green dead installs are findings)")
 	// THE structural close (r5): every --set key must be allowlisted,
 	// every allowlist entry must be used (dead entries are drift), and
 	// the parser must have found the full override set (a silently
@@ -852,6 +866,10 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 	}
 	require.Equal(t, 4, strings.Count(raw, ">> \"$GITHUB_ENV\""),
 		"exactly the four delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
+	// r19 finding 3: the count must cover EVERY redirect spelling — a
+	// single-`>` truncate write evaded the exact-string count.
+	require.Equal(t, 4, len(regexp.MustCompile(`>\s*"\$\{?GITHUB_ENV\}?"`).FindAllString(raw, -1)),
+		"exactly four GITHUB_ENV redirect writes in ANY spelling (>> or >, any spacing) — the channel is the pinned surface, not one spelling of it")
 }
 
 // Pin (f): a failed cold install IS a red gate — the assertions carry
