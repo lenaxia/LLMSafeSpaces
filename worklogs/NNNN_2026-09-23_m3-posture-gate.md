@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r9 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r10 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r9 fixes pushed; awaiting re-review.
+**Status:** r10 fixes pushed; awaiting re-review.
 
 ---
 
@@ -110,7 +110,19 @@ r9's review verified all eight r8 closes by mutation — and found the sibling-s
 4. **Exactly four `kubectl wait` lines** in Assert 1 (the 60s settle-window re-assertion is part of the verdict, deletable around the 300s literals).
 5. **No step may carry an env block** (the carrier channel was closed at workflow/job/install levels; assertion-step env could re-scope the checks).
 
-All seven r9 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. The pin comments' claims are narrowed to what the mechanism delivers: exact lines have no siblings.
+All seven r9 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. The pin comments' claims are narrowed to what the mechanism delivers.
+
+## r10 round record (a verdict is a block, not a line)
+
+r10's review (63 mutations, review + skeptical sub-agent) found the block-below-the-line surface: the verdict INPUTS (r9 dropped the r8 snapshot anchor when moving the comparison to an exact line — an `AFTER_NS="$BEFORE_NS"` alias silently neutered the restart-diff), the verdict CARRIERS (deleting a FAIL branch's `exit 1` turned it into echo-and-continue, five for five), and the fetch-to-detect gap (`--previous=false` satisfied the Contains literal; the one unpinned fetch line accepted `&& false`). The sub-agent added NS-rebinding, a stray `read -r _` swallowing every other pod, and a second capture-file truncate. All closed:
+
+1. **The four snapshot assignments exact-pinned** (the verdict's inputs, by name).
+2. **`exit 1` floors per assertion** (1/2/3/3) — the conditions were r9's close; the carriers are r10's. A floor, not an equality: additional fail-closed branches are legitimate drift, fewer is a neuter.
+3. **The prev-fetch guard exact-pinned** (`--previous=false` and the `&& false` suffix both red now).
+4. **NS rebinding banned in assertion blocks** (`(?m)^\s*NS=` — the env ban closed the parsed carrier; assignment rebinding was the same class one level down).
+5. **Exactly one `read -r` consumer, and each capture file written exactly once** in Assert 3 (the stray-reader and truncate rewires).
+
+All ten r10 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. Claims stated at mechanism level: the pins cover the named drift shapes — conditions, inputs, carriers, counts, and single-use files — and the residual remains the header's stated threat model (adversarial construction is the diff review's department; ten rounds of mutation war have not produced a shape class outside it that the pins claimed).
 
 ## Key Decisions
 
@@ -131,7 +143,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r9 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r10 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -139,7 +151,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r9 verdict pending).
+1. Re-review (r10 verdict pending).
 2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

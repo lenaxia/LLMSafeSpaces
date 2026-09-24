@@ -200,16 +200,17 @@ func TestPostureGate_Triggers(t *testing.T) {
 }
 
 // assertionSpec is one of the four §5 assertions: the parsed-name
-// prefix of its step, the literals its run block must contain, and —
-// r9's uniform close — the verdict-bearing lines that must appear as
-// EXACT trimmed lines: a `&& false` suffix, a polarity flip, or a
-// partial gut kept every Contains-substring green (the sibling-spelling
-// level r8's closes were falsified at); an exact-line pin has no
-// siblings.
+// prefix of its step, the literals its run block must contain, the
+// verdict-bearing lines that must appear as EXACT trimmed lines (r9),
+// and — r10's block-level close — a floor on `exit 1` carrier lines:
+// the condition rows were pinned in r9, but a verdict is carried by
+// its body's exit 1, which nothing required (five-for-five deletions
+// stayed green).
 var assertionSpecs = []struct {
 	prefix     string
 	literals   []string
 	exactLines []string
+	minExit1   int
 	why        string
 }{
 	{"Assert 1", []string{
@@ -218,50 +219,48 @@ var assertionSpecs = []struct {
 	}, []string{
 		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
 		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
-		// r9 finding 5: the 60s pair is deletable around the 300s
-		// literals — the settle-window Available re-assertion is part
-		// of the verdict.
 		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s",
 		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s",
-		// r9 finding 2: the COMPARISON itself — polarity-flippable and
-		// deletable around the pinned assignment anchor.
+		// r10 RC-A: the verdict's INPUTS — the four snapshot assignments
+		// exact-pinned (r9 dropped the r8 anchor when moving the
+		// comparison to an exact line; an `AFTER_NS="$BEFORE_NS"` alias
+		// silently neutered the restart-diff).
+		`BEFORE_NS=$(restarts_snapshot "$NS")`,
+		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
+		`AFTER_NS=$(restarts_snapshot "$NS")`,
+		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
 		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
-	},
+	}, 1,
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
 	{"Assert 2", []string{
 		"relay-only key delivery enabled",
 	}, []string{
-		// r8 finding 1 + r9 finding 3: the DETECTOR and FETCH pinned as
-		// exact whole lines — polarity, target, and suffix all fixed.
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
 		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
-	},
+	}, 2,
 		"the armed line — M1's boot-time contract, cluster-side; the log FETCH is failure-checked (a pod whose logs cannot be read cannot be cleared)"},
 	{"Assert 3", []string{
 		`for GATE_NS in "$NS" "llm-relay"`,
-		"--previous",
 	}, []string{
-		// r9 finding 4: the fetch→loop→feed chain as exact lines, with
-		// exactly ONE PODS assignment (a blanket PODS="" between the
-		// pinned pieces relocated the r2 silent-skip one line down).
 		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
 		"while read -r POD; do",
 		`done <<< "$PODS"`,
 		`if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then`,
 		"if grep -i 'forbidden' /tmp/gate-pod.log; then",
+		// r10 RC-C: the prev-fetch guard exact-pinned — a Contains
+		// `--previous` passed for `--previous=false`, and the one
+		// remaining unpinned fetch line accepted a `&& false` suffix.
+		`if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then`,
 		"if grep -i 'forbidden' /tmp/gate-pod-prev.log; then",
-	},
+	}, 3,
 		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; every fetch failure is red"},
 	{"Assert 4", []string{
 		"starting controller",
 	}, []string{
-		// r9 finding 3: both verdicts as exact lines — the -z diagnostic
-		// branch and the comparison (a `&& false` suffix on either kept
-		// every substring green).
 		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
 		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
 		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
-	},
+	}, 3,
 		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
 }
 
@@ -282,6 +281,20 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 			requireExactLine(t, s.Run, exact,
 				"%s must carry the exact line %%q (a suffix, flip, or partial gut keeps substring pins green) — %s", spec.prefix, spec.why)
 		}
+		// r10 RC-B: the verdict CARRIERS — each FAIL branch's exit 1.
+		// r9 pinned the conditions; deleting the body's exit 1 turned
+		// every FAIL branch into echo-and-continue, five for five. A
+		// floor, not an equality: additional fail-closed branches are
+		// legitimate drift; fewer is a neuter.
+		exit1s := strings.Count(s.Run, "exit 1")
+		require.GreaterOrEqual(t, exit1s, spec.minExit1,
+			"%s must carry at least %d `exit 1` verdict carriers (found %d) — a FAIL branch without its exit is echo-and-continue", spec.prefix, spec.minExit1, exit1s)
+		// r10 sub-agent (i): no assertion may rebind NS — an in-block
+		// `NS=llm-relay` after the prefix silently re-scopes both wait
+		// targets (the env ban closed the parsed channel; assignment
+		// rebinding is the same class one level down).
+		require.NotRegexp(t, `(?m)^\s*NS=`, s.Run,
+			"%s must not rebind NS — the namespace targets are the verdict's scope", spec.prefix)
 		idx := indexOfStep(t, steps, s)
 		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
 		last = idx
@@ -297,6 +310,27 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, podsAssigns, "Assert 3 must carry exactly one PODS assignment (the pinned fetch) — a blanket reassignment feeds empty stdin")
+	// r10 sub-agent (ii)+(iii): exactly one consumer of the pod list
+	// (a stray `read -r _` swallows every other pod's line) and each
+	// capture file written exactly once (a second truncate rewires the
+	// primary grep onto an empty file).
+	readers := 0
+	podLogWrites, prevLogWrites := 0, 0
+	for _, line := range strings.Split(a3.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "read -r") {
+			readers++
+		}
+		if strings.Contains(line, "> /tmp/gate-pod.log") {
+			podLogWrites++
+		}
+		if strings.Contains(line, "> /tmp/gate-pod-prev.log") {
+			prevLogWrites++
+		}
+	}
+	require.Equal(t, 1, readers, "Assert 3 must carry exactly one `read -r` consumer — a stray reader swallows pods")
+	require.Equal(t, 1, podLogWrites, "/tmp/gate-pod.log must be written exactly once — a second write truncates the primary capture")
+	require.Equal(t, 1, prevLogWrites, "/tmp/gate-pod-prev.log must be written exactly once")
 	// r9 finding 5: exactly FOUR kubectl wait lines in Assert 1 — the
 	// 300s pair and the 60s settle-window re-assertion pair.
 	a1 := gateStepByPrefix(t, steps, "Assert 1")
