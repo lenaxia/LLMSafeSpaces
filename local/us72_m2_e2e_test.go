@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package local
+package local_test
 
 // Pins for local/us72-m2-fallback-e2e.sh — the M2/M4 e2e migration
 // story (design 0061 §10; owns #1548's AC1 + AC4). The standing
@@ -28,7 +28,10 @@ func mustReadUS72M2(t *testing.T) string {
 }
 
 func TestUS72M2E2E_BashSyntax(t *testing.T) {
-	bash := requireBashLocal(t)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not on PATH")
+	}
 	out, err := exec.Command(bash, "-n", us72M2E2E).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash -n failed: %s", out)
@@ -93,7 +96,33 @@ func TestUS72M2E2E_CounterLabelsPinned(t *testing.T) {
 // Per-script isolation (the #1342 pattern).
 func TestUS72M2E2E_WorkspaceIsolation(t *testing.T) {
 	src := mustReadUS72M2(t)
-	if !strings.Contains(src, `WS_BASE="e2e72m2e0-`) {
+	if !strings.Contains(src, `WS_BASE="e2e072m2-`) {
 		t.Error("the script must set its own WS_BASE unconditionally")
+	}
+}
+
+// TestUS72M2E2E_ExecuteSmoke — the repo's harness-script mandate ("a new
+// harness script lands with its smoke or it does not land"): the script
+// runs under the shim harness. Depth pin, exactly as far as it reaches:
+// the shims answer kubectl generically, so the cluster assertions fail
+// — which is exactly the depth this smoke proves: BOTH rows execute
+// end-to-end to the final verdict with no runtime abort (the r3
+// invalid-UUID death at setup is caught in seconds).
+func TestUS72M2E2E_ExecuteSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execution smoke spawns shim processes")
+	}
+	combined, exitVal := runScriptUnderShims(t, us72M2E2E, "Active", map[string]string{
+		"CANARY_KEY": "sk-SMOKE-canary-0smoke1row2x",
+	})
+	assertSmokeTraversal(t, us72M2E2E, combined, exitVal, "row(s) failed", "")
+	for _, reached := range []string{
+		"R1 — the migration scenario",
+		"R2 — the fallback arm",
+		"row(s) failed",
+	} {
+		if !strings.Contains(combined, reached) {
+			t.Fatalf("died before [%s] — a runtime death the needles cannot catch:\n%s", reached, smokeTail(combined))
+		}
 	}
 }

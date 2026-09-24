@@ -38,7 +38,7 @@ failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
 
 # Per-script isolation (the #1342 pattern).
-WS_BASE="e2e72m2e0-0000-4000-8000-000000000000"
+WS_BASE="e2e072m2-0000-4000-8000-000000000000"
 WS="$(ws_id 1)"
 
 api() { # method path [json] -> dies on non-2xx
@@ -126,9 +126,16 @@ else
     note_fail "R1: CredentialsStaged='$(condition_row)' (never True)"
 fi
 
-# The batch carries the TOKEN, not the raw key.
-key="$(config_field apiKey)"
-base="$(config_field baseURL)"
+# The batch carries the TOKEN, not the raw key — POLLED (a boot batch
+# predating staging leaves the raw canary standing until the resync
+# applies; a single shot false-fails on the race).
+key=""; base=""
+for _ in $(seq 1 30); do
+    key="$(config_field apiKey)"
+    base="$(config_field baseURL)"
+    [[ -n "${key}" && "${key}" != "${CANARY_KEY}" && "${base}" == *"llm-relay"* ]] && break
+    sleep 4
+done
 if [[ -n "${key}" && "${key}" != "${CANARY_KEY}" ]]; then
     ok "R1: the batch carries the token (not the canary key)"
 else
@@ -143,10 +150,23 @@ fi
 # Zero degrades: the bootstrap log carries no relay degrade for this WS.
 sleep 10 # let a resync settle
 BOOTSTRAP_LOGS="$(kubectl --context "${CTX}" -n "${NS}" logs "deployment/llmsafespaces-api" --since=600s 2>/dev/null || true)"
+DEGRADED=0
 if printf '%s' "${BOOTSTRAP_LOGS}" | grep -F "relay_staging_not_ready" | grep -qF "${WS}"; then
     note_fail "R1: a relay_staging_not_ready degrade fired for this workspace (AC4's literal text — superseded by M2, still must NOT fire when staging is healthy)"
+    DEGRADED=1
 else
     ok "R1: zero relay_staging_not_ready degrades"
+fi
+# Design §10 requires BOTH reasons absent in the migration scenario: a
+# boot-time fallback (staging armed late) could deliver the raw key
+# while R1's later single-shot token read still passed on a stale
+# config — the counter catches it.
+PRE_METRICS="$(curl -sm 15 "http://127.0.0.1:${PORTFWD_PORT}/metrics" 2>/dev/null || true)"
+if printf '%s' "${PRE_METRICS}" | grep -E "^relay_fallback_deliveries_total\{" | grep -qF "workspace=\"${WS}\""; then
+    note_fail "R1: a relay_fallback_delivery already fired pre-tear — a boot-time fallback stands undetected by the token read"
+    DEGRADED=1
+else
+    ok "R1: zero relay_fallback_delivery firings pre-tear"
 fi
 
 # -----------------------------------------------------------------------------
@@ -178,20 +198,30 @@ if (( RESYNC_OK == 0 )); then
 fi
 
 # The batch now carries the RAW key (the migration trade — deliberate,
-# counted, observable).
-key="$(config_field apiKey)"
+# counted, observable) — POLLED (the resync's apply is asynchronous).
+key=""
+for _ in $(seq 1 30); do
+    key="$(config_field apiKey)"
+    [[ "${key}" == "${CANARY_KEY}" ]] && break
+    sleep 4
+done
 if [[ "${key}" == "${CANARY_KEY}" ]]; then
     ok "R2: the fallback delivered the RAW canary key (the pre-flip batch — the migration's availability half)"
 else
     note_fail "R2: apiKey is not the raw canary ('${key:0:12}…') — the fallback did not deliver"
 fi
 
-# The counter incremented (the API's /metrics carries the series).
+# The counter DELTA — the pre-tear baseline was captured in R1
+# (PRE_METRICS); a stale series from a prior run on a persistent
+# harness cluster satisfies an existence grep without a fresh
+# increment. Extract the baseline for THIS series, then compare.
+pre_val=$(printf '%s' "${PRE_METRICS}" | grep -E "^relay_fallback_deliveries_total\{.*provider_slug=\"m2e2e\".*workspace=\"${WS}\"" | grep -oE '[0-9]+$' || echo 0)
 METRICS="$(curl -sm 15 "http://127.0.0.1:${PORTFWD_PORT}/metrics" 2>/dev/null || true)"
-if printf '%s' "${METRICS}" | grep -E "^relay_fallback_deliveries_total\{.*provider_slug=\"m2e2e\"" | grep -qF "${WS}"; then
-    ok "R2: relay_fallback_deliveries_total{workspace=${WS},provider_slug=m2e2e} incremented"
+post_val=$(printf '%s' "${METRICS}" | grep -E "^relay_fallback_deliveries_total\{.*provider_slug=\"m2e2e\".*workspace=\"${WS}\"" | grep -oE '[0-9]+$' || echo 0)
+if (( post_val > pre_val )); then
+    ok "R2: relay_fallback_deliveries_total{workspace=${WS},provider_slug=m2e2e} INCREMENTED (${pre_val} → ${post_val})"
 else
-    note_fail "R2: the fallback counter did not increment for this workspace/provider"
+    note_fail "R2: the counter did not increment (existence alone: ${pre_val} → ${post_val}) — a stale series is not a fresh delivery"
 fi
 
 # CredentialsStaged=False/relay_fallback_delivery (the M4 seam contract).

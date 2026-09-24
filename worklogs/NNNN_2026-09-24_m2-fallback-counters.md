@@ -89,3 +89,11 @@ The sole r2-blocking finding was the e2e gate (both delivery modes, zero cluster
 - The resync trigger: the direct pod :4097 /v1/resync-secrets (the drill's precedent) with the suspend/activate fallback.
 - 5 shape pins (rows-in-order with all seven verdict markers; token-AND-raw both asserted — one-direction checks can pass both rows on a stale config; counter labels; isolation; syntax).
 - First recorded execution: the standing disposition (reviewer runner / #1456).
+
+## r4 — the dead-on-arrival scenario fixed; the smoke landed
+
+- The one-character fix: WS_BASE's first segment was 9 chars (e2e72m2e0) — an invalid UUID, the script died at setup on every run (the reviewer's exact finding; the source needles passed because the UUID is only parsed at RUNTIME by ws_id + the API). Fixed to e2e072m2- (8 chars, the drill/sweep pattern).
+- The ExecuteSmoke LANDED (the repo's harness-script mandate; the shims answer kubectl generically so both rows run to the final verdict — the full-traversal depth proves no runtime abort; the invalid-UUID death is caught in ~9s by this test).
+- R1 now asserts BOTH degrade reasons absent (the design §10 clause: relay_staging_not_ready AND relay_fallback_delivery — the latter via the PRE_METRICS counter baseline, which R2 then reuses for its delta).
+- The counter assertion is a DELTA (pre-tear baseline vs post-resync) — a stale series from a prior run can no longer satisfy it.
+- R1's token read and R2's raw read POLL (the boot-batch-vs-resync-apply race the reviewer named).
