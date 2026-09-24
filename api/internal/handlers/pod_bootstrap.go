@@ -83,6 +83,24 @@ type bootstrapManifestSource interface {
 // client understands the revisioned envelope + conditional 304s.
 const bootstrapContractV2 = 2
 
+// relayFlagAware reports whether the relay-only token source is
+// installed (the relayOnlyKeyDelivery deployment flag — production:
+// *secrets.SecretService.RelayOnlyEnabled). Optional by type assertion,
+// the bootstrapManifestSource pattern: an injector without it (every
+// test double, a mixed-fleet in-process builder) keeps flag-off
+// behavior — the CredentialsStaged condition stays absent (W15).
+type relayFlagAware interface {
+	RelayOnlyEnabled() bool
+}
+
+// relayOutcomeSink writes the batch outcome onto the Workspace CRD
+// (design 0061 §6/M4 — production: the workspace Service's
+// ReportRelayBatchOutcome). Optional by setter: without a sink the
+// bootstrap path is byte-identical to the pre-M4 handler.
+type relayOutcomeSink interface {
+	ReportRelayBatchOutcome(ctx context.Context, workspaceID, degradeReason string) error
+}
+
 // bootstrapWorkspaceLookup resolves workspace metadata for bootstrap.
 type bootstrapWorkspaceLookup interface {
 	GetWorkspace(ctx context.Context, workspaceID string) (*types.WorkspaceMetadata, error)
@@ -140,6 +158,7 @@ type PodBootstrapHandler struct {
 	settings          bootstrapSettingsReader
 	expectedNamespace string
 	logger            interfaces.LoggerInterface
+	relaySink         relayOutcomeSink
 }
 
 // NewPodBootstrapHandler constructs the handler. In production, pass a
@@ -166,6 +185,13 @@ func NewPodBootstrapHandlerFromClientset(clientset kubernetes.Interface, injecto
 // Used when the prompt service is built later in the startup sequence.
 func (h *PodBootstrapHandler) SetPromptService(svc *prompt.Service) {
 	h.promptSvc = svc
+}
+
+// SetRelayOutcomeSink wires the CredentialsStaged condition writer
+// (design 0061 §6/M4) after construction — the SetPromptService
+// pattern. Without it the bootstrap path never writes the condition.
+func (h *PodBootstrapHandler) SetRelayOutcomeSink(sink relayOutcomeSink) {
+	h.relaySink = sink
 }
 
 // SetSettingsReader wires the instance settings reader used to resolve the
@@ -333,6 +359,29 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	if degrade != nil && h.logger != nil {
 		h.logger.Warn("pod-bootstrap: secret batch degraded",
 			"workspaceID", req.WorkspaceID, "reason", degrade.Reason)
+	}
+	// Design 0061 §6 (M4): surface the batch outcome on the Workspace
+	// CRD as the existing CredentialsStaged condition — False/<reason>
+	// on a degrade, True on a clean batch. Flag-gated by the injector
+	// (relay-only off ⇒ the condition stays absent, the W15 contract)
+	// and sink-gated by construction (tests/local without the writer
+	// stay byte-identical). Best-effort by design — this is
+	// user-facing visibility on an object the controller owns, never a
+	// gate on the boot: a write failure logs and the batch still
+	// delivers. The reason is passed through verbatim
+	// (relay_staging_not_ready; M2's relay_fallback_delivery lands in
+	// the same seam).
+	if h.relaySink != nil {
+		if flagAware, ok := h.injector.(relayFlagAware); ok && flagAware.RelayOnlyEnabled() {
+			reason := ""
+			if degrade != nil {
+				reason = degrade.Reason
+			}
+			if err := h.relaySink.ReportRelayBatchOutcome(c.Request.Context(), req.WorkspaceID, reason); err != nil && h.logger != nil {
+				h.logger.Warn("pod-bootstrap: CredentialsStaged condition write failed",
+					"workspaceID", req.WorkspaceID, "error", err)
+			}
+		}
 	}
 	var secretsJSON json.RawMessage
 	if req.ContractVersion == bootstrapContractV2 {

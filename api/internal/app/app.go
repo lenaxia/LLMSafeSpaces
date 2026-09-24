@@ -1043,6 +1043,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			k8sClient.Clientset(), secretService, dbSvc, nil, cfg.Kubernetes.Namespace,
 		)
 		podBootstrapHandler.SetLogger(log)
+		// Design 0061 §6 (M4): surface the relay batch outcome on the
+		// Workspace CRD — the CredentialsStaged condition writer. Wired
+		// only when the concrete workspace service exists (its
+		// UpdateStatus path is the writer); otherwise the handler stays
+		// pre-M4 byte-identical. The write itself is flag-gated inside
+		// the handler on the installed relay source (RelayOnlyEnabled).
+		if wsSvcOk {
+			podBootstrapHandler.SetRelayOutcomeSink(wsSvc)
+		}
 		// Wire the instance settings reader so the bootstrap response carries
 		// workspace.allowedExternalDirectories (default ["/tmp/*"]) — agentd
 		// materializes it into /sandbox-runtime/allowed-dirs.json and the
