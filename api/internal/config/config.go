@@ -286,8 +286,15 @@ type Config struct {
 	//
 	// Wired via chart values → env:
 	//   LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED   ("true" | unset)
+	//   LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE ("migration" | "strict"; default migration)
 	RelayOnlyKeyDelivery struct {
 		Enabled bool `mapstructure:"enabled"`
+		// FallbackMode (design 0061 §4, M2): migration = not-ready
+		// staging delivers pre-flip raw keys + relay_fallback_deliveries
+		// _total (the migration default); strict = the fail-closed
+		// class-mute (flip AFTER the counter reads zero 7 consecutive
+		// days + the posture gate green — the runbook paragraph).
+		FallbackMode string `mapstructure:"fallbackMode"`
 	} `mapstructure:"relayOnlyKeyDelivery"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -401,6 +408,9 @@ func Load(path string) (*Config, error) {
 	// Epic 72 / US-72.4: relay-only batch emission flag (same chart flag
 	// the controller consumes).
 	_ = v.BindEnv("relayOnlyKeyDelivery.enabled", "LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED")
+	// M2: the fallback mode env (chart default migration).
+	_ = v.BindEnv("relayOnlyKeyDelivery.fallbackMode", "LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE")
+	v.SetDefault("relayOnlyKeyDelivery.fallbackMode", "migration")
 
 	// Epic 57 US-57.1: KMS nested-key bindings.
 	bindKMSEnvVars(v)

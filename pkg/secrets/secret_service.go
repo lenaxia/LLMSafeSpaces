@@ -24,6 +24,11 @@ type SecretService struct {
 	// relayTokens (US-72.4): the relay-only token source. nil = the
 	// deployment flag is off = byte-identical legacy batch behavior.
 	relayTokens RelayTokenSource
+	// relayFallback (design 0061 §4, M2): migration mode — not-ready
+	// staging delivers pre-flip raw keys + the fallback counter. The
+	// zero value (false) is STRICT: the fail-closed class-mute, the
+	// steady-state posture.
+	relayFallback bool
 }
 
 // NewSecretService creates a new SecretService.

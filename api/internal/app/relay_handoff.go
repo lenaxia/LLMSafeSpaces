@@ -22,6 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -80,12 +83,26 @@ func (s *k8sRelayTokenSource) RelayHandoff(ctx context.Context, workspaceID stri
 // app.New so the wiring itself is testable (the #1529 review's missing
 // test case 2: the config test covers the env half, the batch tests
 // install the source manually — this pins the seam between them).
-func installRelayTokenSource(svc *secrets.SecretService, enabled bool, getter relayWorkspaceGetter, clientset kubernetes.Interface) {
+func installRelayTokenSource(svc *secrets.SecretService, enabled bool, fallbackMode string, getter relayWorkspaceGetter, clientset kubernetes.Interface) {
 	if svc == nil || !enabled {
 		return
 	}
 	svc.SetRelayTokenSource(newK8sRelayTokenSource(getter, clientset))
+	// M2 (design 0061 §4): the fallback mode rides the same install —
+	// migration unless explicitly strict. The builder's zero value is
+	// strict, so this call is what arms migration in deployment.
+	svc.SetRelayDeliveryFallback(fallbackMode != "strict")
+	// The M2 counters register with the API's default registry ONCE at
+	// relay-install (promauto was deliberately avoided: agentd links
+	// this package and must not carry the series).
+	registerRelayMetricsOnce.Do(func() {
+		fb, deg := secrets.RelayFallbackMetrics()
+		prometheus.MustRegister(fb)
+		prometheus.MustRegister(deg)
+	})
 }
+
+var registerRelayMetricsOnce sync.Once
 
 // Compile-time assertion: the source satisfies the builder seam.
 var _ secrets.RelayTokenSource = (*k8sRelayTokenSource)(nil)

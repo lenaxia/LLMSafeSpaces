@@ -98,7 +98,7 @@ func TestInstallRelayTokenSource_FlagGate(t *testing.T) {
 
 	// Flag off: dependencies provided, flag false — nothing installed.
 	off := newSvc()
-	installRelayTokenSource(off, false, fakeRelayWorkspaceGetter{}, k8sfake.NewSimpleClientset())
+	installRelayTokenSource(off, false, "", fakeRelayWorkspaceGetter{}, k8sfake.NewSimpleClientset())
 	assert.Nil(t, off.RelayTokensForTest(), "flag off must not install a source")
 
 	// Flag on: the k8s source is installed and WORKS through the seam.
@@ -111,7 +111,7 @@ func TestInstallRelayTokenSource_FlagGate(t *testing.T) {
 		}),
 	})
 	on := newSvc()
-	installRelayTokenSource(on, true, fakeRelayWorkspaceGetter{}, cs)
+	installRelayTokenSource(on, true, "", fakeRelayWorkspaceGetter{}, cs)
 	require.NotNil(t, on.RelayTokensForTest(), "flag on must install the relay source on SecretService")
 
 	h, err := on.RelayTokensForTest().RelayHandoff(context.Background(), "ws-99")
@@ -121,5 +121,35 @@ func TestInstallRelayTokenSource_FlagGate(t *testing.T) {
 	assert.Equal(t, fakeToken, h.Providers[0].Token)
 
 	// Nil service must not panic (defensive seam contract).
-	installRelayTokenSource(nil, true, fakeRelayWorkspaceGetter{}, cs)
+	installRelayTokenSource(nil, true, "", fakeRelayWorkspaceGetter{}, cs)
+}
+
+// M2 (design 0061 §4): the fallback mode rides the relay install —
+// migration unless explicitly strict (the builder's zero value is
+// STRICT, so this wiring is what arms migration in deployment; the
+// behavioral table lives in pkg/secrets/relay_fallback_test.go).
+func TestInstallRelay_FallbackModeThreads(t *testing.T) {
+	cs := k8sfake.NewSimpleClientset()
+
+	for _, tc := range []struct {
+		mode     string
+		expected bool
+	}{
+		{"", true},          // unset → migration (the default)
+		{"migration", true}, // explicit migration
+		{"strict", false},   // explicit strict
+	} {
+		svc := secrets.NewSecretService(nil, nil)
+		installRelayTokenSource(svc, true, tc.mode, fakeRelayWorkspaceGetter{}, cs)
+		if svc.RelayFallbackForTest() != tc.expected {
+			t.Errorf("mode %q: fallback = %v, want %v", tc.mode, svc.RelayFallbackForTest(), tc.expected)
+		}
+	}
+
+	// Flag off: no wiring at all (the source AND the mode stay unset).
+	off := secrets.NewSecretService(nil, nil)
+	installRelayTokenSource(off, false, "migration", fakeRelayWorkspaceGetter{}, cs)
+	if off.RelayTokensForTest() != nil || off.RelayFallbackForTest() {
+		t.Error("flag off must not install the source or arm the fallback")
+	}
 }

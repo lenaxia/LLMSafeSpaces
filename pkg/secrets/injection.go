@@ -340,13 +340,14 @@ func (s *SecretService) workspaceDEK(ctx context.Context, ownerUserID, workspace
 // dropped in the rewrite; the credential still decrypts server-side for
 // the model list so flag-on/off entries stay behavior-identical for the
 // formatter). Absent ⇒ the raw mixed-fleet path continues (US-72.3 D5).
-// With handoffErr != nil (staging not ready) the ENTIRE class is muted:
+// With handoffErr != nil (staging not ready) and NO fallback (strict —
+// the zero value and the steady-state posture) the ENTIRE class is muted:
 // no token batch and never a raw fallback under flag-on.
 func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID, workspaceID string, bindings []CredentialBinding, dek []byte, handoff *RelayHandoff, handoffErr error) []BatchEntry {
 	adminDecrypt := decryptFnFor(s.adminProvider)
 	orgDecrypt := decryptFnFor(s.orgProvider)
 
-	muteClass := s.relayTokens != nil && (handoffErr != nil || handoff == nil)
+	muteClass := s.relayTokens != nil && !s.relayFallback && (handoffErr != nil || handoff == nil)
 	seen := make(map[string]bool)
 	var out []BatchEntry
 	for _, b := range bindings {
@@ -368,12 +369,23 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 			continue
 		}
 		if muteClass {
-			// Staging not ready under flag-on: the provider is skipped
-			// loudly (the class-level degrade already audited) — the raw
-			// key must not leak into a not-ready token batch.
+			// Staging not ready under flag-on (strict): the provider is
+			// skipped loudly (the class-level degrade already audited) —
+			// the raw key must not leak into a not-ready token batch.
 			s.audit(ctx, ownerUserID, "credential_skipped_relay_not_ready", nil, &workspaceID,
 				map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind})
 			continue
+		}
+		fallbackDelivery := s.relayTokens != nil && handoff == nil
+		if fallbackDelivery {
+			// M2 (design 0061 §4) — migration mode, staging not ready:
+			// the raw entry DELIVERS (the pre-flip bytes below, the
+			// availability half of the trade) and this emission is a
+			// COUNTED, AUDITED fallback — the counter is the stall
+			// detector (fires at the exact moment harm would begin).
+			s.audit(ctx, ownerUserID, "relay_fallback_delivery", nil, &workspaceID,
+				map[string]string{"slug": pd.Slug, "kind": pd.Kind})
+			relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
 		}
 		s.applyModelAllowlist(&pd, b)
 		if handoff != nil && seen[pd.Slug] {
@@ -387,10 +399,23 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 		}
 		var relayMeta json.RawMessage
 		if handoff != nil {
-			meta, outcome := applyRelayHandoff(&pd, handoff)
+			meta, outcome := applyRelayHandoff(&pd, handoff, s.relayFallback)
 			switch outcome {
 			case relayEmitted:
 				relayMeta = meta
+			case relayExpired:
+				// M2: an expired staged token is not-ready at batch time.
+				// Migration: the raw fallback DELIVERS + counts (the
+				// availability trade). Strict: fall through to the token
+				// emission (applyRelayHandoff performed the rewrite — the
+				// existing renewal path owns expiry there).
+				if s.relayFallback {
+					s.audit(ctx, ownerUserID, "relay_fallback_delivery", nil, &workspaceID,
+						map[string]string{"slug": pd.Slug, "kind": pd.Kind, "reason": "token_expired"})
+					relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
+				} else {
+					relayMeta = meta
+				}
 			case relayEmptyToken:
 				// Empty staged token: corruption the controller never
 				// writes — skip loudly, no keyless entry, no raw fallback.

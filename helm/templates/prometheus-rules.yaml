@@ -851,6 +851,33 @@ spec:
       rules:
         - alert: LlmRelayRouterRejectSpike
           expr: |
+            - alert: RelayFallbackDeliveryActive
+              expr: increase(relay_fallback_deliveries_total[10m]) > 0
+              labels:
+                severity: warning
+                category: credential-delivery
+              annotations:
+                summary: "Relay fallback delivery active (migration mode delivering raw keys)"
+                description: >-
+                  Design 0061 §4 (M2): not-ready relay staging delivered pre-flip raw-key
+                  batches in the last 10m. ANY firing means the migration is still live —
+                  the staging producer is absent or tokens are expiring faster than
+                  renewal. Investigate the controller's arming (the enable line / exit 85)
+                  and the staging reconcile. Flip to strict ONLY after 7 consecutive
+                  zero-days (docs/runbooks/relay-only-flip.md).
+            - alert: RelayDegradedBatchesActive
+              expr: increase(relay_degraded_batches_total[10m]) > 0
+              labels:
+                severity: critical
+                category: credential-delivery
+              annotations:
+                summary: "Fail-closed relay batches (zero LLM credentials delivered)"
+                description: >-
+                  Design 0061 §4: strict-mode not-ready mutes (or any fail-closed relay
+                  degrade) delivered ZERO llm entries in the last 10m — workspaces are
+                  losing all LLM providers (the #1548 harm). The fallback counter is
+                  silent in strict mode by design; THIS series is the mode-independent
+                  detector.
             sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"401|403|429"}[10m])) > 20
           for: 5m
           labels:

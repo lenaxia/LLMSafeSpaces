@@ -139,6 +139,11 @@ spec:
             {{- if and .Values.relayOnlyKeyDelivery.enabled (dig "api" "enabled" true .Values.relayOnlyKeyDelivery) }}
             - name: LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED
               value: "true"
+            # M2 (design 0061 §4): the fallback mode rides the same
+            # install (migration unless explicitly strict — the chart
+            # default is migration; the value threads to the builder).
+            - name: LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE
+              value: {{ .Values.relayOnlyKeyDelivery.fallbackMode | default "migration" | quote }}
             {{- end }}
             - name: LLMSAFESPACES_KUBERNETES_PODNAME
               valueFrom:

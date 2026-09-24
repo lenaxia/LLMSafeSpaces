@@ -1783,6 +1783,13 @@ previewOrigin:
 # heal on the next batch apply — pinned by the drill's R3 leg).
 relayOnlyKeyDelivery:
   enabled: true
+  # M2 (design 0061 §4): migration = not-ready staging delivers pre-flip
+  # raw keys + relay_fallback_deliveries_total (the stall detector —
+  # alerts on ANY firing). strict = the fail-closed class-mute. Flip to
+  # strict only after the counter reads zero 7 consecutive days AND the
+  # posture gate is green (the runbook paragraph,
+  # docs/runbooks/relay-only-flip.md).
+  fallbackMode: "migration"
   # Namespace for the router + staged Secrets.
   namespace: "llm-relay"
   # URL workspace pods use (the router FQDN cross-namespace).
