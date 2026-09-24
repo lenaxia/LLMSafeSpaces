@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r15 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r16 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r15 fixes pushed; awaiting re-review.
+**Status:** r16 fixes pushed; awaiting re-review.
 
 ---
 
@@ -170,6 +170,17 @@ The record pass, delivered IN PLACE this time (the r13 narration-without-correct
 
 r15's finding 1 was an inconsistency, not a new mechanism: the operator ban ran over RAW install text while the lever bans and the -f regex in the SAME test ran over `banViews` — whose empty-join view exists precisely because bash removes backslash-newline with no space. The composed spellings (`<\`+NL+`(`, `>\`+NL+`(`, `$\`+NL+`(`) executed live substitutions mid-install with all pins green (not silent-green — helm fails arg validation — but the r8-finding-7 pin-green-dead-install class, the fourth escape round on this channel). Closed: the operator ban now runs over every `banViews` view; the double-backslash-newline spelling (`\\`+NL — an escaped backslash that ends the command) joins the ban per the adjudicated finding; and `extractSetKeys` parses BOTH join views (the symmetric close for the split-`--set` parse — posture-neutral per the adjudication, but symmetry is cheap). Findings 2+3: the r11 section's two missed annotations are delivered, and the r14 record's completeness claim now states the pass it actually made.
 
+## r16 round record (the chain-integrity pin, the fourth view, the CR ban)
+
+r16's milestone verdict: **the first round in sixteen with no false-green escape constructible** — every pin-green mutation both passes found fails the gate at runtime. The remaining findings were sibling spellings of the dead-install class (pin-green, runtime fail-closed): the blank-line/comment-line/CR continuation amputations and the extra-indent composed operator. Closed:
+
+1. **CHAIN INTEGRITY** — every RAW line strictly between the install's head and tail must end with a backslash, with mid-chain comments banned outright (a comment amputates regardless of its trailing backslash — bash ends comments at the newline).
+2. **The fourth view** — the operator ban gains the EMPTY-JOIN-then-whitespace-stripped view (in that order: strip whitespace first and the backslash survives between the operator characters — my own first attempt had it backwards and its gauntlet caught it); the extra-indent composed spelling forms there.
+3. **The CR ban on the RAW file** — YAML normalizes CRLF inside the parsed scalar, so a `\`+CR+newline continuation is invisible post-parse; any CR byte in the workflow is corruption.
+4. **The `defaults:` ban** (the optional close, adopted): a workflow-level defaults.run.shell re-scopes every step silently.
+
+All five r16 classes re-verified RED (blank line, mid-chain comment, CR corruption, extra-indent composed operator, defaults block); pristine baseline checksummed before and after.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -189,7 +200,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r15 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r16 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -197,7 +208,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Next Steps
 
-1. Re-review (r15 verdict pending).
+1. Re-review (r16 verdict pending).
 2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

@@ -185,6 +185,12 @@ func TestPostureGate_Triggers(t *testing.T) {
 	}
 	require.True(t, ok, "workflow must have an `on:` trigger block")
 
+	// r16's optional close, adopted: a workflow-level `defaults:` block
+	// (e.g. `defaults: {run: {shell: …}}`) silently re-scopes every
+	// step's shell — absent by design here; drift would be unreviewed.
+	require.NotContains(t, keysOf(top), "defaults",
+		"the workflow must carry no `defaults:` block — a defaults.run.shell silently re-scopes every step")
+
 	var onMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(onBlock, &onMap))
 	_, hasDispatch := onMap["workflow_dispatch"]
@@ -621,39 +627,60 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	// bash treats `\\`+NL as an escaped backslash ending the command —
 	// a pin-green dead install (the r8-finding-7 class).
 	for _, op := range []string{"&&", ";", "|", "`", "$(", "<(", ">(", "&", "\\\\\n"} {
-		for _, view := range banViews(install.Run) {
+		// r16 finding 2: the fourth view is the EMPTY JOIN with ALL
+		// WHITESPACE STRIPPED (in that order — the backslash-newline
+		// must go first, or the backslash survives between the operator
+		// characters) — the extra-indent composed spelling forms the
+		// operator in no plain banViews view but forms it here; runtime
+		// it is a bash syntax error (fail-closed), yet the close should
+		// not rest on an indent-sensitive mechanism.
+		fourth := regexp.MustCompile(`\s+`).ReplaceAllString(strings.ReplaceAll(install.Run, "\\\n", ""), "")
+		for _, view := range append(banViews(install.Run), fourth) {
 			require.NotContains(t, view, op,
-				"the install run block must carry no shell operators in any join view — `%s` opens an unreviewed channel", op)
+				"the install run block must carry no shell operators in any join or stripped view — `%s` opens an unreviewed channel", op)
 		}
 	}
-	// r9 finding 1: the TAIL — a newline-separated second command has
-	// no operator and escaped the operator ban (live-demonstrated RBAC
-	// patch post-install). The block must END with the wait line, and
-	// every non-comment line except the last must end with a
-	// continuation backslash.
+	// r9 finding 1 + r16 finding 1: the TAIL and the CHAIN. A newline-
+	// separated second command has no operator and escaped the operator
+	// ban; the round's own closes had sibling spellings — a blank line,
+	// a comment line, or a CR-corrupted continuation mid-chain amputate
+	// the command identically (the workflow's own comment documents the
+	// comment-line form). CHAIN INTEGRITY: every RAW line strictly
+	// between the head line and the tail line must end with a backslash
+	// — no blank/comment skips, no trim (a trimmed check was blind to
+	// trailing CRs and spaces).
 	lines := strings.Split(install.Run, "\n")
-	var last string
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		last = trimmed
-		break
-	}
-	require.Equal(t, "--wait --timeout 10m", last,
-		"the install's last command line must be exactly the wait line — a newline-separated second command is an unreviewed channel")
+	headIdx, tailIdx := -1, -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.TrimSpace(line) == last {
-			break
+		if headIdx == -1 {
+			headIdx = i
 		}
-		require.True(t, strings.HasSuffix(trimmed, "\\"),
-			"install line %d must continue (end with backslash) — the install is ONE command, no newline-separated seconds: %q", i+1, line)
+		tailIdx = i
 	}
+	require.True(t, headIdx >= 0 && tailIdx > headIdx, "the install must be a multi-line command chain")
+	for i := headIdx + 1; i < tailIdx; i++ {
+		require.True(t, strings.HasSuffix(lines[i], "\\"),
+			"install chain line %d must end with a raw backslash — blank, comment, or CR-corrupted continuations amputate the command (a pin-green dead install): %q", i+1, lines[i])
+		// r16 finding 1: a comment mid-chain amputates even WITH a
+		// trailing backslash (bash ends comments at the newline — the
+		// backslash does not continue them); the chain carries no
+		// comments after the head line.
+		require.False(t, strings.HasPrefix(strings.TrimSpace(lines[i]), "#"),
+			"install chain line %d must not be a comment — a mid-chain comment amputates the command regardless of its trailing backslash: %q", i+1, lines[i])
+	}
+	// r16 finding 1 (CR spelling): YAML normalizes CRLF inside the
+	// parsed scalar, so the CR corruption is invisible post-parse —
+	// ban CR anywhere in the raw file (a shell workflow line ending
+	// `\`+CR amputates the command at runtime; a stray CR is always
+	// corruption in this artifact).
+	require.NotContains(t, mustRead(t, postureGateWorkflow), "\r",
+		"the workflow file must contain no CR bytes — a backslash+CR+newline continuation amputates the command (invisible to the YAML parse)")
+	require.Equal(t, "--wait --timeout 10m", strings.TrimSpace(lines[tailIdx]),
+		"the install's last command line must be exactly the wait line — a newline-separated second command is an unreviewed channel")
 	// r8 finding 3: the WORKFLOW-level env block is a carrier channel
 	// one tier above the step/job closes — its values reach helm as
 	// unquoted ${VARS} past every run-text ban. It legitimately exists
