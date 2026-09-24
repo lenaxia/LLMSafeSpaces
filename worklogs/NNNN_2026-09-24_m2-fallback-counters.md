@@ -61,3 +61,7 @@ None.
 - `api/internal/config/config.go` (the knob + BindEnv + default), `api/internal/app/relay_handoff.go` (the install signature + the mode + the metric registration), `app.go` (the call), `relay_handoff_test.go`, `relay_only_config_test.go`
 - `helm/values.yaml` (fallbackMode + the strict-flip criteria comment), `helm/templates/api-deployment.yaml` (the env), `helm/templates/prometheus-rules.yaml` (both alerts), `helm/relay_fallback_mode_test.go` (new, 4 pins)
 - `docs/runbooks/relay-only-flip.md` (the strict-flip paragraph)
+
+## r0-fix — the CI-red my local run couldn't see (no promtool here)
+
+The alerts insert landed INSIDE LlmRelayRouterRejectSpike's multi-line expr block (my python anchor was the CONTINUATION line of a folded expression, not a rule boundary — the inserted `- alert:` lines became expression text, and promtool caught it: "could not parse expression: unexpected identifier RelayFallbackDeliveryActive"). The local run couldn't catch it — TestPromtoolRules SKIPS without the promtool binary, the exact silent-skip shape the orchestrator flagged on #1534. Fixed: the two alerts re-inserted as complete rules at the group head, before the first alert. Structural validation added locally (a rendered-YAML walk asserting every rule in the group has a clean alert name and an uncontaminated expr — the class closed without the binary).
