@@ -40,9 +40,11 @@ func TestSetupRelayStaging_FlagOffIsByteIdenticalNilPath(t *testing.T) {
 	assert.Nil(t, cfg, "flag off: no staging config (zero behavior change)")
 }
 
-// The armed-window shape: the 30s startup-guard timeout IS the bounded
-// window (design §3: "no new timer machinery") — pin that the guard's
-// budget stays the design's window.
+// [Folded into local/m1_arming_source_test.go per r2 finding 3 — this
+// unit twin asserted a var against its own literal; the genuine
+// guard-reads-the-window binding is the source pin. Retained only as
+// the semantic-constant documentation point; the source pin is the
+// enforcement.]
 func TestArmingWindow_IsTheStartupGuardBudget(t *testing.T) {
 	// The guard's timeout is constructed inline (controller.go's
 	// guardCtx); the pin asserts the design constant relationship: the

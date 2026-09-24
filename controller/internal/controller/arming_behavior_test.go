@@ -4,21 +4,16 @@
 package controller
 
 // arming_behavior_test.go — the design §3 shapes, EXECUTED (r1's ask):
-// SetupRelayStaging is driven through a minimal manager stub (the
-// opencodeOverlayDecision precedent: behavior at a seam, not source
-// greps). The armed shape runs the REAL guard against a REAL in-process
-// router stub + a REAL (fake) API client carrying a shape-valid pub
-// Secret — flags → construction → guard → the enable line. The
-// unarmable shape proves "not 1, not a hang": the error returns within
-// the window, and the seam maps it to 85.
+// SetupRelayStaging driven through a minimal manager stub + a
+// guard-client DI seam, hermetically (no envtest, no cluster).
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
-
-	"os"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,9 +28,11 @@ import (
 )
 
 // stubManager satisfies exactly the ctrl.Manager surface
-// SetupRelayStaging touches (GetAPIReader / GetConfig / GetScheme); the
-// embedded nil interface panics on any OTHER use — a future wider
-// manager dependency becomes a loud test failure, not a silent gap.
+// SetupRelayStaging touches (GetAPIReader / GetScheme); the embedded
+// nil interface panics on any OTHER use — a future wider manager
+// dependency becomes a loud test failure, not a silent gap. GetConfig
+// is deliberately NOT stubbed: the guard client rides the DI seam, and
+// a nil-interface panic there means production reached around it.
 type stubManager struct {
 	ctrl.Manager
 	reader client.Reader
@@ -44,10 +41,6 @@ type stubManager struct {
 
 func (m *stubManager) GetAPIReader() client.Reader { return m.reader }
 func (m *stubManager) GetScheme() *runtime.Scheme  { return m.scheme }
-
-// GetConfig is deliberately NOT stubbed: SetupRelayStaging must never
-// touch it (the guard client rides the seam) — a nil-interface panic
-// here means production reached around the seam.
 
 func armingScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -81,21 +74,29 @@ func validPubSecret(t *testing.T, namespace string) *corev1.Secret {
 	}
 }
 
+// withGuardClient swaps the guard-client DI seam to the fake client.
+func withGuardClient(t *testing.T, fc client.Client) {
+	t.Helper()
+	orig := newStartupGuardClient
+	newStartupGuardClient = func(ctrl.Manager) (client.Client, error) { return fc, nil }
+	t.Cleanup(func() { newStartupGuardClient = orig })
+}
+
 // THE ARMED SHAPE (design §3 shape 2): enabled + a reachable, booted
-// router → non-nil config AND the armed line emitted (the enable line
-// IS the armed contract). The line is captured through the package's
-// controller-runtime logger.
-func TestSetupRelayStaging_ArmedEmitsLineAndReturnsConfig(t *testing.T) {
+// router → non-nil config and exit-0 through the seam. The LINE's
+// emission is pinned STRUCTURALLY (ArmedLineLivesInArmedPath — scoped
+// to SetupRelayStaging's body, after the guard's success): a real logr
+// sink capture was attempted and is NOT possible here — the package
+// binary's controller-runtime root logger is already fulfilled before
+// any test runs (empirically verified: SetLogger + a direct probe
+// captures nothing), so the honest coverage is the body-scoped pin.
+func TestSetupRelayStaging_ArmedReturnsConfig(t *testing.T) {
 	router := armingRouterStub(t)
 	ns := "llm-relay"
 	fc := fake.NewClientBuilder().WithScheme(armingScheme(t)).
 		WithObjects(validPubSecret(t, ns)).Build()
 	mgr := &stubManager{reader: fc, scheme: fc.Scheme()}
-	// The guard-client seam: the fake API for the pub-Secret read + the
-	// mint-key create (hermetic — no rest config, no envtest).
-	orig := newStartupGuardClient
-	newStartupGuardClient = func(ctrl.Manager) (client.Client, error) { return fc, nil }
-	t.Cleanup(func() { newStartupGuardClient = orig })
+	withGuardClient(t, fc)
 
 	cfg, err := SetupRelayStaging(mgr, true, router.URL, ns, 24*time.Hour, "http://api.invalid", "token")
 	require.NoError(t, err)
@@ -104,40 +105,48 @@ func TestSetupRelayStaging_ArmedEmitsLineAndReturnsConfig(t *testing.T) {
 }
 
 // THE UNARMABLE SHAPE (design §3 shape 1): enabled + an unreachable
-// router → the error returns WITHIN the window ("not 1, not a hang" —
-// the elapsed time is bounded and asserted) and the seam maps it to 85.
+// router → the error returns WITHIN the window and the seam maps it to
+// 85. The bound is a LITERAL 30s+slack, deliberately NOT derived from
+// ArmingStartupGuardWindow (r2 finding 2: a var regression to 10m
+// would silently loosen a var-derived bound — this catches the
+// bounded-stall regression, not only the infinite hang).
 func TestSetupRelayStaging_UnarmableReturnsErrWithinWindow(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(armingScheme(t)).Build()
 	mgr := &stubManager{reader: fc, scheme: fc.Scheme()}
-	orig := newStartupGuardClient
-	newStartupGuardClient = func(ctrl.Manager) (client.Client, error) { return fc, nil }
-	t.Cleanup(func() { newStartupGuardClient = orig })
+	withGuardClient(t, fc)
 
 	start := time.Now()
 	_, err := SetupRelayStaging(mgr, true, "http://127.0.0.1:1", "llm-relay", 24*time.Hour, "http://api.invalid", "token")
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "unarmable: the error returns (main exits — with the code, not a hang)")
-	assert.Less(t, elapsed, ArmingStartupGuardWindow+5*time.Second,
-		"within the bounded window (the guard's own budget + probe slack)")
+	assert.Less(t, elapsed, 35*time.Second,
+		"within the design's bounded 30s window + probe slack (the guard's context budget)")
 	assert.Contains(t, err.Error(), "refusing to start",
 		"the refusal carries the not-armed language")
 	assert.Equal(t, 85, RelayStagingExitCodeFor(err),
 		"the seam maps the unarmable outcome to the fifth rung")
 }
 
-// The armed-line LITERAL is pinned here (r1 finding: the release-smoke
-// citation was dangling — the parity branch is unmerged; until it lands
-// THIS is the armed contract's only in-tree coverage, and the posture
-// gate asserts it cluster-side when it lands).
-func TestSetupRelayStaging_ArmedLineLiteral(t *testing.T) {
-	src, err := readControllerSource()
+// The armed-line STRUCTURAL pin (r2 finding 1: the literal must live
+// INSIDE SetupRelayStaging's body, AFTER the guard's success — deletion
+// AND relocation both fail; a bare file-level grep catches only
+// deletion). The parity branch's release-smoke markers do not exist on
+// main; until they or the posture gate land, THIS is the armed
+// contract's only in-tree coverage.
+func TestSetupRelayStaging_ArmedLineLivesInArmedPath(t *testing.T) {
+	src, err := os.ReadFile("controller.go")
 	require.NoError(t, err)
-	assert.Contains(t, src, `"relay-only key delivery enabled"`,
-		"the armed contract's literal — the posture gate's cluster-side assertion depends on this exact string")
-}
-
-func readControllerSource() (string, error) {
-	b, err := os.ReadFile("controller.go")
-	return string(b), err
+	fnStart := strings.Index(string(src), "func SetupRelayStaging(")
+	require.GreaterOrEqual(t, fnStart, 0, "SetupRelayStaging not found")
+	fnEnd := strings.Index(string(src)[fnStart:], "\nfunc ")
+	body := string(src)[fnStart : fnStart+fnEnd]
+	assert.Contains(t, body, `"relay-only key delivery enabled"`,
+		"the armed line lives in SetupRelayStaging's body")
+	guardIdx := strings.Index(body, "ValidateRelayStagingStartup")
+	lineIdx := strings.Index(body, `"relay-only key delivery enabled"`)
+	if guardIdx >= 0 && lineIdx >= 0 {
+		assert.Greater(t, lineIdx, guardIdx,
+			"the armed line is emitted only AFTER the guard succeeds (the armed conjunction's order)")
+	}
 }
