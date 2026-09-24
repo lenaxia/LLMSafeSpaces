@@ -835,3 +835,38 @@ tests:
               description: >-
                 Workspace ws-canary saw 20 upstream-class
                 failures in 10m — resolve path or provider availability issue.
+
+  # ── M2 (design 0061 §4): the fallback + degraded-batch detectors ──────
+  - interval: 1m
+    input_series:
+      - series: 'relay_fallback_deliveries_total{workspace="ws-a",provider_slug="openai"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RelayFallbackDeliveryActive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: credential-delivery
+              workspace: ws-a
+              provider_slug: openai
+            exp_annotations:
+              summary: "Relay fallback delivery active (migration mode delivering raw keys)"
+              description: "Design 0061 §4 (M2): not-ready relay staging delivered pre-flip raw-key batches in the last 10m. ANY firing means the migration is still live — the staging producer is absent or tokens are expiring faster than renewal. Investigate the controller's arming (the enable line / exit 85) and the staging reconcile. Flip to strict ONLY after 7 consecutive zero-days (docs/runbooks/relay-only-flip.md)."
+
+  - interval: 1m
+    input_series:
+      - series: 'relay_degraded_batches_total{workspace="ws-b",reason="relay_staging_not_ready"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RelayDegradedBatchesActive
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: credential-delivery
+              workspace: ws-b
+              reason: relay_staging_not_ready
+            exp_annotations:
+              summary: "Fail-closed relay batches (zero LLM credentials delivered)"
+              description: "Design 0061 §4: strict-mode not-ready mutes (or any fail-closed relay degrade) delivered ZERO llm entries in the last 10m — workspaces are losing all LLM providers (the #1548 harm). The fallback counter is silent in strict mode by design; THIS series is the mode-independent detector."

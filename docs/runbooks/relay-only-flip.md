@@ -160,6 +160,15 @@ criterion is UNVERIFIED for that run, not passed.
   first green run satisfies the criterion, a red run is the
   regression signal.
 
+## The strict-mode flip (M2, design 0061 §4)
+
+Migration mode (the chart default since M2) delivers pre-flip raw keys when staging is not ready, counted per provider by `relay_fallback_deliveries_total` — the alert fires on ANY increase (10m window); every firing means the migration is still live. **Flip to `relayOnlyKeyDelivery.fallbackMode: "strict"` only when BOTH hold:**
+
+1. `relay_fallback_deliveries_total` has read **zero for 7 consecutive days** fleet-wide, and
+2. the posture gate is green on the current chart.
+
+After the flip, strict-mode detection rides `relay_degraded_batches_total` (the mode-independent series — a strict-mode staging death is a CRITICAL alert, not a silent mute). Rollback is the value back to `migration` — one helm upgrade, no re-flip machinery.
+
 ## Known interactions
 
 - **`rbac.scope=cluster` installs**: the flipped default renders the

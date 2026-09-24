@@ -23,11 +23,14 @@ package secrets
 //     worklog D5) keeps the raw-key mixed-fleet path until US-72.5
 //     decides coverage; the controller names these in
 //     CredentialsStaged's message.
-//   - A MISSING handoff under flag-on is staging-not-ready: NO
-//     llm-provider entries at all (never a raw-key fallback — the
-//     design's central property), a machine-readable BuildDegrade
-//     (relay_staging_not_ready) and an audit row. Non-provider classes
-//     (env-secrets, MCP) still deliver.
+//   - A MISSING handoff under flag-on is staging-not-ready: in STRICT
+//     mode NO llm-provider entries at all (the fail-closed posture —
+//     the design's central property, keyed relay_staging_not_ready); in
+//     MIGRATION mode (design 0061 §4, the chart default) the pre-flip
+//     RAW-key entries deliver — counted by
+//     relay_fallback_deliveries_total, audited, and surfaced as the
+//     relay_fallback_delivery degrade. Non-provider classes
+//     (env-secrets, MCP) still deliver in both modes.
 //   - The handoff revision participates in the manifest tier
 //     (ManifestHashWithRelayRevision): a token renewal at ~TTL/2
 //     changes the staged revision, which changes the manifest hash,
@@ -38,6 +41,10 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // DegradeRelayStagingNotReady is the loud-degrade reason emitted when
@@ -46,24 +53,72 @@ import (
 // completed a pass, or the Secret was deleted out-of-band).
 const DegradeRelayStagingNotReady = "relay_staging_not_ready"
 
+// DegradeRelayFallbackDelivery (design 0061 §4, M2): the migration-mode
+// fallback outcome — staging was not ready at batch time and the batch
+// delivered PRE-FLIP RAW-KEY entries instead (counted per provider by
+// relay_fallback_deliveries_total, audited relay_fallback_delivery).
+// NON-NIL by contract: the M4 CredentialsStaged hook surfaces it as
+// False/relay_fallback_delivery so the migration is per-workspace
+// visible (the counter alerts; the condition explains).
+const DegradeRelayFallbackDelivery = "relay_fallback_delivery"
+
 // IsRelayDegrade reports whether a BuildDegrade belongs to the relay
 // tier (design 0061 §6/M4): the CredentialsStaged condition mirrors
 // the RELAY outcome only — a DEK-tier degrade (dek_unwrap_failed,
 // owner_no_keys) says nothing about relay staging (admin/org providers
 // were still relay-rewritten and delivered) and must NOT surface as a
 // relay-staging condition. The vocabulary lives HERE behind the
-// builder seam: M2's relay_fallback_delivery joins this set in one
-// place, and consumers never enumerate reasons themselves.
+// builder seam: M2's relay_fallback_delivery joined this set (one
+// place), and consumers never enumerate reasons themselves.
 func IsRelayDegrade(d *BuildDegrade) bool {
 	if d == nil {
 		return false
 	}
 	switch d.Reason {
-	case DegradeRelayStagingNotReady:
+	case DegradeRelayStagingNotReady, DegradeRelayFallbackDelivery:
 		return true
 	default:
 		return false
 	}
+}
+
+// The M2 counters (design 0061 §4). Deliberately NOT promauto: agentd
+// links this package too, and the series belong to the API process
+// that builds batches — the API registers them at relay-install time
+// (api/internal/app/relay_handoff.go, the registerRelayMetricsOnce
+// precedent). Unregistered collectors still count in-process (the
+// tests read them directly).
+var (
+	relayFallbackDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_fallback_deliveries_total",
+		Help: "Raw-key (pre-flip) llm-provider deliveries under relay-only because no usable staged token existed at batch time (migration mode; design 0061 §4). The stall detector: fires at the exact moment harm would begin.",
+	}, []string{"workspace", "provider_slug"})
+
+	relayDegradedBatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_degraded_batches_total",
+		Help: "Fail-closed relay batches (strict mode's not-ready mute, or any zero-entry relay degrade). Mode-independent detection: survives the strict flip (design 0061 §4's r3 addition).",
+	}, []string{"workspace", "reason"})
+)
+
+// RelayFallbackMetrics exposes the M2 counters for the API's
+// registration (relay_handoff.go MustRegisters them once at
+// relay-install).
+func RelayFallbackMetrics() (fallback, degraded *prometheus.CounterVec) {
+	return relayFallbackDeliveries, relayDegradedBatches
+}
+
+// RelayFallbackForTest exposes the installed fallback mode (the
+// RelayTokensForTest precedent — cross-package wiring tests assert the
+// app seam installed MIGRATION, the builder's non-default).
+func (s *SecretService) RelayFallbackForTest() bool { return s.relayFallback }
+
+// SetRelayDeliveryFallback installs the fallback mode (design 0061 §4):
+// true = MIGRATION (not-ready delivers pre-flip raw keys + the fallback
+// counter); false/zero-value = STRICT (the fail-closed class-mute —
+// the steady-state posture; the safe default until the API installs
+// migration explicitly).
+func (s *SecretService) SetRelayDeliveryFallback(enabled bool) {
+	s.relayFallback = enabled
 }
 
 // Relay batch-entry metadata keys (string-valued — the materializer's
@@ -139,8 +194,9 @@ func (h *RelayHandoff) Find(slug string) (RelayHandoffProvider, bool) {
 // RelayTokenSource resolves the controller-staged handoff for a
 // workspace (production: the k8s `workspace-relay-<wsName>` Secret in
 // the workspace namespace, data key `handoff`). A nil handoff with a
-// nil error means "staged Secret absent" — staging not ready, never a
-// raw fallback. A nil RelayTokenSource on the service means the
+// nil error means "staged Secret absent" — staging not ready (strict
+// mutes; migration falls back to raw keys, counted — M2). A nil
+// RelayTokenSource on the service means the
 // deployment flag is OFF: legacy behavior, byte-identical.
 type RelayTokenSource interface {
 	RelayHandoff(ctx context.Context, workspaceID string) (*RelayHandoff, error)
@@ -175,9 +231,16 @@ func (s *SecretService) relayHandoffOpt(ctx context.Context, workspaceID string)
 	return s.relayTokens.RelayHandoff(ctx, workspaceID)
 }
 
-// relayBatchDegrade resolves the relay tier's contribution to a build:
-// nil when the handoff is staged (or the flag is off); the loud
-// relay_staging_not_ready degrade + audit row when it is not.
+// relayBatchDegrade resolves the relay tier's contribution to a build
+// (design 0061 §4, M2 semantics):
+//   - flag off / handoff staged: nil (unchanged);
+//   - not ready (absent/err) + MIGRATION: the NON-NIL fallback degrade
+//     (the M4 seam contract — CredentialsStaged=False/relay_fallback_delivery)
+//     while the batch DELIVERS raw keys (buildCredentialEntries' mute is
+//     lifted); the per-provider fallback counting lives at the entry
+//     site, where the slug is known;
+//   - not ready + STRICT: the fail-closed not-ready degrade + audit row
+//   - relay_degraded_batches_total (the mode-independent detector).
 func (s *SecretService) relayBatchDegrade(ctx context.Context, ownerUserID, workspaceID string, handoff *RelayHandoff, handoffErr error) *BuildDegrade {
 	if s.relayTokens == nil {
 		return nil
@@ -189,8 +252,18 @@ func (s *SecretService) relayBatchDegrade(ctx context.Context, ownerUserID, work
 	if handoffErr != nil {
 		detail = handoffErr.Error()
 	}
+	if s.relayFallback {
+		// MIGRATION: deliver raw (the mute lifts), surface the fallback
+		// outcome loudly. The batch is NOT fail-closed — the degraded
+		// counter stays silent; relay_fallback_deliveries_total (fired
+		// per provider at the entry site) is the alert surface.
+		s.audit(ctx, ownerUserID, DegradeRelayFallbackDelivery, nil, &workspaceID,
+			map[string]string{"detail": detail})
+		return &BuildDegrade{Reason: DegradeRelayFallbackDelivery}
+	}
 	s.audit(ctx, ownerUserID, DegradeRelayStagingNotReady, nil, &workspaceID,
 		map[string]string{"detail": detail})
+	relayDegradedBatches.WithLabelValues(workspaceID, DegradeRelayStagingNotReady).Inc()
 	return &BuildDegrade{Reason: DegradeRelayStagingNotReady}
 }
 
@@ -220,21 +293,33 @@ const (
 	relayEmitted
 	// relayEmptyToken: a handoff entry exists with an empty token —
 	// corruption the controller never writes; skip loudly, never a
-	// keyless entry and never a raw fallback under flag-on.
+	// keyless entry (and never a fallback: an empty token is corrupt,
+	// not not-ready — the design's fallback class is absent/expired).
 	relayEmptyToken
+	// relayExpired (M2): the staged token's expiry is past at batch
+	// time — not-ready for THIS provider (per-provider granularity).
+	relayExpired
 )
 
 // applyRelayHandoff rewrites one decrypted provider entry onto the
 // token path: apiKey = staged token, baseURL = RouterURL + RouterPath.
 // Models and everything else are untouched (flag-on/flag-off behavior
 // parity for the formatter).
-func applyRelayHandoff(pd *LLMProviderData, h *RelayHandoff) (json.RawMessage, relayEmitOutcome) {
+func applyRelayHandoff(pd *LLMProviderData, h *RelayHandoff, fallbackAllowed bool) (json.RawMessage, relayEmitOutcome) {
 	staged, ok := h.Find(pd.Slug)
 	if !ok {
 		return nil, relayNotStaged
 	}
 	if staged.Token == "" {
 		return nil, relayEmptyToken
+	}
+	// M2 (design 0061 §4): an EXPIRED token is not-ready at batch time.
+	// Migration (fallbackAllowed): the relayExpired outcome carries to
+	// the caller, which delivers the raw key + counts. Strict: the
+	// rewrite proceeds below — the token DELIVERS and the existing
+	// renewal path owns expiry (unchanged behavior).
+	if exp, err := time.Parse(time.RFC3339, staged.ExpiresAt); err == nil && time.Now().After(exp) && fallbackAllowed {
+		return nil, relayExpired
 	}
 	pd.APIKey = staged.Token
 	pd.BaseURL = h.RouterBase() + staged.RouterPath

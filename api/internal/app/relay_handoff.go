@@ -12,7 +12,8 @@ package app
 //
 // Semantics the builder relies on:
 //   - Secret absent            → (nil, nil): staging not ready (loud
-//     degrade; never a raw fallback under flag-on).
+//     degrade; the batch falls back to raw keys only in MIGRATION mode
+//     — design 0061 §4 — never silently).
 //   - Empty/unparseable `handoff` data → (nil, nil)/(nil, err): the
 //     same not-ready class — an unusable handoff must not half-deliver.
 //   - No token or workspace material is ever logged.
@@ -22,6 +23,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -57,7 +61,8 @@ func (s *k8sRelayTokenSource) RelayHandoff(ctx context.Context, workspaceID stri
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Staging has not completed a pass (or the Secret was removed
-			// out-of-band): not-ready, never a raw fallback.
+			// out-of-band): not-ready; raw fallback only in migration
+			// mode (M2), always counted.
 			return nil, nil
 		}
 		return nil, fmt.Errorf("relay handoff: read secret: %w", err)
@@ -80,12 +85,26 @@ func (s *k8sRelayTokenSource) RelayHandoff(ctx context.Context, workspaceID stri
 // app.New so the wiring itself is testable (the #1529 review's missing
 // test case 2: the config test covers the env half, the batch tests
 // install the source manually — this pins the seam between them).
-func installRelayTokenSource(svc *secrets.SecretService, enabled bool, getter relayWorkspaceGetter, clientset kubernetes.Interface) {
+func installRelayTokenSource(svc *secrets.SecretService, enabled bool, fallbackMode string, getter relayWorkspaceGetter, clientset kubernetes.Interface) {
 	if svc == nil || !enabled {
 		return
 	}
 	svc.SetRelayTokenSource(newK8sRelayTokenSource(getter, clientset))
+	// M2 (design 0061 §4): the fallback mode rides the same install —
+	// migration unless explicitly strict. The builder's zero value is
+	// strict, so this call is what arms migration in deployment.
+	svc.SetRelayDeliveryFallback(fallbackMode != "strict")
+	// The M2 counters register with the API's default registry ONCE at
+	// relay-install (promauto was deliberately avoided: agentd links
+	// this package and must not carry the series).
+	registerRelayMetricsOnce.Do(func() {
+		fb, deg := secrets.RelayFallbackMetrics()
+		prometheus.MustRegister(fb)
+		prometheus.MustRegister(deg)
+	})
 }
+
+var registerRelayMetricsOnce sync.Once
 
 // Compile-time assertion: the source satisfies the builder seam.
 var _ secrets.RelayTokenSource = (*k8sRelayTokenSource)(nil)

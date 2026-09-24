@@ -564,7 +564,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// relay tokens (handoff Secret in the workspace namespace).
 		// Flag off (default): nil source, byte-identical legacy batches.
 		// (installRelayTokenSource — extracted so the seam is tested.)
-		installRelayTokenSource(secretService, cfg.RelayOnlyKeyDelivery.Enabled,
+		installRelayTokenSource(secretService, cfg.RelayOnlyKeyDelivery.Enabled, cfg.RelayOnlyKeyDelivery.FallbackMode,
 			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 			k8sClient.Clientset())
 
