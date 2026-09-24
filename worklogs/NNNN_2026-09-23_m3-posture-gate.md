@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1 fixes: 2026-09-24; r2 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r1 fixes pushed; awaiting re-review.
+**Status:** r2 fixes pushed; awaiting re-review.
 
 ---
 
@@ -29,6 +29,17 @@ The review's live run validated the bootstrap + install wiring end-to-end and th
 
 **r1 mutation self-checks (my own, post-fix):** deleting a single llm-relay wait line from assertion 1 leaves the pin green — because the stability re-check still carries the both-namespace scope (verified: fully gutting BOTH llm-relay waits fails pin (b)); removing `--previous` fails; gutting the assertion-4 comparison fails; adding `continue-on-error: true` fails.
 
+## r2 round record (review validated the design sound; five findings, all fixed)
+
+r2 confirmed every r1 fix live-verified (the wait idiom against kubectl's own docs, the stability window against the chart's hook-delete policies — no legitimate pod-churn source false-positives the restart snapshot, the render under the gate's exact flags, 7/7 mutation catches). Findings and fixes:
+
+1. **Pin (c) was bypassable (the r0 skeptical-reviewer's values-file note — my r1 miss):** a `--values posture-override.yaml` (or `--set-json`) smuggled whole posture overrides past the `--set` ban list, and `--set controller.watchNamespaces=<ns>` would silence the exact #1555 crashloop class the gate exists to catch. Fixed: `--values`, ` -f `, `--set-json`, and `watchNamespaces=` all banned on the install run block.
+2. **`set -euo pipefail` was unpinned:** deleting it from an assertion block neuters every check with zero literal drift (failed kubectl waits continue; a stuck-not-ready deployment prints OK). Fixed: pin (f) requires it as the FIRST statement of each assertion block.
+3. **Assert 3's pod-LIST fetch was invisible to `set -e`** (process-substitution feed): a namespace whose pods cannot be enumerated was silently cleared. Fixed: `PODS=$(kubectl …)` under `set -e`, loop fed via herestring; the failure-checked-fetch shape is pinned.
+4. **Assert 4's `-z` diagnostic was dead code** (pipefail killed the step before the branch). Fixed: failure-checked log fetch to a file, extraction with `|| true` so the unstamped-artifact diagnostic actually fires. Assert 2 gained the same failure-checked fetch pattern for consistency.
+5. **The dependency record mislabeled M2/M4** (r1's own correction was itself wrong): #1557 is the **M4** PR; **no M2 PR exists yet** (open-PR scan: M1 #1553, M3 #1556, M4 #1557). Corrected here and in the PR body.
+6. (Minor) README-LLM.md:300's structure block said `charts/` — corrected to `helm/` while the file was open (the zero-pre-existing-errors rule).
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -42,27 +53,27 @@ The review's live run validated the bootstrap + install wiring end-to-end and th
 **The gate is RED on current main — by design and by an open defect, and this is the true dependency record (correcting r0's "Blockers: None", which the review's live run refuted):**
 
 1. **#1555 (OPEN)** — the shipped posture's namespace-scope + `watchNamespaces` unset sends the controller's workspace informer cluster-wide → `cannot list resource "workspaces" … at the cluster scope` (56 forbidden lines in the live run) → cache-sync exit → CrashLoop. Assertions 1/3 will stay red until #1555's fix lands. The red IS the gate working — it detected a real shipped-posture defect at first contact, retroactively validating design 0061 — but the gate cannot go green before it.
-2. **M2 (#1557, open) and M4** — the #1548-recorded merge order is M1 → M2 → M4 → gate → e2e; the gate lands after them. (M1's armed line and #1552's RBAC fixes are already on main — confirmed by the live run: the armed-line grep matched the real emission path, and the r0 premise "red until M1 + #1552" was already satisfied.)
+2. **M4 (#1557, open) and M2 (no PR yet)** — the #1548-recorded merge order is M1 → M2 → M4 → gate → e2e; the gate lands after them. Open-PR state at r2: M1 #1553, M3 #1556 (this), M4 #1557; **M2 has no PR yet**. (M1's armed line and #1552's RBAC fixes are already on main — confirmed by the live run: the armed-line grep matched the real emission path.)
 
 The merge call (ship the red gate as the detector it is, once #1555/M2/M4 resolve, vs. wait) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r1 shape).
-- Mutation checks (r1, mine): full llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` — all caught.
-- `bash -n` on every run block — clean (re-verified after the r1 edits).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r2 shape).
+- Mutation checks (r1, mine; r2, the review's — 7/7): full llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection — all caught.
+- `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
-- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics are newly authored and NOT yet live-validated — first live contact rides the next review run or the gate's own first dispatch after merge.
+- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics and r2's fetch-shape changes are newly authored and NOT yet live-validated — first live contact rides the next review run or the gate's own first dispatch after merge.
 
 ## Next Steps
 
-1. Re-review (r1 verdict pending).
-2. The orchestrator sequences the merge per the #1548 order once #1555, M2, and M4 land; then the gate's first dispatched green run closes the loop.
-3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if job pods' pod-set churn false-positives the restart snapshot, the snapshot scope narrows to the chart's Deployments' pods.
+1. Re-review (r2 verdict pending).
+2. The orchestrator sequences the merge per the #1548 order once #1555, M2 (unopened), and M4 (#1557) land; then the gate's first dispatched green run closes the loop.
+3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
 ## Files Modified
 
 - `.github/workflows/posture-gate.yml` (new)
 - `local/posture_gate_workflow_test.go` (new)
-- `README-LLM.md` (the contribution-rule subsection)
+- `README-LLM.md` (the contribution-rule subsection; `charts/` → `helm/` structure correction)
 - `worklogs/NNNN_2026-09-23_m3-posture-gate.md` (this worklog)

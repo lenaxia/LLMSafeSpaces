@@ -258,9 +258,15 @@ jobs:
         # relayOnlyKeyDelivery.enabled=true posture must actually ARM —
         # the enable line is the observable proof the producer exists.
         run: |
-          if ! kubectl -n $NS logs deployment/llmsafespaces-controller | grep -F 'relay-only key delivery enabled'; then
+          set -euo pipefail
+          if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then
+            echo "FAIL: could not fetch controller logs — the armed line cannot be verified"
+            cat /tmp/gate-armed.err || true
+            exit 1
+          fi
+          if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then
             echo "FAIL: armed line absent — the controller is deployed relay-only but not armed (M1's exit-85 class)"
-            kubectl -n $NS logs deployment/llmsafespaces-controller --tail=50 || true
+            tail -50 /tmp/gate-armed.log || true
             exit 1
           fi
           echo "OK: controller armed under the shipped default"
@@ -276,6 +282,10 @@ jobs:
         run: |
           set -euo pipefail
           for GATE_NS in "$NS" "llm-relay"; do
+            # Pod enumeration is failure-checked: a process-substitution
+            # feed (< <(kubectl …)) is invisible to set -e — a namespace
+            # whose pods cannot be enumerated would be silently cleared.
+            PODS=$(kubectl -n "$GATE_NS" get pods -o name)
             while read -r POD; do
               if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then
                 echo "FAIL: could not fetch logs for $GATE_NS/$POD — a pod whose logs cannot be read cannot be cleared"
@@ -292,7 +302,7 @@ jobs:
                   exit 1
                 fi
               fi
-            done < <(kubectl -n "$GATE_NS" get pods -o name)
+            done <<< "$PODS"
           done
           echo "OK: zero forbidden lines"
 
@@ -306,9 +316,16 @@ jobs:
         # the gate does not claim it.
         run: |
           set -euo pipefail
-          RUNNING_COMMIT=$(kubectl -n $NS logs deployment/llmsafespaces-controller \
-            | grep -F 'starting controller' \
-            | grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}')
+          if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then
+            echo "FAIL: could not fetch controller logs — the commit stamp cannot be verified"
+            cat /tmp/gate-controller.err || true
+            exit 1
+          fi
+          # || true so the -z branch below is reachable: under pipefail the
+          # empty extraction would otherwise kill the step before its
+          # diagnostic could fire (r2's dead-branch finding).
+          RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \
+            | grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)
           if [[ -z "$RUNNING_COMMIT" ]]; then
             echo "FAIL: no commit stamp found on the controller startup line — unstamped artifact class"
             exit 1

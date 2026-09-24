@@ -137,18 +137,23 @@ var assertionSpecs = []struct {
 		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
 	},
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
-	{"Assert 2", []string{"relay-only key delivery enabled"},
-		"the armed line — M1's boot-time contract, asserted cluster-side"},
+	{"Assert 2", []string{
+		"relay-only key delivery enabled",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller >",
+	},
+		"the armed line — M1's boot-time contract, cluster-side; the log FETCH is failure-checked (a pod whose logs cannot be read cannot be cleared)"},
 	{"Assert 3", []string{
 		`for GATE_NS in "$NS" "llm-relay"`,
 		"--previous",
+		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
 	},
-		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included"},
+		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; the pod-LIST fetch is failure-checked too (a process-substitution feed is invisible to set -e — r2's silent-skip)"},
 	{"Assert 4", []string{
 		`!= '${{ github.sha }}'`, // the comparison shape, not the FAIL-echo's literal
 		"starting controller",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller >",
 	},
-		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin)"},
+		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
 }
 
 // Pin (b): the four assertions are present, in §5's order, each in its
@@ -206,6 +211,18 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		"relayOnlyKeyDelivery.enabled=",
 		"agentdSidecar.enabled=",
 		"allowRelayRouterEgress=",
+		// watchNamespaces: scoping the informer to a namespace would
+		// silence the exact #1555 crashloop class (cluster-wide list →
+		// forbidden → red gate) the gate exists to catch — tuning the
+		// gate green while the shipped posture is broken (r2 finding 1).
+		"watchNamespaces=",
+		// Values files and --set-json smuggle whole posture overrides
+		// past the --set ban list (r0 raised it, r2 re-demonstrated: a
+		// posture-override.yaml passed via --values kept every pin
+		// green). The install takes its posture from the chart alone.
+		"--values",
+		" -f ",
+		"--set-json",
 	} {
 		require.NotContains(t, install.Run, banned,
 			"the gate must never set %s — the shipped default IS the posture under test", banned)
@@ -272,6 +289,11 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 			"%s must be unconditional — a failed install must fail the gate, not skip its assertions", spec.prefix)
 		require.Nil(t, s.ContinueOnError,
 			"%s must not carry continue-on-error — a failed assertion must fail the job", spec.prefix)
+		// r2 finding 2: without set -e a failed kubectl wait continues
+		// silently and a stuck-not-ready deployment prints OK — the
+		// literal surface is unchanged, so only a pin sees the neuter.
+		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
+			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
 	}
 	for _, s := range steps {
 		require.Nil(t, s.ContinueOnError,
