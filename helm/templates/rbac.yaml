@@ -20,8 +20,9 @@
 #     WORKSPACE namespace (the api.config.kubernetes.namespace override,
 #     else the release namespace) — the workspace-lifecycle rules below.
 #  2. A Role in the controller's RELEASE namespace for events + leases
-#     (leader election), plus delivery- and relay-conditional grants —
-#     see the conditional branches in its rules block.
+#     (leader election), plus delivery-, relay-, and refresher-
+#     conditional grants — see the conditional branches in its rules
+#     block.
 #  3. A gated ClusterRole (bound only under rbac.scope=cluster) for
 #     watching across all namespaces. INVARIANTS: under the default
 #     rbac.scope=namespace, WRITES are namespace-bound (and an unset
