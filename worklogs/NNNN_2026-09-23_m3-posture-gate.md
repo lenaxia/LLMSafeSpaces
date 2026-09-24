@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r8 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r9 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r8 fixes pushed; awaiting re-review.
+**Status:** r9 fixes pushed; awaiting re-review.
 
 ---
 
@@ -100,6 +100,18 @@ r8's review confirmed the r7 closes real (29 mutations, 23 RED spot-checks; the 
 
 All eight re-verified RED by my own mutations (F5's first attempt hit the registry step's exit 1 — outside the pinned scope by design; the redo targeted the assertion block). Pristine baseline checksummed before and verified after the gauntlet.
 
+## r9 round record (the uniform close: exact-line pins)
+
+r9's review verified all eight r8 closes by mutation — and found the sibling-spelling level: a `&& false` suffix on a verdict condition, a `!=`→`==` polarity flip, a newline-separated second command after the wait line, a `PODS=""` blanket between the pinned pieces, a deleted 60s re-check pair, and an assertion-step env block — every one GREEN, several live-demonstrated. The uniform close the review prescribed, now in:
+
+1. **Every verdict-bearing line is pinned as an EXACT trimmed line** (no sibling spellings exist): the four waits, the stability comparison, Assert 2's fetch+detector, Assert 3's fetch+both greps+loop feed, Assert 4's fetch+both verdict branches.
+2. **The install tail shape-pinned**: the block's last command line must be exactly `--wait --timeout 10m`, and every non-comment line before it must end with a continuation backslash — the install is one command, no newline-separated seconds (a live-demonstrated post-install RBAC-patch channel closed).
+3. **Exactly one `PODS=` assignment** in Assert 3 (a blanket reassignment relocated the r2 silent-skip one line below every pin).
+4. **Exactly four `kubectl wait` lines** in Assert 1 (the 60s settle-window re-assertion is part of the verdict, deletable around the 300s literals).
+5. **No step may carry an env block** (the carrier channel was closed at workflow/job/install levels; assertion-step env could re-scope the checks).
+
+All seven r9 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. The pin comments' claims are narrowed to what the mechanism delivers: exact lines have no siblings.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -110,7 +122,7 @@ All eight re-verified RED by my own mutations (F5's first attempt hit the regist
 
 ## Blockers
 
-**The gate is RED on current main — by design and by an open defect, and this is the live-scanned dependency record (r4 refresh, 2026-09-24 ~02:45Z — supersedes r1–r3's versions, two of which asserted states that had flipped before their pushes):**
+**The gate is RED on current main — by design and by an open defect, and this is the live-scanned dependency record (latest scan: r7, 2026-09-24 ~05:2xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **#1555 was closed UNMERGED at 02:05:56Z; the fix now rides #1558 (OPEN, "namespace-scope cache-scoping derivation")**. Assertions 1/3 stay red until #1558 (or successor) lands. The red IS the gate working — first contact detected a real shipped-posture defect, retroactively validating design 0061.
 2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r7 (2026-09-24 ~05:2xZ): **M1 (#1553) MERGED 03:27Z**; **M2 exists — #1559, OPEN**; **M4 (#1557) MERGED**; the defect fix **#1558 OPEN**. The remaining red-drivers before the gate can green: #1558 and, per the recorded order, M2.
@@ -119,7 +131,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r8 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r9 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -127,7 +139,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r8 verdict pending).
+1. Re-review (r9 verdict pending).
 2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

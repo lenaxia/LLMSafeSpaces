@@ -200,55 +200,67 @@ func TestPostureGate_Triggers(t *testing.T) {
 }
 
 // assertionSpec is one of the four §5 assertions: the parsed-name
-// prefix of its step and the literals its run block must contain
-// (multiple where one literal alone would let a mutation through —
-// r1: deleting the llm-relay half of assertions 1/3 kept every pin
-// green while gutting the both-namespace scope the why-text claims).
+// prefix of its step, the literals its run block must contain, and —
+// r9's uniform close — the verdict-bearing lines that must appear as
+// EXACT trimmed lines: a `&& false` suffix, a polarity flip, or a
+// partial gut kept every Contains-substring green (the sibling-spelling
+// level r8's closes were falsified at); an exact-line pin has no
+// siblings.
 var assertionSpecs = []struct {
-	prefix   string
-	literals []string
-	why      string
+	prefix     string
+	literals   []string
+	exactLines []string
+	why        string
 }{
 	{"Assert 1", []string{
-		"--for=condition=available deployment --all -n $NS",
-		"--for=condition=available deployment --all -n llm-relay",
-		"restartCount",                 // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
-		"sleep 45",                     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
-		"AFTER_NS=$(restarts_snapshot", // r8 finding 4: the COMPARISON block — deleting it left a 45s delay and every literal green (the gut-the-comparison class r1 closed for Assert 4)
+		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
+		"sleep 45",     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
+	}, []string{
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
+		// r9 finding 5: the 60s pair is deletable around the 300s
+		// literals — the settle-window Available re-assertion is part
+		// of the verdict.
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s",
+		// r9 finding 2: the COMPARISON itself — polarity-flippable and
+		// deletable around the pinned assignment anchor.
+		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
 	},
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
 	{"Assert 2", []string{
 		"relay-only key delivery enabled",
-		// r8 finding 1: the DETECTOR line pinned whole — polarity AND
-		// target. Dropping the ! inverts green/red; swapping the file to
-		// the (empty-on-healthy) stderr capture vacates the check — both
-		// kept every bare literal intact.
-		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log",
-		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller >",
+	}, []string{
+		// r8 finding 1 + r9 finding 3: the DETECTOR and FETCH pinned as
+		// exact whole lines — polarity, target, and suffix all fixed.
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
 	},
 		"the armed line — M1's boot-time contract, cluster-side; the log FETCH is failure-checked (a pod whose logs cannot be read cannot be cleared)"},
 	{"Assert 3", []string{
 		`for GATE_NS in "$NS" "llm-relay"`,
 		"--previous",
+	}, []string{
+		// r9 finding 4: the fetch→loop→feed chain as exact lines, with
+		// exactly ONE PODS assignment (a blanket PODS="" between the
+		// pinned pieces relocated the r2 silent-skip one line down).
 		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
-		// r8 finding 2: the FEED — without it the pinned fetch is dead
-		// code (read consumes empty stdin, both namespaces silently
-		// cleared). The herestring form is pinned; the process-
-		// substitution form stays banned by absence.
+		"while read -r POD; do",
 		`done <<< "$PODS"`,
-		// r6's root cause D + r7's inversion finding: the payload pinned
-		// on BOTH greps in the POSITIVE `if grep` shape — a Contains-
-		// anywhere pin passed a partial swap, and a `!`-inversion (green
-		// on broken, red on healthy) kept every literal intact.
-		"if grep -i 'forbidden' /tmp/gate-pod.log",
-		"if grep -i 'forbidden' /tmp/gate-pod-prev.log",
-		`if ! kubectl -n "$GATE_NS" logs`, // the fetch guard is negated: a fetch failure must be red
+		`if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then`,
+		"if grep -i 'forbidden' /tmp/gate-pod.log; then",
+		"if grep -i 'forbidden' /tmp/gate-pod-prev.log; then",
 	},
-		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; the pod-LIST fetch is failure-checked too (a process-substitution feed is invisible to set -e — r2's silent-skip)"},
+		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; every fetch failure is red"},
 	{"Assert 4", []string{
-		`!= '${{ github.sha }}'`, // the comparison shape, not the FAIL-echo's literal
 		"starting controller",
-		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller >",
+	}, []string{
+		// r9 finding 3: both verdicts as exact lines — the -z diagnostic
+		// branch and the comparison (a `&& false` suffix on either kept
+		// every substring green).
+		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
+		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
 	},
 		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
 }
@@ -266,16 +278,54 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 		for _, lit := range spec.literals {
 			require.Contains(t, s.Run, lit, "%s run must contain %q — %s", spec.prefix, lit, spec.why)
 		}
+		for _, exact := range spec.exactLines {
+			requireExactLine(t, s.Run, exact,
+				"%s must carry the exact line %%q (a suffix, flip, or partial gut keeps substring pins green) — %s", spec.prefix, spec.why)
+		}
 		idx := indexOfStep(t, steps, s)
 		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
 		last = idx
 	}
+	// r9 finding 4: exactly ONE PODS assignment in Assert 3 — a second
+	// (blanket) assignment between the pinned pieces relocates the r2
+	// silent-skip one line below every pin.
+	a3 := gateStepByPrefix(t, steps, "Assert 3")
+	podsAssigns := 0
+	for _, line := range strings.Split(a3.Run, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "PODS=") {
+			podsAssigns++
+		}
+	}
+	require.Equal(t, 1, podsAssigns, "Assert 3 must carry exactly one PODS assignment (the pinned fetch) — a blanket reassignment feeds empty stdin")
+	// r9 finding 5: exactly FOUR kubectl wait lines in Assert 1 — the
+	// 300s pair and the 60s settle-window re-assertion pair.
+	a1 := gateStepByPrefix(t, steps, "Assert 1")
+	waits := 0
+	for _, line := range strings.Split(a1.Run, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "kubectl wait") {
+			waits++
+		}
+	}
+	require.Equal(t, 4, waits, "Assert 1 must carry exactly four kubectl wait lines (the 300s pair + the 60s settle-window re-assertion)")
 	for _, s := range steps {
 		if strings.HasPrefix(s.Name, "Assert ") {
 			require.Contains(t, []string{"Assert 1", "Assert 2", "Assert 3", "Assert 4"},
 				prefixWords(s.Name), "no extra Assert-named steps (found %q)", s.Name)
 		}
 	}
+}
+
+// requireExactLine fails unless `want` appears as an exact (trimmed)
+// line of `run` — the r9 uniform close: exact lines have no sibling
+// spellings.
+func requireExactLine(t *testing.T, run, want, msg string, args ...interface{}) {
+	t.Helper()
+	for _, line := range strings.Split(run, "\n") {
+		if strings.TrimSpace(line) == want {
+			return
+		}
+	}
+	t.Fatalf(msg+` (want exact line %q)`, append(args, want)...)
 }
 
 // Pin (c): the install command's environmental overrides AND the
@@ -305,13 +355,41 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	}
 	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
 		"the install's first command line must be exactly the nightly's head line, RAW — trailing/leading whitespace drift is an unreviewed change (the r7 committed-mutation class; the r8 escaped-space class)")
-	// r8 finding 6: the install is ONE operator-free command (the
+	// r8 finding 6: the install is one operator-free command (the
 	// nightly's shape) — any shell operator opens a post-install
 	// channel (`… && kubectl set env …`) that no allowlist or -f regex
 	// sees. False-positive-free against the current block.
 	for _, op := range []string{"&&", ";", "|", "`", "$("} {
 		require.NotContains(t, install.Run, op,
 			"the install run block must carry no shell operators — the nightly's shape is one operator-free command; `%s` opens an unreviewed channel", op)
+	}
+	// r9 finding 1: the TAIL — a newline-separated second command has
+	// no operator and escaped the operator ban (live-demonstrated RBAC
+	// patch post-install). The block must END with the wait line, and
+	// every non-comment line except the last must end with a
+	// continuation backslash.
+	lines := strings.Split(install.Run, "\n")
+	var last string
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		last = trimmed
+		break
+	}
+	require.Equal(t, "--wait --timeout 10m", last,
+		"the install's last command line must be exactly the wait line — a newline-separated second command is an unreviewed channel")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.TrimSpace(line) == last {
+			break
+		}
+		require.True(t, strings.HasSuffix(trimmed, "\\"),
+			"install line %d must continue (end with backslash) — the install is ONE command, no newline-separated seconds: %q", i+1, line)
 	}
 	// r8 finding 3: the WORKFLOW-level env block is a carrier channel
 	// one tier above the step/job closes — its values reach helm as
@@ -508,6 +586,12 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 	for _, s := range steps {
 		require.Nil(t, s.ContinueOnError,
 			"no step may carry continue-on-error (found on %q) — failures must propagate", s.Name)
+		// r9 finding 6: the carrier channel closed at workflow, job, and
+		// install-step levels was open on every OTHER step — an env
+		// block on an assertion step can re-scope its $NS-consuming
+		// checks.
+		require.Empty(t, s.Env,
+			"no step may carry an env block (found on %q) — step env is a value-carrier channel", s.Name)
 	}
 	dump := gateStepByPrefix(t, steps, "Dump cluster state on failure")
 	require.Contains(t, dump.If, "failure()")
