@@ -450,28 +450,75 @@ rm -rf "${SR6_DIR}"
 # 48MiB budget BEFORE the count cap — 5×10MiB trips 40+10>48 first —
 # so §6.6's boundary 507'd. Fixed: Admit checks the cap first (the
 # count-cap-preempts-budget regression pin in upload_staging_test.go).
+# History II (nightly 36049595521, WITH the precedence fix): 5
+# SIMULTANEOUS fires are LOAD-RACY — on a fast runner each upload
+# released before the 5th admitted (delivered=5 refused=0; the cap
+# never bound). The row now forces the overlap the serialized world
+# only produced under load: 4 TRICKLED holders (reservations held from
+# Admit — §4.1's reservation-before-acceptance — until the trickle
+# completes), VERIFIED HELD via the reserved_bytes gauge, then the 5th
+# full-speed. §6.6's characterized boundary must be exercised
+# deterministically, not whenever the runner feels slow.
 if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
+# 4 holders: 1MiB bodies at 64k/s ≈ 16s hold each — comfortably under
+# agentd's 5-minute body deadline and the API's no-server-body-timeout
+# posture (ReadHeaderTimeout only); 4×1MiB reserved + the 5th's 10MiB
+# = 14MiB ≤ the 48MiB budget, so the COUNT CAP is the only clause that
+# can bind the 5th (the boundary this row characterizes).
 SR6B_PIDS=()
-for i in 1 2 3 4 5; do
-    upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-${i}" &
+for i in 1 2 3 4; do
+    (
+        _tmp=$(mktemp /tmp/sr-hold-XXXXXX.bin)
+        head -c $((1 * 1024 * 1024)) /dev/urandom > "${_tmp}" 2>/dev/null
+        _st=$(curl -s -m 90 --limit-rate 64k -X POST \
+            -H "Authorization: Bearer ${API_KEY}" \
+            -F "file=@${_tmp};filename=sr-hold-${i}.bin" \
+            -w '%{http_code}' -o /dev/null \
+            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || _st=000
+        rm -f "${_tmp}"
+        printf '%s' "${_st}" > "${SR6B_DIR}/res-hold-${i}"
+    ) &
     SR6B_PIDS+=($!)
 done
-for p in "${SR6B_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
-REPORT6B=$(storm_report "${SR6B_DIR}" 5)
-# Parse the refused COUNT (r3 finding 1: *"refused="* matches every
-# report — refused=0 included). The count-cap regression means
-# refused=0 here; the boundary demands at least one.
-# Completeness + a LITERAL 429 (r4: refused lumps 507|429|504 — a 507
-# satisfies the count without the boundary being the count cap).
-SR6B_HAS_429=0
-for f in "${SR6B_DIR}"/res-*; do
-    [[ "$(cat "${f}" 2>/dev/null)" == "429" ]] && SR6B_HAS_429=1
+# VERIFY HELD: the reserved gauge must show ≥ 4×1MiB while the bodies
+# still trickle — proof of four held reservations, not hope. This is
+# the port of the handler-level pin's shape (hold 4, then the 5th).
+SR6B_HELD=0
+SR6B_RV=""
+for _ in $(seq 1 60); do
+    SR6B_RV=$(gauge_value "$(scrape_metrics "${POD}")" \
+        'workspace_agentd_upload_staging_reserved_bytes')
+    if [[ -n "${SR6B_RV}" ]] && awk -v r="${SR6B_RV}" 'BEGIN{exit !(r >= 4194304)}'; then
+        SR6B_HELD=1
+        break
+    fi
+    sleep 0.5
 done
-if [[ "${REPORT6B}" == *"total=5"* && "${SR6B_HAS_429}" -eq 1 ]]; then
-    ok "SR-6: 5th-concurrent 429 boundary observed (literal 429 present; ${REPORT6B})"
+SR6B_STATUS=window-failed
+if [[ "${SR6B_HELD}" -ne 1 ]]; then
+    note_fail "SR-6: the deterministic hold window never opened (reserved_bytes=${SR6B_RV:-absent} after 30s of trickled holders)"
+    for p in "${SR6B_PIDS[@]}"; do kill "${p}" 2>/dev/null || true; done
 else
-    note_fail "SR-6: 5-concurrent storm lacks a literal 429 or incomplete (${REPORT6B}, has429=${SR6B_HAS_429})"
+    # THE 5th, full speed: len(reservations)=4 ≥ cap → the literal 429.
+    SR6B_STATUS=$(upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5")
+fi
+for p in "${SR6B_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
+# Holders all deliver once their trickles finish (they are valid
+# uploads; a non-201 holder means the window closed early — fail it).
+SR6B_HOLDERS_OK=1
+for i in 1 2 3 4; do
+    [[ "$(cat "${SR6B_DIR}/res-hold-${i}" 2>/dev/null)" == "201" ]] || SR6B_HOLDERS_OK=0
+done
+# RETRY-AFTER-RELEASE (§4.2: the cap's 429 is "clean, retryable"): a
+# full-speed upload AFTER the holders finish must deliver — the slot
+# reopened.
+SR6B_RETRY=$(upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry")
+REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} retry=${SR6B_RETRY}"
+if [[ "${SR6B_HELD}" -eq 1 && "${SR6B_STATUS}" == "429" && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 holders gauge-verified held; literal 429; retry-after-release delivered; ${REPORT6B})"
+else
+    note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, reserved_at_hold=${SR6B_RV})"
 fi
 rm -rf "${SR6B_DIR}"
 else
