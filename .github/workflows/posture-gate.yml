@@ -1,0 +1,298 @@
+name: Posture Gate (kind)
+
+# Design 0061 §5 (M3): cold-install the chart under its OWN mandated
+# default posture and assert the posture is livable. Every
+# default-posture change (any PR touching the posture surface —
+# helm/**, controller/**, api/**, per the §11 ruling-3 breadth) runs
+# this gate; the contribution rule makes its green the evidence a
+# default flip must carry.
+concurrency:
+  group: posture-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - helm/**
+      - controller/**
+      - api/**
+
+env:
+  CLUSTER_NAME: llmsafespaces-posture
+  IMAGE_TAG: posture
+  NS: llmsafespaces
+
+jobs:
+  posture-gate:
+    name: Shipped-default posture gate (kind cluster)
+    runs-on: ubuntu-latest
+    # 45m: the nightly's image-build chain (~4 builds + digest pins) plus
+    # a cold install; the four assertions themselves are minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Start local registry (digest-pinned agentd delivery)
+        run: |
+          # Same pattern as the e2e-nightly bootstrap: sidecar-mode
+          # delivery pins are DIGEST-PINNED (controller startup
+          # validation) and digest refs must resolve in-node.
+          docker run -d --restart=always -p "127.0.0.1:5001:5000" \
+            --network bridge --name lss-e2e-registry registry:3
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:5001/v2/ >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "registry did not become ready"; exit 1
+
+      - name: Create kind cluster
+        run: |
+          # The nightly's 2-node topology, verbatim — control-plane pods
+          # only, but no reason to invent a second topology.
+          kind create cluster --config local/kind-cluster-nightly.yaml --name $CLUSTER_NAME
+          for node in $(kind get nodes --name $CLUSTER_NAME); do
+            docker exec "$node" mkdir -p /etc/containerd/certs.d/localhost:5001
+            printf '[host."http://lss-e2e-registry:5000"]\n' \
+              | docker exec -i "$node" cp /dev/stdin /etc/containerd/certs.d/localhost:5001/hosts.toml
+          done
+          if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' lss-e2e-registry)" = "null" ]; then
+            docker network connect kind lss-e2e-registry
+          fi
+
+      - name: Build and load images
+        run: |
+          # The nightly's build chain, verbatim: COMMIT_SHA stamps the
+          # controller binary from THIS run's github.sha — the basis
+          # assertion 4 attests against.
+          E2E_VERSION="${{ env.IMAGE_TAG }}"
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
+
+          # agentd delivery artifact → local registry (digest-pinned ref +
+          # binary sha for the entrypoint/supervisor verify pins).
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" \
+            -f cmd/workspace-agentd/Dockerfile -t localhost:5001/llmsafespaces/agentd:$IMAGE_TAG .
+          docker push localhost:5001/llmsafespaces/agentd:$IMAGE_TAG >/dev/null
+          AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/agentd:$IMAGE_TAG)
+          case "$AGENTD_REF" in
+            *@sha256:*) AGENTD_REF="localhost:5001/llmsafespaces/agentd:$IMAGE_TAG@${AGENTD_REF##*@}" ;;
+            *) echo "could not determine agentd digest"; exit 1 ;;
+          esac
+          CID=$(docker create localhost:5001/llmsafespaces/agentd:$IMAGE_TAG no-start)
+          docker cp "$CID:/usr/local/bin/workspace-agentd" /tmp/workspace-agentd >/dev/null 2>&1 || { docker rm -f "$CID"; echo "agentd binary extract failed"; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1
+          BINARY_SHA=$(sha256sum /tmp/workspace-agentd | cut -d' ' -f1)
+          [ -n "$BINARY_SHA" ] || { echo "agentd binary hash failed"; exit 1; }
+          echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"
+          echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"
+
+          # opencode delivery artifact → same local-registry pattern.
+          docker build --network host \
+            -f runtimes/opencode/Dockerfile -t localhost:5001/llmsafespaces/opencode:$IMAGE_TAG .
+          docker push localhost:5001/llmsafespaces/opencode:$IMAGE_TAG >/dev/null
+          OPENCODE_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/opencode:$IMAGE_TAG)
+          case "$OPENCODE_REF" in
+            *@sha256:*) OPENCODE_REF="localhost:5001/llmsafespaces/opencode:$IMAGE_TAG@${OPENCODE_REF##*@}" ;;
+            *) echo "could not determine opencode digest"; exit 1 ;;
+          esac
+          OC_CID=$(docker create localhost:5001/llmsafespaces/opencode:$IMAGE_TAG no-start)
+          docker cp "$OC_CID:/usr/local/bin/opencode" /tmp/opencode-bin >/dev/null 2>&1 || { docker rm -f "$OC_CID"; echo "opencode binary extract failed"; exit 1; }
+          docker rm -f "$OC_CID" >/dev/null 2>&1
+          OPENCODE_BINARY_SHA=$(sha256sum /tmp/opencode-bin | cut -d' ' -f1)
+          [ -n "$OPENCODE_BINARY_SHA" ] || { echo "opencode binary hash failed"; exit 1; }
+          echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"
+          echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"
+
+          # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
+          # RuntimeEnvironment validating webhook's image allow-list accepts
+          # it (the webhook requires ghcr.io/lenaxia/ prefixed images).
+          docker tag llmsafespaces/runtime-base:$IMAGE_TAG ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG
+
+          kind load docker-image llmsafespaces/api:$IMAGE_TAG --name $CLUSTER_NAME
+          kind load docker-image llmsafespaces/controller:$IMAGE_TAG --name $CLUSTER_NAME
+          kind load docker-image ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
+
+      - name: Build + load the llm-relay router image
+        # The chart ships the BYO router under the ghcr.io default ref;
+        # the kind cluster cannot pull that, so the gate deploys a
+        # locally built image under the drill-shape precedent (the
+        # api/controller pattern above). The ref override is
+        # ENVIRONMENTAL (image plumbing), not posture: every RBAC and
+        # relay value stays shipped.
+        run: |
+          docker build --network host --build-arg VERSION="${{ env.IMAGE_TAG }}" --build-arg COMMIT_SHA="${{ github.sha }}" \
+            -f cmd/relay-router/Dockerfile -t llmsafespaces/relay-router:$IMAGE_TAG .
+          kind load docker-image llmsafespaces/relay-router:$IMAGE_TAG --name $CLUSTER_NAME
+
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
+          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
+          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
+
+      - name: Create credentials Secret (before Postgres)
+        # The nightly's pattern: the Postgres/Valkey manifests reference
+        # llmsafespaces-credentials for their passwords; create the
+        # namespace + Secret first with known non-insecure passwords,
+        # then pass the same passwords to helm install so the chart does
+        # not rotate them.
+        run: |
+          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n $NS create secret generic llmsafespaces-credentials \
+              --from-literal=postgres-password=e2e-pg-pw-2026 \
+              --from-literal=redis-password=e2e-redis-pw-2026 \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Postgres + Redis
+        run: |
+          kubectl apply -f local/postgres-redis.yaml
+          kubectl -n $NS rollout status deployment/postgres --timeout=180s
+          kubectl -n $NS rollout status deployment/valkey --timeout=180s
+
+      - name: Helm install LLMSafeSpaces (shipped posture)
+        # §5's install: the chart's OWN defaults with ONLY environmental
+        # overrides — image plumbing, delivery pins, mcp off (no image
+        # exists, issue #28), test DB/Redis. rbac.scope,
+        # relayOnlyKeyDelivery.enabled, agentdSidecar.enabled and every
+        # other posture lever reach helm UNTOUCHED: if the shipped
+        # defaults cannot go all-Ready, the gate is red. That is the
+        # point.
+        id: posture-install
+        run: |
+          # NOTE: the helm command's backslash continuation must stay
+          # unbroken — a mid-continuation comment amputates every flag
+          # after it (the nightly's pinned gotcha).
+          helm upgrade --install llmsafespaces helm \
+            -n $NS --create-namespace \
+            --set api.image.repository=llmsafespaces/api \
+            --set api.image.tag=$IMAGE_TAG \
+            --set api.image.pullPolicy=IfNotPresent \
+            --set controller.image.repository=llmsafespaces/controller \
+            --set controller.image.tag=$IMAGE_TAG \
+            --set controller.image.pullPolicy=IfNotPresent \
+            --set mcp.enabled=false \
+            --set postgresql.host=postgres \
+            --set postgresql.port=5432 \
+            --set postgresql.user=llmsafespaces \
+            --set postgresql.database=llmsafespaces \
+            --set redis.host=redis-master \
+            --set redis.port=6379 \
+            --set externalSecret.create=true \
+            --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
+            --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
+            --set api.config.logging.development=true \
+            --set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \
+            --set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \
+            --set "controller.agentdDelivery.binarySHA256Arm64=${{ env.AGENTD_BINARY_SHA }}" \
+            --set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \
+            --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
+            --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
+            --set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \
+            --set controller.inferenceRelay.router.image.tag=$IMAGE_TAG \
+            --wait --timeout 10m
+
+      # ------------------------------------------------------------------
+      # The four §5 assertions, in order. Deliberately UNCONDITIONAL:
+      # a failed cold install is itself a red gate (the #1541 arming
+      # exists for evidence lanes that must run past unrelated
+      # failures — here the install IS the thing under test, and a
+      # failed step already fails the job).
+      # ------------------------------------------------------------------
+
+      - name: Assert 1 — every Deployment Ready (rendered namespaces)
+        # All-Ready: the release namespace AND llm-relay (the chart
+        # renders both). This alone kills the #1546 Defect-1 class — a
+        # CrashLooping router at first cold install — at the source.
+        run: |
+          kubectl -n $NS rollout status deployment --all --timeout=300s
+          kubectl -n llm-relay rollout status deployment --all --timeout=300s
+          echo "OK: all Deployments Ready under the shipped defaults"
+
+      - name: Assert 2 — the armed line (relay-only key delivery enabled)
+        # M1's boot-time contract, asserted cluster-side: the shipped
+        # relayOnlyKeyDelivery.enabled=true posture must actually ARM —
+        # the enable line is the observable proof the producer exists.
+        run: |
+          if ! kubectl -n $NS logs deployment/llmsafespaces-controller | grep -F 'relay-only key delivery enabled'; then
+            echo "FAIL: armed line absent — the controller is deployed relay-only but not armed (M1's exit-85 class)"
+            kubectl -n $NS logs deployment/llmsafespaces-controller --tail=50 || true
+            exit 1
+          fi
+          echo "OK: controller armed under the shipped default"
+
+      - name: Assert 3 — zero forbidden lines in any pod log
+        # The generic silent-RBAC-starvation catch: no pod in any
+        # rendered namespace may log a `forbidden` (RBAC-denial) line.
+        # Defect 2's class, and the refresher-starvation class, both
+        # land here as a red gate instead of a silent degrade.
+        run: |
+          set -euo pipefail
+          for GATE_NS in "$NS" "llm-relay"; do
+            while read -r POD; do
+              if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true 2>/dev/null | grep -i 'forbidden'; then
+                echo "FAIL: forbidden line in $GATE_NS/$POD — RBAC starvation under the shipped posture"
+                exit 1
+              fi
+            done < <(kubectl -n "$GATE_NS" get pods -o name)
+          done
+          echo "OK: zero forbidden lines"
+
+      - name: Assert 4 — provenance (running commit stamp equals build sha)
+        # §5 r1's honest envelope: the running controller's OWN startup
+        # line (`starting controller ... commit=<sha>`) must carry the
+        # sha this run stamped the image with. Catches running
+        # something other than this run's built artifact (tag
+        # overwrites, push mix-ups, stale mirrors). Wrong-bits-with-
+        # right-stamp stays owner-side (the signing-channel residue) —
+        # the gate does not claim it.
+        run: |
+          set -euo pipefail
+          RUNNING_COMMIT=$(kubectl -n $NS logs deployment/llmsafespaces-controller \
+            | grep -F 'starting controller' \
+            | grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}')
+          if [[ -z "$RUNNING_COMMIT" ]]; then
+            echo "FAIL: no commit stamp found on the controller startup line — unstamped artifact class"
+            exit 1
+          fi
+          if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then
+            echo "FAIL: running controller commit '$RUNNING_COMMIT' != this run's build sha '${{ github.sha }}' — wrong-artifact class"
+            exit 1
+          fi
+          echo "OK: running binary carries this run's commit stamp"
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== Pod status ==="
+          kubectl -n $NS get pods -o wide || true
+          kubectl -n llm-relay get pods -o wide || true
+          echo "=== API logs ==="
+          kubectl -n $NS logs deployment/llmsafespaces-api --tail=50 || true
+          echo "=== Controller logs ==="
+          kubectl -n $NS logs deployment/llmsafespaces-controller --tail=50 || true
+          echo "=== Router logs ==="
+          kubectl -n llm-relay logs deployment/llm-relay-router --tail=50 || true
+          echo "=== Events ==="
+          kubectl -n $NS get events --sort-by='.lastTimestamp' | tail -30 || true
+          kubectl -n llm-relay get events --sort-by='.lastTimestamp' | tail -30 || true
+
+      - name: Teardown
+        if: always()
+        run: kind delete cluster --name $CLUSTER_NAME
