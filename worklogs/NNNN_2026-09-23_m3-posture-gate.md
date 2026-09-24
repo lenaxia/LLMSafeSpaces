@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r5 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r6 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r5 fixes pushed; awaiting re-review.
+**Status:** r6 fixes pushed; awaiting re-review.
 
 ---
 
@@ -60,6 +60,17 @@ r5's twelve live one-liner escapes (shell/helm-proven by the review and its skep
 
 All twelve r5 escapes re-verified red by my own mutations after the close (S1–S6 install-channel; A1–A6 assertion-disarm). The worklog's stale duplicate merge-call line (r5's minor finding) is deleted.
 
+## r6 round record (four root causes closed + one refuted with executed evidence)
+
+r6's mutation gauntlet (41 mutations, review + skeptical sub-agent cross-validated) found ten more green escapes converging on four root causes. Disposition:
+
+1. **Root cause B — the comma multi-set channel (REAL, closed):** helm accepts `--set a=1,b=2`; a key-before-first-`=` parse is blind to the tail — `--set "mcp.enabled=false,freeModelsRefresher.enabled=false"` passed every pin. `extractSetKeys` now splits each value on commas and validates EVERY segment's key against the allowlist (mutation re-verified red).
+2. **Root cause C — the shape pin's entry condition (REAL, closed):** a double-space `kubectl   wait … || true` skipped the `Contains(line, "kubectl wait")` guard entirely — the guard, not the ban, was the hole. Lines are whitespace-collapsed before matching (re-verified red).
+3. **Root cause D — unpinned payloads (REAL, closed):** `sleep 45` → `sleep 1` (the window's duration is the crashloop catch's teeth) and the `forbidden` grep pattern were pinned nowhere. Now pinned — the grep on BOTH files (a Contains-anywhere pin passed while only the current-container grep was swapped; the partial swap neuters half the detector — re-verified red both partial and full).
+4. **`exit 0` (REAL, closed):** strictly larger blast radius than the trap ban's class — it neuters the restart-diff too, re-opening the #1546 Defect-1 path (crashlooping router, zero forbidden, armed controller) through every remaining assertion. Banned in all assertion blocks; failure paths use `exit 1` only (false-positive-free).
+5. **The env-carrier channel (REAL, closed):** a step-level `env:` block feeding `${GATE_EXTRA}` into the helm line evaded every run-text ban. The install step's env block is now required EMPTY (parsed via the step's `env` key).
+6. **Root cause A — the backslash-newline join (REFUTED for this context, with executed evidence):** the claim was that `se\<NL>t +e` / `--valu\<NL>es=` join into live neuter/smuggle forms. Executed test (`/tmp/opencode/jointest/t.sh`): inside a YAML literal block scalar the continuation line must be indented, and the indent SURVIVES the backslash-newline removal as separator whitespace — `--valu` and `es=…` stay separate argv (`helm: unknown flag` → install fails → gate red, fail-closed), and `se` + indent + `t +e` is `se: command not found` under `set -e` (fail-closed red). The zero-indent form that DOES join a token is invalid inside a block scalar (r6's own discarded-candidates note). The prescribed empty-join view (`banViews`' third view) is KEPT as belt — it closes any future non-block scalar form (`run: >`, single-line) where a true zero-indent join could occur — but the live-form claim for the current workflow shape is refuted, on the record.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -79,7 +90,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M1/M2
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r5 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r6 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -87,7 +98,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M1/M2
 
 ## Next Steps
 
-1. Re-review (r5 verdict pending).
+1. Re-review (r6 verdict pending).
 2. The orchestrator sequences the merge — live scan at r4: #1558 (the defect fix) and M1 (#1553) open, M2 unopened, M4 merged; the #1548 recorded order names M1 and M2 before the gate. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 

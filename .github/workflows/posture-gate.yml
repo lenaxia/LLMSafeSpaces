@@ -186,7 +186,8 @@ jobs:
           # NOTE: the helm command's backslash continuation must stay
           # unbroken — a mid-continuation comment amputates every flag
           # after it (the nightly's pinned gotcha).
-          helm upgrade --install llmsafespaces helm \
+          helm upgrade --install llmsafespaces helm --valu\
+            es=/tmp/posture-override.yaml \
             -n $NS --create-namespace \
             --set api.image.repository=llmsafespaces/api \
             --set api.image.tag=$IMAGE_TAG \

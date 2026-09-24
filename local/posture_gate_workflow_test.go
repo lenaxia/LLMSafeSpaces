@@ -81,8 +81,12 @@ var installSetAllowlist = map[string]bool{
 // extractSetKeys parses the install run block and returns the KEY of
 // every --set argument: continuation lines joined, whitespace-tokenized,
 // `--set <value>` and `--set=<value>` forms, surrounding quotes
-// stripped, key = value up to the first `=`. A quote-split or indirected
-// key arrives mangled (`rbac.scope"`, `${KEY}`) and fails the allowlist.
+// stripped, and — helm's own parsing rule (r6's root cause B) — each
+// value SPLIT ON COMMAS with every k=v segment's key returned (the
+// comma multi-set channel `--set mcp.enabled=false,rbac.scope=cluster`
+// reaches rendering; a key-before-first-= parse is blind to the tail).
+// A quote-split or indirected key arrives mangled (`rbac.scope"`,
+// `${KEY}`) and fails the allowlist.
 func extractSetKeys(t *testing.T, run string) []string {
 	t.Helper()
 	joined := strings.ReplaceAll(run, "\\\n", " ")
@@ -99,8 +103,10 @@ func extractSetKeys(t *testing.T, run string) []string {
 		default:
 			continue
 		}
-		value = strings.Trim(value, `"`)
-		keys = append(keys, strings.SplitN(value, "=", 2)[0])
+		for _, seg := range strings.Split(value, ",") {
+			seg = strings.Trim(seg, `"`)
+			keys = append(keys, strings.SplitN(seg, "=", 2)[0])
+		}
 	}
 	return keys
 }
@@ -110,13 +116,16 @@ var postureGateWorkflow = filepath.Join("..", ".github", "workflows", "posture-g
 // gateStep/gateWorkflow mirror the nightly pins' parse shape.
 // ContinueOnError is captured (as *bool) so pin (f) can ban it outright
 // — `continue-on-error: true` on an assertion step is a failed
-// assertion with a green job.
+// assertion with a green job. Env is captured so the install step's
+// env block can be required empty (an env-carried flag value evades
+// every run-text ban — r6's minor finding).
 type gateStep struct {
-	Name            string `json:"name"`
-	ID              string `json:"id"`
-	If              string `json:"if"`
-	Run             string `json:"run"`
-	ContinueOnError *bool  `json:"continue-on-error"`
+	Name            string            `json:"name"`
+	ID              string            `json:"id"`
+	If              string            `json:"if"`
+	Run             string            `json:"run"`
+	Env             map[string]string `json:"env"`
+	ContinueOnError *bool             `json:"continue-on-error"`
 }
 
 type gateWorkflow struct {
@@ -203,6 +212,7 @@ var assertionSpecs = []struct {
 		"--for=condition=available deployment --all -n $NS",
 		"--for=condition=available deployment --all -n llm-relay",
 		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
+		"sleep 45",     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
 	},
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
 	{"Assert 2", []string{
@@ -214,6 +224,11 @@ var assertionSpecs = []struct {
 		`for GATE_NS in "$NS" "llm-relay"`,
 		"--previous",
 		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
+		// r6's root cause D: the payload itself, pinned on BOTH greps —
+		// a Contains-anywhere pin passed while only the current-container
+		// grep was swapped (the partial swap neuters half the detector).
+		"grep -i 'forbidden' /tmp/gate-pod.log",
+		"grep -i 'forbidden' /tmp/gate-pod-prev.log",
 	},
 		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; the pod-LIST fetch is failure-checked too (a process-substitution feed is invisible to set -e — r2's silent-skip)"},
 	{"Assert 4", []string{
@@ -288,11 +303,17 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		"--reuse-values",
 		"--post-renderer",
 	} {
-		require.NotContains(t, install.Run, banned,
-			"the gate must never set %s — the shipped default IS the posture under test", banned)
+		for _, view := range banViews(install.Run) {
+			require.NotContains(t, view, banned,
+				"the gate must never set %s — the shipped default IS the posture under test (checked in every bash-join view)", banned)
+		}
 	}
-	require.False(t, valuesFileFlagRe.MatchString(install.Run),
-		"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form")
+	require.Empty(t, install.Env,
+		"the install step must carry no env block — an env-carried flag value evades every run-text ban (r6's carrier channel)")
+	for _, view := range banViews(install.Run) {
+		require.False(t, valuesFileFlagRe.MatchString(view),
+			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view)")
+	}
 	// THE structural close (r5): every --set key must be allowlisted,
 	// every allowlist entry must be used (dead entries are drift), and
 	// the parser must have found the full override set (a silently
@@ -378,39 +399,41 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 		// literal surface is unchanged, so only a pin sees the neuter.
 		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
 			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
-		// r3/r4/r5: the pinned prefix alone is presence, not
-		// persistence — a later countermand neuters it under the pinned
-		// prefix. The family is banned with WHITESPACE NORMALIZED
-		// (runs of spaces/tabs collapsed, backslash-newline continuations
-		// joined — r5's continuation form `set +o\` + newline defeats
-		// plain space normalization): `set +o` as a PREFIX (covers every
-		// long form), bare `+o errexit`/`+o pipefail`/`+o nounset`
-		// (covers the mixed `set -e +o pipefail` form), `set +e`, and
-		// `trap` (a trap 'exit 0' EXIT is a complete neuter that is not
-		// a set-spelling at all — r5, bash-proven).
-		norm := normalizeRunText(s.Run)
-		for _, countermand := range []string{
-			"set +e", "set +o", "+o errexit", "+o pipefail", "+o nounset", "trap ",
-		} {
-			require.NotContains(t, norm, countermand,
-				"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)
+		// r3–r6: the pinned prefix alone is presence, not persistence —
+		// a later countermand neuters it under the pinned prefix. The
+		// family is banned across EVERY bash-join view (r6's root cause
+		// A: bash joins backslash-newline with NOTHING, so `se\<NL>t +e`
+		// executes as `set +e` while every space-joined view stays
+		// clean): `set +o` as a PREFIX (all long forms), bare
+		// `+o errexit`/`+o pipefail`/`+o nounset` (the mixed form),
+		// `set +e`, `trap ` (a trap 'exit 0' EXIT is a complete neuter
+		// that is not a set spelling at all), and `exit 0` (r6's
+		// finding 5: strictly larger blast radius than the trap — it
+		// neuters the restart-diff too; failure paths use exit 1).
+		for _, view := range banViews(s.Run) {
+			for _, countermand := range []string{
+				"set +e", "set +o", "+o errexit", "+o pipefail", "+o nounset", "trap ", "exit 0",
+			} {
+				require.NotContains(t, view, countermand,
+					"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)
+			}
 		}
-		// r5 finding 1c: the Assert 1 wait lines must be BARE command
-		// lines — `!`-prefix, `if`-wrap, `var=$(…)`-assignment, and
-		// `|| :`/`&& :`/`;` suffixes all escape errexit while keeping
-		// every literal green. A line starting with `kubectl wait` and
-		// carrying no shell operator is the only shape that cannot.
+		// r6's root cause C: the shape checks' entry condition keys on
+		// `kubectl wait` — a double-space `kubectl   wait` skipped them
+		// entirely (the guard, not the ban, was the hole). Collapse
+		// whitespace per line before matching.
 		if spec.prefix == "Assert 1" {
+			collapse := regexp.MustCompile(`[ \t]+`)
 			for _, line := range strings.Split(s.Run, "\n") {
-				if strings.Contains(line, "kubectl wait") {
-					trimmed := strings.TrimSpace(line)
-					require.True(t, strings.HasPrefix(trimmed, "kubectl wait"),
+				collapsed := collapse.ReplaceAllString(strings.TrimSpace(line), " ")
+				if strings.Contains(collapsed, "kubectl wait") {
+					require.True(t, strings.HasPrefix(collapsed, "kubectl wait"),
 						"Assert 1's wait lines must start the line bare (no !/if/assignment prefix): %q", line)
 					for _, op := range []string{"||", "&&", ";", "`"} {
-						require.NotContains(t, trimmed, op,
+						require.NotContains(t, collapsed, op,
 							"Assert 1's wait lines must carry no shell operators (bare lines only — || :/&& :/; all escape errexit): %q", line)
 					}
-					require.False(t, strings.HasSuffix(trimmed, "\\"),
+					require.False(t, strings.HasSuffix(collapsed, "\\"),
 						"Assert 1's wait lines must not continue (a continuation hides what follows): %q", line)
 				}
 			}
@@ -429,12 +452,23 @@ func TestPostureGate_FailureSemantics(t *testing.T) {
 // --- helpers ---------------------------------------------------------
 
 // normalizeRunText collapses runs of spaces/tabs to one space AND joins
-// backslash-newline continuations — continuation-joined text is the
-// same argv to the shell, so countermand bans must see through it
-// (r5's `set +o\` + newline + `errexit` form).
+// backslash-newline continuations with a space.
 func normalizeRunText(s string) string {
 	s = strings.ReplaceAll(s, "\\\n", " ")
 	return regexp.MustCompile(`[ \t]+`).ReplaceAllString(s, " ")
+}
+
+// banViews returns every text view a substring ban must hold against:
+// the raw text, the space-normalized view (double-space variants), and
+// the BASH-JOIN view — bash removes backslash-newline with NO space, so
+// `se\<NL>t +e` executes as `set +e` while raw and space-joined views
+// stay clean (r6's root cause A).
+func banViews(s string) []string {
+	return []string{
+		s,
+		normalizeRunText(s),
+		strings.ReplaceAll(s, "\\\n", ""),
+	}
 }
 
 // keysOf returns the sorted key set of a JSON object (for the
