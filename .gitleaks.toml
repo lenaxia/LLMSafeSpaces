@@ -101,7 +101,6 @@ paths = [
   # as literal needles — fixtures constructed to LOOK like keys for the
   # sweep/counter rows; never real credentials (the drill-family
   # precedent, the us-72 scripts' own in-file defaults).
-  '''local/us72_m2_e2e_test\.go''',
   '''local/us61_migration_recovery_e2e_script_test\.go''',
   # LLM provider format tests use synthetic "sk-ant-123" / "sk-oai-456"
   # test keys. Never real credentials (verified by inspection 2026-06-02).

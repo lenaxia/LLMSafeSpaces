@@ -98,7 +98,10 @@ force_resync() { # direct secrets-resync via a pod port-forward; suspend/activat
     fi
     warn "direct resync unavailable — falling back to suspend/activate"
     api POST "/api/v1/workspaces/${WS}/suspend" >/dev/null
-    sleep 5
+    # Poll for Suspended (NOT sleep: the bounded-suspend phase machine
+    # returns 409 on activate while Suspending — same-day evidence, run
+    # 36049595521, the identical phase machine).
+    wait_phase "${WS}" Suspended 60 >/dev/null 2>&1 || return 1
     api POST "/api/v1/workspaces/${WS}/activate" >/dev/null
     wait_phase "${WS}" Active 300 || return 1
 }
@@ -127,7 +130,9 @@ wait_phase "${WS}" Active 300 || die "setup: workspace never Active"
 
 HANDOFF="workspace-relay-${WS}"
 
-# Reach the staged state (the R1 precondition): handoff present + True.
+# R0 — the staged-state precondition (a ROW, not a setup die: the smoke
+# harness's shims cannot stage, and every downstream row re-asserts its
+# own preconditions — the M2 script's shape).
 staged=0
 for _ in $(seq 1 60); do
     if kc get secret "${HANDOFF}" >/dev/null 2>&1 && [[ "$(condition_row)" == "True "* ]]; then
@@ -135,7 +140,11 @@ for _ in $(seq 1 60); do
     fi
     sleep 4
 done
-(( staged )) || die "setup: never reached the staged state (handoff + CredentialsStaged=True) — staging is not arming"
+if (( staged )); then
+    ok "R0: the staged state reached (handoff present + CredentialsStaged=True)"
+else
+    note_fail "R0: never reached the staged state (handoff + CredentialsStaged=True) — staging is not arming (the #1548 class)"
+fi
 
 # Baseline counter for THIS series (delta-pinned, the M2 script's lesson:
 # a stale series from a prior run is not a fresh delivery).
@@ -188,8 +197,11 @@ log "R2 — RECOVERY: the reconcile re-creates the handoff → tokens deliver ag
 
 # Force the controller's reconcile (suspend/activate: generation bump +
 # fresh pod → fresh batch) — the deleted-handoff NotFound→Create path.
+# Poll for Suspended before activating (a fixed sleep 409s on the
+# bounded-suspend phase machine — run 36049595521's exact failure; the
+# US-70 suite's remedy).
 api POST "/api/v1/workspaces/${WS}/suspend" >/dev/null
-sleep 5
+wait_phase "${WS}" Suspended 60 || note_fail "R2: workspace never reached Suspended"
 api POST "/api/v1/workspaces/${WS}/activate" >/dev/null
 wait_phase "${WS}" Active 300 || note_fail "R2: workspace never Active after the recovery cycle"
 
@@ -233,7 +245,10 @@ log "R3 — EXIT 85: the unarmable controller terminates with the DISTINCT code 
 ORIG_URL=$(kubectl --context "${CTX}" -n "${NS}" get deployment llmsafespaces-controller \
     -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
     | tr ' ' '\n' | grep -F -- '--llm-relay-router-url=' | cut -d= -f2- || true)
-[[ -n "${ORIG_URL}" ]] || die "R3: could not read the live router URL from the controller args"
+if [[ -z "${ORIG_URL}" ]]; then
+    note_fail "R3: could not read the live router URL from the controller args — restoring to the chart's shipped default"
+    ORIG_URL="http://llm-relay-router.llm-relay.svc.cluster.local"
+fi
 
 helm --kube-context "${CTX}" upgrade --install llmsafespaces "${SCRIPT_DIR}/../helm" \
     -n "${NS}" --reuse-values \
@@ -290,7 +305,7 @@ done
 # The 45s stability window (M3's second clause: identical restart
 # snapshots — a crashloop cannot stay quiet; R3's exit-85 restarts are
 # EXPECTED and pre-window, so the window compares post-restore state).
-snap() { kubectl --context "${CTX}" -n "${NS}" get pods -o jsonpath='{range .items[*]}{.metadata.name}={.status.containerStatuses[0].restartCount} {end}' 2>/dev/null; }
+snap() { for gate_ns in "${GATE_NSS[@]}"; do kubectl --context "${CTX}" -n "${gate_ns}" get pods -o jsonpath='{range .items[*]}{.metadata.name}={.status.containerStatuses[0].restartCount} {end}' 2>/dev/null; done; }
 s1="$(snap)"; sleep 45; s2="$(snap)"
 if [[ -n "${s1}" && "${s1}" == "${s2}" ]]; then
     ok "R4: 45s stability window — restart counters identical (no crashloop residue)"

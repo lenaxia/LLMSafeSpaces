@@ -551,24 +551,38 @@ type relayFlags struct {
 	tokenTTL  time.Duration
 }
 
-func registerRelayFlags() relayFlags {
+// registerRelayFlags registers the Epic 72 / US-72.3 relay-only key
+// delivery flags and returns the struct the flag package will PARSE
+// INTO. The pointer is load-bearing: returning the struct by value
+// orphans the parse targets (flag.Parse writes the local; the caller's
+// copy keeps zero values) — the #1548 root cause, live since e81a500f:
+// every deployment's --relay-only-key-delivery=true parsed into a dead
+// struct, the controller ran healthy and never armed, and the
+// split-brain incident was this bug's signature. The Into seam exists
+// so the regression pin can parse a fresh FlagSet against the returned
+// struct (the opencodeOverlayDecision precedent).
+func registerRelayFlags() *relayFlags {
+	return registerRelayFlagsInto(flag.CommandLine)
+}
+
+func registerRelayFlagsInto(fs *flag.FlagSet) *relayFlags {
 	var f relayFlags
-	flag.BoolVar(&f.enabled, "relay-only-key-delivery", false,
+	fs.BoolVar(&f.enabled, "relay-only-key-delivery", false,
 		"Epic 72 (design 0058): seal bound BYO llm-provider credentials into llm-relay envelope "+
 			"Secrets and stage scoped router tokens instead of delivering raw keys. Requires the "+
 			"llm-relay router (--llm-relay-router-url) and --api-service-url; startup REFUSES, loud, "+
 			"when the router is unreachable or unbootstrapped. Default false (raw-key path).")
-	flag.StringVar(&f.routerURL, "llm-relay-router-url", "",
+	fs.StringVar(&f.routerURL, "llm-relay-router-url", "",
 		"Base URL of the llm-relay BYO resolve router (e.g. http://llm-relay-router.llm-relay.svc.cluster.local) "+
 			"— the internal mint/rotate API and the router URL staged into workspace tokens. "+
 			"Required when --relay-only-key-delivery is enabled.")
-	flag.StringVar(&f.namespace, "llm-relay-namespace", "llm-relay",
+	fs.StringVar(&f.namespace, "llm-relay-namespace", "llm-relay",
 		"Namespace holding the llm-relay router and the staged envelope Secrets. "+
 			"Required when --relay-only-key-delivery is enabled.")
-	flag.DurationVar(&f.tokenTTL, "relay-token-ttl", 24*time.Hour,
+	fs.DurationVar(&f.tokenTTL, "relay-token-ttl", 24*time.Hour,
 		"TTL of staged router tokens (design 0058 §4.4). Renewal re-mints at ~TTL/2 via the "+
 			"staging pass. Clamp: 1s..7d (router-enforced).")
-	return f
+	return &f
 }
 
 // mustParseUploadStagingFlag parses the design-0060 upload-staging
