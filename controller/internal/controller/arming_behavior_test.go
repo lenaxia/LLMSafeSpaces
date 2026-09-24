@@ -116,8 +116,9 @@ func TestSetupRelayStaging_ArmedReturnsConfigAndEmitsLine(t *testing.T) {
 // timeout) and the seam maps it to 85. The literal <35s is a
 // HANG-GUARD only (r4: the dead port returns in ~ms, so this bound
 // passes regardless of the window's value). The window's VALUE is
-// enforced by the const assertion in TestArmingWindow (below) and the
-// value-aware source pin; its USE by the guard, by the source pin.
+// enforced by the const assertion in TestArmingWindow_IsTheStartupGuardBudget
+// (controller_arming_test.go) and the value-aware source pin; its USE
+// by the guard, by the source pin.
 func TestSetupRelayStaging_UnarmableReturnsErrWithinWindow(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(armingScheme(t)).Build()
 	mgr := &stubManager{reader: fc, scheme: fc.Scheme()}
