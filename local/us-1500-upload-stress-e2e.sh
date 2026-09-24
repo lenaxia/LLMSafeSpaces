@@ -101,6 +101,25 @@ upload_bytes() { # size [outfile]
     fi
 }
 
+# upload_bytes_with_body: upload_bytes + the response BODY preserved to
+# a file (the SR-6B probe must discriminate agentd's staging_busy 429
+# from the API rate limiter's status-identical 429 — the reason rides
+# the body, forwarded verbatim by the API).
+upload_bytes_with_body() { # size outfile bodyfile
+    local size="$1" outfile="$2" bodyfile="$3" tmp st
+    tmp=$(mktemp /tmp/sr-up-XXXXXX.bin)
+    head -c "${size}" /dev/urandom > "${tmp}" 2>/dev/null
+    local out status
+    out=$(curl -s -m 120 -X POST -H "Authorization: Bearer ${API_KEY}" \
+        -F "file=@${tmp};filename=sr-stress-$(basename "${tmp}").bin" \
+        -o "${bodyfile}" -w '%{http_code}' \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || out='000'
+    rm -f "${tmp}"
+    status="${out}"
+    printf '%s' "${status}" > "${outfile}"
+    printf '%s' "${status}"
+}
+
 # wait_all_terminal: every file in a results dir holds a terminal status
 # (201, 507, 429, 504 — never 000/5xx-other/4xx).
 storm_report() { # results-dir count -> prints "delivered=N refused=M other=K"
@@ -466,6 +485,15 @@ SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 # posture (ReadHeaderTimeout only); 4×1MiB reserved + the 5th's 10MiB
 # = 14MiB ≤ the 48MiB budget, so the COUNT CAP is the only clause that
 # can bind the 5th (the boundary this row characterizes).
+# r1 correction: the original cut gated "held" on the reserved_bytes
+# GAUGE — push-only on the sweep's 10-minute tick (upload_staging.go's
+# RecordGauges), frozen ≈boot inside the row's 16s window: tick-luck,
+# not verification. The LIVE, misattribution-proof signal is the 5th's
+# own BODY: the API forwards agentd's 429 verbatim (uploads.go) with
+# reason "staging_busy" — the API's global rate limiter also emits
+# bare 429s on /uploads, status-only assertion regressed r4's
+# discrimination lesson. The row is self-verifying post-hoc: if the
+# holders failed to hold, the 5th delivers 201 and the row fails loud.
 SR6B_PIDS=()
 for i in 1 2 3 4; do
     (
@@ -481,27 +509,19 @@ for i in 1 2 3 4; do
     ) &
     SR6B_PIDS+=($!)
 done
-# VERIFY HELD: the reserved gauge must show ≥ 4×1MiB while the bodies
-# still trickle — proof of four held reservations, not hope. This is
-# the port of the handler-level pin's shape (hold 4, then the 5th).
-SR6B_HELD=0
-SR6B_RV=""
-for _ in $(seq 1 60); do
-    SR6B_RV=$(gauge_value "$(scrape_metrics "${POD}")" \
-        'workspace_agentd_upload_staging_reserved_bytes')
-    if [[ -n "${SR6B_RV}" ]] && awk -v r="${SR6B_RV}" 'BEGIN{exit !(r >= 4194304)}'; then
-        SR6B_HELD=1
-        break
-    fi
-    sleep 0.5
-done
-SR6B_STATUS=window-failed
-if [[ "${SR6B_HELD}" -ne 1 ]]; then
-    note_fail "SR-6: the deterministic hold window never opened (reserved_bytes=${SR6B_RV:-absent} after 30s of trickled holders)"
-    for p in "${SR6B_PIDS[@]}"; do kill "${p}" 2>/dev/null || true; done
-else
-    # THE 5th, full speed: len(reservations)=4 ≥ cap → the literal 429.
-    SR6B_STATUS=$(upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5")
+# Settle margin: the four Admits complete within ~1s of start; the
+# 16s trickle window dwarfs this sleep (it is NOT the determinism —
+# the trickled bodies are; this only orders the probe inside the
+# window's steady state).
+sleep 3
+# THE 5th, full speed — status AND body captured: the literal 429 must
+# carry reason staging_busy (the count cap's class), not the API rate
+# limiter's status-identical 429.
+SR6B_BODY_FILE="${SR6B_DIR}/res-5-body"
+SR6B_STATUS=$(upload_bytes_with_body $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5" "${SR6B_BODY_FILE}")
+SR6B_5TH_BUSY=0
+if [[ "${SR6B_STATUS}" == "429" ]] && grep -q 'staging_busy' "${SR6B_BODY_FILE}" 2>/dev/null; then
+    SR6B_5TH_BUSY=1
 fi
 for p in "${SR6B_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
 # Holders all deliver once their trickles finish (they are valid
@@ -514,11 +534,17 @@ done
 # full-speed upload AFTER the holders finish must deliver — the slot
 # reopened.
 SR6B_RETRY=$(upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry")
-REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} retry=${SR6B_RETRY}"
-if [[ "${SR6B_HELD}" -eq 1 && "${SR6B_STATUS}" == "429" && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
-    ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 holders gauge-verified held; literal 429; retry-after-release delivered; ${REPORT6B})"
+REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} fifth-busy=${SR6B_5TH_BUSY} retry=${SR6B_RETRY}"
+if [[ "${SR6B_5TH_BUSY}" -eq 1 && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ${REPORT6B})"
 else
-    note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, reserved_at_hold=${SR6B_RV})"
+    note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, body=$(head -c 120 "${SR6B_BODY_FILE}" 2>/dev/null))"
+    # r1 minor: kill the holder subshells AND their curl children —
+    # orphaned trickles keep holding reservations past the row.
+    for p in "${SR6B_PIDS[@]}"; do
+        kill "${p}" 2>/dev/null || true
+        pkill -P "${p}" curl 2>/dev/null || true
+    done
 fi
 rm -rf "${SR6B_DIR}"
 else

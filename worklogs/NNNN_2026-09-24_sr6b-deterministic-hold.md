@@ -27,11 +27,17 @@ Make the SR-6B row (design 0060 §6.6's characterized boundary: the 5th concurre
 ### The row (replaces the 5-simultaneous-fire block)
 
 1. **4 holders**: 1MiB bodies at `--limit-rate 64k` ≈ 16s hold each; 4×1MiB reserved + the 5th's 10MiB = 14MiB ≤ the 48MiB budget, so the COUNT CAP is the only clause that can bind the 5th (the boundary this row characterizes — not budget, not clause B).
-2. **Gauge-verified held**: poll `workspace_agentd_upload_staging_reserved_bytes` until ≥ 4×1MiB (30s budget) — proof of four held reservations before the 5th fires, not hope. Window-failure fails the row loud.
-3. **The 5th, full speed**: demand the LITERAL 429.
-4. **Holders all deliver 201** after their trickles finish (they are valid uploads; a non-201 holder means the window closed early — failed explicitly).
+2. **Settle margin** (3s): orders the probe inside the 16s window's steady state — NOT the determinism (the trickled bodies are).
+3. **The 5th, full speed — status AND body**: the literal 429 must carry reason `staging_busy` (the API forwards agentd's 429 body verbatim; the API's global rate limiter also emits status-identical 429s on /uploads — status-only assertion regressed r4's discrimination lesson). Self-verifying post-hoc: if the holders failed to hold, the 5th delivers 201 and the row fails loud.
+4. **Holders all deliver 201** after their trickles finish (a non-201 holder means the window closed early — failed explicitly).
 5. **Retry-after-release** (§4.2: "clean, retryable"): a full-speed upload AFTER the holders finish must deliver 201 — the slot reopened.
-6. The pass condition requires ALL of: held=1, fifth=429, holders-ok=1, retry=201.
+6. The pass condition requires ALL of: fifth=429∧staging_busy, holders-ok=1, retry=201.
+
+### r1 review round (both findings + the minor)
+
+- **The gauge gate was tick-luck, CUT**: the original gated "held" on `workspace_agentd_upload_staging_reserved_bytes` — push-only on the sweep's 10-minute tick (`RecordGauges` from the sweep loop, upload_staging.go:533), frozen ≈boot inside the row's 16s window. Replaced with the LIVE signal: the 5th's own body (above). No product work needed (the alternative — pushing gauges on Admit/Release — remains available if a future row wants a read-before-fire gate).
+- **The pin suite was RED, fixed**: the structural pins still carried the deleted `SR6B_HAS_429`; replaced with needles for the new shape (`--limit-rate 64k`, `SR6B_5TH_BUSY`, `staging_busy`, `upload_bytes_with_body`, `SR6B_HOLDERS_OK`, `SR6B_RETRY`, the precondition gate). The r1 lesson on my own validation: the smoke-filter (`TestHarnessExecuteSmoke_RepoWide/us`) did not cover the pin suite — this round ran the FULL `./local/` package.
+- **Kill-orphans fixed**: the failure path now pkills the holder subshells' curl children (orphaned trickles kept holding reservations past the row).
 
 ---
 
@@ -52,7 +58,8 @@ None.
 ## Tests Run
 
 - `bash -n local/us-1500-upload-stress-e2e.sh` — syntax ok.
-- `go test -count=1 -run 'TestHarnessExecuteSmoke_RepoWide/us' ./local/` — ok (the harness smoke gate).
+- `go test -count=1 ./local/` — ok, the FULL package (31s; the r1-cut smoke filter masked the red pin suite — not repeated).
+- Expected next-nightly line: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ...)`. 
 - Full-stack proof: the next nightly (the row runs in kind; the local environment has no kind cluster). Expected: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 holders gauge-verified held; literal 429; retry-after-release delivered; ...)`.
 
 ---
