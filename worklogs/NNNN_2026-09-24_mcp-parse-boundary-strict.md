@@ -34,6 +34,17 @@ Silent tolerance of malformed transport input is the pattern those lanes ended; 
 - **Parse errors now carry diagnostics** (`Parse error: %v`) — the old bare "Parse error" masked what failed.
 - Request-object additive tolerance PINNED as a decision (not an accident) by `TestMCPHandler_RequestBodyAdditiveTolerancePinned`; the strict boundary is the params wire, documented in-code both ways.
 
+### r1 review round (all findings addressed)
+
+- **The issue's twice-stated 400 criterion implemented** (first cut argued 200-only; the reviewer ruled no recorded ruling supersedes the issue): the parse class (-32700) rides **HTTP 400**, oversize rides **413**; application-level JSON-RPC errors (-32602) keep the endpoint's 200 convention. `writeMCPErrorStatus` carries the status; both poles pinned.
+- **The socialized 1 MiB body cap** (absent from the first cut): `http.MaxBytesReader` → 413 with the cap named. Also structurally bounds the trailing scan (which independently stops at the first non-whitespace byte).
+- **The literal 164-char repro pinned as its own case** (r1: the balanced variant covered the params path only by inference): its trailing unbalanced `}` takes the trailing-data path → HTTP 400 + -32700 + "trailing data at offset 163" — exactly the issue's "expect: 400 invalid JSON".
+- **The accepted-side edge pinned**: `TestMCPHandler_TrailingNewlineAccepted` — every in-repo caller is curl (appends `
+`); whitespace-only remainders must stay accepted or they all silently break.
+- **Parse-error diagnostics content pinned** (reverting to bare "Parse error" now fails a test).
+- **Sibling tracking**: #1565 files the same-class loose decodes (workflow_execute.go:113, user_timezone.go:68) so the class-flag isn't silently retired at merge.
+- **One offset-carrying helper** (`decodeOneDocument`) serves both -3270 paths; client.go's outbound `decodeStrict` keeps its own error contract (different consumers).
+
 ---
 
 ## Key Decisions
@@ -55,12 +66,14 @@ None.
 - `go test -count=1 -run 'TestMCPHandler_ToolsCall_MisplacedParamsKeyRejected|TestMCPHandler_TrailingDataRejected|...' -v` — the 2 salvage shapes RED pre-fix (misplaced key → salvaged "message is required"; trailing data → silently skipped), the 2 characterization pins PASS pre-fix (mid-string garbage already -32700; request-object tolerance).
 - `go test -count=1 -run 'TestMCPHandler_' -v ./cmd/workspace-agentd/` — 23 PASS post-fix (4 new + the full existing family: auth, initialize, tools/list, unknown method/tool, session read/list paths).
 - `go test -count=1 -run 'TestMCPHandler_|TestMCPSession' ./cmd/workspace-agentd/` — ok.
+- Post-r1: 26 PASS across `TestMCPHandler_` (adds: LiteralIssue1561Repro [400 + offset 163], TrailingNewlineAccepted [200], BodyCap413 [giant-token first-decode path], and status/content pins on the r1 tests).
 
 ---
 
 ## Next Steps
 
 - If a future opencode rev legitimately adds request-level MCP keys (e.g. `_meta`), the pinned additive pole keeps them working; a future rev adding tools/call PARAMS keys would trip the strict wire — that's deliberate (renegotiate the wire consciously in that PR, not silently).
+- #1565 tracks the sibling loose decodes (workflow_execute, user_timezone).
 - Parked elsewhere, unaffected: #1560 (chart-pins loud skip, on `fix/chart-pins-loud-skip` in this worktree per PARK-NOTE-1560.md); the worklog self-numbering hook fix.
 
 ---

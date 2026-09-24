@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -61,6 +62,28 @@ type mcpTool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
+// maxMCPBodyBytes bounds a /v1/mcp request body (#1561's socialized
+// cap): every tool on this wire is metadata-scale — arguments are
+// text/ids, not file payloads (uploads own their own leg).
+const maxMCPBodyBytes = 1 << 20
+
+// decodeOneDocument decodes exactly ONE JSON document, tolerating a
+// whitespace-only remainder (every curl caller appends a newline); any
+// non-whitespace trailing data returns the offset where it begins
+// (#1561: Decode's one-value semantics silently skipped it). The
+// outbound twin (client.go's decodeStrict) keeps its own error
+// contract — this offset-carrying variant serves the HTTP boundary.
+func decodeOneDocument(r io.Reader, v any) (trailingAt int64, err error) {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return 0, err
+	}
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+		return dec.InputOffset(), fmt.Errorf("trailing data at offset %d (one JSON document per request)", dec.InputOffset())
+	}
+	return 0, nil
+}
+
 func mcpHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// #847: the proxy exposes session_list/session_read — the
@@ -77,21 +100,23 @@ func mcpHandler(password string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 
+		// #1561: the wire's transport bounds — one JSON document,
+		// at most maxMCPBodyBytes. The cap also bounds the trailing
+		// scan below (an unbounded second value would otherwise
+		// buffer the whole remainder).
+		r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 		var req mcpRequest
-		dec := json.NewDecoder(r.Body)
-		if err := dec.Decode(&req); err != nil {
+		if _, err := decodeOneDocument(r.Body, &req); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeMCPErrorStatus(w, nil, -32700,
+					fmt.Sprintf("Parse error: request body exceeds the %d MiB cap", maxMCPBodyBytes>>20),
+					http.StatusRequestEntityTooLarge)
+				return
+			}
 			// #1561: diagnostics ride the error message — a silent
 			// "Parse error" masked WHAT failed for every caller.
-			writeMCPError(w, nil, -32700, fmt.Sprintf("Parse error: %v", err))
-			return
-		}
-		// #1561: Decode reads ONE JSON value and never looks again —
-		// trailing data (a second document, garbage) was silently
-		// skipped. One JSON document per request; the boundary is the
-		// parse boundary, not a salvage opportunity.
-		if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
-			writeMCPError(w, nil, -32700,
-				fmt.Sprintf("Parse error: trailing data at offset %d (one JSON document per request)", dec.InputOffset()))
+			writeMCPErrorStatus(w, nil, -32700, fmt.Sprintf("Parse error: %v", err), http.StatusBadRequest)
 			return
 		}
 
@@ -660,6 +685,18 @@ func writeMCPResult(w http.ResponseWriter, id any, result any) {
 }
 
 func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
+	writeMCPErrorStatus(w, id, code, msg, http.StatusOK)
+}
+
+// writeMCPErrorStatus carries the HTTP status for transport-class
+// errors: #1561 ruled the parse boundary rides HTTP 400/413 (the
+// issue's twice-stated criterion), while application-level JSON-RPC
+// errors (e.g. -32602) keep the endpoint's 200 convention.
+func writeMCPErrorStatus(w http.ResponseWriter, id any, code int, msg string, status int) {
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(mcpResponse{
 		JSONRPC: "2.0",
 		ID:      id,
