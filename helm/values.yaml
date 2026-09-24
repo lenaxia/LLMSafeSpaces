@@ -1210,9 +1210,11 @@ rbac:
   #                              wide READS on the CORE resource families
   #                              its rules list (writes on those stay
   #                              namespace-bound); plus conditional
-  #                              branches (relay/refresher) that extend
-  #                              reads AND writes cluster-wide when
-  #                              active — the rules block is authoritative.
+  #                              branches that differ — RELAY extends
+  #                              reads AND writes cluster-wide, REFRESHER
+  #                              (default-active) extends configmap READS
+  #                              only (its writes ride the release-ns
+  #                              Role) — the rules block is authoritative.
   #                              (The read-only storageclasses ClusterRole
   #                              is ALWAYS created regardless of scope.)
   #

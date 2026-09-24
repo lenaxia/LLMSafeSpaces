@@ -32,8 +32,10 @@
 #     gives: full CRUD cluster-wide on the llmsafespaces.dev CR
 #     families; cluster-wide READS on the CORE resource families its
 #     rules list (writes on those stay namespace-bound); and its
-#     CONDITIONAL branches (relay/refresher) extend reads and writes
-#     cluster-wide when active — the complete grant set is the rules
+#     CONDITIONAL branches differ — RELAY extends reads AND writes
+#     cluster-wide, REFRESHER (default-active) extends configmap READS
+#     only (its writes ride the release-ns Role) — the complete grant
+#     set is the rules
 #     block of this ClusterRole, which is authoritative. The read-only
 #     storageclasses ClusterRole below is separate, always created,
 #     and never part of this grant (F1.3.7).
@@ -264,9 +266,10 @@ subjects:
 # the namespace-scoped CRUD Role work AS WELL AS allow the cluster-
 # wide informer watches, this ClusterRole's rules grant the cluster-
 # wide read-only watches on the core resource families (and full CRUD
-# on the llmsafespaces.dev CR families — plus more in its conditional
-# branches; see the rules block immediately below, which is
-# authoritative). Writes on the CORE resources stay restricted to the
+# on the llmsafespaces.dev CR families — plus, in its conditional
+# branches, relay configmap writes and refresher configmap reads; see
+# the rules block immediately below, which is authoritative). Writes
+# on the CORE resources stay restricted to the
 # workspace namespace by the per-namespace Role above; writes on the
 # CR families and anything a conditional branch grants are
 # cluster-wide under this scope.

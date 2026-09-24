@@ -126,10 +126,11 @@ Role binds in the WORKSPACE namespace
 ({{ include "llmsafespaces.workspaceNamespace" . }} — the release
 namespace when api.config.kubernetes.namespace is unset; with the
 split-ns override set, the workspace Role lives THERE and the release
-namespace holds the leader-election Role). Always-created cluster-scoped
-grants exist regardless of rbac.scope (the read-only storageclasses
-ClusterRole and the relay-safe CRD-watch ClusterRole); the complete grant
-set is the rules
+namespace holds the leader-election Role). Cluster-scoped grants outside
+rbac.scope's cluster block: the relay-safe CRD-watch ClusterRole (under
+NAMESPACE scope only, rendered regardless of rbac.create) and — when
+rbac.create=true — the read-only storageclasses ClusterRole; the
+complete grant set is the rules
 blocks in the chart's rbac.yaml, which are authoritative. The
 manager's cache is scoped to
 match (the watch-namespaces arg — derived or explicit); resources in
