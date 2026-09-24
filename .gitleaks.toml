@@ -145,6 +145,15 @@ paths = [
   # looking shapes, but neither has any secret material. Verified by
   # inspection 2026-06-22.
   '''api/internal/middleware/auth_method_test\.go''',
+  # The Epic-72 M2 e2e smoke-canary fixtures (design 0061 sec4/sec10):
+  # the planted canary is a SYNTHETIC string whose entire purpose is to
+  # be FOUND by the sweep greps — a corpse-hunt key, never a credential,
+  # not valid against any provider (the sk-SMOKE-/sk-M2E2E- prefixes
+  # mark them fixtures; verified by construction — the tests that read
+  # them assert the marker substrings, not any real key shape).
+  # Added 2026-09-24 (PR #1559 r8, adopting wt-1453's #1566 finding).
+  '''local/us72_m2_e2e_test\.go''',
+  '''local/us72-m2-fallback-e2e\.sh''',
 ]
 
 # Allow specific regex patterns in any file. Use sparingly; prefer
