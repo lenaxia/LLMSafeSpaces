@@ -1079,3 +1079,75 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, d, "pair with trigger_fires") // trigger-fired runs cross-read
 	})
 }
+
+// --- #1561: the parse boundary is strict (silent salvage ended) ---
+
+func TestMCPHandler_ToolsCall_MisplacedParamsKeyRejected(t *testing.T) {
+	// The #1561 repro VERBATIM: the #1530 probe's injected fragment
+	// (`"lsp_injected_session":"ses_Y"}`) legally closed `arguments`
+	// early, demoting `message` to a tools/call params-level key. The
+	// body is VALID JSON — the defect was Unmarshal silently dropping
+	// the unknown key, degrading malformed transport into a schema-level
+	// "message is required" that masked the misplacement.
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_message","arguments":{"session_id":"ses_X","lsp_injected_session":"ses_Y"},"message":"probe"}}`)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "the misplacement must be rejected, not salvaged")
+	assert.Equal(t, -32602, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, `"message"`, "the diagnostic must name the misplaced key")
+}
+
+func TestMCPHandler_TrailingDataRejected(t *testing.T) {
+	// Decode reads ONE JSON value and never looks again — a second
+	// document or garbage after a complete body was silently ignored.
+	// One JSON document per request; trailing bytes are malformed
+	// transport (#1561).
+	req := mcpRequest{JSONRPC: "2.0", ID: 7, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(append(body, []byte(` {"junk":true}`)...)))
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "trailing data must be rejected, not skipped")
+	assert.Equal(t, -32700, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "trailing", "the diagnostic must say what and where")
+}
+
+func TestMCPHandler_MidStringGarbageStillParseErrors(t *testing.T) {
+	// Characterization pin (#1561 triage): syntactically invalid JSON
+	// — true mid-string garbage — ALREADY failed loud at the boundary;
+	// the salvage defect was unknown-key/trailing-data tolerance, not
+	// prefix salvage of invalid documents. This pins the existing
+	// -32700 so the hardening cannot loosen it.
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"k":"v\\"bad}}`)))
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, -32700, resp.Error.Code)
+}
+
+func TestMCPHandler_RequestBodyAdditiveTolerancePinned(t *testing.T) {
+	// The deliberate pole (#1561 triage): request-OBJECT keys beyond
+	// jsonrpc/id/method/params stay TOLERATED — unlike the tools/call
+	// params wire (this repo's fixed client), the request object is
+	// protocol-revision surface (MCP revs add request-level keys, e.g.
+	// _meta; pkg/session/agentmessage's additive-only contract is the
+	// in-repo precedent). Pinned so the strictness boundary is a
+	// documented decision, not an accident.
+	req := mcpRequest{JSONRPC: "2.0", ID: 8, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	body = append(body[:len(body)-1], []byte(`,"future_rev_key":{"a":1}}`)...)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	assert.Equal(t, 200, w.Code)
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Nil(t, resp.Error, "additive request-object keys are forward-compat surface")
+}

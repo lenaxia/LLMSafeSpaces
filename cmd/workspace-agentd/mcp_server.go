@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -77,8 +78,20 @@ func mcpHandler(password string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		var req mcpRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeMCPError(w, nil, -32700, "Parse error")
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&req); err != nil {
+			// #1561: diagnostics ride the error message — a silent
+			// "Parse error" masked WHAT failed for every caller.
+			writeMCPError(w, nil, -32700, fmt.Sprintf("Parse error: %v", err))
+			return
+		}
+		// #1561: Decode reads ONE JSON value and never looks again —
+		// trailing data (a second document, garbage) was silently
+		// skipped. One JSON document per request; the boundary is the
+		// parse boundary, not a salvage opportunity.
+		if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+			writeMCPError(w, nil, -32700,
+				fmt.Sprintf("Parse error: trailing data at offset %d (one JSON document per request)", dec.InputOffset()))
 			return
 		}
 
@@ -339,8 +352,22 @@ func mcpHandler(password string) http.HandlerFunc {
 				Name      string         `json:"name"`
 				Arguments map[string]any `json:"arguments"`
 			}
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				writeMCPError(w, req.ID, -32602, "Invalid params")
+			// #1561: strict at this wire. The client is this repo's
+			// own injected entry sending exactly name+arguments; an
+			// unknown key here is a MISPLACED key (the #1530 probe's
+			// fragment closed arguments early and demoted `message`
+			// to this level — valid JSON, silently dropped by default
+			// Unmarshal, degrading into a schema-level error that
+			// masked the corruption). Reject loud, name the field
+			// (the control-socket precedent: a rejection, not an
+			// ignored unknown field). Tool-ARGUMENT keys stay
+			// free-form — the tool schemas own that layer — and the
+			// REQUEST-object level stays additive-tolerant (MCP revs
+			// add request-level keys; pinned in the tests).
+			pdec := json.NewDecoder(bytes.NewReader(req.Params))
+			pdec.DisallowUnknownFields()
+			if err := pdec.Decode(&params); err != nil {
+				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
 				return
 			}
 			result, err := callMCPTool(r.Context(), password, params.Name, params.Arguments)
