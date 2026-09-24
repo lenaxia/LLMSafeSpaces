@@ -57,4 +57,4 @@ New test arms: non-relay no-write (hook), False→True and True→False LTT bump
 - `api/internal/handlers/pod_bootstrap_relay_condition_test.go` — hook tests (new)
 - `pkg/secrets/relay_batch.go` — `RelayOnlyEnabled` accessor only (the coordinated hunk)
 - `api/internal/app/app.go` — production sink wiring
-- `worklogs/NNNN_2026-09-24_m4-credentials-staged-condition.md`
+- `worklogs/1057_2026-09-24_m4-credentials-staged-condition.md`
