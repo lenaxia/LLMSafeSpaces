@@ -5,14 +5,19 @@ package local
 
 // M1 (design 0061 §3, crash-loud arming) — the source-truth pins: the
 // wiring the unit tests cannot reach (main() is not unit-runnable) is
-// pinned against the source, the release-smoke-marker precedent
-// (local/release_smoke_relay_markers_test.go — the YAML-grep and the
-// source literals cannot drift apart). The four design shapes:
+// pinned against the source. [r4: the r0 draft cited
+// local/release_smoke_relay_markers_test.go as the precedent — that
+// file exists on NO ref (it lives on the unmerged #1548 parity
+// branch); the citation was dangling from birth. The window-binding
+// pin here is the ONLY enforcement of the 30s budget's use — the
+// behavioral test proves prompt-error, not the window's value.] The
+// four design shapes:
 //
-//	unarmable   → exit 85 within the window (main.go's wiring, pinned here)
-//	armed       → the enable line + exit 0 (the posture gate asserts it
-//	              cluster-side; the literal is pinned by the release
-//	              smoke)
+//	unarmable   → exit 85 (the seam maps it; main.go's wiring pinned
+//	              here — tight refusal-to-exit window)
+//	armed       → the line CAPTURED AT RUNTIME (the r3 behavioral
+//	              test, a real zap sink) + the structural body-scope
+//	              pin in the controller package
 //	parity      → 85 too (the #1548 provenance PR's assert — reconciles
 //	              onto this constant when it merges; the reconciliation
 //	              is the pin below)

@@ -112,11 +112,12 @@ func TestSetupRelayStaging_ArmedReturnsConfigAndEmitsLine(t *testing.T) {
 }
 
 // THE UNARMABLE SHAPE (design §3 shape 1): enabled + an unreachable
-// router → the error returns WITHIN the window and the seam maps it to
-// 85. The bound is a LITERAL 30s+slack, deliberately NOT derived from
-// ArmingStartupGuardWindow (r2 finding 2: a var regression to 10m
-// would silently loosen a var-derived bound — this catches the
-// bounded-stall regression, not only the infinite hang).
+// router → a PROMPT error (the probe is single-shot, 5s client
+// timeout) and the seam maps it to 85. The literal <35s is a
+// HANG-GUARD only (r4: the dead port returns in ~ms, so this bound
+// passes regardless of the window's value — it proves "not a hang",
+// NOT the window's budget; the window's 30s value is enforced by the
+// source pin in local/m1_arming_source_test.go).
 func TestSetupRelayStaging_UnarmableReturnsErrWithinWindow(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(armingScheme(t)).Build()
 	mgr := &stubManager{reader: fc, scheme: fc.Scheme()}
