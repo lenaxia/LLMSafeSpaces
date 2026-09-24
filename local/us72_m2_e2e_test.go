@@ -151,15 +151,20 @@ func TestUS72M2E2E_ExecuteSmoke(t *testing.T) {
 	}
 }
 
-// The issue1452 follow-up (r6 finding 2): the LAST remaining instance
-// of the class in local/ — its base carried the same latent corpse
-// (9-char first segment, PG rejects at the seed INSERT) with no
-// canonical pin. Fixed + pinned by the same pattern.
+// The issue1452 follow-up (r6 finding 2, r7-corrected): the LAST
+// instance of the class in local/ — its base carried the same latent
+// corpse (9-char first segment, PG rejects at the seed INSERT) with no
+// canonical pin. [r7: the r6 round kept the :- default form and the
+// pin matched it — but the lib shadows WS_BASE at SOURCE time, so the
+// default-form literal is DEAD (the 1342-canonical-pin precedent's own
+// comment records this: "a :- default is dead post-source"). The
+// assignment is now UNCONDITIONAL (the 1342/1455 precedent) and the
+// pin guards the live literal.]
 func TestIssue1452E2EScript_WorkspaceIDCanonical(t *testing.T) {
 	raw, err := os.ReadFile("issue1452-routine-session-index-e2e.sh")
 	require.NoError(t, err)
-	matches := regexp.MustCompile(`(?m)^WS_BASE="\$\{WS_BASE:-([0-9a-f-]+)\}"$`).FindAllStringSubmatch(string(raw), -1)
-	require.NotEmpty(t, matches, "WS_BASE default assignment not found")
+	matches := regexp.MustCompile(`(?m)^WS_BASE="([0-9a-f-]+)"$`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, matches, "unconditional WS_BASE assignment not found (a :- default is dead post-source — the lib shadows it)")
 	for _, m := range matches {
 		base := m[1]
 		require.Len(t, base, 36, "WS_BASE must be a 36-char UUID: %q", base)
