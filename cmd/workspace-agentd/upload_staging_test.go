@@ -171,6 +171,34 @@ func TestStagingAdmission_ConcurrencyCap(t *testing.T) {
 	}
 }
 
+func TestStagingAdmission_CountCapPreemptsBudgetAtTheBoundary(t *testing.T) {
+	// The §6.6 double-violation point, on the DEFAULT arithmetic the
+	// nightly's SR-6 storm exercises: cap=4, budget=48MiB, 5×10MiB.
+	// The 5th Admit violates BOTH clauses (40+10 > 48 budget AND
+	// len=4 ≥ cap) — §6.6 fixes the class: "the count cap's default IS
+	// 4 — higher concurrency is unreachable by design … the 5th
+	// concurrent upload's 429". A 507 here (budget-first order) tells
+	// the client to wait for tmpfs when the binding constraint is
+	// concurrency — the distinct-client-recovery contract §4.6 keeps
+	// these classes apart to uphold. Regression pin for the nightly
+	// SR-6 failure (runs 35872827066/36011237476/36026824047: the
+	// pre-#1545 literal 429 in that row was the apply-busy TryLock
+	// (#1539), not the cap; with the lock gone, budget-first ordering
+	// left §6.6's boundary 507ing).
+	const MiB = int64(1 << 20)
+	cfg := testStagingConfig(t, 48*MiB, 0, 4) // the shipped defaults
+	cfg.statfs = fakeStatfs{avail: 100000 * MiB}.statfs
+	s := newUploadStager(cfg, nil)
+	for i, id := range []string{"a", "b", "c", "d"} {
+		if c := s.Admit(id, 10*MiB); c != "" {
+			t.Fatalf("admission %d must pass (40MiB ≤ 48MiB budget, len %d < 4): %q", i+1, i, c)
+		}
+	}
+	if c := s.Admit("e", 10*MiB); c != rejectStagingBusy {
+		t.Fatalf("5th concurrent at the cap must be the 429 class even though 40+10MiB > 48MiB (§6.6 cap boundary), got %q", c)
+	}
+}
+
 func TestStagingAdmission_StatfsFailureRejects(t *testing.T) {
 	cfg := testStagingConfig(t, 100, 0, 4)
 	cfg.statfs = fakeStatfs{err: errors.New("boom")}.statfs

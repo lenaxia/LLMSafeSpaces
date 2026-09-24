@@ -286,11 +286,20 @@ func (s *uploadStager) Admit(id string, newBytes int64) stagingRejectClass {
 	for _, n := range s.reservations {
 		reserved += n
 	}
-	if reserved+newBytes > s.cfg.budget {
-		return rejectStagingFull
-	}
+	// Order is contractual (0060 §6.6): at the cap boundary the count
+	// cap is the binding constraint — "higher concurrency is
+	// unreachable by design" — so when len ≥ maxConcurrent the
+	// rejection is staging_busy (429) even if the budget clause would
+	// also fire (e.g. the default 48MiB budget vs 5×10MiB: 40+10 > 48
+	// AND len=4 ≥ 4). Budget-first ordering told the client to wait
+	// for tmpfs when the real constraint was concurrency — the
+	// distinct-client-recovery contract §4.6 keeps the classes apart
+	// to uphold (the nightly SR-6 row pins this at full stack).
 	if len(s.reservations) >= s.cfg.maxConcurrent {
 		return rejectStagingBusy
+	}
+	if reserved+newBytes > s.cfg.budget {
+		return rejectStagingFull
 	}
 
 	avail := s.availableBytes()

@@ -443,6 +443,13 @@ rm -rf "${SR6_DIR}"
 # MAX+1 CONCURRENT uploads; the 5th must 429 (the count cap). Gated on
 # the SAME §6.6 precondition (r5 finding: SR-5's orphans can make this
 # deterministically 507 instead of 429 — red-by-environment).
+# History (nightlies 35872827066/36011237476/36026824047): this row's
+# pre-#1545 green was MISATTRIBUTED — its literal 429 was the apply-busy
+# TryLock (#1539's defect: delivered=3 refused=2 signature), not the
+# count cap. #1545 removed the lock, exposing that Admit checked the
+# 48MiB budget BEFORE the count cap — 5×10MiB trips 40+10>48 first —
+# so §6.6's boundary 507'd. Fixed: Admit checks the cap first (the
+# count-cap-preempts-budget regression pin in upload_staging_test.go).
 if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 SR6B_PIDS=()
