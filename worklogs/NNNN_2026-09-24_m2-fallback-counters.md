@@ -81,3 +81,11 @@ The alerts insert landed INSIDE LlmRelayRouterRejectSpike's multi-line expr bloc
 - The fallbackMode enum is FAIL-LOUD at load (validateRelayFallbackMode — "srtict" refuses boot, never silently arming the fail-open path; the repo's config convention). Pinned.
 - The four stale "never a raw fallback" comments corrected to the two-mode truth (relay_batch.go ×2, injection.go, relay_handoff.go ×2) — each now names strict-mute vs migration-counted.
 - The e2e gate: STANDING per the recorded order (the M2/M4 story owns it — next in my queue, not deferred into nothing; the disposition stated in the PR body since r0).
+
+## r3 — the e2e gate ABSORBED (the reviewer's explicit alternative)
+
+The sole r2-blocking finding was the e2e gate (both delivery modes, zero cluster coverage). Rather than sequencing a separate story PR behind this one, this PR absorbs the M2/M4 e2e migration scenario (the design §10 row that was my next recorded item anyway):
+- `local/us72-m2-fallback-e2e.sh` — R1 the migration scenario (the first workspace-relay-* handoff appears = #1548's AC1 final clause; CredentialsStaged=True; the batch carries the TOKEN not the canary; zero relay_staging_not_ready degrades — AC4's superseded-literal-must-still-hold-when-healthy) and R2 the fallback arm (handoff torn → the RAW canary delivers — the migration trade asserted in BOTH directions; relay_fallback_deliveries_total{workspace,provider_slug} read from the API's /metrics with BOTH labels pinned; CredentialsStaged=False/relay_fallback_delivery — the wt-1453 seam contract live).
+- The resync trigger: the direct pod :4097 /v1/resync-secrets (the drill's precedent) with the suspend/activate fallback.
+- 5 shape pins (rows-in-order with all seven verdict markers; token-AND-raw both asserted — one-direction checks can pass both rows on a stale config; counter labels; isolation; syntax).
+- First recorded execution: the standing disposition (reviewer runner / #1456).
