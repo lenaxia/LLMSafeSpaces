@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r13 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r14 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r13 fixes pushed; awaiting re-review.
+**Status:** r14 fixes pushed; awaiting re-review.
 
 ---
 
@@ -110,7 +110,7 @@ r9's review verified all eight r8 closes by mutation — and found the sibling-s
 4. **Exactly four `kubectl wait` lines** in Assert 1 (the 60s settle-window re-assertion is part of the verdict, deletable around the 300s literals).
 5. **No step may carry an env block** (the carrier channel was closed at workflow/job/install levels; assertion-step env could re-scope the checks).
 
-All seven r9 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. The pin comments' claims are narrowed to what the mechanism delivers.
+All seven r9 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. [CORRECTED r14: the r9-era claim that exact lines "have no siblings" was true only line-locally — sibling CHANNELS (tail appends, rebinds, injections between lines) kept being found through r13; the statement inventory is what made it hold. Kept for the record with this annotation.]
 
 ## r10 round record (a verdict is a block, not a line)
 
@@ -122,7 +122,7 @@ r10's review (63 mutations, review + skeptical sub-agent) found the block-below-
 4. **NS rebinding banned in assertion blocks** (`(?m)^\s*NS=` — the env ban closed the parsed carrier; assignment rebinding was the same class one level down).
 5. **Exactly one `read -r` consumer, and each capture file written exactly once** in Assert 3 (the stray-reader and truncate rewires).
 
-All ten r10 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. Claims stated at mechanism level: the pins cover the named drift shapes — conditions, inputs, carriers, counts, and single-use files — and the residual remains the header's stated threat model (adversarial construction is the diff review's department; ten rounds of mutation war have not produced a shape class outside it that the pins claimed).
+All ten r10 classes re-verified RED by my own mutations; pristine baseline checksummed before and verified after. [CORRECTED r14: the "named drift shapes" list was incomplete one tier down — r11 found the producer/extraction inputs, r12 the variable-rebind and injection spellings, r13 the export/declare forms. Each round's "All closed:" claim is HISTORICAL — accurate for its round's named classes, falsified by the next round's siblings. The statement inventory (r13) is the close that ended the pattern.]
 
 ## r11 round record (the inputs one tier deeper, the comment-padding neuter, and the injection channel)
 
@@ -140,10 +140,10 @@ All nine r11 classes re-verified RED (J1a's first sed misfired on the pipe chara
 
 r12's review (~68 mutations again) found eleven escapes, five inside classes r11 declared closed — the precise pattern: verdicts are BLOCKS, and any line inserted between pinned lines escapes. Closes:
 
-1. **Semantic assignment counts** for the verdict variables: `BEFORE_NS`/`BEFORE_RELAY`/`AFTER_NS`/`AFTER_RELAY` each assigned exactly ONCE, any spelling (the exact-string count missed an interior-space sibling; the semantic count is immune), and `RUNNING_COMMIT` exactly once (a rebind below the pinned extraction unfired both provenance verdicts — the variable-rebind class completed for every verdict variable: PODS r9, snapshots r10/r11, RUNNING_COMMIT now).
+1. **Semantic assignment counts** for the verdict variables: `BEFORE_NS`/`BEFORE_RELAY`/`AFTER_NS`/`AFTER_RELAY` each assigned exactly ONCE, any spelling (the exact-string count missed an interior-space sibling; the semantic count is immune), and `RUNNING_COMMIT` exactly once (a rebind below the pinned extraction unfired both provenance verdicts — the variable-rebind class completed for every verdict variable: PODS r9, snapshots r10/r11, RUNNING_COMMIT now). [CORRECTED r14: "completed" was premature — r13 found the export/declare spellings; the semantic Contains counts closed them.]
 2. **The extraction TAIL exact-pinned** (`|| true` → `|| echo '<sha>'` converted the unstamped-artifact red into a pass).
 3. **Write tools banned in assertion blocks** (`tee`/`cp`/`dd`/`mv`/`sed` at line start or after a pipe/semicolon) — `echo … | tee file` evaded the `>` write-count close.
-4. **`exit 1 &` banned** (backgrounded exits abandon the verdict) and **every exit-1 carrier must sit in a FAIL branch** (a FAIL echo within three lines above) — the dead-branch floor laundering closed.
+4. **`exit 1 &` banned** (backgrounded exits abandon the verdict) and **every exit-1 carrier must sit in a FAIL branch** (a FAIL echo within three lines above) — the dead-branch floor laundering closed [CORRECTED r14: r13 RC-C falsified this round's form — the `if false` ban and the comment-proof FAIL-context are the actual close].
 5. **`sleep 45` exact-pinned** (`sleep 45 &` returned immediately with the Contains literal intact — runtime-proven 0.0s elapsed).
 6. **The rebind ban completed**: `export`/`declare -x` forms of NS and GATE_NS rebinding banned alongside the plain assignments.
 7. **`--set-file` and `--set-literal` banned** on the install (`--set-file` is a REAL lever — freeModelsRefresher drives the RBAC render; the -f regex cannot see inside the flag).
@@ -160,6 +160,12 @@ Semantic backstops kept as belt (and because they document the WHY): Contains-sc
 
 All seven r13 classes re-verified RED (each caught twice — inventory and backstop); pristine baseline checksummed before and after. The write-tool ban's comment no longer overclaims: its prefix class misses `&& tee` (fail-closed payload per the sub-agent's analysis); the INVENTORY is the close for that surface.
 
+## r14 round record (the third spelling of the install operator channel, and the record pass delivered in place)
+
+r14's review (47 mutations) delivered the verdict the thirteen rounds were building toward: **the first round with zero assertion-block escapes** — every r13 replay and all fourteen prior classes RED. One escape remained (install-channel): the process-substitution spelling `< <(kubectl patch clusterrole …)` inside the continuation chain executed mid-install and evaded the r8 operator ban (r9 closed the newline twin). Closed: `<(`, `>(`, and `&` added to the install's banned operators (mutation re-verified red).
+
+The record pass, delivered IN PLACE this time (the r13 narration-without-correction lapse): the falsified claims in the r9–r12 sections are annotated where they stand ("[CORRECTED r14: …]" — history kept, the falsehood no longer uncorrected); the "latest scan: r7" label that survived five rounds of flags is replaced by a live r14 scan; and the material state change is recorded: **#1558 (the defect fix) MERGED 16:21:22Z** — the gate's primary red-driver has landed, M2 (#1559) is the one remaining recorded-order predecessor, and the merge framing now reads "the gate could now run green for the first time" rather than "the gate is red by design." The PR body's sequencing section carries the same refresh.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -170,16 +176,16 @@ All seven r13 classes re-verified RED (each caught twice — inventory and backs
 
 ## Blockers
 
-**The gate is RED on current main — by design and by an open defect, and this is the live-scanned dependency record (latest scan: r7, 2026-09-24 ~05:2xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
+**The dependency record, live-scanned at r14 (2026-09-24 ~18:2xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
-1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **#1555 was closed UNMERGED at 02:05:56Z; the fix now rides #1558 (OPEN, "namespace-scope cache-scoping derivation")**. Assertions 1/3 stay red until #1558 (or successor) lands. The red IS the gate working — first contact detected a real shipped-posture defect, retroactively validating design 0061.
-2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r7 (2026-09-24 ~05:2xZ): **M1 (#1553) MERGED 03:27Z**; **M2 exists — #1559, OPEN**; **M4 (#1557) MERGED**; the defect fix **#1558 OPEN**. The remaining red-drivers before the gate can green: #1558 and, per the recorded order, M2.
+1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **The fix (#1558, "namespace-scope cache-scoping derivation") MERGED 2026-09-24T16:21:22Z** — the gate's primary red-driver has landed; the first green contact should now be reachable. The r0 red was the gate working: first contact detected a real shipped-posture defect, retroactively validating design 0061.
+2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r14 (2026-09-24 ~18:2xZ): **M1 (#1553) MERGED**; **M4 (#1557) MERGED**; **the defect fix #1558 MERGED**; **M2 (#1559) OPEN** — the one remaining recorded-order predecessor. The gate's stability window still awaits its first live contact (Next Steps).
 
-The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) is the orchestrator's.
+The merge call (the gate could now run green for the first time, though the recorded order names M2 first) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r13 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r14 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -187,8 +193,8 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r13 verdict pending).
-2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
+1. Re-review (r14 verdict pending).
+2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
 ## Files Modified

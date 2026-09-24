@@ -605,11 +605,12 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	}
 	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
 		"the install's first command line must be exactly the nightly's head line, RAW — trailing/leading whitespace drift is an unreviewed change (the r7 committed-mutation class; the r8 escaped-space class)")
-	// r8 finding 6: the install is one operator-free command (the
-	// nightly's shape) — any shell operator opens a post-install
-	// channel (`… && kubectl set env …`) that no allowlist or -f regex
-	// sees. False-positive-free against the current block.
-	for _, op := range []string{"&&", ";", "|", "`", "$("} {
+	// r8 finding 6 + r14 finding 1: the install is one operator-free
+	// command (the nightly's shape) — any shell operator opens a
+	// post-install channel that no allowlist or -f regex sees. The
+	// process-substitution spellings `<(`/`>(` execute mid-install and
+	// closed r8's list's third spelling (r9 closed the newline twin).
+	for _, op := range []string{"&&", ";", "|", "`", "$(", "<(", ">(", "&"} {
 		require.NotContains(t, install.Run, op,
 			"the install run block must carry no shell operators — the nightly's shape is one operator-free command; `%s` opens an unreviewed channel", op)
 	}
