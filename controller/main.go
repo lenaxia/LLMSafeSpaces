@@ -352,8 +352,13 @@ func main() {
 	// startup. Nil config (flag off) = zero behavior change.
 	relayStaging, err := controller.SetupRelayStaging(mgr, relayFlags.enabled, relayFlags.routerURL, relayFlags.namespace, relayFlags.tokenTTL, apiServiceURL, apiInternalToken)
 	if err != nil {
-		setupLog.Error(err, "relay-only key delivery: refusing to start")
-		os.Exit(1)
+		// Design 0061 §3 (M1, crash-loud arming): the DISTINCT code, not
+		// bare 1 — the CrashLoop's reason becomes one describe-pod away
+		// (the 81/82-agentd, 83/84-opencode ladder's fifth rung). The
+		// mapping lives in the testable seam (RelayStagingExitCodeFor —
+		// the opencodeOverlayDecision precedent).
+		setupLog.Error(err, "relay-only key delivery: refusing to start (not armed)")
+		os.Exit(controller.RelayStagingExitCodeFor(err))
 	}
 
 	// US-65.6-followup: register the agent runtime explicitly.
