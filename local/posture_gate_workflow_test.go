@@ -233,6 +233,9 @@ var assertionSpecs = []struct {
 		// typo evaluating empty, an appended `| head -n 0`) makes BEFORE
 		// and AFTER equal by construction; the comparison can never fire.
 		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{/end}' | sort`,
+		// r12 finding 7: exact-line — `sleep 45 &` backgrounds the
+		// window away with the Contains literal intact.
+		"sleep 45",
 		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
 	}, 1,
 		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
@@ -269,6 +272,10 @@ var assertionSpecs = []struct {
 		// pinned-sha assignment made the comparison unfireable with
 		// every literal green).
 		"RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \\",
+		// r12 finding 3: the extraction's TAIL — `|| true` → `|| echo
+		// '<this run's sha>'` converts the unstamped-artifact red into a
+		// pass with the head line intact.
+		`| grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)`,
 	}, 3,
 		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
 }
@@ -290,33 +297,52 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 			requireExactLine(t, s.Run, exact,
 				"%s must carry the exact line %%q (a suffix, flip, or partial gut keeps substring pins green) — %s", spec.prefix, spec.why)
 		}
-		// r10 RC-B: the verdict CARRIERS — each FAIL branch's exit 1.
-		// r9 pinned the conditions; deleting the body's exit 1 turned
-		// every FAIL branch into echo-and-continue, five for five. A
-		// floor, not an equality: additional fail-closed branches are
-		// legitimate drift; fewer is a neuter. r11 finding 2: count
-		// NON-COMMENT lines only — `# exit 1` padding satisfied the
-		// plain substring count.
-		exit1s := 0
-		for _, line := range strings.Split(s.Run, "\n") {
-			if strings.TrimSpace(line) == "exit 1" {
-				exit1s++
-			}
-		}
-		require.GreaterOrEqual(t, exit1s, spec.minExit1,
-			"%s must carry at least %d `exit 1` verdict carriers (found %d) — a FAIL branch without its exit is echo-and-continue", spec.prefix, spec.minExit1, exit1s)
-		// r10 sub-agent (i) + r11 finding 4: no assertion may rebind NS
-		// or GATE_NS — an in-block rebinding silently re-scopes the
-		// verdict's targets (both loop iterations scanning llm-relay
-		// left the release namespace's pods forever unchecked). The
-		// env ban closed the parsed channel; assignment and export
-		// rebinding are the same class one level down.
+		// r10 RC-B + r11 finding 2 + r12 finding 6: the verdict CARRIERS —
+		// each FAIL branch's exit 1. r9 pinned the conditions; deleting
+		// the body's exit 1 turned every FAIL branch into echo-and-
+		// continue. Counted below with FAIL-context (comments don't
+		// count; dead-branch laundering doesn't either).
+		// r10 sub-agent (i) + r11 finding 4 + r12 finding 5: no assertion
+		// may rebind NS or GATE_NS — an in-block rebinding silently
+		// re-scopes the verdict's targets (both loop iterations scanning
+		// llm-relay left the release namespace's pods forever unchecked).
+		// The env ban closed the parsed channel; assignment, export, and
+		// declare rebinding are the same class one level down.
 		require.NotRegexp(t, `(?m)^\s*NS=`, s.Run,
 			"%s must not rebind NS — the namespace targets are the verdict's scope", spec.prefix)
 		require.NotRegexp(t, `(?m)^\s*GATE_NS=`, s.Run,
 			"%s must not rebind GATE_NS — both loop iterations must scan their own namespace", spec.prefix)
-		require.NotContains(t, normalizeRunText(s.Run), "export NS=",
-			"%s must not export-rebind NS", spec.prefix)
+		require.NotRegexp(t, `(?m)^\s*(export|declare)\s+(-x\s+)?(NS|GATE_NS)\b`, s.Run,
+			"%s must not export/declare-rebind NS or GATE_NS", spec.prefix)
+		// r12 findings 4+6: the write tools and the backgrounded exit —
+		// `echo … | tee file` evades the write-count close, and
+		// `exit 1 &` backgrounds the verdict carrier away.
+		require.NotRegexp(t, `(?m)(^|[|;]\s*)(tee|cp|dd|mv|sed)\b`, s.Run,
+			"%s must not use write tools (tee/cp/dd/mv/sed) — non-redirection writes evade the capture-file counts", spec.prefix)
+		require.NotRegexp(t, `exit\s+1\s*&`, s.Run,
+			"%s must not background an exit — `exit 1 &` abandons the verdict", spec.prefix)
+		// r12 finding 6: every exit-1 carrier must sit in a FAIL branch
+		// (a FAIL-echo within three lines above) — a dead `if false`
+		// block's exit launders the floor without carrying any verdict.
+		exit1Ctx := 0
+		linesA := strings.Split(s.Run, "\n")
+		for i, line := range linesA {
+			if strings.TrimSpace(line) != "exit 1" {
+				continue
+			}
+			inFail := false
+			for j := i - 1; j >= 0 && j >= i-3; j-- {
+				if strings.Contains(linesA[j], "FAIL") {
+					inFail = true
+					break
+				}
+			}
+			require.True(t, inFail,
+				"%s: every exit 1 must sit in a FAIL branch (a FAIL echo within 3 lines above) — line %d carries no verdict", spec.prefix, i+1)
+			exit1Ctx++
+		}
+		require.GreaterOrEqual(t, exit1Ctx, spec.minExit1,
+			"%s must carry at least %d FAIL-branch `exit 1` verdict carriers (found %d)", spec.prefix, spec.minExit1, exit1Ctx)
 		idx := indexOfStep(t, steps, s)
 		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
 		last = idx
@@ -375,20 +401,29 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	// assignments — a duplicate AFTER the window re-snapshots and the
 	// restarts during the sleep become invisible.
 	a1r := gateStepByPrefix(t, steps, "Assert 1").Run
-	for _, assign := range []string{
-		`BEFORE_NS=$(restarts_snapshot "$NS")`,
-		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
-		`AFTER_NS=$(restarts_snapshot "$NS")`,
-		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
-	} {
+	// r12 finding 2: SEMANTIC assignment counts — the exact-string count
+	// missed an interior-space sibling (`"$NS" )`) that re-snapshotted
+	// past the window; count assignments to the VARIABLE, any spelling.
+	for _, varName := range []string{"BEFORE_NS", "BEFORE_RELAY", "AFTER_NS", "AFTER_RELAY"} {
 		n := 0
 		for _, line := range strings.Split(a1r, "\n") {
-			if strings.TrimSpace(line) == assign {
+			if strings.HasPrefix(strings.TrimSpace(line), varName+"=") {
 				n++
 			}
 		}
-		require.Equal(t, 1, n, "snapshot assignment must appear exactly once (a duplicate re-snapshots past the window): %q", assign)
+		require.Equal(t, 1, n, "%s must be assigned exactly once (a duplicate re-snapshots past the window)", varName)
 	}
+	// r12 finding 1: Assert 4's verdict variable — exactly one
+	// assignment (the pinned extraction); a rebind below it made both
+	// provenance verdicts unfireable.
+	a4r := gateStepByPrefix(t, steps, "Assert 4").Run
+	rcAssigns := 0
+	for _, line := range strings.Split(a4r, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "RUNNING_COMMIT=") {
+			rcAssigns++
+		}
+	}
+	require.Equal(t, 1, rcAssigns, "RUNNING_COMMIT must be assigned exactly once (the pinned extraction) — a rebind unfires both provenance verdicts")
 	// r9 finding 5: exactly FOUR kubectl wait lines in Assert 1 — the
 	// 300s pair and the 60s settle-window re-assertion pair.
 	a1 := gateStepByPrefix(t, steps, "Assert 1")
@@ -521,6 +556,8 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		"--values",
 		"--set-json",
 		"--set-string",
+		"--set-file",    // r12 finding 8: the -f regex cannot see inside it; a REAL lever (freeModelsRefresher drives the RBAC render)
+		"--set-literal", // r12 finding 8: same class, sibling flag
 		"--reuse-values",
 		"--post-renderer",
 	} {

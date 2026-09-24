@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r11 fixes: 2026-09-24)
+**Date:** 2026-09-23 (r1–r12 fixes: 2026-09-24)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r11 fixes pushed; awaiting re-review.
+**Status:** r12 fixes pushed; awaiting re-review.
 
 ---
 
@@ -136,6 +136,20 @@ r11's review (~68 mutations, review + skeptical sub-agent) found the verdict inp
 
 All nine r11 classes re-verified RED (J1a's first sed misfired on the pipe character — the python redo verified applied-and-caught); pristine baseline checksummed before and after.
 
+## r12 round record (the assertion-block spelling war ends the same way the install's did)
+
+r12's review (~68 mutations again) found eleven escapes, five inside classes r11 declared closed — the precise pattern: verdicts are BLOCKS, and any line inserted between pinned lines escapes. Closes:
+
+1. **Semantic assignment counts** for the verdict variables: `BEFORE_NS`/`BEFORE_RELAY`/`AFTER_NS`/`AFTER_RELAY` each assigned exactly ONCE, any spelling (the exact-string count missed an interior-space sibling; the semantic count is immune), and `RUNNING_COMMIT` exactly once (a rebind below the pinned extraction unfired both provenance verdicts — the variable-rebind class completed for every verdict variable: PODS r9, snapshots r10/r11, RUNNING_COMMIT now).
+2. **The extraction TAIL exact-pinned** (`|| true` → `|| echo '<sha>'` converted the unstamped-artifact red into a pass).
+3. **Write tools banned in assertion blocks** (`tee`/`cp`/`dd`/`mv`/`sed` at line start or after a pipe/semicolon) — `echo … | tee file` evaded the `>` write-count close.
+4. **`exit 1 &` banned** (backgrounded exits abandon the verdict) and **every exit-1 carrier must sit in a FAIL branch** (a FAIL echo within three lines above) — the dead-branch floor laundering closed.
+5. **`sleep 45` exact-pinned** (`sleep 45 &` returned immediately with the Contains literal intact — runtime-proven 0.0s elapsed).
+6. **The rebind ban completed**: `export`/`declare -x` forms of NS and GATE_NS rebinding banned alongside the plain assignments.
+7. **`--set-file` and `--set-literal` banned** on the install (`--set-file` is a REAL lever — freeModelsRefresher drives the RBAC render; the -f regex cannot see inside the flag).
+
+All eight r12 mutation families re-verified RED (K2's exact-string count missed the interior-space sibling — caught by my own gauntlet, fixed to the semantic count, re-verified); pristine baseline checksummed before and after.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -155,7 +169,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r11 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 6/6 PASS (r12 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -163,7 +177,7 @@ The merge call (ship the red gate as the detector it is vs. wait for #1558/M2) i
 
 ## Next Steps
 
-1. Re-review (r11 verdict pending).
+1. Re-review (r12 verdict pending).
 2. The orchestrator sequences the merge — live scan at r7: #1558 (the defect fix) and M2 (#1559) open; M1 and M4 merged. Then the gate's first dispatched green run closes the loop.
 3. Watch the stability window's first live contact (the 45s re-check + restart-diff mechanics) — if legitimate pod-set churn ever false-positives the restart snapshot (r2 found none: the hook Jobs delete on success), the snapshot scope narrows to the chart's Deployments' pods.
 
