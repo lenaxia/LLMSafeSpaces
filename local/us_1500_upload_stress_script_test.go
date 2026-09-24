@@ -96,6 +96,11 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`upload_bytes_with_body`,
 		`SR6B_HOLDERS_OK`,
 		`SR6B_RETRY`,
+		// r2: uniform capture semantics — the pass variables read their
+		// statuses from the res files (upload_bytes' outfile form is
+		// args-silent; a stdout-capture was red-on-arrival).
+		`SR6B_STATUS=$(cat "${SR6B_DIR}/res-5")`,
+		`SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")`,
 		`-eq 4 ]]; then`,
 		// Cleanup.
 		`trap cleanup EXIT`,

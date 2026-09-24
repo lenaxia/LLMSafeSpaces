@@ -1,4 +1,4 @@
-# Worklog: SR-6B made deterministic — gauge-verified trickled holders force the admission overlap the racy row hoped for
+# Worklog: SR-6B made deterministic — trickled holders force the admission overlap the racy row hoped for
 
 **Date:** 2026-09-24
 **Session:** The SR-6 nightly recurrence (run 36049595521, new shape delivered=5 refused=0) — the cap-precedence fix was correct but the e2e row was load-racy; this lane ports the handler-level pin's hold-4-then-5th shape to the full stack
@@ -39,13 +39,21 @@ Make the SR-6B row (design 0060 §6.6's characterized boundary: the 5th concurre
 - **The pin suite was RED, fixed**: the structural pins still carried the deleted `SR6B_HAS_429`; replaced with needles for the new shape (`--limit-rate 64k`, `SR6B_5TH_BUSY`, `staging_busy`, `upload_bytes_with_body`, `SR6B_HOLDERS_OK`, `SR6B_RETRY`, the precondition gate). The r1 lesson on my own validation: the smoke-filter (`TestHarnessExecuteSmoke_RepoWide/us`) did not cover the pin suite — this round ran the FULL `./local/` package.
 - **Kill-orphans fixed**: the failure path now pkills the holder subshells' curl children (orphaned trickles kept holding reservations past the row).
 
+### r2 review round (all four findings)
+
+- **The retry capture was red-on-arrival**: `upload_bytes`' outfile form writes the file INSTEAD of printing (args-silence), so the r1 stdout-capture left `SR6B_RETRY` always-empty — the pass condition was unreachable. Fixed by UNIFORM capture semantics (r2's suggestion): the 5th and the retry both read their status from the res files (`SR6B_STATUS=$(cat res-5)`, `SR6B_RETRY=$(cat res-retry)`), pinned by needles so the stdout form can't silently return.
+- **Self-contradicting comment**: the History-II block still advertised "VERIFIED HELD via the reserved_bytes gauge" against the r1-correction note; both trimmed to what stands.
+- **Dead kill loop deleted**: the failure path killed PIDs it had already `wait`ed (recycled-PID hazard, no effect).
+- **Documentation swept**: worklog title/Key-Decisions/Files-Modified and the PR title/body no longer reference the cut gauge mechanism; one expected-nightly-line.
+- `go test -count=1 ./local/` — ok (19s).
+
 ---
 
 ## Key Decisions
 
 - **Client-side throttle, no product seam.** The orchestrator's fallback (a copy-throttle injection seam) is unnecessary: §4.1's reservation-before-acceptance + curl's --limit-rate already give a controllable hold window through the REAL full stack (API → agentd → stager), exercising the true admission path.
 - **1MiB holders, not 10MiB**: keeps reserved+5th at 14MiB ≤ budget so ONLY the cap can bind — the row cannot be satisfied by a budget 507 (the r4 lesson), and the hold arithmetic (1MiB/64k ≈ 16s) stays far from every deadline on the path.
-- **The gauge check is the port of the handler pin's shape**: hold 4 (there: direct Admit; here: trickled bodies verified via the reserved gauge), THEN the 5th.
+- **The held verification is the 5th's own body** (the handler pin's hold-4-then-5th shape ported): a reserved-gauge gate was cut in r1 — the gauge pushes on the sweep's 10-min tick only, so a read-before-fire gate was tick-luck.
 
 ---
 
@@ -59,7 +67,8 @@ None.
 
 - `bash -n local/us-1500-upload-stress-e2e.sh` — syntax ok.
 - `go test -count=1 ./local/` — ok, the FULL package (31s; the r1-cut smoke filter masked the red pin suite — not repeated).
-- Expected next-nightly line: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ...)`. 
+- Expected next-nightly line: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; holders-ok=1 fifth=429 fifth-busy=1 retry=201)`.
+
 - Full-stack proof: the next nightly (the row runs in kind; the local environment has no kind cluster). Expected: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 holders gauge-verified held; literal 429; retry-after-release delivered; ...)`.
 
 ---
@@ -73,5 +82,5 @@ None.
 
 ## Files Modified
 
-- `local/us-1500-upload-stress-e2e.sh` — the SR-6B row: trickled holders + gauge verify + 5th-429 + retry-after-release; the two-round failure history in the comment
+- `local/us-1500-upload-stress-e2e.sh` — the SR-6B row: trickled holders + the 5th's 429/staging_busy body assertion + retry-after-release; the failure history in the comment
 - `worklogs/NNNN_2026-09-24_sr6b-deterministic-hold.md` — this worklog

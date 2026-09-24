@@ -475,9 +475,9 @@ rm -rf "${SR6_DIR}"
 # never bound). The row now forces the overlap the serialized world
 # only produced under load: 4 TRICKLED holders (reservations held from
 # Admit — §4.1's reservation-before-acceptance — until the trickle
-# completes), VERIFIED HELD via the reserved_bytes gauge, then the 5th
-# full-speed. §6.6's characterized boundary must be exercised
-# deterministically, not whenever the runner feels slow.
+# completes), then the 5th full-speed. §6.6's characterized boundary
+# must be exercised deterministically, not whenever the runner feels
+# slow.
 if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 # 4 holders: 1MiB bodies at 64k/s ≈ 16s hold each — comfortably under
@@ -485,15 +485,13 @@ SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 # posture (ReadHeaderTimeout only); 4×1MiB reserved + the 5th's 10MiB
 # = 14MiB ≤ the 48MiB budget, so the COUNT CAP is the only clause that
 # can bind the 5th (the boundary this row characterizes).
-# r1 correction: the original cut gated "held" on the reserved_bytes
-# GAUGE — push-only on the sweep's 10-minute tick (upload_staging.go's
-# RecordGauges), frozen ≈boot inside the row's 16s window: tick-luck,
-# not verification. The LIVE, misattribution-proof signal is the 5th's
-# own BODY: the API forwards agentd's 429 verbatim (uploads.go) with
-# reason "staging_busy" — the API's global rate limiter also emits
-# bare 429s on /uploads, status-only assertion regressed r4's
-# discrimination lesson. The row is self-verifying post-hoc: if the
-# holders failed to hold, the 5th delivers 201 and the row fails loud.
+# The held verification is the 5th's own BODY (r1: a reserved-gauge
+# gate was tick-luck — the gauge pushes on the sweep's 10-min tick
+# only; r4: status-only 429 regressed the misattribution discipline):
+# the API forwards agentd's 429 verbatim with reason "staging_busy",
+# which the API's global rate limiter (status-identical 429s on
+# /uploads) never carries. Self-verifying post-hoc: if the holders
+# failed to hold, the 5th delivers 201 and the row fails loud.
 SR6B_PIDS=()
 for i in 1 2 3 4; do
     (
@@ -518,7 +516,12 @@ sleep 3
 # carry reason staging_busy (the count cap's class), not the API rate
 # limiter's status-identical 429.
 SR6B_BODY_FILE="${SR6B_DIR}/res-5-body"
-SR6B_STATUS=$(upload_bytes_with_body $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5" "${SR6B_BODY_FILE}")
+upload_bytes_with_body $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5" "${SR6B_BODY_FILE}" >/dev/null
+# Capture semantics are UNIFORM across the row (r2): every pass
+# variable reads its status from the res files — upload_bytes'
+# outfile-args-silence (it writes the file INSTEAD of printing) made
+# the r1 stdout-capture of this variable always-empty (red-on-arrival).
+SR6B_STATUS=$(cat "${SR6B_DIR}/res-5")
 SR6B_5TH_BUSY=0
 if [[ "${SR6B_STATUS}" == "429" ]] && grep -q 'staging_busy' "${SR6B_BODY_FILE}" 2>/dev/null; then
     SR6B_5TH_BUSY=1
@@ -533,18 +536,13 @@ done
 # RETRY-AFTER-RELEASE (§4.2: the cap's 429 is "clean, retryable"): a
 # full-speed upload AFTER the holders finish must deliver — the slot
 # reopened.
-SR6B_RETRY=$(upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry")
+upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry" >/dev/null
+SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")
 REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} fifth-busy=${SR6B_5TH_BUSY} retry=${SR6B_RETRY}"
 if [[ "${SR6B_5TH_BUSY}" -eq 1 && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
     ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ${REPORT6B})"
 else
     note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, body=$(head -c 120 "${SR6B_BODY_FILE}" 2>/dev/null))"
-    # r1 minor: kill the holder subshells AND their curl children —
-    # orphaned trickles keep holding reservations past the row.
-    for p in "${SR6B_PIDS[@]}"; do
-        kill "${p}" 2>/dev/null || true
-        pkill -P "${p}" curl 2>/dev/null || true
-    done
 fi
 rm -rf "${SR6B_DIR}"
 else
