@@ -55,8 +55,44 @@ spec:
             {{- if .Values.controller.leaderElection.enabled }}
             - --enable-leader-election=true
             {{- end }}
-            {{- with .Values.controller.watchNamespaces }}
-            - --watch-namespaces={{ . }}
+            {{- /* #820 / nightly run 35872827066: under rbac.scope=namespace the
+                   ClusterRole/Binding are gone (the workspace-namespace Role
+                   covers one namespace), so a cluster-wide manager cache can
+                   never sync its informers there (Forbidden LIST/WATCH outside
+                   the namespace → "Could not wait for Cache to sync" →
+                   CrashLoopBackOff). Derive the cache scope from the
+                   workspaceNamespace helper when the operator has not pinned
+                   watchNamespaces — the runbook's prescribed cluster→namespace
+                   migration path and the chart's own default posture (G5) both
+                   depend on it. Cluster scope renders byte-identically (no
+                   derivation on that path).
+                   WATCH-ALL under namespace scope is INCOHERENT and fails the
+                   render loudly (the llm-relay-rbac convention): the guard
+                   mirrors the controller's own parseWatchNamespaces — a value
+                   containing "*" ANYWHERE (bare, "*,", "*,ns1", "**") either
+                   parses to a cluster-wide cache or builds informers for a
+                   bogus "*" namespace; a value whose comma-split collapses to
+                   ZERO non-empty entries (whitespace-only, ",", " , ", ",,,")
+                   ALSO parses to cluster-wide (the nil branch at
+                   watch_namespaces.go:38-40); all crashloop identically
+                   against namespaced RBAC. The whitespace class is Go
+                   TrimSpace's ([[:space:]] + U+0085 + Zs/Zl/Zp). */ -}}
+            {{- $wnsRaw := default "" .Values.controller.watchNamespaces | toString }}
+            {{- /* rbac.create=false gates the guard: with the chart's
+                   rbac.create-gated grant set absent (the out-of-gate renders
+                   — the relay-safe CRD-watch pair under namespace scope and
+                   the llm-relay grants — do not cover the workspace
+                   lifecycle), grant coherence is the operator's out-of-band
+                   contract (self-managed ClusterRole + watch-all is
+                   coherent); the guard polices the chart's OWN gated grant
+                   posture only. */ -}}
+            {{- if and .Values.rbac.create (ne (.Values.rbac.scope | default "namespace") "cluster") (or (contains "*" $wnsRaw) (and (ne $wnsRaw "") (regexMatch "^[[:space:],\\x{85}\\p{Zs}\\p{Zl}\\p{Zp}]*$" $wnsRaw))) }}
+            {{- fail (printf "controller.watchNamespaces=%q is invalid under rbac.scope=namespace: it contains \"*\" or collapses to no namespaces, which parses to a cluster-wide cache (or a bogus \"*\" namespace) that cannot sync its informers against namespaced RBAC and the controller will CrashLoopBackOff (nightly run 35872827066). Remedies: set controller.watchNamespaces to namespaces your RBAC actually covers (under namespace scope that is the workspace namespace ONLY — NOT the release namespace), or keep rbac.scope=cluster." .Values.controller.watchNamespaces) }}
+            {{- end }}
+            {{- if .Values.controller.watchNamespaces }}
+            - --watch-namespaces={{ .Values.controller.watchNamespaces }}
+            {{- else if not (eq (.Values.rbac.scope | default "namespace") "cluster") }}
+            - --watch-namespaces={{ include "llmsafespaces.workspaceNamespace" . }}
             {{- end }}
             - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles | default 4 }}
             {{- if and .Values.controller.workspaceTerminationGraceSeconds (ne (int .Values.controller.workspaceTerminationGraceSeconds) 0) }}
@@ -91,8 +127,10 @@ spec:
                    here (the controller never sets InferenceRelaySecret in
                    fleet mode; per-VM tokens are managed by the router).
                    The URL MUST be the cross-namespace FQDN: workspace pods
-                   may run in any namespace (controller watches cluster-wide
-                   by default), while the relay-router Service lives in the
+                   may run in any namespace the cache watches (cluster-wide
+                   under rbac.scope=cluster; the workspace namespace under
+                   the default namespace scope — see the derivation above),
+                   while the relay-router Service lives in the
                    release namespace — a short name would fail to resolve
                    cross-ns. workspaceRouterURL overrides for the
                    separate-ns-router case. */}}

@@ -170,6 +170,36 @@ criterion is UNVERIFIED for that run, not passed.
   either pin `relayOnlyKeyDelivery.enabled=false` or migrate to
   namespaced scope before its next `helm upgrade`. Fail-loud is the
   right posture; this note is the operational half.
+- **Namespaced scope implies cache scoping (the migration's first
+  exercise, nightly run 35872827066)**: migrating
+  `rbac.scope=cluster → namespace` deletes the ClusterRole/Binding —
+  and until the chart derived it, the controller's manager kept a
+  CLUSTER-WIDE cache whose Secret/ServiceAccount/Pod/PVC informers need
+  list/watch across ALL namespaces. Against the namespaced Role those
+  LISTs are Forbidden → `Could not wait for Cache to sync` →
+  CrashLoopBackOff → the `helm upgrade --wait` that performed the
+  migration times out (10m `context deadline exceeded`, the exact
+  nightly signature). The chart now derives
+  `--watch-namespaces=<workspace namespace>` under namespace scope
+  whenever `controller.watchNamespaces` is unset (explicit values win;
+  cluster scope renders byte-identically). Any value containing `"*"`
+  under namespace scope fails the render loudly — watch-all and a
+  bogus `"*"` namespace are both incoherent against namespaced RBAC
+  (the same crashloop); set covered namespaces or keep cluster scope.
+  Split-namespace topologies
+  (`api.config.kubernetes.namespace` ≠ release namespace) accept the
+  free-models refresher caveat instead: the derived single-namespace
+  cache leaves the refresher's catalog upsert unreachable (the cached
+  read errors — not IsNotFound — so no ConfigMap ever exists;
+  non-fatal). Listing BOTH namespaces remedies it ONLY under cluster
+  scope or wherever RBAC covers both — under namespace scope the
+  release-ns Role does not cover the workspace-lifecycle core
+  resources (its exact grants are conditional; rbac.yaml's rules are
+  authoritative), so a release-ns informer is the same Forbidden
+  CrashLoopBackOff. The
+  relay startup guard and all llm-relay reads are unaffected — they
+  ride the direct API reader by design (§4.3), which is why the guard
+  passed while the informers died.
 - **`networkPolicy.enabled=false`**: relay-only's own ingress policy
   (`llm-relay-router-allow-workspaces`) renders on the relay-only flag,
   NOT the chart-level networkPolicy master toggle — a networkPolicy=false

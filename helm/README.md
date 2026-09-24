@@ -225,7 +225,7 @@ The chart exposes ~150 documented values. Highlights:
 | `api.image.repository` | `llmsafespaces/api` | API container image |
 | `api.config.rateLimiting.enabled` | `true` | API per-user rate limiting |
 | `controller.replicaCount` | `1` | Number of controller pods |
-| `controller.watchNamespaces` | `""` | Comma-separated list of namespaces to watch (empty = all) |
+| `controller.watchNamespaces` | `""` | Comma-separated namespaces to watch. Empty DERIVES the workspace namespace under `rbac.scope=namespace` (the default — a cluster-wide cache cannot sync informers against namespaced RBAC); empty = all only under `rbac.scope=cluster`. Any `*` fails the render under namespace scope. |
 | `controller.leaderElection.enabled` | `true` | Use leader election for HA controller |
 | `crds.install` | `true` | Install CRDs from `crds/` |
 | `rbac.create` | `true` | Create (Cluster)Role and (Cluster)RoleBinding |
@@ -275,13 +275,21 @@ security over availability.
 
 ### RBAC scope
 
-`rbac.scope=namespace` (default) gives the controller only namespace-scoped Role on
-the release namespace. Combine with `controller.watchNamespaces=<release-ns>`
-for tightest isolation. Resources in other namespaces will not be reconciled.
+`rbac.scope=namespace` (default) keeps the controller's WRITES namespace-bound: the workspace-lifecycle Role binds in the workspace namespace (the read-only storageclasses ClusterRole is always created regardless of scope; the complete grant set is the chart's rbac.yaml rules blocks, which are authoritative). The manager's
+cache is scoped to match: with
+`controller.watchNamespaces` empty (the default) the chart DERIVES
+`--watch-namespaces` to the workspace namespace — a cluster-wide cache cannot
+sync its informers against namespaced RBAC and the controller would
+CrashLoopBackOff (nightly run 35872827066). Under namespace scope the chart's
+RBAC covers the workspace namespace ONLY: listing additional namespaces
+requires operator-created RoleBindings there (the chart creates none), or the
+same Forbidden-informer crashloop follows. Resources in other namespaces will
+not be reconciled.
 
-`rbac.scope=cluster` gives the controller cluster-wide permissions.
-This is required when `controller.watchNamespaces` is empty (cluster-wide
-mode).
+`rbac.scope=cluster` gives the controller cluster-wide permissions and is what
+cluster-wide WATCHING now requires — set the scope explicitly; an empty
+`controller.watchNamespaces` no longer means "watch everything" under the
+default namespace scope.
 
 ### Workspace namespace
 

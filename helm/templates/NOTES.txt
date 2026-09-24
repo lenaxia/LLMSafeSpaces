@@ -121,8 +121,20 @@ controller.watchNamespaces and/or rbac.scope=namespace.
 RBAC SCOPE: namespace
 =====================
 
-The controller has Role-scoped permissions in {{ .Release.Namespace }} only.
-Resources in other namespaces will not be reconciled.
+The controller's WRITES are namespace-bound: the workspace-lifecycle
+Role binds in the WORKSPACE namespace
+({{ include "llmsafespaces.workspaceNamespace" . }} — the release
+namespace when api.config.kubernetes.namespace is unset; with the
+split-ns override set, the workspace Role lives THERE and the release
+namespace holds the leader-election Role). Cluster-scoped grants outside
+rbac.scope's cluster block: the relay-safe CRD-watch ClusterRole (under
+NAMESPACE scope only, rendered regardless of rbac.create) and — when
+rbac.create=true — the read-only storageclasses ClusterRole; the
+complete grant set is the rules
+blocks in the chart's rbac.yaml, which are authoritative. The
+manager's cache is scoped to
+match (the watch-namespaces arg — derived or explicit); resources in
+other namespaces will not be reconciled.
 {{- end }}
 
 {{- if .Values.externalSecret.create }}

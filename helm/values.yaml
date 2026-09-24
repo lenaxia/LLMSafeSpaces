@@ -6,8 +6,10 @@ nameOverride: ""
 fullnameOverride: ""
 
 # Namespace where the platform's own components run.
-# Workspaces are created in the same namespace by default; controller can be
-# configured to watch additional namespaces via .controller.watchNamespaces.
+# Workspaces are created in the same namespace by default (override with
+# .api.config.kubernetes.namespace); watching ADDITIONAL namespaces requires
+# .controller.watchNamespaces — and, under the default rbac.scope=namespace,
+# operator-created RoleBindings there (the chart creates none).
 namespace:
   # If create: true, the chart will create the release namespace.
   # If you install with --namespace and --create-namespace, set this to false.
@@ -263,14 +265,42 @@ controller:
 
   # Comma-separated list of namespaces the controller should watch.
   # Wired to the controller's --watch-namespaces flag.
-  #   ""       (default) — watch all namespaces (cluster-wide)
-  #   "*"                — explicit form, equivalent to empty
+  #   ""       (default) — under rbac.scope=namespace (the chart
+  #             default): DERIVED to the workspace namespace (see the
+  #             derivation note below); under rbac.scope=cluster:
+  #             watch all namespaces (cluster-wide cache)
   #   "ns1"              — watch only ns1
   #   "ns1,ns2"          — watch ns1 and ns2
+  #   "*"                — FORBIDDEN under rbac.scope=namespace (the
+  #             render fails: a watch-all cache cannot sync its
+  #             informers against namespaced RBAC — the exact
+  #             CrashLoopBackOff of nightly run 35872827066); valid
+  #             only under rbac.scope=cluster
   #
   # Combine with namespace-scoped RoleBindings (see rbac.scope below) for
   # defense-in-depth: even if the controller is given cluster-wide RBAC,
   # cache.DefaultNamespaces narrows what it actually reconciles.
+  #
+  # CAVEAT (split-namespace override): when api.config.kubernetes.namespace
+  # differs from the release namespace, the derived single-namespace cache
+  # leaves the free-models refresher's ConfigMap upsert unreachable — the
+  # cached read errors (the namespace is outside the cache set; not
+  # IsNotFound), the upsert never runs, and the catalog NEVER exists
+  # (a per-tick "ConfigMap sync failed" error; refresher.go:232-234,
+  # non-fatal). Listing BOTH namespaces is the remedy ONLY under
+  # rbac.scope=cluster (or wherever the RBAC actually covers both) —
+  # under rbac.scope=namespace the release-ns Role does not cover the
+  # workspace-lifecycle core resources, so a release-ns informer hits
+  # the same Forbidden-informer CrashLoopBackOff; accept the refresher
+  # caveat (or extend the Role) instead.
+  #
+  # Under rbac.scope=namespace (the default), leaving this empty DERIVES
+  # --watch-namespaces to the workspace namespace (the workspaceNamespace
+  # helper) — a cluster-wide cache cannot sync its informers against a
+  # namespaced Role (Forbidden LIST/WATCH outside the namespace →
+  # CrashLoopBackOff; nightly run 35872827066, the first-ever exercise of
+  # the runbook's cluster→namespace migration path). Set explicitly to
+  # override; cluster scope keeps the cluster-wide cache.
   watchNamespaces: ""
 
   # How many different workspaces reconcile in parallel (1..64, clamped
@@ -443,8 +473,10 @@ controller:
     # URL workspace pods use to reach the relay-router for free-model
     # inference (Design Principle 6, Epic 42). Empty → the chart derives the
     # cross-namespace FQDN `http://relay-router.<release-ns>.svc.cluster.local:8080`
-    # so it resolves from workspace pods in ANY namespace (the controller
-    # watches cluster-wide by default). Set this only if you deploy the router
+    # so it resolves from workspace pods in ANY namespace the cache watches
+    # (cluster-wide under rbac.scope=cluster; the workspace namespace under
+    # the default namespace scope — see the watchNamespaces derivation).
+    # Set this only if you deploy the router
     # in a namespace other than the release namespace (the documented
     # out-of-band privileged-namespace case).
     workspaceRouterURL: ""
@@ -1157,22 +1189,34 @@ serviceAccount:
 # ----------------------------------------------------------------------------
 rbac:
   create: true
-  # scope controls how the controller's RBAC is granted:
-  #   "namespace" (default, G5)  Role + RoleBinding scoped to .Release.Namespace
-  #                              and the workspace namespace only. The
-  #                              controller can manage workspaces ONLY in the
-  #                              configured namespace(s). Use this with
-  #                              controller.watchNamespaces unset (or set to
-  #                              the workspace namespace) for tightest
-  #                              least-privilege.
-  #   "cluster"                  Adds a ClusterRole + ClusterRoleBinding for
-  #                              llmsafespaces.dev/* + storageclasses, letting
-  #                              the controller watch workspaces across all
-  #                              namespaces. Pods, secrets, PVCs, and
-  #                              NetworkPolicies remain namespace-scoped
-  #                              regardless — operators running multi-
-  #                              namespace deployments must per-namespace-bind
-  #                              the workspace Role themselves.
+  # scope controls how the controller's RBAC is granted (grant MEMBERS
+  # live in helm/templates/rbac.yaml's rules blocks — the authoritative
+  # enumeration; this comment states invariants and pointers only):
+  #   "namespace" (default, G5)  WRITES are namespace-bound: the
+  #                              workspace-lifecycle Role binds in the
+  #                              WORKSPACE namespace (the
+  #                              api.config.kubernetes.namespace override,
+  #                              else .Release.Namespace). With
+  #                              controller.watchNamespaces unset (the
+  #                              default) the chart derives
+  #                              --watch-namespaces to that namespace (see
+  #                              the watchNamespaces derivation note);
+  #                              listing additional namespaces requires
+  #                              operator-created RoleBindings there (the
+  #                              chart creates none).
+  #   "cluster"                  Adds the gated ClusterRole + binding:
+  #                              full CRUD cluster-wide on the
+  #                              llmsafespaces.dev CR families; cluster-
+  #                              wide READS on the CORE resource families
+  #                              its rules list (writes on those stay
+  #                              namespace-bound); plus conditional
+  #                              branches that differ — RELAY extends
+  #                              reads AND writes cluster-wide, REFRESHER
+  #                              (default-active) extends configmap READS
+  #                              only (its writes ride the release-ns
+  #                              Role) — the rules block is authoritative.
+  #                              (The read-only storageclasses ClusterRole
+  #                              is ALWAYS created regardless of scope.)
   #
   # SECURITY (G5, Epic 17): the default flipped from "cluster" to
   # "namespace" in worklog 0107. Pre-flip the chart-default install
