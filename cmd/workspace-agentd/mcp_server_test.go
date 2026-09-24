@@ -1154,7 +1154,7 @@ func TestMCPHandler_LiteralIssue1561Repro(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.NotNil(t, resp.Error)
 	assert.Equal(t, -32700, resp.Error.Code)
-	assert.Contains(t, resp.Error.Message, "trailing data at offset 163")
+	assert.Contains(t, resp.Error.Message, "trailing data after offset 163")
 }
 
 func TestMCPHandler_TrailingNewlineAccepted(t *testing.T) {
@@ -1190,7 +1190,49 @@ func TestMCPHandler_BodyCap413(t *testing.T) {
 	var resp mcpResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.NotNil(t, resp.Error)
-	assert.Contains(t, resp.Error.Message, "1 MiB cap")
+	assert.Contains(t, resp.Error.Message, "exceeds the 1048576-byte cap")
+}
+
+func TestMCPHandler_BodyCapExactDocPlusTrailingByte413(t *testing.T) {
+	// r2 finding 1's classification pin: a document that fits EXACTLY
+	// in the cap plus a trailing byte must classify 413 (the cap
+	// trips in the trailing scan — the %w wrap carries the
+	// MaxBytesError through decodeOneDocument's trailing error), not
+	// 400-trailing.
+	head := `{"jsonrpc":"2.0","id":13,"method":"tools/list","params":{"pad":"`
+	tail := `"}}`
+	padLen := int(maxMCPBodyBytes) - len(head) - len(tail) - 1 // body = cap-1, room for the byte
+	body := append([]byte(head), []byte(strings.Repeat("x", padLen)+tail+"\n")...)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(append(body, 'x')))
+	assert.Equal(t, 413, w.Code, "cap trip in the trailing scan classifies 413, not 400")
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error)
+	assert.Contains(t, resp.Error.Message, "byte cap")
+}
+
+func TestMCPHandler_ToolsCall_MetaKeyAllowed(t *testing.T) {
+	// r2 finding 2: the MCP spec's forward-compat mechanism for
+	// tools/call lives INSIDE params (`_meta`, e.g. progressToken) —
+	// allowlisted, tolerated uninterpreted, matching the envelope's
+	// additive pole. A tool that succeeds on empty arguments proves
+	// dispatch proceeded past the params gate.
+	params, _ := json.Marshal(map[string]any{
+		"name":      "get_datetime",
+		"arguments": map[string]any{},
+		"_meta":     map[string]any{"progressToken": "pt-1"},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 14, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	assert.Equal(t, 200, w.Code)
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Nil(t, resp.Error, "the spec's own additive key must not trip the strict wire")
 }
 
 func TestMCPHandler_RequestBodyAdditiveTolerancePinned(t *testing.T) {

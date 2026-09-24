@@ -45,6 +45,14 @@ Silent tolerance of malformed transport input is the pattern those lanes ended; 
 - **Sibling tracking**: #1565 files the same-class loose decodes (workflow_execute.go:113, user_timezone.go:68) so the class-flag isn't silently retired at merge.
 - **One offset-carrying helper** (`decodeOneDocument`) serves both -3270 paths; client.go's outbound `decodeStrict` keeps its own error contract (different consumers).
 
+### r2 review round (both blocking findings + the minor + style nits)
+
+- **Finding 1 (413/400 misclassification)**: the trailing error now wraps its cause (`%w`) — a cap trip during the trailing scan (`http.MaxBytesError`) propagates and classifies **413**, matching the advertised contract. Pinned: `TestMCPHandler_BodyCapExactDocPlusTrailingByte413` (exact-cap document + trailing byte → 413, not 400-trailing).
+- **Finding 2 (params-level `_meta`)**: the MCP spec's forward-compat mechanism for tools/call lives INSIDE params (e.g. progressToken) — `DisallowUnknownFields` rejected it. Replaced with an explicit key gate (name/arguments/`_meta`): `_meta` allowlisted uninterpreted (matching the envelope's additive pole), everything else still rejects loud naming the field with the misplacement hint. Pinned: `TestMCPHandler_ToolsCall_MetaKeyAllowed` (dispatch proceeds past the gate on a real tool).
+- **Finding 3 (offset precision)**: the diagnostic reworded to "trailing data AFTER offset N" where N = the first document's end — the scan's start, exact for every shape (previously the whitespace and second-value shapes misstated the junk's location). The literal-repro pin updated to the exact wording.
+- **Style nits folded in**: dead `trailingAt` return dropped; the cap message carries bytes ("exceeds the 1048576-byte cap" — no MiB framing trap); the unreachable Content-Type guard removed.
+- 28/28 `TestMCPHandler_` green post-round.
+
 ---
 
 ## Key Decisions

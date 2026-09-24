@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,15 +72,19 @@ const maxMCPBodyBytes = 1 << 20
 // (#1561: Decode's one-value semantics silently skipped it). The
 // outbound twin (client.go's decodeStrict) keeps its own error
 // contract — this offset-carrying variant serves the HTTP boundary.
-func decodeOneDocument(r io.Reader, v any) (trailingAt int64, err error) {
+func decodeOneDocument(r io.Reader, v any) error {
 	dec := json.NewDecoder(r)
 	if err := dec.Decode(v); err != nil {
-		return 0, err
+		return err
 	}
+	end := dec.InputOffset()
 	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
-		return dec.InputOffset(), fmt.Errorf("trailing data at offset %d (one JSON document per request)", dec.InputOffset())
+		if err != nil {
+			return fmt.Errorf("trailing data after offset %d (one JSON document per request): %w", end, err)
+		}
+		return fmt.Errorf("trailing data after offset %d (one JSON document per request)", end)
 	}
-	return 0, nil
+	return nil
 }
 
 func mcpHandler(password string) http.HandlerFunc {
@@ -106,11 +109,11 @@ func mcpHandler(password string) http.HandlerFunc {
 		// buffer the whole remainder).
 		r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 		var req mcpRequest
-		if _, err := decodeOneDocument(r.Body, &req); err != nil {
+		if err := decodeOneDocument(r.Body, &req); err != nil {
 			var mbe *http.MaxBytesError
 			if errors.As(err, &mbe) {
 				writeMCPErrorStatus(w, nil, -32700,
-					fmt.Sprintf("Parse error: request body exceeds the %d MiB cap", maxMCPBodyBytes>>20),
+					fmt.Sprintf("Parse error: request body exceeds the %d-byte cap", maxMCPBodyBytes),
 					http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -377,21 +380,34 @@ func mcpHandler(password string) http.HandlerFunc {
 				Name      string         `json:"name"`
 				Arguments map[string]any `json:"arguments"`
 			}
-			// #1561: strict at this wire. The client is this repo's
-			// own injected entry sending exactly name+arguments; an
-			// unknown key here is a MISPLACED key (the #1530 probe's
-			// fragment closed arguments early and demoted `message`
-			// to this level — valid JSON, silently dropped by default
-			// Unmarshal, degrading into a schema-level error that
-			// masked the corruption). Reject loud, name the field
-			// (the control-socket precedent: a rejection, not an
-			// ignored unknown field). Tool-ARGUMENT keys stay
-			// free-form — the tool schemas own that layer — and the
-			// REQUEST-object level stays additive-tolerant (MCP revs
-			// add request-level keys; pinned in the tests).
-			pdec := json.NewDecoder(bytes.NewReader(req.Params))
-			pdec.DisallowUnknownFields()
-			if err := pdec.Decode(&params); err != nil {
+			// #1561: strict at this wire, with the spec's own
+			// additive key allowlisted. An unknown key here is a
+			// MISPLACED key (the #1530 probe's fragment closed
+			// arguments early and demoted `message` to this level —
+			// valid JSON, silently dropped by default Unmarshal,
+			// degrading into a schema-level error that masked the
+			// corruption) → reject loud, name the field (the
+			// control-socket precedent: a rejection, not an
+			// ignored unknown field). `_meta` is the exception:
+			// the MCP spec's forward-compat mechanism for tools/call
+			// lives INSIDE params (e.g. progressToken) — tolerated
+			// uninterpreted, matching the envelope's additive pole.
+			// Tool-ARGUMENT keys stay free-form (the tool schemas
+			// own that layer); the REQUEST-object level stays
+			// additive-tolerant (pinned in the tests).
+			var rawParams map[string]json.RawMessage
+			if err := json.Unmarshal(req.Params, &rawParams); err != nil {
+				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
+				return
+			}
+			for k := range rawParams {
+				if k != "name" && k != "arguments" && k != "_meta" {
+					writeMCPError(w, req.ID, -32602,
+						fmt.Sprintf("Invalid params: unknown field %q (tools/call takes name/arguments/_meta; misplaced key?)", k))
+					return
+				}
+			}
+			if err := json.Unmarshal(req.Params, &params); err != nil {
 				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
 				return
 			}
@@ -693,9 +709,6 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 // issue's twice-stated criterion), while application-level JSON-RPC
 // errors (e.g. -32602) keep the endpoint's 200 convention.
 func writeMCPErrorStatus(w http.ResponseWriter, id any, code int, msg string, status int) {
-	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", "application/json")
-	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(mcpResponse{
 		JSONRPC: "2.0",
