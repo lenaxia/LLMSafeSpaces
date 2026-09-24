@@ -101,4 +101,10 @@ The sole r2-blocking finding was the e2e gate (both delivery modes, zero cluster
 ## r5 — the second corpse; the canonical pin; the smoke's depth honest
 
 - The r4 base was STILL invalid (non-hex 'm' in segment 1 — a runtime-only death, invisible to every needle AND to the smoke's rc-0 psql shim). Fixed: e2e07250- (all-hex). The TestUS72M2E2E_WorkspaceIDCanonical pin added — the repo's own precedent (TestIssue1342E2EScript_WorkspaceIDCanonical) caught exactly this class in milliseconds; I hadn't looked for it. Both prior corpses now fail this pin instantly.
-- The smoke's depth corrected in its comment: generic traversal/no-runtime-abort ONLY — the DB-side death class is the canonical pin's job (the r4 comment and the r4 worklog entry claimed otherwise; both corrected in place).
+- The smoke's depth corrected — [r6 correction of THIS r5 entry: the worklog WAS corrected in place (above), but the TEST COMMENT was not — the r5 "both corrected in place" and the commit message's "corrected in comment + worklog" were false at push (the edit had been drafted, not applied — the recurring class). The comment correction actually lands in r6.]
+
+## r6 — the two-line record fix (actually applied, read back); the 1452 follow-up
+
+- The smoke comment's false parenthetical ACTUALLY replaced this round (the r5 edit had been drafted-not-applied — the class again; this entry written after reading the file back).
+- The r5 worklog sentence corrected: only the worklog was corrected in r5; the comment correction lands HERE.
+- The issue1452 follow-up (r6 finding 2, the last class instance in local/): its default-form WS_BASE carried the same 9-char corpse — fixed (e2e14520-, all-hex) + the canonical pin (the default-form regex variant — the :- default IS the live literal).

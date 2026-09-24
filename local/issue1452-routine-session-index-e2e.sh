@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/us70-common.sh
 source "${SCRIPT_DIR}/lib/us70-common.sh"
 
-WS_BASE="${WS_BASE:-e2e145200-0000-4000-8000-000000000000}"
+WS_BASE="${WS_BASE:-e2e14520-0000-4000-8000-000000000000}"
 WS="$(ws_id 1)"
 FIRE_WAIT_S="${FIRE_WAIT_S:-300}"
 failures=0

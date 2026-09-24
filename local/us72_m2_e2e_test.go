@@ -126,11 +126,12 @@ func TestUS72M2E2E_WorkspaceIDCanonical(t *testing.T) {
 
 // TestUS72M2E2E_ExecuteSmoke — the repo's harness-script mandate ("a new
 // harness script lands with its smoke or it does not land"): the script
-// runs under the shim harness. Depth pin, exactly as far as it reaches:
-// the shims answer kubectl generically, so the cluster assertions fail
-// — which is exactly the depth this smoke proves: BOTH rows execute
-// end-to-end to the final verdict with no runtime abort (the r3
-// invalid-UUID death at setup is caught in seconds).
+// runs under the shim harness. Depth pin — GENERIC TRAVERSAL ONLY:
+// both rows execute end-to-end to the final verdict with no runtime
+// abort. DB-side deaths are STRUCTURALLY INVISIBLE to this smoke (the
+// psql shim answers rc-0 without inspecting SQL — the r4 claim that it
+// caught the invalid-UUID corpse was false, per the reviewer's
+// corpse-both-ways run) — the canonical-UUID pin carries that class.
 func TestUS72M2E2E_ExecuteSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("execution smoke spawns shim processes")
@@ -147,5 +148,21 @@ func TestUS72M2E2E_ExecuteSmoke(t *testing.T) {
 		if !strings.Contains(combined, reached) {
 			t.Fatalf("died before [%s] — a runtime death the needles cannot catch:\n%s", reached, smokeTail(combined))
 		}
+	}
+}
+
+// The issue1452 follow-up (r6 finding 2): the LAST remaining instance
+// of the class in local/ — its base carried the same latent corpse
+// (9-char first segment, PG rejects at the seed INSERT) with no
+// canonical pin. Fixed + pinned by the same pattern.
+func TestIssue1452E2EScript_WorkspaceIDCanonical(t *testing.T) {
+	raw, err := os.ReadFile("issue1452-routine-session-index-e2e.sh")
+	require.NoError(t, err)
+	matches := regexp.MustCompile(`(?m)^WS_BASE="\$\{WS_BASE:-([0-9a-f-]+)\}"$`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, matches, "WS_BASE default assignment not found")
+	for _, m := range matches {
+		base := m[1]
+		require.Len(t, base, 36, "WS_BASE must be a 36-char UUID: %q", base)
+		require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, base)
 	}
 }
