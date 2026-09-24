@@ -38,7 +38,7 @@ failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
 
 # Per-script isolation (the #1342 pattern).
-WS_BASE="e2e072m2-0000-4000-8000-000000000000"
+WS_BASE="e2e07250-0000-4000-8000-000000000000"
 WS="$(ws_id 1)"
 
 api() { # method path [json] -> dies on non-2xx

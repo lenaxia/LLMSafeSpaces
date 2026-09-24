@@ -92,8 +92,13 @@ The sole r2-blocking finding was the e2e gate (both delivery modes, zero cluster
 
 ## r4 — the dead-on-arrival scenario fixed; the smoke landed
 
-- The one-character fix: WS_BASE's first segment was 9 chars (e2e72m2e0) — an invalid UUID, the script died at setup on every run (the reviewer's exact finding; the source needles passed because the UUID is only parsed at RUNTIME by ws_id + the API). Fixed to e2e072m2- (8 chars, the drill/sweep pattern).
-- The ExecuteSmoke LANDED (the repo's harness-script mandate; the shims answer kubectl generically so both rows run to the final verdict — the full-traversal depth proves no runtime abort; the invalid-UUID death is caught in ~9s by this test).
+- The one-character fix attempt: WS_BASE's first segment was 9 chars (e2e72m2e0). [r5 correction: the r4 "fix" e2e072m2- was ALSO invalid — non-hex 'm'; PostgreSQL rejects the derived id at the seed INSERT before any row. Fixed r5: e2e07250- (all-hex 8), the TestIssue1342-canonical-pin precedent ADDED (the repo had the exact pin for this class; I didn't look).]
+- The ExecuteSmoke LANDED — [r5 correction: the r4 record claimed it "catches the invalid-UUID death in ~9s" — FALSE, the reviewer ran the corpse BOTH ways and the smoke passes on both: the psql shim answers rc-0 without inspecting SQL, so DB-side deaths are structurally invisible to it. Its true depth: generic two-row traversal, no runtime abort — the test comment now says exactly that, and the canonical-UUID pin carries the DB-side class.]
 - R1 now asserts BOTH degrade reasons absent (the design §10 clause: relay_staging_not_ready AND relay_fallback_delivery — the latter via the PRE_METRICS counter baseline, which R2 then reuses for its delta).
 - The counter assertion is a DELTA (pre-tear baseline vs post-resync) — a stale series from a prior run can no longer satisfy it.
 - R1's token read and R2's raw read POLL (the boot-batch-vs-resync-apply race the reviewer named).
+
+## r5 — the second corpse; the canonical pin; the smoke's depth honest
+
+- The r4 base was STILL invalid (non-hex 'm' in segment 1 — a runtime-only death, invisible to every needle AND to the smoke's rc-0 psql shim). Fixed: e2e07250- (all-hex). The TestUS72M2E2E_WorkspaceIDCanonical pin added — the repo's own precedent (TestIssue1342E2EScript_WorkspaceIDCanonical) caught exactly this class in milliseconds; I hadn't looked for it. Both prior corpses now fail this pin instantly.
+- The smoke's depth corrected in its comment: generic traversal/no-runtime-abort ONLY — the DB-side death class is the canonical pin's job (the r4 comment and the r4 worklog entry claimed otherwise; both corrected in place).

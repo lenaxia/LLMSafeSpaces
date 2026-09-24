@@ -12,8 +12,11 @@ package local_test
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const us72M2E2E = "us72-m2-fallback-e2e.sh"
@@ -96,8 +99,28 @@ func TestUS72M2E2E_CounterLabelsPinned(t *testing.T) {
 // Per-script isolation (the #1342 pattern).
 func TestUS72M2E2E_WorkspaceIsolation(t *testing.T) {
 	src := mustReadUS72M2(t)
-	if !strings.Contains(src, `WS_BASE="e2e072m2-`) {
+	if !strings.Contains(src, `WS_BASE="e2e07250-`) {
 		t.Error("the script must set its own WS_BASE unconditionally")
+	}
+}
+
+// TestUS72M2E2E_WorkspaceIDCanonical — the repo's canonical pin for the
+// DB-side death class (the TestIssue1342E2EScript_WorkspaceIDCanonical
+// precedent): ws_id builds base[:32]+4-digit suffix; PostgreSQL rejects
+// a non-hex/oversized segment at the seed INSERT BEFORE any row runs.
+// The r3/r4 bases both failed this (9 chars; then non-hex 'm') —
+// runtime-only deaths the needles and the smoke (rc-0 psql shim)
+// cannot see. This pin catches them in milliseconds, no cluster.
+func TestUS72M2E2E_WorkspaceIDCanonical(t *testing.T) {
+	raw, err := os.ReadFile(us72M2E2E)
+	require.NoError(t, err)
+	matches := regexp.MustCompile(`(?m)^WS_BASE="([0-9a-f-]+)"$`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, matches, "unconditional WS_BASE assignment not found")
+	for _, m := range matches {
+		base := m[1]
+		require.Len(t, base, 36, "WS_BASE must be a 36-char UUID: %q", base)
+		require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, base,
+			"ws_id suffixes base[:32] — the base MUST be canonical or the seed INSERT dies")
 	}
 }
 
