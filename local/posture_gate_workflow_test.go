@@ -1161,3 +1161,66 @@ func stepRunsJoined(t *testing.T, steps []gateStep) string {
 	}
 	return b.String()
 }
+
+// TestPostureGate_APILeaderElectionBindingAssertion pins the #1566
+// peel's graduated assertion (the truth probe promoted to a REQUIRED
+// step): the api-leader-election RoleBinding rendered+stored in helm's
+// manifest but never reached the cluster from rbac.yaml's multi-doc
+// tail (version-independent apply loss); the dedicated template file
+// is the fix, and this gate step makes its regression impossible to
+// miss — twice (install+0 and +40s: never-applied vs
+// applied-then-deleted) plus the API SA's actual lease grant via
+// auth can-i. Drift-deterrence in this file's stated threat model: a
+// dropped step, a shortened discriminator window, or a gutted check
+// fails HERE instead of at the next kind run.
+func TestPostureGate_APILeaderElectionBindingAssertion(t *testing.T) {
+	steps := parsePostureGate(t)
+	s := gateStepByPrefix(t, steps, "Require the api-leader-election binding live")
+	require.NotEmpty(t, s.Run, "the graduated binding assertion must carry a run block")
+
+	// The live-object check — exact line: the object name is the
+	// load-bearing literal (the apply-loss victim).
+	requireExactLine(t, s.Run, "if ! kubectl -n $NS get rolebinding llmsafespaces-api-leader-election >/dev/null 2>&1; then",
+		"the binding assertion must carry the exact live-get line %%q")
+	// Both discriminator probes — exact: deleting either (or moving the
+	// second past a `|| true`) re-scope the peel's verdict.
+	requireExactLine(t, s.Run, `check_binding "immediately post-install"`,
+		"the install+0 probe must carry %%q — its absence loses the never-applied verdict")
+	requireExactLine(t, s.Run, `check_binding "40s later (the applied-then-deleted discriminator)"`,
+		"the +40s probe must carry %%q — its absence loses the applied-then-deleted verdict")
+	requireExactLine(t, s.Run, "sleep 40",
+		"the discriminator window must be the exact duration %%q — `sleep 1` passes every textual pin")
+	// The SA's real grant (a present-but-inert binding renders green in
+	// the object check; can-i is the teeth).
+	requireExactLine(t, s.Run, "kubectl -n $NS auth can-i get leases --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null",
+		"the API SA's lease grant must be probed with the exact line %%q")
+
+	// The verdict carriers: the FAIL branch's echo + exit 1 (the
+	// FourAssertions contract, applied to the graduated step).
+	require.Contains(t, s.Run, "FAIL: the api-leader-election RoleBinding is absent live",
+		"the FAIL branch must name the missing object — a generic failure hides the class")
+	exit1Ctx := 0
+	for i, line := range strings.Split(s.Run, "\n") {
+		if strings.TrimSpace(line) != "exit 1" {
+			continue
+		}
+		inFail := false
+		for j := i - 1; j >= 0 && j >= i-3; j-- {
+			if strings.HasPrefix(strings.TrimSpace(strings.Split(s.Run, "\n")[j]), `echo "FAIL`) {
+				inFail = true
+				break
+			}
+		}
+		require.True(t, inFail, "every exit 1 must sit in a FAIL branch (line %d carries no verdict)", i+1)
+		exit1Ctx++
+	}
+	require.GreaterOrEqual(t, exit1Ctx, 1,
+		"the binding assertion needs at least one FAIL-branch `exit 1` verdict carrier (found %d)", exit1Ctx)
+
+	// Order: the graduated assertion runs BEFORE Assert 1 — its 40s
+	// discriminator window rides ahead of the stability window, and the
+	// lease-starvation it catches is upstream of every posture verdict.
+	a1 := gateStepByPrefix(t, steps, "Assert 1")
+	require.Less(t, indexOfStep(t, steps, s), indexOfStep(t, steps, a1),
+		"the binding assertion must run before Assert 1 — the RBAC precondition precedes the posture convergence")
+}
