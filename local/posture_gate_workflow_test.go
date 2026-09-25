@@ -91,18 +91,22 @@ func extractSetKeys(t *testing.T, run string) []string {
 	t.Helper()
 	// Both bash-join views (r15's symmetric close): the space join and
 	// the EMPTY join — a split `--se\`+NL+`t key=val` never forms the
-	// flag in the space-join parse but does in bash's own join.
+	// flag in the space-join parse but does in bash's own join. Keys
+	// are deduped PER VIEW (a key legitimately appears once per view;
+	// a duplicate WITHIN a view is helm's last-wins override class).
 	var keys []string
 	for _, joined := range []string{
 		strings.ReplaceAll(run, "\\\n", " "),
 		strings.ReplaceAll(run, "\\\n", ""),
 	} {
-		for i, tok := range strings.Fields(joined) {
+		seenInView := map[string]bool{}
+		fields := strings.Fields(joined)
+		for i, tok := range fields {
 			var value string
 			switch {
 			case tok == "--set":
-				require.True(t, i+1 < len(strings.Fields(joined)), "--set must be followed by a value token")
-				value = strings.Fields(joined)[i+1]
+				require.True(t, i+1 < len(fields), "--set must be followed by a value token")
+				value = fields[i+1]
 			case strings.HasPrefix(tok, "--set="):
 				value = strings.TrimPrefix(tok, "--set=")
 			default:
@@ -110,7 +114,11 @@ func extractSetKeys(t *testing.T, run string) []string {
 			}
 			for _, seg := range strings.Split(value, ",") {
 				seg = strings.Trim(seg, `"`)
-				keys = append(keys, strings.SplitN(seg, "=", 2)[0])
+				k := strings.SplitN(seg, "=", 2)[0]
+				if !seenInView[k] {
+					seenInView[k] = true
+					keys = append(keys, k)
+				}
 			}
 		}
 	}
@@ -597,10 +605,62 @@ var goldenInventories = map[string][]string{
 	},
 }
 
+// goldenInstallInventory is r20's structural close for the install
+// block — the same golden-line-sequence treatment the assertion blocks
+// got in r13. Every non-comment line, in sequence: insertions (the
+// mid-chain --valu\ split class), deletions, sibling spellings, and
+// duplicate-key last-wins overrides all fail here in one check. The
+// head/tail/chain/operator/allowlist pins remain as documented
+// backstops with the WHY attached.
+var goldenInstallInventory = []string{
+	"helm upgrade --install llmsafespaces helm \\",
+	"-n $NS --create-namespace \\",
+	"--set api.image.repository=llmsafespaces/api \\",
+	`--set "api.image.tag=$IMAGE_TAG" \`,
+	"--set api.image.pullPolicy=IfNotPresent \\",
+	"--set controller.image.repository=llmsafespaces/controller \\",
+	`--set "controller.image.tag=$IMAGE_TAG" \`,
+	"--set controller.image.pullPolicy=IfNotPresent \\",
+	"--set mcp.enabled=false \\",
+	"--set postgresql.host=postgres \\",
+	"--set postgresql.port=5432 \\",
+	"--set postgresql.user=llmsafespaces \\",
+	"--set postgresql.database=llmsafespaces \\",
+	"--set redis.host=redis-master \\",
+	"--set redis.port=6379 \\",
+	"--set externalSecret.create=true \\",
+	`--set "externalSecret.postgresPassword=e2e-pg-pw-2026" \`,
+	`--set "externalSecret.redisPassword=e2e-redis-pw-2026" \`,
+	"--set api.config.logging.development=true \\",
+	`--set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \`,
+	`--set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \`,
+	`--set "controller.agentdDelivery.binarySHA256Arm64=${{ env.AGENTD_BINARY_SHA }}" \`,
+	`--set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \`,
+	`--set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \`,
+	`--set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \`,
+	"--set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \\",
+	`--set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \`,
+	"--wait --timeout 10m",
+}
+
 // TestPostureGate_StatementInventory holds the four assertion blocks as
 // complete golden inventories — every non-comment line, in sequence.
 func TestPostureGate_StatementInventory(t *testing.T) {
 	steps := parsePostureGate(t)
+	// r20 finding 2b: the INSTALL block joins the golden treatment —
+	// the mid-chain insertion classes (the --valu\ split) close
+	// structurally here, not by spelling.
+	install := gateStepByPrefix(t, steps, "Helm install LLMSafeSpaces")
+	var gotInstall []string
+	for _, line := range strings.Split(install.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		gotInstall = append(gotInstall, trimmed)
+	}
+	require.Equal(t, goldenInstallInventory, gotInstall,
+		"the install statement inventory: every non-comment line pinned in sequence — insertions, deletions, sibling spellings, and duplicate-key overrides all fail here; legitimate changes update the golden deliberately")
 	for prefix, golden := range goldenInventories {
 		t.Run(prefix, func(t *testing.T) {
 			s := gateStepByPrefix(t, steps, prefix)
@@ -788,15 +848,15 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		require.False(t, valuesFileFlagRe.MatchString(view),
 			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view; view 3 is what catches the LIVE block-minimum split)")
 	}
-	// r19 finding 1: the LIVE composed spellings form in view 3 (bash
-	// joins block-minimum continuations to column 0); the extra-indent
-	// splits are runtime-INERT (bash reads them as tokens `-` and `f` —
-	// helm rejects the argv) but were pin-green, so the inert `-\`
-	// line ending is banned outright. The r17 "fourth view" was
-	// VACUOUS (whitespace-stripping destroys the (^|\s) boundary) —
-	// removed; this ban is the honest close for the inert class.
-	require.NotRegexp(t, `(?m)-\\$`, install.Run,
-		"no install chain line may end with a bare `-` before the continuation backslash — the inert split spelling (helm rejects the amputated argv, but pin-green dead installs are findings)")
+	// r19 finding 1 + r20 finding 2a: the LIVE composed spellings form
+	// in view 3 (bash joins block-minimum continuations to column 0);
+	// the extra-indent splits are runtime-INERT (bash reads them as
+	// tokens `-` and `f` — helm rejects the argv) but were pin-green,
+	// so the inert line endings are banned outright — dash with ANY
+	// trailing whitespace before the continuation backslash (the
+	// r19 `-\$` form demanded dash-adjacency; `- \` escaped it).
+	require.NotRegexp(t, `(?m)-\s*\\$`, install.Run,
+		"no install chain line may end with a bare `-` (any trailing whitespace) before the continuation backslash — the inert split spelling (helm rejects the amputated argv, but pin-green dead installs are findings)")
 	// THE structural close (r5): every --set key must be allowlisted,
 	// every allowlist entry must be used (dead entries are drift), and
 	// the parser must have found the full override set (a silently
@@ -805,10 +865,22 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 	keys := extractSetKeys(t, install.Run)
 	require.GreaterOrEqual(t, len(keys), 20,
 		"the --set parse must find the full environmental override set (found %d — a silent parse failure would vacuously pass)", len(keys))
-	seen := map[string]bool{}
+	keyCounts := map[string]int{}
 	for _, k := range keys {
 		require.True(t, installSetAllowlist[k],
 			"--set key %q is NOT on the environmental allowlist — the install may carry no posture lever in ANY spelling", k)
+		keyCounts[k]++
+	}
+	for k, n := range keyCounts {
+		// r20 finding 3: each key appears exactly once PER JOIN VIEW (the
+		// parse walks two views) — more than two means a duplicate
+		// within a view: helm's last-wins silently overrides the
+		// earlier value.
+		require.Equal(t, 2, n,
+			"duplicate --set key %q within a view — helm's last-wins silently overrides the earlier value (the r20 duplicate-key class)", k)
+	}
+	seen := map[string]bool{}
+	for k := range keyCounts {
 		seen[k] = true
 	}
 	for allowed := range installSetAllowlist {
@@ -868,8 +940,13 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 		"exactly the four delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
 	// r19 finding 3: the count must cover EVERY redirect spelling — a
 	// single-`>` truncate write evaded the exact-string count.
-	require.Equal(t, 4, len(regexp.MustCompile(`>\s*"\$\{?GITHUB_ENV\}?"`).FindAllString(raw, -1)),
-		"exactly four GITHUB_ENV redirect writes in ANY spelling (>> or >, any spacing) — the channel is the pinned surface, not one spelling of it")
+	// r19 finding 1 + r20 finding 1: the CHANNEL is the pinned surface —
+	// exactly four GITHUB_ENV occurrences in the whole file, any
+	// spelling (unquoted, tee -a, indirection `ENVF="$GITHUB_ENV"`,
+	// single->) — a fifth mention of the channel is drift by
+	// definition; verified false-positive-free on pristine.
+	require.Equal(t, 4, strings.Count(raw, "GITHUB_ENV"),
+		"exactly four GITHUB_ENV occurrences may exist in the whole workflow — the channel is the pinned surface, not one spelling of it (any fifth write or indirection is drift)")
 }
 
 // Pin (f): a failed cold install IS a red gate — the assertions carry

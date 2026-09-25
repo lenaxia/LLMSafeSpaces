@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r19 fixes: 2026-09-24/25)
-**Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` structural pins (seven test functions) + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r19 fixes pushed; awaiting re-review.
+**Date:** 2026-09-23 (r1–r20 fixes: 2026-09-24/25)
+**Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` — seven structural pin tests + the two golden inventories — + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
+**Status:** r20 fixes pushed; awaiting re-review.
 
 ---
 
@@ -219,6 +219,17 @@ r19's review live-verified the r18 story (the `{/end}` parse error proven, the r
 
 All three r19 mutation classes re-verified RED; pristine baseline checksummed before and after.
 
+## r20 round record (the channel count, the install golden, the duplicate-key ban)
+
+The fourth consecutive round with no verdict-flipping escape constructible; the findings were the r19 closes' own siblings. Closed:
+
+1. **The GITHUB_ENV CHANNEL pinned**: exactly four `GITHUB_ENV` occurrences in the whole file, any spelling — unquoted, `tee -a`, indirection (`ENVF="$GITHUB_ENV"`), single-`>` — a fifth mention of the channel is drift by definition (the r19 regex count was spelling-scoped against its own stated principle).
+2. **The install block joins the golden treatment** (the r13 mechanism, prescribed for this block since r13): every non-comment line pinned in sequence — the mid-chain `--valu\`+NL+`es=` split class closes structurally, not by spelling; the head/tail/chain/operator/allowlist pins remain as documented backstops.
+3. **`(?m)-\s*\\$`** — the inert-split ban covers dash-with-whitespace (`- \` escaped the r19 dash-adjacent form).
+4. **Duplicate `--set` keys banned** — each key exactly once per join view; a duplicate within a view is helm's last-wins override (parse deduped per view; the cross-view count is exactly two per key).
+
+All six r20 mutation classes re-verified RED (unquoted/tee/indirect env writes, dash-space split, mid-chain valu split, duplicate key); pristine baseline checksummed before and after. The record: the stale Next-Steps scan line and the "six structural pins" header fixed in place; the PR body's sequencing section refreshed (all recorded-order predecessors merged).
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -238,7 +249,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. the statement inventory (r19 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r20 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -246,8 +257,8 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Next Steps
 
-1. Re-review (r19 verdict pending); w2 rebases #1566 onto this head.
-2. The orchestrator sequences the merge — live scan at r14: M1, M4, and the defect fix #1558 all MERGED; M2 (#1559) is the one remaining recorded-order predecessor. The gate's first dispatched green run closes the loop — and the stability window's first live contact with it.
+1. Re-review (r20 verdict pending); w2 rebases #1566 onto this head.
+2. The orchestrator sequences the merge — live scan at r20: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
 3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
 
 ## Files Modified
