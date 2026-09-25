@@ -68,10 +68,13 @@ const maxMCPBodyBytes = 1 << 20
 
 // decodeOneDocument decodes exactly ONE JSON document, tolerating a
 // whitespace-only remainder (every curl caller appends a newline); any
-// non-whitespace trailing data returns the offset where it begins
-// (#1561: Decode's one-value semantics silently skipped it). The
+// other trailing data is an error (#1561: Decode's one-value
+// semantics silently skipped it) naming the offset AFTER the first
+// document — the scan's start, exact for every shape. The trailing
+// error wraps its underlying cause (%w) so a cap trip in the scan
+// (http.MaxBytesError) still classifies as 413 at the handler. The
 // outbound twin (client.go's decodeStrict) keeps its own error
-// contract — this offset-carrying variant serves the HTTP boundary.
+// contract.
 func decodeOneDocument(r io.Reader, v any) error {
 	dec := json.NewDecoder(r)
 	if err := dec.Decode(v); err != nil {

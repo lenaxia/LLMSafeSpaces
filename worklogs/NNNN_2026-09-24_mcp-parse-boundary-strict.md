@@ -18,7 +18,7 @@ Characterize when agentd's /v1/mcp layer "salvages" malformed transport input (#
 
 The issue title says "salvages invalid JSON" — the triage's first finding is that this is TWO distinct silent tolerances, and neither is prefix salvage:
 
-1. **Unknown keys at the tools/call params level — silently dropped** (the repro's actual mechanism). The repro body is VALID JSON (verified: `json.loads` passes; params keys = name/arguments/message). The #1530 probe's injected fragment (`"lsp_injected_session":"ses_Y"}`) legally closed `arguments` early, demoting `message` to a params-level key; Go's default `Unmarshal` into the `{Name, Arguments}` struct drops unknown keys, so the tool received arguments without `message` and errored at the schema layer — masking the misplacement.
+1. **Unknown keys at the tools/call params level — silently dropped** (the repro's mechanism). The issue's literal 164-char body is a balanced 163-char document plus an unbalanced trailing `}` (r1: two shapes, two paths); the BALANCED variant is valid JSON (verified: `json.loads` passes; params keys = name/arguments/message). The #1530 probe's injected fragment (`"lsp_injected_session":"ses_Y"}`) legally closed `arguments` early, demoting `message` to a params-level key; Go's default `Unmarshal` into the `{Name, Arguments}` struct drops unknown keys, so the tool received arguments without `message` and errored at the schema layer — masking the misplacement. The literal body takes the trailing-data path; the balanced variant takes the params path; both are pinned.
 2. **Trailing data after the first JSON value — silently skipped.** `json.NewDecoder(r.Body).Decode(&req)` reads ONE value and never looks again: a second document or garbage after a complete body was never examined.
 3. **True mid-string garbage ALREADY failed loud** (-32700) — the issue's framing overstated this; no prefix salvage of invalid documents exists. Pinned (see tests) so the hardening can't loosen it.
 4. **Unknown keys at the request-object level — silently dropped** (jsonrpc/id/method/params struct): KEPT tolerant deliberately — this is protocol-revision surface (MCP revs add request-level keys, e.g. `_meta`; `pkg/session/agentmessage`'s additive-only contract is the in-repo precedent for that pole).
@@ -53,12 +53,19 @@ Silent tolerance of malformed transport input is the pattern those lanes ended; 
 - **Style nits folded in**: dead `trailingAt` return dropped; the cap message carries bytes ("exceeds the 1048576-byte cap" — no MiB framing trap); the unreachable Content-Type guard removed.
 - 28/28 `TestMCPHandler_` green post-round.
 
+### r3 review round (documentation accuracy; engineering ruled done)
+
+- The `decodeOneDocument` comment corrected to the shipped contract (error-only return; the offset names the first document's END — the scan's start; %w carries cap trips for 413 classification).
+- The PR body refreshed to the shipped boundary (the key-gate allowlist, not DisallowUnknownFields; parse class 400/413; "after offset N"; 28/28).
+- The worklog contradictions reconciled (this round's edits above).
+- The #1561 closure comment corrects the prior lane's "live-server integration test" claim (the tests drive `mcpHandler` directly — exactly what the mux registers; logically equivalent coverage, no live server).
+
 ---
 
 ## Key Decisions
 
 - **Strict at the params wire, tolerant at the request object.** The tools/call params wire is this repo's fixed own-client surface (control-socket precedent: reject); the request object is MCP-revision surface where additive keys are legitimate forward-compat (agentmessage precedent: tolerate). Pinning BOTH poles as tests makes the boundary a documented contract.
-- **JSON-RPC error codes over HTTP 400.** The endpoint's convention is JSON-RPC error bodies on HTTP 200 (writeMCPError); the issue's "expect 400" was loose — loudness here is the code + the named-field/offset diagnostics.
+- **JSON-RPC error codes over HTTP 400** — REVERSED in r1: the reviewer ruled no recorded ruling supersedes the issue's twice-stated criterion, so the parse class (-32700) rides HTTP 400 and oversize rides 413; application-level JSON-RPC errors (-32602) keep the endpoint's 200 convention. The initial ruling here (200-only, "the issue's expect-400 was loose") was wrong and was overturned.
 - **No change to tool-argument freedom.** `Arguments map[string]any` stays free-form — strictness at the transport boundary, schemas at the semantic layer; conflating them would break every tool.
 
 ---
@@ -89,5 +96,5 @@ None.
 ## Files Modified
 
 - `cmd/workspace-agentd/mcp_server.go` — trailing-data check, diagnostics on parse errors, strict tools/call params decode (both poles documented in-code)
-- `cmd/workspace-agentd/mcp_server_test.go` — 4 new tests: MisplacedParamsKeyRejected (the #1561 repro verbatim), TrailingDataRejected, MidStringGarbageStillParseErrors, RequestBodyAdditiveTolerancePinned
+- `cmd/workspace-agentd/mcp_server_test.go` — 8 new tests: MisplacedParamsKeyRejected, TrailingDataRejected, MidStringGarbageStillParseErrors, RequestBodyAdditiveTolerancePinned, LiteralIssue1561Repro (the 164-char body byte-identical), TrailingNewlineAccepted, BodyCap413, BodyCapExactDocPlusTrailingByte413, ToolsCall_MetaKeyAllowed (9 across the rounds; 28/28 family total)
 - `worklogs/NNNN_2026-09-24_mcp-parse-boundary-strict.md` — this worklog
