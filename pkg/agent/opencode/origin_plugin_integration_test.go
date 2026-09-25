@@ -399,7 +399,8 @@ func TestOriginPlugin_DualParamWireIntegrity(t *testing.T) {
 		"the wire must carry session_id exactly once — no field duplication")
 	assert.NotContains(t, raw, "ses_MODEL_STALE",
 		"the stale model-supplied origin must not survive to the wire")
-	dups, err := utilities.FindDuplicateKeys(raws[0])
+	dups, total, err := utilities.FindDuplicateKeys(raws[0])
 	require.NoError(t, err)
 	assert.Empty(t, dups, "no duplicated keys anywhere in the raw body: %v", dups)
+	assert.Zero(t, total, "the raw wire body carries zero duplicate occurrences")
 }
