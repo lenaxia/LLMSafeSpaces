@@ -86,8 +86,25 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`max(p95@N`,
 		`SR6_P95`,
 		`ms-${i}`,
-		// SR-6B: the literal-429 construct + the precondition gate.
-		`SR6B_HAS_429`,
+		// SR-6B (deterministic, r2 shape): the trickled-holder construct,
+		// the misattribution-proof 429 (status AND staging_busy body —
+		// the API rate limiter's 429 is status-identical), the holders'
+		// 201s, the retry-after-release, and the precondition gate.
+		`--limit-rate 64k`,
+		`SR6B_5TH_BUSY`,
+		`staging_busy`,
+		`upload_bytes_with_body`,
+		`SR6B_HOLDERS_OK`,
+		`SR6B_RETRY`,
+		// r3: the EXECUTABLE misattribution guard — the bare
+		// `staging_busy` needle is comment-satisfiable (the string
+		// also lives in History notes); the grep form is not.
+		`grep -q 'staging_busy' "${SR6B_BODY_FILE}"`,
+		// r2: uniform capture semantics — the pass variables read their
+		// statuses from the res files (upload_bytes' outfile form is
+		// args-silent; a stdout-capture was red-on-arrival).
+		`SR6B_STATUS=$(cat "${SR6B_DIR}/res-5")`,
+		`SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")`,
 		`-eq 4 ]]; then`,
 		// Cleanup.
 		`trap cleanup EXIT`,

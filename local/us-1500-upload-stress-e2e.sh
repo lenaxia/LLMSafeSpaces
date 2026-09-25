@@ -101,6 +101,24 @@ upload_bytes() { # size [outfile]
     fi
 }
 
+# upload_bytes_with_body: upload_bytes + the response BODY preserved to
+# a file (the SR-6B probe must discriminate agentd's staging_busy 429
+# from the API rate limiter's status-identical 429 — the reason rides
+# the body, forwarded verbatim by the API).
+upload_bytes_with_body() { # size outfile bodyfile
+    local size="$1" outfile="$2" bodyfile="$3" tmp
+    tmp=$(mktemp /tmp/sr-up-XXXXXX.bin)
+    head -c "${size}" /dev/urandom > "${tmp}" 2>/dev/null
+    local status
+    status=$(curl -s -m 120 -X POST -H "Authorization: Bearer ${API_KEY}" \
+        -F "file=@${tmp};filename=sr-stress-$(basename "${tmp}").bin" \
+        -o "${bodyfile}" -w '%{http_code}' \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || status='000'
+    rm -f "${tmp}"
+    printf '%s' "${status}" > "${outfile}"
+    printf '%s' "${status}"
+}
+
 # wait_all_terminal: every file in a results dir holds a terminal status
 # (201, 507, 429, 504 — never 000/5xx-other/4xx).
 storm_report() { # results-dir count -> prints "delivered=N refused=M other=K"
@@ -450,28 +468,80 @@ rm -rf "${SR6_DIR}"
 # 48MiB budget BEFORE the count cap — 5×10MiB trips 40+10>48 first —
 # so §6.6's boundary 507'd. Fixed: Admit checks the cap first (the
 # count-cap-preempts-budget regression pin in upload_staging_test.go).
+# History II (nightly 36049595521, WITH the precedence fix): 5
+# SIMULTANEOUS fires are LOAD-RACY — on a fast runner each upload
+# released before the 5th admitted (delivered=5 refused=0; the cap
+# never bound). The row now forces the overlap the serialized world
+# only produced under load: 4 TRICKLED holders (reservations held from
+# Admit — §4.1's reservation-before-acceptance — until the trickle
+# completes), then the 5th full-speed. §6.6's characterized boundary
+# must be exercised deterministically, not whenever the runner feels
+# slow.
 if [[ "${CONCURRENCY}" -eq 4 ]]; then
 SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
+# 4 holders: 1MiB bodies at 64k/s ≈ 16s hold each — comfortably under
+# agentd's 5-minute body deadline and the API's no-server-body-timeout
+# posture (ReadHeaderTimeout only); 4×1MiB reserved + the 5th's 10MiB
+# = 14MiB ≤ the 48MiB budget, so the COUNT CAP is the only clause that
+# can bind the 5th (the boundary this row characterizes).
+# The held verification is the 5th's own BODY (r1: a reserved-gauge
+# gate was tick-luck — the gauge pushes on the sweep's 10-min tick
+# only; r4: status-only 429 regressed the misattribution discipline):
+# the API forwards agentd's 429 verbatim with reason "staging_busy",
+# which the API's global rate limiter (status-identical 429s on
+# /uploads) never carries. Self-verifying post-hoc: if the holders
+# failed to hold, the 5th delivers 201 and the row fails loud.
 SR6B_PIDS=()
-for i in 1 2 3 4 5; do
-    upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-${i}" &
+for i in 1 2 3 4; do
+    (
+        _tmp=$(mktemp /tmp/sr-hold-XXXXXX.bin)
+        head -c $((1 * 1024 * 1024)) /dev/urandom > "${_tmp}" 2>/dev/null
+        _st=$(curl -s -m 90 --limit-rate 64k -X POST \
+            -H "Authorization: Bearer ${API_KEY}" \
+            -F "file=@${_tmp};filename=sr-hold-${i}.bin" \
+            -w '%{http_code}' -o /dev/null \
+            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || _st=000
+        rm -f "${_tmp}"
+        printf '%s' "${_st}" > "${SR6B_DIR}/res-hold-${i}"
+    ) &
     SR6B_PIDS+=($!)
 done
+# Settle margin: the four Admits complete within ~1s of start; the
+# 16s trickle window dwarfs this sleep (it is NOT the determinism —
+# the trickled bodies are; this only orders the probe inside the
+# window's steady state).
+sleep 3
+# THE 5th, full speed — status AND body captured: the literal 429 must
+# carry reason staging_busy (the count cap's class), not the API rate
+# limiter's status-identical 429.
+SR6B_BODY_FILE="${SR6B_DIR}/res-5-body"
+upload_bytes_with_body $((10 * 1024 * 1024)) "${SR6B_DIR}/res-5" "${SR6B_BODY_FILE}" >/dev/null
+# Capture semantics are UNIFORM across the row (r2): every pass
+# variable reads its status from the res files — upload_bytes'
+# outfile-args-silence (it writes the file INSTEAD of printing) made
+# the r1 stdout-capture of this variable always-empty (red-on-arrival).
+SR6B_STATUS=$(cat "${SR6B_DIR}/res-5")
+SR6B_5TH_BUSY=0
+if [[ "${SR6B_STATUS}" == "429" ]] && grep -q 'staging_busy' "${SR6B_BODY_FILE}" 2>/dev/null; then
+    SR6B_5TH_BUSY=1
+fi
 for p in "${SR6B_PIDS[@]}"; do wait "${p}" 2>/dev/null || true; done
-REPORT6B=$(storm_report "${SR6B_DIR}" 5)
-# Parse the refused COUNT (r3 finding 1: *"refused="* matches every
-# report — refused=0 included). The count-cap regression means
-# refused=0 here; the boundary demands at least one.
-# Completeness + a LITERAL 429 (r4: refused lumps 507|429|504 — a 507
-# satisfies the count without the boundary being the count cap).
-SR6B_HAS_429=0
-for f in "${SR6B_DIR}"/res-*; do
-    [[ "$(cat "${f}" 2>/dev/null)" == "429" ]] && SR6B_HAS_429=1
+# Holders all deliver once their trickles finish (they are valid
+# uploads; a non-201 holder means the window closed early — fail it).
+SR6B_HOLDERS_OK=1
+for i in 1 2 3 4; do
+    [[ "$(cat "${SR6B_DIR}/res-hold-${i}" 2>/dev/null)" == "201" ]] || SR6B_HOLDERS_OK=0
 done
-if [[ "${REPORT6B}" == *"total=5"* && "${SR6B_HAS_429}" -eq 1 ]]; then
-    ok "SR-6: 5th-concurrent 429 boundary observed (literal 429 present; ${REPORT6B})"
+# RETRY-AFTER-RELEASE (§4.2: the cap's 429 is "clean, retryable"): a
+# full-speed upload AFTER the holders finish must deliver — the slot
+# reopened.
+upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry" >/dev/null
+SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")
+REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} fifth-busy=${SR6B_5TH_BUSY} retry=${SR6B_RETRY}"
+if [[ "${SR6B_5TH_BUSY}" -eq 1 && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ${REPORT6B})"
 else
-    note_fail "SR-6: 5-concurrent storm lacks a literal 429 or incomplete (${REPORT6B}, has429=${SR6B_HAS_429})"
+    note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, body=$(head -c 120 "${SR6B_BODY_FILE}" 2>/dev/null))"
 fi
 rm -rf "${SR6B_DIR}"
 else
