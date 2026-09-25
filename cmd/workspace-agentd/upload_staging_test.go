@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -65,6 +66,14 @@ func (m *recordingStagingMetrics) RecordStagingGauges(stagedBytes, reservedBytes
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gauges++
+}
+
+// gaugeCount is the locked read for tests that poll from another
+// goroutine (the sweep loop pushes under m.mu — #1532's -race proofs).
+func (m *recordingStagingMetrics) gaugeCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gauges
 }
 
 func (m *recordingStagingMetrics) RecordUploadBytes(direction string, n int64) {
@@ -1026,5 +1035,67 @@ func TestBuildSidecarDeps_SweeperPlacementGuarded(t *testing.T) {
 	case <-deps2.uploadStager.sweepStarted:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the sweeper must start where the staging parent exists (the boot-reclaim contract)")
+	}
+}
+
+// TestStagingSweeper_DeterministicTicks (#1532): the sweep loop's tick
+// semantics asserted by DRIVING ticks — which files age out is decided
+// by the FAKE now the tick carries, not by real-time luck; idempotence
+// and the gauge push are counted, not slept past.
+func TestStagingSweeper_DeterministicTicks(t *testing.T) {
+	mc := newManualClock(t)
+	mc.install(t)
+
+	cfg := testStagingConfig(t, 1000, 0, 4)
+	m := &recordingStagingMetrics{}
+	s := newUploadStager(cfg, m)
+
+	aged := filepath.Join(cfg.stagingDir, "aged-id")
+	fresh := filepath.Join(cfg.stagingDir, "fresh-id")
+	if err := os.MkdirAll(cfg.stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{aged, fresh, cfg.stagingDir + "/part.tmp"} {
+		if err := os.WriteFile(p, []byte("x"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The aged object's mtime is REAL-past; the sweep compares against
+	// the tick's fake now — fix the fake so the decision is arithmetic:
+	// aged is 2×ttl old at the tick, fresh is not.
+	past := time.Now().Add(-2 * cfg.ttl)
+	if err := os.Chtimes(aged, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.startStagingSweeper(ctx, time.Hour) // interval irrelevant under the fake
+
+	// Sync on the observable: close(sweepStarted) happens before the
+	// goroutine exists — no wait needed; but the loop must be SELECTING
+	// before the tick lands or the buffered tick is simply consumed
+	// later (outcome asserts below are pace-independent).
+	mc.tick()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(aged)
+		return err != nil // aged gone
+	}, 5*time.Second, 10*time.Millisecond, "the tick must age out the ttl-old object")
+
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh object must survive the sweep: %v", err)
+	}
+	if _, err := os.Stat(cfg.stagingDir + "/part.tmp"); err != nil {
+		t.Fatalf("the fresh .tmp part must survive (age-gated, not name-gated): %v", err)
+	}
+	require.Equal(t, 1, m.gaugeCount(), "exactly one gauge push per tick")
+
+	// Idempotence: a second tick at the SAME fake now sweeps nothing
+	// new and pushes exactly one more gauge.
+	mc.tick()
+	require.Eventually(t, func() bool { return m.gaugeCount() == 2 }, 5*time.Second, 10*time.Millisecond)
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh must still survive the second sweep: %v", err)
 	}
 }

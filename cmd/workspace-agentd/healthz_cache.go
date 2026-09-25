@@ -223,8 +223,8 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 	// a previously-healthy opencode that later hangs.
 	bootCompleted := false
 
-	tick := time.NewTicker(readinessRefreshInterval)
-	defer tick.Stop()
+	tick, stopTick := agentdNewTicker(readinessRefreshInterval)
+	defer stopTick()
 
 	// Immediate first refresh on boot.
 	refreshOnce(ctx, client, cache, watchdogLogger, gr)
@@ -233,7 +233,7 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-tick:
 			refreshOnce(ctx, client, cache, watchdogLogger, gr)
 
 			snap := cache.Snapshot()

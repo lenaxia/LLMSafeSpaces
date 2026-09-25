@@ -121,7 +121,7 @@ func startSupervisorSubprocessEnv(t *testing.T, extraEnv ...string) *supervisorP
 		if sp.exited() {
 			t.Fatalf("supervisor subprocess exited before serving (see output above)")
 		}
-		time.Sleep(50 * time.Millisecond)
+		agentdSleep(50 * time.Millisecond) // the #1532 seam: poll cadence, I/O-speed under the fake
 	}
 	t.Fatalf("supervisor socket %s never accepted within 10s", addr)
 	return nil
