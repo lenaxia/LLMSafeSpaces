@@ -521,15 +521,15 @@ func (s *uploadStager) startStagingSweeper(ctx context.Context, interval time.Du
 	if s.sweepStarted != nil {
 		close(s.sweepStarted)
 	}
+	tick, stopTick := agentdNewTicker(interval)
 	go func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
+		defer stopTick()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
-				s.scrubStagingDir(s.cfg.ttl, time.Now())
+			case <-tick:
+				s.scrubStagingDir(s.cfg.ttl, agentdNow())
 				s.RecordGauges()
 			}
 		}

@@ -471,6 +471,14 @@ func TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess(t *testing.T) {
 	withTestLogger(t)
 	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 2)
 
+	// #1532 de-timing: the fire decisions are DRIVEN ticks and the
+	// boot window is FAKE now — the 700ms-real-sleep version raced the
+	// runner (2/2 timeouts under load). The subprocess and the hung
+	// server stay REAL (the vitals gatherer is the subject); only the
+	// clock that DECIDES is deterministic.
+	mc := newManualClock(t)
+	mc.install(t)
+
 	// Health endpoint that hangs past the probe timeout: failures
 	// accumulate exactly like a starved/crashed pod.
 	srv := newHungServer(t, 500*time.Millisecond)
@@ -492,29 +500,66 @@ func TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess(t *testing.T) {
 	spawnedAt := time.Now()
 
 	fr := &fakeRestarter{}
-	vit := newProcVitalsGatherer(
-		fmt.Sprintf("127.0.0.1:%d", port),
-		func() int { return childPID },
-		func() time.Time { return spawnedAt },
-	)
+	// A literal gatherer with a 10ms sample window (the house pattern
+	// at :134/:153): production's 3s window would make each driven
+	// tick's would-fire gather cost 3s REAL — the de-timed ticks
+	// must not re-acquire wall-clock through the vitals sample.
+	vit := &procVitalsGatherer{
+		addr:         fmt.Sprintf("127.0.0.1:%d", port),
+		pidFn:        func() int { return childPID },
+		childBootAt:  func() time.Time { return spawnedAt },
+		dialTimeout:  vitalsDialTimeout,
+		sampleWindow: 10 * time.Millisecond,
+	}
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, idleSessions{}, vit)
 
-	// Several would-fire moments: threshold 2, poll 60ms — 700ms spans
-	// ~10 fire decisions against the booting child.
-	time.Sleep(700 * time.Millisecond)
+	// Deterministic fire decisions: the fake now is FROZEN at spawn
+	// (every would-fire moment lands INSIDE the boot grace — runner
+	// speed cannot shrink the window). Ten ticks = ten probe failures;
+	// the count first reaches the threshold of 2 at tick 2, leaving
+	// NINE would-fire moments for the boot-grace suppression to hold.
+	// The loop goroutine builds its ticker asynchronously — a tick
+	// delivered BEFORE the ticker exists is lost. Sync on its creation.
+	require.Eventually(t, func() bool { return mc.tickerCount() >= 1 },
+		5*time.Second, 5*time.Millisecond, "the watchdog loop must build its tick source")
+	mc.mu.Lock()
+	mc.now = spawnedAt
+	mc.mu.Unlock()
+	for i := 0; i < 10; i++ {
+		mc.tick()
+	}
+
+	// Sync on the observable: ten consecutive probe failures against
+	// the hung server (the real probe latency is bounded by the 40ms
+	// client timeout each — outcome-deterministic, wait-bounded).
+	require.Eventually(t, func() bool {
+		return cache.Snapshot().ConsecutiveFailures >= 10
+	}, 10*time.Second, 20*time.Millisecond, "ten driven ticks must each record a failure")
+
 	assert.False(t, cache.Snapshot().Healthy, "sanity: health genuinely failing")
 	assert.Zero(t, fr.callCount(),
 		"the watchdog must not kill a booting child — refused dial inside the boot grace is RESPAWN, not HUNG")
 
 	// Direct evidence the real sample carries the booting state (not
-	// merely an accidental suppress via another verdict).
+	// merely an accidental suppress via another verdict) — BOTH window
+	// arms deterministic via the fake now, no sleeps:
 	v := vit.gather(context.Background())
 	assert.True(t, v.tcpRefused)
 	assert.False(t, v.pidGone)
-	assert.True(t, v.booting, "real gatherer must mark the young live pid as booting")
+	assert.True(t, v.booting, "the gatherer must mark the young live pid as booting (fake now inside the grace)")
 	got, _ := v.classify()
 	assert.Equal(t, verdictRespawn, got)
+
+	// Past the grace: the same real sample classifies differently —
+	// the window boundary is ARITHMETIC on the fake clock. step()
+	// (not advance): the loop must NOT receive an eleventh fire
+	// moment — this arm asserts through the DIRECT gather only.
+	mc.step(vitalsBootGraceWindow + time.Second)
+	v2 := vit.gather(context.Background())
+	assert.False(t, v2.booting, "fake now past the grace flips the booting flag")
+	got2, _ := v2.classify()
+	assert.Equal(t, verdictHung, got2, "refused dial + live pid + past grace = the hung verdict the watchdog acts on")
 }
 
 // TestBuildVitalsGatherer_WiringSmoke verifies the production wiring
