@@ -1047,6 +1047,29 @@ func TestMCPHandler_ToolsCallTrailingGarbageDuplicateKeyRefused(t *testing.T) {
 	assert.Contains(t, w2.Body.String(), "-32700", "unscannable tools/call bodies refuse regardless of duplicate presence")
 }
 
+// r3: the raw-body read is bounded (the package's LimitReader
+// convention; pre-PR this handler streamed unbounded) — an
+// over-limit body refuses as a parse error and never dispatches.
+func TestMCPHandler_ToolsCallBodyLimitRefused(t *testing.T) {
+	pad := strings.Repeat("x", 17<<20) // > the 16MiB cap
+	body := []byte(`{"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"send_message","arguments":{"session_id":"ses_A","message":"` + pad + `"}}}`)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+
+	var resp struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Result *json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "an over-limit body must refuse, never dispatch")
+	assert.Equal(t, -32700, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "16MiB")
+	assert.Nil(t, resp.Result)
+}
+
 // Every tool sits behind the Basic gate — the per-tool 401 probe.
 func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 	for _, tool := range []string{
@@ -2233,11 +2256,27 @@ func TestSplitDuplicatedArgFragment_AcceptanceHalf(t *testing.T) {
 	assert.Equal(t, "ses_TARGET", target)
 	assert.Equal(t, "ses_ORIGIN", embedded)
 
-	// Underscores are legal id characters (deliberately permissive —
+	// Underscores are legal id characters (mirrors the seam grammar —
 	// the recovered target is re-validated by SessionExists after).
 	_, embedded, ok = splitDuplicatedArgFragment(`ses_T_1","lsp_injected_session":"ses_O_2"}`)
 	assert.True(t, ok)
 	assert.Equal(t, "ses_O_2", embedded)
+
+	// r3 grammar alignment: HYPHENS are legal in the seam's id grammar
+	// (#1364's deliberate widening) — a hyphenated leading id now
+	// RECOVERS instead of silently falling back to the lossy pre-fix
+	// path (the divergence the round pinned).
+	target, embedded, ok = splitDuplicatedArgFragment(`ses_AB-C","lsp_injected_session":"ses_O-X_9"}`)
+	assert.True(t, ok, "hyphenated ids recover (seam grammar parity)")
+	assert.Equal(t, "ses_AB-C", target)
+	assert.Equal(t, "ses_O-X_9", embedded)
+
+	// The seam grammar's 1-128 TOTAL-length cap: an id past it is not
+	// the platform's grammar and does not recover.
+	_, _, ok = splitDuplicatedArgFragment(`ses_` + strings.Repeat("a", 125) + `","lsp_injected_session":"ses_O"}`)
+	assert.False(t, ok, "ids past the seam grammar's 128-total cap refuse")
+	_, _, ok = splitDuplicatedArgFragment(`ses_` + strings.Repeat("a", 124) + `","lsp_injected_session":"ses_O"}`)
+	assert.True(t, ok, "the 128-total cap itself recovers (boundary)")
 }
 
 // The guard must not mangle clean ids: a normal send carries no

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,19 +79,32 @@ func mcpHandler(password string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 
-		// #1530 duplicate-key refusal: read the RAW body once — the
-		// standard decode below collapses duplicated object keys
-		// SILENTLY (last wins), the KEY twin of the value-fragment
-		// emission slip the send_message recovery guard handles. A
-		// duplicated key in a tools/call body misbinds with zero
-		// trace (wrong id, wrong target, no error) — refusing loudly
-		// beats guessing which copy was intended. Scoped to
-		// tools/call: the argument surface where the exposure lives.
+		// #1530 r3: bound the raw-body read (the package's LimitReader
+		// convention — client.go 16MiB, sessionstate 4MiB; pre-PR this
+		// handler streamed). The largest legitimate MCP body here is a
+		// workflow spec; 16MiB matches the client's own read cap.
+		// Over-limit surfaces as *http.MaxBytesError from ReadAll and
+		// refuses as a parse error — never dispatches, never buffers
+		// beyond the cap.
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 		raw, readErr := io.ReadAll(r.Body)
 		if readErr != nil {
-			writeMCPError(w, nil, -32700, "Parse error")
+			var maxErr *http.MaxBytesError
+			if errors.As(readErr, &maxErr) {
+				writeMCPError(w, nil, -32700, "Parse error: request body exceeds the 16MiB limit")
+			} else {
+				writeMCPError(w, nil, -32700, "Parse error")
+			}
 			return
 		}
+		// #1530 duplicate-key refusal: the standard decode below
+		// collapses duplicated object keys SILENTLY (last wins), the
+		// KEY twin of the value-fragment emission slip the send_message
+		// recovery guard handles. A duplicated key in a tools/call body
+		// misbinds with zero trace (wrong id, wrong target, no error) —
+		// refusing loudly beats guessing which copy was intended.
+		// Scoped to tools/call: the argument surface where the exposure
+		// lives.
 		var req mcpRequest
 		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&req); err != nil {
 			writeMCPError(w, nil, -32700, "Parse error")

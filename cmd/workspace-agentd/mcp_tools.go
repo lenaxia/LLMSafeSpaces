@@ -609,12 +609,19 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // normal error path — the guard never mangles clean input).
 const dupFragmentMark = `","lsp_injected_session":"`
 
-// sesIDPattern is deliberately permissive (the recovered target is
-// re-validated by SessionExists immediately after; the embedded
-// origin is cosmetic, untrusted data): it exists to reject shapes
-// that merely CONTAIN the fragment mark by accident, not to
-// second-guess the id format.
-var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_]+$`)
+// sesIDPattern MIRRORS the adapter seam's agent-id grammar
+// (pkg/agent/opencode loopback.go sessionIDPattern — #1364's
+// deliberate widening admits hyphens): the ses_ prefix plus the
+// seam's charset and 1-128 TOTAL-length discipline (the {1,124}
+// bound is 128 minus the 4-char ses_ prefix). Diverging from
+// the seam grammar would silently shrink recovery coverage to a
+// subset of ids the platform itself validates (r3: a hyphenated
+// leading id failed the shape and fell back to the lossy pre-fix
+// path). The recovered target is re-validated by SessionExists
+// immediately after; the embedded origin is cosmetic, untrusted
+// data — the pattern exists to reject shapes that merely CONTAIN
+// the fragment mark by accident, not to second-guess the id format.
+var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_-]{1,124}$`)
 
 func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok bool) {
 	i := strings.Index(v, dupFragmentMark)

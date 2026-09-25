@@ -39,6 +39,11 @@ Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-pl
 - **Style**: dead `_ = ctx` removed from the unhappy e2e row.
 - Issue closure verified FULLY ADDRESSED this round (legs 1–3 + all three comment-thread artifacts on-branch, CI-enforced).
 
+### Round-3 review findings (all addressed)
+- **Unbounded raw-body buffering (validated DoS edge)**: the r1 raw read (`io.ReadAll(r.Body)`) had no limit and ran for every method (pre-PR the handler streamed). FIXED: `http.MaxBytesReader(w, r.Body, 16<<20)` (the package's own convention — client.go 16MiB, sessionstate 4MiB), over-limit mapped to -32700 with an explicit message; pinned by `TestMCPHandler_ToolsCallBodyLimitRefused`.
+- **Id-grammar divergence**: `sesIDPattern` forbade `-` while the adapter seam's own guard (`loopback.go sessionIDPattern`, #1364) admits hyphens — a hyphenated leading id silently fell back to the lossy pre-fix path. FIXED: the pattern mirrors the seam grammar (`ses_` + `[A-Za-z0-9_-]` under the seam's 1-128 TOTAL-length cap → `{1,124}`); the "deliberately permissive" doc claim replaced with the parity rationale. Pins: hyphenated recovery, the 128-cap boundary (124 recovers, 125 refuses).
+- Issue closure FULLY ADDRESSED both rounds; both red-first claims mutation-verified by the reviewer at r3's SHA.
+
 ### Byproduct — filed separately
 - #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 
