@@ -63,21 +63,42 @@ func validateWorkspaceTerminationGrace(grace int64) error {
 	return nil
 }
 
+// freeModelsFlags carries the free-tier catalog refresher flags
+// (registered together so the block stays extractable from main).
+type freeModelsFlags struct {
+	enabled  bool
+	interval time.Duration
+}
+
 // freeModelsFlags registers the free-tier catalog refresher flags
 // (hoisted from main purely for the funlen bound; defaults unchanged).
-func registerFreeModelsFlags() (enable bool, interval time.Duration) {
-	flag.BoolVar(&enable, "enable-free-models-refresher", true,
+// The pointer return is load-bearing for the SAME reason as
+// registerRelayFlags (#1548's orphaning class, the r2 finding on
+// #1566): the original returned the values BY VALUE while
+// flag.BoolVar/DurationVar bound into the locals — argv parsed into a
+// dead struct, the refresher ignored --enable-free-models-refresher=false,
+// and with the chart's flag-coupled RBAC grant withheld, every refresh
+// was a forbidden write (#1546 Defect 3's exact failure mode). The
+// Into seam exists for the regression pin (the registerRelayFlagsInto
+// precedent).
+func registerFreeModelsFlags() *freeModelsFlags {
+	return registerFreeModelsFlagsInto(flag.CommandLine)
+}
+
+func registerFreeModelsFlagsInto(fs *flag.FlagSet) *freeModelsFlags {
+	var f freeModelsFlags
+	fs.BoolVar(&f.enabled, "enable-free-models-refresher", true,
 		"Periodically fetch the opencode free-tier model catalog from models.dev "+
 			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
 			"this CM to pre-render their relay agent-config.json before opencode "+
 			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
 			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
 			"true; set false to disable and fall back to per-pod fetching.")
-	flag.DurationVar(&interval, "free-models-refresh-interval", 6*time.Hour,
+	fs.DurationVar(&f.interval, "free-models-refresh-interval", 6*time.Hour,
 		"How often the free-models refresher fetches the catalog. The catalog "+
 			"changes ~weekly so 6h is generous; lower values are fine but "+
 			"increase load on models.dev.")
-	return
+	return &f
 }
 
 func main() {
@@ -179,7 +200,7 @@ func main() {
 	flag.Int64Var(&maxMemoryMiPerTenant, "max-memory-mi-per-tenant", 0,
 		"Maximum aggregate memory requests (MiB) per tenant (Epic 51 S51.2). "+
 			"0 means unlimited. Recommended: 16384 (16GiB) for multi-tenant.")
-	enableFreeModelsRefresher, freeModelsRefreshInterval := registerFreeModelsFlags()
+	freeModels := registerFreeModelsFlags()
 	var freeModelsAPIURL string
 	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "",
 		"Override URL for the free-models catalog. Empty defaults to "+
@@ -458,7 +479,7 @@ func main() {
 	// pods consume to pre-render their relay config before opencode
 	// boots. NeedLeaderElection() returns true so only one replica
 	// fetches at a time.
-	if enableFreeModelsRefresher {
+	if freeModels.enabled {
 		fmNamespace := os.Getenv("POD_NAMESPACE")
 		if fmNamespace == "" {
 			fmNamespace = "llmsafespaces"
@@ -466,7 +487,7 @@ func main() {
 		if err := mgr.Add(&freemodels.Refresher{
 			Client:    mgr.GetClient(),
 			Namespace: fmNamespace,
-			Interval:  freeModelsRefreshInterval,
+			Interval:  freeModels.interval,
 			Fetcher:   &freemodels.Fetcher{URL: freeModelsAPIURL},
 		}); err != nil {
 			setupLog.Error(err, "unable to add free-models refresher")
@@ -474,7 +495,7 @@ func main() {
 		}
 		setupLog.Info("free-models refresher enabled",
 			"namespace", fmNamespace,
-			"interval", freeModelsRefreshInterval,
+			"interval", freeModels.interval,
 			"url", freeModelsAPIURL)
 	}
 

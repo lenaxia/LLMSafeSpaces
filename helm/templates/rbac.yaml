@@ -564,7 +564,7 @@ subjects:
     name: {{ include "llmsafespaces.api.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
-
+---
 {{- /* #1546 design gap (design 0061 §8.1): inferencerelays is a
         cluster-scoped CRD; its grant existed only inside the opt-in
         rbac.scope=cluster block, which the relay-only guard REFUSES —
