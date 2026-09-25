@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r21 fixes: 2026-09-24/25)
+**Date:** 2026-09-23 (r1–r22 fixes: 2026-09-24/25)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` — seven structural pin tests + the two golden inventories — + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r21 fixes pushed; awaiting re-review.
+**Status:** r22 fixes pushed; awaiting re-review.
 
 ---
 
@@ -240,6 +240,10 @@ The record's own fix-claims audited: the "six structural pins" Work Completed bu
 
 The fifth consecutive round with no verdict-flipping escape constructible; the two findings were a vacuous mechanism (the class the thread keeps catching in its own closes) and the one remaining golden-skip insertion point.
 
+## r22 round record (the escaped-space raw check, the labels harmonized)
+
+r22's review delivered a first: **every claim in the r21 round record audited true** — and one finding remained: the escaped-space spelling on Assert 4's continuation head (`… log \ ` — a trailing space after the backslash) passed every TrimSpace comparison and dead-gated the step on every tree (bash syntax error; the r8 install-head class, never extended to the assertion blocks). Closed: no RAW assertion line may end with backslash-then-whitespace (V1 re-verified RED). The three scan labels harmonized to r22 (Blockers preamble, item 2, Next Steps); the PR body's label refreshed with them.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -250,16 +254,16 @@ The fifth consecutive round with no verdict-flipping escape constructible; the t
 
 ## Blockers
 
-**The dependency record, live-scanned at r21 (2026-09-25 — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
+**The dependency record, live-scanned at r22 (2026-09-25 — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **The fix (#1558, "namespace-scope cache-scoping derivation") MERGED 2026-09-24T16:21:22Z** — the gate's primary red-driver has landed; the first green contact should now be reachable. The r0 red was the gate working: first contact detected a real shipped-posture defect, retroactively validating design 0061.
-2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r19: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
+2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r22: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
 
 The merge call (all recorded-order predecessors merged; the gate's first dispatched green run closes the loop) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r21 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r22 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -267,8 +271,8 @@ The merge call (all recorded-order predecessors merged; the gate's first dispatc
 
 ## Next Steps
 
-1. Re-review (r21 verdict pending); w2 rebases #1566 onto this head.
-2. The orchestrator sequences the merge — live scan at r20: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
+1. Re-review (r22 verdict pending); w2 rebases #1566 onto this head.
+2. The orchestrator sequences the merge — live scan at r22: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
 3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
 
 ## Files Modified
