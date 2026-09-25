@@ -22,7 +22,7 @@ Per #1532's orchestrator ruling: the fix class is CLOCK INJECTION, not per-test 
 
 ### The seam (`clock.go`)
 
-Three package vars — `agentdNow`, `agentdNewTicker` (channel+stop shape), `agentdSleep` — defaults ARE the stdlib functions. Wired at exactly the three sites: the sweeper's ticker+now, the watchdog loop's ticker + the boot-grace `time.Since` → `agentdNow().Sub`, the supervisor test's poll sleep. The `setWatchdogTiming` house pattern (swap per-test, restore on cleanup, join-before-restore) documented in the seam.
+Two package vars — `agentdNow`, `agentdNewTicker` (channel+stop shape) — defaults ARE the stdlib functions. Wired at the two de-timed sites: the sweeper's ticker+now, the watchdog loop's ticker + the boot-grace `time.Since` → `agentdNow().Sub`. The `setWatchdogTiming` house pattern (swap per-test, restore on cleanup, join-before-restore) documented in the seam. (An r0-cut `agentdSleep` var + a supervisor poll-sleep routing were the over-reach r1 retracted; the var is deleted, not left orphaned.)
 
 ### The deterministic conversions
 
@@ -31,6 +31,14 @@ Three package vars — `agentdNow`, `agentdNewTicker` (channel+stop shape), `age
 - `TestStagingSweeper_DeterministicTicks` (NEW): driven ticks + fake now decide which files age out; idempotence and the gauge push COUNTED (locked reads — the recording fixture's mutex honored from the polling side).
 - `TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess` (CONVERTED, the named 2/2 flake): 10 DRIVEN ticks with the fake now FROZEN at spawn — every would-fire moment lands inside the boot grace regardless of runner speed; sync on the observable (cf≥10) instead of a blind 700ms sleep; BOTH window arms asserted arithmetically (frozen now → booting/respawn; advanced past grace → not-booting/hung). The subprocess and hung server stay REAL (the gatherer is the subject). The 3s sampleWindow trap fixed by the house literal pattern (10ms window — the de-timed ticks must not re-acquire wall-clock through the vitals sample).
 - Left deliberately real: the 6 verdict-table tests' real servers (their I/O is the subject; their sleeps are already just-enough bounded budgets — converting them would fake the HTTP layer, changing what they test) and the supervisor family's I/O waits (instance 2, above).
+
+### r2 review round (documentation + dead-code)
+
+- `agentdSleep` deleted (orphaned by the r1 retraction — a seam var without a site is speculative surface); the fake's sleepFn and its contract section removed with it.
+- The stale "three sites" narrative corrected everywhere it survived the r1 retraction (clock.go's file comment, the var docs, clock_test.go's header, this worklog's seam section).
+- clock.go's "tests run non-parallel by convention" clause reworded to the accurate claim (the seam-swapping tests must not run parallel; the package has t.Parallel elsewhere).
+- The fire-decision comment's middle clause reworded ("the count first reaches the threshold of 2 at tick 2, leaving nine would-fire moments").
+- The past-grace arm now uses `step()` (advance-without-tick): the loop receives no eleventh fire moment — that arm asserts through the direct gather only (r2's orphan-tick noise finding).
 
 ### r1 review round
 

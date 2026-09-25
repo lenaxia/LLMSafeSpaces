@@ -517,8 +517,8 @@ func TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess(t *testing.T) {
 	// Deterministic fire decisions: the fake now is FROZEN at spawn
 	// (every would-fire moment lands INSIDE the boot grace — runner
 	// speed cannot shrink the window). Ten ticks = ten probe failures;
-	// the first reaches the threshold of 2, leaving NINE would-fire
-	// moments for the boot-grace suppression to hold.
+	// the count first reaches the threshold of 2 at tick 2, leaving
+	// NINE would-fire moments for the boot-grace suppression to hold.
 	// The loop goroutine builds its ticker asynchronously — a tick
 	// delivered BEFORE the ticker exists is lost. Sync on its creation.
 	require.Eventually(t, func() bool { return mc.tickerCount() >= 1 },
@@ -552,8 +552,10 @@ func TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess(t *testing.T) {
 	assert.Equal(t, verdictRespawn, got)
 
 	// Past the grace: the same real sample classifies differently —
-	// the window boundary is ARITHMETIC on the fake clock.
-	mc.advance(vitalsBootGraceWindow + time.Second)
+	// the window boundary is ARITHMETIC on the fake clock. step()
+	// (not advance): the loop must NOT receive an eleventh fire
+	// moment — this arm asserts through the DIRECT gather only.
+	mc.step(vitalsBootGraceWindow + time.Second)
 	v2 := vit.gather(context.Background())
 	assert.False(t, v2.booting, "fake now past the grace flips the booting flag")
 	got2, _ := v2.classify()
