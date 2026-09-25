@@ -51,7 +51,7 @@ None. Dependencies: M2 (#1559) and M3 (#1556) merge first (the recorded order); 
 - `local/us61_migration_recovery_e2e_script_test.go` (new) — the 8 pins
 - `.github/workflows/e2e-nightly.yml` — the two ARMED steps (ports 18090/18091)
 - `local/us72_nightly_lane_hardening_test.go` — the armed-set amendment (drillDone/m2Chain + the two entries)
-- `worklogs/NNNN_2026-09-24_migration-recovery-e2e.md`
+- `worklogs/1063_2026-09-24_migration-recovery-e2e.md`
 
 ## Review Round 1 + THE ROOT CAUSE (this PR is now the incident's closure)
 
