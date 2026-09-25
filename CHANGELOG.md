@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.8] - 2026-09-25
+
+### Fixed — the relay arming root cause and incident closure (#1546/#1548, design 0061)
+
+- **Controllers could never arm relay-only delivery** (#1548's literal root
+  cause, found by the M3 posture gate on its first real execution): the flag
+  registration returned its struct by value while the flag package bound into
+  the local — `flag.Parse` wrote an orphaned copy and `relay-only-key-delivery`
+  stayed false under every value, on every release since #1448 (v0.34.4
+  through v0.34.7 all audited affected; no released controller ever armed).
+  Fixed at both flag seams (relay and free-models refresher — the same
+  byte-identical bug), pinned three generations deep (seam, gate-structural,
+  caller-wrapper), and closed tree-wide by class sweep (the remaining
+  registrars are pointer-safe by construction). First live arming verified on
+  kind by the posture gate; v0.34.8 is the first release whose controller can
+  arm at all. (PR #1566)
+
+### Features — design 0061: relay delivery hardening (PRs #1553/#1559/#1556/#1557/#1552/#1566)
+
+- **M1 crash-loud arming**: a controller deployed relay-only that fails to
+  arm exits 85 instead of running un-armed (#1553).
+- **M2 migration fallback + both counters**: absent or expired staged
+  handoffs deliver the pre-flip raw-key batch (migration mode, the chart
+  default) with `relay_fallback_deliveries_total` firing at the exact moment
+  of harm; `relay_degraded_batches_total` survives both modes; strict mode
+  preserves the fail-closed class (#1559).
+- **M3 posture gate**: a CI job cold-installing the chart's own shipped
+  defaults on kind and asserting the four §5 checks; on its first real
+  executions it caught its own invalid jsonpath, the arming root cause, and
+  the RBAC bindings apply-loss, then ran green twelve times (#1556, #1566).
+- **M4 CredentialsStaged**: the relay batch outcome surfaces as the existing
+  condition on the Workspace CRD (#1557).
+- **Posture RBAC fixes** (#1552); the api-leader-election and
+  api-platform-info bindings moved to a dedicated template after a
+  whitespace-eaten doc separator silently dropped one from every apply, with
+  a doc-boundary class pin (#1566); namespace-scope cache-scoping derivation
+  fixes the drill-shape crashloop (#1558).
+- **Migration-recovery e2e** (design 0061 §10/§11), closing #1546's evidence
+  (#1566).
+
+### Fixed — MCP transport boundaries (PRs #1572/#1564)
+
+- **send_message argument recovery**: model-emitted duplicated fragments in
+  tool arguments (the #1530 class — proven by escaped-quote forensics, race
+  falsified by 11,501 harness-exact wire bodies, now CI-wired as a standing
+  probe) are recovered and delivered with a warning field; duplicate-key JSON
+  bodies (intent unrecoverable) refuse loud with -32602, duplicate-path
+  REPORTS capped (first 16 + count, paths truncated, join bounded —
+  attacker-shaped amplification closed by construction and pinned); the raw
+  read bounded by the socialized 1MiB cap (#1572, closes #1530). Misplaced
+  params keys and trailing data reject loud with exact diagnostics, the
+  spec's additive `_meta` key allowlisted (#1564, closes #1561).
+
+### Fixed — upload admission and the nightly instrument (PRs #1563/#1567/#1545/#1540/#1542/#1544)
+
+- **Admission precedence**: the count-cap check now precedes the budget
+  clause — the 5th-concurrent 429 boundary (§6.6) was unreachable at shipped
+  defaults (#1563); the SR-6B row forces the admission overlap
+  deterministically (#1567). Upload serialization removed with its latency
+  catch reclassified as the known-issue skip (#1545, #1540); the nightly's
+  epic-72 evidence lane un-hostaged (#1542); the arbitration's final five
+  rows closed — 29/29 contract-correct (#1544).
+
+### Security — legacy-key scrub and rogue-agent sweep (US-72.6, PR #1537)
+
+### Fixed — the agentd flake family (PRs #1568/#1547)
+
+- **#1532 instances 1+3 de-timed**: the staging sweeper and watchdog clock
+  sites route through an injectable seam (production byte-identical,
+  behaviorally pinned); tests assert ordering and window boundaries
+  deterministically instead of racing the runner; the supervisor family
+  triaged I/O-inherent (instance 2 open) (#1568). The watchdog flake's
+  signature decoded and the supervisor env read guarded (#1547).
+
+### E2E — sidecar upload rows un-skip (design 0060 PR4, #1524)
+
 ## [0.34.7] - 2026-09-22
 
 ### Features — saved prompts and slash commands (#1496/#1499, PRs #1502/#1503/#1509)
