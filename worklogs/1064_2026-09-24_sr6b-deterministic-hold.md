@@ -83,4 +83,4 @@ None.
 ## Files Modified
 
 - `local/us-1500-upload-stress-e2e.sh` — the SR-6B row: trickled holders + the 5th's 429/staging_busy body assertion + retry-after-release; the failure history in the comment
-- `worklogs/NNNN_2026-09-24_sr6b-deterministic-hold.md` — this worklog
+- `worklogs/1064_2026-09-24_sr6b-deterministic-hold.md` — this worklog
