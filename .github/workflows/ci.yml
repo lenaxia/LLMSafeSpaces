@@ -614,6 +614,14 @@ jobs:
       - name: Run the origin e2e (real opencode + real agentd dispatch)
         run: go test -tags=integration -timeout 600s -count=1 -run TestOriginE2E ./cmd/workspace-agentd/
 
+      # #1530: the falsification harness (replica of the pinned
+      # dispatch — sequential awaited hooks, shared args reference,
+      # wire serialization) runs on every PR so a future async-unsafe
+      # plugin rewrite that introduces a REAL mutation/serializer
+      # race fails HERE, not in production misfires.
+      - name: Run the #1530 arg-mutation falsification probe
+        run: node scripts/1530-arg-mutation-probe.mjs 2000
+
   sdk-contract:
     name: SDK Contract Tests
     runs-on: ubuntu-latest

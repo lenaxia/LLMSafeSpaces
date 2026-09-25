@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -595,6 +596,53 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 
 // --- send_message ---------------------------------------------------------
 
+// splitDuplicatedArgFragment detects the #1530 emission-duplication
+// shape in a session_id argument: the value carries an escaped JSON
+// tail — `TARGET","lsp_injected_session":"ORIGIN"}` (trailing brace
+// optional) — the bytes a model emits when it duplicates the tail of
+// a similar prior send_message call visible in its context. Probes
+// (scripts/1530-arg-mutation-probe.mjs) falsified the plugin/
+// serializer race: the escapes exist only in JSON SOURCE TEXT, so
+// the corruption predates serialization. Both extracted ids must be
+// well-formed session ids; anything else is NOT the shape and
+// returns ok=false (the caller keeps the original value and its
+// normal error path — the guard never mangles clean input).
+const dupFragmentMark = `","lsp_injected_session":"`
+
+// sesIDPattern is a PREFIX-RESTRICTED SUBSET of the adapter seam's
+// agent-id grammar (pkg/agent/opencode loopback.go
+// sessionIDPattern — #1364's deliberate widening admits hyphens; the
+// seam itself has NO ses_ requirement, so this pattern covers
+// strictly less): the ses_ prefix plus the seam's charset and 1-128
+// TOTAL-length discipline (the {1,124} bound is 128 minus the
+// 4-char ses_ prefix). A non-ses_-prefixed leading id falls to the
+// documented lossy error path (fail-safe: never misdelivers; all
+// live ids are ses_-prefixed). Diverging from the seam charset
+// would silently shrink recovery coverage relative to ids the
+// platform itself validates (r3: a hyphenated leading id failed the
+// shape and fell back to the lossy pre-fix path). The recovered
+// target is re-validated by SessionExists
+// immediately after; the embedded origin is cosmetic, untrusted
+// data — the pattern exists to reject shapes that merely CONTAIN
+// the fragment mark by accident, not to second-guess the id format.
+var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_-]{1,124}$`)
+
+func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok bool) {
+	i := strings.Index(v, dupFragmentMark)
+	if i <= 0 {
+		return "", "", false
+	}
+	target = v[:i]
+	if !sesIDPattern.MatchString(target) {
+		return "", "", false
+	}
+	rest := strings.TrimSuffix(strings.TrimSuffix(v[i+len(dupFragmentMark):], "}"), `"`)
+	if !sesIDPattern.MatchString(rest) {
+		return "", "", false
+	}
+	return target, rest, true
+}
+
 // mcpSendMessage delivers a text message to another session in this
 // workspace, fire-and-forget: the reply (if any) stays in the target
 // session — nothing returns to the caller (the same philosophy as
@@ -625,10 +673,29 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // current turn ends (live-proven run-at-boundary semantics — the same
 // POST shape that powers compact's scheduling), so delivery is detached
 // either way and the tool reports which case applies.
+//
+// #1530 emission-duplication recovery: a session_id carrying the
+// model-emission duplication shape (leading TARGET id + pasted
+// ","lsp_injected_session":"ORIGIN"} JSON tail — 13 live instances,
+// root-caused to model emission, NOT a plugin/serializer race; probes
+// in scripts/1530-arg-mutation-probe.mjs) is recovered to its leading
+// id, delivered, and warned — never silently lost to a resolution
+// error. See splitDuplicatedArgFragment for the exact shape contract.
 func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedSession, declaredSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
+	}
+	// #1530 emission-duplication recovery: a session_id carrying the
+	// duplicated-argument fragment (model emission slip — see
+	// splitDuplicatedArgFragment) still encodes the intended target
+	// in its leading id. Recover it and deliver; the result warns
+	// loudly instead of losing the message to a resolution error
+	// (the 13-instance misfire class — messages were lost though the
+	// intent was mechanically recoverable).
+	recoveredTarget, embeddedOrigin, recovered := splitDuplicatedArgFragment(sessionID)
+	if recovered {
+		sessionID = recoveredTarget
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -672,10 +739,23 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	// (legitimate self-notes exist per the issue's ruling); the result
 	// carries a loud warning field plus a plain-language line so the
 	// misaddress is visible at SEND time, not after echo-inspection.
-	selfSend := sessionID == origin
-	var selfWarn string
-	if selfSend {
-		selfWarn = "target is your own session — this message will come back to you as your next turn, not reach another agent. If you meant a different session, re-check the ID (session_list / session_metadata); if this is an intentional self-note, carry on."
+	//
+	// #1530 composes into the same field: a recovered emission-
+	// duplication send (and its embedded-origin mismatch, if any)
+	// appends its own warning so every anomaly is visible at send
+	// time while normal sends stay warning-free.
+	var warnParts []string
+	if sessionID == origin {
+		warnParts = append(warnParts,
+			"target is your own session — this message will come back to you as your next turn, not reach another agent. If you meant a different session, re-check the ID (session_list / session_metadata); if this is an intentional self-note, carry on.")
+	}
+	if recovered {
+		warn := "session_id carried a duplicated-argument fragment (emission slip): recovered target " + sessionID +
+			" from the leading id and delivered there — re-check the ID you pass (session_list / session_metadata)."
+		if embeddedOrigin != origin {
+			warn += " The fragment's embedded origin " + embeddedOrigin + " differs from the resolved origin " + origin + " — treated as cosmetic (the embedded copy is not trusted; the resolved origin wins attribution)."
+		}
+		warnParts = append(warnParts, warn)
 	}
 
 	busy, err := client.GetSessionStatuses(ctx)
@@ -716,8 +796,8 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		"origin":      origin,
 		"origin_mode": mode,
 	}
-	if selfWarn != "" {
-		result["warning"] = selfWarn
+	if len(warnParts) > 0 {
+		result["warning"] = strings.Join(warnParts, " ")
 	}
 	out, _ := json.Marshal(result)
 	return string(out), nil
