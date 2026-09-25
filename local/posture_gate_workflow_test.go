@@ -92,14 +92,15 @@ func extractSetKeys(t *testing.T, run string) []string {
 	// Both bash-join views (r15's symmetric close): the space join and
 	// the EMPTY join — a split `--se\`+NL+`t key=val` never forms the
 	// flag in the space-join parse but does in bash's own join. Keys
-	// are deduped PER VIEW (a key legitimately appears once per view;
-	// a duplicate WITHIN a view is helm's last-wins override class).
+	// are appended RAW per view (no dedup — r21 finding 1: deduping
+	// here made the duplicate-key count check vacuous; each key
+	// legitimately appears once per view, so >2 occurrences means a
+	// duplicate WITHIN a view).
 	var keys []string
 	for _, joined := range []string{
 		strings.ReplaceAll(run, "\\\n", " "),
 		strings.ReplaceAll(run, "\\\n", ""),
 	} {
-		seenInView := map[string]bool{}
 		fields := strings.Fields(joined)
 		for i, tok := range fields {
 			var value string
@@ -114,11 +115,7 @@ func extractSetKeys(t *testing.T, run string) []string {
 			}
 			for _, seg := range strings.Split(value, ",") {
 				seg = strings.Trim(seg, `"`)
-				k := strings.SplitN(seg, "=", 2)[0]
-				if !seenInView[k] {
-					seenInView[k] = true
-					keys = append(keys, k)
-				}
+				keys = append(keys, strings.SplitN(seg, "=", 2)[0])
 			}
 		}
 	}
@@ -674,6 +671,23 @@ func TestPostureGate_StatementInventory(t *testing.T) {
 			}
 			require.Equal(t, golden, got,
 				"the statement inventory: every non-comment line of %s is pinned in sequence — insertions, deletions, and sibling spellings all fail here; legitimate changes update the golden deliberately", prefix)
+			// r21 finding 2: the goldens skip comment/blank lines, but
+			// a comment or blank inserted after a line ending in `\`
+			// dead-gates the block (the continuation joins the comment
+			// onto the command — bash syntax error). The install block
+			// got its chain-integrity rule in r16/r17; the assertion
+			// blocks' one continuation (Assert 4's extraction pair) gets
+			// it here: the line after ANY backslash-terminated line must
+			// be neither blank nor comment.
+			rawLines := strings.Split(s.Run, "\n")
+			for i, line := range rawLines {
+				if !strings.HasSuffix(strings.TrimSpace(line), "\\") || i+1 >= len(rawLines) {
+					continue
+				}
+				next := strings.TrimSpace(rawLines[i+1])
+				require.False(t, next == "" || strings.HasPrefix(next, "#"),
+					"%s: the line after a continuation (line %d) must be neither blank nor comment — it dead-gates the block (a bash syntax error): %q", prefix, i+2, rawLines[i+1])
+			}
 		})
 	}
 }
@@ -872,10 +886,10 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		keyCounts[k]++
 	}
 	for k, n := range keyCounts {
-		// r20 finding 3: each key appears exactly once PER JOIN VIEW (the
-		// parse walks two views) — more than two means a duplicate
-		// within a view: helm's last-wins silently overrides the
-		// earlier value.
+		// r20 finding 3 + r21 finding 1: each key appears exactly once
+		// PER JOIN VIEW (the parse walks two views, raw counts — no
+		// dedup); more than two is a duplicate within a view: helm's
+		// last-wins silently overrides the earlier value.
 		require.Equal(t, 2, n,
 			"duplicate --set key %q within a view — helm's last-wins silently overrides the earlier value (the r20 duplicate-key class)", k)
 	}

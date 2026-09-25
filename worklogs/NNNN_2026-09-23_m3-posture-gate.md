@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r20 fixes: 2026-09-24/25)
+**Date:** 2026-09-23 (r1–r21 fixes: 2026-09-24/25)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` — seven structural pin tests + the two golden inventories — + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r20 fixes pushed; awaiting re-review.
+**Status:** r21 fixes pushed; awaiting re-review.
 
 ---
 
@@ -15,7 +15,7 @@ One CI job that cold-installs the chart under its OWN mandated default posture o
 - **`.github/workflows/posture-gate.yml`** — the e2e-nightly bootstrap reused verbatim (kind v0.32.0, helm, the `lss-e2e-registry` digest-pin registry, the 2-node `kind-cluster-nightly.yaml` topology, the stamped image-build chain, cert-manager, the credentials Secret, test Postgres/Redis), plus the router image built from tree under a local ref (the drill-shape precedent — kind cannot pull the ghcr default; the override is environmental image plumbing, not posture).
 - **The install** carries ONLY environmental overrides (image repos/tags/pullPolicy, delivery pins, `mcp.enabled=false` (issue #28 — no image exists), test DB/Redis, logging verbosity). Every posture lever — `rbac.scope`, `relayOnlyKeyDelivery.enabled`, `agentdSidecar.enabled`, `allowRelayRouterEgress` — reaches helm UNTOUCHED at its shipped default. If the shipped defaults cannot go all-Ready, the gate is red. That is the point.
 - **The four assertions, in order, as separate unconditional steps** (r1: each hardened — see the round record).
-- **`local/posture_gate_workflow_test.go`** — six structural pins, mutation-checked (r0 by the reviewer, r1 by me — see the round record).
+- **`local/posture_gate_workflow_test.go`** — seven structural pin tests plus the two golden inventories, mutation-checked every round since r0 (see the round records). [r21: this line said "six structural pins" for three consecutive rounds while two round records claimed it fixed — the Work Completed bullet, not the Session header, was the surviving copy.]
 - **README-LLM** — the contribution rule subsection (the M3 AC's "contribution rule lands in README-LLM" clause): a PR flipping any multi-component default must include posture-gate evidence covering the new posture.
 
 ## r1 round record (the review EXECUTED the gate on a live kind cluster)
@@ -230,6 +230,16 @@ The fourth consecutive round with no verdict-flipping escape constructible; the 
 
 All six r20 mutation classes re-verified RED (unquoted/tee/indirect env writes, dash-space split, mid-chain valu split, duplicate key); pristine baseline checksummed before and after. The record: the stale Next-Steps scan line and the "six structural pins" header fixed in place; the PR body's sequencing section refreshed (all recorded-order predecessors merged).
 
+## r21 round record (the vacuous dedup fixed, the continuation-pair rule, the record's own fix-claims audited)
+
+r21's review proved the r20 duplicate-key count check VACUOUS — `extractSetKeys` deduped per view before appending, so the count was structurally always 2 (proven three ways, including the live mutation: a duplicate line left the containing test GREEN; only the golden caught it). Fixed: the extractor appends RAW per view (no dedup) and the count check fires in its own test — U1/U2 re-verified: a duplicate `--set` line AND a comma-level duplicate now fail `TestPostureGate_InstallShippedPosture` directly. The pin comment and this record now describe the mechanism that exists.
+
+The assertion goldens' comment/blank skip left one pin-green fail-closed insertion point — Assert 4's continuation pair (a comment or blank after the `RUNNING_COMMIT=… \` line joins onto the command and dead-gates the block; bash syntax error). Closed: within assertion blocks, the line after ANY backslash-terminated line must be neither blank nor comment (the install block's r16/r17 chain-integrity rule, extended). U3/U4 re-verified RED.
+
+The record's own fix-claims audited: the "six structural pins" Work Completed bullet survived two round records claiming it fixed (the Session header was edited, the bullet was not) — fixed now with the annotation; the Blockers label refreshed to r21 and the stale "though the recorded order names M2 first" parenthetical removed (M2 merged).
+
+The fifth consecutive round with no verdict-flipping escape constructible; the two findings were a vacuous mechanism (the class the thread keeps catching in its own closes) and the one remaining golden-skip insertion point.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -240,16 +250,16 @@ All six r20 mutation classes re-verified RED (unquoted/tee/indirect env writes, 
 
 ## Blockers
 
-**The dependency record, live-scanned at r19 (2026-09-24 ~22:0xZ — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
+**The dependency record, live-scanned at r21 (2026-09-25 — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **The fix (#1558, "namespace-scope cache-scoping derivation") MERGED 2026-09-24T16:21:22Z** — the gate's primary red-driver has landed; the first green contact should now be reachable. The r0 red was the gate working: first contact detected a real shipped-posture defect, retroactively validating design 0061.
 2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r19: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
 
-The merge call (the gate could now run green for the first time, though the recorded order names M2 first) is the orchestrator's.
+The merge call (all recorded-order predecessors merged; the gate's first dispatched green run closes the loop) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r20 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r21 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -257,7 +267,7 @@ The merge call (the gate could now run green for the first time, though the reco
 
 ## Next Steps
 
-1. Re-review (r20 verdict pending); w2 rebases #1566 onto this head.
+1. Re-review (r21 verdict pending); w2 rebases #1566 onto this head.
 2. The orchestrator sequences the merge — live scan at r20: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
 3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
 
