@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/utilities"
 )
 
 // resyncBaseURLAtomic holds the base URL of THIS pod's resync endpoint
@@ -106,13 +108,30 @@ func mcpHandler(password string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 
-		// #1561: the wire's transport bounds — one JSON document,
-		// at most maxMCPBodyBytes. The cap also bounds the trailing
-		// scan below (an unbounded second value would otherwise
-		// buffer the whole remainder).
+		// #1561: the wire's transport bounds — one JSON document, at
+		// most maxMCPBodyBytes. #1530 integration: the body is read
+		// ONCE (bounded by the same cap) so the tools/call
+		// duplicate-key scan below can see the RAW bytes beneath the
+		// decoder's silent duplicate-key collapse — the read is
+		// equivalent to the streaming decode (MaxBytesReader trips at
+		// the same byte count, including inside what would have been
+		// the trailing scan), and decodeOneDocument keeps its strict
+		// one-document contract on the in-memory copy.
 		r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
+		raw, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(readErr, &mbe) {
+				writeMCPErrorStatus(w, nil, -32700,
+					fmt.Sprintf("Parse error: request body exceeds the %d-byte cap", maxMCPBodyBytes),
+					http.StatusRequestEntityTooLarge)
+				return
+			}
+			writeMCPErrorStatus(w, nil, -32700, fmt.Sprintf("Parse error: %v", readErr), http.StatusBadRequest)
+			return
+		}
 		var req mcpRequest
-		if err := decodeOneDocument(r.Body, &req); err != nil {
+		if err := decodeOneDocument(bytes.NewReader(raw), &req); err != nil {
 			var mbe *http.MaxBytesError
 			if errors.As(err, &mbe) {
 				writeMCPErrorStatus(w, nil, -32700,
@@ -124,6 +143,35 @@ func mcpHandler(password string) http.HandlerFunc {
 			// "Parse error" masked WHAT failed for every caller.
 			writeMCPErrorStatus(w, nil, -32700, fmt.Sprintf("Parse error: %v", err), http.StatusBadRequest)
 			return
+		}
+		// #1530 duplicate-key refusal (tools/call only — the argument
+		// surface where the exposure lives): the strict decode above
+		// collapses duplicated object keys SILENTLY (last wins), the
+		// KEY twin of the value-fragment emission slip the send_message
+		// recovery guard handles. A duplicated key misbinds with zero
+		// trace (wrong id, wrong target, no error) — refusing loudly
+		// beats guessing which copy was intended.
+		if req.Method == "tools/call" {
+			// Fail CLOSED on scanner error. Unreachable by construction
+			// while decodeOneDocument stays strict (it rejects trailing
+			// data the scanner would error on) — kept as defense in
+			// depth: if the two parsers ever diverge in what they
+			// accept, a tools/call body refuses rather than dispatches
+			// past the gate (r2's verified escape class).
+			dups, scanErr := utilities.FindDuplicateKeys(raw)
+			if scanErr != nil {
+				writeMCPErrorStatus(w, req.ID, -32700,
+					"Parse error: malformed tools/call body (unscannable JSON): "+scanErr.Error(),
+					http.StatusBadRequest)
+				return
+			}
+			if len(dups) > 0 {
+				writeMCPErrorStatus(w, req.ID, -32602,
+					"Invalid params: duplicated object key(s) "+strings.Join(dups, ", ")+
+						" — JSON allows one value per key and the server cannot guess which copy was intended; re-emit the call with each key exactly once",
+					http.StatusBadRequest)
+				return
+			}
 		}
 
 		switch req.Method {
@@ -237,7 +285,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "send_message",
-						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when target==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when target==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the session_id value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -486,12 +534,17 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		sessionID, _ := args["session_id"].(string)
 		message, _ := args["message"].(string)
 		// Hybrid origin (#1469 ruling): lsp_injected_session is the
-		// platform plugin's harness-attested injection (never
-		// schema-advertised, never model-supplied by construction);
-		// from_session_id is the optional self-declared fallback the
-		// model may supply when injection is absent. mcpSendMessage
-		// prefers injection, validates by-ID either way, and labels
-		// the mode in the sentinel and the result.
+		// platform plugin's harness-attested injection — not an
+		// inputSchema property, but #1530's model-emission findings
+		// showed models DO sometimes supply copies of the key (it is
+		// visible in their own prior calls' rendered arguments, and
+		// the send_message description references it), so "never
+		// model-supplied by construction" no longer holds — the
+		// injection OVERWRITES any model-supplied copy (unconditional,
+		// last-write-wins at the plugin). from_session_id is the
+		// optional self-declared fallback. mcpSendMessage prefers
+		// injection, validates by-ID either way, and labels the mode
+		// in the sentinel and the result.
 		injected, _ := args["lsp_injected_session"].(string)
 		declared, _ := args["from_session_id"].(string)
 		return mcpSendMessage(ctx, password, sessionID, message, injected, declared)
