@@ -97,4 +97,4 @@ None.
 
 - `cmd/workspace-agentd/mcp_server.go` — trailing-data check, diagnostics on parse errors, strict tools/call params decode (both poles documented in-code)
 - `cmd/workspace-agentd/mcp_server_test.go` — 9 new tests: MisplacedParamsKeyRejected, TrailingDataRejected, MidStringGarbageStillParseErrors, RequestBodyAdditiveTolerancePinned, LiteralIssue1561Repro (the 164-char body byte-identical), TrailingNewlineAccepted, BodyCap413, BodyCapExactDocPlusTrailingByte413, ToolsCall_MetaKeyAllowed — 4 at r0 + 3 at r1 + 2 at r2; 28/28 family total
-- `worklogs/NNNN_2026-09-24_mcp-parse-boundary-strict.md` — this worklog
+- `worklogs/1065_2026-09-24_mcp-parse-boundary-strict.md` — this worklog
