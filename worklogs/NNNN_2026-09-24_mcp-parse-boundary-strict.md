@@ -43,7 +43,7 @@ Silent tolerance of malformed transport input is the pattern those lanes ended; 
 `); whitespace-only remainders must stay accepted or they all silently break.
 - **Parse-error diagnostics content pinned** (reverting to bare "Parse error" now fails a test).
 - **Sibling tracking**: #1565 files the same-class loose decodes (workflow_execute.go:113, user_timezone.go:68) so the class-flag isn't silently retired at merge.
-- **One offset-carrying helper** (`decodeOneDocument`) serves both -3270 paths; client.go's outbound `decodeStrict` keeps its own error contract (different consumers).
+- **One offset-carrying helper** (`decodeOneDocument`) serves both -32700 paths; client.go's outbound `decodeStrict` keeps its own error contract (different consumers).
 
 ### r2 review round (both blocking findings + the minor + style nits)
 
