@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r24 fixes: 2026-09-24/25)
+**Date:** 2026-09-23 (r1–r25 fixes: 2026-09-24/25)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` — seven structural pin tests + the two golden inventories — + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r24 fixes pushed; awaiting re-review.
+**Status:** r25 fixes pushed (the record refreshed to the live-green milestone); awaiting re-review.
 
 ---
 
@@ -257,6 +257,10 @@ W1/W2/W3 re-verified RED (NBSP after the continuation backslash, after `fi`, on 
 
 r24's sole finding: the r23 commit edited the worklog carrying the scan labels without refreshing them (all three still read r22), and the body's header read "r22 refresh" above an inner "Live scan at r23" — the same one-section self-contradiction r20/r21/r22 each counted. Fixed: all labels harmonized to a fresh r24 live scan (content unchanged: M1/M2/M4/#1558 all MERGED; #1566 OPEN; no new recorded-order predecessors among {1562, 1564, 1567}). The pattern itself — editing the record without re-scanning it — is the r5→r6 lapse recurrence; the discipline going forward is that any commit touching the worklog refreshes the labels in the same edit.
 
+## r25 round record (the milestone the record awaited had already happened)
+
+r24's review brought the news the record was waiting for: **the gate has gone fully green, nine+ times** (dispatched runs 00:30Z–04:59Z 2026-09-25 on #1566's branch — all four assertions SUCCESS, two step-verified via the Actions API; that branch's four assertion run blocks are BYTE-IDENTICAL to this PR's, its additive peel being a helm version pin, an RBAC-binding assertion step, and a failure-dump step). The r18 Assert 2 lines are live-validated; the stability window has passed many times; the provenance assertion has passed live. The record refresh: Tests Run, Next Steps, and the body's merge-call paragraph now characterize the green runs accurately — and the r24 commit had edited the very section carrying the stale "await their first live cluster contact" line (the lapse the r24 record itself names, recurring one round later — named again here, honestly). The verdict's own words: one record pass and this is approvable on the current mechanism.
+
 ## Key Decisions
 
 1. **Unconditional assertions.** The nightly's cancel-guard arming protects EVIDENCE lanes from unrelated row failures; here the install is the thing under test — a failed `helm --wait` already fails the job, and conditioning the assertions would only manufacture skip-paths around red gates.
@@ -267,26 +271,26 @@ r24's sole finding: the r23 commit edited the worklog carrying the scan labels w
 
 ## Blockers
 
-**The dependency record, live-scanned at r24 (2026-09-25 — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
+**The dependency record, live-scanned at r25 (2026-09-25 — each round re-scans at write time; two earlier rounds asserted states that had flipped before their pushes, the lesson that made the scans explicit):**
 
 1. **The shipped-posture cache-scoping defect** — namespace scope + `watchNamespaces` unset → cluster-wide informer → forbidden → CrashLoop (56 denial lines in the r0 live run). **The fix (#1558, "namespace-scope cache-scoping derivation") MERGED 2026-09-24T16:21:22Z** — the gate's primary red-driver has landed; the first green contact should now be reachable. The r0 red was the gate working: first contact detected a real shipped-posture defect, retroactively validating design 0061.
-2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r24: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
+2. **The #1548 recorded order**: M1 → M2 → M4 → gate → e2e. Live scan at r25: **M1 (#1553), M2 (#1559), M4 (#1557), and the defect fix #1558 ALL MERGED** — the recorded order is clear for the gate; #1566 (the e2e story) rebases onto this head.
 
 The merge call (all recorded-order predecessors merged; the gate's first dispatched green run closes the loop) is the orchestrator's.
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r24 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r25 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
-- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics are NOW live-validated (Assert 1 passed, run 36053803876 — r18); the r18 Assert 2 deployment-truth/prev-consult lines are render-validated but await their first live cluster contact (rides the next gate run).
+- Live-cluster execution: r0's review run (their evidence, cited above); the r1 stability-window mechanics are NOW live-validated (Assert 1 passed, run 36053803876 — r18); and the r18 Assert 2 deployment-truth/prev-consult lines are LIVE-VALIDATED TOO [r25: nine+ dispatched FULL-GREEN gate runs 00:30Z–04:59Z 2026-09-25 on #1566's branch — all four assertions SUCCESS, step-verified via the Actions API by the r24 review; that branch's assertion run blocks are byte-identical to this PR's, its additive peel being a helm pin, an RBAC-binding assertion step, and a failure-dump step]. The gate's first full green has happened, repeatedly.
 
 ## Next Steps
 
-1. Re-review (r24 verdict pending); w2 rebases #1566 onto this head.
-2. The orchestrator sequences the merge — live scan at r24: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
-3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
+1. Re-review (r25 verdict pending — the review's own bar: approvable on the current mechanism once the record matches the milestone).
+2. The orchestrator sequences the merge — live scan at r25: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear. The gate's first dispatched green run HAS HAPPENED (nine+ times, on #1566's byte-identical assertion code) — the loop is closed; what remains is the merge call itself.
+3. The stability window has passed live MANY times (r18's first contact; then the nine+ full-green runs of 2026-09-25 — the gate's complete four-assertion green, demonstrated). No churn false-positives observed; the hook Jobs delete on success.
 
 ## Files Modified
 
