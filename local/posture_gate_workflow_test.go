@@ -1,0 +1,1163 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package local_test
+
+// posture_gate_workflow_test.go — design 0061 §5 (M3): structural pins
+// for the posture gate workflow. The gate cold-installs the chart under
+// its OWN shipped default posture on kind (rbac.scope=namespace +
+// relayOnlyKeyDelivery.enabled=true are the SHIPPED values — the install
+// sets NEITHER) and asserts, in order: (1) every Deployment in every
+// rendered namespace Ready, (2) the controller's armed line
+// (`relay-only key delivery enabled`, M1's boot contract), (3) zero
+// `forbidden` lines in any pod log (the silent-RBAC-starvation class),
+// (4) the running controller's commit stamp equals the sha the image
+// was built with in this run (the wrong-artifact class — §5's r1
+// envelope: what this CAN catch is running something other than this
+// run's built artifact; wrong-bits-with-right-stamp stays owner-side).
+//
+// The pins hold: the three-path trigger breadth (§11 ruling 3: helm/**
+// + controller/** + api/**), the four assertions present and ordered,
+// the default-posture install command (environmental overrides ONLY —
+// an ALLOWLIST over the --set channel, the values channels banned
+// outright), and the provenance basis (the controller image build
+// stamps the SAME `${{ github.sha }}` literal assertion 4 compares
+// against).
+//
+// Residual threat model (stated, r5 — so the pins' claims stop
+// outrunning their mechanism): these pins deter ACCIDENTAL DRIFT on
+// maintainer PRs — a renamed flag, a dropped namespace, a pasted
+// override, a refactor that amputates a check. They are NOT an
+// adversarial-shell-evasion defense: eval strings, function overrides,
+// PATH-shimmed kubectl, or a workflow step that rewrites the chart
+// itself can defeat any text-level pin and are out of scope (the
+// workflow diff is the reviewed artifact; r2's ruling on the
+// chart-mutation class stands). Five rounds of spelling-list closes
+// were each falsified within one round — the allowlist/channel-ban/
+// shape-pin structure is the close for the drift classes; what remains
+// beyond it is adversarial, and the review of the diff itself is the
+// control for that.
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+	"unicode"
+
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/yaml"
+)
+
+// valuesFileFlagRe matches ANY -f flag spelling against the install
+// run block — attached (`-fov.yaml`), delimited (`-f file`, `-f=file`,
+// tab), or continuation (`-f\` + newline). r5's ruling: the shell
+// cannot be enumerated by spelling lists; any `-f` after whitespace
+// is a values channel, period.
+var valuesFileFlagRe = regexp.MustCompile(`(?m)(^|\s)-f`)
+
+// installSetAllowlist is the COMPLETE environmental override surface —
+// the only keys the install may carry. This is the structural close
+// (r5): an allowlist over the --set channel ends the spelling war —
+// quote-split (`--set rbac.scope"=cluster"`), variable indirection
+// (`--set "${KEY}=cluster"`), and every future lever fail HERE, in one
+// check, regardless of how they are spelled.
+var installSetAllowlist = map[string]bool{
+	"api.image.repository": true, "api.image.tag": true, "api.image.pullPolicy": true,
+	"controller.image.repository": true, "controller.image.tag": true, "controller.image.pullPolicy": true,
+	"mcp.enabled":     true,
+	"postgresql.host": true, "postgresql.port": true, "postgresql.user": true, "postgresql.database": true,
+	"redis.host": true, "redis.port": true,
+	"externalSecret.create": true, "externalSecret.postgresPassword": true, "externalSecret.redisPassword": true,
+	"api.config.logging.development":              true,
+	"controller.agentdDelivery.image":             true,
+	"controller.agentdDelivery.binarySHA256Amd64": true, "controller.agentdDelivery.binarySHA256Arm64": true,
+	"controller.opencodeDelivery.image":             true,
+	"controller.opencodeDelivery.binarySHA256Amd64": true, "controller.opencodeDelivery.binarySHA256Arm64": true,
+	"controller.inferenceRelay.router.image.repository": true, "controller.inferenceRelay.router.image.tag": true,
+}
+
+// extractSetKeys parses the install run block and returns the KEY of
+// every --set argument: continuation lines joined, whitespace-tokenized,
+// `--set <value>` and `--set=<value>` forms, surrounding quotes
+// stripped, and — helm's own parsing rule (r6's root cause B) — each
+// value SPLIT ON COMMAS with every k=v segment's key returned (the
+// comma multi-set channel `--set mcp.enabled=false,rbac.scope=cluster`
+// reaches rendering; a key-before-first-= parse is blind to the tail).
+// A quote-split or indirected key arrives mangled (`rbac.scope"`,
+// `${KEY}`) and fails the allowlist.
+func extractSetKeys(t *testing.T, run string) []string {
+	t.Helper()
+	// Both bash-join views (r15's symmetric close): the space join and
+	// the EMPTY join — a split `--se\`+NL+`t key=val` never forms the
+	// flag in the space-join parse but does in bash's own join. Keys
+	// are appended RAW per view (no dedup — r21 finding 1: deduping
+	// here made the duplicate-key count check vacuous; each key
+	// legitimately appears once per view, so >2 occurrences means a
+	// duplicate WITHIN a view).
+	var keys []string
+	for _, joined := range []string{
+		strings.ReplaceAll(run, "\\\n", " "),
+		strings.ReplaceAll(run, "\\\n", ""),
+	} {
+		fields := strings.Fields(joined)
+		for i, tok := range fields {
+			var value string
+			switch {
+			case tok == "--set":
+				require.True(t, i+1 < len(fields), "--set must be followed by a value token")
+				value = fields[i+1]
+			case strings.HasPrefix(tok, "--set="):
+				value = strings.TrimPrefix(tok, "--set=")
+			default:
+				continue
+			}
+			for _, seg := range strings.Split(value, ",") {
+				seg = strings.Trim(seg, `"`)
+				keys = append(keys, strings.SplitN(seg, "=", 2)[0])
+			}
+		}
+	}
+	return keys
+}
+
+var postureGateWorkflow = filepath.Join("..", ".github", "workflows", "posture-gate.yml")
+
+// gateStep/gateWorkflow mirror the nightly pins' parse shape.
+// ContinueOnError is captured (as *bool) so pin (f) can ban it outright
+// — `continue-on-error: true` on an assertion step is a failed
+// assertion with a green job. Env is captured so the install step's
+// env block can be required empty (an env-carried flag value evades
+// every run-text ban — r6's minor finding).
+type gateStep struct {
+	Name            string            `json:"name"`
+	ID              string            `json:"id"`
+	If              string            `json:"if"`
+	Run             string            `json:"run"`
+	Env             map[string]string `json:"env"`
+	Shell           string            `json:"shell"`
+	ContinueOnError *bool             `json:"continue-on-error"`
+}
+
+type gateWorkflow struct {
+	Jobs map[string]struct {
+		If      string            `json:"if"`
+		Env     map[string]string `json:"env"`
+		Default *struct {
+			Run *struct {
+				Shell string `json:"shell"`
+			} `json:"run"`
+		} `json:"defaults"`
+		Steps []gateStep `json:"steps"`
+	} `json:"jobs"`
+}
+
+func parsePostureGate(t *testing.T) []gateStep {
+	t.Helper()
+	raw := []byte(mustRead(t, postureGateWorkflow))
+	var wf gateWorkflow
+	require.NoError(t, yaml.Unmarshal(raw, &wf), "posture-gate.yml must parse")
+	var steps []gateStep
+	for _, j := range wf.Jobs {
+		steps = append(steps, j.Steps...)
+	}
+	require.NotEmpty(t, steps)
+	return steps
+}
+
+// gateStepByPrefix finds the unique step whose parsed name starts with
+// prefix (multi-match fails loudly, mirroring the nightly pins).
+func gateStepByPrefix(t *testing.T, steps []gateStep, prefix string) gateStep {
+	t.Helper()
+	var found []gateStep
+	for _, s := range steps {
+		if strings.HasPrefix(s.Name, prefix) {
+			found = append(found, s)
+		}
+	}
+	require.Len(t, found, 1, "prefix %q must match exactly one step (matched %d)", prefix, len(found))
+	return found[0]
+}
+
+// Pin (a): the trigger surface — workflow_dispatch plus the §11
+// ruling-3 breadth: pull_request paths EXACTLY helm/**, controller/**,
+// api/**. A dropped path silently stops gating that surface; an added
+// path gates surface the owner did not confirm.
+func TestPostureGate_Triggers(t *testing.T) {
+	raw := []byte(mustRead(t, postureGateWorkflow))
+	var top map[string]json.RawMessage
+	require.NoError(t, yaml.Unmarshal(raw, &top))
+	// go-yaml resolves the bare `on` key as YAML-1.1 boolean true when
+	// round-tripped through JSON — accept either key spelling.
+	onBlock, ok := top["on"]
+	if !ok {
+		onBlock, ok = top["true"]
+	}
+	require.True(t, ok, "workflow must have an `on:` trigger block")
+
+	// r16's optional close, adopted: a workflow-level `defaults:` block
+	// (e.g. `defaults: {run: {shell: …}}`) silently re-scopes every
+	// step's shell — absent by design here; drift would be unreviewed.
+	require.NotContains(t, keysOf(top), "defaults",
+		"the workflow must carry no `defaults:` block — a defaults.run.shell silently re-scopes every step")
+
+	// r17 finding 5: the permissions block exact-pinned (r3's
+	// least-privilege note, unpinned until now).
+	var perms map[string]string
+	require.NoError(t, json.Unmarshal(top["permissions"], &perms))
+	require.Equal(t, map[string]string{"contents": "read"}, perms,
+		"the workflow's permissions must be exactly contents: read — least privilege, pinned")
+
+	var onMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(onBlock, &onMap))
+	_, hasDispatch := onMap["workflow_dispatch"]
+	require.True(t, hasDispatch, "workflow_dispatch must be a trigger (manual posture re-checks)")
+
+	// The pull_request block must carry ONLY the paths filter — a
+	// `types:`/`branches:` filter silently narrows which PR events arm
+	// the gate (e.g. types: [opened] stops re-runs on pushes).
+	// r17 finding 5: the top-level trigger set is EXACT — an added
+	// `push:` (or any other) trigger gates surface the owner did not
+	// confirm (pin (a)'s own rationale).
+	require.ElementsMatch(t, []string{"workflow_dispatch", "pull_request"}, keysOf(onMap),
+		"the trigger set must be exactly workflow_dispatch + pull_request")
+	var prKeys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(onMap["pull_request"], &prKeys))
+	require.ElementsMatch(t, []string{"paths"}, keysOf(prKeys),
+		"pull_request must filter by paths only — types/branches filters silently disarm the gate")
+	var prPaths struct {
+		Paths []string `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(onMap["pull_request"], &prPaths))
+	require.ElementsMatch(t, []string{"helm/**", "controller/**", "api/**"}, prPaths.Paths,
+		"pull_request paths must be exactly the ruling-3 breadth: helm/** + controller/** + api/**")
+}
+
+// assertionSpec is one of the four §5 assertions: the parsed-name
+// prefix of its step, the literals its run block must contain, the
+// verdict-bearing lines that must appear as EXACT trimmed lines (r9),
+// and — r10's block-level close — a floor on `exit 1` carrier lines:
+// the condition rows were pinned in r9, but a verdict is carried by
+// its body's exit 1, which nothing required (five-for-five deletions
+// stayed green).
+var assertionSpecs = []struct {
+	prefix     string
+	literals   []string
+	exactLines []string
+	minExit1   int
+	why        string
+}{
+	{"Assert 1", []string{
+		"restartCount", // the stability window: helm --wait's rc=0 mid-crashloop (r1 live run) is not the verdict
+		"sleep 45",     // r6's root cause D: the DURATION is the crashloop catch's teeth — `sleep 1` passed every pin
+	}, []string{
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s",
+		// r10 RC-A: the verdict's INPUTS — the four snapshot assignments
+		// exact-pinned (r9 dropped the r8 anchor when moving the
+		// comparison to an exact line; an `AFTER_NS="$BEFORE_NS"` alias
+		// silently neutered the restart-diff).
+		`BEFORE_NS=$(restarts_snapshot "$NS")`,
+		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
+		`AFTER_NS=$(restarts_snapshot "$NS")`,
+		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
+		// r11 finding 1: the PRODUCER — a constant producer (a jsonpath
+		// typo evaluating empty, an appended `| head -n 0`) makes BEFORE
+		// and AFTER equal by construction; the comparison can never fire.
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{end}' | sort`,
+		// r12 finding 7: exact-line — `sleep 45 &` backgrounds the
+		// window away with the Contains literal intact.
+		"sleep 45",
+		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
+	}, 1,
+		"all-Ready in BOTH rendered namespaces plus a no-new-restarts stability window (the #1546 Defect-1 catch; `rollout status --all` does not exist in kubectl — the wait idiom is the verified one)"},
+	{"Assert 2", []string{
+		"relay-only key delivery enabled",
+	}, []string{
+		// r18 (the #1566 handoff): the DEPLOYMENT TRUTH first — the flag
+		// on the pod spec discriminates the render-lied defect from the
+		// wiring-drift residue; then the armed line in current OR
+		// previous containers (a post-arming restart moves the boot-time
+		// line; the stability window tolerates cold-start restarts).
+		`ARGS=$(kubectl -n $NS get deployment llmsafespaces-controller -o jsonpath='{.spec.template.spec.containers[0].args}')`,
+		`if ! grep -F -- '--relay-only-key-delivery=true' <<<"$ARGS"; then`,
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
+		"kubectl -n $NS logs deployment/llmsafespaces-controller --previous > /tmp/gate-armed-prev.log 2>/dev/null || true",
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
+	}, 3,
+		"the armed line — M1's boot-time contract, cluster-side; the FLAG on the pod spec first (the deployment truth), then the line in any container ever run"},
+	{"Assert 3", []string{
+		`for GATE_NS in "$NS" "llm-relay"`,
+	}, []string{
+		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
+		"while read -r POD; do",
+		`done <<< "$PODS"`,
+		`if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then`,
+		"if grep -i 'forbidden' /tmp/gate-pod.log; then",
+		// r10 RC-C: the prev-fetch guard exact-pinned — a Contains
+		// `--previous` passed for `--previous=false`, and the one
+		// remaining unpinned fetch line accepted a `&& false` suffix.
+		`if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then`,
+		"if grep -i 'forbidden' /tmp/gate-pod-prev.log; then",
+	}, 3,
+		"zero forbidden: no RBAC-denial line in any pod log, any container, BOTH namespaces, prior crashed containers included; every fetch failure is red"},
+	{"Assert 4", []string{
+		"starting controller",
+	}, []string{
+		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
+		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
+		// r11 finding 1: the comparison's INPUT — the extraction's first
+		// line (gutting the pipeline while retaining a no-op grep and a
+		// pinned-sha assignment made the comparison unfireable with
+		// every literal green).
+		"RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \\",
+		// r12 finding 3: the extraction's TAIL — `|| true` → `|| echo
+		// '<this run's sha>'` converts the unstamped-artifact red into a
+		// pass with the head line intact.
+		`| grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)`,
+	}, 3,
+		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
+}
+
+// Pin (b): the four assertions are present, in §5's order, each in its
+// own named step — and no OTHER step may claim an "Assert N" name
+// (an extra assertion step would silently reorder or dilute the
+// contract).
+func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
+	steps := parsePostureGate(t)
+	last := -1
+	for _, spec := range assertionSpecs {
+		s := gateStepByPrefix(t, steps, spec.prefix)
+		require.NotEmpty(t, s.Run, "%s must carry a run block", spec.prefix)
+		for _, lit := range spec.literals {
+			require.Contains(t, s.Run, lit, "%s run must contain %q — %s", spec.prefix, lit, spec.why)
+		}
+		for _, exact := range spec.exactLines {
+			requireExactLine(t, s.Run, exact,
+				"%s must carry the exact line %%q (a suffix, flip, or partial gut keeps substring pins green) — %s", spec.prefix, spec.why)
+		}
+		// r10 RC-B + r11 finding 2 + r12 finding 6: the verdict CARRIERS —
+		// each FAIL branch's exit 1. r9 pinned the conditions; deleting
+		// the body's exit 1 turned every FAIL branch into echo-and-
+		// continue. Counted below with FAIL-context (comments don't
+		// count; dead-branch laundering doesn't either).
+		// r10 sub-agent (i) + r11 finding 4 + r12 finding 5: no assertion
+		// may rebind NS or GATE_NS — an in-block rebinding silently
+		// re-scopes the verdict's targets (both loop iterations scanning
+		// llm-relay left the release namespace's pods forever unchecked).
+		// The env ban closed the parsed channel; assignment, export, and
+		// declare rebinding are the same class one level down.
+		require.NotRegexp(t, `(?m)^\s*NS=`, s.Run,
+			"%s must not rebind NS — the namespace targets are the verdict's scope", spec.prefix)
+		require.NotRegexp(t, `(?m)^\s*GATE_NS=`, s.Run,
+			"%s must not rebind GATE_NS — both loop iterations must scan their own namespace", spec.prefix)
+		require.NotRegexp(t, `(?m)^\s*(export|declare)\s+(-x\s+)?(NS|GATE_NS)\b`, s.Run,
+			"%s must not export/declare-rebind NS or GATE_NS", spec.prefix)
+		// r12 findings 4+6: the write tools and the backgrounded exit —
+		// `echo … | tee file` evades the write-count close, and
+		// `exit 1 &` backgrounds the verdict carrier away.
+		require.NotRegexp(t, `(?m)(^|[|;]\s*)(tee|cp|dd|mv|sed)\b`, s.Run,
+			"%s must not use write tools (tee/cp/dd/mv/sed) — non-redirection writes evade the capture-file counts", spec.prefix)
+		require.NotRegexp(t, `exit\s+1\s*&`, s.Run,
+			"%s must not background an exit — `exit 1 &` abandons the verdict", spec.prefix)
+		// r12 finding 6: every exit-1 carrier must sit in a FAIL branch
+		// (a real `echo "FAIL…` line — non-comment — within three lines
+		// above; r13 RC-C: a comment containing FAIL satisfied the loose
+		// form) — a dead block's exit launders the floor without
+		// carrying any verdict.
+		exit1Ctx := 0
+		linesA := strings.Split(s.Run, "\n")
+		for i, line := range linesA {
+			if strings.TrimSpace(line) != "exit 1" {
+				continue
+			}
+			inFail := false
+			for j := i - 1; j >= 0 && j >= i-3; j-- {
+				trimmed := strings.TrimSpace(linesA[j])
+				if strings.HasPrefix(trimmed, "echo \"FAIL") {
+					inFail = true
+					break
+				}
+			}
+			require.True(t, inFail,
+				"%s: every exit 1 must sit in a FAIL branch (a FAIL echo within 3 lines above) — line %d carries no verdict", spec.prefix, i+1)
+			exit1Ctx++
+		}
+		require.GreaterOrEqual(t, exit1Ctx, spec.minExit1,
+			"%s must carry at least %d FAIL-branch `exit 1` verdict carriers (found %d)", spec.prefix, spec.minExit1, exit1Ctx)
+		idx := indexOfStep(t, steps, s)
+		require.Greater(t, idx, last, "assertions must run in §5 order: %s", spec.prefix)
+		last = idx
+	}
+	// r9 finding 4: exactly ONE PODS assignment in Assert 3 — a second
+	// (blanket) assignment between the pinned pieces relocates the r2
+	// silent-skip one line below every pin.
+	a3 := gateStepByPrefix(t, steps, "Assert 3")
+	podsAssigns := 0
+	for _, line := range strings.Split(a3.Run, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "PODS=") {
+			podsAssigns++
+		}
+	}
+	require.Equal(t, 1, podsAssigns, "Assert 3 must carry exactly one PODS assignment (the pinned fetch) — a blanket reassignment feeds empty stdin")
+	// r10 sub-agent (ii)+(iii): exactly one consumer of the pod list
+	// (a stray `read -r _` swallows every other pod's line) and each
+	// capture file written exactly once (a second truncate rewires the
+	// primary grep onto an empty file).
+	readers := 0
+	podLogWrites, prevLogWrites := 0, 0
+	for _, line := range strings.Split(a3.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "read -r") {
+			readers++
+		}
+		if strings.Contains(line, "> /tmp/gate-pod.log") {
+			podLogWrites++
+		}
+		if strings.Contains(line, "> /tmp/gate-pod-prev.log") {
+			prevLogWrites++
+		}
+	}
+	require.Equal(t, 1, readers, "Assert 3 must carry exactly one `read -r` consumer — a stray reader swallows pods")
+	require.Equal(t, 1, podLogWrites, "/tmp/gate-pod.log must be written exactly once — a second write truncates the primary capture")
+	require.Equal(t, 1, prevLogWrites, "/tmp/gate-pod-prev.log must be written exactly once")
+	// r11 finding 3 + r13 RC-B: the write-count close, regex-scoped for
+	// ANY redirect spacing (`>file`, `>  file`, tab) — the single-
+	// spelling `"> "+file` form missed the no-space injection.
+	countWrites := func(run, file string) int {
+		re := regexp.MustCompile(`>\s*` + regexp.QuoteMeta(file))
+		n := 0
+		for _, line := range strings.Split(run, "\n") {
+			if re.MatchString(line) {
+				n++
+			}
+		}
+		return n
+	}
+	a2 := gateStepByPrefix(t, steps, "Assert 2")
+	a4 := gateStepByPrefix(t, steps, "Assert 4")
+	require.Equal(t, 1, countWrites(a2.Run, "/tmp/gate-armed.log"),
+		"/tmp/gate-armed.log must be written exactly once — injection between fetch and detector is always-green")
+	require.Equal(t, 1, countWrites(a2.Run, "/tmp/gate-armed-prev.log"),
+		"/tmp/gate-armed-prev.log must be written exactly once (the previous-container consult)")
+	require.Equal(t, 1, countWrites(a4.Run, "/tmp/gate-controller.log"),
+		"/tmp/gate-controller.log must be written exactly once — injection before the extraction is always-green")
+	require.Equal(t, 1, countWrites(a3.Run, "/tmp/gate-pod.log"),
+		"/tmp/gate-pod.log must be written exactly once (regex-scoped)")
+	require.Equal(t, 1, countWrites(a3.Run, "/tmp/gate-pod-prev.log"),
+		"/tmp/gate-pod-prev.log must be written exactly once (regex-scoped)")
+	// r13 RC-D: the loop variable may not be rebound — `POD=$(… head -n 1)`
+	// after the pinned while re-scans only the first pod forever.
+	require.NotRegexp(t, `(?m)^\s*POD=`, a3.Run,
+		"Assert 3 must not rebind POD — every iteration must consume the feed's next pod")
+	// r13 RC-C: no dead branches — `if false` laundered the exit floor.
+	for _, spec := range assertionSpecs {
+		s := gateStepByPrefix(t, steps, spec.prefix)
+		require.NotContains(t, s.Run, "if false",
+			"%s must carry no dead branches — `if false` launders the exit-1 floor", spec.prefix)
+	}
+	// r11 finding 1: exactly-one counts on the four snapshot
+	// assignments — a duplicate AFTER the window re-snapshots and the
+	// restarts during the sleep become invisible.
+	a1r := gateStepByPrefix(t, steps, "Assert 1").Run
+	// r12 finding 2 + r13 RC-A: SEMANTIC assignment counts, Contains-
+	// scoped — any spelling, including export/declare forms (the
+	// HasPrefix scope missed `export AFTER_NS="$BEFORE_NS"`).
+	for _, varName := range []string{"BEFORE_NS", "BEFORE_RELAY", "AFTER_NS", "AFTER_RELAY"} {
+		n := strings.Count(a1r, varName+"=")
+		require.Equal(t, 1, n, "%s must be assigned exactly once, any spelling — a duplicate (or an export alias) re-snapshots or neuters the window", varName)
+	}
+	// r13 N1: exactly one definition of the producer — a pasted
+	// `restarts_snapshot() { true; }` after the pinned line makes all
+	// four snapshots constant (BEFORE==AFTER by construction).
+	require.Equal(t, 1, strings.Count(a1r, "restarts_snapshot() {"),
+		"the snapshot producer must be defined exactly once — a duplicate constant producer neuters the restart-diff")
+	// r12 finding 1: Assert 4's verdict variable — exactly one
+	// assignment (the pinned extraction); a rebind below it made both
+	// provenance verdicts unfireable.
+	a4r := gateStepByPrefix(t, steps, "Assert 4").Run
+	rcAssigns := 0
+	for _, line := range strings.Split(a4r, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "RUNNING_COMMIT=") {
+			rcAssigns++
+		}
+	}
+	require.Equal(t, 1, rcAssigns, "RUNNING_COMMIT must be assigned exactly once (the pinned extraction) — a rebind unfires both provenance verdicts")
+	// r9 finding 5: exactly FOUR kubectl wait lines in Assert 1 — the
+	// 300s pair and the 60s settle-window re-assertion pair.
+	a1 := gateStepByPrefix(t, steps, "Assert 1")
+	waits := 0
+	for _, line := range strings.Split(a1.Run, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "kubectl wait") {
+			waits++
+		}
+	}
+	require.Equal(t, 4, waits, "Assert 1 must carry exactly four kubectl wait lines (the 300s pair + the 60s settle-window re-assertion)")
+	for _, s := range steps {
+		if strings.HasPrefix(s.Name, "Assert ") {
+			require.Contains(t, []string{"Assert 1", "Assert 2", "Assert 3", "Assert 4"},
+				prefixWords(s.Name), "no extra Assert-named steps (found %q)", s.Name)
+		}
+	}
+}
+
+// goldenInventories is r13's structural close for the assertion blocks —
+// the analog of the r5 install allowlist. A verdict is a block; the
+// blocks are pinned as COMPLETE statement inventories: every non-comment
+// line, in sequence. Any insertion, deletion, or sibling-spelling edit —
+// the thirteen-round mutation war's every escape class — fails here in
+// one check, regardless of spelling. Legitimate changes to a block
+// update its golden deliberately (the diff shows exactly what changed).
+var goldenInventories = map[string][]string{
+	"Assert 1": {
+		"set -euo pipefail",
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=300s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=300s",
+		"restarts_snapshot() {",
+		`kubectl get pods -n "$1" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[*].restartCount}{"\n"}{end}' | sort`,
+		"}",
+		`BEFORE_NS=$(restarts_snapshot "$NS")`,
+		`BEFORE_RELAY=$(restarts_snapshot llm-relay)`,
+		"sleep 45",
+		"kubectl wait --for=condition=available deployment --all -n $NS --timeout=60s",
+		"kubectl wait --for=condition=available deployment --all -n llm-relay --timeout=60s",
+		`AFTER_NS=$(restarts_snapshot "$NS")`,
+		`AFTER_RELAY=$(restarts_snapshot llm-relay)`,
+		`if [[ "$BEFORE_NS" != "$AFTER_NS" || "$BEFORE_RELAY" != "$AFTER_RELAY" ]]; then`,
+		`echo "FAIL: pods restarted during the 45s stability window — the Available condition is flapping (crashloop class)"`,
+		`diff <(echo "$BEFORE_NS"; echo "$BEFORE_RELAY") <(echo "$AFTER_NS"; echo "$AFTER_RELAY") || true`,
+		"exit 1",
+		"fi",
+		`echo "OK: all Deployments Ready and stable under the shipped defaults"`,
+	},
+	"Assert 2": {
+		"set -euo pipefail",
+		`ARGS=$(kubectl -n $NS get deployment llmsafespaces-controller -o jsonpath='{.spec.template.spec.containers[0].args}')`,
+		`if ! grep -F -- '--relay-only-key-delivery=true' <<<"$ARGS"; then`,
+		`echo "FAIL: --relay-only-key-delivery=true absent from the controller pod spec — the shipped posture's flag did not reach the deployment"`,
+		`echo "args: $ARGS"`,
+		"exit 1",
+		"fi",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-armed.log 2>/tmp/gate-armed.err; then",
+		`echo "FAIL: could not fetch controller logs — the armed line cannot be verified"`,
+		"cat /tmp/gate-armed.err || true",
+		"exit 1",
+		"fi",
+		"kubectl -n $NS logs deployment/llmsafespaces-controller --previous > /tmp/gate-armed-prev.log 2>/dev/null || true",
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed.log; then",
+		"if ! grep -F 'relay-only key delivery enabled' /tmp/gate-armed-prev.log; then",
+		`echo "FAIL: armed line absent in both containers (flag ON the pod spec) — deployed relay-only but not armed: wiring drift until proven otherwise"`,
+		"tail -50 /tmp/gate-armed.log || true",
+		"exit 1",
+		"fi",
+		"fi",
+		`echo "OK: controller armed under the shipped default"`,
+	},
+	"Assert 3": {
+		"set -euo pipefail",
+		`for GATE_NS in "$NS" "llm-relay"; do`,
+		`PODS=$(kubectl -n "$GATE_NS" get pods -o name)`,
+		"while read -r POD; do",
+		`if ! kubectl -n "$GATE_NS" logs "$POD" --all-containers=true > /tmp/gate-pod.log 2>/tmp/gate-pod.err; then`,
+		`echo "FAIL: could not fetch logs for $GATE_NS/$POD — a pod whose logs cannot be read cannot be cleared"`,
+		"cat /tmp/gate-pod.err || true",
+		"exit 1",
+		"fi",
+		"if grep -i 'forbidden' /tmp/gate-pod.log; then",
+		`echo "FAIL: forbidden line in $GATE_NS/$POD — RBAC starvation under the shipped posture"`,
+		"exit 1",
+		"fi",
+		`if kubectl -n "$GATE_NS" logs "$POD" --all-containers=true --previous > /tmp/gate-pod-prev.log 2>/dev/null; then`,
+		"if grep -i 'forbidden' /tmp/gate-pod-prev.log; then",
+		`echo "FAIL: forbidden line in $GATE_NS/$POD (previous container) — RBAC starvation under the shipped posture"`,
+		"exit 1",
+		"fi",
+		"fi",
+		`done <<< "$PODS"`,
+		"done",
+		`echo "OK: zero forbidden lines"`,
+	},
+	"Assert 4": {
+		"set -euo pipefail",
+		"if ! kubectl -n $NS logs deployment/llmsafespaces-controller > /tmp/gate-controller.log 2>/tmp/gate-controller.err; then",
+		`echo "FAIL: could not fetch controller logs — the commit stamp cannot be verified"`,
+		"cat /tmp/gate-controller.err || true",
+		"exit 1",
+		"fi",
+		"RUNNING_COMMIT=$(grep -F 'starting controller' /tmp/gate-controller.log \\",
+		`| grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)`,
+		`if [[ -z "$RUNNING_COMMIT" ]]; then`,
+		`echo "FAIL: no commit stamp found on the controller startup line — unstamped artifact class"`,
+		"exit 1",
+		"fi",
+		`if [[ "$RUNNING_COMMIT" != '${{ github.sha }}' ]]; then`,
+		`echo "FAIL: running controller commit '$RUNNING_COMMIT' != this run's build sha '${{ github.sha }}' — wrong-artifact class"`,
+		"exit 1",
+		"fi",
+		`echo "OK: running binary carries this run's commit stamp"`,
+	},
+}
+
+// goldenInstallInventory is r20's structural close for the install
+// block — the same golden-line-sequence treatment the assertion blocks
+// got in r13. Every non-comment line, in sequence: insertions (the
+// mid-chain --valu\ split class), deletions, sibling spellings, and
+// duplicate-key last-wins overrides all fail here in one check. The
+// head/tail/chain/operator/allowlist pins remain as documented
+// backstops with the WHY attached.
+var goldenInstallInventory = []string{
+	"helm upgrade --install llmsafespaces helm \\",
+	"-n $NS --create-namespace \\",
+	"--set api.image.repository=llmsafespaces/api \\",
+	`--set "api.image.tag=$IMAGE_TAG" \`,
+	"--set api.image.pullPolicy=IfNotPresent \\",
+	"--set controller.image.repository=llmsafespaces/controller \\",
+	`--set "controller.image.tag=$IMAGE_TAG" \`,
+	"--set controller.image.pullPolicy=IfNotPresent \\",
+	"--set mcp.enabled=false \\",
+	"--set postgresql.host=postgres \\",
+	"--set postgresql.port=5432 \\",
+	"--set postgresql.user=llmsafespaces \\",
+	"--set postgresql.database=llmsafespaces \\",
+	"--set redis.host=redis-master \\",
+	"--set redis.port=6379 \\",
+	"--set externalSecret.create=true \\",
+	`--set "externalSecret.postgresPassword=e2e-pg-pw-2026" \`,
+	`--set "externalSecret.redisPassword=e2e-redis-pw-2026" \`,
+	"--set api.config.logging.development=true \\",
+	`--set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \`,
+	`--set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \`,
+	`--set "controller.agentdDelivery.binarySHA256Arm64=${{ env.AGENTD_BINARY_SHA }}" \`,
+	`--set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \`,
+	`--set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \`,
+	`--set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \`,
+	"--set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \\",
+	`--set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \`,
+	"--wait --timeout 10m",
+}
+
+// TestPostureGate_StatementInventory holds the four assertion blocks as
+// complete golden inventories — every non-comment line, in sequence.
+func TestPostureGate_StatementInventory(t *testing.T) {
+	steps := parsePostureGate(t)
+	// r20 finding 2b: the INSTALL block joins the golden treatment —
+	// the mid-chain insertion classes (the --valu\ split) close
+	// structurally here, not by spelling.
+	install := gateStepByPrefix(t, steps, "Helm install LLMSafeSpaces")
+	var gotInstall []string
+	for _, line := range strings.Split(install.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		gotInstall = append(gotInstall, trimmed)
+	}
+	require.Equal(t, goldenInstallInventory, gotInstall,
+		"the install statement inventory: every non-comment line pinned in sequence — insertions, deletions, sibling spellings, and duplicate-key overrides all fail here; legitimate changes update the golden deliberately")
+	for prefix, golden := range goldenInventories {
+		t.Run(prefix, func(t *testing.T) {
+			s := gateStepByPrefix(t, steps, prefix)
+			var got []string
+			for _, line := range strings.Split(s.Run, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				got = append(got, trimmed)
+			}
+			require.Equal(t, golden, got,
+				"the statement inventory: every non-comment line of %s is pinned in sequence — insertions, deletions, and sibling spellings all fail here; legitimate changes update the golden deliberately", prefix)
+			// r21 finding 2: the goldens skip comment/blank lines, but
+			// a comment or blank inserted after a line ending in `\`
+			// dead-gates the block (the continuation joins the comment
+			// onto the command — bash syntax error). The install block
+			// got its chain-integrity rule in r16/r17; the assertion
+			// blocks' one continuation (Assert 4's extraction pair) gets
+			// it here: the line after ANY backslash-terminated line must
+			// be neither blank nor comment.
+			rawLines := strings.Split(s.Run, "\n")
+			for i, line := range rawLines {
+				if !strings.HasSuffix(strings.TrimSpace(line), "\\") || i+1 >= len(rawLines) {
+					continue
+				}
+				next := strings.TrimSpace(rawLines[i+1])
+				require.False(t, next == "" || strings.HasPrefix(next, "#"),
+					"%s: the line after a continuation (line %d) must be neither blank nor comment — it dead-gates the block (a bash syntax error): %q", prefix, i+2, rawLines[i+1])
+			}
+			// r22/r23 finding 1: the escaped-whitespace spelling — every
+			// TrimSpace comparison was blind to trailing whitespace after
+			// the continuation backslash (`… log \ `, `\<TAB>`,
+			// `\<NBSP>`), which turns the continuation into an escaped
+			// character and dead-gates the block on every tree. RUNE-
+			// level check (r23: the r22 space+tab spellings were two of
+			// a class — NBSP is the paste-artifact member): no assertion
+			// line may carry ANY unicode whitespace after content ending
+			// in a backslash.
+			for i, line := range rawLines {
+				right := strings.TrimRightFunc(line, unicode.IsSpace)
+				require.False(t, right != line && strings.HasSuffix(right, "\\"),
+					"%s: line %d carries whitespace AFTER the continuation backslash — an escaped character that dead-gates the block on every tree: %q", prefix, i+1, line)
+			}
+		})
+	}
+}
+func requireExactLine(t *testing.T, run, want, msg string, args ...interface{}) {
+	t.Helper()
+	for _, line := range strings.Split(run, "\n") {
+		if strings.TrimSpace(line) == want {
+			return
+		}
+	}
+	t.Fatalf(msg+` (want exact line %q)`, append(args, want)...)
+}
+
+// Pin (c): the install command's environmental overrides AND the
+// posture-lever ban list. The shipped defaults (rbac.scope=namespace,
+// relayOnlyKeyDelivery.enabled=true, agentdSidecar.enabled=false,
+// networkPolicy.allowRelayRouterEgress=false) reach helm UNTOUCHED —
+// the moment the gate pins any of these levers, it is asserting an
+// override, not the shipped posture, and this pin goes red.
+func TestPostureGate_InstallShippedPosture(t *testing.T) {
+	steps := parsePostureGate(t)
+	install := gateStepByPrefix(t, steps, "Helm install LLMSafeSpaces")
+	require.Equal(t, "posture-install", install.ID, "install step must carry the id the run keys on")
+	require.Contains(t, install.Run, "helm upgrade --install llmsafespaces helm",
+		"the nightly's install command shape, verbatim")
+	// r8 finding 7: the comparison must be on the RAW parsed line —
+	// TrimSpace defeated the pin for the trailing-space spelling
+	// (`helm … \ ` — an escaped space, not a continuation: helm gets a
+	// positional arg and the install fails on every tree with all pins
+	// green, the r6 dead-gate class through the pin's own normalization).
+	first := ""
+	for _, line := range strings.Split(install.Run, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		first = line
+		break
+	}
+	require.Equal(t, "helm upgrade --install llmsafespaces helm \\", first,
+		"the install's first command line must be exactly the nightly's head line, RAW — trailing/leading whitespace drift is an unreviewed change (the r7 committed-mutation class; the r8 escaped-space class)")
+	// r8 finding 6 + r14/r15: the install is one operator-free command
+	// (the nightly's shape) — any shell operator opens a post-install
+	// channel that no allowlist or -f regex sees. Checked over EVERY
+	// bash-join view (r15: the raw-text-only check missed the composed
+	// spellings — `<\`+NL+`(` etc. execute as live substitutions mid-
+	// install while never forming the substring in raw text). The
+	// double-backslash-newline spelling joins r15's adjudicated list:
+	// bash treats `\\`+NL as an escaped backslash ending the command —
+	// a pin-green dead install (the r8-finding-7 class).
+	for _, op := range []string{"&&", ";", "|", "`", "$(", "<(", ">(", "&", "\\\\\n"} {
+		// r16 finding 2: the fourth view is the EMPTY JOIN with ALL
+		// WHITESPACE STRIPPED (in that order — the backslash-newline
+		// must go first, or the backslash survives between the operator
+		// characters) — the extra-indent composed spelling forms the
+		// operator in no plain banViews view but forms it here; runtime
+		// it is a bash syntax error (fail-closed), yet the close should
+		// not rest on an indent-sensitive mechanism.
+		fourth := regexp.MustCompile(`\s+`).ReplaceAllString(strings.ReplaceAll(install.Run, "\\\n", ""), "")
+		for _, view := range append(banViews(install.Run), fourth) {
+			require.NotContains(t, view, op,
+				"the install run block must carry no shell operators in any join or stripped view — `%s` opens an unreviewed channel", op)
+		}
+	}
+	// r9 finding 1 + r16 finding 1: the TAIL and the CHAIN. A newline-
+	// separated second command has no operator and escaped the operator
+	// ban; the round's own closes had sibling spellings — a blank line,
+	// a comment line, or a CR-corrupted continuation mid-chain amputate
+	// the command identically (the workflow's own comment documents the
+	// comment-line form). CHAIN INTEGRITY: every RAW line strictly
+	// between the head line and the tail line must end with a backslash
+	// — no blank/comment skips, no trim (a trimmed check was blind to
+	// trailing CRs and spaces).
+	lines := strings.Split(install.Run, "\n")
+	headIdx, tailIdx := -1, -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if headIdx == -1 {
+			headIdx = i
+		}
+		tailIdx = i
+	}
+	require.True(t, headIdx >= 0 && tailIdx > headIdx, "the install must be a multi-line command chain")
+	for i := headIdx + 1; i < tailIdx; i++ {
+		require.True(t, strings.HasSuffix(lines[i], "\\"),
+			"install chain line %d must end with a raw backslash — blank, comment, or CR-corrupted continuations amputate the command (a pin-green dead install): %q", i+1, lines[i])
+		// r16/r17: a comment mid-chain amputates even WITH a trailing
+		// backslash (bash ends comments at the newline — the backslash
+		// does not continue them) — full-line AND trailing spellings
+		// both banned: no `#` anywhere in a chain line.
+		require.NotContains(t, lines[i], "#",
+			"install chain line %d must carry no comment — a mid-chain comment (full-line or trailing) amputates the command regardless of its trailing backslash: %q", i+1, lines[i])
+	}
+	// r17 finding 3: the install's namespace line exact-pinned (an
+	// accidental `-n` drift re-scopes the release; runtime fail-closed
+	// via the postgres manifests, but pinned is pinned).
+	requireExactLine(t, install.Run, "-n $NS --create-namespace \\",
+		"the install's namespace line must be exactly this")
+	// r19 finding 2: the three tag values QUOTED and exact-pinned — the
+	// unquoted spelling was the word-split amplifier the r17 review
+	// argv-proved; convention alone held it.
+	for _, quoted := range []string{
+		`--set "api.image.tag=$IMAGE_TAG" \`,
+		`--set "controller.image.tag=$IMAGE_TAG" \`,
+		`--set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \`,
+	} {
+		requireExactLine(t, install.Run, quoted,
+			"the tag value must be QUOTED and exactly this line — the unquoted spelling is the word-split amplifier")
+	}
+	// r16 finding 1 (CR spelling) + r23 finding 1 (the whitespace class,
+	// file-wide): YAML normalizes CRLF inside the parsed scalar, and
+	// TrimSpace strips NBSP — so both corruptions are invisible to the
+	// parsed-layer pins. BANNED AT THE RAW FILE: CR bytes anywhere, and
+	// any NON-ASCII unicode whitespace rune anywhere (NBSP, U+1680,
+	// U+2000–200A, U+202F, U+205F, U+3000 — the paste-artifact class;
+	// a trailing one after `fi` or the install tail dead-gates its
+	// block exactly like the escaped space).
+	rawBytes := []rune(mustRead(t, postureGateWorkflow))
+	for i, r := range rawBytes {
+		require.False(t, r == '\r', "the workflow file must contain no CR bytes (offset %d) — a backslash+CR+newline continuation amputates the command (invisible to the YAML parse)", i)
+		require.False(t, r > 127 && unicode.IsSpace(r),
+			"the workflow file must contain no non-ASCII whitespace (offset %d, U+%04X) — the paste-artifact class; trailing ones dead-gate blocks invisibly to TrimSpace", i, r)
+	}
+	require.Equal(t, "--wait --timeout 10m", strings.TrimSpace(lines[tailIdx]),
+		"the install's last command line must be exactly the wait line — a newline-separated second command is an unreviewed channel")
+	// r8 finding 3: the WORKFLOW-level env block is a carrier channel
+	// one tier above the step/job closes — its values reach helm as
+	// unquoted ${VARS} past every run-text ban. It legitimately exists
+	// (the three cluster-identity vars); anything else is drift.
+	var top struct {
+		Env map[string]string `json:"env"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(mustRead(t, postureGateWorkflow)), &top))
+	require.Equal(t, map[string]string{
+		"CLUSTER_NAME": "llmsafespaces-posture",
+		"IMAGE_TAG":    "posture",
+		"NS":           "llmsafespaces",
+	}, top.Env,
+		"the workflow-level env must be exactly the three cluster-identity vars — any added entry is a value-carrier channel that evades the run-text bans")
+	// The two value-bearing environmental pins: mcp MUST be off (issue
+	// #28 — no image exists to pull) and the install MUST wait (the
+	// nightly's shape; the assertions still carry the verdict).
+	require.Contains(t, install.Run, "--set mcp.enabled=false",
+		"mcp.enabled must be OFF — the mcp image does not exist (issue #28)")
+	require.Contains(t, install.Run, "--wait", "the install must wait")
+
+	for _, banned := range []string{
+		"rbac.scope=",
+		"relayOnlyKeyDelivery.enabled=",
+		"agentdSidecar.enabled=",
+		"allowRelayRouterEgress=",
+		// watchNamespaces: scoping the informer to a namespace would
+		// silence the exact #1555-class crashloop (cluster-wide list →
+		// forbidden → red gate) the gate exists to catch — tuning the
+		// gate green while the shipped posture is broken (r2 finding 1).
+		"watchNamespaces=",
+		// The values channels beyond --set (r2–r5): the install takes
+		// its posture from the chart alone. --set-string and
+		// --reuse-values are value channels too; --post-renderer is a
+		// whole-manifest rewrite channel (r5, helm-proven live).
+		"--values",
+		"--set-json",
+		"--set-string",
+		"--set-file",    // r12 finding 8: the -f regex cannot see inside it; a REAL lever (freeModelsRefresher drives the RBAC render)
+		"--set-literal", // r12 finding 8: same class, sibling flag
+		"--reuse-values",
+		"--post-renderer",
+	} {
+		for _, view := range banViews(install.Run) {
+			require.NotContains(t, view, banned,
+				"the gate must never set %s — the shipped default IS the posture under test (checked in every bash-join view)", banned)
+		}
+	}
+	require.Empty(t, install.Env,
+		"the install step must carry no env block — an env-carried flag value evades every run-text ban (r6's carrier channel)")
+	for _, view := range banViews(install.Run) {
+		require.False(t, valuesFileFlagRe.MatchString(view),
+			"the install must take no values files in ANY -f spelling — attached, delimited, tab, or continuation form (checked in every bash-join view; view 3 is what catches the LIVE block-minimum split)")
+	}
+	// r19 finding 1 + r20 finding 2a: the LIVE composed spellings form
+	// in view 3 (bash joins block-minimum continuations to column 0);
+	// the extra-indent splits are runtime-INERT (bash reads them as
+	// tokens `-` and `f` — helm rejects the argv) but were pin-green,
+	// so the inert line endings are banned outright — dash with ANY
+	// trailing whitespace before the continuation backslash (the
+	// r19 `-\$` form demanded dash-adjacency; `- \` escaped it).
+	require.NotRegexp(t, `(?m)-\s*\\$`, install.Run,
+		"no install chain line may end with a bare `-` (any trailing whitespace) before the continuation backslash — the inert split spelling (helm rejects the amputated argv, but pin-green dead installs are findings)")
+	// THE structural close (r5): every --set key must be allowlisted,
+	// every allowlist entry must be used (dead entries are drift), and
+	// the parser must have found the full override set (a silently
+	// empty parse would be a vacuous pass). Any spelling of any other
+	// key — quote-split, indirected, or a future lever — fails here.
+	keys := extractSetKeys(t, install.Run)
+	require.GreaterOrEqual(t, len(keys), 20,
+		"the --set parse must find the full environmental override set (found %d — a silent parse failure would vacuously pass)", len(keys))
+	keyCounts := map[string]int{}
+	for _, k := range keys {
+		require.True(t, installSetAllowlist[k],
+			"--set key %q is NOT on the environmental allowlist — the install may carry no posture lever in ANY spelling", k)
+		keyCounts[k]++
+	}
+	for k, n := range keyCounts {
+		// r20 finding 3 + r21 finding 1: each key appears exactly once
+		// PER JOIN VIEW (the parse walks two views, raw counts — no
+		// dedup); more than two is a duplicate within a view: helm's
+		// last-wins silently overrides the earlier value.
+		require.Equal(t, 2, n,
+			"duplicate --set key %q within a view — helm's last-wins silently overrides the earlier value (the r20 duplicate-key class)", k)
+	}
+	seen := map[string]bool{}
+	for k := range keyCounts {
+		seen[k] = true
+	}
+	for allowed := range installSetAllowlist {
+		require.True(t, seen[allowed],
+			"allowlist entry %q is unused — dead entries are drift; remove it or use it", allowed)
+	}
+}
+
+// Pin (d): the provenance basis is ONE sha — the controller image
+// build stamps COMMIT_SHA from the same `${{ github.sha }}` literal
+// assertion 4 compares against. If the stamp and the assertion ever
+// drift apart, the gate reds on every run (or worse, silently passes
+// against a pinned sha) — this pin makes the drift a test failure
+// first.
+func TestPostureGate_ProvenanceSameShaBasis(t *testing.T) {
+	raw := mustRead(t, postureGateWorkflow)
+	require.Contains(t, raw, `--build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile`,
+		"the controller image must be stamped from this run's github.sha")
+	a4 := gateStepByPrefix(t, parsePostureGate(t), "Assert 4")
+	require.Contains(t, a4.Run, `!= '${{ github.sha }}'`,
+		"assertion 4's COMPARISON must be against the same github.sha literal the build stamps (not merely an echo that mentions it — the r1 mutation)")
+	require.Contains(t, a4.Run, "starting controller",
+		"assertion 4 reads the running binary's own startup line (the label channel §5 r1 names)")
+}
+
+// Pin (e): the bootstrap reuses the e2e-nightly sequence verbatim —
+// the proven kind topology + registry + image-build + cert-manager +
+// test DB/Redis chain. A silently divergent bootstrap turns gate
+// failures into bootstrap flake hunts.
+func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
+	steps := parsePostureGate(t)
+	joined := stepRunsJoined(t, steps)
+	for _, literal := range []string{
+		"local/kind-cluster-nightly.yaml", // the nightly's 2-node topology, verbatim
+		"lss-e2e-registry",                // digest-pinned delivery refs resolve in-node
+		"cert-manager",                    // the validating webhook's CA chain
+		"local/postgres-redis.yaml",       // test DB/Redis (§5's install shape)
+		"llmsafespaces-credentials",       // the credentials Secret pre-Postgres
+	} {
+		require.Contains(t, joined, literal, "the nightly bootstrap must contribute %q", literal)
+	}
+	// r17 finding 3: the $GITHUB_ENV runtime channel — exactly the four
+	// legitimate delivery-pin writes, exact-pinned; any other write to
+	// the runner env file is drift (an accidental NS/IMAGE_TAG overwrite
+	// re-scopes or word-splits downstream steps).
+	raw := mustRead(t, postureGateWorkflow)
+	for _, write := range []string{
+		`echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"`,
+		`echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"`,
+		`echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"`,
+		`echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"`,
+	} {
+		require.Contains(t, raw, write,
+			"the legitimate GITHUB_ENV write must be exactly this line: %q", write)
+	}
+	require.Equal(t, 4, strings.Count(raw, ">> \"$GITHUB_ENV\""),
+		"exactly the four delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
+	// r19 finding 3: the count must cover EVERY redirect spelling — a
+	// single-`>` truncate write evaded the exact-string count.
+	// r19 finding 1 + r20 finding 1: the CHANNEL is the pinned surface —
+	// exactly four GITHUB_ENV occurrences in the whole file, any
+	// spelling (unquoted, tee -a, indirection `ENVF="$GITHUB_ENV"`,
+	// single->) — a fifth mention of the channel is drift by
+	// definition; verified false-positive-free on pristine.
+	require.Equal(t, 4, strings.Count(raw, "GITHUB_ENV"),
+		"exactly four GITHUB_ENV occurrences may exist in the whole workflow — the channel is the pinned surface, not one spelling of it (any fifth write or indirection is drift)")
+}
+
+// Pin (f): a failed cold install IS a red gate — the assertions carry
+// NO skip conditions (the #1541 arming exists to keep EVIDENCE lanes
+// running past unrelated failures; here the install is the thing under
+// test), no assertion step may carry `continue-on-error` (a failed
+// assertion with a green job — the silent-disarm mutation the r1
+// review enumerates), the job itself carries no `if:` (a job-level
+// condition disarms the whole gate in one edit), and the failure dump
+// + teardown keep the crash-loud culture (logs on failure, cluster
+// disposed always).
+func TestPostureGate_FailureSemantics(t *testing.T) {
+	raw := []byte(mustRead(t, postureGateWorkflow))
+	var wf gateWorkflow
+	require.NoError(t, yaml.Unmarshal(raw, &wf))
+	require.Len(t, wf.Jobs, 1, "the gate is ONE job (0061 §5)")
+	for jobName, j := range wf.Jobs {
+		require.Empty(t, strings.TrimSpace(j.If),
+			"the gate job %q must carry no `if:` — one edit could disarm the whole gate", jobName)
+		// r7 (the sub-agent's job-level carrier): the r6 close pinned
+		// only the STEP env; a job-level env block feeding $VARS into
+		// the helm line smuggles past every run-text ban the same way.
+		require.Empty(t, j.Env,
+			"the gate job %q must carry no env block — job-level env is a value-carrier channel that evades the run-text bans", jobName)
+		// r17 finding 2: the defaults/shell tier close — a job-level
+		// `defaults:` or a step-level `shell:` re-scopes the runner's
+		// shell wrapper (the r16 workflow-level ban one tier down; the
+		// r9 step-env tier-inconsistency class).
+		require.Nil(t, j.Default,
+			"the gate job %q must carry no `defaults:` block — it silently re-scopes every step's shell", jobName)
+		for _, st := range j.Steps {
+			require.Empty(t, st.Shell,
+				"no step may carry a `shell:` override (found in job %q) — it re-scopes that step's shell wrapper", jobName)
+		}
+	}
+	steps := parsePostureGate(t)
+	for _, spec := range assertionSpecs {
+		s := gateStepByPrefix(t, steps, spec.prefix)
+		require.Empty(t, strings.TrimSpace(s.If),
+			"%s must be unconditional — a failed install must fail the gate, not skip its assertions", spec.prefix)
+		require.Nil(t, s.ContinueOnError,
+			"%s must not carry continue-on-error — a failed assertion must fail the job", spec.prefix)
+		// r2 finding 2: without set -e a failed kubectl wait continues
+		// silently and a stuck-not-ready deployment prints OK — the
+		// literal surface is unchanged, so only a pin sees the neuter.
+		require.True(t, strings.HasPrefix(strings.TrimSpace(s.Run), "set -euo pipefail"),
+			"%s must begin with `set -euo pipefail` — deleting it neuters every check with zero literal drift", spec.prefix)
+		// r3–r6: the pinned prefix alone is presence, not persistence —
+		// a later countermand neuters it under the pinned prefix. The
+		// family is banned across EVERY bash-join view (r6's root cause
+		// A: bash joins backslash-newline with NOTHING, so `se\<NL>t +e`
+		// executes as `set +e` while every space-joined view stays
+		// clean): `set +o` as a PREFIX (all long forms), bare
+		// `+o errexit`/`+o pipefail`/`+o nounset` (the mixed form),
+		// `set +e`, `trap ` (a trap 'exit 0' EXIT is a complete neuter
+		// that is not a set spelling at all), and `exit 0` (r6's
+		// finding 5: strictly larger blast radius than the trap — it
+		// neuters the restart-diff too; failure paths use exit 1).
+		for _, view := range banViews(s.Run) {
+			for _, countermand := range []string{
+				"set +e", "set +o", "+o errexit", "+o pipefail", "+o nounset", "trap ", "exit 0",
+				// r8 finding 5: `break`/`continue` abandon the loop and
+				// print OK with every literal intact (exit 1 → break in
+				// the detector branch fires the grep, drops the verdict).
+				// No assertion block legitimately uses either.
+				"break", "continue",
+			} {
+				require.NotContains(t, view, countermand,
+					"%s must not countermand set -euo pipefail (`%s` neuters every check under the pinned prefix)", spec.prefix, countermand)
+			}
+		}
+		// r6's root cause C: the shape checks' entry condition keys on
+		// `kubectl wait` — a double-space `kubectl   wait` skipped them
+		// entirely (the guard, not the ban, was the hole). Collapse
+		// whitespace per line before matching. r7 (the sub-agent's
+		// split escape): a continuation `kubectl \`+newline+`wait …`
+		// never enters the guard either — Assert 1 carries no
+		// legitimate continuations, so they are banned outright.
+		if spec.prefix == "Assert 1" {
+			require.NotContains(t, s.Run, "\\\n",
+				"Assert 1 must carry no line continuations — a split command never enters the shape guard (r7)")
+			collapse := regexp.MustCompile(`[ \t]+`)
+			for _, line := range strings.Split(s.Run, "\n") {
+				collapsed := collapse.ReplaceAllString(strings.TrimSpace(line), " ")
+				if strings.Contains(collapsed, "kubectl wait") {
+					require.True(t, strings.HasPrefix(collapsed, "kubectl wait"),
+						"Assert 1's wait lines must start the line bare (no !/if/assignment prefix): %q", line)
+					for _, op := range []string{"||", "&&", ";", "`"} {
+						require.NotContains(t, collapsed, op,
+							"Assert 1's wait lines must carry no shell operators (bare lines only — || :/&& :/; all escape errexit): %q", line)
+					}
+					require.False(t, strings.HasSuffix(collapsed, "\\"),
+						"Assert 1's wait lines must not continue (a continuation hides what follows): %q", line)
+				}
+			}
+		}
+	}
+	for _, s := range steps {
+		require.Nil(t, s.ContinueOnError,
+			"no step may carry continue-on-error (found on %q) — failures must propagate", s.Name)
+		// r9 finding 6: the carrier channel closed at workflow, job, and
+		// install-step levels was open on every OTHER step — an env
+		// block on an assertion step can re-scope its $NS-consuming
+		// checks.
+		require.Empty(t, s.Env,
+			"no step may carry an env block (found on %q) — step env is a value-carrier channel", s.Name)
+	}
+	dump := gateStepByPrefix(t, steps, "Dump cluster state on failure")
+	require.Contains(t, dump.If, "failure()")
+	teardown := gateStepByPrefix(t, steps, "Teardown")
+	require.Contains(t, teardown.If, "always()")
+}
+
+// --- helpers ---------------------------------------------------------
+
+// normalizeRunText collapses runs of spaces/tabs to one space AND joins
+// backslash-newline continuations with a space.
+func normalizeRunText(s string) string {
+	s = strings.ReplaceAll(s, "\\\n", " ")
+	return regexp.MustCompile(`[ \t]+`).ReplaceAllString(s, " ")
+}
+
+// banViews returns every text view a substring ban must hold against:
+// the raw text, the space-normalized view (double-space variants), and
+// the BASH-JOIN view — bash removes backslash-newline with NO space, so
+// `se\<NL>t +e` executes as `set +e` while raw and space-joined views
+// stay clean (r6's root cause A).
+func banViews(s string) []string {
+	return []string{
+		s,
+		normalizeRunText(s),
+		strings.ReplaceAll(s, "\\\n", ""),
+	}
+}
+
+// keysOf returns the sorted key set of a JSON object (for the
+// exact-keys pins).
+func keysOf(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func indexOfStep(t *testing.T, steps []gateStep, want gateStep) int {
+	t.Helper()
+	for i, s := range steps {
+		if s.Name == want.Name {
+			return i
+		}
+	}
+	t.Fatalf("step %q not in list", want.Name)
+	return -1
+}
+
+// prefixWords keeps the first two words ("Assert 1" of "Assert 1 — …")
+// for the exact-set check in pin (b).
+func prefixWords(name string) string {
+	f := strings.Fields(name)
+	if len(f) >= 2 {
+		return f[0] + " " + f[1]
+	}
+	return name
+}
+
+func stepRunsJoined(t *testing.T, steps []gateStep) string {
+	t.Helper()
+	var b strings.Builder
+	for _, s := range steps {
+		b.WriteString(s.Name)
+		b.WriteString("\n")
+		b.WriteString(s.Run)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
