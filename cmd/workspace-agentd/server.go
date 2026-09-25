@@ -101,6 +101,11 @@ type serverDeps struct {
 	// legacy-key scrub's static report to healthz (/v1/healthz — the
 	// surface the controller polls). Nil-safe.
 	legacyScrub *legacyScrubTracker
+	// legacyScrubSnapshot, when non-nil, overrides the tracker-derived
+	// healthz snapshot (US-72.6 sidecar mode: the scrub runs in the
+	// uid-1000 supervisor and the sidecar reads its report over the
+	// control-socket status poll — supervisorStatusStore.legacyScrubHealth).
+	legacyScrubSnapshot func() *agentd.LegacyScrubHealth
 	// pendingApply surfaces the deferred credential apply on healthz →
 	// the controller's CredentialsApplyPending condition (#1342 item 4).
 	// Nil-safe by construction (every method tolerates the nil
@@ -526,7 +531,11 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubSnapshotFor(deps.legacyScrub)))
+	legacyScrubSnapshot := deps.legacyScrubSnapshot
+	if legacyScrubSnapshot == nil {
+		legacyScrubSnapshot = legacyScrubSnapshotFor(deps.legacyScrub)
+	}
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubSnapshot))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 

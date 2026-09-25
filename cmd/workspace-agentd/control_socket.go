@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"log/slog"
 	"net"
 	"sync"
@@ -89,6 +90,14 @@ type controlSocketServer struct {
 	// cgroup numbers (US-2: the supervisor's own cgroup = the workspace
 	// container's). Nil keeps the US-1 reserved envelope.
 	metricsSource func() *cgroupMetrics
+
+	// legacyScrubSnapshot, when non-nil, supplies the `status` method's
+	// legacy-scrub report (US-72.6: the uid-1000 supervisor RUNS the
+	// boot scrub in sidecar mode — it is the only process that can see
+	// /workspace — and the sidecar's healthz mirror reads it through
+	// THIS status method; run 36135708380 found the #1537 wiring
+	// single-container-only).
+	legacyScrubSnapshot func() *agentd.LegacyScrubHealth
 
 	mu     sync.Mutex
 	closed bool
@@ -227,18 +236,28 @@ func (s *controlSocketServer) status(id *int64) controlResponse {
 		lastStr = last.UTC().Format(time.RFC3339)
 	}
 	spawn := s.proc.SpawnEnvState()
-	return controlResponse{V: controlProtocolVersion, ID: idOr(id),
-		Result: map[string]any{
-			"child_pid":          pid,
-			"child_state":        state,
-			"restarts":           restarts,
-			"last_restart_at":    lastStr,
-			"spawned_rev":        spawn.SpawnedRev,
-			"spawn_env_degraded": spawn.Degraded,
-			"spawn_env_reason":   spawn.Reason,
-			"files_rev":          spawn.FilesRev,
-			"spawn_files_reason": spawn.FilesReason,
-		}}
+	result := map[string]any{
+		"child_pid":          pid,
+		"child_state":        state,
+		"restarts":           restarts,
+		"last_restart_at":    lastStr,
+		"spawned_rev":        spawn.SpawnedRev,
+		"spawn_env_degraded": spawn.Degraded,
+		"spawn_env_reason":   spawn.Reason,
+		"files_rev":          spawn.FilesRev,
+		"spawn_files_reason": spawn.FilesReason,
+	}
+	if s.legacyScrubSnapshot != nil {
+		if rep := s.legacyScrubSnapshot(); rep != nil {
+			if raw, err := json.Marshal(rep); err == nil {
+				var scrubMap map[string]any
+				if json.Unmarshal(raw, &scrubMap) == nil {
+					result["legacy_scrub"] = scrubMap
+				}
+			}
+		}
+	}
+	return controlResponse{V: controlProtocolVersion, ID: idOr(id), Result: result}
 }
 
 func (s *controlSocketServer) restart(req controlRequest) controlResponse {

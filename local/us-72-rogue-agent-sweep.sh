@@ -77,14 +77,18 @@ sweep_hits() {
                  /sandbox-runtime/rt/secrets.json \
                  /sandbox-runtime/rt/auth.json; do
             out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)
-            [[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))
+            if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+                hits=$((hits + out)); echo "HIT ${p} x${out}" >&2
+            fi
         done
         for env in /proc/[0-9]*/environ; do
             out=$(grep -ac "'"${CANARY_KEY}"'" "$env" 2>/dev/null || true)
-            [[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))
+            if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+                hits=$((hits + out)); echo "HIT ${env} x${out}" >&2
+            fi
         done
         echo "${hits}"
-    ' 2>/dev/null | tail -1 || echo 1
+    ' 2>&1 | tail -1 || echo 1
 }
 
 condition_status() { # cond-type -> status (None when absent)
@@ -113,6 +117,26 @@ bind_code=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
 [[ "${bind_code}" == 2* ]] || die "setup: bind failed: HTTP ${bind_code}"
 
 wait_phase "${WS}" Active 300 || die "setup: workspace never Active"
+
+# The CONVERGENCE gate (run 36135708380's R1 lesson): the exit criterion
+# evaluates the CONVERGED post-flip posture, not the boot transient —
+# design 0061 M2's migration-mode fail-open fallback deliberately
+# delivers a RAW batch on any boot where controller staging has not
+# converged yet (workspaces must not strand), and that window's live
+# files (agent-config.json, rt/auth.json) legitimately carry the raw
+# canary until the token batch lands. The drill's own R2 gates on
+# CredentialsStaged=True for exactly this reason; the sweep must too.
+staged="None"
+for _ in $(seq 1 60); do
+    staged="$(condition_status CredentialsStaged)"
+    [[ "${staged}" == "True" ]] && break
+    sleep 5
+done
+if [[ "${staged}" == "True" ]]; then
+    ok "CredentialsStaged=True (converged posture — the criterion's frame)"
+else
+    note_fail "setup: CredentialsStaged=${staged} (never True) — the sweep cannot evaluate the converged posture"
+fi
 
 # -----------------------------------------------------------------------------
 log "R1 — the exit-criterion sweep: zero canary bytes in uid-1000 space"

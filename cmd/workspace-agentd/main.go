@@ -267,12 +267,23 @@ func main() {
 	// loudly + re-arms on outage — never a crashloop. Flag-off pods
 	// observe no relay entries: the loop idles at one file rescan per
 	// tick, zero HTTP.
-	// US-72.6 (design 0058 §8): the one-time legacy-key scrub rides the
-	// relay monitor's first Present=true observation (a post-flip pod) —
-	// the report lands on healthz (/v1/healthz, the surface the
-	// controller polls) for the LegacyKeysScrubbed mirror. A flag-off
-	// pod never fires it.
+	// US-72.6 (design 0058 §8): the one-time legacy-key scrub. Run
+	// 36135708380 (the sweep's first real execution): the #1537
+	// first-Present hook is dead exactly when the migration must run —
+	// design 0061 M2's migration-mode fail-open fallback delivers a RAW
+	// batch on any boot where controller staging has not converged, and
+	// on those boots the batch carries no relay-fronted entries, so the
+	// monitor never evaluates Present=true and the hook never fires
+	// (LegacyKeysScrubbed stuck at the stale boot mirror while the
+	// residue survives). The scrub now fires UNCONDITIONALLY at boot;
+	// the first-Present hook stays wired as belt-and-braces (the
+	// tracker's sync.Once collapses whichever fires first). Safe on
+	// every posture: the scrub strips key material only from legacy
+	// platform-shaped residue files, never the live delivery surfaces.
+	// The report lands on healthz (/v1/healthz, the surface the
+	// controller polls) for the LegacyKeysScrubbed mirror.
 	legacyScrub := newLegacyScrubTracker("/workspace")
+	bootLegacyScrub(legacyScrub)
 	relayLiveness := newRelayLivenessMonitorWithHook(bootstrapSecretsOutFromEnv(), nil, legacyScrub.runOnce)
 	deps.relayLiveness = relayLiveness
 	deps.legacyScrub = legacyScrub

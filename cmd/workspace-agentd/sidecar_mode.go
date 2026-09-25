@@ -219,6 +219,11 @@ func runSidecarCommand(_ []string) int {
 	// snapshot, never the socket.
 	supervisorStatus := &supervisorStatusStore{}
 	deps.spawnEnvSnapshot = supervisorStatus.spawnEnvHealth
+	// US-72.6: the boot scrub's report mirror (the scrub itself runs in
+	// the uid-1000 supervisor; run 36135708380 found the #1537 wiring
+	// single-container-only — the sidecar's healthz never carried the
+	// slice, so LegacyKeysScrubbed never landed in sidecar installs).
+	deps.legacyScrubSnapshot = supervisorStatus.legacyScrubHealth
 
 	if sidecarAuthority != nil {
 		startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonBoot)

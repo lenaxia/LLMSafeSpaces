@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"net"
 	"os"
 	"sync/atomic"
@@ -64,6 +65,10 @@ type controlStatus struct {
 	// files the uid-1000 supervisor wrote, plus its degrade reason.
 	FilesRev         string `json:"-"`
 	SpawnFilesReason string `json:"-"`
+	// US-72.6: the supervisor's boot-scrub report (sidecar mode — the
+	// uid-1000 supervisor runs the scrub; the sidecar's healthz mirror
+	// reads it from this status field). Nil until the boot scrub fires.
+	LegacyScrub *agentd.LegacyScrubHealth `json:"-"`
 }
 
 type controlRestartResult struct {
@@ -160,15 +165,16 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 		return nil, err
 	}
 	raw := struct {
-		ChildPID         int    `json:"child_pid"`
-		ChildState       string `json:"child_state"`
-		Restarts         int    `json:"restarts"`
-		LastRestartAt    string `json:"last_restart_at"`
-		SpawnedRev       string `json:"spawned_rev"`
-		SpawnEnvDegraded bool   `json:"spawn_env_degraded"`
-		SpawnEnvReason   string `json:"spawn_env_reason"`
-		FilesRev         string `json:"files_rev"`
-		SpawnFilesReason string `json:"spawn_files_reason"`
+		ChildPID         int                       `json:"child_pid"`
+		ChildState       string                    `json:"child_state"`
+		Restarts         int                       `json:"restarts"`
+		LastRestartAt    string                    `json:"last_restart_at"`
+		SpawnedRev       string                    `json:"spawned_rev"`
+		SpawnEnvDegraded bool                      `json:"spawn_env_degraded"`
+		SpawnEnvReason   string                    `json:"spawn_env_reason"`
+		FilesRev         string                    `json:"files_rev"`
+		SpawnFilesReason string                    `json:"spawn_files_reason"`
+		LegacyScrub      *agentd.LegacyScrubHealth `json:"legacy_scrub"`
 	}{}
 	if err := json.Unmarshal(mustMarshal(res), &raw); err != nil {
 		return nil, fmt.Errorf("control socket: status decode: %w", err)
@@ -182,6 +188,7 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 		SpawnEnvReason:   raw.SpawnEnvReason,
 		FilesRev:         raw.FilesRev,
 		SpawnFilesReason: raw.SpawnFilesReason,
+		LegacyScrub:      raw.LegacyScrub,
 	}
 	if raw.LastRestartAt != "" {
 		t, err := time.Parse(time.RFC3339, raw.LastRestartAt)
