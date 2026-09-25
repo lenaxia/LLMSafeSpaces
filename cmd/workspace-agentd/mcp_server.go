@@ -97,7 +97,21 @@ func mcpHandler(password string) http.HandlerFunc {
 			return
 		}
 		if req.Method == "tools/call" {
-			if dups, err := utilities.FindDuplicateKeys(raw); err == nil && len(dups) > 0 {
+			// Fail CLOSED on scanner error: the streaming Decode above
+			// accepts trailing garbage (the #1561 salvage behavior),
+			// and the scanner deliberately errors on it — a body that
+			// decodes-but-does-not-scan can carry collapsed duplicate
+			// keys past this gate otherwise (r2's verified escape:
+			// `{"a":1,"session_id":"A","session_id":"B"} junk`
+			// dispatched silently). Scanner error → -32700 (the body
+			// is malformed at the seam's stricter read); dups → -32602.
+			dups, scanErr := utilities.FindDuplicateKeys(raw)
+			if scanErr != nil {
+				writeMCPError(w, req.ID, -32700,
+					"Parse error: malformed tools/call body (unscannable JSON — trailing or invalid data): "+scanErr.Error())
+				return
+			}
+			if len(dups) > 0 {
 				writeMCPError(w, req.ID, -32602,
 					"Invalid params: duplicated object key(s) "+strings.Join(dups, ", ")+
 						" — JSON allows one value per key and the server cannot guess which copy was intended; re-emit the call with each key exactly once")

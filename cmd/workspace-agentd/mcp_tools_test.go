@@ -1016,6 +1016,37 @@ func TestMCPHandler_DuplicateKeyRefusalScopedAndCleanPasses(t *testing.T) {
 	assert.NotContains(t, w2.Body.String(), "-32602", "clean tools/call bodies never hit the refusal")
 }
 
+// r2's verified escape, pinned shut: the streaming Decode accepts
+// trailing garbage (the #1561 salvage behavior) while the scanner
+// errors on it — a duplicate-key body with a garbage tail used to
+// skip the refusal entirely (fail-open) and dispatch with the keys
+// silently collapsed. The gate now refuses on scanner error (-32700):
+// fail CLOSED.
+func TestMCPHandler_ToolsCallTrailingGarbageDuplicateKeyRefused(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"send_message","arguments":{"session_id":"ses_A","session_id":"ses_B","message":"hi"}}} junk`)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+
+	var resp struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Result *json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "a garbage-tailed duplicate-key tools/call must be refused, never dispatched")
+	assert.Equal(t, -32700, resp.Error.Code, "scanner error fails closed as a parse error")
+	assert.Nil(t, resp.Result, "nothing dispatches")
+
+	// And the garbage tail WITHOUT duplicate keys also refuses — the
+	// stricter read applies to every tools/call body, dupes or not.
+	tailOnly := []byte(`{"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}} x`)
+	w2 := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w2, mcpAuthedRequest(tailOnly))
+	assert.Contains(t, w2.Body.String(), "-32700", "unscannable tools/call bodies refuse regardless of duplicate presence")
+}
+
 // Every tool sits behind the Basic gate — the per-tool 401 probe.
 func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 	for _, tool := range []string{

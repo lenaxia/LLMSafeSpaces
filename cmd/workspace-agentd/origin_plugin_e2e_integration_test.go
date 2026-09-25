@@ -352,7 +352,6 @@ func TestOriginE2E_EmissionDuplicationRecoveredTargetNonexistent(t *testing.T) {
 	defer cancel()
 
 	callerID := createWithBootstrapRetry(t, client, "origin-e2e-caller")
-	_ = ctx
 
 	corrupt := `ses_E2E_NO_SUCH` + `","lsp_injected_session":"` + callerID + `"}`
 	provider.mu.Lock()

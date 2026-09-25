@@ -30,6 +30,14 @@ func TestFindDuplicateKeys(t *testing.T) {
 		{"empty object and array", `{"a":{},"b":[]}`, nil},
 		{"scalars, nulls, escapes", `{"s":"a\"b","n":null,"t":true,"f":false,"z":0}`, nil},
 		{"key with dot and quote chars", `{"a.b":{"c\"d":1,"c\"d":2}}`, []string{`$.a.b.c"d`}},
+		// The escape-shadowed shape (the issue thread's own callout):
+		// \u0073 escapes to "s", so both keys are "session_id" — a
+		// raw-text comparison would MISS this; the Decoder resolves
+		// escapes before comparison and the duplicate is caught.
+		{"escape-shadowed duplicate key", `{"\u0073ession_id":1,"session_id":2}`, []string{"$.session_id"}},
+		// Distinct-after-escape-resolution only via DIFFERENT strings
+		// stays clean: same escapes, different keys.
+		{"escape-resolved distinct keys", `{"\u0073ession_id":1,"\u0074ession_id":2}`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

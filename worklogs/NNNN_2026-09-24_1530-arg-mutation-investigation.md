@@ -33,6 +33,12 @@ Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-pl
 - Description tension: the send_message description no longer carries the literal fragment bytes (removing a second imitation-priming channel); the recovery notice is now generic.
 - Worklog restructured onto the mandated template.
 
+### Round-2 review findings (all addressed)
+- **Escapable refusal (verified fail-open)**: the gate's `err == nil && len(dups) > 0` skipped refusal when the scanner errored, while the seam's streaming Decode accepts trailing garbage — a duplicate-key body with a garbage tail dispatched with keys silently collapsed (the exact misdelivery the gate exists to prevent). FIXED: the tools/call gate fails CLOSED — scanner error → -32700 (unscannable body), dups → -32602. The scanner's doc comment (which asserted the opposite of the seam's behavior) rewritten to state the contract.
+- **Missing pin rows**: `TestMCPHandler_ToolsCallTrailingGarbageDuplicateKeyRefused` (the escape, both legs: dupes+garbage and garbage-only) and the escape-shadowed scanner row (`{"\u0073ession_id":1,"session_id":2}` → `$.session_id`, plus an escape-resolved-distinct clean row).
+- **Style**: dead `_ = ctx` removed from the unhappy e2e row.
+- Issue closure verified FULLY ADDRESSED this round (legs 1–3 + all three comment-thread artifacts on-branch, CI-enforced).
+
 ### Byproduct — filed separately
 - #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 

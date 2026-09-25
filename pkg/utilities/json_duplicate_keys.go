@@ -20,11 +20,12 @@ import (
 // key shape misdelivers silently). The seam refuses such bodies
 // (-32602) instead of guessing intent; this scanner is the detector.
 //
-// Malformed JSON returns the decode error; current callers consult
-// the scanner only after a successful standard decode, so an error
-// here would indicate internal inconsistency (map collapse cannot
-// reject what the token stream accepted — the reverse can diverge on
-// trailing garbage, which the seam rejects earlier anyway).
+// Malformed JSON returns the decode error. Callers must FAIL CLOSED
+// on it: a streaming json.Decoder.Decode accepts some bodies this
+// scanner rejects (trailing garbage after the top-level value), so
+// "scanner errored" can mean "duplicate keys hid beneath salvage" —
+// the MCP tools/call seam refuses such bodies (-32700) rather than
+// dispatching past the gate.
 //
 // Implementation: encoding/json cannot re-emit duplicates (map
 // collapse), so this walks the Decoder token-by-token with explicit
