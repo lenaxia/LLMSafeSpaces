@@ -50,14 +50,15 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Install helm
-        # #1566 peel: pinned to 3.21.4 — the truth probe showed helm
-        # 3.22.0's STORED manifest carries the api-leader-election
-        # Binding while the cluster never receives it (apply-path loss;
-        # the sibling Role applies). 3.21.4 is the version the local
-        # replication rendered+verified with. One controlled variable:
-        # if the loss follows the version, it's the 3.22 apply path
-        # (upstream note + keep the pin); if it persists, engine-
-        # independent (the dedicated-file fix follows).
+        # #1566 peel: pinned to 3.21.4 — the replication version.
+        # The apply-loss is SETTLED: version-independent (reproduced
+        # on BOTH 3.21.4 and 3.22.0) — the chart's own template
+        # whitespace glued the multi-doc tail into one doc (last-wins
+        # decode drops the first object; the stored manifest lied
+        # while the cluster never received the Binding). Fixed
+        # in-tree: the dedicated file + the restored separator,
+        # pinned by the doc-boundary class test. The pin stays as
+        # the one known-good constant the replication verified with.
         run: |
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version v3.21.4
 
@@ -233,9 +234,10 @@ jobs:
 
       # #1566 peel: the api-leader-election BINDING rendered locally
       # but was absent live while its Role applied (the Role applied).
-      # Post-install truth probe, one cycle: helm's own manifest vs the
-      # cluster + the engine version — a render/apply divergence class.
-      # Diagnosis-only (never gates): the assertions stay authoritative.
+      # Graduated from a diagnosis-only probe to a GATING assertion:
+      # both RBAC pairs must be LIVE on the cluster — probed twice
+      # (install+0 and +40s: never-applied vs applied-then-deleted)
+      # plus the API SA's actual grants via auth can-i.
       - name: Require the RBAC bindings live (the #1566 peel's assertion)
         # The graduated truth probe: the api-leader-election AND
         # api-platform-info pairs rendered+stored but never reached the
