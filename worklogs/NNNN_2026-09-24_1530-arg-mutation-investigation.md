@@ -1,91 +1,87 @@
-# #1530 — send_message arg-mutation race: investigation, falsification, and the emission-duplication recovery
+# Worklog: #1530 — send_message arg-mutation investigation: race falsified, emission root cause, recovery + seam refusal
 
-Date: 2026-09-24
-Branch: `fix/1530-arg-mutation-race`
-Status: PR open (iterate to APPROVED, no merge)
+**Date:** 2026-09-24
+**Session:** Orchestrator-delegated investigation of the send_message arg-mutation race hypothesis (13 delivery misfires), evolved into the emission-duplication recovery + duplicate-key seam refusal
+**Status:** Complete
 
-## The assignment
+---
 
-The orchestrator's hypothesis: the origin plugin's in-place arg mutation
-(`output.args.lsp_injected_session = input.sessionID`,
-runtimes/opencode/plugins/llmsafespaces-origin.js:49) races the MCP
-serializer, duplicating id fields when calls carry both origin and
-target params — the root cause behind 13 delivery misfires (the
-orchestrator's 11, this worker's 2, both while REPORTING the #1525
-fix). Mandate: reproduce with a probe, inspect for object aliasing,
-compare shapes against the observed reports; fix at the plugin if
-confirmed, honest negative if not.
+## Objective
 
-## Finding 1 — the race is FALSIFIED (probe A, committed)
+Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-place arg mutation racing the MCP serializer, duplicating id fields when calls carry both origin and target params — with a probe; fix at the plugin if confirmed, deliver the honest negative otherwise. Root-cause the 13 live misfire instances (the orchestrator's 11 + this worker's 2, both emitted while reporting the #1525 fix).
 
-`scripts/1530-arg-mutation-probe.mjs` replicates the pinned opencode
-1.18.15 dispatch exactly — verified against upstream sources, not
-assumed:
+---
 
-- `plugin/index.ts` trigger(): hooks run SEQUENTIALLY, AWAITED, over
-  one shared `output` object per call site.
-- `session/tools.ts:106-111`: `trigger("tool.execute.before",
-  {tool, sessionID, callID}, {args})` then `item.execute(args)` — the
-  SAME args reference flows hook → execute → wire → after-hook.
-- The wire is JSON.stringify inside the MCP client's HTTP body
-  (remote HTTP transport to agentd :4097, per agent-config.json).
+## Work Completed
 
-Four legs, 11,501 dual-param wire bodies: sequential (10k, injection
-correctly OVERWRITES a stale model-supplied lsp_injected_session),
-concurrent per-call args (500), ALIASED shared args across two
-interleaved dispatches (501 — the aliasing worst case; snapshot
-ambiguity between origins is real, torn JSON is not), and literal
-mutation-DURING-stringify via hostile Proxy (1000). Zero corrupt
-bodies. Structural conclusion: V8's synchronous JSON.stringify cannot
-emit duplicated keys or unbalanced quotes from ANY object state. The
-aliasing upstream is real but benign.
+### Investigation and falsification (r1)
+- Read the pinned upstream 1.18.15 dispatch chain (plugin/index.ts trigger, session/tools.ts:106, MCP client path): hooks run sequentially+awaited over one shared args reference — aliasing is real, concurrent serialization is not.
+- `scripts/1530-arg-mutation-probe.mjs` (new): harness-exact replica, four legs, 11,501 dual-param wire bodies — sequential, concurrent, aliased-shared-args interleaved at await points, and literal mutation-during-stringify via hostile Proxy. Zero corrupt bodies: V8's synchronous `JSON.stringify` cannot emit duplicated keys or unbalanced quotes from any object state. Race FALSIFIED structurally.
+- Root cause proven from the bytes: every corrupt value contains ESCAPED quotes — escapes exist only in JSON source text, so the corruption predates serialization. MODEL EMISSION (duplicating the tail of a similar prior call visible in context). `scripts/1530-corrupt-args-liveprobe.py` (new, era-aware): live raw-wire characterization against agentd.
 
-## Finding 2 — the actual root cause: MODEL EMISSION (probe B, committed)
+### The fix (r1)
+- `splitDuplicatedArgFragment` + recovery in `mcpSendMessage` (mcp_tools.go): exact-shape detection, leading-id recovery, delivery, composed omit-when-clean warning (extends the #1525 self-send field); embedded origin never trusted (mismatch surfaced as cosmetic; resolved origin wins).
+- Four red-first integration rows in mcp_tools_test.go; the initial red reproduced the production error byte-for-byte.
 
-The corrupt values across all 13 instances contain ESCAPED quotes
-(`\",\"lsp_injected_session\":\"…\"`) — backslash escapes exist only
-in JSON SOURCE TEXT. Object serialization cannot inject them; the
-corruption therefore predates serialization: the MODEL duplicated the
-tail of a similar prior send_message call — a call made VISIBLE in
-context by the plugin's injected field (the model then imitates and
-sometimes duplicates it; this worker's two misfires were exactly
-this, live). `scripts/1530-corrupt-args-liveprobe.sh` drives agentd
-raw-wire with the exact shapes: all fail cleanly with resolution
-errors — the message is LOST, but the intent (leading target id) is
-mechanically recoverable.
+### Round-1 review findings (all addressed)
+- Duplicate-key silent-collapse exposure (issue comment thread; neither shipped nor ruled out): SHIPPED — `pkg/utilities/json_duplicate_keys.go` scanner (token-walk recursive descent; Go's decoder collapses duplicate keys silently, last-wins) + tools/call seam refusal (-32602, names the duplicated paths) in mcpHandler; unit tables + handler rows.
+- Rejection-half coverage of the predicate: SHIPPED — `TestSplitDuplicatedArgFragment_RejectionHalf` (11 rows: malformed ids, empty target, trailing garbage, multi-mark) + `AcceptanceHalf`.
+- Missing e2e level: SHIPPED — `TestOriginE2E_EmissionDuplicationRecovery` (happy: recovery + delivery + warning through real opencode + real plugin + real agentd) and `...RecoveredTargetNonexistent` (unhappy: error names the RECOVERED id, fragment absent). Both verified against the live pinned binary (15s each).
+- Real-binary wire-integrity probe restored: `TestOriginPlugin_DualParamWireIntegrity` in the pkg harness (raw-body capture in the stub MCP; injected-overwrite semantics + each identity key exactly once + scanner clean on raw bytes); rides CI's existing `-run TestOriginPlugin` selector. Replica probe wired into the origin-plugin-pin CI job (node step).
+- Stale liveprobe narrative: rewritten era-aware (post-#1530 recovers and names the recovered id; pre-#1530 hard-fails on the raw fragment; either era passes with its label) and renamed `.sh`→`.py` (python shebang vs scripts/ bash convention).
+- Comment truth (Rule 4): the dispatch comment's "never schema-advertised, never model-supplied by construction" corrected — models DO supply copies (the key is visible in rendered prior calls).
+- Description tension: the send_message description no longer carries the literal fragment bytes (removing a second imitation-priming channel); the recovery notice is now generic.
+- Worklog restructured onto the mandated template.
 
-## The fix — agentd-side recovery + warning (the #1525 pattern)
+### Byproduct — filed separately
+- #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 
-`splitDuplicatedArgFragment` (mcp_tools.go) detects the exact
-fragment mark; the leading id is recovered as the target, the send
-DELIVERS, and the result warns loudly (omit-when-clean — composed
-with the #1525 self-send warning into one field). The fragment's
-embedded origin is never trusted (mismatch is surfaced as cosmetic;
-the resolved origin — injected or declared — wins attribution).
-Recovered targets still pass SessionExists; anything that is not the
-exact shape takes the original path unchanged.
+---
 
-Tests (red-first — the initial failure reproduced the production
-error byte-for-byte, including the `failed to resolve session
-ses_X\",\"lsp_injected_session\":\"ses_Y\"}` signature):
-RecoversTargetAndWarns (delivered payload carries no fragment bytes),
-NoBraceVariant, MismatchedEmbeddedOriginStillDelivers,
-AbsentOnCleanIDs (no mangling; clean bogus ids keep the plain
-not-found path). Full package green (304.6s), vet/gofmt clean.
+## Key Decisions
 
-## Byproduct — filed as its own issue, not fixed here (#1561)
+- **Recovery over refusal for the fragment shape** (message intent is mechanically recoverable; the #1525 not-a-refusal philosophy) **but refusal (-32602) for the duplicate-key shape** (intent is NOT recoverable — which copy was meant is a guess; loud refusal beats silent last-wins misbinding). Both are model-emission shapes; they get opposite treatments because recoverability differs.
+- **Embedded origin never trusted** — cosmetic echo only; attribution always from the resolved origin (injected > declared). Pinned by test.
+- **Scanner in pkg/utilities, refusal at the tools/call seam only** — the exposure surface is tool arguments; blanket refusal would touch notifications/initialize traffic for no benefit.
+- **Era-aware liveprobe** rather than post-fix-only expectations: deployed pods run pre-fix agentd until the next train; a probe that fails fleet-wide pre-deploy helps nobody.
+- Probe A ships as a CI regression despite the negative result: it converts "the race is impossible today" into "the race stays impossible through future plugin rewrites."
 
-Probe B's first draft found agentd's HTTP layer SALVAGES invalid JSON
-bodies (unescaped garbage mid-string parses as a prefix; trailing
-keys silently dropped → "message is required" masks transport
-corruption). Orchestrator ruling: separate issue. #1561 filed.
+## Blockers
 
-## Honest boundaries
+None.
 
-- The race could still bite a FUTURE async-unsafe plugin rewrite —
-  probe A ships as the standing regression harness for exactly that.
-- Recovery is shape-exact, not heuristic: a fragment WITHOUT a
-  well-formed leading id still fails as today (by design — the guard
-  must never guess).
-- The model-side trigger (field visibility in transcript) is
-  upstream harness behavior; agentd defense is the actionable layer.
+---
+
+## Tests Run
+
+- `go test ./pkg/utilities/ -run FindDuplicateKeys` — ok (table + malformed-errors).
+- `go test ./cmd/workspace-agentd/ -run 'DuplicateKey|SplitDuplicatedArgFragment|EmissionDuplication|SelfSendGuard'` — ok.
+- `OPENCODE_BINARY=/opencode/usr/local/bin/opencode go test -tags=integration -run TestOriginPlugin_DualParamWireIntegrity ./pkg/agent/opencode/` — ok (22s, real binary).
+- `OPENCODE_BINARY=... go test -tags=integration -run 'TestOriginE2E_EmissionDuplication' ./cmd/workspace-agentd/` — ok (both rows, real binary, 30s).
+- `node scripts/1530-arg-mutation-probe.mjs 10000` — RACE NOT REPRODUCED, exit 0.
+- `./scripts/1530-corrupt-args-liveprobe.py` — 4/4 pass (era-aware, pre-fix labels on this pod).
+- Full `go test ./cmd/workspace-agentd/` — run before push (see PR CI).
+- `go vet`, `gofmt`, golangci-lint (pre-commit) — clean.
+
+---
+
+## Next Steps
+
+- Iterate PR #1562 to APPROVED (round 2+).
+- Post-merge: the recovery + seam refusal deploy with the next train; the era-aware probe flips to post-fix labels fleet-wide.
+- #1561 (HTTP salvage) is a queued lane candidate — not this lane.
+
+---
+
+## Files Modified
+
+- `cmd/workspace-agentd/mcp_tools.go` — recovery guard + splitDuplicatedArgFragment + composed warning
+- `cmd/workspace-agentd/mcp_tools_test.go` — recovery rows, rejection/acceptance tables, seam refusal rows
+- `cmd/workspace-agentd/mcp_server.go` — tools/call duplicate-key refusal (-32602), comment-truth fix, description rewrite
+- `pkg/utilities/json_duplicate_keys.go` (+ `_test.go`) — NEW: duplicate-key scanner
+- `pkg/agent/opencode/origin_plugin_integration_test.go` — raw-body capture, dual-param emission, TestOriginPlugin_DualParamWireIntegrity
+- `cmd/workspace-agentd/origin_plugin_e2e_integration_test.go` — two #1530 e2e rows
+- `scripts/1530-arg-mutation-probe.mjs` — NEW: falsification harness (CI-wired)
+- `scripts/1530-corrupt-args-liveprobe.py` — NEW (renamed from .sh): era-aware live probe
+- `.github/workflows/ci.yml` — origin-plugin-pin: probe step
+- `worklogs/NNNN_2026-09-24_1530-arg-mutation-investigation.md` — this worklog

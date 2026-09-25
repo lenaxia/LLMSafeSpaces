@@ -9,11 +9,16 @@
 # model-emission signature. Raw HTTP has no plugin, so origin rides
 # the #1469 hybrid's declared fallback (from_session_id).
 #
-# All targets are bogus ids (ses_PROBE_*): resolution fails, nothing
-# delivers — safe to fire repeatedly.
+# Targets are bogus ids (ses_PROBE_*): nothing delivers either way.
+# The probe is ERA-AWARE (the pre-#1389 404-skip precedent): a
+# post-#1530 agentd RECOVERS the corrupt shapes to their leading id
+# and fails naming the RECOVERED id (fragment absent); a pre-#1530
+# agentd fails on the raw corrupt value (the historical hard-fail —
+# message lost). Either era passes with its label; anything else is
+# a real failure.
 #
-# Usage: scripts/1530-corrupt-args-liveprobe.sh
-# Exit 0 = characterization complete; exit 1 = unexpected behavior.
+# Usage: scripts/1530-corrupt-args-liveprobe.py
+# Exit 0 = era semantics confirmed; exit 1 = unexpected behavior.
 
 import json
 import sys
@@ -50,15 +55,27 @@ def note(ok, label):
 base = {"message": "probe-1530 (no action needed)", "from_session_id": DECLARED}
 
 # v1 — the exact instance shape: escaped tail fragment inside the value,
-# VALID JSON (what the model actually emitted in the 13 misfires)
+# VALID JSON (what the model actually emitted in the 13 misfires).
+# Post-fix: RECOVERED to ses_PROBE_TARGET, fails there naming the
+# RECOVERED id, raw fragment absent from the error.
 v1 = call({**base, "session_id": 'ses_PROBE_TARGET","lsp_injected_session":"ses_PROBE_ORIGIN"}'})
 print(f"v1 exact-instance (escaped fragment, valid JSON): {v1}")
-note("failed to resolve session" in v1 or "not found" in v1, "v1 hard-fails cleanly (message lost)")
+if "not found" in v1 and "ses_PROBE_TARGET" in v1 and '","lsp_injected_session":"' not in v1:
+    note(True, "v1 post-#1530: recovers the leading id, fails naming the RECOVERED target")
+elif "failed to resolve session" in v1:
+    note(True, "v1 pre-#1530 agentd: historical hard-fail on the raw fragment (recovery not deployed here)")
+else:
+    note(False, f"v1 unexpected shape: {v1}")
 
 # v2 — fragment without trailing brace
 v2 = call({**base, "session_id": 'ses_PROBE_TARGET","lsp_injected_session":"ses_PROBE_ORIGIN"'})
 print(f"v2 no-brace variant: {v2}")
-note("failed to resolve session" in v2 or "not found" in v2, "v2 hard-fails cleanly")
+if "not found" in v2 and "ses_PROBE_TARGET" in v2 and '","lsp_injected_session":"' not in v2:
+    note(True, "v2 post-#1530: recovers the leading id, fails naming the RECOVERED target")
+elif "failed to resolve session" in v2:
+    note(True, "v2 pre-#1530 agentd: historical hard-fail on the raw fragment (recovery not deployed here)")
+else:
+    note(False, f"v2 unexpected shape: {v2}")
 
 # v3 — control: clean bogus id, same expected failure class
 v3 = call({**base, "session_id": "ses_PROBE_CLEAN_BOGUS"})

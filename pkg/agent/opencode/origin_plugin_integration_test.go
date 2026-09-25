@@ -26,9 +26,11 @@ package opencode
 // CI runs it via the origin-plugin-pin job (downloads the pinned binary).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +43,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/utilities"
 )
 
 // stubAgentdMCP is the minimal agentd /v1/mcp stand-in: JSON-RPC over
@@ -49,6 +53,7 @@ import (
 type stubAgentdMCP struct {
 	mu    sync.Mutex
 	calls []map[string]any // recorded tools/call params (name + arguments)
+	raws  [][]byte         // recorded RAW tools/call bodies (#1530 wire integrity)
 }
 
 func (s *stubAgentdMCP) handler(t *testing.T) http.HandlerFunc {
@@ -62,12 +67,17 @@ func (s *stubAgentdMCP) handler(t *testing.T) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		raw, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		var req struct {
 			ID     any             `json:"id"`
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -102,6 +112,7 @@ func (s *stubAgentdMCP) handler(t *testing.T) http.HandlerFunc {
 			_ = json.Unmarshal(req.Params, &params)
 			s.mu.Lock()
 			s.calls = append(s.calls, params)
+			s.raws = append(s.raws, raw)
 			s.mu.Unlock()
 			writeResult(map[string]any{
 				"content": []map[string]any{{"type": "text", "text": `{"status":"delivering"}`}},
@@ -124,14 +135,33 @@ func (s *stubAgentdMCP) sendCalls() []map[string]any {
 	return out
 }
 
+// rawCalls returns the RAW tools/call wire bodies — the byte-level
+// truth beneath the decoded maps (Go's decoder collapses duplicate
+// keys silently; wire-integrity assertions must read the bytes).
+func (s *stubAgentdMCP) rawCalls() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := [][]byte{}
+	for i, c := range s.calls {
+		if c["name"] == "send_message" {
+			out = append(out, s.raws[i])
+		}
+	}
+	return out
+}
+
 // toolCallMockProvider answers the FIRST completion with one streamed
 // llmsafespaces_send_message tool call, every later one with plain
 // text — enough agentic loop for the harness to execute the tool once
-// and finish the turn.
+// and finish the turn. staleInjected (#1530), when armed, makes the
+// emitted call DUAL-PARAM: the model supplies its own (stale) copy of
+// lsp_injected_session alongside session_id — the precondition of the
+// 13-instance misfire class.
 type toolCallMockProvider struct {
-	mu       sync.Mutex
-	requests int
-	targetID string
+	mu            sync.Mutex
+	requests      int
+	targetID      string
+	staleInjected string
 }
 
 func (m *toolCallMockProvider) handler(t *testing.T) http.HandlerFunc {
@@ -144,7 +174,7 @@ func (m *toolCallMockProvider) handler(t *testing.T) http.HandlerFunc {
 		m.mu.Lock()
 		m.requests++
 		first := m.requests == 1
-		target := m.targetID
+		target, stale := m.targetID, m.staleInjected
 		m.mu.Unlock()
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -157,7 +187,11 @@ func (m *toolCallMockProvider) handler(t *testing.T) http.HandlerFunc {
 			}
 		}
 		if first {
-			args, _ := json.Marshal(map[string]string{"session_id": target, "message": "stub hello"})
+			argsMap := map[string]string{"session_id": target, "message": "stub hello"}
+			if stale != "" {
+				argsMap["lsp_injected_session"] = stale
+			}
+			args, _ := json.Marshal(argsMap)
 			firstChunk, _ := json.Marshal(map[string]any{
 				"id": "chatcmpl-mock", "object": "chat.completion.chunk", "created": 1, "model": "mockmodel",
 				"choices": []map[string]any{{
@@ -240,8 +274,11 @@ func originPluginConfig(mockBaseURL, mcpURL string, pluginPath string) string {
 
 // bootOriginHarness boots the pinned binary against the mock provider
 // and stub MCP server, sends one prompt through the seam, and returns
-// the stub's recorded send_message calls plus the created session ID.
-func bootOriginHarness(t *testing.T, ocPort, mockPort int, withPlugin bool) (string, []map[string]any) {
+// the stub's recorded send_message calls plus the created session ID
+// (and the stub/provider handles for wire-level legs like #1530).
+// arm, when non-nil, customizes the provider BEFORE the prompt (e.g.
+// #1530's dual-param stale lsp_injected_session).
+func bootOriginHarness(t *testing.T, ocPort, mockPort int, withPlugin bool, arm func(*toolCallMockProvider)) (string, []map[string]any, *stubAgentdMCP, *toolCallMockProvider) {
 	t.Helper()
 
 	pluginPath := ""
@@ -281,13 +318,16 @@ func bootOriginHarness(t *testing.T, ocPort, mockPort int, withPlugin bool) (str
 	provider.mu.Lock()
 	provider.targetID = sessionID
 	provider.mu.Unlock()
+	if arm != nil {
+		arm(provider)
+	}
 
 	_, err = client.SessionSend(ctx, sessionID, "call the send_message tool now", "", nil)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool { return len(mcpStub.sendCalls()) == 1 },
 		30*time.Second, 250*time.Millisecond, "the harness must execute the stub send_message tool exactly once")
-	return sessionID, mcpStub.sendCalls()
+	return sessionID, mcpStub.sendCalls(), mcpStub, provider
 }
 
 // TestOriginPlugin_InjectsCallingSessionID — the freeze pin. The
@@ -296,7 +336,7 @@ func bootOriginHarness(t *testing.T, ocPort, mockPort int, withPlugin bool) (str
 // works end-to-end (residual #4: no layer strips injected args), and
 // the value is the harness's own session identity.
 func TestOriginPlugin_InjectsCallingSessionID(t *testing.T) {
-	sessionID, calls := bootOriginHarness(t, 14210, 14250, true)
+	sessionID, calls, _, _ := bootOriginHarness(t, 14210, 14250, true, nil)
 	require.Len(t, calls, 1)
 	args, ok := calls[0]["arguments"].(map[string]any)
 	require.True(t, ok, "arguments must be an object: %v", calls[0])
@@ -312,11 +352,54 @@ func TestOriginPlugin_InjectsCallingSessionID(t *testing.T) {
 // plugin's doing; nothing in the harness adds session identity — the
 // #1465 wire-format finding, held as a regression pin).
 func TestOriginPlugin_NoPluginNoInjection(t *testing.T) {
-	_, calls := bootOriginHarness(t, 14270, 14310, false)
+	_, calls, _, _ := bootOriginHarness(t, 14270, 14310, false, nil)
 	require.Len(t, calls, 1)
 	args, ok := calls[0]["arguments"].(map[string]any)
 	require.True(t, ok, "arguments must be an object: %v", calls[0])
 	_, present := args["lsp_injected_session"]
 	assert.False(t, present,
 		"no harness-injected identity without the plugin — if this fails, the harness grew native injection and the plugin can be retired")
+}
+
+// TestOriginPlugin_DualParamWireIntegrity — the #1530 wire-byte probe,
+// restored (the issue thread's prior investigation wrote it but its PR
+// never landed). The real pinned binary + real plugin + real MCP
+// transport, with the model emitting BOTH session_id and a STALE
+// lsp_injected_session (the dual-param precondition of the 13-instance
+// misfire class): the wire must carry the injected origin (overwrite
+// semantics) with each key EXACTLY once — asserted on the RAW body
+// bytes, beneath the decoder's silent duplicate-key collapse.
+func TestOriginPlugin_DualParamWireIntegrity(t *testing.T) {
+	sessionID, calls, stub, _ := bootOriginHarness(t, 14330, 14360, true, func(p *toolCallMockProvider) {
+		p.mu.Lock()
+		p.staleInjected = "ses_MODEL_STALE"
+		p.mu.Unlock()
+	})
+	require.Len(t, calls, 1)
+	args, ok := calls[0]["arguments"].(map[string]any)
+	require.True(t, ok, "arguments must be an object: %v", calls[0])
+
+	// Overwrite semantics on the decoded view: the plugin's injection
+	// WINS over the model's stale copy — a model-supplied value can
+	// never survive a working plugin.
+	assert.Equal(t, sessionID, args["lsp_injected_session"],
+		"the plugin must OVERWRITE the stale model-supplied origin")
+	assert.Equal(t, sessionID, args["session_id"])
+	assert.Equal(t, "stub hello", args["message"])
+
+	// The wire-byte truth (decoded maps cannot see key duplication —
+	// Go collapses it silently): each identity key exactly once, and
+	// the scanner finds no duplicated key anywhere in the body.
+	raws := stub.rawCalls()
+	require.Len(t, raws, 1, "exactly one send_message tools/call on the wire")
+	raw := string(raws[0])
+	assert.Equal(t, 1, strings.Count(raw, `"lsp_injected_session"`),
+		"the wire must carry lsp_injected_session exactly once — no field duplication")
+	assert.Equal(t, 1, strings.Count(raw, `"session_id"`),
+		"the wire must carry session_id exactly once — no field duplication")
+	assert.NotContains(t, raw, "ses_MODEL_STALE",
+		"the stale model-supplied origin must not survive to the wire")
+	dups, err := utilities.FindDuplicateKeys(raws[0])
+	require.NoError(t, err)
+	assert.Empty(t, dups, "no duplicated keys anywhere in the raw body: %v", dups)
 }

@@ -965,6 +965,57 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 	}
 }
 
+// --- MCP seam duplicate-key refusal (#1530) -----------------------------
+//
+// Go's encoding/json collapses duplicated object keys SILENTLY (last
+// wins) — a duplicated session_id in a tools/call body would misbind
+// with zero trace (the KEY twin of the value-fragment emission slip
+// the send_message recovery handles; both are model-emission shapes).
+// The seam refuses such bodies with -32602 naming the duplicated
+// paths: loud refusal beats guessing which copy was intended.
+func TestMCPHandler_ToolsCallDuplicateKeyRefused(t *testing.T) {
+	// RAW body (not json.Marshal of a map — Go maps cannot express a
+	// duplicated key): the exact silent-collapse shape.
+	body := []byte(`{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"send_message","arguments":{"session_id":"ses_A","session_id":"ses_B","message":"hi"}}}`)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+
+	var resp struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "a duplicated-key tools/call must be refused, not dispatched")
+	assert.Equal(t, -32602, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "$.params.arguments.session_id", "the refusal names the duplicated path")
+	assert.Contains(t, resp.Error.Message, "re-emit the call with each key exactly once")
+}
+
+// The refusal is scoped to tools/call: other methods (and clean
+// bodies) pass through to normal dispatch untouched.
+func TestMCPHandler_DuplicateKeyRefusalScopedAndCleanPasses(t *testing.T) {
+	// A duplicated key in a NON-tools/call method is not the seam's
+	// exposure surface — normal dispatch (result or method-specific
+	// error), never -32602.
+	body := []byte(`{"jsonrpc":"2.0","id":32,"method":"tools/list","jsonrpc":"2.0"}`)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	assert.NotContains(t, w.Body.String(), "-32602", "non-tools/call methods are out of scope")
+
+	// A CLEAN tools/call reaches the tool (its own arg validation may
+	// error — but never the duplicate-key refusal).
+	params, _ := json.Marshal(map[string]any{
+		"name":      "send_message",
+		"arguments": map[string]any{"session_id": "ses_A", "message": "hi"},
+	})
+	clean, _ := json.Marshal(mcpRequest{JSONRPC: "2.0", ID: 33, Method: "tools/call", Params: params})
+	w2 := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w2, mcpAuthedRequest(clean))
+	assert.NotContains(t, w2.Body.String(), "-32602", "clean tools/call bodies never hit the refusal")
+}
+
 // Every tool sits behind the Basic gate — the per-tool 401 probe.
 func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 	for _, tool := range []string{
@@ -2106,6 +2157,56 @@ func TestMCPSendMessage_EmissionDuplicationGuard_MismatchedEmbeddedOriginStillDe
 	require.Eventually(t, func() bool {
 		return len(f.sentFor(target)) == 1
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// The predicate's documented rejection contract ("Both extracted ids
+// must be well-formed session ids; anything else is NOT the shape")
+// — the never-guess boundary. Every row must refuse recovery.
+func TestSplitDuplicatedArgFragment_RejectionHalf(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"clean id, no fragment mark", "ses_TARGET"},
+		{"empty target (mark at index 0)", `","lsp_injected_session":"ses_ORIGIN"}`},
+		{"malformed leading id", `not-an-id","lsp_injected_session":"ses_ORIGIN"}`},
+		{"malformed embedded origin", `ses_TARGET","lsp_injected_session":"not an id"}`},
+		{"empty embedded origin", `ses_TARGET","lsp_injected_session":""}`},
+		{"trailing garbage after origin", `ses_TARGET","lsp_injected_session":"ses_ORIGIN"}junk`},
+		{"multi-mark value", `ses_A","lsp_injected_session":"ses_B","lsp_injected_session":"ses_C"}`},
+		{"non-ses prefix target", `xxx_TARGET","lsp_injected_session":"ses_ORIGIN"}`},
+		{"non-ses prefix origin", `ses_TARGET","lsp_injected_session":"xxx_ORIGIN"}`},
+		{"empty string", ""},
+		{"fragment mark alone", `","lsp_injected_session":"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, embedded, ok := splitDuplicatedArgFragment(tc.value)
+			assert.False(t, ok, "must refuse recovery for %q", tc.value)
+			assert.Empty(t, target)
+			assert.Empty(t, embedded)
+		})
+	}
+}
+
+// The acceptance half, directly (the four integration rows above
+// exercise it through mcpSendMessage; this pins the extractor's own
+// return values).
+func TestSplitDuplicatedArgFragment_AcceptanceHalf(t *testing.T) {
+	target, embedded, ok := splitDuplicatedArgFragment(`ses_TARGET","lsp_injected_session":"ses_ORIGIN"}`)
+	assert.True(t, ok)
+	assert.Equal(t, "ses_TARGET", target)
+	assert.Equal(t, "ses_ORIGIN", embedded)
+
+	target, embedded, ok = splitDuplicatedArgFragment(`ses_TARGET","lsp_injected_session":"ses_ORIGIN"`)
+	assert.True(t, ok, "no-brace variant accepts")
+	assert.Equal(t, "ses_TARGET", target)
+	assert.Equal(t, "ses_ORIGIN", embedded)
+
+	// Underscores are legal id characters (deliberately permissive —
+	// the recovered target is re-validated by SessionExists after).
+	_, embedded, ok = splitDuplicatedArgFragment(`ses_T_1","lsp_injected_session":"ses_O_2"}`)
+	assert.True(t, ok)
+	assert.Equal(t, "ses_O_2", embedded)
 }
 
 // The guard must not mangle clean ids: a normal send carries no

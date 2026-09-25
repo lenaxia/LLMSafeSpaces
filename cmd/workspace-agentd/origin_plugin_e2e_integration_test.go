@@ -296,6 +296,83 @@ func TestOriginE2E_RealHarnessRealAgentd(t *testing.T) {
 	assert.Contains(t, delivered, "send the status report")
 }
 
+// TestOriginE2E_EmissionDuplicationRecovery — the #1530 recovery leg,
+// end to end through the REAL chain: the model emits the corrupt
+// session_id (leading id + pasted fragment tail), the real plugin
+// injects the origin, the REAL agentd dispatch recovers the leading
+// id, delivers, and the tool result warns.
+func TestOriginE2E_EmissionDuplicationRecovery(t *testing.T) {
+	client, toolResults, provider := bootOriginE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "origin-e2e-caller")
+	targetID := createWithBootstrapRetry(t, client, "origin-e2e-target")
+
+	// The exact instance shape: target id + escaped fragment tail
+	// carrying the caller's id (as the model's slip pastes it).
+	corrupt := targetID + `","lsp_injected_session":"` + callerID + `"}`
+	provider.mu.Lock()
+	provider.targetID = corrupt
+	provider.messageTx = "recovered lane report"
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "send the status report", "", nil)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, *toolResults)
+	if strings.HasPrefix((*toolResults)[0], "ERROR: ") {
+		t.Fatalf("recovery must deliver, not error: %s", (*toolResults)[0])
+	}
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte((*toolResults)[0]), &result))
+	assert.Equal(t, targetID, result["session_id"], "the result reports the RECOVERED target id")
+	assert.Equal(t, callerID, result["origin"])
+	assert.Equal(t, "injected", result["origin_mode"])
+	warn, _ := result["warning"].(string)
+	assert.Contains(t, warn, "duplicated-argument fragment", "the recovery warns loudly")
+	assert.Equal(t, "delivering", result["status"])
+
+	// The delivered message lands in the TARGET transcript (recovered
+	// addressing), clean of fragment bytes.
+	require.Eventually(t, func() bool {
+		body, _, err := client.SessionMessagesRaw(ctx, targetID, 50, "")
+		return err == nil && strings.Contains(string(body), "recovered lane report")
+	}, 30*time.Second, 500*time.Millisecond, "the recovered send must land in the intended target")
+	assert.NotContains(t, (*toolResults)[0], `","lsp_injected_session":"`,
+		"no fragment bytes in the tool result")
+}
+
+// TestOriginE2E_EmissionDuplicationRecoveredTargetNonexistent — the
+// unhappy twin: when the recovered leading id does not exist, the
+// failure names the RECOVERED id (never the raw fragment).
+func TestOriginE2E_EmissionDuplicationRecoveredTargetNonexistent(t *testing.T) {
+	client, toolResults, provider := bootOriginE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "origin-e2e-caller")
+	_ = ctx
+
+	corrupt := `ses_E2E_NO_SUCH` + `","lsp_injected_session":"` + callerID + `"}`
+	provider.mu.Lock()
+	provider.targetID = corrupt
+	provider.messageTx = "wont deliver"
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "send the status report", "", nil)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, *toolResults)
+	res := (*toolResults)[0]
+	if !strings.HasPrefix(res, "ERROR: ") {
+		t.Fatalf("a nonexistent recovered target must fail loudly, got result: %s", res)
+	}
+	assert.Contains(t, res, "ses_E2E_NO_SUCH", "the error names the RECOVERED id")
+	assert.NotContains(t, res, `","lsp_injected_session":"`,
+		"the raw fragment must not appear in the error — the recovery consumed it")
+}
+
 // realAgentdMCCHandler serves the REAL agentd MCP dispatch (the same
 // logic mcpHandler runs) with tool results captured for assertions.
 // NEVER fails the test from inside the handler: a Goexit mid-request
