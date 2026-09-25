@@ -32,30 +32,47 @@ import (
 // recursive descent — keys are structurally unambiguous at this
 // layer (objects are key, value, key, value…), unlike the raw token
 // stream's undifferentiated strings.
+// Reporting bounds (r3's measured finding: a 619KB duplicate-bearing
+// body — 8000-deep chain + 45K dup pairs — made the uncapped scan
+// render 89,999 full-depth paths: 7.63s CPU, 17.78GB allocated, and
+// the seam's strings.Join then built a 3.93GB error string. Duplicates
+// are this scanner's TARGET input, not a rare accident — both factors
+// (dups × depth) are attacker-chosen within the 1MiB body cap, so the
+// REPORT is bounded by construction: first maxReportedDupPaths paths,
+// each capped at maxDupPathLength chars, plus the TOTAL count so the
+// refusal still says how many).
+const (
+	maxReportedDupPaths = 16
+	maxDupPathLength    = 4096
+)
+
 type dupKeyScanner struct {
-	dec  *json.Decoder
-	dups []string
-	objs []map[string]bool
-	segs []string
+	dec      *json.Decoder
+	dups     []string
+	dupTotal int
+	objs     []map[string]bool
+	segs     []string
 }
 
 // FindDuplicateKeys reports duplicated object keys as dotted paths
-// rooted at "$" (array elements qualify as [i]). Empty result = no
+// rooted at "$" (array elements qualify as [i]); the SECOND return is
+// the TOTAL duplicate-occurrence count (the first return carries at
+// most maxReportedDupPaths truncated paths). Both zero = no
 // duplicates.
-func FindDuplicateKeys(data []byte) ([]string, error) {
+func FindDuplicateKeys(data []byte) ([]string, int, error) {
 	s := &dupKeyScanner{dec: json.NewDecoder(bytes.NewReader(data))}
 	s.dec.UseNumber()
 	if err := s.value(); err != nil {
 		if err == io.EOF {
-			return nil, fmt.Errorf("unexpected EOF")
+			return nil, 0, fmt.Errorf("unexpected EOF")
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	// reject trailing garbage after the top-level value
 	if _, err := s.dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("trailing data after JSON value")
+		return nil, 0, fmt.Errorf("trailing data after JSON value")
 	}
-	return s.dups, nil
+	return s.dups, s.dupTotal, nil
 }
 
 func (s *dupKeyScanner) value() error {
@@ -90,14 +107,18 @@ func (s *dupKeyScanner) object() error {
 			return fmt.Errorf("object key is not a string: %v", tok)
 		}
 		frame := s.objs[len(s.objs)-1]
-		// Path is built LAZILY, only on a duplicate: building it for
-		// every key made the scan quadratic in depth×keys (r1's
-		// validated ~170x CPU amplification on a valid 829KB
-		// tools/call body — the seam's shared credential makes that a
-		// core-pinning DoS). Duplicates are rare; the lazy cost is
-		// O(dups × depth).
+		// Path is built LAZILY, only on a duplicate, and the REPORT is
+		// capped: eager per-key builds made VALID-body scans quadratic
+		// (r1), and uncapped dup reports made DUPLICATE-bearing scans
+		// explode (r3 — dups are the target input, both factors
+		// attacker-chosen). First maxReportedDupPaths paths render
+		// (each truncated to maxDupPathLength); every further
+		// duplicate costs one increment.
 		if frame[key] {
-			s.dups = append(s.dups, s.path(key))
+			s.dupTotal++
+			if len(s.dups) < maxReportedDupPaths {
+				s.dups = append(s.dups, truncatePath(s.path(key)))
+			}
 		}
 		frame[key] = true
 		s.segs = append(s.segs, "."+key)
@@ -134,4 +155,14 @@ func (s *dupKeyScanner) path(key string) string {
 	}
 	b.WriteString("." + key)
 	return b.String()
+}
+
+// truncatePath bounds a reported path: paths render at O(depth), and
+// depth is attacker-chosen — a 10,000-deep nest yields ~60KB paths.
+// Capped at maxDupPathLength with an explicit truncation marker.
+func truncatePath(p string) string {
+	if len(p) <= maxDupPathLength {
+		return p
+	}
+	return p[:maxDupPathLength] + "…(truncated)"
 }

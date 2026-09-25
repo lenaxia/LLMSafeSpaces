@@ -45,11 +45,53 @@ func TestFindDuplicateKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := FindDuplicateKeys([]byte(tc.in))
+			got, total, err := FindDuplicateKeys([]byte(tc.in))
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+			assert.Equal(t, len(tc.want), total, "total counts every duplicate occurrence")
 		})
 	}
+}
+
+// The report cap: more duplicates than maxReportedDupPaths still
+// reports the TOTAL count, a bounded path list, and per-path
+// truncation at depth.
+func TestFindDuplicateKeys_ReportCapped(t *testing.T) {
+	// 41 copies of one key → 40 duplicate occurrences: 16 reported,
+	// 40 counted (the FIRST occurrence is legal; extras are dups).
+	var b strings.Builder
+	b.WriteString(`{"obj":{`)
+	for i := 0; i < 41; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`"k":1`)
+	}
+	b.WriteString("}}")
+	paths, total, err := FindDuplicateKeys([]byte(b.String()))
+	require.NoError(t, err)
+	assert.Equal(t, 40, total, "every duplicate occurrence is counted")
+	require.Len(t, paths, maxReportedDupPaths, "the reported list is capped")
+	for _, p := range paths {
+		assert.LessOrEqual(t, len(p), maxDupPathLength+len("…(truncated)"))
+	}
+
+	// Per-path length truncation at depth: a deep nest renders a path
+	// past the cap with an explicit marker.
+	var d strings.Builder
+	for i := 0; i < 1500; i++ { // 1500 × ~9 chars/segment > 4096
+		fmt.Fprintf(&d, `{"level_%04d":`, i)
+	}
+	d.WriteString(`{"x":1,"x":2}`)
+	for i := 0; i < 1500; i++ {
+		d.WriteString("}")
+	}
+	paths, total, err = FindDuplicateKeys([]byte(d.String()))
+	require.NoError(t, err)
+	require.Len(t, paths, 1)
+	assert.Equal(t, 1, total)
+	assert.Len(t, paths[0], maxDupPathLength+len("…(truncated)"), "deep paths truncate with the marker")
+	assert.Contains(t, paths[0], "(truncated)")
 }
 
 // Malformed input must ERROR (never silently pass): the seam's
@@ -65,7 +107,7 @@ func TestFindDuplicateKeys_MalformedErrors(t *testing.T) {
 		`{"a":1} trailing`,
 		`[1,2,`,
 	} {
-		_, err := FindDuplicateKeys([]byte(bad))
+		_, _, err := FindDuplicateKeys([]byte(bad))
 		assert.Error(t, err, "input %q must error", bad)
 	}
 }
@@ -81,7 +123,7 @@ func TestFindDuplicateKeys_MalformedErrors(t *testing.T) {
 // run: see the worklog — red by >4x against the restored eager
 // implementation on this shape).
 func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
-	// ~620KB valid body: an 8000-level nest chain (within the stdlib
+	// 727,793-byte (710.7 KiB) valid body: an 8000-level nest chain (within the stdlib
 	// decoder's 10000-depth limit) ending in a 60K-key flat object —
 	// every key pays the full ancestor depth under the eager build.
 	var b strings.Builder
@@ -114,10 +156,11 @@ func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
 		"decode baseline must be above timing noise for the ratio to be meaningful")
 
 	scanStart := time.Now()
-	dups, err := FindDuplicateKeys(body)
+	dups, total, err := FindDuplicateKeys(body)
 	scanTime := time.Since(scanStart)
 	require.NoError(t, err)
 	assert.Empty(t, dups)
+	assert.Zero(t, total)
 
 	// Ratio: lazy sits within a small multiple of the decode; eager
 	// sits orders above (the r2 mutation run on this shape measured
@@ -130,20 +173,79 @@ func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
 		"absolute belt on top of the ratio (lazy scans this shape in ~100ms class; the restored eager build measured multi-second in the r2 mutation run)")
 }
 
+// The DUPLICATE-bearing complexity pin (r3's measured finding): the
+// clean-body pin above does not bound the scan when duplicates — this
+// scanner's TARGET input — are present at depth. The reviewer's
+// shape: ~619KB body (under the 1MiB cap), 8000-deep chain + 45K
+// duplicated-key pairs at the bottom → the UNCAPPED build rendered
+// 89,999 full-depth paths (7.63s CPU, 17.78GB allocated) and the
+// seam's join built a 3.93GB error string. The capped build reports
+// 16 truncated paths + the total, at decode-class cost.
+func TestFindDuplicateKeys_DuplicateBearingBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"a1":{"a2":`)
+	for i := 3; i <= 8000; i++ {
+		fmt.Fprintf(&b, `{"a%d":`, i)
+	}
+	b.WriteString(`{"dups":{`)
+	for i := 0; i < 45000; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `"k%d":1,"k%d":2`, i, i) // 45K distinct keys, each duplicated once
+	}
+	b.WriteString("}}")
+	for i := 8000; i >= 3; i-- {
+		b.WriteString("}")
+	}
+	b.WriteString("}}")
+	body := []byte(b.String())
+	require.Less(t, len(body), 1<<20, "adversarial shape must stay under the MCP body cap")
+
+	decodeStart := time.Now()
+	var into any
+	require.NoError(t, json.Unmarshal(body, &into))
+	decodeTime := time.Since(decodeStart)
+	require.Greater(t, decodeTime, time.Millisecond, "decode baseline must be above timing noise")
+
+	scanStart := time.Now()
+	paths, total, err := FindDuplicateKeys(body)
+	scanTime := time.Since(scanStart)
+	require.NoError(t, err)
+
+	assert.Equal(t, 45000, total, "every duplicate occurrence is counted")
+	require.Len(t, paths, maxReportedDupPaths, "the reported list is capped")
+
+	// The seam's message shape (first paths + "…and K more") is
+	// bounded by construction — assert the join stays kilobytes.
+	msg := strings.Join(paths, ", ") + fmt.Sprintf(" …and %d more", total-len(paths))
+	assert.Less(t, len(msg), 128*1024, "the refusal message stays kilobyte-scale")
+
+	assert.LessOrEqual(t, scanTime, 20*decodeTime,
+		"dup-bearing scan (%s) must stay within 20x the stdlib decode (%s) — the uncapped build measured 7.63s/17.78GB on this class",
+		scanTime, decodeTime)
+	assert.Less(t, scanTime, 1500*time.Millisecond,
+		"absolute belt: the capped dup-bearing scan is decode-class, not multi-second")
+}
+
 // Laziness must not cost detection: the SAME deep shape with one
 // duplicate at the bottom still reports it, path intact.
 func TestFindDuplicateKeys_DeepDuplicateStillFound(t *testing.T) {
+	// Depth kept under the path-truncation cap (~2 chars/segment) so
+	// the FULL path — leaf key included — renders; the truncation
+	// behavior itself is pinned in ReportCapped.
 	var b strings.Builder
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < 1500; i++ {
 		b.WriteString(`{"n":`)
 	}
 	b.WriteString(`{"x":1,"x":2}`)
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < 1500; i++ {
 		b.WriteString("}")
 	}
-	dups, err := FindDuplicateKeys([]byte(b.String()))
+	dups, total, err := FindDuplicateKeys([]byte(b.String()))
 	require.NoError(t, err)
 	require.Len(t, dups, 1)
+	assert.Equal(t, 1, total)
 	assert.True(t, strings.HasPrefix(dups[0], "$"), "the lazy path still renders the full ancestor path: %s", dups[0])
 	assert.True(t, strings.HasSuffix(dups[0], ".x"), "the leaf key is named: %s", dups[0])
 }

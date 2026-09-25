@@ -158,18 +158,24 @@ func mcpHandler(password string) http.HandlerFunc {
 			// depth: if the two parsers ever diverge in what they
 			// accept, a tools/call body refuses rather than dispatches
 			// past the gate (r2's verified escape class).
-			dups, scanErr := utilities.FindDuplicateKeys(raw)
+			dups, dupTotal, scanErr := utilities.FindDuplicateKeys(raw)
 			if scanErr != nil {
 				writeMCPErrorStatus(w, req.ID, -32700,
 					"Parse error: malformed tools/call body (unscannable JSON): "+scanErr.Error(),
 					http.StatusBadRequest)
 				return
 			}
-			if len(dups) > 0 {
-				writeMCPErrorStatus(w, req.ID, -32602,
-					"Invalid params: duplicated object key(s) "+strings.Join(dups, ", ")+
-						" — JSON allows one value per key and the server cannot guess which copy was intended; re-emit the call with each key exactly once",
-					http.StatusBadRequest)
+			if dupTotal > 0 {
+				// Bounded by construction: the scanner reports at
+				// most 16 truncated paths; the join cannot explode
+				// (r3's uncapped build joined 89,999 full-depth
+				// paths into a 3.93GB string).
+				msg := "Invalid params: duplicated object key(s) " + strings.Join(dups, ", ")
+				if dupTotal > len(dups) {
+					msg += fmt.Sprintf(" …and %d more", dupTotal-len(dups))
+				}
+				msg += " — JSON allows one value per key and the server cannot guess which copy was intended; re-emit the call with each key exactly once"
+				writeMCPErrorStatus(w, req.ID, -32602, msg, http.StatusBadRequest)
 				return
 			}
 		}
