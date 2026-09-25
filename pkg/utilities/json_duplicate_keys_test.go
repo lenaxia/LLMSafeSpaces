@@ -1,6 +1,7 @@
 package utilities
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -69,45 +70,64 @@ func TestFindDuplicateKeys_MalformedErrors(t *testing.T) {
 	}
 }
 
-// The complexity pin (r1's validated finding): path construction is
-// LAZY — duplicates only. The reviewer's adversarial shape (deep
-// ancestor chain + wide key fan, fully VALID, sized under the MCP
-// 1MiB cap and the stdlib decoder's 10000-depth limit) made the
-// eager scan burn ~4.7s of single-thread CPU (~170x the stdlib
-// decode) on the authenticated tools/call seam. The lazy scan must
-// stay in the same cost class as the decode itself; the bound is
-// generous (CI hardware varies) but two orders below the quadratic.
+// The complexity pin (r2's discriminating rewrite): path construction
+// is LAZY — duplicates only. r1's absolute 1.5s bound did NOT
+// discriminate (the known-bad eager implementation passed at ~1.0s on
+// CI-class hardware); this pin scales the adversarial shape toward
+// the MCP 1MiB cap AND ratio-pins the scan against the stdlib decode
+// of the SAME body — self-normalizing across hardware. The lazy scan
+// sits in the decode's own cost class (single-digit multiples); the
+// eager quadratic sits orders above it (measured in the r2 mutation
+// run: see the worklog — red by >4x against the restored eager
+// implementation on this shape).
 func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
-	// ~530KB valid body: 2000-level nest chain, then a 40K-key flat
-	// object at the bottom (every key pays full ancestor depth under
-	// the eager build — the amplification shape).
+	// ~620KB valid body: an 8000-level nest chain (within the stdlib
+	// decoder's 10000-depth limit) ending in a 60K-key flat object —
+	// every key pays the full ancestor depth under the eager build.
 	var b strings.Builder
 	b.WriteString(`{"a1":{"a2":`)
-	for i := 3; i <= 2000; i++ {
+	for i := 3; i <= 8000; i++ {
 		fmt.Fprintf(&b, `{"a%d":`, i)
 	}
 	b.WriteString(`{"flat":{`)
-	for i := 0; i < 40000; i++ {
+	for i := 0; i < 60000; i++ {
 		if i > 0 {
 			b.WriteString(",")
 		}
 		fmt.Fprintf(&b, `"k%d":1`, i)
 	}
 	b.WriteString("}}")
-	for i := 2000; i >= 3; i-- {
+	for i := 8000; i >= 3; i-- {
 		b.WriteString("}")
 	}
 	b.WriteString("}}")
 	body := []byte(b.String())
 	require.Less(t, len(body), 1<<20, "adversarial shape must stay under the MCP body cap")
 
-	start := time.Now()
+	// Baseline: the stdlib decode of the same body — the pre-scanner
+	// cost the seam already pays.
+	decodeStart := time.Now()
+	var into any
+	require.NoError(t, json.Unmarshal(body, &into))
+	decodeTime := time.Since(decodeStart)
+	require.Greater(t, decodeTime, time.Millisecond,
+		"decode baseline must be above timing noise for the ratio to be meaningful")
+
+	scanStart := time.Now()
 	dups, err := FindDuplicateKeys(body)
-	elapsed := time.Since(start)
+	scanTime := time.Since(scanStart)
 	require.NoError(t, err)
 	assert.Empty(t, dups)
-	assert.Less(t, elapsed, 1500*time.Millisecond,
-		"the lazy-path scan must not regress to quadratic (eager build measured ~4.7s on this class; decode alone is ~tens of ms)")
+
+	// Ratio: lazy sits within a small multiple of the decode; eager
+	// sits orders above (the r2 mutation run on this shape measured
+	// the restored eager build at 8.3s scan vs ~0.13s lazy — red by
+	// 5.5x against the absolute belt alone).
+	assert.LessOrEqual(t, scanTime, 20*decodeTime,
+		"scan (%s) must stay within 20x the stdlib decode (%s) — the eager quadratic path build sits far outside",
+		scanTime, decodeTime)
+	assert.Less(t, scanTime, 1500*time.Millisecond,
+		"absolute belt on top of the ratio (lazy scans this shape in ~100ms class; the restored eager build measured multi-second in the r2 mutation run)")
 }
 
 // Laziness must not cost detection: the SAME deep shape with one

@@ -56,6 +56,10 @@ Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-pl
 - **Stale doc ref**: liveprobe `.sh` → `.py` in the test-file comment.
 - **Overstated parity**: sesIDPattern comment now says prefix-restricted SUBSET (the seam has no ses_ requirement) with the lossy-fallback framing.
 
+### #1572 round-2 findings (all addressed)
+- **[Blocking] The perf pin did not discriminate**: the r1 absolute 1.5s bound PASSED against the known-bad eager implementation on CI-class hardware (~1.0s eager on that ~438KB shape). REWRITTEN: the shape scaled toward the cap (8000-deep + 60K-key fan, ~620KB, under 1MiB and the 10000-depth limit) AND ratio-pinned (scan ≤ 20× the stdlib decode of the SAME body — hardware self-normalizing) with the absolute belt retained. MUTATION-VERIFIED RED before push: the restored eager build fails at 8.29s scan (5.5x past the belt; ~14x past the ratio); lazy green at ~0.13s.
+- **Comment accuracy in the test**: sizes and measurements now state this shape's actuals (~620KB; eager 8.3s / lazy 0.13s from the mutation run), not the r0 reviewer's larger shape.
+
 ### Byproduct — filed separately
 - #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 
