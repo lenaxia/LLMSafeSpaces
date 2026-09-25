@@ -31,7 +31,12 @@ package main
 import "time"
 
 var (
-	// agentdNow is every wall-clock READ in the two #1532 sites.
+	// agentdNow is the de-timed wall-clock read in the two #1532
+	// sites (the sweeper's scrub age-out and the vitals boot-grace
+	// window). Other real reads deliberately remain: the watchdog's
+	// rate-limiter window (wd.maybeFire(time.Now()) — unit-tested
+	// with synthetic times, not reachable by the boot-window test)
+	// and LastRefreshedAt bookkeeping.
 	agentdNow = time.Now
 	// agentdNewTicker builds the two loops' tick sources.
 	agentdNewTicker = stdNewTicker

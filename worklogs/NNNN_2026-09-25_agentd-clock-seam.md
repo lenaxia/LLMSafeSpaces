@@ -1,7 +1,7 @@
 # Worklog: #1532 — the agentd clock seam: the sweeper + watchdog flake instances de-timed; the supervisor family triaged I/O-inherent
 
 **Date:** 2026-09-25
-**Session:** The #1532 CI flake family (sweeper / supervisor-helper / watchdog timeouts under load) — injectable clock seam at the three sites, the named flaky tests converted to driven ticks/fake now, production byte-identical
+**Session:** The #1532 CI flake family (sweeper / supervisor-helper / watchdog timeouts under load) — injectable clock seam at the two de-timed sites (instances 1+3), the named flaky tests converted to driven ticks/fake now, production byte-identical
 **Status:** Complete
 
 ---
@@ -26,8 +26,8 @@ Two package vars — `agentdNow`, `agentdNewTicker` (channel+stop shape) — def
 
 ### The deterministic conversions
 
-- `TestClockSeam_ProductionDefaults`: the defaults pin — the seam vars ARE real clock/ticker/sleep (a production swap to a silent fake fails here).
-- `TestClockSeam_ManualClockFake`: the fake's contract (ordered ticks, explicit world-advance, recorded sleeps).
+- `TestClockSeam_ProductionDefaults`: the defaults pin — the seam vars ARE the real clock/ticker constructors (a production swap to a silent fake fails here).
+- `TestClockSeam_ManualClockFake`: the fake's contract (ordered ticks, explicit world-advance).
 - `TestStagingSweeper_DeterministicTicks` (NEW): driven ticks + fake now decide which files age out; idempotence and the gauge push COUNTED (locked reads — the recording fixture's mutex honored from the polling side).
 - `TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess` (CONVERTED, the named 2/2 flake): 10 DRIVEN ticks with the fake now FROZEN at spawn — every would-fire moment lands inside the boot grace regardless of runner speed; sync on the observable (cf≥10) instead of a blind 700ms sleep; BOTH window arms asserted arithmetically (frozen now → booting/respawn; advanced past grace → not-booting/hung). The subprocess and hung server stay REAL (the gatherer is the subject). The 3s sampleWindow trap fixed by the house literal pattern (10ms window — the de-timed ticks must not re-acquire wall-clock through the vitals sample).
 - Left deliberately real: the 6 verdict-table tests' real servers (their I/O is the subject; their sleeps are already just-enough bounded budgets — converting them would fake the HTTP layer, changing what they test) and the supervisor family's I/O waits (instance 2, above).
@@ -82,7 +82,7 @@ None.
 
 ## Files Modified
 
-- `cmd/workspace-agentd/clock.go` — NEW: the seam (3 vars, stdlib defaults, the discipline note)
+- `cmd/workspace-agentd/clock.go` — NEW: the seam (2 vars, stdlib defaults, the discipline note)
 - `cmd/workspace-agentd/clock_test.go` — NEW: manualClock fake + tickerCount sync + the defaults pin + the fake contract test
 - `cmd/workspace-agentd/upload_staging.go` — the sweeper loop through the seam
 - `cmd/workspace-agentd/healthz_cache.go` — the watchdog loop's ticker through the seam
