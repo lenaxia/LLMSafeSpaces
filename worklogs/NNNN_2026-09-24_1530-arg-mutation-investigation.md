@@ -66,6 +66,11 @@ Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-pl
 - **Size figures corrected**: 727,793 bytes (710.7 KiB) everywhere; the "~620KB" claims gone.
 - Signature change: FindDuplicateKeys now returns (paths, total, error) — callers updated.
 
+### #1572 round-4 findings (all addressed)
+- **Untested composition branch**: TestMCPHandler_ToolsCallManyDuplicatesBoundedMessage — 21 copies → 20 dups at the SEAM: -32602, the production "…and 4 more" suffix, message < 4KB, nothing dispatches. (The scanner-level test replicated the composition test-side; this row pins the handler line itself.)
+- **Size-claim accuracy (round three of the class)**: the dup-bearing pin's comment now states the builder's byte-exact actuals — 1,046,683 bytes = 1022.1 KiB, 1,893 bytes under the 1MiB cap, 45,000 dups — with the reviewer's ~619KB/89,999-path numbers attributed to THEIR demonstration shape, not this builder.
+- **Rider**: the scanner's cap comment no longer overstates — stored REPORT paths are truncated to maxDupPathLength; the transient path() build is O(depth), bounded by the body cap.
+
 ### Byproduct — filed separately
 - #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 

@@ -176,11 +176,14 @@ func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
 // The DUPLICATE-bearing complexity pin (r3's measured finding): the
 // clean-body pin above does not bound the scan when duplicates — this
 // scanner's TARGET input — are present at depth. The reviewer's
-// shape: ~619KB body (under the 1MiB cap), 8000-deep chain + 45K
-// duplicated-key pairs at the bottom → the UNCAPPED build rendered
-// 89,999 full-depth paths (7.63s CPU, 17.78GB allocated) and the
-// seam's join built a 3.93GB error string. The capped build reports
-// 16 truncated paths + the total, at decode-class cost.
+// original demonstration: a ~619KB body (8000-deep + 45K dup pairs)
+// drove the UNCAPPED build to render 89,999 full-depth paths (7.63s
+// CPU, 17.78GB allocated) and the seam's join built a 3.93GB error
+// string. THIS builder (byte-exact): 1,046,683 bytes = 1022.1 KiB —
+// 1,893 bytes under the 1MiB cap — an 8000-deep chain plus 45K
+// distinct keys each duplicated once, yielding exactly 45,000
+// duplicate occurrences. The capped build reports 16 truncated paths
+// + the total, at decode-class cost.
 func TestFindDuplicateKeys_DuplicateBearingBounded(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(`{"a1":{"a2":`)

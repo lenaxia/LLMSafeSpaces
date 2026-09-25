@@ -111,8 +111,9 @@ func (s *dupKeyScanner) object() error {
 		// capped: eager per-key builds made VALID-body scans quadratic
 		// (r1), and uncapped dup reports made DUPLICATE-bearing scans
 		// explode (r3 — dups are the target input, both factors
-		// attacker-chosen). First maxReportedDupPaths paths render
-		// (each truncated to maxDupPathLength); every further
+		// attacker-chosen). First maxReportedDupPaths paths are STORED
+		// truncated to maxDupPathLength (the transient path() build
+		// itself is O(depth), bounded by the body cap); every further
 		// duplicate costs one increment.
 		if frame[key] {
 			s.dupTotal++

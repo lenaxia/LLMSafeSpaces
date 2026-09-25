@@ -993,6 +993,41 @@ func TestMCPHandler_ToolsCallDuplicateKeyRefused(t *testing.T) {
 	assert.Contains(t, resp.Error.Message, "re-emit the call with each key exactly once")
 }
 
+// The composition branch (r4's untested line): more duplicate
+// occurrences than maxReportedDupPaths exercises the production
+// "…and K more" suffix at the SEAM — the scanner-level test replicates
+// the composition test-side; this row pins the actual handler line.
+func TestMCPHandler_ToolsCallManyDuplicatesBoundedMessage(t *testing.T) {
+	// 21 copies of one key in the arguments object → 20 duplicate
+	// occurrences → 16 reported paths + "…and 4 more".
+	var b strings.Builder
+	b.WriteString(`{"jsonrpc":"2.0","id":37,"method":"tools/call","params":{"name":"send_message","arguments":{`)
+	for i := 0; i < 21; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`"k":1`)
+	}
+	b.WriteString("}}}")
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest([]byte(b.String())))
+
+	var resp struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Result *json.RawMessage `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Error, "the many-duplicate body must refuse, never dispatch")
+	assert.Equal(t, -32602, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "…and 4 more", "the production composition suffix names the unreported remainder")
+	assert.Contains(t, resp.Error.Message, "duplicated object key(s)")
+	assert.Less(t, len(resp.Error.Message), 4096, "the refusal message is bounded kilobyte-scale")
+	assert.Nil(t, resp.Result)
+}
+
 // The refusal is scoped to tools/call: other methods (and clean
 // bodies) pass through to normal dispatch untouched.
 func TestMCPHandler_DuplicateKeyRefusalScopedAndCleanPasses(t *testing.T) {
