@@ -1078,24 +1078,28 @@ func TestStagingSweeper_DeterministicTicks(t *testing.T) {
 	// later (outcome asserts below are pace-independent).
 	mc.tick()
 
+	// The scrub and the gauge push are the SAME tick handler, but the
+	// file-gone observable can be observed BETWEEN them — never assert
+	// an exact count while a tick is mid-flight (r1: this exact race
+	// failed the PR's own CI). Settle on >=, assert exactness only
+	// after the last tick's observables settle (the sweeper is the
+	// only pusher, and only on ticks).
 	require.Eventually(t, func() bool {
 		_, err := os.Stat(aged)
 		return err != nil // aged gone
 	}, 5*time.Second, 10*time.Millisecond, "the tick must age out the ttl-old object")
 
-	if _, err := os.Stat(fresh); err != nil {
-		t.Fatalf("fresh object must survive the sweep: %v", err)
-	}
-	if _, err := os.Stat(cfg.stagingDir + "/part.tmp"); err != nil {
-		t.Fatalf("the fresh .tmp part must survive (age-gated, not name-gated): %v", err)
-	}
-	require.Equal(t, 1, m.gaugeCount(), "exactly one gauge push per tick")
-
 	// Idempotence: a second tick at the SAME fake now sweeps nothing
 	// new and pushes exactly one more gauge.
 	mc.tick()
-	require.Eventually(t, func() bool { return m.gaugeCount() == 2 }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return m.gaugeCount() == 2 },
+		5*time.Second, 10*time.Millisecond, "two ticks push exactly two gauge snapshots")
+	require.Equal(t, 2, m.gaugeCount(), "exactly one gauge push per tick (no other pusher)")
+
 	if _, err := os.Stat(fresh); err != nil {
-		t.Fatalf("fresh must still survive the second sweep: %v", err)
+		t.Fatalf("fresh object must survive both sweeps: %v", err)
+	}
+	if _, err := os.Stat(cfg.stagingDir + "/part.tmp"); err != nil {
+		t.Fatalf("the fresh .tmp part must survive (age-gated, not name-gated): %v", err)
 	}
 }

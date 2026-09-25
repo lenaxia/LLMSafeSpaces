@@ -515,9 +515,10 @@ func TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess(t *testing.T) {
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, idleSessions{}, vit)
 
 	// Deterministic fire decisions: the fake now is FROZEN at spawn
-	// (every tick's would-fire moment lands INSIDE the boot grace —
-	// runner speed cannot shrink the window). Ten ticks = ten fire
-	// decisions, far past the threshold of 2.
+	// (every would-fire moment lands INSIDE the boot grace — runner
+	// speed cannot shrink the window). Ten ticks = ten probe failures;
+	// the first reaches the threshold of 2, leaving NINE would-fire
+	// moments for the boot-grace suppression to hold.
 	// The loop goroutine builds its ticker asynchronously — a tick
 	// delivered BEFORE the ticker exists is lost. Sync on its creation.
 	require.Eventually(t, func() bool { return mc.tickerCount() >= 1 },

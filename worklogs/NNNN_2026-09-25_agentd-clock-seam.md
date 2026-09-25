@@ -1,4 +1,4 @@
-# Worklog: #1532 — the agentd clock seam: the three real-clock flake sites de-timed
+# Worklog: #1532 — the agentd clock seam: the sweeper + watchdog flake instances de-timed; the supervisor family triaged I/O-inherent
 
 **Date:** 2026-09-25
 **Session:** The #1532 CI flake family (sweeper / supervisor-helper / watchdog timeouts under load) — injectable clock seam at the three sites, the named flaky tests converted to driven ticks/fake now, production byte-identical
@@ -18,7 +18,7 @@ Per #1532's orchestrator ruling: the fix class is CLOCK INJECTION, not per-test 
 
 1. **The sweeper** (`startStagingSweeper`): a real 10-min ticker + `time.Now()` per tick — tick semantics untestable deterministically.
 2. **The watchdog loop** (`refreshIsHealthyLoop` + the vitals gatherer): a real poll ticker; the boot-grace window (`vitalsBootGraceWindow`, compared via `time.Since(childBootAt)`) — the boot-window test's 700ms blind sleep raced the runner (the named 2/2 flake). Hidden second clock: the vitals `sampleWindow` (3s production default) — each would-fire gather costs 3s REAL.
-3. **The supervisor family**: the real-subprocess tests are Eventually-bounded I/O (their subject IS process+socket reality — spawn latency under load is inherent, not a clock decision); the de-timable piece is the test-side poll cadence (`waitForSocket`'s blind 50ms sleeps).
+3. **The supervisor family (instance 2): TRIAGED I/O-INHERENT, EXPLICITLY LEFT OPEN** — the real-subprocess waits (socket bind, pid respawn, the production respawn backoff inside the SEPARATE supervisor process) are external events a package-var seam can never reach deterministically; faking the parent's poll sleep only spins. An r1-cut routing of one poll sleep through the seam was structurally inert (no test installs the fake there) and is DROPPED. #1532's instance-2 concern stays open on the issue.
 
 ### The seam (`clock.go`)
 
@@ -30,8 +30,13 @@ Three package vars — `agentdNow`, `agentdNewTicker` (channel+stop shape), `age
 - `TestClockSeam_ManualClockFake`: the fake's contract (ordered ticks, explicit world-advance, recorded sleeps).
 - `TestStagingSweeper_DeterministicTicks` (NEW): driven ticks + fake now decide which files age out; idempotence and the gauge push COUNTED (locked reads — the recording fixture's mutex honored from the polling side).
 - `TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess` (CONVERTED, the named 2/2 flake): 10 DRIVEN ticks with the fake now FROZEN at spawn — every would-fire moment lands inside the boot grace regardless of runner speed; sync on the observable (cf≥10) instead of a blind 700ms sleep; BOTH window arms asserted arithmetically (frozen now → booting/respawn; advanced past grace → not-booting/hung). The subprocess and hung server stay REAL (the gatherer is the subject). The 3s sampleWindow trap fixed by the house literal pattern (10ms window — the de-timed ticks must not re-acquire wall-clock through the vitals sample).
-- The supervisor tests: poll sleep routed through the seam (I/O-speed under the fake); their Eventually budgets unchanged (I/O-bounded, not clock-decided).
-- Left deliberately real: the 6 verdict-table tests' real servers (their I/O is the subject; their sleeps are already just-enough bounded budgets — converting them would fake the HTTP layer, changing what they test).
+- Left deliberately real: the 6 verdict-table tests' real servers (their I/O is the subject; their sleeps are already just-enough bounded budgets — converting them would fake the HTTP layer, changing what they test) and the supervisor family's I/O waits (instance 2, above).
+
+### r1 review round
+
+- **The sweeper test's own gauge assert was the banned pattern** (an exact-count gauntlet against an in-flight tick handler — failed the PR's own CI run 36133455567): restructured to settle-on->= then assert exactness after the last tick's observables settle (the sweeper is the only pusher).
+- **Instance 2 honestly re-scoped**: the supervisor-family claim dropped (the helper re-execs a separate OS process — a package-var seam can never reach it; the r1-cut poll-sleep routing was inert and is removed). The PR now closes instances 1+3 and leaves instance 2 explicitly open on #1532.
+- **The "ten fire decisions" comment corrected to the exact arithmetic** (ten probe failures; NINE would-fire moments past the threshold of 2).
 
 ---
 
@@ -76,5 +81,4 @@ None.
 - `cmd/workspace-agentd/watchdog_vitals.go` — the boot-grace compare through the seam
 - `cmd/workspace-agentd/upload_staging_test.go` — the deterministic sweeper test + the locked gauge read
 - `cmd/workspace-agentd/watchdog_vitals_test.go` — the boot-window conversion (driven ticks, frozen/advanced now, gatherer literal)
-- `cmd/workspace-agentd/supervisor_subprocess_test.go` — the poll sleep through the seam
 - `worklogs/NNNN_2026-09-25_agentd-clock-seam.md` — this worklog
