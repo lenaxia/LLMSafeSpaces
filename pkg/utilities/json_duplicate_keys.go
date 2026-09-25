@@ -90,9 +90,14 @@ func (s *dupKeyScanner) object() error {
 			return fmt.Errorf("object key is not a string: %v", tok)
 		}
 		frame := s.objs[len(s.objs)-1]
-		path := s.path(key)
+		// Path is built LAZILY, only on a duplicate: building it for
+		// every key made the scan quadratic in depth×keys (r1's
+		// validated ~170x CPU amplification on a valid 829KB
+		// tools/call body — the seam's shared credential makes that a
+		// core-pinning DoS). Duplicates are rare; the lazy cost is
+		// O(dups × depth).
 		if frame[key] {
-			s.dups = append(s.dups, path)
+			s.dups = append(s.dups, s.path(key))
 		}
 		frame[key] = true
 		s.segs = append(s.segs, "."+key)

@@ -1,7 +1,10 @@
 package utilities
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,4 +67,63 @@ func TestFindDuplicateKeys_MalformedErrors(t *testing.T) {
 		_, err := FindDuplicateKeys([]byte(bad))
 		assert.Error(t, err, "input %q must error", bad)
 	}
+}
+
+// The complexity pin (r1's validated finding): path construction is
+// LAZY — duplicates only. The reviewer's adversarial shape (deep
+// ancestor chain + wide key fan, fully VALID, sized under the MCP
+// 1MiB cap and the stdlib decoder's 10000-depth limit) made the
+// eager scan burn ~4.7s of single-thread CPU (~170x the stdlib
+// decode) on the authenticated tools/call seam. The lazy scan must
+// stay in the same cost class as the decode itself; the bound is
+// generous (CI hardware varies) but two orders below the quadratic.
+func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
+	// ~530KB valid body: 2000-level nest chain, then a 40K-key flat
+	// object at the bottom (every key pays full ancestor depth under
+	// the eager build — the amplification shape).
+	var b strings.Builder
+	b.WriteString(`{"a1":{"a2":`)
+	for i := 3; i <= 2000; i++ {
+		fmt.Fprintf(&b, `{"a%d":`, i)
+	}
+	b.WriteString(`{"flat":{`)
+	for i := 0; i < 40000; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `"k%d":1`, i)
+	}
+	b.WriteString("}}")
+	for i := 2000; i >= 3; i-- {
+		b.WriteString("}")
+	}
+	b.WriteString("}}")
+	body := []byte(b.String())
+	require.Less(t, len(body), 1<<20, "adversarial shape must stay under the MCP body cap")
+
+	start := time.Now()
+	dups, err := FindDuplicateKeys(body)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	assert.Empty(t, dups)
+	assert.Less(t, elapsed, 1500*time.Millisecond,
+		"the lazy-path scan must not regress to quadratic (eager build measured ~4.7s on this class; decode alone is ~tens of ms)")
+}
+
+// Laziness must not cost detection: the SAME deep shape with one
+// duplicate at the bottom still reports it, path intact.
+func TestFindDuplicateKeys_DeepDuplicateStillFound(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 3000; i++ {
+		b.WriteString(`{"n":`)
+	}
+	b.WriteString(`{"x":1,"x":2}`)
+	for i := 0; i < 3000; i++ {
+		b.WriteString("}")
+	}
+	dups, err := FindDuplicateKeys([]byte(b.String()))
+	require.NoError(t, err)
+	require.Len(t, dups, 1)
+	assert.True(t, strings.HasPrefix(dups[0], "$"), "the lazy path still renders the full ancestor path: %s", dups[0])
+	assert.True(t, strings.HasSuffix(dups[0], ".x"), "the leaf key is named: %s", dups[0])
 }

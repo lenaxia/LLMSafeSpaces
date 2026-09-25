@@ -2144,7 +2144,7 @@ func TestMCPSendMessage_SelfSendGuard_AbsentOnNormalSend(t *testing.T) {
 // fragment — `TARGET","lsp_injected_session":"ORIGIN"}` — a
 // duplication slip over a similar prior call made visible in
 // context. Probes (scripts/1530-arg-mutation-probe.mjs,
-// 1530-corrupt-args-liveprobe.sh) FALSIFIED the plugin/serializer
+// 1530-corrupt-args-liveprobe.py) FALSIFIED the plugin/serializer
 // race: V8's synchronous stringify cannot emit the shape; the
 // escapes prove the corruption predates serialization (model
 // emission). agentd currently hard-fails these — the message is
@@ -2280,6 +2280,29 @@ func TestSplitDuplicatedArgFragment_AcceptanceHalf(t *testing.T) {
 	assert.False(t, ok, "ids past the seam grammar's 128-total cap refuse")
 	_, _, ok = splitDuplicatedArgFragment(`ses_` + strings.Repeat("a", 124) + `","lsp_injected_session":"ses_O"}`)
 	assert.True(t, ok, "the 128-total cap itself recovers (boundary)")
+}
+
+// The composition row (r1's missing case): a recovered target that
+// ALSO equals the origin — the orchestrator's original misfire shape
+// (a self-report addressed to itself with a corrupted id). Both
+// warnings must appear, joined in the single warning field: the
+// self-send note AND the recovery note.
+func TestMCPSendMessage_EmissionDuplicationGuard_ComposedWithSelfSend(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	corrupt := caller + `","lsp_injected_session":"` + caller + `"}`
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "self report", caller, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"warning"`, "the composed warning must be present")
+	assert.Contains(t, out, "target is your own session", "the self-send part survives composition")
+	assert.Contains(t, out, "duplicated-argument fragment", "the recovery part survives composition")
+	assert.Contains(t, out, `"session_id":"`+caller+`"`, "the recovered target is reported")
+
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(caller)) == 1
+	}, 5*time.Second, 50*time.Millisecond, "the composed case still delivers (the self-note)")
 }
 
 // The guard must not mangle clean ids: a normal send carries no

@@ -50,6 +50,12 @@ Adjudicate the orchestrator's hypothesis for #1530 — the origin plugin's in-pl
 - Verified BOTH families together: #1564's TrailingDataRejected/MidStringGarbage/LiteralIssue1561Repro/TrailingNewline/BodyCap413/BodyCapExactDocPlusTrailingByte413/MetaKeyAllowed/AdditiveTolerance AND all #1530 rows — green.
 - Full-suite note (disclosed): 2 UNCAPTURED full-package failures in runs 1/3 (cold-cache window, ~300s runs; failure output lost to tail-only logging — my gap); 8 consecutive greens after, including 2 verbose runs. If CI reproduces, the suspect set is the package's known timing-sensitive family, not a deterministic defect in this lane's rows (every targeted row green across all runs).
 
+### #1572 round-1 findings (all addressed)
+- **[Blocking] Quadratic scanner (validated ~170x CPU amplification)**: `path()` built the full ancestor string for EVERY key — measured 4.72s single-thread on a valid 829KB tools/call body vs ~28ms decode. FIXED: lazy path construction (duplicates only, O(dups × depth)); the adversarial shape now scans in ~50ms. Pinned by `TestFindDuplicateKeys_NoQuadraticBlowup` (the reviewer's deep+wide shape, 1.5s bound — two orders below quadratic) + `DeepDuplicateStillFound` (laziness costs no detection).
+- **Uncovered composed-warning path**: `EmissionDuplicationGuard_ComposedWithSelfSend` — recovered target == origin (the orchestrator's original misfire shape): BOTH warning parts joined in the single field, delivery still lands.
+- **Stale doc ref**: liveprobe `.sh` → `.py` in the test-file comment.
+- **Overstated parity**: sesIDPattern comment now says prefix-restricted SUBSET (the seam has no ses_ requirement) with the lossy-fallback framing.
+
 ### Byproduct — filed separately
 - #1561: agentd's HTTP layer salvages invalid JSON bodies, silently dropping trailing keys (probe first-draft finding). Orchestrator ruling: own issue, not this lane.
 
