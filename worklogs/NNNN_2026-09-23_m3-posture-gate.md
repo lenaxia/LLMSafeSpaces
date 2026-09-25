@@ -1,8 +1,8 @@
 # Worklog: M3 — the posture gate workflow (design 0061 §5)
 
-**Date:** 2026-09-23 (r1–r22 fixes: 2026-09-24/25)
+**Date:** 2026-09-23 (r1–r23 fixes: 2026-09-24/25)
 **Session:** Design 0061 implementation, M3 lane (the gate itself): `.github/workflows/posture-gate.yml` + `local/posture_gate_workflow_test.go` — seven structural pin tests + the two golden inventories — + the README-LLM contribution rule (the M3 AC's fourth clause). Merge sequenced per the #1548 recorded order.
-**Status:** r22 fixes pushed; awaiting re-review.
+**Status:** r23 fixes pushed; awaiting re-review.
 
 ---
 
@@ -242,7 +242,16 @@ The fifth consecutive round with no verdict-flipping escape constructible; the t
 
 ## r22 round record (the escaped-space raw check, the labels harmonized)
 
-r22's review delivered a first: **every claim in the r21 round record audited true** — and one finding remained: the escaped-space spelling on Assert 4's continuation head (`… log \ ` — a trailing space after the backslash) passed every TrimSpace comparison and dead-gated the step on every tree (bash syntax error; the r8 install-head class, never extended to the assertion blocks). Closed: no RAW assertion line may end with backslash-then-whitespace (V1 re-verified RED). The three scan labels harmonized to r22 (Blockers preamble, item 2, Next Steps); the PR body's label refreshed with them.
+r22's review delivered a first: **every claim in the r21 round record audited true** — and one finding remained: the escaped-space spelling on Assert 4's continuation head (`… log \ ` — a trailing space after the backslash) passed every TrimSpace comparison and dead-gated the step on every tree (bash syntax error; the r8 install-head class, never extended to the assertion blocks). Closed (at r22 for space+tab — [CORRECTED r23: the claim said "whitespace" while the mechanism banned two spellings; NBSP, the paste-artifact member, stayed green until r23's rune-level close]): no RAW assertion line may carry backslash-then-whitespace. The three scan labels harmonized to r22 (Blockers preamble, item 2, Next Steps); the PR body's label refreshed with them.
+
+## r23 round record (the whitespace class closed at rune level, file-wide)
+
+r23's review found the r22 close two-spellings-wide of its own claim: `\`+NBSP (U+00A0 — the paste-artifact whitespace) passed every pin and dead-gated the step (`bash -n` rc=2), and the sub-agent extended the class past continuations entirely (NBSP after `fi`, NBSP on the install tail — same dead-gate, same green). Closed twice over:
+
+1. **The raw-file ban extended from CR to ANY non-ASCII `unicode.IsSpace` rune** — NBSP, U+1680, U+2000–200A, U+202F, U+205F, U+3000 are corruption in this artifact, anywhere in the file (this is the one-edit close for the whole class, continuation-bound or not).
+2. **The assertion-line check made rune-level** (`TrimRightFunc(unicode.IsSpace)` — fires for any trailing whitespace after backslash-terminated content; the r22 space+tab spellings were two members of it).
+
+W1/W2/W3 re-verified RED (NBSP after the continuation backslash, after `fi`, on the install tail). The r22 record's overclaim annotated in place (the claim-vs-mechanism gap, one spelling wide — the same recurring class as r18's vacuous view and r20's vacuous count). The PR body's inner label refreshed.
 
 ## Key Decisions
 
@@ -263,7 +272,7 @@ The merge call (all recorded-order predecessors merged; the gate's first dispatc
 
 ## Tests Run
 
-- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r22 shape).
+- `go test ./local/ -run TestPostureGate -count=1` — 7/7 PASS incl. both golden inventories (r23 shape).
 - Mutation checks across rounds (r1 mine; r2–r4 the reviews', each re-verified by me after closing): llm-relay gutting / `--previous` removal / assertion-4 comparison gutting / `continue-on-error` / job `if:` / `types:` filter / posture `--set` injection / `--values` / `--set-json` / `watchNamespaces=` / `set -euo pipefail` deletion / process-substitution reversion / `-f=` / `set +e` / `set +o errexit` / tab-form `-f` / `|| true` on a wait line — all caught.
 - `bash -n` on every run block — clean (re-verified after each round's edits).
 - `go test ./local/ -count=1` — full package green. `go vet ./local/` clean; gofmt/goimports clean.
@@ -271,7 +280,7 @@ The merge call (all recorded-order predecessors merged; the gate's first dispatc
 
 ## Next Steps
 
-1. Re-review (r22 verdict pending); w2 rebases #1566 onto this head.
+1. Re-review (r23 verdict pending); w2 rebases #1566 onto this head.
 2. The orchestrator sequences the merge — live scan at r22: M1, M2, M4, and the defect fix #1558 ALL MERGED; the recorded order is clear for the gate (w2's #1566 rebases onto this head). The gate's first dispatched green run closes the loop.
 3. The stability window's first live contact PASSED (r18, run 36053803876, on a genuinely all-Ready cold install); the remaining watch item is churn-false-positives if pod sets ever change inside the 45s window (none yet: the hook Jobs delete on success).
 

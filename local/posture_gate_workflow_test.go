@@ -45,6 +45,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
@@ -688,16 +689,19 @@ func TestPostureGate_StatementInventory(t *testing.T) {
 				require.False(t, next == "" || strings.HasPrefix(next, "#"),
 					"%s: the line after a continuation (line %d) must be neither blank nor comment — it dead-gates the block (a bash syntax error): %q", prefix, i+2, rawLines[i+1])
 			}
-			// r22 finding 1: the escaped-space spelling — every
-			// TrimSpace comparison was blind to a trailing space after
-			// the continuation backslash (`… log \ `), which turns the
-			// continuation into an escaped space and dead-gates the
-			// step on every tree (the r8 install-head class, applied to
-			// the assertion blocks' one continuation). RAW check: no
-			// assertion line may end with backslash-then-whitespace.
+			// r22/r23 finding 1: the escaped-whitespace spelling — every
+			// TrimSpace comparison was blind to trailing whitespace after
+			// the continuation backslash (`… log \ `, `\<TAB>`,
+			// `\<NBSP>`), which turns the continuation into an escaped
+			// character and dead-gates the block on every tree. RUNE-
+			// level check (r23: the r22 space+tab spellings were two of
+			// a class — NBSP is the paste-artifact member): no assertion
+			// line may carry ANY unicode whitespace after content ending
+			// in a backslash.
 			for i, line := range rawLines {
-				require.False(t, strings.HasSuffix(line, "\\ ") || strings.HasSuffix(line, "\\\t"),
-					"%s: line %d ends with whitespace AFTER the continuation backslash — an escaped space that dead-gates the block on every tree: %q", prefix, i+1, line)
+				right := strings.TrimRightFunc(line, unicode.IsSpace)
+				require.False(t, right != line && strings.HasSuffix(right, "\\"),
+					"%s: line %d carries whitespace AFTER the continuation backslash — an escaped character that dead-gates the block on every tree: %q", prefix, i+1, line)
 			}
 		})
 	}
@@ -810,13 +814,20 @@ func TestPostureGate_InstallShippedPosture(t *testing.T) {
 		requireExactLine(t, install.Run, quoted,
 			"the tag value must be QUOTED and exactly this line — the unquoted spelling is the word-split amplifier")
 	}
-	// r16 finding 1 (CR spelling): YAML normalizes CRLF inside the
-	// parsed scalar, so the CR corruption is invisible post-parse —
-	// ban CR anywhere in the raw file (a shell workflow line ending
-	// `\`+CR amputates the command at runtime; a stray CR is always
-	// corruption in this artifact).
-	require.NotContains(t, mustRead(t, postureGateWorkflow), "\r",
-		"the workflow file must contain no CR bytes — a backslash+CR+newline continuation amputates the command (invisible to the YAML parse)")
+	// r16 finding 1 (CR spelling) + r23 finding 1 (the whitespace class,
+	// file-wide): YAML normalizes CRLF inside the parsed scalar, and
+	// TrimSpace strips NBSP — so both corruptions are invisible to the
+	// parsed-layer pins. BANNED AT THE RAW FILE: CR bytes anywhere, and
+	// any NON-ASCII unicode whitespace rune anywhere (NBSP, U+1680,
+	// U+2000–200A, U+202F, U+205F, U+3000 — the paste-artifact class;
+	// a trailing one after `fi` or the install tail dead-gates its
+	// block exactly like the escaped space).
+	rawBytes := []rune(mustRead(t, postureGateWorkflow))
+	for i, r := range rawBytes {
+		require.False(t, r == '\r', "the workflow file must contain no CR bytes (offset %d) — a backslash+CR+newline continuation amputates the command (invisible to the YAML parse)", i)
+		require.False(t, r > 127 && unicode.IsSpace(r),
+			"the workflow file must contain no non-ASCII whitespace (offset %d, U+%04X) — the paste-artifact class; trailing ones dead-gate blocks invisibly to TrimSpace", i, r)
+	}
 	require.Equal(t, "--wait --timeout 10m", strings.TrimSpace(lines[tailIdx]),
 		"the install's last command line must be exactly the wait line — a newline-separated second command is an unreviewed channel")
 	// r8 finding 3: the WORKFLOW-level env block is a carrier channel
