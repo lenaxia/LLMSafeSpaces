@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,6 +61,35 @@ type mcpTool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
+// maxMCPBodyBytes bounds a /v1/mcp request body (#1561's socialized
+// cap): every tool on this wire is metadata-scale — arguments are
+// text/ids, not file payloads (uploads own their own leg).
+const maxMCPBodyBytes = 1 << 20
+
+// decodeOneDocument decodes exactly ONE JSON document, tolerating a
+// whitespace-only remainder (every curl caller appends a newline); any
+// other trailing data is an error (#1561: Decode's one-value
+// semantics silently skipped it) naming the offset AFTER the first
+// document — the scan's start, exact for every shape. The trailing
+// error wraps its underlying cause (%w) so a cap trip in the scan
+// (http.MaxBytesError) still classifies as 413 at the handler. The
+// outbound twin (client.go's decodeStrict) keeps its own error
+// contract.
+func decodeOneDocument(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	end := dec.InputOffset()
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing data after offset %d (one JSON document per request): %w", end, err)
+		}
+		return fmt.Errorf("trailing data after offset %d (one JSON document per request)", end)
+	}
+	return nil
+}
+
 func mcpHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// #847: the proxy exposes session_list/session_read — the
@@ -76,9 +106,23 @@ func mcpHandler(password string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 
+		// #1561: the wire's transport bounds — one JSON document,
+		// at most maxMCPBodyBytes. The cap also bounds the trailing
+		// scan below (an unbounded second value would otherwise
+		// buffer the whole remainder).
+		r.Body = http.MaxBytesReader(w, r.Body, maxMCPBodyBytes)
 		var req mcpRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeMCPError(w, nil, -32700, "Parse error")
+		if err := decodeOneDocument(r.Body, &req); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeMCPErrorStatus(w, nil, -32700,
+					fmt.Sprintf("Parse error: request body exceeds the %d-byte cap", maxMCPBodyBytes),
+					http.StatusRequestEntityTooLarge)
+				return
+			}
+			// #1561: diagnostics ride the error message — a silent
+			// "Parse error" masked WHAT failed for every caller.
+			writeMCPErrorStatus(w, nil, -32700, fmt.Sprintf("Parse error: %v", err), http.StatusBadRequest)
 			return
 		}
 
@@ -339,8 +383,35 @@ func mcpHandler(password string) http.HandlerFunc {
 				Name      string         `json:"name"`
 				Arguments map[string]any `json:"arguments"`
 			}
+			// #1561: strict at this wire, with the spec's own
+			// additive key allowlisted. An unknown key here is a
+			// MISPLACED key (the #1530 probe's fragment closed
+			// arguments early and demoted `message` to this level —
+			// valid JSON, silently dropped by default Unmarshal,
+			// degrading into a schema-level error that masked the
+			// corruption) → reject loud, name the field (the
+			// control-socket precedent: a rejection, not an
+			// ignored unknown field). `_meta` is the exception:
+			// the MCP spec's forward-compat mechanism for tools/call
+			// lives INSIDE params (e.g. progressToken) — tolerated
+			// uninterpreted, matching the envelope's additive pole.
+			// Tool-ARGUMENT keys stay free-form (the tool schemas
+			// own that layer); the REQUEST-object level stays
+			// additive-tolerant (pinned in the tests).
+			var rawParams map[string]json.RawMessage
+			if err := json.Unmarshal(req.Params, &rawParams); err != nil {
+				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
+				return
+			}
+			for k := range rawParams {
+				if k != "name" && k != "arguments" && k != "_meta" {
+					writeMCPError(w, req.ID, -32602,
+						fmt.Sprintf("Invalid params: unknown field %q (tools/call takes name/arguments/_meta; misplaced key?)", k))
+					return
+				}
+			}
 			if err := json.Unmarshal(req.Params, &params); err != nil {
-				writeMCPError(w, req.ID, -32602, "Invalid params")
+				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
 				return
 			}
 			result, err := callMCPTool(r.Context(), password, params.Name, params.Arguments)
@@ -633,6 +704,15 @@ func writeMCPResult(w http.ResponseWriter, id any, result any) {
 }
 
 func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
+	writeMCPErrorStatus(w, id, code, msg, http.StatusOK)
+}
+
+// writeMCPErrorStatus carries the HTTP status for transport-class
+// errors: #1561 ruled the parse boundary rides HTTP 400/413 (the
+// issue's twice-stated criterion), while application-level JSON-RPC
+// errors (e.g. -32602) keep the endpoint's 200 convention.
+func writeMCPErrorStatus(w http.ResponseWriter, id any, code int, msg string, status int) {
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(mcpResponse{
 		JSONRPC: "2.0",
 		ID:      id,
