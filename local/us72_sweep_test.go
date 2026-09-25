@@ -93,13 +93,26 @@ func TestUS72Sweep_SurfacesAndScrubExec(t *testing.T) {
 // grep -c; transport failure = a hit — fail-closed rows).
 func TestUS72Sweep_CountingBranchMatchesDrill(t *testing.T) {
 	src := mustReadUS72Sweep(t)
+	// The counting semantics (the drilled form): numeric-only counting,
+	// unreadable paths pass. Since the 36135708380 fix the per-path
+	// branch is an if-guard that ALSO reports the hit path (the run's
+	// diagnosability gap — 3 hits, no idea where), so the exact branch
+	// differs from the drill's bare `&&` form while preserving it.
 	for _, marker := range []string{
 		`out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)`,
-		`[[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))`,
+		`if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then`,
+		`hits=$((hits + out)); echo "HIT ${p} x${out}" >&2`,
+		`hits=$((hits + out)); echo "HIT ${env} x${out}" >&2`,
+		`echo "${hits}"`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Errorf("sweep's counting branch must contain %q (the drilled form)", marker)
+			t.Errorf("sweep's counting branch must contain %q (the drilled semantics + the HIT-path report)", marker)
 		}
+	}
+	// The count stays the function's LAST line (tail -1): the HIT detail
+	// rides stderr into the log without corrupting the numeric contract.
+	if !strings.Contains(src, `2>&1 | tail -1 || echo 1`) {
+		t.Error("sweep_hits must merge stderr (HIT detail) and tail the count as the last line")
 	}
 }
 
