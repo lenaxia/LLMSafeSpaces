@@ -1,0 +1,42 @@
+# api-leader-rbac.yaml — the API's leader-election Role + RoleBinding,
+# a DEDICATED file (the #1566 peel): in rbac.yaml's tail this exact
+# pair rendered and stored in helm's manifest but never reached the
+# cluster (the sibling Role from the same tail applied; the Binding
+# vanished at apply, version-independent — 3.21.4 and 3.22.0 both). A
+# dedicated file isolates the pair from whatever tail-adjacent
+# chunking the multi-doc file triggers; the posture gate now REQUIRES
+# the binding live post-install (the truth probe graduated to an
+# assertion).
+{{- if .Values.rbac.create }}
+# Lease for API leader election (release namespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-api-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llmsafespaces.api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-api-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llmsafespaces.api.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "llmsafespaces.fullname" . }}-api-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llmsafespaces.api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

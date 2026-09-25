@@ -236,13 +236,30 @@ jobs:
       # Post-install truth probe, one cycle: helm's own manifest vs the
       # cluster + the engine version — a render/apply divergence class.
       # Diagnosis-only (never gates): the assertions stay authoritative.
-      - name: Truth probe — api-leader-election manifest vs live
+      - name: Require the api-leader-election binding live (the #1566 peel's assertion)
+        # The graduated truth probe: this pair rendered+stored but never
+        # reached the cluster from rbac.yaml's tail (version-independent
+        # apply loss); the dedicated file is the fix, and THIS check
+        # makes its regression impossible to miss — the API's leader
+        # election depends on it (Assert 3's forbidden class).
         run: |
-          helm version --short || true
-          echo "--- manifest doc-name count for api-leader-election:"
-          helm --kube-context kind-$CLUSTER_NAME get manifest llmsafespaces -n $NS | grep -c "name: llmsafespaces-api-leader-election" || true
-          echo "--- live rolebindings (leader):"
-          kubectl -n $NS get rolebindings | grep -i leader || echo "(none)"
+          set -euo pipefail
+          check_binding() {
+            if ! kubectl -n $NS get rolebinding llmsafespaces-api-leader-election >/dev/null 2>&1; then
+              echo "FAIL: the api-leader-election RoleBinding is absent live ($1) — the API's leader election will starve (Assert 3's forbidden class, the #1566 peel)"
+              kubectl -n $NS get rolebindings || true
+              exit 1
+            fi
+          }
+          check_binding "immediately post-install"
+          kubectl -n $NS auth can-i get leases --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null
+          # The applied-then-deleted discriminator (#1566): if a deleter
+          # runs post-apply, the binding vanishes inside this window and
+          # the dedicated-file fix was the wrong bet — this second check
+          # routes the peel to (b) with watch evidence.
+          sleep 40
+          check_binding "40s later (the applied-then-deleted discriminator)"
+          echo "OK: api-leader-election binding live at install and 40s on; the API SA can get leases"
 
       - name: Assert 1 — every Deployment Ready (rendered namespaces)
         # All-Ready: the release namespace AND llm-relay (the chart
