@@ -688,6 +688,17 @@ func TestPostureGate_StatementInventory(t *testing.T) {
 				require.False(t, next == "" || strings.HasPrefix(next, "#"),
 					"%s: the line after a continuation (line %d) must be neither blank nor comment — it dead-gates the block (a bash syntax error): %q", prefix, i+2, rawLines[i+1])
 			}
+			// r22 finding 1: the escaped-space spelling — every
+			// TrimSpace comparison was blind to a trailing space after
+			// the continuation backslash (`… log \ `), which turns the
+			// continuation into an escaped space and dead-gates the
+			// step on every tree (the r8 install-head class, applied to
+			// the assertion blocks' one continuation). RAW check: no
+			// assertion line may end with backslash-then-whitespace.
+			for i, line := range rawLines {
+				require.False(t, strings.HasSuffix(line, "\\ ") || strings.HasSuffix(line, "\\\t"),
+					"%s: line %d ends with whitespace AFTER the continuation backslash — an escaped space that dead-gates the block on every tree: %q", prefix, i+1, line)
+			}
 		})
 	}
 }
