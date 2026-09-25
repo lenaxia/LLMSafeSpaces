@@ -50,8 +50,17 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Install helm
+        # #1566 peel: pinned to 3.21.4 — the replication version.
+        # The apply-loss is SETTLED: version-independent (reproduced
+        # on BOTH 3.21.4 and 3.22.0) — the chart's own template
+        # whitespace glued the multi-doc tail into one doc (last-wins
+        # decode drops the first object; the stored manifest lied
+        # while the cluster never received the Binding). Fixed
+        # in-tree: the dedicated file + the restored separator,
+        # pinned by the doc-boundary class test. The pin stays as
+        # the one known-good constant the replication verified with.
         run: |
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version v3.21.4
 
       - name: Start local registry (digest-pinned agentd delivery)
         run: |
@@ -223,6 +232,44 @@ jobs:
       # failed step already fails the job).
       # ------------------------------------------------------------------
 
+      # #1566 peel: the api-leader-election BINDING rendered locally
+      # but was absent live while its Role applied (the Role applied).
+      # Graduated from a diagnosis-only probe to a GATING assertion:
+      # both RBAC pairs must be LIVE on the cluster — probed twice
+      # (install+0 and +40s: never-applied vs applied-then-deleted)
+      # plus the API SA's actual grants via auth can-i.
+      - name: Require the RBAC bindings live (the #1566 peel's assertion)
+        # The graduated truth probe: the api-leader-election AND
+        # api-platform-info pairs rendered+stored but never reached the
+        # cluster from rbac.yaml's multi-doc tail (missing separator +
+        # template whitespace-trim glues objects; last-wins decode drops
+        # the first — version-independent). The dedicated file and the
+        # restored separator are the fixes, and THIS check makes their
+        # regression impossible to miss — twice (install+0 and +40s:
+        # never-applied vs applied-then-deleted) plus the API SA's
+        # actual grants via auth can-i.
+        run: |
+          set -euo pipefail
+          check_binding() {
+            if ! kubectl -n $NS get rolebinding "$1" >/dev/null 2>&1; then
+              echo "FAIL: the $1 RoleBinding is absent live ($2) — the API's grant it carries will starve (Assert 3's forbidden class, the #1566 peel)"
+              kubectl -n $NS get rolebindings || true
+              exit 1
+            fi
+          }
+          check_binding llmsafespaces-api-leader-election "immediately post-install"
+          check_binding llmsafespaces-api-platform-info "immediately post-install"
+          kubectl -n $NS auth can-i get leases --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null
+          kubectl -n $NS auth can-i list deployments --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null
+          # The applied-then-deleted discriminator (#1566): if a deleter
+          # runs post-apply, the binding vanishes inside this window and
+          # the dedicated-file fix was the wrong bet — this second check
+          # routes the peel to (b) with watch evidence.
+          sleep 40
+          check_binding llmsafespaces-api-leader-election "40s later (the applied-then-deleted discriminator)"
+          check_binding llmsafespaces-api-platform-info "40s later (the applied-then-deleted discriminator)"
+          echo "OK: api-leader-election + api-platform-info bindings live at install and 40s on; the API SA can get leases and list deployments"
+
       - name: Assert 1 — every Deployment Ready (rendered namespaces)
         # All-Ready: the release namespace AND llm-relay (the chart
         # renders both). This alone kills the #1546 Defect-1 class — a
@@ -357,6 +404,25 @@ jobs:
             exit 1
           fi
           echo "OK: running binary carries this run's commit stamp"
+
+      # #1566 peel: on any red, capture the authorizer's view for the
+      # API-lease denial class — the chart's render provably carries
+      # the grants, so a live denial needs the cluster's actual RBAC
+      # state in the record (diagnosis rides the failure path; the
+      # assertions themselves stay untouched).
+      - name: Dump RBAC state on failure
+        if: failure()
+        run: |
+          for GATE_NS in "$NS" "llm-relay"; do
+            echo "=== Roles/Bindings in $GATE_NS (leader/api) ==="
+            kubectl -n "$GATE_NS" get role,rolebinding -o name 2>/dev/null | grep -iE "leader|api" || echo "(none)"
+            echo "=== SA lease checks in $GATE_NS ==="
+            for SA in $(kubectl -n "$GATE_NS" get serviceaccounts -o name 2>/dev/null); do
+              SA_NAME=${SA#serviceaccount/}
+              printf '%s get leases: ' "$SA_NAME"
+              kubectl -n "$GATE_NS" auth can-i get leases --as "system:serviceaccount:${GATE_NS}:${SA_NAME}" 2>/dev/null || echo "check-failed"
+            done
+          done
 
       - name: Dump cluster state on failure
         if: failure()

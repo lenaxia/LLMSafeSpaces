@@ -1161,3 +1161,89 @@ func stepRunsJoined(t *testing.T, steps []gateStep) string {
 	}
 	return b.String()
 }
+
+// TestPostureGate_APILeaderElectionBindingAssertion pins the #1566
+// peel's graduated assertion (the truth probe promoted to a REQUIRED
+// step): the api-leader-election AND api-platform-info RoleBindings
+// rendered+stored in helm's manifest but never reached the cluster
+// from rbac.yaml's multi-doc tail (missing separator + whitespace-trim
+// glue, last-wins decode); the dedicated template file and the
+// restored separator are the fixes, and this gate step makes their
+// regression impossible to miss — twice per binding (install+0 and
+// +40s: never-applied vs applied-then-deleted) plus the API SA's
+// actual grants via auth can-i. Drift-deterrence in this file's
+// stated threat model: a dropped step, a shortened discriminator
+// window, or a gutted check fails HERE instead of at the next kind
+// run.
+func TestPostureGate_APILeaderElectionBindingAssertion(t *testing.T) {
+	steps := parsePostureGate(t)
+	s := gateStepByPrefix(t, steps, "Require the RBAC bindings live")
+	require.NotEmpty(t, s.Run, "the graduated binding assertion must carry a run block")
+
+	// Both bindings, both discriminator probes — exact lines: dropping
+	// either binding (or either probe) re-scope the peel's verdict.
+	for _, binding := range []string{"llmsafespaces-api-leader-election", "llmsafespaces-api-platform-info"} {
+		requireExactLine(t, s.Run, `check_binding `+binding+` "immediately post-install"`,
+			"%%q must be probed at install+0 — its absence loses the never-applied verdict")
+		requireExactLine(t, s.Run, `check_binding `+binding+` "40s later (the applied-then-deleted discriminator)"`,
+			"%%q must be probed at +40s — its absence loses the applied-then-deleted verdict")
+	}
+	requireExactLine(t, s.Run, "sleep 40",
+		"the discriminator window must be the exact duration %%q — `sleep 1` passes every textual pin")
+	// The SA's real grants (a present-but-inert binding renders green in
+	// the object check; can-i is the teeth — leases for leader
+	// election, deployments for the platform-info consumer).
+	requireExactLine(t, s.Run, "kubectl -n $NS auth can-i get leases --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null",
+		"the API SA's lease grant must be probed with the exact line %%q")
+	requireExactLine(t, s.Run, "kubectl -n $NS auth can-i list deployments --as system:serviceaccount:${NS}:llmsafespaces-api >/dev/null",
+		"the API SA's deployments grant must be probed with the exact line %%q")
+
+	// The verdict carriers: the FAIL branch's echo + exit 1 (the
+	// FourAssertions contract, applied to the graduated step).
+	require.Contains(t, s.Run, "FAIL: the $1 RoleBinding is absent live",
+		"the FAIL branch must name the missing object — a generic failure hides the class")
+	exit1Ctx := 0
+	for i, line := range strings.Split(s.Run, "\n") {
+		if strings.TrimSpace(line) != "exit 1" {
+			continue
+		}
+		inFail := false
+		for j := i - 1; j >= 0 && j >= i-3; j-- {
+			if strings.HasPrefix(strings.TrimSpace(strings.Split(s.Run, "\n")[j]), `echo "FAIL`) {
+				inFail = true
+				break
+			}
+		}
+		require.True(t, inFail, "every exit 1 must sit in a FAIL branch (line %d carries no verdict)", i+1)
+		exit1Ctx++
+	}
+	require.GreaterOrEqual(t, exit1Ctx, 1,
+		"the binding assertion needs at least one FAIL-branch `exit 1` verdict carrier (found %d)", exit1Ctx)
+
+	// Order: the graduated assertion runs BEFORE Assert 1 — its 40s
+	// discriminator window rides ahead of the stability window, and the
+	// lease-starvation it catches is upstream of every posture verdict.
+	a1 := gateStepByPrefix(t, steps, "Assert 1")
+	require.Less(t, indexOfStep(t, steps, s), indexOfStep(t, steps, a1),
+		"the binding assertion must run before Assert 1 — the RBAC precondition precedes the posture convergence")
+}
+
+// TestPostureGate_DumpRBACStateOnFailure pins the failure-path
+// diagnosis step (the 8d567271 shape): when an RBAC-shaped assertion
+// fails, the cluster's actual Roles/Bindings and per-SA lease grants
+// ride the run log — the diagnosis channel that made the #1566 peel
+// possible from run logs alone. It must stay on the FAILURE path only
+// (a promotion to always-run would slow every green gate; a drop of
+// `if: failure()` would run it always).
+func TestPostureGate_DumpRBACStateOnFailure(t *testing.T) {
+	steps := parsePostureGate(t)
+	s := gateStepByPrefix(t, steps, "Dump RBAC state on failure")
+	require.Equal(t, "failure()", s.If,
+		"the RBAC dump must ride the failure path only (`if: failure()`)")
+	require.Contains(t, s.Run, `for GATE_NS in "$NS" "llm-relay"`,
+		"the dump must sweep BOTH namespaces — the release namespace and llm-relay")
+	require.Contains(t, s.Run, "kubectl -n \"$GATE_NS\" get role,rolebinding -o name",
+		"the dump must list the actual Roles/Bindings (the manifest-vs-cluster delta IS the diagnosis)")
+	require.Contains(t, s.Run, "kubectl -n \"$GATE_NS\" auth can-i get leases --as",
+		"the dump must probe per-SA lease grants (the leader-election starvation channel)")
+}

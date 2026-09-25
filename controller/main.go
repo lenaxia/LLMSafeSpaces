@@ -63,21 +63,42 @@ func validateWorkspaceTerminationGrace(grace int64) error {
 	return nil
 }
 
+// freeModelsFlags carries the free-tier catalog refresher flags
+// (registered together so the block stays extractable from main).
+type freeModelsFlags struct {
+	enabled  bool
+	interval time.Duration
+}
+
 // freeModelsFlags registers the free-tier catalog refresher flags
 // (hoisted from main purely for the funlen bound; defaults unchanged).
-func registerFreeModelsFlags() (enable bool, interval time.Duration) {
-	flag.BoolVar(&enable, "enable-free-models-refresher", true,
+// The pointer return is load-bearing for the SAME reason as
+// registerRelayFlags (#1548's orphaning class, the r2 finding on
+// #1566): the original returned the values BY VALUE while
+// flag.BoolVar/DurationVar bound into the locals — argv parsed into a
+// dead struct, the refresher ignored --enable-free-models-refresher=false,
+// and with the chart's flag-coupled RBAC grant withheld, every refresh
+// was a forbidden write (#1546 Defect 3's exact failure mode). The
+// Into seam exists for the regression pin (the registerRelayFlagsInto
+// precedent).
+func registerFreeModelsFlags() *freeModelsFlags {
+	return registerFreeModelsFlagsInto(flag.CommandLine)
+}
+
+func registerFreeModelsFlagsInto(fs *flag.FlagSet) *freeModelsFlags {
+	var f freeModelsFlags
+	fs.BoolVar(&f.enabled, "enable-free-models-refresher", true,
 		"Periodically fetch the opencode free-tier model catalog from models.dev "+
 			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
 			"this CM to pre-render their relay agent-config.json before opencode "+
 			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
 			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
 			"true; set false to disable and fall back to per-pod fetching.")
-	flag.DurationVar(&interval, "free-models-refresh-interval", 6*time.Hour,
+	fs.DurationVar(&f.interval, "free-models-refresh-interval", 6*time.Hour,
 		"How often the free-models refresher fetches the catalog. The catalog "+
 			"changes ~weekly so 6h is generous; lower values are fine but "+
 			"increase load on models.dev.")
-	return
+	return &f
 }
 
 func main() {
@@ -179,7 +200,7 @@ func main() {
 	flag.Int64Var(&maxMemoryMiPerTenant, "max-memory-mi-per-tenant", 0,
 		"Maximum aggregate memory requests (MiB) per tenant (Epic 51 S51.2). "+
 			"0 means unlimited. Recommended: 16384 (16GiB) for multi-tenant.")
-	enableFreeModelsRefresher, freeModelsRefreshInterval := registerFreeModelsFlags()
+	freeModels := registerFreeModelsFlags()
 	var freeModelsAPIURL string
 	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "",
 		"Override URL for the free-models catalog. Empty defaults to "+
@@ -458,7 +479,7 @@ func main() {
 	// pods consume to pre-render their relay config before opencode
 	// boots. NeedLeaderElection() returns true so only one replica
 	// fetches at a time.
-	if enableFreeModelsRefresher {
+	if freeModels.enabled {
 		fmNamespace := os.Getenv("POD_NAMESPACE")
 		if fmNamespace == "" {
 			fmNamespace = "llmsafespaces"
@@ -466,7 +487,7 @@ func main() {
 		if err := mgr.Add(&freemodels.Refresher{
 			Client:    mgr.GetClient(),
 			Namespace: fmNamespace,
-			Interval:  freeModelsRefreshInterval,
+			Interval:  freeModels.interval,
 			Fetcher:   &freemodels.Fetcher{URL: freeModelsAPIURL},
 		}); err != nil {
 			setupLog.Error(err, "unable to add free-models refresher")
@@ -474,7 +495,7 @@ func main() {
 		}
 		setupLog.Info("free-models refresher enabled",
 			"namespace", fmNamespace,
-			"interval", freeModelsRefreshInterval,
+			"interval", freeModels.interval,
 			"url", freeModelsAPIURL)
 	}
 
@@ -551,24 +572,38 @@ type relayFlags struct {
 	tokenTTL  time.Duration
 }
 
-func registerRelayFlags() relayFlags {
+// registerRelayFlags registers the Epic 72 / US-72.3 relay-only key
+// delivery flags and returns the struct the flag package will PARSE
+// INTO. The pointer is load-bearing: returning the struct by value
+// orphans the parse targets (flag.Parse writes the local; the caller's
+// copy keeps zero values) — the #1548 root cause, live since e81a500f:
+// every deployment's --relay-only-key-delivery=true parsed into a dead
+// struct, the controller ran healthy and never armed, and the
+// split-brain incident was this bug's signature. The Into seam exists
+// so the regression pin can parse a fresh FlagSet against the returned
+// struct (the opencodeOverlayDecision precedent).
+func registerRelayFlags() *relayFlags {
+	return registerRelayFlagsInto(flag.CommandLine)
+}
+
+func registerRelayFlagsInto(fs *flag.FlagSet) *relayFlags {
 	var f relayFlags
-	flag.BoolVar(&f.enabled, "relay-only-key-delivery", false,
+	fs.BoolVar(&f.enabled, "relay-only-key-delivery", false,
 		"Epic 72 (design 0058): seal bound BYO llm-provider credentials into llm-relay envelope "+
 			"Secrets and stage scoped router tokens instead of delivering raw keys. Requires the "+
 			"llm-relay router (--llm-relay-router-url) and --api-service-url; startup REFUSES, loud, "+
 			"when the router is unreachable or unbootstrapped. Default false (raw-key path).")
-	flag.StringVar(&f.routerURL, "llm-relay-router-url", "",
+	fs.StringVar(&f.routerURL, "llm-relay-router-url", "",
 		"Base URL of the llm-relay BYO resolve router (e.g. http://llm-relay-router.llm-relay.svc.cluster.local) "+
 			"— the internal mint/rotate API and the router URL staged into workspace tokens. "+
 			"Required when --relay-only-key-delivery is enabled.")
-	flag.StringVar(&f.namespace, "llm-relay-namespace", "llm-relay",
+	fs.StringVar(&f.namespace, "llm-relay-namespace", "llm-relay",
 		"Namespace holding the llm-relay router and the staged envelope Secrets. "+
 			"Required when --relay-only-key-delivery is enabled.")
-	flag.DurationVar(&f.tokenTTL, "relay-token-ttl", 24*time.Hour,
+	fs.DurationVar(&f.tokenTTL, "relay-token-ttl", 24*time.Hour,
 		"TTL of staged router tokens (design 0058 §4.4). Renewal re-mints at ~TTL/2 via the "+
 			"staging pass. Clamp: 1s..7d (router-enforced).")
-	return f
+	return &f
 }
 
 // mustParseUploadStagingFlag parses the design-0060 upload-staging

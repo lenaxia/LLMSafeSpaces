@@ -738,6 +738,45 @@ jobs:
           fi
           bash local/us-72-rogue-agent-sweep.sh
 
+      - name: Run the M2/M4 migration-fallback e2e (design 0061 §10, #1548 AC1/AC4)
+        # The migration scenario + the fallback arm, live: tokens stage on
+        # the first post-flip reconcile; tearing the handoff delivers the
+        # counted raw-key fallback and CredentialsStaged=False/
+        # relay_fallback_delivery. Self-contained (seeds its own workspace
+        # + canary). ARMED on the drill chain (flipped posture + mock-llm
+        # + router image) — an un-shaped or drill-failed release leaves
+        # the flag state unknown and the rows would fail for
+        # infrastructure reasons, poisoning the incident-closure record.
+        # Rides the sweep's end state (relay ON, namespaced scope).
+        id: m2-fallback
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' }}
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18090
+        run: bash local/us72-m2-fallback-e2e.sh
+
+      - name: Run the migration-recovery + exit-85 + posture e2e (design 0061 §10/§11, closes #1546/#1548)
+        # The formally-closing half: the full migration ARC (fallback →
+        # RECOVERY — the deleted handoff re-created, tokens back, the
+        # condition healed), M1's exit-85 arming contract (the unarmable
+        # controller terminates with the DISTINCT code + the refusing
+        # line; reversible), and the posture convergence (all-Ready +
+        # 45s stability + the armed line + zero forbidden — the M3 gate's
+        # assertions against the exercised cluster, corpses included).
+        # Self-contained; ARMED on the m2-fallback step (the recovery arc
+        # re-seats its own degraded state, but a failed fallback arm
+        # means the relay plane itself is broken — posture assertions
+        # against that would be infrastructure noise, not evidence).
+        if: ${{ !cancelled() && steps.helm-install.outcome == 'success' && steps.us70-suite.outcome == 'success' && steps.router-build.outcome == 'success' && steps.drill-shape.outcome == 'success' && steps.relay-drill.outcome == 'success' && steps.m2-fallback.outcome == 'success' }}
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18091
+        run: bash local/us61-migration-recovery-e2e.sh
+
       - name: Dump cluster state on failure
         if: failure()
         run: |
