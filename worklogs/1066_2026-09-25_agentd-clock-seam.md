@@ -89,4 +89,4 @@ None.
 - `cmd/workspace-agentd/watchdog_vitals.go` — the boot-grace compare through the seam
 - `cmd/workspace-agentd/upload_staging_test.go` — the deterministic sweeper test + the locked gauge read
 - `cmd/workspace-agentd/watchdog_vitals_test.go` — the boot-window conversion (driven ticks, frozen/advanced now, gatherer literal)
-- `worklogs/NNNN_2026-09-25_agentd-clock-seam.md` — this worklog
+- `worklogs/1066_2026-09-25_agentd-clock-seam.md` — this worklog
