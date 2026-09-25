@@ -96,6 +96,10 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`upload_bytes_with_body`,
 		`SR6B_HOLDERS_OK`,
 		`SR6B_RETRY`,
+		// r3: the EXECUTABLE misattribution guard — the bare
+		// `staging_busy` needle is comment-satisfiable (the string
+		// also lives in History notes); the grep form is not.
+		`grep -q 'staging_busy' "${SR6B_BODY_FILE}"`,
 		// r2: uniform capture semantics — the pass variables read their
 		// statuses from the res files (upload_bytes' outfile form is
 		// args-silent; a stdout-capture was red-on-arrival).

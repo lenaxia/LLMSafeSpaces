@@ -37,7 +37,7 @@ Make the SR-6B row (design 0060 §6.6's characterized boundary: the 5th concurre
 
 - **The gauge gate was tick-luck, CUT**: the original gated "held" on `workspace_agentd_upload_staging_reserved_bytes` — push-only on the sweep's 10-minute tick (`RecordGauges` from the sweep loop, upload_staging.go:533), frozen ≈boot inside the row's 16s window. Replaced with the LIVE signal: the 5th's own body (above). No product work needed (the alternative — pushing gauges on Admit/Release — remains available if a future row wants a read-before-fire gate).
 - **The pin suite was RED, fixed**: the structural pins still carried the deleted `SR6B_HAS_429`; replaced with needles for the new shape (`--limit-rate 64k`, `SR6B_5TH_BUSY`, `staging_busy`, `upload_bytes_with_body`, `SR6B_HOLDERS_OK`, `SR6B_RETRY`, the precondition gate). The r1 lesson on my own validation: the smoke-filter (`TestHarnessExecuteSmoke_RepoWide/us`) did not cover the pin suite — this round ran the FULL `./local/` package.
-- **Kill-orphans fixed**: the failure path now pkills the holder subshells' curl children (orphaned trickles kept holding reservations past the row).
+- **Kill-orphans**: the r1 cut killed already-waited PIDs (dead, recycled-PID hazard) — r2 deleted the loop entirely (the holders are waited before any fail branch; the row's failure already ended their scope).
 
 ### r2 review round (all four findings)
 
@@ -69,7 +69,7 @@ None.
 - `go test -count=1 ./local/` — ok, the FULL package (31s; the r1-cut smoke filter masked the red pin suite — not repeated).
 - Expected next-nightly line: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; holders-ok=1 fifth=429 fifth-busy=1 retry=201)`.
 
-- Full-stack proof: the next nightly (the row runs in kind; the local environment has no kind cluster). Expected: `SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 holders gauge-verified held; literal 429; retry-after-release delivered; ...)`.
+- Full-stack proof: the next nightly (the row runs in kind; the local environment has no kind cluster). The expected line is line 70 above — the ONE expected line (r3 deleted the stale duplicate that sat here still advertising the cut "gauge-verified held" mechanism).
 
 ---
 

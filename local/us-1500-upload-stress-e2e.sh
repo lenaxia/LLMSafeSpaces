@@ -106,16 +106,15 @@ upload_bytes() { # size [outfile]
 # from the API rate limiter's status-identical 429 — the reason rides
 # the body, forwarded verbatim by the API).
 upload_bytes_with_body() { # size outfile bodyfile
-    local size="$1" outfile="$2" bodyfile="$3" tmp st
+    local size="$1" outfile="$2" bodyfile="$3" tmp
     tmp=$(mktemp /tmp/sr-up-XXXXXX.bin)
     head -c "${size}" /dev/urandom > "${tmp}" 2>/dev/null
-    local out status
-    out=$(curl -s -m 120 -X POST -H "Authorization: Bearer ${API_KEY}" \
+    local status
+    status=$(curl -s -m 120 -X POST -H "Authorization: Bearer ${API_KEY}" \
         -F "file=@${tmp};filename=sr-stress-$(basename "${tmp}").bin" \
         -o "${bodyfile}" -w '%{http_code}' \
-        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || out='000'
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || status='000'
     rm -f "${tmp}"
-    status="${out}"
     printf '%s' "${status}" > "${outfile}"
     printf '%s' "${status}"
 }
