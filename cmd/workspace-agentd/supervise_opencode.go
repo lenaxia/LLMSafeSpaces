@@ -52,7 +52,9 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	if err := runSupervisorSelfVerify("/proc/self/exe"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = writeTerminationLog(err.Error())
-		return supervisorExitVerifyFailed
+		// #1573: class-specific exit (81 tamper / 83 config / 84 baked
+		// refusal) — never a process-group signal.
+		return verifyExitCode(err)
 	}
 
 	// PID 1 duties: reap orphans exactly like the current in-container

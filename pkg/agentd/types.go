@@ -79,6 +79,13 @@ const (
 	AuthUsername    = "opencode" // Basic Auth username for opencode
 )
 
+// OverlayMountPath is the agentd image-volume mount inside workspace
+// pods (controller internal mirror: agentdMountPath). Shared here so
+// the #1573 baked-path self-denial — the binary refuses to run from
+// outside this mount when the overlay marker is set — judges the same
+// prefix the controller mounts.
+const OverlayMountPath = "/agentd"
+
 // DeliveryCapability is this build's secret-delivery generation (US-70.5
 // fleet-version evidence): "v2" marks the conditional-pull stack — the v2
 // bootstrap envelope contract, revision anchoring, the resync endpoint,

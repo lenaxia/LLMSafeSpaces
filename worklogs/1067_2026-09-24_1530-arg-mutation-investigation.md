@@ -122,4 +122,4 @@ None.
 - `scripts/1530-arg-mutation-probe.mjs` — NEW: falsification harness (CI-wired)
 - `scripts/1530-corrupt-args-liveprobe.py` — NEW (renamed from .sh): era-aware live probe
 - `.github/workflows/ci.yml` — origin-plugin-pin: probe step
-- `worklogs/NNNN_2026-09-24_1530-arg-mutation-investigation.md` — this worklog
+- `worklogs/1067_2026-09-24_1530-arg-mutation-investigation.md` — this worklog
