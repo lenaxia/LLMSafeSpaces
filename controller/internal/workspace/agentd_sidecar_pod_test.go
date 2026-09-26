@@ -98,12 +98,6 @@ func TestAgentdSidecar_DisabledByDefault_NoSidecarContainer(t *testing.T) {
 func TestAgentdSidecar_Enabled_NativeSidecarContainer(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentdSidecar(t)
-	// r2: the guarded preview-origin append must FIRE for the env
-	// uniqueness pin below to exercise its claimed scenario (r1's pin
-	// ran with the field unset — the exact combination that produced
-	// the duplicate was invisible; empirically proven by re-adding the
-	// duplicate and watching the pin pass).
-	r.PreviewOriginBaseDomain = "safespaces.dev"
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
@@ -319,6 +313,12 @@ func TestAgentdSidecar_Enabled_MainContainerSwitchesToSupervisorMode(t *testing.
 func TestAgentdSidecar_Enabled_WorkspaceIDAndRelayEnv(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentdSidecar(t)
+	// r3: the guarded preview-origin append must FIRE for the env
+	// uniqueness pin below (r2 set the field in the WRONG test — a
+	// different function's fixture, empirically invisible to this pin;
+	// the reviewer re-introduced the r1 duplicate and watched the
+	// suite stay green). Set HERE, in the pin's own fixture.
+	r.PreviewOriginBaseDomain = "safespaces.dev"
 	r.InferenceRelayURL = "https://relay.example/"
 
 	pod, err := r.buildPod(context.Background(), ws)
