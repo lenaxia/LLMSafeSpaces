@@ -19,9 +19,13 @@ package main
 // detectAgentdVerificationFailure (exit 81 + expected=/got= message
 // shape) keeps working unchanged:
 //
-//	AGENTD_IMAGE_VOLUME unset → skip (legacy baked binary).
-//	pin mismatch / no pin for arch → exit 81 before ANY work (socket,
-//	  children, markers) — fail closed, never a silent fallback.
+//	AGENTD_IMAGE_VOLUME unset + no overlay coordinate → skip (legacy
+//	  baked binary). Coordinate set + marker absent → exit 87 (the
+//	  sanitized-env shape on an overlay pod).
+//	no pin for arch / malformed pin → exit 87 before ANY work — an
+//	  operator signal, never a tamper verdict (#1573).
+//	pin mismatch → exit 81 before ANY work (socket, children, markers)
+//	  — fail closed, never a silent fallback.
 
 import (
 	"crypto/sha256"
@@ -112,7 +116,7 @@ func bakedPathRefusal(volumeFlag, selfExe, overlayBinEnv string) error {
 }
 
 // verifyExitCode classifies a self-verify error to its exit code.
-// nil → 0 (proceed); config → 83; refusal → 84; anything else is the
+// nil → 0 (proceed); config → 87; refusal → 88; anything else is the
 // tamper verdict → 81 (the #863 contract, unchanged).
 func verifyExitCode(err error) int {
 	var cfg *verifyConfigError
@@ -243,7 +247,19 @@ func sha256Path(path string) (string, error) {
 // delta window in TestSupervisorSubprocess_LifecycleAndContract, CI
 // 2026-08-26).
 func runSupervisorSelfVerify(exePath string) error {
-	if os.Getenv("AGENTD_IMAGE_VOLUME") != "1" {
+	volume := os.Getenv("AGENTD_IMAGE_VOLUME")
+	overlayBin := os.Getenv("LLMSAFESPACES_AGENTD_BINARY")
+	if volume != "1" {
+		// Legacy pods (baked binary, no overlay wiring) skip — but an
+		// overlay pod whose env was SANITIZED mid-flight (the #1573
+		// incident shape: marker lost, overlay-binary coordinate kept)
+		// is a config break, not a legacy pod. This check lives HERE —
+		// before the legacy skip — so the sanitized-env shape can never
+		// ride the skip into the live supervisor loop.
+		if overlayBin != "" {
+			return &verifyConfigError{msg: fmt.Sprintf(
+				"AgentdVerificationConfigError: overlay binary coordinate set (%s) but the overlay marker is absent — sanitized environment on an overlay pod is an operator signal, not a tamper verdict (#1573)", overlayBin)}
+		}
 		return nil // legacy: baked binary, no overlay pin contract
 	}
 	// #1573 baked self-denial: judge the RESOLVED path (a symlinked
@@ -252,7 +268,7 @@ func runSupervisorSelfVerify(exePath string) error {
 	if r, err := filepath.EvalSymlinks(exePath); err == nil {
 		resolved = r
 	}
-	if err := bakedPathRefusal(os.Getenv("AGENTD_IMAGE_VOLUME"), resolved, os.Getenv("LLMSAFESPACES_AGENTD_BINARY")); err != nil {
+	if err := bakedPathRefusal(volume, resolved, overlayBin); err != nil {
 		return err
 	}
 	actual, err := sha256Path(exePath)
@@ -262,11 +278,11 @@ func runSupervisorSelfVerify(exePath string) error {
 		actual = ""
 	}
 	return selfVerifyDecision(selfVerifyEnv{
-		volumeFlag: os.Getenv("AGENTD_IMAGE_VOLUME"),
+		volumeFlag: volume,
 		amd64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_AMD64"),
 		arm64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_ARM64"),
 		arch:       unameArch(runtime.GOARCH),
 		actualSHA:  actual,
-		overlayBin: os.Getenv("LLMSAFESPACES_AGENTD_BINARY"),
+		overlayBin: overlayBin,
 	})
 }

@@ -19,7 +19,11 @@ package sessionstate_test
 // render WHY.
 
 import (
+	"context"
 	"testing"
+	"time"
+
+	"connectrpc.com/connect"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -122,20 +126,54 @@ func TestBusyPermissionWaitDoesNotMaskWork(t *testing.T) {
 	}
 }
 
-// TestBusyQueueDepthCounts: ledger deliveries with the turn incomplete
-// are turn machinery in flight — busy (and surfaced as a component).
+// TestBusyQueueDepthCounts: a REAL queued delivery through the public
+// wire op (r1 ask: the named test must pin the queue leg, not a
+// vacuous zero-check). An admitted-then-unpromoted row is turn
+// machinery in flight — the session derives BUSY with the queue
+// component surfaced even though no status event ever marked it (the
+// harness's status channel is silent about queued work — that silence
+// was the false-IDLE).
 func TestBusyQueueDepthCounts(t *testing.T) {
-	a, p := newEventAuthority(t, nil)
-	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_IDLE))
-
-	// Feed one ledgered delivery for s1 via the public event contract:
-	// a message delivery event admitted but not promoted. The exact
-	// event spelling lives with the ledger tests; here the ledger
-	// surface is what matters — if queueDepth is 0 through the public
-	// contract alone, the derivation still holds via its other legs
-	// (pinned above); this test asserts the queue_depth leg THROUGH the
-	// projection's own ledger by seeding an admitted delivery.
-	if d := a.State().Sessions["s1"].BusyComponents; d.GetQueueDepth() != 0 {
-		t.Fatalf("no deliveries: queue_depth component = 0, got %+v", d)
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      &fixtureParser{},
+		Store:       &mapStore{m: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE}},
+		Passwords:   []string{"pw"},
+		Admitter:    &recordingAdmitter{},
+		FastCursor:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = a.Close() }()
+
+	// Seed the projection's record for s1 from store truth.
+	if err := a.Reseed(context.Background(), sessionstate.ReseedReasonBoot); err != nil {
+		t.Fatal(err)
+	}
+
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	if _, err := c.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+		SessionId: "s1", EntryId: "e-busy", Attempt: 1,
+		Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "queued work"}}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, ok := a.State().Sessions["s1"]
+		if ok && st.BusyComponents.GetBusy() && st.BusyComponents.GetQueueDepth() == 1 {
+			if st.Status != abiv1.SessionStatus_SESSION_STATUS_BUSY {
+				t.Fatalf("derived busy must render BUSY status, got %v", st.Status)
+			}
+			if st.BusyComponents.GetStreaming() {
+				t.Fatalf("no stream ever started — the queue leg alone derives busy: %+v", st.BusyComponents)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("an admitted-then-unpromoted delivery must derive busy via the queue leg within 5s")
 }

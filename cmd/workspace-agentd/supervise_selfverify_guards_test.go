@@ -216,6 +216,14 @@ func TestSupervisorSelfVerify_ClassExits(t *testing.T) {
 			wantMsg:  "AgentdVerificationConfigError",
 		},
 		{
+			name: "sanitized env: marker absent, coordinate kept → exit 87 at the ENTRY POINT",
+			overlays: []string{
+				"LLMSAFESPACES_AGENTD_BINARY=/agentd/usr/local/bin/workspace-agentd",
+			},
+			wantExit: supervisorExitVerifyConfig,
+			wantMsg:  "AgentdVerificationConfigError",
+		},
+		{
 			name: "baked refusal exits 88 before hashing",
 			overlays: []string{
 				"AGENTD_IMAGE_VOLUME=1",

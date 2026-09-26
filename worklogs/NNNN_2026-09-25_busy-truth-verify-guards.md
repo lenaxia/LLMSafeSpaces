@@ -47,3 +47,37 @@ would have silently run as the baked fallback. New leg: marker absent +
 overlay coordinate present = sanitized-environment config error (exit
 87) — the pod is overlay-wired; refusing loudly beats silently
 degrading. Legacy pods (neither marker nor coordinate) still skip.
+
+## r1 worked (all three blockers + the four test asks)
+
+1. **The unreachable guard, fixed at the entry point**: the sanitized-env
+   leg lived in selfVerifyDecision behind runSupervisorSelfVerify's
+   legacy early-return — dead on the production path (the reviewer
+   reproduced the binary supervising instead of exiting 87). The check
+   now runs INSIDE the early return, before the legacy skip; the
+   subprocess pin covers marker-absent + coordinate-present → exit 87
+   through the real entry point.
+2. **statusz internal consistency**: busy_ages/oldest_busy_seconds now
+   filtered by the SAME authority truth the statuses render from (one
+   snapshot per render, hoisted — never two truths in one response):
+   authority-unbusied sessions stop contributing fictional age;
+   projection-blind tracker sessions keep the tracker's age
+   (pre-#1574 fallback); derived-busy-unstamped sessions carry no
+   fictional clock. The D6 input can no longer contradict the status
+   line next to it.
+3. **Stale 83/84 comments** corrected to 87/88 everywhere they were
+   introduced (verifyExitCode doc, main.go, supervise_opencode.go, the
+   file-top contract block — which now also states the 87 config class
+   and the sanitized-env shape).
+4. Test asks: the entry-point subprocess pin; the handler-level
+   non-nil-busyTruth test (through the REAL handler, both directions +
+   the age-fixture); the busyTruthFrom adapter against a real Authority
+   (wire-op-delivered queue leg + at-rest leg); the vacuous
+   TestBusyQueueDepthCounts replaced with a real Deliver-driven
+   queue-leg pin. Robustness: the O(N) per-session State() hoisted to
+   one snapshot per render (busyTruthFn is now batch).
+5. Alignment: the hand-numbered 1068 duplicate worklog removed (the
+   sentinel file is the only one — the numbering bot owns assignment);
+   the PR title scoped (refs #1573 — asks 2-4 are the umbrella PRs';
+   closes #1574 only, which the reviewer assessed SUBSTANTIALLY
+   ADDRESSED).

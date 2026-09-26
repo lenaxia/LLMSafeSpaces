@@ -553,10 +553,10 @@ func (c *providerCache) lastKnown() (connected []string, configured int) {
 }
 
 // busyTruthFn is the #1574 authority overlay: the projection's derived
-// busy (one definition) for sessions the projection knows. known=false
-// means the projection has no record — the caller falls back to the
-// tracker's status.
-type busyTruthFn func(sessionID string) (busy, known bool)
+// busy (one definition) for every session the projection knows, in ONE
+// snapshot (fetched once per render — never per session). Sessions
+// absent from the map keep the tracker's answer.
+type busyTruthFn func() map[string]bool
 
 // cachedState merges the client's session list with SSE-tracked
 // statuses, then overlays the authority's derived busy truth (#1574
@@ -611,13 +611,15 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 // busy (tool in flight while the harness said idle) renders busy; an
 // authority not-busy (the permission-wait carve-out) un-busies a stale
 // tracker mark. Sessions the projection does not know keep the
-// tracker's answer.
+// tracker's answer. ONE snapshot per render (never per session — the
+// polled-endpoint contract).
 func applyBusyTruthLocked(sessions []agentd.SessionInfo, busyTruth busyTruthFn) {
 	if busyTruth == nil {
 		return
 	}
+	truth := busyTruth()
 	for i := range sessions {
-		busy, known := busyTruth(sessions[i].ID)
+		busy, known := truth[sessions[i].ID]
 		if !known {
 			continue
 		}
@@ -632,20 +634,22 @@ func applyBusyTruthLocked(sessions []agentd.SessionInfo, busyTruth busyTruthFn) 
 // busyTruthFrom adapts the sessionstate authority to the #1574 statusz
 // overlay: the projection's DERIVED busy (one definition — streaming ||
 // in-flight parts || queue depth, permission-wait carved out) for every
-// session the projection knows. A nil authority yields nil (bare
-// tracker behavior).
+// session the projection knows, in one snapshot per call. A nil
+// authority yields nil (bare tracker behavior).
 func busyTruthFrom(a *sessionstate.Authority) busyTruthFn {
 	if a == nil {
 		return nil
 	}
-	return func(sessionID string) (bool, bool) {
-		st, ok := a.State().Sessions[sessionID]
-		if !ok {
-			return false, false
+	return func() map[string]bool {
+		st := a.State().Sessions
+		out := make(map[string]bool, len(st))
+		for id, v := range st {
+			if v.BusyComponents != nil {
+				out[id] = v.BusyComponents.GetBusy()
+			} else {
+				out[id] = v.Busy
+			}
 		}
-		if st.BusyComponents == nil {
-			return st.Busy, true
-		}
-		return st.BusyComponents.GetBusy(), true
+		return out
 	}
 }
