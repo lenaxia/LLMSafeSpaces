@@ -37,9 +37,18 @@ polling) — policy choice left open; (4) surfaces the numbers for the
 owner's keep/replace/remove decision: deferral firings, stall
 durations, orphaned-flag clear rate.
 
+## Round 2 (w3 resume — lane rotated from w2 after turn-death; assessment approved by the orchestrator)
+
+Completed the WIP seam:
+- **Gap 1 (the real one)**: the stall histogram's own contract promised applying/forcing/canceling — the FORCE leg never observed. Fixed: the force call site observes with deferredAt; TestDeferSeam_ForceLegObservesStall pins it (a source stuck busy-and-stalled defers, forces, and the datum lands — the deferred-then-forced restart is exactly the case the owner's keep/replace/remove decision needs data on). Test-detail: testutil.CollectAndCount counts METRICS not observations (a histogram is always "1") — the test reads the sample count via the default gatherer; the restart and the observation are deliberately separate events, so the test waits for the datum, not the restart.
+- **Gap 2 (per orchestrator ruling)**: the two `source.(*sessionStatusTracker)` assertions kept, WHY documented at both sites (prune is tracker-specific C2a hygiene, not policy; folding it into the seam would widen it into new machinery, which the steer forbids).
+- Gap 3 (the fake's advance-inside-Eventually timing coupling): agreed, left as-is.
+- Branch rebased onto v0.34.9 main; all seam + restart-decision + rearm + generation-signal families green; vet/gofmt clean.
+
 ## Round log
 
 - (opening) Terrain mapped; tests first.
+- (w3) Resume assessment delivered + approved; gaps 1-2 closed, gap-3 untouched; force-leg datum live.
 
 ## Round 1 code (two commits)
 
