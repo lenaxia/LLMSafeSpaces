@@ -264,7 +264,7 @@ func TestUS72Sweep_SetupGateIsAppliedFresh(t *testing.T) {
 	if !strings.Contains(setup, "if config_converged; then applied=0; break; fi") {
 		t.Fatal("the SETUP gate must poll config_converged (APPLIED evidence) before R1 — CredentialsStaged alone read the controller verdict while the pod ran the raw fallback batch (run 36216981147)")
 	}
-	if !strings.Contains(setup, "CredentialsStaged") {
-		t.Fatal("the controller-side conjunct (CredentialsStaged) stays — both conjuncts, cheap first")
+	if !strings.Contains(setup, "condition_status CredentialsStaged") {
+		t.Fatal("the controller-side conjunct's CODE (the condition_status poll) must stay in setup — a comment mention alone does not gate (the r1 comment-satisfiable-pin class)")
 	}
 }

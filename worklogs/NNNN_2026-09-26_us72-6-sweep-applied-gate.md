@@ -33,7 +33,7 @@ The setup gate becomes TWO conjuncts: `CredentialsStaged=True` (the cheap contro
 ## Key Decisions
 
 1. **Gate over scrub**: the evidence (drill R2 zero, R3 post-boot zero) attributes the hits to apply-timing; scrubbing live token-bearing surfaces would be both unnecessary and harmful.
-2. **Keep both conjuncts**: CredentialsStaged is the cheap fast-fail (controller never converged = nothing to wait for); config_converged is the proof.
+2. **Keep both conjuncts**: CredentialsStaged is the cheap controller-side prerequisite; config_converged is the proof. (r1 correction of this very bullet: the original text called CredentialsStaged "the cheap fast-fail" — the implemented code does NOT fast-fail; after a STAGED failure the APPLIED poll still runs its full window, which is arguably better diagnostics: the two failure rows distinguish never-staged from staged-never-applied.)
 3. **K1 carve-out unchanged** (non-frontables excluded, owner decision pending).
 
 ## Blockers
