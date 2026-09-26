@@ -23,9 +23,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+// stallObservations reads the histogram's cumulative sample count via
+// the default gatherer (testutil.CollectAndCount counts METRICS, not
+// observations — a histogram is always "1").
+func stallObservations(t *testing.T) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		if mf.GetName() != "llmsafespaces_agentd_restart_defer_stall_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if m.GetHistogram() != nil {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}
 
 // fakeDeferSource is a scriptable deferBusySource: the answers the
 // restart decision will see, in order.
@@ -121,4 +142,39 @@ func TestDeferSeam_TrackerRemainsTheDefaultSource(t *testing.T) {
 	require.False(t, tr.anyBusyOrUnknown())
 	tr.set("ses-a", "busy")
 	require.True(t, tr.anyBusyOrUnknown())
+}
+
+// TestDeferSeam_ForceLegObservesStall: the stall histogram's contract
+// is applying/forcing/canceling — the FORCE leg is the longest-stall
+// case and the datum the owner's keep/replace/remove decision most
+// needs (a deferral that never found an idle window). A source stuck
+// busy-and-stalled defers, then forces, and the observation lands.
+func TestDeferSeam_ForceLegObservesStall(t *testing.T) {
+	withTestLogger(t)
+	proc := &seamProc{}
+	src := &fakeDeferSource{script: []fakeSourceAnswer{
+		{busy: []string{"ses-stuck"}},              // defer
+		{busy: []string{"ses-stuck"}, force: true}, // stalled → force
+	}}
+
+	stallObsBefore := stallObservations(t)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, src, restartDecisionConfig{
+		PollInterval: 5 * time.Millisecond,
+		StallBound:   time.Hour,
+		GraceWindow:  time.Millisecond,
+	})
+	require.False(t, decided, "busy → deferred")
+
+	require.Eventually(t, func() bool {
+		src.advance()
+		return proc.restarts.Load() > 0
+	}, 5*time.Second, 5*time.Millisecond, "the stalled-only path forces the restart")
+
+	// The restart fires inside forceInterruptRestart; the observation
+	// lands on the line AFTER — wait for the datum, not just the
+	// restart (they are deliberately separate events).
+	require.Eventually(t, func() bool {
+		return stallObservations(t) == stallObsBefore+1
+	}, 5*time.Second, 5*time.Millisecond,
+		"the force leg observes its stall duration — deferred-then-forced is the case the decision data exists for")
 }

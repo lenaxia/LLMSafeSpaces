@@ -312,7 +312,12 @@ func makeSessionAwareRestartDecision(
 	}
 
 	// Prune stale entries before deciding (C2a). Nil-source (no
-	// tracker wired) is the immediate-restart path.
+	// tracker wired) is the immediate-restart path. The concrete-type
+	// assertions below are DELIBERATE (orchestrator ruling, #1576
+	// steer): prune is tracker-specific C2a hygiene, not policy —
+	// folding it into deferBusySource would widen the seam into new
+	// machinery, which the steer forbids. A non-tracker source simply
+	// skips pruning.
 	if source == nil {
 		proc.restart()
 		return true
@@ -368,6 +373,8 @@ func makeSessionAwareRestartDecision(
 				restartDeferStallSeconds.Observe(time.Since(deferredAt).Seconds())
 				return
 			case <-ticker.C:
+				// Same deliberate assertion as the pre-decision prune
+				// (tracker hygiene, not policy — see above).
 				if tr, ok := source.(*sessionStatusTracker); ok {
 					pruneFromLister(ctx, tr, cfg.Lister)
 				}
@@ -389,6 +396,11 @@ func makeSessionAwareRestartDecision(
 					continue
 				}
 				forceInterruptRestart(ctx, proc, stalled, cfg)
+				// The force leg of the stall datum (the metric's own
+				// contract: applying/forcing/canceling) — a
+				// deferred-then-forced restart is the longest-stall
+				// case; observe it before the process tears down.
+				restartDeferStallSeconds.Observe(time.Since(deferredAt).Seconds())
 				return
 			}
 		}
