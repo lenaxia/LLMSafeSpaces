@@ -47,6 +47,20 @@ func (s *supervisorStatusStore) snapshot() *controlStatus {
 	return s.last
 }
 
+// legacyScrubHealth mirrors the supervisor's boot-scrub report (US-72.6,
+// run 36135708380): the scrub runs in the uid-1000 supervisor (the sole
+// /workspace-visible process in sidecar mode); the sidecar's healthz
+// serves this snapshot so the controller's LegacyKeysScrubbed mirror
+// works in BOTH container topologies.
+func (s *supervisorStatusStore) legacyScrubHealth() *agentd.LegacyScrubHealth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return nil
+	}
+	return s.last.LegacyScrub
+}
+
 // spawnEnvHealth projects the cached supervisor status into the healthz
 // spawn-env field.
 func (s *supervisorStatusStore) spawnEnvHealth() *agentd.SpawnEnvHealth {

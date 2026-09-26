@@ -139,9 +139,15 @@ type HealthzResponse struct {
 	// a liveness-probe kill; the §4.8 remedy is bounded re-arm).
 	Relay *RelayHealth `json:"relay,omitempty"`
 	// LegacyScrub (US-72.6, design 0058 §8) is the one-time legacy-key
-	// migration scrub's outcome: run at boot the first time the batch
-	// observes relay-fronted providers (a post-flip pod). Nil when the
-	// scrub has not run (flag-off pods). Observability only.
+	// migration scrub's outcome. Since the run-36135708380 fix the scrub
+	// fires UNCONDITIONALLY at boot (the #1537 first-relay-Present hook
+	// alone was starved by design 0061 M2's migration-mode fail-open
+	// fallback, which can deliver a raw batch — no relay-fronted entries
+	// — on any unconverged boot, exactly when the residue migration must
+	// run), so the report is non-nil on EVERY posture once boot completes
+	// (flag-off and raw-batch pods included; AlreadyClean on clean roots).
+	// Nil only before the boot call lands (early boot) or in topologies
+	// that never construct the tracker. Observability only.
 	LegacyScrub *LegacyScrubHealth `json:"legacyScrub,omitempty"`
 }
 

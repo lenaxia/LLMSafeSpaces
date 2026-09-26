@@ -218,7 +218,7 @@ func runSidecarCommand(_ []string) int {
 	// healthz itself stays process-only (US-22.1) and reads the cached
 	// snapshot, never the socket.
 	supervisorStatus := &supervisorStatusStore{}
-	deps.spawnEnvSnapshot = supervisorStatus.spawnEnvHealth
+	applySidecarStatusMirrors(&deps, supervisorStatus)
 
 	if sidecarAuthority != nil {
 		startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonBoot)
@@ -429,4 +429,17 @@ func fmtAgentAddr() string {
 func stagingBootShouldRun(stagingDir string) bool {
 	info, err := os.Stat(filepath.Dir(stagingDir))
 	return err == nil && info.IsDir()
+}
+
+// applySidecarStatusMirrors wires the supervisor-status store's healthz
+// mirrors into the sidecar's deps (US-72.6: the boot scrub's report
+// mirror — the scrub itself runs in the uid-1000 supervisor; run
+// 36135708380 found the #1537 wiring single-container-only, so the
+// sidecar's healthz never carried the slice and LegacyKeysScrubbed never
+// landed in sidecar installs). Extracted from runSidecarCommand so the
+// assignment has a red mode (r3: deleting the inline line kept the suite
+// green — the exact nightly regression).
+func applySidecarStatusMirrors(deps *serverDeps, store *supervisorStatusStore) {
+	deps.spawnEnvSnapshot = store.spawnEnvHealth
+	deps.legacyScrubSnapshot = store.legacyScrubHealth
 }

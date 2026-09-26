@@ -77,14 +77,18 @@ sweep_hits() {
                  /sandbox-runtime/rt/secrets.json \
                  /sandbox-runtime/rt/auth.json; do
             out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)
-            [[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))
+            if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+                hits=$((hits + out)); echo "HIT ${p} x${out}" >&2
+            fi
         done
         for env in /proc/[0-9]*/environ; do
             out=$(grep -ac "'"${CANARY_KEY}"'" "$env" 2>/dev/null || true)
-            [[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))
+            if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+                hits=$((hits + out)); echo "HIT ${env} x${out}" >&2
+            fi
         done
         echo "${hits}"
-    ' 2>/dev/null | tail -1 || echo 1
+    ' 2>&1 | tee /dev/stderr | tail -1 || echo 1
 }
 
 condition_status() { # cond-type -> status (None when absent)
@@ -113,6 +117,26 @@ bind_code=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
 [[ "${bind_code}" == 2* ]] || die "setup: bind failed: HTTP ${bind_code}"
 
 wait_phase "${WS}" Active 300 || die "setup: workspace never Active"
+
+# The CONVERGENCE gate (run 36135708380's R1 lesson): the exit criterion
+# evaluates the CONVERGED post-flip posture, not the boot transient —
+# design 0061 M2's migration-mode fail-open fallback deliberately
+# delivers a RAW batch on any boot where controller staging has not
+# converged yet (workspaces must not strand), and that window's live
+# files (agent-config.json, rt/auth.json) legitimately carry the raw
+# canary until the token batch lands. The drill's own R2 gates on
+# CredentialsStaged=True for exactly this reason; the sweep must too.
+staged="None"
+for _ in $(seq 1 60); do
+    staged="$(condition_status CredentialsStaged)"
+    [[ "${staged}" == "True" ]] && break
+    sleep 5
+done
+if [[ "${staged}" == "True" ]]; then
+    ok "CredentialsStaged=True (converged posture — the criterion's frame)"
+else
+    note_fail "setup: CredentialsStaged=${staged} (never True) — the sweep cannot evaluate the converged posture"
+fi
 
 # -----------------------------------------------------------------------------
 log "R1 — the exit-criterion sweep: zero canary bytes in uid-1000 space"
@@ -234,7 +258,47 @@ else
     note_fail "R3: reason='${boot_reason}' msg='${boot_msg}' — the migration trigger did not fire on the residue boot"
 fi
 
-# And the post-boot sweep is clean (the residue is gone).
+# And the post-boot sweep is clean (the residue is gone) — GATED on
+# POD-FRESH convergence evidence (the r3 review's finding: the
+# CredentialsStaged condition SURVIVES suspend — conditions are never
+# cleared on the suspend path — so polling it after resume reads the
+# PRE-SUSPEND pod's verdict and establishes nothing about the resumed
+# pod; a lastTransitionTime freshness gate has the inverse defect: the
+# steady-state resumed staging pass performs ZERO writes, so a genuinely
+# converged resume may carry no fresh transition). The honest pod-fresh
+# evidence: read the RESUMED pod's effective config and require the
+# provider's apiKey to be the token (not the canary) and baseURL to
+# point at the relay router — direct proof the resumed delivery
+# converged, independent of any condition's staleness.
+config_field() { # field -> the sweep provider's rendered field (or "")
+    local pod
+    pod=$(pod_of_ws)
+    [[ -n "${pod}" ]] || { echo ""; return; }
+    kubectl --context "${CTX}" -n "${NS}" exec "${pod}" -c workspace -- bash -c '
+        for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
+            [[ -r "$p" ]] && cat "$p" && exit 0
+        done
+        echo "{}"
+    ' 2>/dev/null | jq -r --arg f "$1" '.provider["us72sweep"].options[$f] // ""' || echo ""
+}
+config_apikey()  { config_field apiKey; }
+config_baseurl() { config_field baseURL; }
+config_converged() { # -> 0 when the pod's live config carries token+router
+    local apikey baseurl
+    apikey="$(config_apikey)"
+    baseurl="$(config_baseurl)"
+    [[ -n "${apikey}" && "${apikey}" != "${CANARY_KEY}" && "${baseurl}" == *"llm-relay"* ]]
+}
+converged=1
+for _ in $(seq 1 60); do
+    if config_converged; then converged=0; break; fi
+    sleep 5
+done
+if (( converged == 0 )); then
+    ok "the resumed pod's config carries token+router (pod-fresh convergence — the criterion's frame)"
+else
+    note_fail "R3: the resumed pod's config never showed token+router — the raw M2-fallback batch may still be live; cannot evaluate the converged posture"
+fi
 hits="$(sweep_hits)"
 if [[ "${hits}" =~ ^[0-9]+$ ]] && (( hits == 0 )); then
     ok "R3: post-boot sweep zero — the PVC residue is gone"

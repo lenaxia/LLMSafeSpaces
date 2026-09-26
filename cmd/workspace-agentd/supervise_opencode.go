@@ -33,6 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+
 	"go.uber.org/zap"
 )
 
@@ -101,6 +103,16 @@ func runSuperviseOpencodeCommand(_ []string) int {
 
 	proc, adapter := newSupervisorProcess(rootCtx)
 	proc.start()
+
+	// US-72.6 (run 36135708380): this uid-1000 supervisor is the ONLY
+	// process that can see /workspace in sidecar mode (the sidecar does
+	// not mount the PVC home) — fire the one-time legacy-key scrub at
+	// boot here, unconditionally of relay Present (M2's fail-open
+	// fallback can leave the batch raw on unconverged boots, which
+	// starved the #1537 first-Present hook). The report rides the
+	// control socket's status method to the sidecar's healthz mirror.
+	legacyScrub := legacyScrubBootWiring(legacyScrubRootFromEnv())
+	supervisorLegacyScrub.Store(legacyScrub)
 
 	// #1300 heal path: if the agent-config changes AFTER spawn (sidecar
 	// resync delivering a late batch), the running opencode may never
@@ -190,6 +202,12 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter, upload
 	}
 	srv.metricsSource = newWorkspaceCgroupReader().read
 	srv.uploadApply = uploadEngine
+	srv.legacyScrubSnapshot = func() *agentd.LegacyScrubHealth {
+		if tr := supervisorLegacyScrub.Load(); tr != nil {
+			return tr.snapshot()
+		}
+		return nil
+	}
 	return srv, nil
 }
 

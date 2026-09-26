@@ -4,7 +4,9 @@
 package main
 
 import (
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -53,4 +55,47 @@ func (t *legacyScrubTracker) snapshot() *agentd.LegacyScrubHealth {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.report
+}
+
+// bootLegacyScrub fires the one-time scrub at boot, UNCONDITIONALLY of
+// the relay monitor's Present state (run 36135708380: M2's fail-open
+// fallback can deliver a raw batch on any unconverged boot, leaving the
+// first-Present hook unfired exactly when the residue migration must
+// run). The monitor hook remains wired as belt-and-braces; the
+// tracker's sync.Once collapses whichever fires first.
+func bootLegacyScrub(t *legacyScrubTracker) {
+	if t == nil {
+		return
+	}
+	go t.runOnce()
+}
+
+// supervisorLegacyScrub holds the supervise-opencode process's boot
+// scrub tracker (US-72.6): the control socket's status method reads it
+// (sidecar mode — the sidecar's healthz mirror polls the supervisor for
+// the report because the scrub itself can only run in this uid-1000
+// process, the sole one with /workspace visibility). Set once at boot;
+// read-only thereafter.
+var supervisorLegacyScrub atomic.Pointer[legacyScrubTracker]
+
+// legacyScrubRootFromEnv resolves the scrub root (the PVC workspace
+// mount; overridable for exec-level integration tests the same way the
+// subcommand's --workspace-root is).
+func legacyScrubRootFromEnv() string {
+	if r := os.Getenv("LLMSAFESPACES_LEGACY_SCRUB_ROOT"); r != "" {
+		return r
+	}
+	return "/workspace"
+}
+
+// legacyScrubBootWiring is the shared boot construction (both agentd
+// topologies): create the tracker, fire the unconditional boot scrub,
+// hand the tracker back for the Present hook (belt-and-braces — the
+// sync.Once collapses) and the healthz snapshot. Extracted (US-72.6 r3)
+// so the construction+boot unit is behaviorally pinnable at both call
+// sites' shared core.
+func legacyScrubBootWiring(root string) *legacyScrubTracker {
+	tr := newLegacyScrubTracker(root)
+	bootLegacyScrub(tr)
+	return tr
 }

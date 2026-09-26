@@ -93,13 +93,34 @@ func TestUS72Sweep_SurfacesAndScrubExec(t *testing.T) {
 // grep -c; transport failure = a hit — fail-closed rows).
 func TestUS72Sweep_CountingBranchMatchesDrill(t *testing.T) {
 	src := mustReadUS72Sweep(t)
+	// The counting semantics (the drilled form): numeric-only counting,
+	// unreadable paths pass. The per-path branch is an if-guard that
+	// ALSO reports the hit path (the 36135708380 diagnosability gap —
+	// 3 hits, no idea where). NOTE the r1 correction: the first version
+	// of this change merged stderr into the pipe (`2>&1 | tail -1`) and
+	// this pin was AMENDED TO ENSHRINE THE NO-OP — tail -1 dropped every
+	// HIT line. The contract below is the honest one: tee /dev/stderr
+	// surfaces the HIT lines to the CI log while tail -1 still captures
+	// the count as the caller's stdout.
 	for _, marker := range []string{
 		`out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)`,
-		`[[ "${out}" =~ ^[0-9]+$ ]] && hits=$((hits + out))`,
+		`if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then`,
+		`hits=$((hits + out)); echo "HIT ${p} x${out}" >&2`,
+		`hits=$((hits + out)); echo "HIT ${env} x${out}" >&2`,
+		`echo "${hits}"`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Errorf("sweep's counting branch must contain %q (the drilled form)", marker)
+			t.Errorf("sweep's counting branch must contain %q (the drilled semantics + the HIT-path report)", marker)
 		}
+	}
+	// The output contract: tee /dev/stderr SURFACES the HIT lines (they
+	// reach the CI log); tail -1 captures the count on stdout. The
+	// no-op form (`2>&1 | tail -1` alone) must be ABSENT.
+	if !strings.Contains(src, `2>&1 | tee /dev/stderr | tail -1 || echo 1`) {
+		t.Error("sweep_hits must tee /dev/stderr (HIT lines surface) and tail the count — the bare 2>&1|tail form DROPS them (the r1 no-op)")
+	}
+	if strings.Contains(src, `2>&1 | tail -1`) {
+		t.Error("the no-op merge form must be gone — it drops every HIT line")
 	}
 }
 
@@ -201,5 +222,27 @@ func TestUS72Sweep_PlantBreaksTheSymlink(t *testing.T) {
 	plant := strings.Index(src, "> /workspace/.local/opencode/auth.json")
 	if plant >= 0 && i > plant {
 		t.Error("the rm -f must precede the write (order is load-bearing)")
+	}
+}
+
+// TestUS72Sweep_R3GateIsPodFresh (r3): the post-boot sweep's convergence
+// gate reads POD-FRESH evidence (the resumed pod's live config carrying
+// token+router) — NOT the CredentialsStaged condition, which survives
+// suspend (conditions are never cleared on the suspend path) and so
+// reads the PRE-SUSPEND pod's verdict after resume.
+func TestUS72Sweep_R3GateIsPodFresh(t *testing.T) {
+	src := mustReadUS72Sweep(t)
+	if !strings.Contains(src, "config_converged() {") {
+		t.Fatal("R3's gate must be the pod-fresh config_converged() check (token+router in the RESUMED pod's live config)")
+	}
+	if !strings.Contains(src, `.provider["us72sweep"].options[$f] // ""`) {
+		t.Fatal("the sweep provider's field reader must exist (the drill's shape, keyed to us72sweep)")
+	}
+	// The stale form — polling CredentialsStaged AFTER the resume — must
+	// appear only in the R1 setup gate (fresh workspace: no pre-existing
+	// condition, the first True is genuinely fresh), never as R3's gate.
+	r3Block := src[strings.Index(src, "R3 — the residue-boot migration row"):]
+	if strings.Contains(r3Block, "condition_status CredentialsStaged") {
+		t.Fatal("R3 must not gate on the CredentialsStaged condition — it survives suspend (the pre-suspend pod's verdict, not the resumed pod's)")
 	}
 }

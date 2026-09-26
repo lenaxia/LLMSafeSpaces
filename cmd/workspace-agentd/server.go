@@ -101,6 +101,11 @@ type serverDeps struct {
 	// legacy-key scrub's static report to healthz (/v1/healthz — the
 	// surface the controller polls). Nil-safe.
 	legacyScrub *legacyScrubTracker
+	// legacyScrubSnapshot, when non-nil, overrides the tracker-derived
+	// healthz snapshot (US-72.6 sidecar mode: the scrub runs in the
+	// uid-1000 supervisor and the sidecar reads its report over the
+	// control-socket status poll — supervisorStatusStore.legacyScrubHealth).
+	legacyScrubSnapshot func() *agentd.LegacyScrubHealth
 	// pendingApply surfaces the deferred credential apply on healthz →
 	// the controller's CredentialsApplyPending condition (#1342 item 4).
 	// Nil-safe by construction (every method tolerates the nil
@@ -526,7 +531,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubSnapshotFor(deps.legacyScrub)))
+	adminMux.HandleFunc("/v1/healthz", healthzRoute(deps))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
@@ -691,4 +696,26 @@ func buildVitalsGatherer(proc *managedProcess) *procVitalsGatherer {
 		proc.pid,
 		proc.childStartedAt,
 	)
+}
+
+// legacyScrubHealthSnapshot selects the healthz scrub snapshot source:
+// the deps override (sidecar mode — the supervisor's report read over
+// the control-socket status poll) when set, else the in-process tracker
+// (single-container mode). Extracted from wireHTTPServers so the
+// override-wins selection is pinnable (US-72.6 r1: the inline form was
+// 0%-covered).
+func legacyScrubHealthSnapshot(deps serverDeps) func() *agentd.LegacyScrubHealth {
+	if deps.legacyScrubSnapshot != nil {
+		return deps.legacyScrubSnapshot
+	}
+	return legacyScrubSnapshotFor(deps.legacyScrub)
+}
+
+// healthzRoute builds the /v1/healthz handler for a deps shape. Extracted
+// from wireHTTPServers (US-72.6 r3: the use-site — which snapshot source
+// healthz actually serves — had no red mode; reverting it to the tracker
+// fallback silently dropped the sidecar mirror, the exact nightly
+// regression this PR fixes).
+func healthzRoute(deps serverDeps) http.HandlerFunc {
+	return healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps))
 }
