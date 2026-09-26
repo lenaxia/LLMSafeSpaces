@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.9] - 2026-09-26
+
+### Fixed — the busy-truth cluster, part 1 (PR #1578)
+
+- **Verify failures can no longer kill live sessions** (#1573 part 1): a
+  missing or malformed agentd binary pin is now an operator signal (exit 87 —
+  loud via termination log, controller condition/event/metric, never the
+  tamper verdict) instead of a fail-closed kill; the tamper verdict (81) and
+  its message contract are unchanged. A stale baked agentd binary now refuses
+  to run under the overlay contract (exit 88, mount-prefix fallback that a
+  sanitized environment cannot disable) — the 2026-09-25 incident class
+  (workspace b150f355: a pre-hardening baked binary re-exec'd with wiped env,
+  its verify failure group-SIGKILLing two live turns) is structurally dead.
+  The controller detects all four exit classes; the crashloop skip covers
+  them.
+- **busy means autonomous progress pending** (#1574, the owner's rule): busy
+  is now derived once, from data — streaming, running tool executions,
+  queued ones, and in-flight turn machinery all count; waiting on a
+  permission/question prompt does not (its own surface). The single
+  definition feeds the projection, snapshots, and statusz's authority
+  overlay in both directions (false-IDLE and tracker divergence); an errored
+  session is never busy (terminal veto, lift-pinned — a new turn re-marks).
+  ABI contract updated: consumers read busy, never recompute it.
+
 ## [0.34.8] - 2026-09-25
 
 ### Fixed — the relay arming root cause and incident closure (#1546/#1548, design 0061)
