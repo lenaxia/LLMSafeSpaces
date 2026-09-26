@@ -233,7 +233,7 @@ func TestUS72Sweep_PlantBreaksTheSymlink(t *testing.T) {
 func TestUS72Sweep_R3GateIsPodFresh(t *testing.T) {
 	src := mustReadUS72Sweep(t)
 	if !strings.Contains(src, "config_converged() {") {
-		t.Fatal("R3's gate must be the pod-fresh config_converged() check (token+router in the RESUMED pod's live config)")
+		t.Fatal("the sweep must carry the pod-fresh config_converged() check (token+router in the live config — hoisted to setup, shared by the setup and R3 gates)")
 	}
 	if !strings.Contains(src, `.provider["us72sweep"].options[$f] // ""`) {
 		t.Fatal("the sweep provider's field reader must exist (the drill's shape, keyed to us72sweep)")
@@ -244,5 +244,27 @@ func TestUS72Sweep_R3GateIsPodFresh(t *testing.T) {
 	r3Block := src[strings.Index(src, "R3 — the residue-boot migration row"):]
 	if strings.Contains(r3Block, "condition_status CredentialsStaged") {
 		t.Fatal("R3 must not gate on the CredentialsStaged condition — it survives suspend (the pre-suspend pod's verdict, not the resumed pod's)")
+	}
+}
+
+// TestUS72Sweep_SetupGateIsAppliedFresh (run 36216981147): the SETUP
+// gate must prove the token batch APPLIED, not merely staged —
+// CredentialsStaged=True stood while the sweep's fresh workspace still
+// ran the M2 raw-fallback batch (3 canary hits in agentd-config.json,
+// the auth store + its symlink view). The second conjunct is the same
+// pod-fresh config_converged() check, polled BEFORE R1; the fallback
+// surfaces are overwrite semantics (the token apply rewrites them —
+// drill R2's zero-canary including rt/auth.json proves it), so no scrub
+// extension to the LIVE delivery surfaces is needed or safe (they carry
+// TOKENS in the converged era; stripping them would strand the pod).
+func TestUS72Sweep_SetupGateIsAppliedFresh(t *testing.T) {
+	src := mustReadUS72Sweep(t)
+	r1Idx := strings.Index(src, "R1 — the exit-criterion sweep")
+	setup := src[:r1Idx]
+	if !strings.Contains(setup, "if config_converged; then applied=0; break; fi") {
+		t.Fatal("the SETUP gate must poll config_converged (APPLIED evidence) before R1 — CredentialsStaged alone read the controller verdict while the pod ran the raw fallback batch (run 36216981147)")
+	}
+	if !strings.Contains(setup, "condition_status CredentialsStaged") {
+		t.Fatal("the controller-side conjunct's CODE (the condition_status poll) must stay in setup — a comment mention alone does not gate (the r1 comment-satisfiable-pin class)")
 	}
 }
