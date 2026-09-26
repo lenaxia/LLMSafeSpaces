@@ -118,14 +118,42 @@ bind_code=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
 
 wait_phase "${WS}" Active 300 || die "setup: workspace never Active"
 
-# The CONVERGENCE gate (run 36135708380's R1 lesson): the exit criterion
-# evaluates the CONVERGED post-flip posture, not the boot transient —
-# design 0061 M2's migration-mode fail-open fallback deliberately
-# delivers a RAW batch on any boot where controller staging has not
-# converged yet (workspaces must not strand), and that window's live
-# files (agent-config.json, rt/auth.json) legitimately carry the raw
-# canary until the token batch lands. The drill's own R2 gates on
-# CredentialsStaged=True for exactly this reason; the sweep must too.
+config_field() { # field -> the sweep provider's rendered field (or "")
+    local pod
+    pod=$(pod_of_ws)
+    [[ -n "${pod}" ]] || { echo ""; return; }
+    kubectl --context "${CTX}" -n "${NS}" exec "${pod}" -c workspace -- bash -c '
+        for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
+            [[ -r "$p" ]] && cat "$p" && exit 0
+        done
+        echo "{}"
+    ' 2>/dev/null | jq -r --arg f "$1" '.provider["us72sweep"].options[$f] // ""' || echo ""
+}
+config_apikey()  { config_field apiKey; }
+config_baseurl() { config_field baseURL; }
+config_converged() { # -> 0 when the pod's live config carries token+router
+    local apikey baseurl
+    apikey="$(config_apikey)"
+    baseurl="$(config_baseurl)"
+    [[ -n "${apikey}" && "${apikey}" != "${CANARY_KEY}" && "${baseurl}" == *"llm-relay"* ]]
+}
+
+# The CONVERGENCE gate, TWO conjuncts (runs 36135708380 + 36216981147):
+# the exit criterion evaluates the CONVERGED-AND-APPLIED post-flip
+# posture, not the boot transient. Design 0061 M2's migration-mode
+# fail-open fallback deliberately delivers a RAW batch on any boot where
+# controller staging has not converged yet (workspaces must not strand),
+# and that window's live files (agent-config.json, rt/auth.json — the
+# paths run 36216981147's HIT diagnostics named) carry the raw canary
+# until the token batch APPLIES. CredentialsStaged=True alone proved
+# insufficient in 36216981147: it is the CONTROLLER-side staging verdict,
+# which can stand True while the pod still runs the fallback batch (the
+# sweep's fresh workspace showed 3 canary hits with the condition True).
+# The second conjunct is POD-FRESH APPLIED evidence — the drill's own R2
+# contract: the live config's apiKey is the token (not the canary) and
+# baseURL points at the relay router. When that holds, the token apply
+# has overwritten the fallback surfaces (the drill's R2 zero-canary
+# including rt/auth.json proves the overwrite semantics).
 staged="None"
 for _ in $(seq 1 60); do
     staged="$(condition_status CredentialsStaged)"
@@ -133,9 +161,19 @@ for _ in $(seq 1 60); do
     sleep 5
 done
 if [[ "${staged}" == "True" ]]; then
-    ok "CredentialsStaged=True (converged posture — the criterion's frame)"
+    ok "CredentialsStaged=True (controller-side staging converged)"
 else
     note_fail "setup: CredentialsStaged=${staged} (never True) — the sweep cannot evaluate the converged posture"
+fi
+applied=1
+for _ in $(seq 1 60); do
+    if config_converged; then applied=0; break; fi
+    sleep 5
+done
+if (( applied == 0 )); then
+    ok "the pod's live config carries token+router (APPLIED — the criterion's frame)"
+else
+    note_fail "setup: the pod's config never showed token+router — the raw fallback batch still live; the sweep cannot evaluate the converged posture"
 fi
 
 # -----------------------------------------------------------------------------
@@ -269,26 +307,9 @@ fi
 # evidence: read the RESUMED pod's effective config and require the
 # provider's apiKey to be the token (not the canary) and baseURL to
 # point at the relay router — direct proof the resumed delivery
-# converged, independent of any condition's staleness.
-config_field() { # field -> the sweep provider's rendered field (or "")
-    local pod
-    pod=$(pod_of_ws)
-    [[ -n "${pod}" ]] || { echo ""; return; }
-    kubectl --context "${CTX}" -n "${NS}" exec "${pod}" -c workspace -- bash -c '
-        for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
-            [[ -r "$p" ]] && cat "$p" && exit 0
-        done
-        echo "{}"
-    ' 2>/dev/null | jq -r --arg f "$1" '.provider["us72sweep"].options[$f] // ""' || echo ""
-}
-config_apikey()  { config_field apiKey; }
-config_baseurl() { config_field baseURL; }
-config_converged() { # -> 0 when the pod's live config carries token+router
-    local apikey baseurl
-    apikey="$(config_apikey)"
-    baseurl="$(config_baseurl)"
-    [[ -n "${apikey}" && "${apikey}" != "${CANARY_KEY}" && "${baseurl}" == *"llm-relay"* ]]
-}
+# converged, independent of any condition's staleness. The helpers
+# (config_converged et al.) are hoisted to the setup block, shared by
+# both gates.
 converged=1
 for _ in $(seq 1 60); do
     if config_converged; then converged=0; break; fi
