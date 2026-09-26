@@ -259,18 +259,46 @@ else
 fi
 
 # And the post-boot sweep is clean (the residue is gone) — GATED on
-# re-convergence like R1: the residue boot IS an unconverged boot (M2's
-# fallback may serve a raw first batch), and the raw live files would
-# false-fail this row for the same designed-transient reason (the r1
-# review's finding: R3 was exposed to exactly the transient the gate
-# was added for).
-re_staged="None"
+# POD-FRESH convergence evidence (the r3 review's finding: the
+# CredentialsStaged condition SURVIVES suspend — conditions are never
+# cleared on the suspend path — so polling it after resume reads the
+# PRE-SUSPEND pod's verdict and establishes nothing about the resumed
+# pod; a lastTransitionTime freshness gate has the inverse defect: the
+# steady-state resumed staging pass performs ZERO writes, so a genuinely
+# converged resume may carry no fresh transition). The honest pod-fresh
+# evidence: read the RESUMED pod's effective config and require the
+# provider's apiKey to be the token (not the canary) and baseURL to
+# point at the relay router — direct proof the resumed delivery
+# converged, independent of any condition's staleness.
+config_field() { # field -> the sweep provider's rendered field (or "")
+    local pod
+    pod=$(pod_of_ws)
+    [[ -n "${pod}" ]] || { echo ""; return; }
+    kubectl --context "${CTX}" -n "${NS}" exec "${pod}" -c workspace -- bash -c '
+        for p in /sandbox-runtime/agent-config.json /agentd-config/agent-config.json; do
+            [[ -r "$p" ]] && cat "$p" && exit 0
+        done
+        echo "{}"
+    ' 2>/dev/null | jq -r --arg f "$1" '.provider["us72sweep"].options[$f] // ""' || echo ""
+}
+config_apikey()  { config_field apiKey; }
+config_baseurl() { config_field baseURL; }
+config_converged() { # -> 0 when the pod's live config carries token+router
+    local apikey baseurl
+    apikey="$(config_apikey)"
+    baseurl="$(config_baseurl)"
+    [[ -n "${apikey}" && "${apikey}" != "${CANARY_KEY}" && "${baseurl}" == *"llm-relay"* ]]
+}
+converged=1
 for _ in $(seq 1 60); do
-    re_staged="$(condition_status CredentialsStaged)"
-    [[ "${re_staged}" == "True" ]] && break
+    if config_converged; then converged=0; break; fi
     sleep 5
 done
-[[ "${re_staged}" == "True" ]] && ok "CredentialsStaged=True again (converged before the post-boot sweep)"     || note_fail "R3: CredentialsStaged=${re_staged} after the residue boot — cannot evaluate the converged posture"
+if (( converged == 0 )); then
+    ok "the resumed pod's config carries token+router (pod-fresh convergence — the criterion's frame)"
+else
+    note_fail "R3: the resumed pod's config never showed token+router — the raw M2-fallback batch may still be live; cannot evaluate the converged posture"
+fi
 hits="$(sweep_hits)"
 if [[ "${hits}" =~ ^[0-9]+$ ]] && (( hits == 0 )); then
     ok "R3: post-boot sweep zero — the PVC residue is gone"

@@ -224,3 +224,25 @@ func TestUS72Sweep_PlantBreaksTheSymlink(t *testing.T) {
 		t.Error("the rm -f must precede the write (order is load-bearing)")
 	}
 }
+
+// TestUS72Sweep_R3GateIsPodFresh (r3): the post-boot sweep's convergence
+// gate reads POD-FRESH evidence (the resumed pod's live config carrying
+// token+router) — NOT the CredentialsStaged condition, which survives
+// suspend (conditions are never cleared on the suspend path) and so
+// reads the PRE-SUSPEND pod's verdict after resume.
+func TestUS72Sweep_R3GateIsPodFresh(t *testing.T) {
+	src := mustReadUS72Sweep(t)
+	if !strings.Contains(src, "config_converged() {") {
+		t.Fatal("R3's gate must be the pod-fresh config_converged() check (token+router in the RESUMED pod's live config)")
+	}
+	if !strings.Contains(src, `.provider["us72sweep"].options[$f] // ""`) {
+		t.Fatal("the sweep provider's field reader must exist (the drill's shape, keyed to us72sweep)")
+	}
+	// The stale form — polling CredentialsStaged AFTER the resume — must
+	// appear only in the R1 setup gate (fresh workspace: no pre-existing
+	// condition, the first True is genuinely fresh), never as R3's gate.
+	r3Block := src[strings.Index(src, "R3 — the residue-boot migration row"):]
+	if strings.Contains(r3Block, "condition_status CredentialsStaged") {
+		t.Fatal("R3 must not gate on the CredentialsStaged condition — it survives suspend (the pre-suspend pod's verdict, not the resumed pod's)")
+	}
+}

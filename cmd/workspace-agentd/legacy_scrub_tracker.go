@@ -87,3 +87,15 @@ func legacyScrubRootFromEnv() string {
 	}
 	return "/workspace"
 }
+
+// legacyScrubBootWiring is the shared boot construction (both agentd
+// topologies): create the tracker, fire the unconditional boot scrub,
+// hand the tracker back for the Present hook (belt-and-braces — the
+// sync.Once collapses) and the healthz snapshot. Extracted (US-72.6 r3)
+// so the construction+boot unit is behaviorally pinnable at both call
+// sites' shared core.
+func legacyScrubBootWiring(root string) *legacyScrubTracker {
+	tr := newLegacyScrubTracker(root)
+	bootLegacyScrub(tr)
+	return tr
+}

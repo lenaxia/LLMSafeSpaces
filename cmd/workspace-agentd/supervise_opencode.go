@@ -111,8 +111,7 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// fallback can leave the batch raw on unconverged boots, which
 	// starved the #1537 first-Present hook). The report rides the
 	// control socket's status method to the sidecar's healthz mirror.
-	legacyScrub := newLegacyScrubTracker(legacyScrubRootFromEnv())
-	bootLegacyScrub(legacyScrub)
+	legacyScrub := legacyScrubBootWiring(legacyScrubRootFromEnv())
 	supervisorLegacyScrub.Store(legacyScrub)
 
 	// #1300 heal path: if the agent-config changes AFTER spawn (sidecar

@@ -21,6 +21,11 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,4 +134,79 @@ func TestScrubClientDecodeTagAgreement(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, dec.LegacyScrub)
 	assert.Equal(t, 1, dec.LegacyScrub.ConfigKeysRemoved)
+}
+
+// --- r3: the three uncovered wiring lines, each with a red mode -------------
+
+// TestHealthzRouteServesOverrideSnapshot (server.go use-site): the route
+// built by healthzRoute — the actual constructor wireHTTPServers calls —
+// must serve the OVERRIDE snapshot (sidecar shape), not fall back to the
+// (nil-in-sidecar) tracker. Reverting the use-site to
+// legacyScrubSnapshotFor(deps.legacyScrub) turns this red.
+func TestHealthzRouteServesOverrideSnapshot(t *testing.T) {
+	store := &supervisorStatusStore{}
+	store.set(&controlStatus{LegacyScrub: &agentd.LegacyScrubHealth{RanAt: 123, ConfigKeysRemoved: 1}})
+	deps := serverDeps{}
+	applySidecarStatusMirrors(&deps, store) // the sidecar wiring line
+
+	req, err := http.NewRequest(http.MethodGet, "/v1/healthz", nil)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	healthzRoute(deps).ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"legacyScrub"`, "the served healthz must carry the legacyScub slice via the OVERRIDE (the sidecar mirror delivery)")
+	assert.Contains(t, rec.Body.String(), `"configKeysRemoved":1`)
+}
+
+// TestApplySidecarStatusMirrorsWiresBoth (sidecar_mode.go:226): the
+// extraction target — deleting the legacyScrubSnapshot assignment turns
+// this red (spawnEnvSnapshot asserted alongside as the adjacent mirror).
+func TestApplySidecarStatusMirrorsWiresBoth(t *testing.T) {
+	store := &supervisorStatusStore{}
+	deps := serverDeps{}
+	applySidecarStatusMirrors(&deps, store)
+	require.NotNil(t, deps.spawnEnvSnapshot, "the spawnEnv mirror must be wired")
+	require.NotNil(t, deps.legacyScrubSnapshot, "the LEGACY SCRUB mirror must be wired — its deletion is the exact run-36135708380 nightly regression")
+	assert.Nil(t, deps.legacyScrubSnapshot(), "pre-poll: the store has no status yet (nil-safe)")
+}
+
+// TestLegacyScrubBootWiring (the shared main/supervise construction):
+// fires at construction AND leaves the tracker hooked for Present
+// belt-and-braces. Deleting either the boot call or the hook handoff at
+// the shared core turns this red.
+func TestLegacyScrubBootWiring(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".local", "config", "opencode"), 0o755))
+	residue := filepath.Join(root, ".local", "config", "opencode", "agent-config.json")
+	require.NoError(t, os.WriteFile(residue, []byte(`{"provider":{"x":{"options":{"apiKey":"sk-W"}}}}`), 0o644))
+
+	tr := legacyScrubBootWiring(root)
+	require.NotNil(t, tr)
+	require.Eventually(t, func() bool { return tr.snapshot() != nil }, 2*time.Second, 5*time.Millisecond,
+		"the shared wiring must FIRE the boot scrub at construction (both topologies' call sites route through it)")
+	require.NotNil(t, tr.runOnce, "the tracker must remain hookable (the Present belt-and-braces)")
+	// And the boot pass actually scrubbed the residue root.
+	require.Eventually(t, func() bool { s := tr.snapshot(); return s != nil && s.ConfigKeysRemoved == 1 }, 2*time.Second, 5*time.Millisecond)
+}
+
+// TestLegacyScrubBootWiringAtCallSites (marker pin, the orphan_reason_pin
+// precedent — main() is not execable in-process): both topologies' boot
+// paths route through the shared wiring. An honest marker pin, named as
+// such; the behavioral red mode lives in TestLegacyScrubBootWiring.
+func TestLegacyScrubBootWiringAtCallSites(t *testing.T) {
+	mainSrc := readFileOrFail(t, "main.go")
+	if !strings.Contains(mainSrc, `legacyScrub := legacyScrubBootWiring("/workspace")`) {
+		t.Error("main.go's single-container boot must construct through legacyScrubBootWiring (the unconditional boot call)")
+	}
+	supSrc := readFileOrFail(t, "supervise_opencode.go")
+	if !strings.Contains(supSrc, "legacyScrub := legacyScrubBootWiring(legacyScrubRootFromEnv())") {
+		t.Error("supervise_opencode.go's boot must construct through legacyScrubBootWiring")
+	}
+}
+
+func readFileOrFail(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(name) // the test binary's cwd is the package dir
+	require.NoError(t, err)
+	return string(b)
 }

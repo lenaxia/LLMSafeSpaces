@@ -531,7 +531,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps)))
+	adminMux.HandleFunc("/v1/healthz", healthzRoute(deps))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
@@ -709,4 +709,13 @@ func legacyScrubHealthSnapshot(deps serverDeps) func() *agentd.LegacyScrubHealth
 		return deps.legacyScrubSnapshot
 	}
 	return legacyScrubSnapshotFor(deps.legacyScrub)
+}
+
+// healthzRoute builds the /v1/healthz handler for a deps shape. Extracted
+// from wireHTTPServers (US-72.6 r3: the use-site — which snapshot source
+// healthz actually serves — had no red mode; reverting it to the tracker
+// fallback silently dropped the sidecar mirror, the exact nightly
+// regression this PR fixes).
+func healthzRoute(deps serverDeps) http.HandlerFunc {
+	return healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps))
 }

@@ -282,8 +282,7 @@ func main() {
 	// platform-shaped residue files, never the live delivery surfaces.
 	// The report lands on healthz (/v1/healthz, the surface the
 	// controller polls) for the LegacyKeysScrubbed mirror.
-	legacyScrub := newLegacyScrubTracker("/workspace")
-	bootLegacyScrub(legacyScrub)
+	legacyScrub := legacyScrubBootWiring("/workspace")
 	relayLiveness := newRelayLivenessMonitorWithHook(bootstrapSecretsOutFromEnv(), nil, legacyScrub.runOnce)
 	deps.relayLiveness = relayLiveness
 	deps.legacyScrub = legacyScrub
