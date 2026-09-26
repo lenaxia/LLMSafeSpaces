@@ -40,3 +40,22 @@ durations, orphaned-flag clear rate.
 ## Round log
 
 - (opening) Terrain mapped; tests first.
+
+## Round 1 code (two commits)
+
+1. **The generation signal** (eac93e1f): the sidecar's status poller
+   detects generation boundaries from the supervisor's ChildPID (first
+   observation = boot; every change = respawn) and fires the D2 reset
+   + the authority's S12 generation reseed at that edge — #1573's live
+   finding (NEITHER fired in split mode) closed at the wiring level,
+   revert-proof through the real socket. The orphaned-flag datum rides
+   the EXISTING workspace_tracker_busy_resets_total counter (no
+   duplicate metric).
+2. **Declared timeouts** (layer 2): tool INPUT's declared timeout (ms)
+   registers a per-part deadline at upsert (StartedAt + timeout); the
+   reconcile pass folds RUNNING parts past their own deadline terminal
+   (ERROR + "declared timeout exceeded" + completed stamp,
+   store-independent, runs first, counted in
+   ReconcileStats.DeclaredTimeouts). Zero heuristics: no declaration →
+   no action (process liveness is PR3's). Four pins incl. the
+   within-window hold and the completed-part untouched.

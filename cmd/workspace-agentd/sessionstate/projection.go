@@ -4,6 +4,7 @@
 package sessionstate
 
 import (
+	"encoding/json"
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -52,10 +53,18 @@ type sessionRecord struct {
 	pendingSince map[string]uint64
 	resolvedSeq  map[string]uint64
 	lastBusySeq  uint64
+	// toolDeadlines carries each tool part's DECLARED deadline (#1576
+	// layer 2): partID → startedAt + input timeout ms. Only parts with
+	// a declared timeout appear here; entries clear at terminal folds.
+	toolDeadlines map[string]time.Time
 }
 
 func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
-	return &sessionRecord{status: status, pending: map[string]*abiv1.InputRequest{}}
+	return &sessionRecord{
+		status:        status,
+		pending:       map[string]*abiv1.InputRequest{},
+		toolDeadlines: map[string]time.Time{},
+	}
 }
 
 // markBusy stamps the busy flag with the marking event's seq (the
@@ -215,6 +224,12 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 // custom-valve counter (the retired API-side unknown-taxonomy signal's
 // agentd successor: extension kinds flowing through the valve, counted at
 // the projection — the sole place parts are applied).
+// DeclaredTimeoutReason is the synthetic terminal-state error folded
+// onto tool parts terminated by #1576 layer 2 — past their own
+// DECLARED timeout (the input's "timeout" milliseconds; the model
+// specified the bound, not a heuristic).
+const DeclaredTimeoutReason = "declared timeout exceeded"
+
 func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 	if p == nil || p.GetId() == "" {
 		return
@@ -223,11 +238,47 @@ func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 		a.customValveEvents++
 	}
 	clone := proto.Clone(p).(*abiv1.Part)
+	// #1576 layer 2: register/clear the part's declared deadline. The
+	// timeout lives in the tool INPUT JSON (the harness contract, e.g.
+	// bash's milliseconds); StartedAt anchors it. No declared timeout →
+	// no entry (zero heuristics); terminal states clear.
+	a.registerToolDeadlineLocked(rec, clone)
 	if i := rec.partIndex(p.GetId()); i >= 0 {
 		rec.inFly[i] = clone
 		return
 	}
 	rec.inFly = append(rec.inFly, clone)
+}
+
+// declaredTimeoutInput is the tool-input shape layer 2 reads: only the
+// timeout field matters (milliseconds), everything else ignored.
+type declaredTimeoutInput struct {
+	Timeout *int64 `json:"timeout"`
+}
+
+// registerToolDeadlineLocked records (or clears) a tool part's declared
+// deadline on the session record.
+func (a *Authority) registerToolDeadlineLocked(rec *sessionRecord, p *abiv1.Part) {
+	tool, ok := p.GetPayload().(*abiv1.Part_Tool)
+	if !ok {
+		return
+	}
+	id := p.GetId()
+	terminal := tool.Tool.GetState().GetStatus() == abiv1.ToolStatus_TOOL_STATUS_COMPLETED ||
+		tool.Tool.GetState().GetStatus() == abiv1.ToolStatus_TOOL_STATUS_ERROR
+	if terminal {
+		delete(rec.toolDeadlines, id)
+		return
+	}
+	var in declaredTimeoutInput
+	if err := json.Unmarshal(tool.Tool.GetInput(), &in); err != nil || in.Timeout == nil || *in.Timeout <= 0 {
+		return
+	}
+	anchor := time.Now()
+	if s := tool.Tool.GetState().GetStartedAt(); s != nil {
+		anchor = s.AsTime()
+	}
+	rec.toolDeadlines[id] = anchor.Add(time.Duration(*in.Timeout) * time.Millisecond)
 }
 
 // seedLocked rebuilds one session's record from store truth.

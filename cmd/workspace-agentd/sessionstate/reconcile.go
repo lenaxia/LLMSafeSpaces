@@ -10,6 +10,7 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // reconcile.go — epic-71 / 1b (#1311): ledger store-evidence convergence.
@@ -64,6 +65,9 @@ type ReconcileStats struct {
 	Promoted  int
 	TurnEnded int
 	Failed    int
+	// DeclaredTimeouts counts tool parts terminated by #1576 layer 2 —
+	// past their own declared deadline (store-independent, runs first).
+	DeclaredTimeouts int
 	// BusyCleared counts sessions whose BUSY view was re-derived idle
 	// (evidence idle + no unresolved rows remain).
 	BusyCleared int
@@ -94,10 +98,59 @@ func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 
 // reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
 // it with seeds it already read).
+// enforceDeclaredTimeoutsLocked is #1576 layer 2: tool parts still
+// RUNNING past their own DECLARED deadline (input "timeout" ms,
+// registered at upsert) fold terminal — ERROR with
+// DeclaredTimeoutReason and a completed stamp — so the turn fails
+// visibly and the busy derivation drops the dead leg. Zero heuristics:
+// parts without a declared timeout are untouched (layer 3's process
+// liveness owns that class). Returns how many parts terminated.
+// a.mu must be held.
+func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
+	var terminated int64
+	stamp := timestamppb.New(now)
+	for _, rec := range a.sessions {
+		if rec == nil || len(rec.toolDeadlines) == 0 {
+			continue
+		}
+		for _, p := range rec.inFly {
+			id := p.GetId()
+			dl, ok := rec.toolDeadlines[id]
+			if !ok || !now.After(dl) {
+				continue
+			}
+			tool, isTool := p.GetPayload().(*abiv1.Part_Tool)
+			if !isTool {
+				delete(rec.toolDeadlines, id)
+				continue
+			}
+			if tool.Tool.GetState().GetStatus() != abiv1.ToolStatus_TOOL_STATUS_RUNNING {
+				delete(rec.toolDeadlines, id)
+				continue
+			}
+			tool.Tool.State = &abiv1.ToolState{
+				Status:      abiv1.ToolStatus_TOOL_STATUS_ERROR,
+				Error:       DeclaredTimeoutReason,
+				StartedAt:   tool.Tool.GetState().GetStartedAt(),
+				CompletedAt: stamp,
+			}
+			delete(rec.toolDeadlines, id)
+			terminated++
+		}
+	}
+	return terminated
+}
+
 func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 	if a.cfg.Store == nil {
 		return ReconcileStats{}
 	}
+	// #1576 layer 2 runs FIRST and store-independent: past-deadline
+	// declared timeouts are objective dead signals — no evidence read
+	// should sit between the model's own contract and the fold.
+	a.mu.Lock()
+	declaredTimeouts := a.enforceDeclaredTimeoutsLocked(time.Now())
+	a.mu.Unlock()
 	var rows map[string]struct{}
 	if a.ledger != nil {
 		rows = a.ledger.unresolvedSessions()
@@ -130,6 +183,7 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		return stats
 	}
 	var stats ReconcileStats
+	stats.DeclaredTimeouts = int(declaredTimeouts)
 	if a.ledger != nil {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
