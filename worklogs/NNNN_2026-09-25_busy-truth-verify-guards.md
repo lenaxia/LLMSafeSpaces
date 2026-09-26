@@ -29,3 +29,21 @@
   stale mark); the rendered status now stays BUSY with the queue leg
   surfaced. #998/D6 semantics interact (long-legit busy must not
   auto-escalate as hung) — PR4's surface.
+
+## The re-exec hunt (post-PR round 1) — the class pinned, one leg closed
+
+The current tree has NO agentd re-exec site (audited every exec.Command/
+syscall.Exec: opencode serve via the sha256-verified overlay factory,
+mise/git/bash helpers — none resolve agentd). The plausible class: a
+bare-name `workspace-agentd` invocation from a SANITIZED tool-shell env
+(session harness envs are scrubbed — no pin envs) on an old factory base
+where /usr/local/bin/workspace-agentd still exists on PATH. The stale
+pre-#1021 artifact then verified against sha256("") and group-killed.
+
+One residual that class exposed, closed at this round: a scrubbed env
+that loses the MARKER but keeps LLMSAFESPACES_AGENTD_BINARY previously
+skipped verify entirely (marker-first short-circuit) — a CURRENT binary
+would have silently run as the baked fallback. New leg: marker absent +
+overlay coordinate present = sanitized-environment config error (exit
+87) — the pod is overlay-wired; refusing loudly beats silently
+degrading. Legacy pods (neither marker nor coordinate) still skip.

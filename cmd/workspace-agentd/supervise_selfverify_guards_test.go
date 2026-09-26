@@ -48,24 +48,28 @@ func TestSelfVerifyConfigClassIsNotTamper(t *testing.T) {
 	const good = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 	cases := []struct {
-		name   string
-		amd64  string
-		arm64  string
-		arch   string
-		actual string
+		name       string
+		volume     string
+		amd64      string
+		arm64      string
+		arch       string
+		actual     string
+		overlayBin string
 	}{
-		{"no pin for arch", "", "", "x86_64", good},
-		{"unknown arch", good, good, "riscv64", good},
-		{"malformed pin (not 64 hex)", "notahash", "", "x86_64", good},
+		{"no pin for arch", "1", "", "", "x86_64", good, ""},
+		{"unknown arch", "1", good, good, "riscv64", good, ""},
+		{"malformed pin (not 64 hex)", "1", "notahash", "", "x86_64", good, ""},
+		{"sanitized env: marker lost, overlay coordinate kept", "", good, good, "x86_64", good, "/agentd/usr/local/bin/workspace-agentd"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := selfVerifyDecision(selfVerifyEnv{
-				volumeFlag: "1",
+				volumeFlag: tc.volume,
 				amd64Pin:   tc.amd64,
 				arm64Pin:   tc.arm64,
 				arch:       tc.arch,
 				actualSHA:  tc.actual,
+				overlayBin: tc.overlayBin,
 			})
 			if err == nil {
 				t.Fatal("expected an error for the config class")

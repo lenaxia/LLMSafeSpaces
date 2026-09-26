@@ -137,6 +137,11 @@ type selfVerifyEnv struct {
 	arm64Pin   string
 	arch       string
 	actualSHA  string
+	// overlayBin is LLMSAFESPACES_AGENTD_BINARY (the controller-set
+	// overlay coordinate, set in the same branch as the marker): the
+	// marker-absent + coordinate-present shape is a sanitized
+	// environment on an overlay pod — the #1573 incident class.
+	overlayBin string
 }
 
 // pinForArch maps the uname-style arch to its pin, mirroring
@@ -155,6 +160,15 @@ func (e selfVerifyEnv) pinForArch() string {
 // selfVerifyDecision evaluates the pin contract. Nil error = proceed.
 func selfVerifyDecision(e selfVerifyEnv) error {
 	if e.volumeFlag != "1" {
+		// Legacy pods (baked binary, no overlay wiring) skip — but an
+		// overlay pod whose env was SANITIZED mid-flight (the #1573
+		// incident shape: marker lost, overlay-binary coordinate kept)
+		// is a config break, not a legacy pod: refuse loudly rather
+		// than silently run as the baked fallback.
+		if e.overlayBin != "" {
+			return &verifyConfigError{msg: fmt.Sprintf(
+				"AgentdVerificationConfigError: overlay binary coordinate set (%s) but the overlay marker is absent — sanitized environment on an overlay pod is an operator signal, not a tamper verdict (#1573)", e.overlayBin)}
+		}
 		return nil // legacy: baked binary, no overlay pin contract
 	}
 	expected := e.pinForArch()
@@ -253,5 +267,6 @@ func runSupervisorSelfVerify(exePath string) error {
 		arm64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_ARM64"),
 		arch:       unameArch(runtime.GOARCH),
 		actualSHA:  actual,
+		overlayBin: os.Getenv("LLMSAFESPACES_AGENTD_BINARY"),
 	})
 }
