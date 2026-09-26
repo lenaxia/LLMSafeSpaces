@@ -95,3 +95,19 @@ degrading. Legacy pods (neither marker nor coordinate) still skip.
   entry point by the subprocess test.
 - **The unreachable compat branch** in busyTruthFrom removed (State()
   always enriches BusyComponents — the doc comment now says so).
+
+## r3 worked (the terminal-veto regression + the dead field)
+
+- **The ERROR mask**: EVENT_TYPE_ERROR deliberately leaves the turn's
+  parts renderable in the record; the derived-busy overlay then flipped
+  a TERMINAL error back to BUSY on every surface, unbounded (the
+  reconcile sweep skips busy==false records — only a reseed cleared
+  it). The reviewer A/B-reproduced against main. Fix: the terminal
+  veto in enrichBusyLocked — status ERROR forces busy=false; components
+  keep reporting the residual parts as data (honest), only the
+  busy/status flip is vetoed; a new turn re-marks via status events.
+  Pinned red-first (BUSY → PART_START → ERROR(with payload) → status
+  stays ERROR, busy false, in_flight_parts reported, snapshot surface
+  too).
+- The write-only selfVerifyEnv.overlayBin dropped (the r2 de-dup
+  orphaned it).

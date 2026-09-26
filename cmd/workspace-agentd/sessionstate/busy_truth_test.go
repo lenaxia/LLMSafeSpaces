@@ -177,3 +177,47 @@ func TestBusyQueueDepthCounts(t *testing.T) {
 	}
 	t.Fatal("an admitted-then-unpromoted delivery must derive busy via the queue leg within 5s")
 }
+
+// TestBusyTerminalErrorVeto: the #1578 r3 regression pin — derived
+// busy must never mask a terminal SESSION_STATUS_ERROR. EVENT_TYPE_ERROR
+// deliberately leaves the turn's parts in the record (renderable);
+// those orphans flipped the status back to BUSY with no bound (the
+// reconcile sweep skips busy==false records — only a reseed cleared
+// it). The veto: an errored session does nothing autonomously; not
+// busy; the ERROR status stays visible on every surface.
+func TestBusyTerminalErrorVeto(t *testing.T) {
+	a, p := newEventAuthority(t, nil)
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	feed(t, a, p, partEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "m1", "p1", ""))
+	feed(t, a, p, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_ERROR, SessionId: "s1",
+		Error: &abiv1.Error{Code: "turn_failed", Message: "the turn died mid-tool"}})
+
+	st := a.State().Sessions["s1"]
+	if st.Status != abiv1.SessionStatus_SESSION_STATUS_ERROR {
+		t.Fatalf("terminal ERROR must stay visible, got %v", st.Status)
+	}
+	if st.BusyComponents.GetBusy() {
+		t.Fatalf("an errored session does nothing autonomously — not busy: %+v", st.BusyComponents)
+	}
+	if st.BusyComponents.GetInFlightParts() != 1 {
+		t.Fatalf("the residual orphan part stays REPORTED as data (components honest, flip vetoed): %+v", st.BusyComponents)
+	}
+
+	// The snapshot surface carries the same veto.
+	frames, cancel, err := a.Stream(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	first := <-frames
+	for _, snap := range first.GetSnapshot().GetSnapshot().GetSessions() {
+		if snap.GetSessionId() == "s1" {
+			if snap.GetStatus() != abiv1.SessionStatus_SESSION_STATUS_ERROR {
+				t.Fatalf("snapshot must keep ERROR visible, got %v", snap.GetStatus())
+			}
+			if snap.GetBusy().GetBusy() {
+				t.Fatalf("snapshot busy must be vetoed too: %+v", snap.GetBusy())
+			}
+		}
+	}
+}

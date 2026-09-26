@@ -141,11 +141,6 @@ type selfVerifyEnv struct {
 	arm64Pin   string
 	arch       string
 	actualSHA  string
-	// overlayBin is LLMSAFESPACES_AGENTD_BINARY (the controller-set
-	// overlay coordinate, set in the same branch as the marker): the
-	// marker-absent + coordinate-present shape is a sanitized
-	// environment on an overlay pod — the #1573 incident class.
-	overlayBin string
 }
 
 // pinForArch maps the uname-style arch to its pin, mirroring
@@ -277,6 +272,5 @@ func runSupervisorSelfVerify(exePath string) error {
 		arm64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_ARM64"),
 		arch:       unameArch(runtime.GOARCH),
 		actualSHA:  actual,
-		overlayBin: overlayBin,
 	})
 }

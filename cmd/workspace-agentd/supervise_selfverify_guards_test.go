@@ -48,17 +48,16 @@ func TestSelfVerifyConfigClassIsNotTamper(t *testing.T) {
 	const good = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 	cases := []struct {
-		name       string
-		volume     string
-		amd64      string
-		arm64      string
-		arch       string
-		actual     string
-		overlayBin string
+		name   string
+		volume string
+		amd64  string
+		arm64  string
+		arch   string
+		actual string
 	}{
-		{"no pin for arch", "1", "", "", "x86_64", good, ""},
-		{"unknown arch", "1", good, good, "riscv64", good, ""},
-		{"malformed pin (not 64 hex)", "1", "notahash", "", "x86_64", good, ""},
+		{"no pin for arch", "1", "", "", "x86_64", good},
+		{"unknown arch", "1", good, good, "riscv64", good},
+		{"malformed pin (not 64 hex)", "1", "notahash", "", "x86_64", good},
 		// The sanitized-env shape (marker absent + coordinate kept) is
 		// judged in runSupervisorSelfVerify's legacy branch — pinned at
 		// the ENTRY POINT by TestSupervisorSelfVerify_ClassExits, not
@@ -72,7 +71,6 @@ func TestSelfVerifyConfigClassIsNotTamper(t *testing.T) {
 				arm64Pin:   tc.arm64,
 				arch:       tc.arch,
 				actualSHA:  tc.actual,
-				overlayBin: tc.overlayBin,
 			})
 			if err == nil {
 				t.Fatal("expected an error for the config class")

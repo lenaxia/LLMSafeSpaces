@@ -269,6 +269,16 @@ func (a *Authority) enrichBusyLocked(id string, v *SessionView) {
 	}
 	comp := deriveBusyComponents(v.Busy, int32(len(v.InFlightParts)), queue, //nolint:gosec // G115: part count bounded by admission
 		pendingUserInputsOf(v.PendingInputs))
+	// The terminal veto (#1578 r3): an errored session does nothing
+	// autonomously — EVENT_TYPE_ERROR deliberately leaves its parts in
+	// the record (renderable), and those orphans must never flip the
+	// status back to BUSY (the mask was unbounded: the reconcile sweep
+	// skips busy==false records, so nothing cleared it but a reseed).
+	// Components still report the residual parts as data; only the
+	// busy/status flip is vetoed. A new turn re-marks via status events.
+	if v.Status == abiv1.SessionStatus_SESSION_STATUS_ERROR {
+		comp.Busy = false
+	}
 	v.Busy = comp.GetBusy()
 	v.BusyComponents = comp
 	// The derived truth flips the rendered status on EVERY surface (the
