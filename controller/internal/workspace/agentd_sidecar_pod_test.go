@@ -322,6 +322,11 @@ func TestAgentdSidecar_Enabled_WorkspaceIDAndRelayEnv(t *testing.T) {
 	require.NotNil(t, sc)
 	id := sidecarEnvVar(sc, "WORKSPACE_ID")
 	require.NotNil(t, id, "ops-metrics labels and bootstrap identity need WORKSPACE_ID")
+	// #1580: the sidecar runs the dev_preview_url MCP tool (#1332) —
+	// the space's dev-preview state must project here too.
+	dp := sidecarEnvVar(sc, "WORKSPACE_DEV_PREVIEW_ENABLED")
+	require.NotNil(t, dp, "the sidecar's MCP tooling needs the space's dev-preview state")
+	require.Contains(t, []string{"true", "false"}, dp.Value)
 	require.Equal(t, ws.Name, id.Value)
 	require.NotNil(t, sidecarEnvVar(sc, "INFERENCE_RELAY_BASEURL"),
 		"the relay injector lives in the sidecar now")
