@@ -495,15 +495,21 @@ func TestPodBuilder_FSGroupChangePolicy_OnRootMismatch(t *testing.T) {
 func TestPodBuilder_ContainerEnv_DevPreviewStateProjected(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		flag bool
+		flag *bool
 		want string
 	}{
-		{"enabled projects true", true, "true"},
-		{"disabled projects false", false, "false"},
+		{"enabled projects true", ptrTo(true), "true"},
+		{"disabled projects false", ptrTo(false), "false"},
+		// r1: nil NetworkAccess is a REAL production state (the CRD
+		// gives networkAccess no object-level default) — it must
+		// project the CRD default, false.
+		{"nil networkAccess projects the CRD default false", nil, "false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := newWorkspaceForPodBuilder(t)
-			ws.Spec.NetworkAccess = &v1.WorkspaceNetworkAccess{DevPreview: tc.flag}
+			if tc.flag != nil {
+				ws.Spec.NetworkAccess = &v1.WorkspaceNetworkAccess{DevPreview: *tc.flag}
+			}
 			r := reconcilerFor(t)
 			pod, err := r.buildPod(context.Background(), ws)
 			require.NoError(t, err)
@@ -525,3 +531,5 @@ func TestPodBuilder_ContainerEnv_DevPreviewStateProjected(t *testing.T) {
 		})
 	}
 }
+
+func ptrTo(b bool) *bool { return &b }

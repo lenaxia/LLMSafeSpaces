@@ -90,12 +90,19 @@ func mcpFeatureStatus() (string, error) {
 		SourceDetail: "LLMSAFESPACES_UPLOADS_STAGING_PATH + the UPLOAD_STAGING_* knobs (design 0060 §8 chart defaults)",
 	})
 
-	// Operator/chart-set: single-container vs sidecar deployment shape.
+	// Operator/chart-set: the deployment shape. Truthful basis
+	// (r1: the original SINGLE_CONTAINER_SPAWN_MARKER key was a
+	// test-harness-only phantom — unset in every real deployment):
+	// AGENTD_SIDECAR_PASSWORD is projected by the controller ONLY
+	// into the sidecar container (agentd_sidecar.go), and sidecar boot
+	// fail-closes without it — so its presence here means this process
+	// IS the sidecar; its absence in a serving process means
+	// single-container mode.
 	flags = append(flags, featureFlag{
-		Feature:      "single_container_mode",
-		Active:       os.Getenv("SINGLE_CONTAINER_SPAWN_MARKER") != "",
+		Feature:      "agent_sidecar",
+		Active:       os.Getenv("AGENTD_SIDECAR_PASSWORD") != "",
 		Source:       "operator",
-		SourceDetail: "SINGLE_CONTAINER_SPAWN_MARKER (the deployment shape the chart chose; sidecar mode runs agentd in its own container)",
+		SourceDetail: "AGENTD_SIDECAR_PASSWORD (projected only into the sidecar container; absent in this process = single-container deployment)",
 	})
 
 	out, err := json.MarshalIndent(flags, "", "  ")

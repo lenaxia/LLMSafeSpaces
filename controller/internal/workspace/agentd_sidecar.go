@@ -174,9 +174,6 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		env = append(env, corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain})
 	}
 	env = append(env, corev1.EnvVar{Name: "WORKSPACE_DEV_PREVIEW_ENABLED", Value: strconv.FormatBool(workspace.Spec.NetworkAccess != nil && workspace.Spec.NetworkAccess.DevPreview)})
-	if r.PreviewOriginBaseDomain != "" {
-		env = append(env, corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain})
-	}
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
 	}

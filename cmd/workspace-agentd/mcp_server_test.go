@@ -1370,6 +1370,82 @@ func TestMCPHandler_FeatureStatus_ListedAndShaped(t *testing.T) {
 	assert.Equal(t, "space", devPreview["source"], "devPreview is the one space-set flag")
 	assert.Contains(t, devPreview["source_detail"], "networkAccess.devPreview")
 	assert.Equal(t, false, devPreview["controllable"], "the controllable set is empty today — reported, not assumed")
+
+	// The full inventory is pinned (r1: a silently dropped entry would
+	// have passed) — with the space flag false and every operator env
+	// absent, exactly these five features, all inactive, agent_sidecar
+	// NOT keyed on any phantom env.
+	names := make([]string, 0, len(statuses))
+	for _, st := range statuses {
+		names = append(names, st["feature"].(string))
+		assert.Equal(t, false, st["controllable"], "no entry is controllable today")
+		if st["feature"] != "dev_preview" {
+			assert.Equal(t, "operator", st["source"], "every other flag is operator-set")
+		}
+	}
+	assert.ElementsMatch(t, []string{"dev_preview", "dev_preview_per_workspace_origin", "inference_relay_plane", "upload_staging", "agent_sidecar"}, names)
+}
+
+func TestMCPHandler_FeatureStatus_ActiveArmsAndSkew(t *testing.T) {
+	// r1: every operator entry's ACTIVE arm + the dev_preview skew
+	// detail — table-driven, one call per env combination.
+	for _, tc := range []struct {
+		name     string
+		env      map[string]string
+		feature  string
+		wantAct  bool
+		wantTail string
+	}{
+		{"per-workspace-origin active", map[string]string{"PREVIEW_ORIGIN_BASE_DOMAIN": "safespaces.dev"}, "dev_preview_per_workspace_origin", true, ""},
+		{"relay plane active", map[string]string{"INFERENCE_RELAY_BASEURL": "http://relay"}, "inference_relay_plane", true, ""},
+		{"upload staging active", map[string]string{"LLMSAFESPACES_UPLOADS_STAGING_PATH": "/tmp/x"}, "upload_staging", true, ""},
+		{"agent sidecar active", map[string]string{"AGENTD_SIDECAR_PASSWORD": "pw"}, "agent_sidecar", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			call := mcpRequest{JSONRPC: "2.0", ID: 30, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+				"name": "feature_status", "arguments": map[string]any{},
+			})}
+			body, _ := json.Marshal(call)
+			w := httptest.NewRecorder()
+			mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+			var resp mcpResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			result := resp.Result.(map[string]any)
+			text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+			var statuses []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(text), &statuses))
+			for _, st := range statuses {
+				if st["feature"] == tc.feature {
+					assert.Equal(t, tc.wantAct, st["active"])
+					return
+				}
+			}
+			t.Fatalf("feature %s missing from the inventory", tc.feature)
+		})
+	}
+
+	t.Run("dev_preview unreported skew detail", func(t *testing.T) {
+		call := mcpRequest{JSONRPC: "2.0", ID: 31, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+			"name": "feature_status", "arguments": map[string]any{},
+		})}
+		body, _ := json.Marshal(call)
+		w := httptest.NewRecorder()
+		mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+		var resp mcpResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		text := resp.Result.(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+		var statuses []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(text), &statuses))
+		for _, st := range statuses {
+			if st["feature"] == "dev_preview" {
+				assert.Equal(t, false, st["active"], "unreported is never guessed enabled")
+				assert.Contains(t, st["source_detail"], "UNREPORTED", "the skew detail is explicit")
+			}
+		}
+	})
 }
 
 func mcpMustMarshal(t *testing.T, v any) json.RawMessage {
