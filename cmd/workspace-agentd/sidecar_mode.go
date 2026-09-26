@@ -228,7 +228,21 @@ func runSidecarCommand(_ []string) int {
 		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), sidecarAuthority, sessionstate.ReconcileCadence)
 	}
 	startBackgroundLoops(bgCtx, &bgWg, deps)
-	startSupervisorStatusPoller(bgCtx, &bgWg, newControlClient(ControlSocketAddr()), supervisorStatus)
+	// #1576 layer 1's signal: the sidecar learns generation boundaries
+	// from the supervisor's ChildPID (boot observation + every respawn)
+	// — the D2 reset and the authority's generation reseed both fire on
+	// it now (#1573's live finding was that NEITHER ever fired in split
+	// mode; the supervisor holds no tracker by design, so the poller's
+	// observable PID truth is the channel).
+	startSupervisorStatusPollerWithInterval(bgCtx, &bgWg, newControlClient(ControlSocketAddr()), supervisorStatus,
+		func(genPID int) {
+			if deps.sseTracker != nil {
+				deps.sseTracker.onOpencodeGenerationStart()
+			}
+			if sidecarAuthority != nil {
+				go startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonGenerationChange)
+			}
+		}, supervisorStatusPollInterval)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
