@@ -221,3 +221,34 @@ func TestBusyTerminalErrorVeto(t *testing.T) {
 		}
 	}
 }
+
+// TestBusyTerminalVetoLiftsOnNewTurn: the veto's lift path — a NEW
+// turn after a terminal error re-marks busy via status events, and the
+// derivation follows (the veto is keyed on the CURRENT status, not a
+// latch; the errored session is not bricked).
+func TestBusyTerminalVetoLiftsOnNewTurn(t *testing.T) {
+	a, p := newEventAuthority(t, nil)
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	feed(t, a, p, partEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "m1", "p1", ""))
+	feed(t, a, p, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_ERROR, SessionId: "s1",
+		Error: &abiv1.Error{Code: "turn_failed", Message: "died"}})
+
+	if st := a.State().Sessions["s1"]; st.BusyComponents.GetBusy() {
+		t.Fatalf("terminal ERROR vetoes busy: %+v", st.BusyComponents)
+	}
+
+	// The user retries; a fresh turn marks busy and streams again.
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	feed(t, a, p, partEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "m2", "p2", ""))
+
+	st := a.State().Sessions["s1"]
+	if !st.BusyComponents.GetBusy() {
+		t.Fatalf("a new turn after the veto must derive busy again: %+v", st.BusyComponents)
+	}
+	if st.Status != abiv1.SessionStatus_SESSION_STATUS_BUSY {
+		t.Fatalf("status must render BUSY for the new turn, got %v", st.Status)
+	}
+	if st.BusyComponents.GetInFlightParts() < 1 {
+		t.Fatalf("the new turn's parts are in flight: %+v", st.BusyComponents)
+	}
+}

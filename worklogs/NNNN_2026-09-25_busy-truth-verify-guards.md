@@ -111,3 +111,20 @@ degrading. Legacy pods (neither marker nor coordinate) still skip.
   too).
 - The write-only selfVerifyEnv.overlayBin dropped (the r2 de-dup
   orphaned it).
+
+## r4 worked (the ABI contract clause + the lift pin + the train flake)
+
+- The ABI formula comments now state the terminal-veto exception in
+  both places (SessionSnapshot.busy + BusyComponents.busy) and instruct
+  consumers to READ the field, never recompute — regenerated all three
+  copies (go, ts, sessiongen).
+- The veto's lift path pinned: a new turn after the terminal error
+  re-marks busy (status-event keyed, not a latch — the errored session
+  is not bricked).
+- The merge-train flake de-timed (outside this PR's surface, blocks
+  the train regardless): TestFindDuplicateKeys_DuplicateBearingBounded
+  (#1572's, pkg/utilities — untouched by this PR's 25 files) failed its
+  ABSOLUTE 1.5s belt on a loaded runner at 1.607s while the relative
+  decode-class bound (the real invariant) held. Treatment per the
+  #1532 clock seam (1134c68b): the absolute wall-clock belt removed,
+  the self-scaling 20x-decode bound kept with the rationale in place.

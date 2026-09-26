@@ -499,7 +499,11 @@ type SessionSnapshot struct {
 	// bare flag. busy.busy := streaming || in_flight_parts > 0 ||
 	// queue_depth > 0; pending QUESTION/PERMISSION asks are the owner's
 	// carve-out (autonomous progress is blocked on the USER — not busy,
-	// surfaced via pending_inputs as their own signal).
+	// surfaced via pending_inputs as their own signal). ONE exception:
+	// a terminal ERROR status vetoes the flip (busy=false regardless of
+	// components) — an errored session does nothing autonomously; the
+	// residual parts stay REPORTED as data. Consumers must read busy,
+	// never recompute it from this formula.
 	Busy          *BusyComponents `protobuf:"bytes,6,opt,name=busy,proto3" json:"busy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -595,7 +599,9 @@ type BusyComponents struct {
 	// Never contributes to busy (the carve-out); carried so consumers can
 	// render "waiting on you" distinctly from "working".
 	PendingUserInputs int32 `protobuf:"varint,4,opt,name=pending_user_inputs,json=pendingUserInputs,proto3" json:"pending_user_inputs,omitempty"`
-	// busy := streaming || in_flight_parts > 0 || queue_depth > 0.
+	// busy := streaming || in_flight_parts > 0 || queue_depth > 0,
+	// EXCEPT a terminal ERROR status vetoes the flip (busy=false) —
+	// read this field; never recompute the formula.
 	Busy          bool `protobuf:"varint,5,opt,name=busy,proto3" json:"busy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

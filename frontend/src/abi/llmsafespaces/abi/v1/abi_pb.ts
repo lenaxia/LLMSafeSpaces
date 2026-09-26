@@ -245,7 +245,11 @@ export type SessionSnapshot = Message<"llmsafespaces.abi.v1.SessionSnapshot"> & 
    * bare flag. busy.busy := streaming || in_flight_parts > 0 ||
    * queue_depth > 0; pending QUESTION/PERMISSION asks are the owner's
    * carve-out (autonomous progress is blocked on the USER — not busy,
-   * surfaced via pending_inputs as their own signal).
+   * surfaced via pending_inputs as their own signal). ONE exception:
+   * a terminal ERROR status vetoes the flip (busy=false regardless of
+   * components) — an errored session does nothing autonomously; the
+   * residual parts stay REPORTED as data. Consumers must read busy,
+   * never recompute it from this formula.
    *
    * @generated from field: llmsafespaces.abi.v1.BusyComponents busy = 6;
    */
@@ -301,7 +305,9 @@ export type BusyComponents = Message<"llmsafespaces.abi.v1.BusyComponents"> & {
   pendingUserInputs: number;
 
   /**
-   * busy := streaming || in_flight_parts > 0 || queue_depth > 0.
+   * busy := streaming || in_flight_parts > 0 || queue_depth > 0,
+   * EXCEPT a terminal ERROR status vetoes the flip (busy=false) —
+   * read this field; never recompute the formula.
    *
    * @generated from field: bool busy = 5;
    */

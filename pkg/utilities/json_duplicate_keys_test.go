@@ -227,8 +227,13 @@ func TestFindDuplicateKeys_DuplicateBearingBounded(t *testing.T) {
 	assert.LessOrEqual(t, scanTime, 20*decodeTime,
 		"dup-bearing scan (%s) must stay within 20x the stdlib decode (%s) — the uncapped build measured 7.63s/17.78GB on this class",
 		scanTime, decodeTime)
-	assert.Less(t, scanTime, 1500*time.Millisecond,
-		"absolute belt: the capped dup-bearing scan is decode-class, not multi-second")
+	// No absolute wall-clock belt: the relative decode-class bound above
+	// is the invariant, and it self-scales on loaded shared runners
+	// (decode and scan slow together — the #1578 CI flake measured a
+	// 1.607s scan on a loaded runner with a proportionally slow decode;
+	// the relative bound held with margin). Same treatment as the
+	// #1532 clock seam (1134c68b): wall-clock belts on shared runners
+	// flake; ratios do not.
 }
 
 // Laziness must not cost detection: the SAME deep shape with one
