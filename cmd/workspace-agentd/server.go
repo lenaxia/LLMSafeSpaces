@@ -148,6 +148,7 @@ func buildStatuszHandler(
 	client *OpenCodeClient,
 	cache *providerCache,
 	tracker *sessionStatusTracker,
+	busyTruth busyTruthFn,
 	pressureMon *memoryPressureMonitor,
 	startedAt time.Time,
 	modelWarnPath string,
@@ -159,7 +160,7 @@ func buildStatuszHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		healthy, version, _ := client.IsHealthy(r.Context())
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker)
+		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, busyTruth)
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -539,7 +540,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.

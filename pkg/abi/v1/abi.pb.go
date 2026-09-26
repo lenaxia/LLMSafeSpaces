@@ -494,6 +494,13 @@ type SessionSnapshot struct {
 	// table); frontends must not render it as a send queue.
 	QueueDepth    int32           `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
 	PendingInputs []*InputRequest `protobuf:"bytes,5,rep,name=pending_inputs,json=pendingInputs,proto3" json:"pending_inputs,omitempty"`
+	// busy is the #1574 busy-from-data derivation and its components —
+	// WHY the session is busy, so consumers render reasons instead of a
+	// bare flag. busy.busy := streaming || in_flight_parts > 0 ||
+	// queue_depth > 0; pending QUESTION/PERMISSION asks are the owner's
+	// carve-out (autonomous progress is blocked on the USER — not busy,
+	// surfaced via pending_inputs as their own signal).
+	Busy          *BusyComponents `protobuf:"bytes,6,opt,name=busy,proto3" json:"busy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -563,6 +570,102 @@ func (x *SessionSnapshot) GetPendingInputs() []*InputRequest {
 	return nil
 }
 
+func (x *SessionSnapshot) GetBusy() *BusyComponents {
+	if x != nil {
+		return x.Busy
+	}
+	return nil
+}
+
+// BusyComponents is the #1574 single busy definition, computed once in
+// the projection and served to every view (snapshot, statusz, the API
+// busy view). Two definitions of busy is how the #1573
+// tracker/projection divergence happened.
+type BusyComponents struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// streaming: a status-event busy-mark is the only pre-#1574 signal
+	// (an in-flight model stream).
+	Streaming bool `protobuf:"varint,1,opt,name=streaming,proto3" json:"streaming,omitempty"`
+	// in_flight_parts: tool parts running or queued (bash mid-execution,
+	// serialized behind another command — both count).
+	InFlightParts int32 `protobuf:"varint,2,opt,name=in_flight_parts,json=inFlightParts,proto3" json:"in_flight_parts,omitempty"`
+	// queue_depth mirrors SessionSnapshot.queue_depth at derivation time.
+	QueueDepth int32 `protobuf:"varint,3,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
+	// pending_user_inputs: QUESTION/PERMISSION asks awaiting the user.
+	// Never contributes to busy (the carve-out); carried so consumers can
+	// render "waiting on you" distinctly from "working".
+	PendingUserInputs int32 `protobuf:"varint,4,opt,name=pending_user_inputs,json=pendingUserInputs,proto3" json:"pending_user_inputs,omitempty"`
+	// busy := streaming || in_flight_parts > 0 || queue_depth > 0.
+	Busy          bool `protobuf:"varint,5,opt,name=busy,proto3" json:"busy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BusyComponents) Reset() {
+	*x = BusyComponents{}
+	mi := &file_llmsafespaces_abi_v1_abi_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BusyComponents) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BusyComponents) ProtoMessage() {}
+
+func (x *BusyComponents) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_abi_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BusyComponents.ProtoReflect.Descriptor instead.
+func (*BusyComponents) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_abi_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BusyComponents) GetStreaming() bool {
+	if x != nil {
+		return x.Streaming
+	}
+	return false
+}
+
+func (x *BusyComponents) GetInFlightParts() int32 {
+	if x != nil {
+		return x.InFlightParts
+	}
+	return 0
+}
+
+func (x *BusyComponents) GetQueueDepth() int32 {
+	if x != nil {
+		return x.QueueDepth
+	}
+	return 0
+}
+
+func (x *BusyComponents) GetPendingUserInputs() int32 {
+	if x != nil {
+		return x.PendingUserInputs
+	}
+	return 0
+}
+
+func (x *BusyComponents) GetBusy() bool {
+	if x != nil {
+		return x.Busy
+	}
+	return false
+}
+
 var File_llmsafespaces_abi_v1_abi_proto protoreflect.FileDescriptor
 
 const file_llmsafespaces_abi_v1_abi_proto_rawDesc = "" +
@@ -588,7 +691,7 @@ const file_llmsafespaces_abi_v1_abi_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\x0e2\".llmsafespaces.abi.v1.ReseedReasonR\x06reason\"3\n" +
 	"\x12GetSnapshotRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x9d\x02\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xd7\x02\n" +
 	"\x0fSessionSnapshot\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12;\n" +
@@ -596,7 +699,15 @@ const file_llmsafespaces_abi_v1_abi_proto_rawDesc = "" +
 	"\x0fin_flight_parts\x18\x03 \x03(\v2\x1a.llmsafespaces.abi.v1.PartR\rinFlightParts\x12\x1f\n" +
 	"\vqueue_depth\x18\x04 \x01(\x05R\n" +
 	"queueDepth\x12I\n" +
-	"\x0epending_inputs\x18\x05 \x03(\v2\".llmsafespaces.abi.v1.InputRequestR\rpendingInputs*j\n" +
+	"\x0epending_inputs\x18\x05 \x03(\v2\".llmsafespaces.abi.v1.InputRequestR\rpendingInputs\x128\n" +
+	"\x04busy\x18\x06 \x01(\v2$.llmsafespaces.abi.v1.BusyComponentsR\x04busy\"\xbb\x01\n" +
+	"\x0eBusyComponents\x12\x1c\n" +
+	"\tstreaming\x18\x01 \x01(\bR\tstreaming\x12&\n" +
+	"\x0fin_flight_parts\x18\x02 \x01(\x05R\rinFlightParts\x12\x1f\n" +
+	"\vqueue_depth\x18\x03 \x01(\x05R\n" +
+	"queueDepth\x12.\n" +
+	"\x13pending_user_inputs\x18\x04 \x01(\x05R\x11pendingUserInputs\x12\x12\n" +
+	"\x04busy\x18\x05 \x01(\bR\x04busy*j\n" +
 	"\fReseedReason\x12\x1d\n" +
 	"\x19RESEED_REASON_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12RESEED_REASON_BOOT\x10\x01\x12#\n" +
@@ -621,7 +732,7 @@ func file_llmsafespaces_abi_v1_abi_proto_rawDescGZIP() []byte {
 }
 
 var file_llmsafespaces_abi_v1_abi_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_llmsafespaces_abi_v1_abi_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_llmsafespaces_abi_v1_abi_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_llmsafespaces_abi_v1_abi_proto_goTypes = []any{
 	(ReseedReason)(0),                // 0: llmsafespaces.abi.v1.ReseedReason
 	(*EventsRequest)(nil),            // 1: llmsafespaces.abi.v1.EventsRequest
@@ -632,45 +743,47 @@ var file_llmsafespaces_abi_v1_abi_proto_goTypes = []any{
 	(*ReseedNotice)(nil),             // 6: llmsafespaces.abi.v1.ReseedNotice
 	(*GetSnapshotRequest)(nil),       // 7: llmsafespaces.abi.v1.GetSnapshotRequest
 	(*SessionSnapshot)(nil),          // 8: llmsafespaces.abi.v1.SessionSnapshot
-	(*CapabilityReport)(nil),         // 9: llmsafespaces.abi.v1.CapabilityReport
-	(*Event)(nil),                    // 10: llmsafespaces.abi.v1.Event
-	(SessionStatus)(0),               // 11: llmsafespaces.abi.v1.SessionStatus
-	(*Part)(nil),                     // 12: llmsafespaces.abi.v1.Part
-	(*InputRequest)(nil),             // 13: llmsafespaces.abi.v1.InputRequest
-	(*DeliveryRequest)(nil),          // 14: llmsafespaces.abi.v1.DeliveryRequest
-	(*GetDeliveryStatusRequest)(nil), // 15: llmsafespaces.abi.v1.GetDeliveryStatusRequest
-	(*ActionRequest)(nil),            // 16: llmsafespaces.abi.v1.ActionRequest
-	(*DeliveryAck)(nil),              // 17: llmsafespaces.abi.v1.DeliveryAck
-	(*DeliveryStatus)(nil),           // 18: llmsafespaces.abi.v1.DeliveryStatus
-	(*ActionResult)(nil),             // 19: llmsafespaces.abi.v1.ActionResult
+	(*BusyComponents)(nil),           // 9: llmsafespaces.abi.v1.BusyComponents
+	(*CapabilityReport)(nil),         // 10: llmsafespaces.abi.v1.CapabilityReport
+	(*Event)(nil),                    // 11: llmsafespaces.abi.v1.Event
+	(SessionStatus)(0),               // 12: llmsafespaces.abi.v1.SessionStatus
+	(*Part)(nil),                     // 13: llmsafespaces.abi.v1.Part
+	(*InputRequest)(nil),             // 14: llmsafespaces.abi.v1.InputRequest
+	(*DeliveryRequest)(nil),          // 15: llmsafespaces.abi.v1.DeliveryRequest
+	(*GetDeliveryStatusRequest)(nil), // 16: llmsafespaces.abi.v1.GetDeliveryStatusRequest
+	(*ActionRequest)(nil),            // 17: llmsafespaces.abi.v1.ActionRequest
+	(*DeliveryAck)(nil),              // 18: llmsafespaces.abi.v1.DeliveryAck
+	(*DeliveryStatus)(nil),           // 19: llmsafespaces.abi.v1.DeliveryStatus
+	(*ActionResult)(nil),             // 20: llmsafespaces.abi.v1.ActionResult
 }
 var file_llmsafespaces_abi_v1_abi_proto_depIdxs = []int32{
 	3,  // 0: llmsafespaces.abi.v1.StreamFrame.snapshot:type_name -> llmsafespaces.abi.v1.SnapshotFrame
 	5,  // 1: llmsafespaces.abi.v1.StreamFrame.event:type_name -> llmsafespaces.abi.v1.SequencedEvent
 	6,  // 2: llmsafespaces.abi.v1.StreamFrame.reseeded:type_name -> llmsafespaces.abi.v1.ReseedNotice
 	4,  // 3: llmsafespaces.abi.v1.SnapshotFrame.snapshot:type_name -> llmsafespaces.abi.v1.PodSnapshot
-	9,  // 4: llmsafespaces.abi.v1.SnapshotFrame.capabilities:type_name -> llmsafespaces.abi.v1.CapabilityReport
+	10, // 4: llmsafespaces.abi.v1.SnapshotFrame.capabilities:type_name -> llmsafespaces.abi.v1.CapabilityReport
 	8,  // 5: llmsafespaces.abi.v1.PodSnapshot.sessions:type_name -> llmsafespaces.abi.v1.SessionSnapshot
-	10, // 6: llmsafespaces.abi.v1.SequencedEvent.event:type_name -> llmsafespaces.abi.v1.Event
+	11, // 6: llmsafespaces.abi.v1.SequencedEvent.event:type_name -> llmsafespaces.abi.v1.Event
 	0,  // 7: llmsafespaces.abi.v1.ReseedNotice.reason:type_name -> llmsafespaces.abi.v1.ReseedReason
-	11, // 8: llmsafespaces.abi.v1.SessionSnapshot.status:type_name -> llmsafespaces.abi.v1.SessionStatus
-	12, // 9: llmsafespaces.abi.v1.SessionSnapshot.in_flight_parts:type_name -> llmsafespaces.abi.v1.Part
-	13, // 10: llmsafespaces.abi.v1.SessionSnapshot.pending_inputs:type_name -> llmsafespaces.abi.v1.InputRequest
-	1,  // 11: llmsafespaces.abi.v1.HarnessABIService.Events:input_type -> llmsafespaces.abi.v1.EventsRequest
-	7,  // 12: llmsafespaces.abi.v1.HarnessABIService.GetSnapshot:input_type -> llmsafespaces.abi.v1.GetSnapshotRequest
-	14, // 13: llmsafespaces.abi.v1.HarnessABIService.Deliver:input_type -> llmsafespaces.abi.v1.DeliveryRequest
-	15, // 14: llmsafespaces.abi.v1.HarnessABIService.GetDeliveryStatus:input_type -> llmsafespaces.abi.v1.GetDeliveryStatusRequest
-	16, // 15: llmsafespaces.abi.v1.HarnessABIService.Act:input_type -> llmsafespaces.abi.v1.ActionRequest
-	2,  // 16: llmsafespaces.abi.v1.HarnessABIService.Events:output_type -> llmsafespaces.abi.v1.StreamFrame
-	8,  // 17: llmsafespaces.abi.v1.HarnessABIService.GetSnapshot:output_type -> llmsafespaces.abi.v1.SessionSnapshot
-	17, // 18: llmsafespaces.abi.v1.HarnessABIService.Deliver:output_type -> llmsafespaces.abi.v1.DeliveryAck
-	18, // 19: llmsafespaces.abi.v1.HarnessABIService.GetDeliveryStatus:output_type -> llmsafespaces.abi.v1.DeliveryStatus
-	19, // 20: llmsafespaces.abi.v1.HarnessABIService.Act:output_type -> llmsafespaces.abi.v1.ActionResult
-	16, // [16:21] is the sub-list for method output_type
-	11, // [11:16] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	12, // 8: llmsafespaces.abi.v1.SessionSnapshot.status:type_name -> llmsafespaces.abi.v1.SessionStatus
+	13, // 9: llmsafespaces.abi.v1.SessionSnapshot.in_flight_parts:type_name -> llmsafespaces.abi.v1.Part
+	14, // 10: llmsafespaces.abi.v1.SessionSnapshot.pending_inputs:type_name -> llmsafespaces.abi.v1.InputRequest
+	9,  // 11: llmsafespaces.abi.v1.SessionSnapshot.busy:type_name -> llmsafespaces.abi.v1.BusyComponents
+	1,  // 12: llmsafespaces.abi.v1.HarnessABIService.Events:input_type -> llmsafespaces.abi.v1.EventsRequest
+	7,  // 13: llmsafespaces.abi.v1.HarnessABIService.GetSnapshot:input_type -> llmsafespaces.abi.v1.GetSnapshotRequest
+	15, // 14: llmsafespaces.abi.v1.HarnessABIService.Deliver:input_type -> llmsafespaces.abi.v1.DeliveryRequest
+	16, // 15: llmsafespaces.abi.v1.HarnessABIService.GetDeliveryStatus:input_type -> llmsafespaces.abi.v1.GetDeliveryStatusRequest
+	17, // 16: llmsafespaces.abi.v1.HarnessABIService.Act:input_type -> llmsafespaces.abi.v1.ActionRequest
+	2,  // 17: llmsafespaces.abi.v1.HarnessABIService.Events:output_type -> llmsafespaces.abi.v1.StreamFrame
+	8,  // 18: llmsafespaces.abi.v1.HarnessABIService.GetSnapshot:output_type -> llmsafespaces.abi.v1.SessionSnapshot
+	18, // 19: llmsafespaces.abi.v1.HarnessABIService.Deliver:output_type -> llmsafespaces.abi.v1.DeliveryAck
+	19, // 20: llmsafespaces.abi.v1.HarnessABIService.GetDeliveryStatus:output_type -> llmsafespaces.abi.v1.DeliveryStatus
+	20, // 21: llmsafespaces.abi.v1.HarnessABIService.Act:output_type -> llmsafespaces.abi.v1.ActionResult
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_llmsafespaces_abi_v1_abi_proto_init() }
@@ -693,7 +806,7 @@ func file_llmsafespaces_abi_v1_abi_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llmsafespaces_abi_v1_abi_proto_rawDesc), len(file_llmsafespaces_abi_v1_abi_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -359,15 +359,22 @@ func TestReconcile_SnapshotQueueDepthPostSweep(t *testing.T) {
 
 	stats := a.Reconcile(context.Background())
 	// BusyCleared: the BUSY view re-derives idle from harness truth even
-	// with a queued LEDGERED row — queued ≠ running (#1312 ownership
-	// table; the turn's MESSAGE_START re-marks busy when it starts).
+	// with a queued LEDGERED row — the stale MARK clears (the reconcile
+	// machinery's stat). The #1574 DERIVED busy still counts the queued
+	// row (queue_depth leg: a queued delivery is work the session will
+	// do without user input) — the turn's MESSAGE_START re-marks busy
+	// when it starts, and the rendered status stays BUSY until then.
 	assert.Equal(t, ReconcileStats{TurnEnded: 9, BusyCleared: 1}, stats)
 
 	a.mu.Lock()
 	snap := a.sessionSnapshotLocked("s1", a.sessions["s1"])
 	a.mu.Unlock()
 	assert.Equal(t, int32(1), snap.GetQueueDepth(), "only the genuinely-queued row remains")
-	assert.Equal(t, abiv1.SessionStatus_SESSION_STATUS_IDLE, snap.GetStatus())
+	assert.Equal(t, abiv1.SessionStatus_SESSION_STATUS_BUSY, snap.GetStatus(),
+		"#1574: a queued delivery keeps the session busy (autonomous progress pending)")
+	if snap.GetBusy() == nil || !snap.GetBusy().GetBusy() || snap.GetBusy().GetQueueDepth() != 1 {
+		t.Fatalf("#1574 components must carry the queue leg: %+v", snap.GetBusy())
+	}
 }
 
 // TestReseedSweepsLedger_BootAutoHeal: the deploy-heals-everything row — a

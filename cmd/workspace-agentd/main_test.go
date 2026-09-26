@@ -134,14 +134,14 @@ func TestCachedState_CachesWithinTTL(t *testing.T) {
 	cache := &providerCache{}
 
 	// First call populates cache
-	connected1, configured1, sessions1 := cachedState(context.Background(), client, cache, newSessionStatusTracker())
+	connected1, configured1, sessions1 := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.Equal(t, []string{"opencode"}, connected1)
 	assert.Equal(t, 1, configured1)
 	assert.Len(t, sessions1, 1)
 	firstCallCount := callCount
 
 	// Second call within TTL should use cache
-	connected2, configured2, sessions2 := cachedState(context.Background(), client, cache, newSessionStatusTracker())
+	connected2, configured2, sessions2 := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.Equal(t, connected1, connected2)
 	assert.Equal(t, configured1, configured2)
 	assert.Equal(t, sessions1, sessions2)
@@ -185,7 +185,7 @@ func TestStatuszEndpoint_IncludesSessionsAndDisk(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		healthy, version, _ := client.IsHealthy(r.Context())
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker)
+		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, nil)
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -237,7 +237,7 @@ func TestStatuszEndpoint_ContextUsage_PerSessionContextUsed(t *testing.T) {
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
 	tracker.setPromptTokens("ses_1", 15000)
 	tracker.setPromptTokens("ses_2", 80000)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestStatuszEndpoint_ContextUsage_EmptySessions(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -306,7 +306,7 @@ func TestStatuszEndpoint_ContextUsage_ColdStart(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -347,7 +347,7 @@ func TestStatuszEndpoint_OldFieldsUnchanged(t *testing.T) {
 	tracker := newSessionStatusTracker()
 	startedAt := time.Now()
 
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -471,7 +471,7 @@ func TestBuildStatuszHandler_ContextUsed_PerSession(t *testing.T) {
 	startedAt := time.Now()
 
 	// Use the real buildStatuszHandler, not a hand-rolled copy.
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -518,7 +518,7 @@ func TestBuildStatuszHandler_NoContextUsed_WhenTrackerEmpty(t *testing.T) {
 	tracker := newSessionStatusTracker() // empty — no SSE data yet
 	startedAt := time.Now()
 
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), startedAt, "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -703,7 +703,7 @@ func TestSessionStatusTracker_MergesIntoCachedState(t *testing.T) {
 	// Simulate SSE event marking ses_1 as busy
 	tracker.set("ses_1", "busy")
 
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker)
+	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
 
 	assert.Len(t, sessions, 2)
 	assert.Equal(t, "busy", sessions[0].Status)
@@ -1164,7 +1164,7 @@ func TestBuildStatuszHandler_SurfacesModelResolutionWarning(t *testing.T) {
 	warnPath := modelResolutionWarningPath(dir)
 	require.NoError(t, os.WriteFile(warnPath, []byte(`{"defaultModel":"deepseek-v4-flash-free"}`), 0o600))
 
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), warnPath, defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), warnPath, defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -1185,7 +1185,7 @@ func TestStatuszEndpoint_RelayFreeModelsField(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
 
 	orig := relayFreeModelsState.Load()
 	t.Cleanup(func() { relayFreeModelsState.Store(orig) })
@@ -1216,7 +1216,7 @@ func TestStatuszEndpoint_LedgerInFlight(t *testing.T) {
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
 
 	get := func(inFlightFn func() int64) *httptest.ResponseRecorder {
-		handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, inFlightFn, nil)
+		handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, inFlightFn, nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "/v1/statusz", nil))
 		return w
@@ -1294,7 +1294,7 @@ func TestStatuszEndpoint_OldestBusySeconds(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+	handler := buildStatuszHandler(client, cache, tracker, nil, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics(), nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()

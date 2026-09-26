@@ -17,6 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -551,7 +552,19 @@ func (c *providerCache) lastKnown() (connected []string, configured int) {
 	return nil, 0
 }
 
-func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker) ([]string, int, []agentd.SessionInfo) {
+// busyTruthFn is the #1574 authority overlay: the projection's derived
+// busy (one definition) for sessions the projection knows. known=false
+// means the projection has no record — the caller falls back to the
+// tracker's status.
+type busyTruthFn func(sessionID string) (busy, known bool)
+
+// cachedState merges the client's session list with SSE-tracked
+// statuses, then overlays the authority's derived busy truth (#1574
+// ask 2: one definition feeding both views — the #1573 incident caught
+// them holding opposite answers). busyTruth may be nil (no authority
+// wired: bare tracker behavior, preserved for constructions without
+// one).
+func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker, busyTruth busyTruthFn) ([]string, int, []agentd.SessionInfo) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if time.Since(cache.lastFetchedAt) < connectedCacheTTL && cache.connected != nil {
@@ -559,6 +572,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 		for i := range cache.sessions {
 			cache.sessions[i].Status = tracker.get(cache.sessions[i].ID)
 		}
+		applyBusyTruthLocked(cache.sessions, busyTruth)
 		return cache.connected, cache.configured, cache.sessions
 	}
 	connected, connErr := client.ConnectedProviders(ctx)
@@ -583,10 +597,55 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 		ids[i] = s.ID
 	}
 	tracker.prune(ids)
+	applyBusyTruthLocked(sessions, busyTruth)
 	cache.connected = connected
 	cache.configured = configured
 	cache.sessions = sessions
 	cache.lastFetchedAt = time.Now()
 	cache.readySnapshot.Store(&providerReadySnapshot{connected: connected, configured: configured})
 	return connected, configured, sessions
+}
+
+// applyBusyTruthLocked overlays the authority's derived busy truth on
+// the rendered session statuses (#1574). Both directions: an authority
+// busy (tool in flight while the harness said idle) renders busy; an
+// authority not-busy (the permission-wait carve-out) un-busies a stale
+// tracker mark. Sessions the projection does not know keep the
+// tracker's answer.
+func applyBusyTruthLocked(sessions []agentd.SessionInfo, busyTruth busyTruthFn) {
+	if busyTruth == nil {
+		return
+	}
+	for i := range sessions {
+		busy, known := busyTruth(sessions[i].ID)
+		if !known {
+			continue
+		}
+		if busy {
+			sessions[i].Status = "busy"
+		} else if sessions[i].Status == "busy" {
+			sessions[i].Status = "idle"
+		}
+	}
+}
+
+// busyTruthFrom adapts the sessionstate authority to the #1574 statusz
+// overlay: the projection's DERIVED busy (one definition — streaming ||
+// in-flight parts || queue depth, permission-wait carved out) for every
+// session the projection knows. A nil authority yields nil (bare
+// tracker behavior).
+func busyTruthFrom(a *sessionstate.Authority) busyTruthFn {
+	if a == nil {
+		return nil
+	}
+	return func(sessionID string) (bool, bool) {
+		st, ok := a.State().Sessions[sessionID]
+		if !ok {
+			return false, false
+		}
+		if st.BusyComponents == nil {
+			return st.Busy, true
+		}
+		return st.BusyComponents.GetBusy(), true
+	}
 }

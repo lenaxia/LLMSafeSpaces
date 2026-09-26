@@ -204,6 +204,7 @@ func TestSupervise_SelfVerifyMismatch_Exit81(t *testing.T) {
 	cmd := exec.Command(bin, "--supervise")
 	cmd.Env = append(filteredEnviron(overlayEnvKeys()...),
 		"AGENTD_IMAGE_VOLUME=1",
+		"LLMSAFESPACES_AGENTD_BINARY="+bin, // #1573: the subprocess IS the overlay binary under test — the baked refusal must pass
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64="+emptyHash,
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64="+emptyHash,
 	)
