@@ -81,3 +81,17 @@ degrading. Legacy pods (neither marker nor coordinate) still skip.
    the PR title scoped (refs #1573 — asks 2-4 are the umbrella PRs';
    closes #1574 only, which the reviewer assessed SUBSTANTIALLY
    ADDRESSED).
+
+## r2 worked (the race + two residuals)
+
+- **The data race**: `len(tracker.statuses)` on the polled statusz path
+  was an unlocked read against the SSE goroutine's writes (a regression
+  of the fix commit — r0 took the length from the RLock'd copy). Fixed:
+  `busyAges := tracker.busyDurations()` first, size and range the
+  local. Race-detector clean.
+- **The duplicated sanitized-env leg**: removed from
+  selfVerifyDecision (production-unreachable there); the legacy branch
+  of runSupervisorSelfVerify is the class's one owner, pinned at the
+  entry point by the subprocess test.
+- **The unreachable compat branch** in busyTruthFrom removed (State()
+  always enriches BusyComponents — the doc comment now says so).

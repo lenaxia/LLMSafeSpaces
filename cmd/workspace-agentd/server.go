@@ -189,8 +189,12 @@ func buildStatuszHandler(
 		// OldestBusySeconds drives the API's alert threshold (0 when
 		// nothing is busy).
 		oldest := 0
-		ages := make(map[string]int, len(tracker.statuses))
-		for id, d := range tracker.busyDurations() {
+		// busyDurations() returns an RLock'd copy — never read
+		// tracker.statuses directly here (the SSE goroutine writes it;
+		// -race flags an unlocked len/read).
+		busyAges := tracker.busyDurations()
+		ages := make(map[string]int, len(busyAges))
+		for id, d := range busyAges {
 			if busy, known := truth[id]; known && !busy {
 				continue // authority-unbusied: the age was fiction
 			}

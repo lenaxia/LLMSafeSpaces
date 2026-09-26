@@ -59,7 +59,10 @@ func TestSelfVerifyConfigClassIsNotTamper(t *testing.T) {
 		{"no pin for arch", "1", "", "", "x86_64", good, ""},
 		{"unknown arch", "1", good, good, "riscv64", good, ""},
 		{"malformed pin (not 64 hex)", "1", "notahash", "", "x86_64", good, ""},
-		{"sanitized env: marker lost, overlay coordinate kept", "", good, good, "x86_64", good, "/agentd/usr/local/bin/workspace-agentd"},
+		// The sanitized-env shape (marker absent + coordinate kept) is
+		// judged in runSupervisorSelfVerify's legacy branch — pinned at
+		// the ENTRY POINT by TestSupervisorSelfVerify_ClassExits, not
+		// in this pure-function table (r2: one owner per class).
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

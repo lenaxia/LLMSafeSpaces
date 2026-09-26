@@ -162,17 +162,11 @@ func (e selfVerifyEnv) pinForArch() string {
 }
 
 // selfVerifyDecision evaluates the pin contract. Nil error = proceed.
+// (The sanitized-env shape — marker absent + overlay coordinate kept —
+// is judged in runSupervisorSelfVerify's legacy branch, the only
+// production reach; this pure function owns the marker-set classes.)
 func selfVerifyDecision(e selfVerifyEnv) error {
 	if e.volumeFlag != "1" {
-		// Legacy pods (baked binary, no overlay wiring) skip — but an
-		// overlay pod whose env was SANITIZED mid-flight (the #1573
-		// incident shape: marker lost, overlay-binary coordinate kept)
-		// is a config break, not a legacy pod: refuse loudly rather
-		// than silently run as the baked fallback.
-		if e.overlayBin != "" {
-			return &verifyConfigError{msg: fmt.Sprintf(
-				"AgentdVerificationConfigError: overlay binary coordinate set (%s) but the overlay marker is absent — sanitized environment on an overlay pod is an operator signal, not a tamper verdict (#1573)", e.overlayBin)}
-		}
 		return nil // legacy: baked binary, no overlay pin contract
 	}
 	expected := e.pinForArch()

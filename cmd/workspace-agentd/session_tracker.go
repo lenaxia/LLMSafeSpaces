@@ -644,11 +644,9 @@ func busyTruthFrom(a *sessionstate.Authority) busyTruthFn {
 		st := a.State().Sessions
 		out := make(map[string]bool, len(st))
 		for id, v := range st {
-			if v.BusyComponents != nil {
-				out[id] = v.BusyComponents.GetBusy()
-			} else {
-				out[id] = v.Busy
-			}
+			// State() always enriches BusyComponents (enrichBusyLocked
+			// runs on every view render) — no fallback leg exists here.
+			out[id] = v.BusyComponents.GetBusy()
 		}
 		return out
 	}
