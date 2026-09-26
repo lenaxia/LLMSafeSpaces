@@ -22,11 +22,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"log/slog"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // ControlSocketPort is the fixed v1 port (design 0051 A.0).
@@ -249,12 +250,7 @@ func (s *controlSocketServer) status(id *int64) controlResponse {
 	}
 	if s.legacyScrubSnapshot != nil {
 		if rep := s.legacyScrubSnapshot(); rep != nil {
-			if raw, err := json.Marshal(rep); err == nil {
-				var scrubMap map[string]any
-				if json.Unmarshal(raw, &scrubMap) == nil {
-					result["legacy_scrub"] = scrubMap
-				}
-			}
+			result["legacy_scrub"] = rep
 		}
 	}
 	return controlResponse{V: controlProtocolVersion, ID: idOr(id), Result: result}

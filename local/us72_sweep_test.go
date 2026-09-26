@@ -94,10 +94,14 @@ func TestUS72Sweep_SurfacesAndScrubExec(t *testing.T) {
 func TestUS72Sweep_CountingBranchMatchesDrill(t *testing.T) {
 	src := mustReadUS72Sweep(t)
 	// The counting semantics (the drilled form): numeric-only counting,
-	// unreadable paths pass. Since the 36135708380 fix the per-path
-	// branch is an if-guard that ALSO reports the hit path (the run's
-	// diagnosability gap — 3 hits, no idea where), so the exact branch
-	// differs from the drill's bare `&&` form while preserving it.
+	// unreadable paths pass. The per-path branch is an if-guard that
+	// ALSO reports the hit path (the 36135708380 diagnosability gap —
+	// 3 hits, no idea where). NOTE the r1 correction: the first version
+	// of this change merged stderr into the pipe (`2>&1 | tail -1`) and
+	// this pin was AMENDED TO ENSHRINE THE NO-OP — tail -1 dropped every
+	// HIT line. The contract below is the honest one: tee /dev/stderr
+	// surfaces the HIT lines to the CI log while tail -1 still captures
+	// the count as the caller's stdout.
 	for _, marker := range []string{
 		`out=$(grep -ac "'"${CANARY_KEY}"'" "$p" 2>/dev/null || true)`,
 		`if [[ "${out}" =~ ^[0-9]+$ ]] && (( out > 0 )); then`,
@@ -109,10 +113,14 @@ func TestUS72Sweep_CountingBranchMatchesDrill(t *testing.T) {
 			t.Errorf("sweep's counting branch must contain %q (the drilled semantics + the HIT-path report)", marker)
 		}
 	}
-	// The count stays the function's LAST line (tail -1): the HIT detail
-	// rides stderr into the log without corrupting the numeric contract.
-	if !strings.Contains(src, `2>&1 | tail -1 || echo 1`) {
-		t.Error("sweep_hits must merge stderr (HIT detail) and tail the count as the last line")
+	// The output contract: tee /dev/stderr SURFACES the HIT lines (they
+	// reach the CI log); tail -1 captures the count on stdout. The
+	// no-op form (`2>&1 | tail -1` alone) must be ABSENT.
+	if !strings.Contains(src, `2>&1 | tee /dev/stderr | tail -1 || echo 1`) {
+		t.Error("sweep_hits must tee /dev/stderr (HIT lines surface) and tail the count — the bare 2>&1|tail form DROPS them (the r1 no-op)")
+	}
+	if strings.Contains(src, `2>&1 | tail -1`) {
+		t.Error("the no-op merge form must be gone — it drops every HIT line")
 	}
 }
 

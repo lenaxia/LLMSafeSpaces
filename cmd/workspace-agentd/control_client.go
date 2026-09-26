@@ -19,11 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"net"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // ControlSocketAddr is the fixed v1 supervisor address (A.0).
@@ -164,6 +165,14 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeControlStatus(res)
+}
+
+// decodeControlStatus decodes the status method's result payload (the
+// wire tags live HERE — extracted from Status so the legacy_scrub tag
+// agreement is pinnable without a socket round-trip, US-72.6 r1: a
+// locally-declared test struct cannot catch a typo in this table).
+func decodeControlStatus(res map[string]any) (*controlStatus, error) {
 	raw := struct {
 		ChildPID         int                       `json:"child_pid"`
 		ChildState       string                    `json:"child_state"`

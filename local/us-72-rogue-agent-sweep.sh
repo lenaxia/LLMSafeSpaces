@@ -88,7 +88,7 @@ sweep_hits() {
             fi
         done
         echo "${hits}"
-    ' 2>&1 | tail -1 || echo 1
+    ' 2>&1 | tee /dev/stderr | tail -1 || echo 1
 }
 
 condition_status() { # cond-type -> status (None when absent)
@@ -258,7 +258,19 @@ else
     note_fail "R3: reason='${boot_reason}' msg='${boot_msg}' — the migration trigger did not fire on the residue boot"
 fi
 
-# And the post-boot sweep is clean (the residue is gone).
+# And the post-boot sweep is clean (the residue is gone) — GATED on
+# re-convergence like R1: the residue boot IS an unconverged boot (M2's
+# fallback may serve a raw first batch), and the raw live files would
+# false-fail this row for the same designed-transient reason (the r1
+# review's finding: R3 was exposed to exactly the transient the gate
+# was added for).
+re_staged="None"
+for _ in $(seq 1 60); do
+    re_staged="$(condition_status CredentialsStaged)"
+    [[ "${re_staged}" == "True" ]] && break
+    sleep 5
+done
+[[ "${re_staged}" == "True" ]] && ok "CredentialsStaged=True again (converged before the post-boot sweep)"     || note_fail "R3: CredentialsStaged=${re_staged} after the residue boot — cannot evaluate the converged posture"
 hits="$(sweep_hits)"
 if [[ "${hits}" =~ ^[0-9]+$ ]] && (( hits == 0 )); then
     ok "R3: post-boot sweep zero — the PVC residue is gone"

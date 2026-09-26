@@ -531,11 +531,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	legacyScrubSnapshot := deps.legacyScrubSnapshot
-	if legacyScrubSnapshot == nil {
-		legacyScrubSnapshot = legacyScrubSnapshotFor(deps.legacyScrub)
-	}
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubSnapshot))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps)))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
@@ -700,4 +696,17 @@ func buildVitalsGatherer(proc *managedProcess) *procVitalsGatherer {
 		proc.pid,
 		proc.childStartedAt,
 	)
+}
+
+// legacyScrubHealthSnapshot selects the healthz scrub snapshot source:
+// the deps override (sidecar mode — the supervisor's report read over
+// the control-socket status poll) when set, else the in-process tracker
+// (single-container mode). Extracted from wireHTTPServers so the
+// override-wins selection is pinnable (US-72.6 r1: the inline form was
+// 0%-covered).
+func legacyScrubHealthSnapshot(deps serverDeps) func() *agentd.LegacyScrubHealth {
+	if deps.legacyScrubSnapshot != nil {
+		return deps.legacyScrubSnapshot
+	}
+	return legacyScrubSnapshotFor(deps.legacyScrub)
 }

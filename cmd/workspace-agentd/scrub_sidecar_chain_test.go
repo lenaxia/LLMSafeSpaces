@@ -39,10 +39,12 @@ func TestControlSocketStatusCarriesLegacyScrub(t *testing.T) {
 		return &agentd.LegacyScrubHealth{RanAt: 42, AuthKeysRemoved: 1, ConfigKeysRemoved: 2}
 	}
 	res = srv.status(int64p(2))
-	m, ok := res.Result["legacy_scrub"].(map[string]any)
-	require.True(t, ok, "the wired seam must embed the report object")
-	assert.Equal(t, float64(1), m["authKeysRemoved"])
-	assert.Equal(t, float64(2), m["configKeysRemoved"])
+	// The r1 right-sizing stores the STRUCT (marshals identically on the
+	// wire); the JSON-shape proof lives in the real-socket chain test.
+	m, ok := res.Result["legacy_scrub"].(*agentd.LegacyScrubHealth)
+	require.True(t, ok, "the wired seam must embed the report")
+	assert.Equal(t, 1, m.AuthKeysRemoved)
+	assert.Equal(t, 2, m.ConfigKeysRemoved)
 }
 
 // TestControlClientDecodesLegacyScrub: the client round-trips the report.
