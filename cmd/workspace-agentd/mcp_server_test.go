@@ -1398,7 +1398,7 @@ func TestMCPHandler_FeatureStatus_ActiveArmsAndSkew(t *testing.T) {
 	}{
 		{"per-workspace-origin active", map[string]string{"PREVIEW_ORIGIN_BASE_DOMAIN": "safespaces.dev"}, "dev_preview_per_workspace_origin", true, ""},
 		{"relay plane active", map[string]string{"INFERENCE_RELAY_BASEURL": "http://relay"}, "inference_relay_plane", true, ""},
-		{"upload staging active", map[string]string{"LLMSAFESPACES_UPLOADS_STAGING_PATH": "/tmp/x"}, "upload_staging", true, ""},
+		{"upload staging active", map[string]string{"AGENTD_SIDECAR_PASSWORD": "pw"}, "upload_staging", true, ""},
 		{"agent sidecar active", map[string]string{"AGENTD_SIDECAR_PASSWORD": "pw"}, "agent_sidecar", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

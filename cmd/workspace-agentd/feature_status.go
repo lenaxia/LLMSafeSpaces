@@ -80,14 +80,19 @@ func mcpFeatureStatus() (string, error) {
 		SourceDetail: "INFERENCE_RELAY_BASEURL (Epic 72 relay-only emission; agentd monitors liveness and degrades loudly when set)",
 	})
 
-	// Operator/chart-set: the upload staging leg (design 0060) —
-	// active where the sidecar stager runs (the staging path env is
-	// the controller's projection of the tmpfs staging dir).
+	// Operator/chart-set: the upload staging leg (design 0060). r2:
+	// the r0 key (LLMSAFESPACES_UPLOADS_STAGING_PATH) was the phantom
+	// class — the controller projects only the UPLOAD_STAGING_* KNOBS
+	// (the path env is an agentd-side override with a compiled-in
+	// default). The truthful activity basis: buildSidecarDeps
+	// constructs the stager unconditionally in sidecar mode and never
+	// in single-container mode — the staging leg exists exactly where
+	// this process is the sidecar (same basis as agent_sidecar).
 	flags = append(flags, featureFlag{
 		Feature:      "upload_staging",
-		Active:       os.Getenv("LLMSAFESPACES_UPLOADS_STAGING_PATH") != "",
+		Active:       os.Getenv("AGENTD_SIDECAR_PASSWORD") != "",
 		Source:       "operator",
-		SourceDetail: "LLMSAFESPACES_UPLOADS_STAGING_PATH + the UPLOAD_STAGING_* knobs (design 0060 §8 chart defaults)",
+		SourceDetail: "the sidecar's staged-upload leg (design 0060; constructed unconditionally by buildSidecarDeps in sidecar mode, never in single-container; the UPLOAD_STAGING_* knobs tune it when operator-set)",
 	})
 
 	// Operator/chart-set: the deployment shape. Truthful basis

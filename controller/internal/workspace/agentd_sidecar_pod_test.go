@@ -98,6 +98,12 @@ func TestAgentdSidecar_DisabledByDefault_NoSidecarContainer(t *testing.T) {
 func TestAgentdSidecar_Enabled_NativeSidecarContainer(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentdSidecar(t)
+	// r2: the guarded preview-origin append must FIRE for the env
+	// uniqueness pin below to exercise its claimed scenario (r1's pin
+	// ran with the field unset — the exact combination that produced
+	// the duplicate was invisible; empirically proven by re-adding the
+	// duplicate and watching the pin pass).
+	r.PreviewOriginBaseDomain = "safespaces.dev"
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)

@@ -28,8 +28,8 @@
   - `dev_preview` — source **space** (`spec.networkAccess.devPreview`, projected; skew = active:false + UNREPORTED in the detail — never guessed).
   - `dev_preview_per_workspace_origin` — operator (PREVIEW_ORIGIN_BASE_DOMAIN presence; the URL-shape topology).
   - `inference_relay_plane` — operator (INFERENCE_RELAY_BASEURL; Epic 72's relay-only emission).
-  - `upload_staging` — operator (LLMSAFESPACES_UPLOADS_STAGING_PATH + the 0060 §8 knobs).
-  - `single_container_mode` — operator (SINGLE_CONTAINER_SPAWN_MARKER; the deployment shape).
+  - `upload_staging` — operator (r2: keyed on the truthful sidecar-mode basis — buildSidecarDeps constructs the stager unconditionally in sidecar mode, never single-container; the r0 staging-path env key was the phantom class).
+  - `agent_sidecar` — operator (AGENTD_SIDECAR_PASSWORD, projected only into the sidecar container; r1 replaced the r0 phantom SINGLE_CONTAINER_SPAWN_MARKER key).
 - **The controllable set is EMPTY, reported as fact**: every entry `controllable:false`. No write path exists (CRD = owner territory; instance settings = operator territory; pod env immutable at runtime). No gate/audit scaffolding invented for a nonexistent surface.
 - **The not-projected class named, not fabricated**: instance-level settings (the API's registry: rateLimiting.*, workflows.*, triggers.*, the devPreview kill-switch) are structurally unreadable in-pod (the D3 no-API-credentials posture); the tool's description says so — absence reads as design.
 
@@ -52,7 +52,8 @@ None.
 
 ## Tests Run
 
-- `go test -count=1 -run 'TestMCPHandler_DevPreview|TestMCPHandler_FeatureStatus' -v ./cmd/workspace-agentd/` — 4 PASS (red-first: DisabledFailsLoud + FeatureStatus failed pre-implementation).
+- `go test -count=1 -run 'TestMCPHandler_DevPreview|TestMCPHandler_FeatureStatus' -v ./cmd/workspace-agentd/` — 10 PASS across the rounds (red-first at r0; r1 added the active-arms/skew/inventory pins; r2 rekeyed the staging arm on the truthful basis).
+- `bash -n local/dev-preview-tunnel-e2e.sh` + the repo-wide harness smoke — ok (the r1-seeded DISABLED arm).
 - `go test -count=1 -run 'TestPodBuilder' -v ./controller/internal/workspace/` — 18 PASS (the projection pin red-first).
 - `go test -count=1 -run 'TestPodBuilder|TestAgentdSidecar|TestSidecar' ./controller/internal/workspace/` — ok (the sidecar env pin green).
 - The full MCP family re-run: `TestMCPHandler_` green (the strict wire applies to the new tool's params).
@@ -73,6 +74,7 @@ None.
 - `controller/internal/workspace/pod_builder_test.go` — the projection pin (both arms)
 - `controller/internal/workspace/agentd_sidecar_pod_test.go` — the sidecar env pin
 - `cmd/workspace-agentd/mcp_server.go` — the loud gate + skew note; the feature_status listing + case
-- `cmd/workspace-agentd/feature_status.go` — NEW: the read tool's inventory
+- `local/dev-preview-tunnel-e2e.sh` — the DISABLED e2e arm (r1)
+- `cmd/workspace-agentd/feature_status.go` — NEW: the read tool's inventory (r2: the staging entry's truthful basis)
 - `cmd/workspace-agentd/mcp_server_test.go` — 4 new tests + the marshal helper
 - `worklogs/NNNN_2026-09-26_devpreview-loud-feature-status.md` — this worklog
