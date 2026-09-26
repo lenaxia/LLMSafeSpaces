@@ -22,10 +22,14 @@ type SessionSeed struct {
 // SessionView is one session's projected state (I12: a snapshot of these
 // fields alone renders the session).
 type SessionView struct {
-	Status        abiv1.SessionStatus
-	Busy          bool
-	InFlightParts []*abiv1.Part
-	PendingInputs []*abiv1.InputRequest
+	Status abiv1.SessionStatus
+	// Busy is the DERIVED #1574 busy truth (streaming || in-flight
+	// parts || queue depth) — not the raw streaming flag. Components
+	// carry the why.
+	Busy           bool
+	BusyComponents *abiv1.BusyComponents
+	InFlightParts  []*abiv1.Part
+	PendingInputs  []*abiv1.InputRequest
 }
 
 // sessionView is the internal mutable projection record. lastBusySeq is
@@ -237,20 +241,87 @@ func seedLocked(seed SessionSeed) *sessionRecord {
 	return rec
 }
 
+// deriveBusyComponents is the #1574 single busy definition, computed
+// here once and served to every view: busy ⇔ autonomous progress
+// pending. Streaming (the status-event busy-mark), tool parts running
+// or queued, and ledger deliveries in flight all count; pending
+// QUESTION/PERMISSION asks are the owner's carve-out — blocked on the
+// USER, never busy, surfaced via pending_inputs as their own signal.
+// Two definitions of busy is how the #1573 tracker/projection
+// divergence happened; this is the only one.
+func deriveBusyComponents(streaming bool, parts, queue, pendingUser int32) *abiv1.BusyComponents {
+	return &abiv1.BusyComponents{
+		Streaming:         streaming,
+		InFlightParts:     parts,
+		QueueDepth:        queue,
+		PendingUserInputs: pendingUser,
+		Busy:              streaming || parts > 0 || queue > 0,
+	}
+}
+
+// enrichBusyLocked overlays the derived busy truth onto a record's
+// view (State() and sessionSnapshotLocked share this — one definition,
+// both surfaces).
+func (a *Authority) enrichBusyLocked(id string, v *SessionView) {
+	var queue int32
+	if a.ledger != nil {
+		queue = int32(a.ledger.queueDepth(id)) //nolint:gosec // G115: bounded by delivery rate limits
+	}
+	comp := deriveBusyComponents(v.Busy, int32(len(v.InFlightParts)), queue, //nolint:gosec // G115: part count bounded by admission
+		pendingUserInputsOf(v.PendingInputs))
+	// The terminal veto (#1578 r3): an errored session does nothing
+	// autonomously — EVENT_TYPE_ERROR deliberately leaves its parts in
+	// the record (renderable), and those orphans must never flip the
+	// status back to BUSY (the mask was unbounded: the reconcile sweep
+	// skips busy==false records, so nothing cleared it but a reseed).
+	// Components still report the residual parts as data; only the
+	// busy/status flip is vetoed. A new turn re-marks via status events.
+	if v.Status == abiv1.SessionStatus_SESSION_STATUS_ERROR {
+		comp.Busy = false
+	}
+	v.Busy = comp.GetBusy()
+	v.BusyComponents = comp
+	// The derived truth flips the rendered status on EVERY surface (the
+	// #1574 incident shape: harness IDLE while a tool runs renders BUSY
+	// in State() exactly as in the snapshots). The carve-out is
+	// one-directional: a pending ask never flips busy by itself.
+	if comp.GetBusy() {
+		v.Status = abiv1.SessionStatus_SESSION_STATUS_BUSY
+	}
+}
+
+// pendingUserInputsOf counts the carve-out asks on a rendered view.
+func pendingUserInputsOf(pending []*abiv1.InputRequest) int32 {
+	var n int32
+	for _, in := range pending {
+		switch in.GetKind() {
+		case abiv1.InputKind_INPUT_KIND_QUESTION, abiv1.InputKind_INPUT_KIND_PERMISSION:
+			n++
+		}
+	}
+	return n
+}
+
 // sessionSnapshotLocked renders one session's I12-complete snapshot:
 // status (busy-aware), in-flight parts with partials, pending inputs.
 // Queue depth is ledger-derived and lands with US-69.7.
 func (a *Authority) sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.SessionSnapshot {
 	v := rec.view()
+	a.enrichBusyLocked(id, v)
 	snap := &abiv1.SessionSnapshot{
 		SessionId:     id,
 		Status:        v.Status,
 		InFlightParts: v.InFlightParts,
 		PendingInputs: v.PendingInputs,
 	}
-	if v.Busy {
+	// #1574: busy-from-data. The derived truth (not the raw status
+	// event) flips the rendered status — the incident's shape (harness
+	// IDLE while a tool runs) renders BUSY here. The carve-out is
+	// one-directional: a pending ask never flips busy by itself.
+	if v.BusyComponents.GetBusy() {
 		snap.Status = abiv1.SessionStatus_SESSION_STATUS_BUSY
 	}
+	snap.Busy = v.BusyComponents
 	if a.ledger != nil {
 		snap.QueueDepth = int32(a.ledger.queueDepth(id)) //nolint:gosec // G115: bounded by delivery rate limits
 	}

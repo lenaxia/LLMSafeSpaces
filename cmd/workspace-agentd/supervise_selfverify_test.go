@@ -78,17 +78,21 @@ func TestSelfVerifyDecision(t *testing.T) {
 // TestSelfVerifyMessageShape: the mismatch error carries the exact
 // expected=/got= key=value form — detectAgentdVerificationFailure's
 // event message parses it (agentd_overlay.go), same as the bash
-// entrypoint's log_fail line.
+// entrypoint's log_fail line. (Fixture pins are 64-hex: a malformed
+// pin is #1573's config class, not tamper — pinned separately in
+// supervise_selfverify_guards_test.go.)
 func TestSelfVerifyMessageShape(t *testing.T) {
+	const good = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const bad = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	err := selfVerifyDecision(selfVerifyEnv{
 		volumeFlag: "1",
-		amd64Pin:   "aaaa",
+		amd64Pin:   good,
 		arch:       "x86_64",
-		actualSHA:  "cccc",
+		actualSHA:  bad,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "expected=aaaa")
-	assert.Contains(t, err.Error(), "got=cccc")
+	assert.Contains(t, err.Error(), "expected="+good)
+	assert.Contains(t, err.Error(), "got="+bad)
 }
 
 // TestSuperviseOpencode_SelfVerifyMismatch_Exit81: the REAL subcommand,
@@ -116,6 +120,7 @@ func TestSuperviseOpencode_SelfVerifyMismatch_Exit81(t *testing.T) {
 	// opencode_overlay_test.go's runSuperviseSubprocess.
 	cmd.Env = append(filteredEnviron(overlayEnvKeys()...),
 		"AGENTD_IMAGE_VOLUME=1",
+		"LLMSAFESPACES_AGENTD_BINARY="+bin, // #1573: the subprocess IS the overlay binary under test — the baked refusal must pass
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64="+emptyHash,
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64="+emptyHash,
 		"LLMSAFESPACES_CONTROL_SOCKET_ADDR=127.0.0.1:0",
@@ -199,6 +204,7 @@ func TestSupervise_SelfVerifyMismatch_Exit81(t *testing.T) {
 	cmd := exec.Command(bin, "--supervise")
 	cmd.Env = append(filteredEnviron(overlayEnvKeys()...),
 		"AGENTD_IMAGE_VOLUME=1",
+		"LLMSAFESPACES_AGENTD_BINARY="+bin, // #1573: the subprocess IS the overlay binary under test — the baked refusal must pass
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64="+emptyHash,
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64="+emptyHash,
 	)

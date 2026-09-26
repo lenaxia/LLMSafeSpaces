@@ -112,4 +112,38 @@ message SessionSnapshot {
   // table); frontends must not render it as a send queue.
   int32 queue_depth = 4;
   repeated InputRequest pending_inputs = 5;
+  // busy is the #1574 busy-from-data derivation and its components —
+  // WHY the session is busy, so consumers render reasons instead of a
+  // bare flag. busy.busy := streaming || in_flight_parts > 0 ||
+  // queue_depth > 0; pending QUESTION/PERMISSION asks are the owner's
+  // carve-out (autonomous progress is blocked on the USER — not busy,
+  // surfaced via pending_inputs as their own signal). ONE exception:
+  // a terminal ERROR status vetoes the flip (busy=false regardless of
+  // components) — an errored session does nothing autonomously; the
+  // residual parts stay REPORTED as data. Consumers must read busy,
+  // never recompute it from this formula.
+  BusyComponents busy = 6;
+}
+
+// BusyComponents is the #1574 single busy definition, computed once in
+// the projection and served to every view (snapshot, statusz, the API
+// busy view). Two definitions of busy is how the #1573
+// tracker/projection divergence happened.
+message BusyComponents {
+  // streaming: a status-event busy-mark is the only pre-#1574 signal
+  // (an in-flight model stream).
+  bool streaming = 1;
+  // in_flight_parts: tool parts running or queued (bash mid-execution,
+  // serialized behind another command — both count).
+  int32 in_flight_parts = 2;
+  // queue_depth mirrors SessionSnapshot.queue_depth at derivation time.
+  int32 queue_depth = 3;
+  // pending_user_inputs: QUESTION/PERMISSION asks awaiting the user.
+  // Never contributes to busy (the carve-out); carried so consumers can
+  // render "waiting on you" distinctly from "working".
+  int32 pending_user_inputs = 4;
+  // busy := streaming || in_flight_parts > 0 || queue_depth > 0,
+  // EXCEPT a terminal ERROR status vetoes the flip (busy=false) —
+  // read this field; never recompute the formula.
+  bool busy = 5;
 }

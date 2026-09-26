@@ -30,7 +30,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file llmsafespaces/abi/v1/abi.proto.
  */
 export const file_llmsafespaces_abi_v1_abi: GenFile = /*@__PURE__*/
-  fileDesc("Ch5sbG1zYWZlc3BhY2VzL2FiaS92MS9hYmkucHJvdG8SFGxsbXNhZmVzcGFjZXMuYWJpLnYxIg8KDUV2ZW50c1JlcXVlc3QivgEKC1N0cmVhbUZyYW1lEjcKCHNuYXBzaG90GAEgASgLMiMubGxtc2FmZXNwYWNlcy5hYmkudjEuU25hcHNob3RGcmFtZUgAEjUKBWV2ZW50GAIgASgLMiQubGxtc2FmZXNwYWNlcy5hYmkudjEuU2VxdWVuY2VkRXZlbnRIABI2CghyZXNlZWRlZBgDIAEoCzIiLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlJlc2VlZE5vdGljZUgAQgcKBWZyYW1lIpIBCg1TbmFwc2hvdEZyYW1lEg4KBmF0X3NlcRgBIAEoBBIzCghzbmFwc2hvdBgCIAEoCzIhLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlBvZFNuYXBzaG90EjwKDGNhcGFiaWxpdGllcxgDIAEoCzImLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNhcGFiaWxpdHlSZXBvcnQiRgoLUG9kU25hcHNob3QSNwoIc2Vzc2lvbnMYASADKAsyJS5sbG1zYWZlc3BhY2VzLmFiaS52MS5TZXNzaW9uU25hcHNob3QiSQoOU2VxdWVuY2VkRXZlbnQSCwoDc2VxGAEgASgEEioKBWV2ZW50GAIgASgLMhsubGxtc2FmZXNwYWNlcy5hYmkudjEuRXZlbnQiTwoMUmVzZWVkTm90aWNlEgsKA3NlcRgBIAEoBBIyCgZyZWFzb24YAiABKA4yIi5sbG1zYWZlc3BhY2VzLmFiaS52MS5SZXNlZWRSZWFzb24iKAoSR2V0U25hcHNob3RSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAki4AEKD1Nlc3Npb25TbmFwc2hvdBISCgpzZXNzaW9uX2lkGAEgASgJEjMKBnN0YXR1cxgCIAEoDjIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlNlc3Npb25TdGF0dXMSMwoPaW5fZmxpZ2h0X3BhcnRzGAMgAygLMhoubGxtc2FmZXNwYWNlcy5hYmkudjEuUGFydBITCgtxdWV1ZV9kZXB0aBgEIAEoBRI6Cg5wZW5kaW5nX2lucHV0cxgFIAMoCzIiLmxsbXNhZmVzcGFjZXMuYWJpLnYxLklucHV0UmVxdWVzdCpqCgxSZXNlZWRSZWFzb24SHQoZUkVTRUVEX1JFQVNPTl9VTlNQRUNJRklFRBAAEhYKElJFU0VFRF9SRUFTT05fQk9PVBABEiMKH1JFU0VFRF9SRUFTT05fR0VORVJBVElPTl9DSEFOR0UQAjLXAwoRSGFybmVzc0FCSVNlcnZpY2USUgoGRXZlbnRzEiMubGxtc2FmZXNwYWNlcy5hYmkudjEuRXZlbnRzUmVxdWVzdBohLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlN0cmVhbUZyYW1lMAESXgoLR2V0U25hcHNob3QSKC5sbG1zYWZlc3BhY2VzLmFiaS52MS5HZXRTbmFwc2hvdFJlcXVlc3QaJS5sbG1zYWZlc3BhY2VzLmFiaS52MS5TZXNzaW9uU25hcHNob3QSUwoHRGVsaXZlchIlLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkRlbGl2ZXJ5UmVxdWVzdBohLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkRlbGl2ZXJ5QWNrEmkKEUdldERlbGl2ZXJ5U3RhdHVzEi4ubGxtc2FmZXNwYWNlcy5hYmkudjEuR2V0RGVsaXZlcnlTdGF0dXNSZXF1ZXN0GiQubGxtc2FmZXNwYWNlcy5hYmkudjEuRGVsaXZlcnlTdGF0dXMSTgoDQWN0EiMubGxtc2FmZXNwYWNlcy5hYmkudjEuQWN0aW9uUmVxdWVzdBoiLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkFjdGlvblJlc3VsdEIxWi9naXRodWIuY29tL2xlbmF4aWEvbGxtc2FmZXNwYWNlcy9wa2cvYWJpL3YxO2FiaWIGcHJvdG8z", [file_llmsafespaces_abi_v1_action, file_llmsafespaces_abi_v1_capability, file_llmsafespaces_abi_v1_contract, file_llmsafespaces_abi_v1_delivery]);
+  fileDesc("Ch5sbG1zYWZlc3BhY2VzL2FiaS92MS9hYmkucHJvdG8SFGxsbXNhZmVzcGFjZXMuYWJpLnYxIg8KDUV2ZW50c1JlcXVlc3QivgEKC1N0cmVhbUZyYW1lEjcKCHNuYXBzaG90GAEgASgLMiMubGxtc2FmZXNwYWNlcy5hYmkudjEuU25hcHNob3RGcmFtZUgAEjUKBWV2ZW50GAIgASgLMiQubGxtc2FmZXNwYWNlcy5hYmkudjEuU2VxdWVuY2VkRXZlbnRIABI2CghyZXNlZWRlZBgDIAEoCzIiLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlJlc2VlZE5vdGljZUgAQgcKBWZyYW1lIpIBCg1TbmFwc2hvdEZyYW1lEg4KBmF0X3NlcRgBIAEoBBIzCghzbmFwc2hvdBgCIAEoCzIhLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlBvZFNuYXBzaG90EjwKDGNhcGFiaWxpdGllcxgDIAEoCzImLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNhcGFiaWxpdHlSZXBvcnQiRgoLUG9kU25hcHNob3QSNwoIc2Vzc2lvbnMYASADKAsyJS5sbG1zYWZlc3BhY2VzLmFiaS52MS5TZXNzaW9uU25hcHNob3QiSQoOU2VxdWVuY2VkRXZlbnQSCwoDc2VxGAEgASgEEioKBWV2ZW50GAIgASgLMhsubGxtc2FmZXNwYWNlcy5hYmkudjEuRXZlbnQiTwoMUmVzZWVkTm90aWNlEgsKA3NlcRgBIAEoBBIyCgZyZWFzb24YAiABKA4yIi5sbG1zYWZlc3BhY2VzLmFiaS52MS5SZXNlZWRSZWFzb24iKAoSR2V0U25hcHNob3RSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkilAIKD1Nlc3Npb25TbmFwc2hvdBISCgpzZXNzaW9uX2lkGAEgASgJEjMKBnN0YXR1cxgCIAEoDjIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlNlc3Npb25TdGF0dXMSMwoPaW5fZmxpZ2h0X3BhcnRzGAMgAygLMhoubGxtc2FmZXNwYWNlcy5hYmkudjEuUGFydBITCgtxdWV1ZV9kZXB0aBgEIAEoBRI6Cg5wZW5kaW5nX2lucHV0cxgFIAMoCzIiLmxsbXNhZmVzcGFjZXMuYWJpLnYxLklucHV0UmVxdWVzdBIyCgRidXN5GAYgASgLMiQubGxtc2FmZXNwYWNlcy5hYmkudjEuQnVzeUNvbXBvbmVudHMifAoOQnVzeUNvbXBvbmVudHMSEQoJc3RyZWFtaW5nGAEgASgIEhcKD2luX2ZsaWdodF9wYXJ0cxgCIAEoBRITCgtxdWV1ZV9kZXB0aBgDIAEoBRIbChNwZW5kaW5nX3VzZXJfaW5wdXRzGAQgASgFEgwKBGJ1c3kYBSABKAgqagoMUmVzZWVkUmVhc29uEh0KGVJFU0VFRF9SRUFTT05fVU5TUEVDSUZJRUQQABIWChJSRVNFRURfUkVBU09OX0JPT1QQARIjCh9SRVNFRURfUkVBU09OX0dFTkVSQVRJT05fQ0hBTkdFEAIy1wMKEUhhcm5lc3NBQklTZXJ2aWNlElIKBkV2ZW50cxIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkV2ZW50c1JlcXVlc3QaIS5sbG1zYWZlc3BhY2VzLmFiaS52MS5TdHJlYW1GcmFtZTABEl4KC0dldFNuYXBzaG90EigubGxtc2FmZXNwYWNlcy5hYmkudjEuR2V0U25hcHNob3RSZXF1ZXN0GiUubGxtc2FmZXNwYWNlcy5hYmkudjEuU2Vzc2lvblNuYXBzaG90ElMKB0RlbGl2ZXISJS5sbG1zYWZlc3BhY2VzLmFiaS52MS5EZWxpdmVyeVJlcXVlc3QaIS5sbG1zYWZlc3BhY2VzLmFiaS52MS5EZWxpdmVyeUFjaxJpChFHZXREZWxpdmVyeVN0YXR1cxIuLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkdldERlbGl2ZXJ5U3RhdHVzUmVxdWVzdBokLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkRlbGl2ZXJ5U3RhdHVzEk4KA0FjdBIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkFjdGlvblJlcXVlc3QaIi5sbG1zYWZlc3BhY2VzLmFiaS52MS5BY3Rpb25SZXN1bHRCMVovZ2l0aHViLmNvbS9sZW5heGlhL2xsbXNhZmVzcGFjZXMvcGtnL2FiaS92MTthYmliBnByb3RvMw", [file_llmsafespaces_abi_v1_action, file_llmsafespaces_abi_v1_capability, file_llmsafespaces_abi_v1_contract, file_llmsafespaces_abi_v1_delivery]);
 
 /**
  * @generated from message llmsafespaces.abi.v1.EventsRequest
@@ -238,6 +238,22 @@ export type SessionSnapshot = Message<"llmsafespaces.abi.v1.SessionSnapshot"> & 
    * @generated from field: repeated llmsafespaces.abi.v1.InputRequest pending_inputs = 5;
    */
   pendingInputs: InputRequest[];
+
+  /**
+   * busy is the #1574 busy-from-data derivation and its components —
+   * WHY the session is busy, so consumers render reasons instead of a
+   * bare flag. busy.busy := streaming || in_flight_parts > 0 ||
+   * queue_depth > 0; pending QUESTION/PERMISSION asks are the owner's
+   * carve-out (autonomous progress is blocked on the USER — not busy,
+   * surfaced via pending_inputs as their own signal). ONE exception:
+   * a terminal ERROR status vetoes the flip (busy=false regardless of
+   * components) — an errored session does nothing autonomously; the
+   * residual parts stay REPORTED as data. Consumers must read busy,
+   * never recompute it from this formula.
+   *
+   * @generated from field: llmsafespaces.abi.v1.BusyComponents busy = 6;
+   */
+  busy?: BusyComponents | undefined;
 };
 
 /**
@@ -246,6 +262,64 @@ export type SessionSnapshot = Message<"llmsafespaces.abi.v1.SessionSnapshot"> & 
  */
 export const SessionSnapshotSchema: GenMessage<SessionSnapshot> = /*@__PURE__*/
   messageDesc(file_llmsafespaces_abi_v1_abi, 7);
+
+/**
+ * BusyComponents is the #1574 single busy definition, computed once in
+ * the projection and served to every view (snapshot, statusz, the API
+ * busy view). Two definitions of busy is how the #1573
+ * tracker/projection divergence happened.
+ *
+ * @generated from message llmsafespaces.abi.v1.BusyComponents
+ */
+export type BusyComponents = Message<"llmsafespaces.abi.v1.BusyComponents"> & {
+  /**
+   * streaming: a status-event busy-mark is the only pre-#1574 signal
+   * (an in-flight model stream).
+   *
+   * @generated from field: bool streaming = 1;
+   */
+  streaming: boolean;
+
+  /**
+   * in_flight_parts: tool parts running or queued (bash mid-execution,
+   * serialized behind another command — both count).
+   *
+   * @generated from field: int32 in_flight_parts = 2;
+   */
+  inFlightParts: number;
+
+  /**
+   * queue_depth mirrors SessionSnapshot.queue_depth at derivation time.
+   *
+   * @generated from field: int32 queue_depth = 3;
+   */
+  queueDepth: number;
+
+  /**
+   * pending_user_inputs: QUESTION/PERMISSION asks awaiting the user.
+   * Never contributes to busy (the carve-out); carried so consumers can
+   * render "waiting on you" distinctly from "working".
+   *
+   * @generated from field: int32 pending_user_inputs = 4;
+   */
+  pendingUserInputs: number;
+
+  /**
+   * busy := streaming || in_flight_parts > 0 || queue_depth > 0,
+   * EXCEPT a terminal ERROR status vetoes the flip (busy=false) —
+   * read this field; never recompute the formula.
+   *
+   * @generated from field: bool busy = 5;
+   */
+  busy: boolean;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.BusyComponents.
+ * Use `create(BusyComponentsSchema)` to create a new message.
+ */
+export const BusyComponentsSchema: GenMessage<BusyComponents> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_abi, 8);
 
 /**
  * @generated from enum llmsafespaces.abi.v1.ReseedReason

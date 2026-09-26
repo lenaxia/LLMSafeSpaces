@@ -144,10 +144,12 @@ func main() {
 	// fail-closed self-verify as supervise-opencode — exit 81 keeps the
 	// controller's AgentdVerificationFailed detection contract. Runs
 	// before ANY work; no-op when the overlay marker is unset (dev).
+	// #1573: the exit is class-specific (81 tamper / 87 config / 88
+	// baked refusal) — never a process-group signal.
 	if err := runSupervisorSelfVerify("/proc/self/exe"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0o644) //nolint:gosec // best-effort, mirrors runSuperviseOpencodeCommand
-		os.Exit(supervisorExitVerifyFailed)
+		os.Exit(verifyExitCode(err))
 	}
 
 	supervise := len(os.Args) > 1 && os.Args[1] == "--supervise"

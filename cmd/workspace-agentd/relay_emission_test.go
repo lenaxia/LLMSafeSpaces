@@ -161,7 +161,7 @@ func TestRelayEmission_ReadyzSurfacesButNeverGates(t *testing.T) {
 // scrapes.
 func TestRelayEmission_StatuszMirrorsRelaySlice(t *testing.T) {
 	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: time.Second}}
-	handler := buildStatuszHandler(client, &providerCache{}, newSessionStatusTracker(), newMemoryPressureMonitor(),
+	handler := buildStatuszHandler(client, &providerCache{}, newSessionStatusTracker(), nil, newMemoryPressureMonitor(),
 		time.Now(), "", defaultSysMetrics(), nil, nil,
 		func() *agentd.RelayHealth {
 			return &agentd.RelayHealth{Present: true, Reachable: true, AppliedRevision: "rST0001"}

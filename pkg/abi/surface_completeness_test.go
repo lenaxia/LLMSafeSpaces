@@ -27,6 +27,9 @@ func TestSchemaSurfaceCompleteness(t *testing.T) {
 		"PodSnapshot": false, "SequencedEvent": false, "ReseedNotice": false,
 		// Op 2 — Snapshot.
 		"GetSnapshotRequest": false, "SessionSnapshot": false,
+		// #1574 busy-from-data: the busy components (why-busy) riding
+		// the snapshot — additive field 6; the single busy definition.
+		"BusyComponents": false,
 		// Op 3 — Deliver (parts-capable, D3).
 		"DeliveryRequest": false, "DeliveryPart": false, "FileReference": false,
 		"DeliveryAck": false,

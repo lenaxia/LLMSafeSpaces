@@ -39,6 +39,12 @@ import (
 const (
 	agentdExitVerifyFailed   int32 = 81
 	agentdExitOverlayMissing int32 = 82
+	// #1573: the config and refusal classes. 87/88, NOT 83/84 — those
+	// are the opencode-overlay verify's codes in the same container
+	// (opencode_overlay.go); a dual-overlay pod's failure attribution
+	// must never cross overlays.
+	agentdExitVerifyConfig int32 = 87
+	agentdExitBakedRefused int32 = 88
 )
 
 const (
@@ -172,6 +178,12 @@ func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Contex
 	case agentdExitOverlayMissing:
 		reason = v1.ReasonAgentdOverlayMissing
 		outcome = "overlay_missing"
+	case agentdExitVerifyConfig:
+		reason = v1.ReasonAgentdVerificationConfigError
+		outcome = "verify_config"
+	case agentdExitBakedRefused:
+		reason = v1.ReasonAgentdBakedRefused
+		outcome = "baked_refused"
 	default:
 		return false
 	}

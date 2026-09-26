@@ -406,6 +406,13 @@ const (
 	ReasonAgentdVerificationFailed = "AgentdVerificationFailed"
 	ReasonAgentdOverlayMissing     = "AgentdOverlayMissing"
 	ReasonAgentdVerified           = "AgentdVerified"
+	// #1573: the #863 contract's two non-tamper classes — an
+	// operator/config signal (empty/malformed pin, exit 87) and the
+	// baked-path refusal under the overlay contract (exit 88). Distinct
+	// reasons so the event names the fixing action without reading as
+	// tamper; codes 87/88 stay clear of opencode-overlay's 83/84.
+	ReasonAgentdVerificationConfigError = "AgentdVerificationConfigError"
+	ReasonAgentdBakedRefused            = "AgentdBakedRefused"
 	// Design 0053 §4.2 opencode overlay delivery: supervisor sha256
 	// verification outcomes (exit codes 83/84, distinct from agentd's
 	// 81/82 so a dual-overlay pod's failure attribution never crosses).

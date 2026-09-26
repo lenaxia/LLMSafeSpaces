@@ -99,7 +99,7 @@ func TestE2E_SSEToStatusz(t *testing.T) {
 	sseConnected.Wait()
 
 	// --- Phase 1: All sessions idle (no SSE events yet) ---
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker)
+	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
 	require.Len(t, sessions, 3)
 	assert.Equal(t, "idle", sessions[0].Status)
 	assert.Equal(t, "idle", sessions[1].Status)
@@ -116,7 +116,7 @@ func TestE2E_SSEToStatusz(t *testing.T) {
 	cache.lastFetchedAt = time.Time{}
 	cache.mu.Unlock()
 
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker)
+	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "busy", sessions[0].Status, "ses_1 should be busy after SSE event")
 	assert.Equal(t, "idle", sessions[1].Status, "ses_2 should still be idle")
 	assert.Equal(t, "idle", sessions[2].Status, "ses_3 should still be idle")
@@ -130,13 +130,13 @@ func TestE2E_SSEToStatusz(t *testing.T) {
 	cache.lastFetchedAt = time.Time{}
 	cache.mu.Unlock()
 
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker)
+	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "idle", sessions[0].Status, "ses_1 should be idle again")
 	assert.Equal(t, "busy", sessions[1].Status, "ses_2 should be busy")
 
 	// --- Phase 4: Verify statusz response has correct active count ---
 	healthy, version, _ := client.IsHealthy(context.Background())
-	connected, configured, sessions := cachedState(context.Background(), client, cache, tracker)
+	connected, configured, sessions := cachedState(context.Background(), client, cache, tracker, nil)
 	ready := healthy && len(connected) > 0
 
 	activeCnt := 0

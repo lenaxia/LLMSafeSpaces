@@ -560,7 +560,11 @@ func (a *Authority) State() StateSnapshot {
 	defer a.mu.Unlock()
 	out := make(map[string]*SessionView, len(a.sessions))
 	for k, v := range a.sessions {
-		out[k] = v.view()
+		view := v.view()
+		// #1574: one busy definition on every surface — State() serves
+		// the same derived truth the snapshots serve.
+		a.enrichBusyLocked(k, view)
+		out[k] = view
 	}
 	return StateSnapshot{Seq: a.seq, Sessions: out}
 }

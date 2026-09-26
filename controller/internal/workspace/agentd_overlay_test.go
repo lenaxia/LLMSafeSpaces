@@ -228,6 +228,68 @@ func TestAgentdVerify_OverlayMissing_UsesOverlayReason(t *testing.T) {
 	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("overlay_missing", "node-1", "0123456789ab")))
 }
 
+// #1573: the config and refusal classes carry their OWN reasons and
+// metric outcomes — an operator misconfiguration (empty/malformed pin,
+// exit 87) and a baked-path execution under the overlay contract (exit
+// 88) are detected distinctly from the 81 tamper verdict, so the event
+// tells the operator which action fixes it (pin config vs baked-path
+// exec) without paging as tamper.
+func TestAgentdVerify_ConfigClass_DistinctReasonAndMetric(t *testing.T) {
+	r := reconcilerWithAgentd(t)
+	ws := activeOverlayWorkspace(t, r, "ws-verify-config")
+
+	pod := makeWorkspacePod(ws, "CrashLoopBackOff", agentdExitVerifyConfig,
+		"AgentdVerificationConfigError: no sha256 pin for arch x86_64 (self-verify) — operator signal, not a tamper verdict (#1573)")
+	require.NoError(t, r.Create(context.Background(), pod))
+
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_config", "node-1", "0123456789ab"))
+	_, err := r.handleActive(context.Background(), ws)
+	require.NoError(t, err)
+
+	cond := conditionOfType(ws, v1.WorkspaceConditionAgentdVerified)
+	require.NotNil(t, cond)
+	require.Equal(t, "False", cond.Status)
+	require.Equal(t, string(v1.ReasonAgentdVerificationConfigError), cond.Reason)
+	require.Contains(t, cond.Message, "no sha256 pin")
+	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_config", "node-1", "0123456789ab")))
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	select {
+	case e := <-rec.Events:
+		require.Contains(t, e, "AgentdVerificationConfigError")
+	default:
+		t.Fatal("expected a warning event on the Workspace")
+	}
+}
+
+func TestAgentdVerify_BakedRefused_DistinctReasonAndMetric(t *testing.T) {
+	r := reconcilerWithAgentd(t)
+	ws := activeOverlayWorkspace(t, r, "ws-baked-refused")
+
+	pod := makeWorkspacePod(ws, "CrashLoopBackOff", agentdExitBakedRefused,
+		"AgentdBakedRefused: exe /usr/local/bin/workspace-agentd is not the overlay binary /agentd/usr/local/bin/workspace-agentd — the baked binary never executes under the overlay contract (#1573)")
+	require.NoError(t, r.Create(context.Background(), pod))
+
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("baked_refused", "node-1", "0123456789ab"))
+	_, err := r.handleActive(context.Background(), ws)
+	require.NoError(t, err)
+
+	cond := conditionOfType(ws, v1.WorkspaceConditionAgentdVerified)
+	require.NotNil(t, cond)
+	require.Equal(t, "False", cond.Status)
+	require.Equal(t, string(v1.ReasonAgentdBakedRefused), cond.Reason)
+	require.Contains(t, cond.Message, "baked binary never executes")
+	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("baked_refused", "node-1", "0123456789ab")))
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	select {
+	case e := <-rec.Events:
+		require.Contains(t, e, "AgentdBakedRefused")
+	default:
+		t.Fatal("expected a warning event on the Workspace")
+	}
+}
+
 func TestAgentdVerify_FailureIsIdempotentPerEpisode(t *testing.T) {
 	r := reconcilerWithAgentd(t)
 	ws := activeOverlayWorkspace(t, r, "ws-dedup")

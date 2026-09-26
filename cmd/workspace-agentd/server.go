@@ -153,6 +153,7 @@ func buildStatuszHandler(
 	client *OpenCodeClient,
 	cache *providerCache,
 	tracker *sessionStatusTracker,
+	busyTruth busyTruthFn,
 	pressureMon *memoryPressureMonitor,
 	startedAt time.Time,
 	modelWarnPath string,
@@ -164,7 +165,14 @@ func buildStatuszHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		healthy, version, _ := client.IsHealthy(r.Context())
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker)
+		// ONE truth snapshot per render: the sessions overlay and the
+		// busy-age filter below judge the same map (never a second
+		// authority fetch, never two different truths in one response).
+		var truth map[string]bool
+		if busyTruth != nil {
+			truth = busyTruth()
+		}
+		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, func() map[string]bool { return truth })
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -175,12 +183,26 @@ func buildStatuszHandler(
 		}
 
 		// D6 (#998): busy-age escalation inputs. busyAges from the SSE
-		// tracker's busy-at timestamps; OldestBusySeconds drives the
-		// API's alert threshold (0 when nothing is busy).
-		busyAges := tracker.busyDurations()
+		// tracker's busy-at timestamps, FILTERED by the authority truth
+		// (#1574/#1573 Part 2): a session the authority un-busied must
+		// stop contributing fictional age in the SAME response that
+		// renders it idle — status and age from one view. Tracker-known
+		// sessions the authority has no record of keep the tracker's
+		// age (the fallback — pre-#1574 behavior for projection-blind
+		// sessions). Derived-busy sessions the tracker never stamped
+		// carry no age (0 — fresh truth, no fictional clock).
+		// OldestBusySeconds drives the API's alert threshold (0 when
+		// nothing is busy).
 		oldest := 0
+		// busyDurations() returns an RLock'd copy — never read
+		// tracker.statuses directly here (the SSE goroutine writes it;
+		// -race flags an unlocked len/read).
+		busyAges := tracker.busyDurations()
 		ages := make(map[string]int, len(busyAges))
 		for id, d := range busyAges {
+			if busy, known := truth[id]; known && !busy {
+				continue // authority-unbusied: the age was fiction
+			}
 			secs := int(d.Seconds())
 			ages[id] = secs
 			if secs > oldest {
@@ -544,7 +566,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.
