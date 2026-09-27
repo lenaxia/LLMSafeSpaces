@@ -37,8 +37,9 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 ### r3–r4 review rounds (the consistency pass)
 
-- r3 closed all five r2 findings (verified against source by the reviewer): the §3 mint/replace wording, the §8 rotation-path pin (delete+recreate asserted via UID change + the no-update-verb RBAC assertion), the identifier-disjointness negative, the sha8-collision triad (§5.0/§6/§8).
+- r3 closed all five r2 findings (verified against source by the reviewer): the §3 mint/replace wording, the §8 rotation-path pin (delete+recreate asserted via UID change + the no-update-verb RBAC assertion), the identifier-disjointness negative, the sha8-collision triad (§5.0/§6/§8), and §4's gate-order list / in-handler kill-switch correction.
 - r4's two citation residuals: the "complete list" label gained the empty-workspaceID 400 (:112-116) and the port-parse span widened to :131-147 — a list labeled complete must actually be.
+- r5's two minors: the worklog's own five-count enumeration completed (the fifth was §4's gate-order/kill-switch fix — this very lane's subject); §4's second invariant clause scoped to HEADER Secrets (the password provider's cache-miss fetch legitimately precedes the 429 — it is the tunnel's credential, not header configuration).
 
 ## Tests Run
 
