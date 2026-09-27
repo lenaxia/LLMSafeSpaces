@@ -68,7 +68,6 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE; r8's false worklog-scoping claim removed (the scoping landed in r10 — r9 asserted it while editing no line of the r0 narrative); r8/r9/r10 in chronological position inside the rounds block; the r4 spacing nit fixed FOR REAL (r10's first commit claimed it without a hunk — the second of THREE consecutive false-completion claims (r9, r10, r11), each caught by review).
 
-
 ### r11 review round
 
 - Closures (verified by the r11 review): the r4 spacing blank line present byte-level; r10 moved inside the rounds block (the stranded-slot reuse undone); nit (a) rephrased honestly ("r9 asserted it while editing no line of the r0 narrative"). r11's own false-completion claim — the attribution "corrections" existing only as metatext while :16 stood untouched — is recorded in the r12 bullet below.
@@ -76,6 +75,7 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 ### r12 review round
 
 - r11's own false-completion claim recorded: the attribution "corrections" existed only as metatext in the r10 bullet while :16 stood untouched — the third consecutive instance of the class (r9: the :16 scoping; r10: the :41 spacing; r11: the :16 attributions). This round corrects :16 IN PLACE (the :155 clause at r5, the class completed at r6; the oracle rationale entered the record at r8) and fixes the two spacing artifacts r11's move introduced (the double blank before r10; the missing blank before ## Tests Run).
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -88,3 +88,4 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
+
