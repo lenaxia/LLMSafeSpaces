@@ -39,6 +39,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
@@ -122,6 +124,43 @@ func anyRestartDeferred() bool { return deferredRestarts.Load() > 0 }
 // collaborators and tunables. StallBound/GraceWindow/PollInterval <= 0
 // fall back to their defaults (restartStallBound /
 // defaultInterruptGrace / restartIdleCheckInterval).
+// deferBusySource is the #1576 design steer's deferral SEAM: the busy
+// reads the restart decision consumes. *sessionStatusTracker satisfies
+// it today (the defer-until-idle policy: SSE-observed busy + the
+// progressing/stall partitions). The seam exists so the owner's
+// keep/replace/remove decision lands as a swap — a turn-boundary
+// policy (apply at turn-completion edges instead of busy polls) or an
+// always-restart policy — without touching the decision machinery.
+// This PR adds NO new machinery; it only names the seam.
+type deferBusySource interface {
+	anyBusyOrUnknown() bool
+	listBusy() []string
+	busyPartitions(stallBound time.Duration) (progressing, stalled []string)
+}
+
+// anyBusyOrUnknown adapts the tracker to the seam (trackerHasBusyOrUnknown's
+// logic, method form).
+func (t *sessionStatusTracker) anyBusyOrUnknown() bool {
+	return trackerHasBusyOrUnknown(t)
+}
+
+// The decision numbers (the steer's directive 3): how often deferral
+// actually fires, and how long the stalls run — surfaced so the
+// owner's keep/replace/remove call is made with data.
+var (
+	restartDeferralsFired = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "llmsafespaces",
+		Name:      "agentd_restart_deferrals_fired_total",
+		Help:      "Session-aware restarts deferred past a busy source (#1576 steer datum: how often deferral fires)",
+	})
+	restartDeferStallSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "llmsafespaces",
+		Name:      "agentd_restart_defer_stall_seconds",
+		Help:      "How long a deferred restart waited before applying/forcing/canceling (#1576 steer datum: the stalls deferral causes)",
+		Buckets:   []float64{1, 5, 15, 30, 60, 300, 900, 1800, 3600},
+	})
+)
+
 type restartDecisionConfig struct {
 	PollInterval time.Duration
 	// StallBound: busy sessions with no harness activity newer than
@@ -247,7 +286,7 @@ func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 func makeSessionAwareRestartDecision(
 	ctx context.Context,
 	proc restartableProcess,
-	tracker *sessionStatusTracker,
+	source deferBusySource,
 	cfg restartDecisionConfig,
 ) bool {
 	if proc == nil {
@@ -272,10 +311,22 @@ func makeSessionAwareRestartDecision(
 		ctx = context.Background() //nolint:contextcheck // root context for a background goroutine that must outlive any HTTP request — intentionally not derived from a parent
 	}
 
-	// Prune stale entries before deciding (C2a).
-	pruneFromLister(ctx, tracker, cfg.Lister)
+	// Prune stale entries before deciding (C2a). Nil-source (no
+	// tracker wired) is the immediate-restart path. The concrete-type
+	// assertions below are DELIBERATE (orchestrator ruling, #1576
+	// steer): prune is tracker-specific C2a hygiene, not policy —
+	// folding it into deferBusySource would widen the seam into new
+	// machinery, which the steer forbids. A non-tracker source simply
+	// skips pruning.
+	if source == nil {
+		proc.restart()
+		return true
+	}
+	if tr, ok := source.(*sessionStatusTracker); ok {
+		pruneFromLister(ctx, tr, cfg.Lister)
+	}
 
-	if !trackerHasBusyOrUnknown(tracker) {
+	if !source.anyBusyOrUnknown() {
 		proc.restart()
 		return true
 	}
@@ -291,8 +342,8 @@ func makeSessionAwareRestartDecision(
 	// tick will observe idle and restart within pollInterval — no
 	// permanent stall.
 	var busy []string
-	if tracker != nil {
-		busy = tracker.listBusy()
+	if source != nil {
+		busy = source.listBusy()
 	}
 	if len(busy) > 0 {
 		log.Info("session-aware restart: deferring restart until idle (maintenance window), sessions are busy",
@@ -308,6 +359,8 @@ func makeSessionAwareRestartDecision(
 			zap.Duration("pollInterval", cfg.PollInterval))
 	}
 
+	deferredAt := time.Now()
+	restartDeferralsFired.Inc()
 	runDeferred := func() {
 		defer deferredRestarts.Add(-1)
 		defer cfg.PendingApply.clear()
@@ -317,15 +370,21 @@ func makeSessionAwareRestartDecision(
 			select {
 			case <-ctx.Done():
 				log.Info("session-aware restart: deferred restart canceled by shutdown")
+				restartDeferStallSeconds.Observe(time.Since(deferredAt).Seconds())
 				return
 			case <-ticker.C:
-				pruneFromLister(ctx, tracker, cfg.Lister)
-				if !trackerHasBusyOrUnknown(tracker) {
+				// Same deliberate assertion as the pre-decision prune
+				// (tracker hygiene, not policy — see above).
+				if tr, ok := source.(*sessionStatusTracker); ok {
+					pruneFromLister(ctx, tr, cfg.Lister)
+				}
+				if !source.anyBusyOrUnknown() {
 					log.Info("session-aware restart: all sessions now idle, applying deferred restart")
+					restartDeferStallSeconds.Observe(time.Since(deferredAt).Seconds())
 					proc.restart()
 					return
 				}
-				progressing, stalled := tracker.busyPartitions(cfg.StallBound)
+				progressing, stalled := source.busyPartitions(cfg.StallBound)
 				cfg.PendingApply.refreshBusy(len(progressing) + len(stalled))
 				if len(progressing) > 0 {
 					// Progress-keyed defer (#1342): a session streaming
@@ -337,6 +396,11 @@ func makeSessionAwareRestartDecision(
 					continue
 				}
 				forceInterruptRestart(ctx, proc, stalled, cfg)
+				// The force leg of the stall datum (the metric's own
+				// contract: applying/forcing/canceling) — a
+				// deferred-then-forced restart is the longest-stall
+				// case; observe it before the process tears down.
+				restartDeferStallSeconds.Observe(time.Since(deferredAt).Seconds())
 				return
 			}
 		}

@@ -10,6 +10,7 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // reconcile.go — epic-71 / 1b (#1311): ledger store-evidence convergence.
@@ -64,6 +65,9 @@ type ReconcileStats struct {
 	Promoted  int
 	TurnEnded int
 	Failed    int
+	// DeclaredTimeouts counts tool parts terminated by #1576 layer 2 —
+	// past their own declared deadline (store-independent, runs first).
+	DeclaredTimeouts int
 	// BusyCleared counts sessions whose BUSY view was re-derived idle
 	// (evidence idle + no unresolved rows remain).
 	BusyCleared int
@@ -92,11 +96,85 @@ func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 	return a.reconcileLocked(ctx)
 }
 
+// enforceDeclaredTimeoutsLocked is #1576 layer 2: tool parts still
+// RUNNING past their own DECLARED deadline (input "timeout" ms,
+// registered at upsert) fold terminal — ERROR with
+// DeclaredTimeoutReason and a completed stamp — so the turn fails
+// visibly; the busy derivation drops the dead leg via
+// activePartCount (terminal TOOL parts stop counting, projection.go).
+// Zero heuristics: parts without a declared timeout are untouched
+// (layer 3's process liveness owns that class). Returns how many
+// parts terminated.
+// a.mu must be held.
+func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
+	var terminated int64
+	for _, rec := range a.sessions {
+		if rec == nil || len(rec.toolDeadlines) == 0 {
+			continue
+		}
+		for _, p := range rec.inFly {
+			id := p.GetId()
+			dl, ok := rec.toolDeadlines[id]
+			if !ok || !now.After(dl) {
+				continue
+			}
+			tool, isTool := p.GetPayload().(*abiv1.Part_Tool)
+			if !isTool {
+				delete(rec.toolDeadlines, id)
+				continue
+			}
+			if tool.Tool.GetState().GetStatus() != abiv1.ToolStatus_TOOL_STATUS_RUNNING {
+				delete(rec.toolDeadlines, id)
+				continue
+			}
+			// Per-part stamp (r1): a single shared *timestamppb.Timestamp
+			// aliased across parts is read-only-safe today but fragile —
+			// any future mutation of one part's stamp would corrupt all.
+			tool.Tool.State = &abiv1.ToolState{
+				Status:      abiv1.ToolStatus_TOOL_STATUS_ERROR,
+				Error:       DeclaredTimeoutReason,
+				StartedAt:   tool.Tool.GetState().GetStartedAt(),
+				CompletedAt: timestamppb.New(now),
+			}
+			delete(rec.toolDeadlines, id)
+			terminated++
+			// The busy effect (r1's core finding): rec.busy is the
+			// SSE STREAMING flag — in the wedge scenario the harness
+			// is dead and NEVER sends the IDLE that would clear it,
+			// so dead parts alone kept busy latched true forever.
+			// When the fold terminates the session's LAST active
+			// part, the turn is dead by the model's own contract:
+			// clear the streaming flag and mark the session ERROR
+			// ("the turn fails visibly" — and the #1578 terminal veto
+			// arms: the residual terminal parts can never flip the
+			// view back to BUSY).
+			if activePartCount(rec.inFly) == 0 {
+				rec.busy = false
+				rec.status = abiv1.SessionStatus_SESSION_STATUS_ERROR
+				rec.foldedDead = true
+			}
+		}
+	}
+	return terminated
+}
+
 // reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
 // it with seeds it already read).
 func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
+	// #1576 layer 2 runs FIRST and store-independent (r1 moved it
+	// above the store gate — its three "store-independent" comments
+	// were false below it): past-deadline declared timeouts are
+	// objective dead signals — no evidence read should sit between
+	// the model's own contract and the fold.
+	a.mu.Lock()
+	declaredTimeouts := a.enforceDeclaredTimeoutsLocked(time.Now())
+	a.mu.Unlock()
+	if declaredTimeouts > 0 {
+		zap.L().Info("sessionstate: declared-timeout fold terminated RUNNING parts",
+			zap.Int64("terminated", declaredTimeouts))
+	}
 	if a.cfg.Store == nil {
-		return ReconcileStats{}
+		return ReconcileStats{DeclaredTimeouts: int(declaredTimeouts)} //nolint:gosec // G115: bounded by in-flight part count
 	}
 	var rows map[string]struct{}
 	if a.ledger != nil {
@@ -133,6 +211,11 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 	if a.ledger != nil {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
+	// AFTER the sweep (r1): the sweep's return REPLACES stats —
+	// assigning DeclaredTimeouts earlier let the field be wiped
+	// (the r1 test caught the fold counting 0 through the public
+	// pass while the deadline was consumed).
+	stats.DeclaredTimeouts = int(declaredTimeouts) //nolint:gosec // G115: bounded by in-flight part count
 	a.rederiveStatuses(seeds)
 	if ctx.Err() != nil {
 		// The sweep already returned partial stats; running the lease
@@ -295,6 +378,12 @@ func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStat
 	rec.busy = false
 	rec.status = evStatus
 	rec.inFly = nil
+	// Empty map, NOT nil (r2's crash finding): a nil here panics the
+	// next declared-timeout upsert on the surviving record
+	// (assignment to entry in nil map) — the evidence-clear path is
+	// everyday (the lost-idle-event class), and the panic kills the
+	// sidecar (Ingest's recover wall covers the parser only).
+	rec.toolDeadlines = map[string]time.Time{}
 	return 1
 }
 

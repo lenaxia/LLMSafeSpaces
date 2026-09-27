@@ -83,10 +83,20 @@ func (s *supervisorStatusStore) spawnEnvHealth() *agentd.SpawnEnvHealth {
 // degrade (e.g. first spawn with a dead sidecar) surfaces without
 // waiting a full interval.
 func startSupervisorStatusPoller(ctx context.Context, wg *sync.WaitGroup, cc *controlClient, store *supervisorStatusStore) {
+	startSupervisorStatusPollerWithInterval(ctx, wg, cc, store, nil, supervisorStatusPollInterval)
+}
+
+// startSupervisorStatusPollerWithInterval is the injectable form:
+// onGeneration, when non-nil, fires with the new child PID at every
+// generation boundary the poll observes (#1576 layer 1's signal — the
+// boot observation and every respawn; a nil callback is the
+// pre-#1576 no-op, kept for constructions without a tracker).
+func startSupervisorStatusPollerWithInterval(ctx context.Context, wg *sync.WaitGroup, cc *controlClient, store *supervisorStatusStore, onGeneration func(genPID int), interval time.Duration) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(supervisorStatusPollInterval)
+		gen := newGenerationSignal()
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		poll := func() {
 			st, err := cc.Status(ctx)
@@ -95,6 +105,9 @@ func startSupervisorStatusPoller(ctx context.Context, wg *sync.WaitGroup, cc *co
 				return
 			}
 			store.set(st)
+			if onGeneration != nil && st.ChildPID != 0 && gen.observe(st.ChildPID, st.Restarts) {
+				onGeneration(st.ChildPID)
+			}
 		}
 		poll()
 		for {

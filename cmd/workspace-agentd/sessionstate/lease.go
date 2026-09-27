@@ -198,7 +198,14 @@ func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest, s
 func (a *Authority) rederiveStatusLocked(sid string, rec *sessionRecord, truth abiv1.SessionStatus) {
 	switch truth {
 	case abiv1.SessionStatus_SESSION_STATUS_BUSY:
-		if !rec.busy {
+		// The #1576 layer-2 fold-dead hold: a session the
+		// declared-timeout fold terminated must not re-latch busy
+		// from the store's stale BUSY (the dead harness's table
+		// never writes IDLE). The hold lifts only at the
+		// HARNESS-event boundary (liftFoldDeadLocked, authority.go —
+		// Ingest and its test shim), never here: re-derivation is
+		// store truth, not harness speech.
+		if !rec.busy && !rec.foldedDead {
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
 		}
 	case abiv1.SessionStatus_SESSION_STATUS_IDLE, abiv1.SessionStatus_SESSION_STATUS_ERROR:

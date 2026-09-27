@@ -338,8 +338,36 @@ func (a *Authority) Ingest(raw []byte) {
 		a.mu.Unlock()
 		return
 	}
+	// The #1576 layer-2 fold-dead hold lifts HERE — the harness-event
+	// boundary — and only here: applyLocked is also fed by store-derived
+	// lease-diff events and platform-local actions (a user answering a
+	// pending ask on a fold-dead session must NOT re-arm the stale
+	// store's BUSY re-derivation). The harness speaking again is the
+	// definitive alive signal; everything else goes around the hold.
+	a.liftFoldDeadLocked(evt)
 	a.applyLocked(evt)
 	a.mu.Unlock()
+}
+
+// liftFoldDeadLocked clears the #1576 layer-2 fold-dead hold for the
+// event's session — called ONLY at harness-provenance boundaries
+// (Ingest and its test shim): the harness speaking again is the
+// definitive alive signal that re-legitimizes the store's status
+// truth. a.mu must be held.
+func (a *Authority) liftFoldDeadLocked(evt *abiv1.Event) {
+	if evt == nil {
+		return
+	}
+	sid := evt.SessionId
+	if sid == "" && evt.GetSession() != nil {
+		sid = evt.GetSession().GetId()
+	}
+	if sid == "" {
+		return
+	}
+	if rec := a.sessions[sid]; rec != nil {
+		rec.foldedDead = false
+	}
 }
 
 // parseContained runs the injected parser behind a recover wall.
@@ -476,9 +504,26 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	}
 	a.seq = next
 	a.lastSeqAt = time.Now()
+	// F1 (#1584 r3): snapshot the fold-dead sessions BEFORE the map
+	// rebuild — Reseed(StallWake) runs while the harness is still dead
+	// in the SAME generation, and a fresh record (foldedDead=false)
+	// let the stale store's BUSY row re-latch on the next rederive,
+	// re-forming the exact wedge this PR kills. The hold's lift lives
+	// at the harness-event boundary (liftFoldDeadLocked); a reseed is
+	// store truth, not harness speech.
+	foldDeadBefore := map[string]bool{}
+	for id, old := range a.sessions {
+		if old != nil && old.foldedDead {
+			foldDeadBefore[id] = true
+		}
+	}
 	a.sessions = make(map[string]*sessionRecord, len(seeds))
 	for id, seed := range seeds {
-		a.sessions[id] = seedLocked(seed)
+		rec := seedLocked(seed)
+		if foldDeadBefore[id] && seed.Status == abiv1.SessionStatus_SESSION_STATUS_BUSY {
+			rec.foldedDead = true
+		}
+		a.sessions[id] = rec
 	}
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Reseeded{Reseeded: &abiv1.ReseedNotice{Seq: next, Reason: reason.proto()}}}
 	a.fanoutLocked(frame)
@@ -829,6 +874,9 @@ func (a *Authority) IngestForTest(evt *abiv1.Event) {
 		a.mu.Unlock()
 		return
 	}
+	// Same harness provenance as Ingest (this shim IS the harness
+	// contract entry for tests) — the fold-dead hold lifts here too.
+	a.liftFoldDeadLocked(evt)
 	a.applyLocked(evt)
 	a.mu.Unlock()
 }

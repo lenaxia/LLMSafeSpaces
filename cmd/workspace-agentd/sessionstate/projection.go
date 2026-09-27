@@ -4,6 +4,7 @@
 package sessionstate
 
 import (
+	"encoding/json"
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -52,10 +53,26 @@ type sessionRecord struct {
 	pendingSince map[string]uint64
 	resolvedSeq  map[string]uint64
 	lastBusySeq  uint64
+	// toolDeadlines carries each tool part's DECLARED deadline (#1576
+	// layer 2): partID → startedAt + input timeout ms. Only parts with
+	// a declared timeout appear here; entries clear at terminal folds.
+	toolDeadlines map[string]time.Time
+	// foldedDead marks a session the declared-timeout fold terminated
+	// (its LAST active part died past the model's own contract —
+	// #1576 layer 2): the store's stale BUSY must not re-latch the
+	// projection (the dead harness's table never writes IDLE). Cleared
+	// by any REAL harness event for the session (the harness speaking
+	// again is the definitive alive signal; a new turn re-marks busy
+	// through status events).
+	foldedDead bool
 }
 
 func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
-	return &sessionRecord{status: status, pending: map[string]*abiv1.InputRequest{}}
+	return &sessionRecord{
+		status:        status,
+		pending:       map[string]*abiv1.InputRequest{},
+		toolDeadlines: map[string]time.Time{},
+	}
 }
 
 // markBusy stamps the busy flag with the marking event's seq (the
@@ -109,6 +126,11 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		rec = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_UNKNOWN)
 		a.sessions[sid] = rec
 	}
+	// NOTE: the #1576 fold-dead hold is NOT cleared here (r2's
+	// provenance fix) — applyContractLocked sees store-derived
+	// lease-diff events and platform-local action events too; the hold
+	// lifts only at the HARNESS-event boundary (Ingest), where
+	// provenance is structural.
 
 	switch evt.Type {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
@@ -123,6 +145,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 			// forever — r5 finding 1).
 			rec.busy = false
 			rec.inFly = nil
+			rec.toolDeadlines = map[string]time.Time{} // B2: no dangling deadlines on the surviving record (same class as the N1 crash)
 		}
 	case abiv1.EventType_EVENT_TYPE_SESSION_UPDATED:
 		if s := evt.GetSession(); s != nil {
@@ -207,6 +230,12 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 	}
 }
 
+// DeclaredTimeoutReason is the synthetic terminal-state error folded
+// onto tool parts terminated by #1576 layer 2 — past their own
+// DECLARED timeout (the input's "timeout" milliseconds; the model
+// specified the bound, not a heuristic).
+const DeclaredTimeoutReason = "declared timeout exceeded"
+
 // upsertPartLocked stores a PRIVATE clone: the event object is also
 // referenced by the fanout frame (serialized outside the lock by the
 // Events handler) — retaining the shared pointer would race later
@@ -223,11 +252,47 @@ func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 		a.customValveEvents++
 	}
 	clone := proto.Clone(p).(*abiv1.Part)
+	// #1576 layer 2: register/clear the part's declared deadline. The
+	// timeout lives in the tool INPUT JSON (the harness contract, e.g.
+	// bash's milliseconds); StartedAt anchors it. No declared timeout →
+	// no entry (zero heuristics); terminal states clear.
+	a.registerToolDeadlineLocked(rec, clone)
 	if i := rec.partIndex(p.GetId()); i >= 0 {
 		rec.inFly[i] = clone
 		return
 	}
 	rec.inFly = append(rec.inFly, clone)
+}
+
+// declaredTimeoutInput is the tool-input shape layer 2 reads: only the
+// timeout field matters (milliseconds), everything else ignored.
+type declaredTimeoutInput struct {
+	Timeout *int64 `json:"timeout"`
+}
+
+// registerToolDeadlineLocked records (or clears) a tool part's declared
+// deadline on the session record.
+func (a *Authority) registerToolDeadlineLocked(rec *sessionRecord, p *abiv1.Part) {
+	tool, ok := p.GetPayload().(*abiv1.Part_Tool)
+	if !ok {
+		return
+	}
+	id := p.GetId()
+	terminal := tool.Tool.GetState().GetStatus() == abiv1.ToolStatus_TOOL_STATUS_COMPLETED ||
+		tool.Tool.GetState().GetStatus() == abiv1.ToolStatus_TOOL_STATUS_ERROR
+	if terminal {
+		delete(rec.toolDeadlines, id)
+		return
+	}
+	var in declaredTimeoutInput
+	if err := json.Unmarshal(tool.Tool.GetInput(), &in); err != nil || in.Timeout == nil || *in.Timeout <= 0 {
+		return
+	}
+	anchor := time.Now()
+	if s := tool.Tool.GetState().GetStartedAt(); s != nil {
+		anchor = s.AsTime()
+	}
+	rec.toolDeadlines[id] = anchor.Add(time.Duration(*in.Timeout) * time.Millisecond)
 }
 
 // seedLocked rebuilds one session's record from store truth.
@@ -267,7 +332,14 @@ func (a *Authority) enrichBusyLocked(id string, v *SessionView) {
 	if a.ledger != nil {
 		queue = int32(a.ledger.queueDepth(id)) //nolint:gosec // G115: bounded by delivery rate limits
 	}
-	comp := deriveBusyComponents(v.Busy, int32(len(v.InFlightParts)), queue, //nolint:gosec // G115: part count bounded by admission
+	// #1576 layer 2's busy effect (r1): the busy derivation counts
+	// only ACTIVE parts — a Tool part in a terminal state (the
+	// declared-timeout fold's ERROR, or a COMPLETED part pending
+	// cleanup) is a dead leg that must not hold the session busy; it
+	// stays in InFlightParts (renderable — the fold's whole point is
+	// visible failure) but drops out of the busy count. Components
+	// still report the residual parts as data (InFlightParts below).
+	comp := deriveBusyComponents(v.Busy, activePartCount(v.InFlightParts), queue, //nolint:gosec // G115: part count bounded by admission
 		pendingUserInputsOf(v.PendingInputs))
 	// The terminal veto (#1578 r3): an errored session does nothing
 	// autonomously — EVENT_TYPE_ERROR deliberately leaves its parts in
@@ -298,6 +370,26 @@ func pendingUserInputsOf(pending []*abiv1.InputRequest) int32 {
 		case abiv1.InputKind_INPUT_KIND_QUESTION, abiv1.InputKind_INPUT_KIND_PERMISSION:
 			n++
 		}
+	}
+	return n
+}
+
+// activePartCount counts the parts that may still hold the session
+// busy: every non-Tool part, plus Tool parts whose state is not
+// terminal. Terminal TOOL parts (the declared-timeout fold's ERROR,
+// COMPLETED parts awaiting cleanup) render in InFlightParts but are
+// dead legs (#1576 layer 2's stated busy effect — r1's finding was
+// that the fold alone left busy latched true forever).
+func activePartCount(parts []*abiv1.Part) int32 {
+	var n int32
+	for _, p := range parts {
+		if tool, isTool := p.GetPayload().(*abiv1.Part_Tool); isTool {
+			switch tool.Tool.GetState().GetStatus() {
+			case abiv1.ToolStatus_TOOL_STATUS_COMPLETED, abiv1.ToolStatus_TOOL_STATUS_ERROR:
+				continue
+			}
+		}
+		n++
 	}
 	return n
 }
