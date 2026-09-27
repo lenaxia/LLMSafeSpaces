@@ -113,6 +113,11 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The r20 push shipped its own insertion artifacts DESPITE the new sweep catching them pre-push: the command chain used ";" so the non-zero exit printed and the push proceeded — the detector worked, the discipline did not. Fixed here (artifacts collapsed); the push discipline is now &&-chained so a red sweep blocks the push mechanically. This round's own insertion verified green before this push.
 
+### r22 review round
+
+- The r20 commit message's "fixture-verified both directions, green on the worklog" is marked FALSE here per the confession precedent (r12/r15/r18): the worklog was NOT green at r20 — the sweep caught :108 DBL + :112 abutment and the ;-chained push shipped them (r21's mechanism confession, now with the false claim named).
+- The sweep script's EOF rule completed to its header's claim: a MISSING final newline now fails too (fixture-verified exit 1); the header scopes the one out-of-scope case (a single whitespace-only tail line).
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -124,4 +129,5 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r22: the durable spacing sweep; both-sides abutment, EOF contract, exit contract)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
