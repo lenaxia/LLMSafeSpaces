@@ -45,6 +45,14 @@ func TestSupervisorGenerationSignal_PIDChangeFires(t *testing.T) {
 // clear lands in workspace_tracker_busy_resets_total (the
 // orphaned-flag-rate datum for the owner's deferral decision).
 func TestD2Reset_TheUnifiedTrackerHook(t *testing.T) {
+	// Env-independence (r1): RecordTrackerBusyReset normalizes an
+	// EMPTY WORKSPACE_ID to "unknown" (ops_metrics.go) — the helper
+	// below reads via workspaceIDFromEnv() with the SAME
+	// normalization, so pin the env here instead: unset, the counter
+	// child is the "unknown"-labeled one and the ""-labeled read
+	// diverged (the r1 clean-checkout red — masked on dev pods where
+	// WORKSPACE_ID is always set).
+	t.Setenv("WORKSPACE_ID", "gen-signal-test")
 	withTestLogger(t)
 	tr := newSessionStatusTracker()
 	tr.set("ses-a", "busy")
