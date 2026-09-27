@@ -38,6 +38,7 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 ### r3 review round
 
 - r3 closed all five r2 findings (verified against source by the reviewer): the §3 mint/replace wording, the §8 rotation-path pin (delete+recreate asserted via UID change + the no-update-verb RBAC assertion), the identifier-disjointness negative, the sha8-collision triad (§5.0/§6/§8), and §4's gate-order list / in-handler kill-switch correction.
+
 ### r4 review round
 
 - The two citation residuals: the "complete list" label gained the empty-workspaceID 400 (:112-116) and the port-parse span widened to :131-147 — a list labeled complete must actually be.
@@ -63,6 +64,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - §5.3's "naming it" ambiguity resolved (naming the ENTRY, never the Secret) — the last uniform-body fossil.
 
+
+### r10 review round
+
+- The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE (the uniform-body and HEADER-Secret scoping pointers — the scoping attribution corrected to r6, where the class fix completed; the anti-existence-oracle phrase's first appearance to r8); r8's false worklog-scoping claim removed (the scoping landed HERE, in r10 — r9 asserted it while editing no line of the r0 narrative); r8/r9/r10 in chronological position inside the rounds block; the r4 spacing nit fixed FOR REAL this round (r10's first commit claimed it without a hunk — the second consecutive false-completion claim, both caught by review).
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -75,7 +80,3 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
-
-### r10 review round
-
-- The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE (the uniform-body and HEADER-Secret scoping pointers); r8's false worklog-scoping claim removed (the scoping happens HERE, in r10 — r9's edit targeted the wrong string and silently no-opped); r8/r9 restored to chronological position inside the rounds block; the r4 spacing nit fixed.
