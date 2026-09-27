@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.10] - 2026-09-27
+
+### Fixed — the busy-truth cluster, part 2: wedged-turn recovery (#1584, #1586)
+
+- **The sidecar now learns the supervisor respawned opencode** (#1576
+  layer 1, #1573 ask 3): the status poller derives generation boundaries
+  from the supervisor's ChildPID + Restarts epoch (the composite key is
+  namespace-immune — a container restart can reproduce a deterministic
+  early PID) and fires the D2 reset and the authority's generation
+  reseed at that edge. Previously split mode never noticed a respawn on
+  either boot-restore or respawn; the production wiring is source-pinned.
+- **Declared tool timeouts are enforced** (#1576 layer 2): a tool
+  input's declared timeout registers a per-part deadline; the reconcile
+  pass folds RUNNING parts past their own deadline terminal (ERROR +
+  declared-timeout reason, first and above the store gate). Zero
+  heuristics — no declaration, no action.
+- **The wedged-busy view dies with the fold** (#1576 layer 2's busy
+  effect): a folded terminal part no longer holds the session busy
+  (active count is non-terminal TOOL parts only — the part stays
+  renderable), the fold clears the streaming busy-latch and marks the
+  session ERROR (arming #1578's terminal veto), and a fold-dead hold
+  refuses stale store-BUSY re-derivation until a real harness event —
+  including across stall-wake reseeds (the r3 fix: the hold is
+  snapshotted and re-armed on BUSY seeds; B1-pinned end to end).
+- **Restart deferral is on probation with numbers** (the owner's seam):
+  the busy reads sit behind a swappable deferBusySource and the decision
+  surfaces deferrals-fired, a defer-stall histogram on all three legs,
+  and the orphaned-flag clear rate — the keep/replace/remove call is now
+  a data question.
+- **The runtime-env-reader ClusterRole** (#1586, bf54c386, #1551): fixes
+  namespace-posture resolver starvation; the posture gate asserts the
+  reconcile path.
+- Docs-only #1585 (design 0062, dev-preview header configuration) is
+  held out of this train pending owner sign-off.
+
 ## [0.34.9] - 2026-09-26
 
 ### Fixed — the busy-truth cluster, part 1 (PR #1578)
