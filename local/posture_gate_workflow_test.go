@@ -322,9 +322,25 @@ var assertionSpecs = []struct {
 		`| grep -oE 'commit[=": ]+[0-9a-f]{40}' | head -1 | grep -oE '[0-9a-f]{40}' || true)`,
 	}, 3,
 		"provenance: the running commit stamp COMPARED against this run's build sha (r1 mutation: gutting the comparison while the echo retained the literal passed the old pin); the fetch is failure-checked"},
+	{"Assert 5", []string{
+		// #1551: the reconcile-path assertion — the boot-only checks
+		// cannot catch lazy-informer RBAC starvation (the informer
+		// starts on the FIRST workspace, not at boot; the cold-install
+		// green said nothing about the first reconcile).
+		"runtime: base",
+		`timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'`,
+	}, []string{
+		"apiVersion: llmsafespaces.dev/v1",
+		"kind: Workspace",
+		"name: posture-gate-reconcile-probe",
+		"storage:",
+		"size: 1Gi",
+		`if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
+	}, 1,
+		"the reconcile path: a minimal Workspace naming the chart's own base RuntimeEnvironment must produce its pod OBJECT within 180s — pod creation is downstream of runtime resolution, so a pod existing proves the cached read is granted (the wedge signature is NO POD EVER; Pending/ImagePullBackOff are passes)"},
 }
 
-// Pin (b): the four assertions are present, in §5's order, each in its
+// Pin (b): the four §5 assertions plus the #1551 reconcile-path assertion are present, in order, each in its
 // own named step — and no OTHER step may claim an "Assert N" name
 // (an extra assertion step would silently reorder or dilute the
 // contract).
@@ -500,7 +516,7 @@ func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
 	require.Equal(t, 4, waits, "Assert 1 must carry exactly four kubectl wait lines (the 300s pair + the 60s settle-window re-assertion)")
 	for _, s := range steps {
 		if strings.HasPrefix(s.Name, "Assert ") {
-			require.Contains(t, []string{"Assert 1", "Assert 2", "Assert 3", "Assert 4"},
+			require.Contains(t, []string{"Assert 1", "Assert 2", "Assert 3", "Assert 4", "Assert 5"},
 				prefixWords(s.Name), "no extra Assert-named steps (found %q)", s.Name)
 		}
 	}
@@ -600,6 +616,30 @@ var goldenInventories = map[string][]string{
 		"exit 1",
 		"fi",
 		`echo "OK: running binary carries this run's commit stamp"`,
+	},
+	"Assert 5": {
+		"set -euo pipefail",
+		"cat <<'EOF' | kubectl apply -f -",
+		"apiVersion: llmsafespaces.dev/v1",
+		"kind: Workspace",
+		"metadata:",
+		"name: posture-gate-reconcile-probe",
+		"namespace: llmsafespaces",
+		"spec:",
+		"owner:",
+		"userID: posture-gate",
+		"runtime: base",
+		"storage:",
+		"size: 1Gi",
+		"EOF",
+		`if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
+		`echo "OK: workspace reconcile proceeded past runtime resolution (the pod object exists)"`,
+		"else",
+		`echo "FAIL: no workspace pod within 180s — the reconcile wedged (the #1551 class: runtime resolution starved?)"`,
+		"kubectl -n $NS get workspace posture-gate-reconcile-probe -o yaml || true",
+		"kubectl -n $NS get pods -o wide || true",
+		"exit 1",
+		"fi",
 	},
 }
 

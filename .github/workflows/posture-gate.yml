@@ -424,6 +424,41 @@ jobs:
             done
           done
 
+      - name: Assert 5 — the reconcile path (workspace create → pod built)
+        # #1551: the boot-only assertions above cannot catch reconcile-
+        # path RBAC starvation — the runtime-environments informer is
+        # lazy, so a cold boot says nothing about the FIRST workspace.
+        # This step creates a minimal Workspace naming the chart's own
+        # base RuntimeEnvironment and asserts the pod OBJECT appears:
+        # pod creation is downstream of runtime resolution (the cached
+        # Get/List in runtime_resolver.go), so a pod existing proves
+        # the read is granted. The pod need not go Ready — Pending or
+        # ImagePullBackOff are PASSES here; the wedge signature is NO
+        # POD EVER (the resolver blocked forever).
+        run: |
+          set -euo pipefail
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: llmsafespaces.dev/v1
+          kind: Workspace
+          metadata:
+            name: posture-gate-reconcile-probe
+            namespace: llmsafespaces
+          spec:
+            owner:
+              userID: posture-gate
+            runtime: base
+            storage:
+              size: 1Gi
+          EOF
+          if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then
+            echo "OK: workspace reconcile proceeded past runtime resolution (the pod object exists)"
+          else
+            echo "FAIL: no workspace pod within 180s — the reconcile wedged (the #1551 class: runtime resolution starved?)"
+            kubectl -n $NS get workspace posture-gate-reconcile-probe -o yaml || true
+            kubectl -n $NS get pods -o wide || true
+            exit 1
+          fi
+
       - name: Dump cluster state on failure
         if: failure()
         run: |

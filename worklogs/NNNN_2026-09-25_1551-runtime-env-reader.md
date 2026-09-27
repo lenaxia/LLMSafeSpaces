@@ -1,0 +1,57 @@
+# Worklog: #1551 — the runtime resolver's namespace-posture starvation (the §8.1 pattern, second application)
+
+**Date:** 2026-09-25
+**Session:** Prod-bomb lane: the workspace runtime resolver wedges under the mandated namespace posture on the first named-runtime reconcile. Fix + the posture gate's reconcile-path assertion (the boot-only hole). Worker w4.
+**Status:** Complete; PR up.
+
+---
+
+## Objective
+
+Under `rbac.scope=namespace` (prod's posture since v0.34.8), the FIRST workspace create/update with a named runtime wedges the reconcile worker silently. Fix the RBAC starvation with the design-0061 §8.1 precedent, and close the gate hole that let it through (boot-only assertions cannot see lazy-informer starvation).
+
+## Work Completed
+
+- **The mechanism, confirmed in the tree** (the orchestrator's triage, verified): `resolveRuntimeImage` reads RuntimeEnvironment through the manager's CACHED client (Get at runtime_resolver.go:40/:52, List at :66; pod_builder.go:24 calls it on every pod build). RuntimeEnvironment is CLUSTER-scoped (crds/runtimeenvironment.yaml:13) — a namespaced Role CANNOT grant it (F1.3.4's removal was correct), and the `runtimeenvironments` rule existed ONLY in the cluster-scope block (rbac.yaml:289). The informer is LAZY — no boot-time watch, which is exactly why the posture gate's cold-boot assertions all passed; the first workspace reconcile starts the informer, its LIST is 403'd forever, the cached Get blocks forever, the pod is never built, and nothing logs. rbac.yaml's own fleet guard (:595) names the class ("#1551 family").
+- **The fix** (`helm/templates/rbac.yaml`): the §8.1 pattern's second application — an ALWAYS-created (namespace posture) `…-controller-runtime-env-reader` ClusterRole + ClusterRoleBinding: `get/list/watch` on `runtimeenvironments` ONLY (read-only, no Secrets, no subresources, no other CRDs; the resolver does Get and List). Cluster installs keep their broader block, which already grants it. The comment cites the wedge, the lazy-informer detail, and the precedent.
+- **The gate gap closed** (`.github/workflows/posture-gate.yml`, Assert 5): a minimal Workspace (`runtime: base` — the chart's own RuntimeEnvironment; `owner.userID` + `storage.size` per the CRD's requireds; `1Gi`) created in the release namespace, asserting the pod OBJECT appears within 180s. Pod creation is downstream of runtime resolution, so a pod existing PROVES the cached read is granted; the pod need not go Ready (Pending/ImagePullBackOff are passes — the gate does not drag in workspace runtime machinery). The wedge signature is NO POD EVER. The until-loop is `timeout`-bounded (ban-aware: no `exit 0`, no `break` in the block — the M3 pin suite's countermand bans apply).
+- **The pins extended** (`local/posture_gate_workflow_test.go`): assertionSpecs + golden inventory for Assert 5 (the exact five-line Workspace manifest, the exact `timeout 180 bash -c 'until …'` line, the `runtime: base` literal whose image-bypass swap is the vacuity escape), the Assert-name set extended to five.
+
+## Red-first record
+
+- `TestRuntimeEnvReaderClusterRoleNamespaceScope` — RED against the unfixed chart (the ClusterRole absent; the NotNil failed at the pin's line 66), GREEN with the reader. The rules pinned exactly: one apiGroup (`llmsafespaces.dev` — the wrong-apiGroup class the §8.1 precedent's r1 caught), `runtimeenvironments` ONLY, `get/list/watch` ONLY, the controller SA in the release namespace.
+- `TestRuntimeEnvReaderAbsentClusterScope` — GREEN both sides (the reader must NOT duplicate the cluster block's grant); the render needed `relayOnlyKeyDelivery.enabled=false` (the §4.3 guard refuses relay-on + cluster scope — the runbook remedy).
+- Assert 5's pins mutation-checked: delete-the-step ✓, `runtime:` → explicit image (the resolver BYPASS — Assert 5 would pass vacuously) ✓ caught by the `runtime: base` literal, `timeout 0` ✓, wrong label selector ✓. My first M2 mutation check used the wrong indentation and silently missed (0 failures = no mutation); the redo applied-and-verified — and the redo caught that my stray sed had mutated the backup file (md5 mismatch → restored + verified). Every mutation check now verifies BOTH the apply and the pristine restore.
+
+## Key Decisions
+
+1. **ClusterRole + ClusterRoleBinding (not a cache workaround)**: the resolver's cached read is correct (informer-backed, no per-reconcile API hits); the GRANT was the missing piece. Scoping the cache or switching the resolver to a direct client would trade a hot path for this wedge — the §8.1 ruling (grant the minimal read, never touch the design) stands.
+2. **Read-only, three verbs, one resource**: the resolver does Get and List; watch is the informer's own requirement. No writes anywhere — the posture's write surface is unchanged.
+3. **The gate asserts the pod OBJECT, not pod Ready**: creation is the provable downstream signal of resolution; Ready would couple the gate to the full workspace runtime machinery (delivery, dind, networks) — control-plane-cheap by design.
+4. **Assert 5 lives in the gate, not a new workflow**: the gate IS the posture surface's evidence instrument (the README-LLM contribution rule); a reconcile-path assertion belongs beside the boot assertions that missed this.
+
+## Blockers
+
+None. Note: this PR (helm/**) self-triggers the gate — Assert 5's FIRST live run is this PR's own CI, against the fixed chart (the reader renders under the default posture). The wedge's live demonstration (no reader → no pod) is inherently pre-fix evidence; the render pin + the resolver's call path are the record.
+
+## Tests Run
+
+- `go test ./helm/ -run TestRuntimeEnvReader -count=1` — RED first, GREEN after the fix.
+- `go test ./helm/ -count=1` — full package green (27.1s; the §8.1 precedent's own pins unaffected).
+- `go test ./local/ -run TestPostureGate -count=1` — green with Assert 5 (specs + golden + the five-name set).
+- `go test ./local/ -count=1` — full package green (31.1s).
+- `bash -n` on every gate run block — clean. Mutation checks: all four Assert 5 classes caught.
+
+## Next Steps
+
+1. PR review; iterate to APPROVED; merge is the orchestrator's (prod-bomb priority noted).
+2. The gate's own run on this PR is Assert 5's first live contact — watch it (a red there means the probe itself needs adjusting, e.g. a webhook required I missed).
+3. The fleet guard's tracked "#1551 family" wedge (rbac.yaml:595, the Secret informer) remains fail-loud-guarded by design — no action here.
+
+## Files Modified
+
+- `helm/templates/rbac.yaml` (the reader ClusterRole + binding)
+- `helm/issue_1551_runtime_env_reader_test.go` (new; the red-first render pins)
+- `.github/workflows/posture-gate.yml` (Assert 5)
+- `local/posture_gate_workflow_test.go` (Assert 5's specs + golden)
+- `worklogs/NNNN_2026-09-25_1551-runtime-env-reader.md` (this worklog)
