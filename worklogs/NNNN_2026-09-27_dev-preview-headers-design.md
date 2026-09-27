@@ -109,6 +109,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The committed sweep completed to its full rule set: the below-side abutment detector added (the r19 script enforced only half the "blank-separated on BOTH sides" rule while claiming both — the r16 lesson half-applied in the permanent artifact); the /tmp ghost name dropped from the usage line; a findings-grep exit contract (non-zero on findings, exit 2 on sweep error — a failed sweep is never a pass). Fixture-verified: the below-side violation is caught; the clean worklog passes; error paths exit non-zero.
 
+### r21 review round
+
+- The r20 push shipped its own insertion artifacts DESPITE the new sweep catching them pre-push: the command chain used ";" so the non-zero exit printed and the push proceeded — the detector worked, the discipline did not. Fixed here (artifacts collapsed); the push discipline is now &&-chained so a red sweep blocks the push mechanically. This round's own insertion verified green before this push.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
