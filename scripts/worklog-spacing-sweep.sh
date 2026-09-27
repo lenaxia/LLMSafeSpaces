@@ -2,8 +2,9 @@
 # worklog-spacing sweep (#1583 r19/r20): the pinned rules, unambiguous output.
 # Rules: no double blank lines; every heading blank-separated on BOTH sides;
 # exactly one trailing newline (a trailing blank AND a missing final newline
-# both fail). Whitespace-only lines — single or doubled — are NOT detected
-# (out of scope; no worklog in this repo carries them).
+# both fail). Whitespace-only lines are not matched by the DBL rule (they
+# still count as content for the abutment rules); single or doubled, they
+# are out of this sweep's scope.
 # Usage: scripts/worklog-spacing-sweep.sh <file>
 #   Lines above the terminator are findings; terminator-only = clean.
 #   Non-zero exit on findings OR on any sweep error (a failed sweep is not a pass).
