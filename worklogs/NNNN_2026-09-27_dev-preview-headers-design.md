@@ -105,6 +105,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 - r16's dropped third prescription closed: the r14 commit-message truncation ("…so the fix must not") is immutable git history — recorded here as WONTFIX (the nit did not recur; r15+ messages are complete sentences).
 - The r18 verification story made DURABLE: the sweep script committed to the repo (scripts/worklog-spacing-sweep.sh — both pinned rules, the terminator-line pass state) so the methodology is reconstructable from the tree, not from a vanished /tmp path. Swept green on this edit in the push chain.
 
+
+### r20 review round
+
+- The committed sweep completed to its full rule set: the below-side abutment detector added (the r19 script enforced only half the "blank-separated on BOTH sides" rule while claiming both — the r16 lesson half-applied in the permanent artifact); the /tmp ghost name dropped from the usage line; a findings-grep exit contract (non-zero on findings, exit 2 on sweep error — a failed sweep is never a pass). Fixture-verified: the below-side violation is caught; the clean worklog passes; error paths exit non-zero.
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
