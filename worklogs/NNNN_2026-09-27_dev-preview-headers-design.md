@@ -24,6 +24,17 @@ Settle the approved framing into a reviewable design: exact CRD v1 shape + migra
 
 None — awaiting design review.
 
+### r1 review round (the critical security finding, closed in-design)
+
+The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a **one-PUT arbitrary-Secret-read primitive** — the shared namespace houses `master-secret` (the KEK root), `jwt-secret`, and every tenant's workspace password; the API already holds unscoped Secret reads; so `inject: [{secretKeyRef: {name: "jwt-secret"}}]` would deliver the platform's signing key to the caller's own preview browser. Closed by the **mint model** (§5.0): the PUT carries values write-only, the service mints labeled+owner-referenced Secrets, resolve-time mint-name + workspace-label checks backstop forged specs; user-supplied references no longer exist. Plus the inject/forward denylist split (`X-Forwarded-User` forward-only), the injection position pinned against the P0-2 WS block, and SecretKeySelector's no-namespace-field reconciliation.
+
+### r2 review round (feasibility + identifier pins)
+
+- **Rotation was RBAC-infeasible as written**: the API holds `update`/`patch` only on three named Secrets (the chart documents `resourceNames` cannot express per-workspace prefixes) — pinned to **delete + recreate** (both verbs held broadly), the millisecond Get-gap self-healing.
+- **The minted-name identifier pinned to the CRD UUID** (`ObjectMeta.Name`) — the human display name is non-unique/mutable/unvalidated and would reopen a same-name collision channel.
+- **The 502 mechanics corrected**: `Rewrite` has no error return — resolution happens at HANDLER level (after every gate), the director only applies resolved values; the ordering invariant restated at its true location.
+- Carried r0 staleness fixed (§2's DTO-vs-CRD gate claim, §3's dead namespace bullet, §9's dangling row); §4's gate-order list corrected to the handler's real sequence (400 → 503 → 503 → 429 → resolve → proxy); citation drifts (Rewrite 248-307; bootstrap 612-614).
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).

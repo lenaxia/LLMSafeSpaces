@@ -37,7 +37,7 @@ The design adds two header modes at the **API boundary** (the component that ter
 
 ### 2.1 v1 schema
 
-`spec.networkAccess.devPreview` stays the boolean toggle — it is load-bearing (the API's 503 gate reads it via `ws.DevPreviewEnabled`; #1581 projects it into the pod; `feature_status` reports it). Headers nest as a **sibling list**, not inside the bool:
+`spec.networkAccess.devPreview` stays the boolean toggle — it is load-bearing (the API's 503 gate reads it off the typed CRD, `workspace.Spec.NetworkAccess.DevPreview`, dev_preview.go:194-197; the REST DTO mirrors it as `DevPreviewEnabled` at workspace_service.go:556-558; #1581 projects it into the pod; `feature_status` reports it). Headers nest as a **sibling list**, not inside the bool:
 
 ```go
 // pkg/apis/llmsafespaces/v1/workspace_types.go
@@ -105,7 +105,7 @@ PUT /api/v1/workspaces/:id/dev-preview/headers
 The request's `value` field is **write-only**: the service mints/updates the platform-owned Secret (§5.0) and the response, DTO, spec, and logs carry only `{name, secretKeyRef}` — values are never echoed (the platform's standard credential-handling posture: transient over the authenticated API, at rest only in Secrets).
 
 - **Authz:** identical to the toggle — `AuthMiddleware` + `WorkspaceAccessMiddleware` (ownership) on `idGroup`; the service method re-checks ownership (`SetDevPreview` precedent, api/internal/services/workspace/workspace_service.go:1906; the endpoint at api/internal/server/router.go:1313). No new role surface.
-- **Validation** (§6 for the full rules): names canonicalized + reserved-denylisted; `secretKeyRef` namespace forced to the workspace's own; caps enforced; duplicates rejected.
+- **Validation** (§6 for the full rules): names canonicalized + reserved-denylisted (the inject set for inject, the forward subset for forward); a `secretKeyRef` field in the REQUEST is schema-rejected outright (the mint model — §5.0; the spec's field is service-written only); caps enforced; duplicates rejected.
 - **DTO:** `DevPreviewHeaders` on the Workspace DTO mirrors `DevPreviewEnabled` (workspace_service.go:557 reads the CRD; the DTO is the API's honest mirror). Names and refs are public configuration; **Secret values never appear in any DTO**.
 - SDK/OpenAPI follow the DTO mechanically (the Epic-66 endpoint family precedent).
 
@@ -128,7 +128,7 @@ The write path being owner-scoped API today makes it a **natural first candidate
 
 ## 4. The injection point + the two topology modes
 
-**Where:** `HandleDevPreview`'s director — the `Rewrite` func spanning dev_preview.go:250-306 (through the P0-2 WebSocket re-establishment block at :296-306). Ordering, pinned exactly: G34's allowlist copy → the tunnel's own transport headers (`Authorization` Basic, `X-Forwarded-For`, `X-Forwarded-Host/Proto) → **forward** (the allowlisted extension) → **inject** → the P0-2 WS re-establishment LAST. Injection is after the transport headers (configuration can never be shadowed by caller input; `Sec-WebSocket-*` is on the inject denylist so it cannot clobber a handshake) but BEFORE the WS block, so the WS descriptors remain the last writer for upgraded connections — non-WS requests are unaffected by the block and injection is effectively last-writer for them:
+**Where:** `HandleDevPreview`'s director — the `Rewrite` func spanning dev_preview.go:248-307 (through the P0-2 WebSocket re-establishment block at :296-306). Ordering, pinned exactly: G34's allowlist copy → the tunnel's own transport headers (`Authorization` Basic, `X-Forwarded-For`, `X-Forwarded-Host/Proto) → **forward** (the allowlisted extension) → **inject** → the P0-2 WS re-establishment LAST. Injection is after the transport headers (configuration can never be shadowed by caller input; `Sec-WebSocket-*` is on the inject denylist so it cannot clobber a handshake) but BEFORE the WS block, so the WS descriptors remain the last writer for upgraded connections — non-WS requests are unaffected by the block and injection is effectively last-writer for them:
 
 ```go
 // (existing) r.Out.Header = http.Header{}; copyRequestHeaders(...); Set("Authorization", basic); Set("X-Forwarded-For", ...)
@@ -137,19 +137,22 @@ The write path being owner-scoped API today makes it a **natural first candidate
 // 0062 §4: forward — G34's fixed set plus the workspace's allowlist.
 copyForwardedHeaders(r.In.Header, r.Out.Header, cfg.ForwardNames)  // same shape as copyRequestHeaders with a per-workspace extension
 
-// 0062 §4: inject — server-side resolution, ordered, last-writer.
-for _, entry := range cfg.InjectEntries {
-    v, err := resolveHeaderSecret(ctx, entry)   // §5
-    if err != nil { /* §5's loud path */ }
-    r.Out.Header.Set(entry.Name, v)
+// 0062 §4/F3: injection consumes PRE-RESOLVED values. ReverseProxy's
+// Rewrite has no error return — resolution happens in the HANDLER,
+// after every gate, before proxy.ServeHTTP; its failure is §5.2's
+// JSON 502 emitted there. The director only Sets:
+for _, h := range resolvedInject {   // []{Name, Value} — handler-resolved
+    r.Out.Header.Set(h.Name, h.Value)
 }
 ```
 
-**Both topology modes funnel here.** Path mode (`/dev-preview/:port/*`) is this handler directly. Origin mode's bootstrap hop (`/dev-preview-bootstrap/:port`) is a redirect carrying a one-time signed token in the query string (preview_origin.go:626-630) — **no injection there** (nothing is proxied to the service); the subsequent per-workspace-origin request lands on this same handler. One injection point covers both modes; nothing mode-specific exists in the header design.
+**The mechanics (r2/F3, pinned):** `Rewrite func(*ProxyRequest)` cannot return errors, so §5.2's loud 502 is emitted at HANDLER level — the resolution loop runs after all gates and before `proxy.ServeHTTP`, writes `resolvedInject`, and on any failure writes the 502 and returns without proxying. The director (still inside `Rewrite`) only applies the resolved values. The ordering invariant is unchanged and now testable: **Secret reads happen strictly after every 400/503/429 gate, and no Secret is read for a request that will not be proxied.**
+
+**Both topology modes funnel here.** Path mode (`/dev-preview/:port/*`) is this handler directly. Origin mode's bootstrap hop (`/dev-preview-bootstrap/:port`) is a redirect carrying a one-time signed token in the query string (preview_origin.go:612-614) — **no injection there** (nothing is proxied to the service); the subsequent per-workspace-origin request lands on this same handler. One injection point covers both modes; nothing mode-specific exists in the header design.
 
 **The agentd hop is untouched.** It already forwards non-`Authorization` headers to the service; injected and forwarded headers ride the authenticated tunnel like the existing allowlisted three. The pod sees header VALUES in proxied requests — unavoidable (the service must receive them) and explicitly accepted by the framing: the rule the design enforces is that values never live in **spec, env, or API responses** — the pod's process tree still cannot *read* them, only the previewed service receives them per-request. (The terminal-probe caveat: a malicious previewed service exfiltrates its own injected headers — that service is the developer's own code, in their own workspace, receiving their own configured credentials; the D-class adversary boundary is unchanged.)
 
-**Gate ordering (the 503 interaction):** the existing gates run FIRST and unchanged — kill-switch (503), per-space disabled (503 via the CRD flag; the agentd tool additionally fails loud pre-URL per #1581), port denylist, conn caps. Header config resolution happens only for a request that already passed every gate: a disabled space never touches a Secret; a misconfigured header entry never masks the enable/disable semantics.
+**Gate ordering (the 503 interaction), the REAL sequence** (r2 correction — the handler's actual order at dev_preview.go:140-212): port parse + denylist **400** → phase/PodIP **503** → per-space flag **503** → conn-cap **429** → *(r2/F3: handler-level header resolution — §5.2's 502 on failure)* → proxying. Header resolution happens only for a request that already passed every gate: a disabled space never touches a Secret; a misconfigured header entry never masks the enable/disable semantics; the kill-switch (config-level, `devPreviewConfigFromSettings`) precedes the handler entirely.
 
 ---
 
@@ -162,24 +165,25 @@ The design's first cut allowed **user-supplied `secretKeyRef`** — any Secret i
 **The mint model closes it structurally:**
 
 - **No user-supplied references exist.** The PUT carries the header VALUE (write-only, §3); the service writes it to a Secret IT mints:
-  - name: `dev-preview-hdr-<workspaceName>-<sha8(headerName)>` (deterministic — PUT-again updates in place);
-  - labels: `llmsafespaces.dev/dev-preview-header: "true"`, `llmsafespaces.dev/workspace: <workspaceName>`;
+  - name: `dev-preview-hdr-<UUID>-<sha8(headerName)>` where **UUID is the Workspace's `ObjectMeta.Name` — the 36-char CRD identity, NOT the human display name** (which is non-unique, mutable via rename, unvalidated for length/charset, and would open a same-name collision channel between workspaces). 36 + 17 + 8 fits the 253-char Secret-name budget; the UUID's `[0-9a-f-]` charset is label-safe.
+  - labels: `llmsafespaces.dev/dev-preview-header: "true"`, `llmsafespaces.dev/workspace: <UUID>`;
   - `ownerReferences` → the Workspace object (k8s-native GC on workspace deletion).
-- **Resolve-time enforcement (defense-in-depth):** before reading, the resolver verifies BOTH the naming convention AND the `llmsafespaces.dev/workspace` label equal THIS workspace — a forged spec (raw kubectl apply, DB edit) referencing any platform or foreign Secret fails the check and takes §5.2's loud 502. The primitive is unreachable even with spec write access.
+  - sha8 truncation collisions between two headers of the SAME workspace are detected at PUT time (name clash on distinct header names → 422 suggesting the operator cap catch it first; astronomically unlikely, but the check is one line).
+- **Resolve-time enforcement (defense-in-depth):** before reading, the resolver verifies BOTH the naming convention AND the `llmsafespaces.dev/workspace` label equal THIS workspace's UUID — a forged spec (raw kubectl apply, DB edit) referencing any platform or foreign Secret fails the check and takes §5.2's loud 502, the value never read. The primitive is unreachable even with spec write access.
 - **Platform ownership:** these Secrets are platform-managed end-to-end (created, rotated, deleted by the settings service); §5.3's earlier "owner-managed" wording is superseded — the owner manages the CONFIGURATION; the platform manages the ARTIFACTS.
 
 ### 5.1 Resolution
 
 - **Per-request `Get`** on the workspace namespace (the `relay_handoff.go:59` precedent — the API's clientset reads Secrets there). **No cache in v1**: at `maxConnsPerWorkspace=50` the apiserver load is bounded and rotation becomes **instant** (the next request sees the new value) — the simplest correct semantics win.
-- **RBAC:** the API's existing Secrets read/write in its namespace (app.go:1242 / relay-handoff usage); no new grants — and under the mint model (§5.0) the reach of that grant is irrelevant to header injection, because only service-minted, label-checked Secrets are ever resolved.
+- **RBAC:** the API's existing grants suffice — `secrets: [get, list, watch, delete]` + unscoped `create` (helm/templates/rbac.yaml:364-367). The chart deliberately grants `update`/`patch` ONLY on three named Secrets (`:389-395`) and documents that `resourceNames` cannot express per-workspace prefixes — so **rotation is DELETE + RECREATE** (both verbs held broadly), never in-place update. Under the mint model (§5.0) the reach of the grant is also irrelevant to header injection: only service-minted, label-checked Secrets are ever resolved.
 
 ### 5.2 Failure semantics (loud, per the house convention)
 
-A configured entry whose Secret/key is missing or unreadable is **misconfiguration, not degradation**: the request fails **502** with a reason body naming the entry and the Secret — `{"error":"dev-preview header configuration unavailable","reason":"header X-Service-Key: secret dev-preview-hdr-ws-a1b2c3d4/key not found (mint-model check: not a platform-minted Secret for this workspace)"}` — and a WARN log line. Skipping the entry would produce a confusing broken preview indistinguishable from a service bug (#1580's whole lesson); the toggle-level gates stay 503-first so the two failure classes never alias.
+A configured entry whose Secret/key is missing or unreadable is **misconfiguration, not degradation**: the request fails **502** with a reason body naming the entry and the Secret — `{"error":"dev-preview header configuration unavailable","reason":"header X-Service-Key: secret dev-preview-hdr-3f1c9a2e-<...>/key not found (mint-model check: not a platform-minted Secret for this workspace)"}` — and a WARN log line. Skipping the entry would produce a confusing broken preview indistinguishable from a service bug (#1580's whole lesson); the toggle-level gates stay 503-first so the two failure classes never alias.
 
 ### 5.3 Rotation + deletion (the mint model's semantics)
 
-- **Rotation:** PUT the config again with the new value — the deterministic name means the service updates the same Secret in place; the next request sees it (no cache, §5.1).
+- **Rotation:** PUT the config again with the new value — the service **deletes and recreates** the deterministic-named Secret (§5.1's RBAC pin: the API holds no `update` grant, and the chart documents why none is coming); the next request resolves the new object (no cache). The delete+recreate window is a per-request `Get` gap of milliseconds — a preview request inside it takes §5.2's 502, self-healing on retry.
 - **Deletion:** removing an entry from the PUT DELETES the minted Secret (the platform owns the artifact); workspace deletion garbage-collects all of them via `ownerReferences` (§5.0) — no finalizer work. An entry whose Secret is nonetheless missing (manual deletion) takes §5.2's 502 naming it.
 - **Out-of-band platform Secrets are structurally unreachable** — there is no flow that mints a reference to anything not created by this service, and the resolve-time check backstops forged specs (§5.0).
 
@@ -192,7 +196,7 @@ A configured entry whose Secret/key is missing or unreadable is **misconfigurati
 | header name canonical (`textproto.CanonicalMIMEHeaderKey`), printable, ≤ 128 chars | webhook + PUT | 422 |
 | **inject reserved denylist**: `Authorization, Proxy-Authorization, Cookie, Set-Cookie, Host, Connection, Upgrade, X-Forwarded-For, X-Forwarded-Host, X-Forwarded-Proto, Sec-WebSocket-*` (all variants), + all hop-by-hop | webhook + PUT | 422 |
 | **forward reserved denylist** (a STRICT SUBSET — identity headers are forward's whole point): `Authorization, Cookie, Host, Proxy-Authorization, Connection, Upgrade, X-Forwarded-For, X-Forwarded-Host, X-Forwarded-Proto, Sec-WebSocket-*`, + hop-by-hop. **`X-Forwarded-User` is ALLOWED for forward** (§6.1) and denied for inject | webhook + PUT | 422 |
-| inject `secretKeyRef` well-formed — and references ONLY the platform-minted shape (§5.0; the webhook validates name/key form; the resolver enforces mint+label at runtime) | webhook + PUT + resolve | 422 / 502 |
+| inject `secretKeyRef` (the SPEC field) well-formed and mint-shaped (§5.0) — written only by the service; the resolver enforces mint-name + workspace-label at runtime (forged specs → 502, §5.0) | webhook (form) + resolve (ownership) | 422 / 502 |
 | no duplicate header names within inject; no name in both inject and forward | webhook + PUT | 422 |
 | entry counts ≤ instance caps | PUT (service-clamped like the settings knobs) + webhook MaxItems | 422 |
 | `devPreview: false` + headers present → VALID but inert (the gates run first, §4) | — | — |
@@ -243,7 +247,7 @@ The controller writes `WORKSPACE_DEV_PREVIEW_HEADERS=N/M` beside the existing bo
 | per-port header scoping (`ports: []int` matcher) | **deferred, not rejected** — v1 is workspace-scoped; the additive path (a matcher field later) is clean, and no use case in the issue needs it (multi-service previews are the future that would) |
 | CRD condition for missing Secrets | the 502 + WARN already name the Secret; a condition is operator-polish for later |
 | per-request edge-trust verification for forwarded identity headers | unverifiable at the API; the edge-trust assumption is documented (§6.1) and the operator doc carries the warning |
-| secretKeyRef existence REJECTED-hard at PUT | creation-order coupling (Secret may legitimately land after the config); warn-not-reject (§5.3) |
+| secretKeyRef existence REJECTED-hard at PUT | obsolete under the mint model (the service mints the Secret in the same PUT — there is no creation-order coupling to tolerate) |
 
 ## 10. Rollout
 
