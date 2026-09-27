@@ -33,7 +33,12 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 - **Rotation was RBAC-infeasible as written**: the API holds `update`/`patch` only on three named Secrets (the chart documents `resourceNames` cannot express per-workspace prefixes) — pinned to **delete + recreate** (both verbs held broadly), the millisecond Get-gap self-healing.
 - **The minted-name identifier pinned to the CRD UUID** (`ObjectMeta.Name`) — the human display name is non-unique/mutable/unvalidated and would reopen a same-name collision channel.
 - **The 502 mechanics corrected**: `Rewrite` has no error return — resolution happens at HANDLER level (after every gate), the director only applies resolved values; the ordering invariant restated at its true location.
-- Carried r0 staleness fixed (§2's DTO-vs-CRD gate claim, §3's dead namespace bullet, §9's dangling row); §4's gate-order list corrected to the handler's real sequence (400 → 503 → 503 → 429 → resolve → proxy); citation drifts (Rewrite 248-307; bootstrap 612-614).
+- Carried r0 staleness fixed (§2's DTO-vs-CRD gate claim, §3's dead namespace bullet, §9's dangling row); §4's gate-order list corrected (final r4 form: empty-id 400 :112-116 → kill-switch 503 :118-121 → port 400 :131-147 → 308 :164-172 → wsGetter-nil 503 :174-177 → 404 :179-183 → phase/PodIP 503 :185-192 → flag 503 :194-197 → pwProvider 500 :199-203 → conn-cap 429 :205-212 → handler-level resolution → proxy); citation drifts (Rewrite 248-307; bootstrap 612-614).
+
+### r3–r4 review rounds (the consistency pass)
+
+- r3 closed all five r2 findings (verified against source by the reviewer): the §3 mint/replace wording, the §8 rotation-path pin (delete+recreate asserted via UID change + the no-update-verb RBAC assertion), the identifier-disjointness negative, the sha8-collision triad (§5.0/§6/§8).
+- r4's two citation residuals: the "complete list" label gained the empty-workspaceID 400 (:112-116) and the port-parse span widened to :131-147 — a list labeled complete must actually be.
 
 ## Tests Run
 
