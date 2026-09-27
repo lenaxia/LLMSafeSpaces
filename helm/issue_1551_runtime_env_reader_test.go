@@ -35,6 +35,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// verbList returns the rule's verbs as a slice (for exact-set pins).
+func verbList(rule map[string]any) []string {
+	out := []string{}
+	vs, _ := rule["verbs"].([]any)
+	for _, v := range vs {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // findRuntimeEnvReader locates the runtime-env-reader ClusterRole and
 // its binding in a rendered doc set.
 func findRuntimeEnvReader(docs []map[string]any) (cr map[string]any, binding map[string]any) {
@@ -87,6 +99,12 @@ func TestRuntimeEnvReaderClusterRoleNamespaceScope(t *testing.T) {
 			assert.Contains(t, []string{"get", "list", "watch"}, v,
 				"read-only verbs only — the resolver does Get and List; writes stay wherever the posture put them")
 		}
+		// r1 finding 1: PRESENCE, not just subset — dropping `list`
+		// (the resolver's language:version fallback needs it, and the
+		// lazy informer requires it) would pass the subset check while
+		// reintroducing the exact wedge this grant exists to prevent.
+		assert.ElementsMatch(t, verbList(m), []string{"get", "list", "watch"},
+			"the reader grants exactly get, list, and watch — each is load-bearing (Get lookup, List fallback, informer sync)")
 	}
 
 	// The binding wires the CONTROLLER's service account in the release
@@ -100,6 +118,17 @@ func TestRuntimeEnvReaderClusterRoleNamespaceScope(t *testing.T) {
 		"the subject is the controller's service account: %v", saName)
 	ns, _ := subj["namespace"].(string)
 	assert.Equal(t, "test-ns", ns, "the release namespace")
+}
+
+// TestRuntimeEnvReaderExplicitNamespaceScope — r1 finding 2: the
+// explicit rbac.scope=namespace render (the | default "namespace")
+// branch's twin; both spellings of the prod posture must produce the
+// reader.
+func TestRuntimeEnvReaderExplicitNamespaceScope(t *testing.T) {
+	docs := helmTemplate(t, "rbac:\n  scope: namespace\n")
+	cr, binding := findRuntimeEnvReader(docs)
+	require.NotNil(t, cr, "the reader must render under an EXPLICIT rbac.scope=namespace too (the default branch's twin)")
+	require.NotNil(t, binding)
 }
 
 // TestRuntimeEnvReaderAbsentClusterScope — cluster installs already

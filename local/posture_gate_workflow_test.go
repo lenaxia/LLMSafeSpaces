@@ -328,14 +328,14 @@ var assertionSpecs = []struct {
 		// starts on the FIRST workspace, not at boot; the cold-install
 		// green said nothing about the first reconcile).
 		"runtime: base",
-		`timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'`,
+		`timeout 180 bash -c 'until kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'`,
 	}, []string{
 		"apiVersion: llmsafespaces.dev/v1",
 		"kind: Workspace",
 		"name: posture-gate-reconcile-probe",
 		"storage:",
 		"size: 1Gi",
-		`if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
+		`if timeout 180 bash -c 'until kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
 	}, 1,
 		"the reconcile path: a minimal Workspace naming the chart's own base RuntimeEnvironment must produce its pod OBJECT within 180s — pod creation is downstream of runtime resolution, so a pod existing proves the cached read is granted (the wedge signature is NO POD EVER; Pending/ImagePullBackOff are passes)"},
 }
@@ -619,12 +619,12 @@ var goldenInventories = map[string][]string{
 	},
 	"Assert 5": {
 		"set -euo pipefail",
-		"cat <<'EOF' | kubectl apply -f -",
+		"cat <<EOF | kubectl apply -f -",
 		"apiVersion: llmsafespaces.dev/v1",
 		"kind: Workspace",
 		"metadata:",
 		"name: posture-gate-reconcile-probe",
-		"namespace: llmsafespaces",
+		"namespace: $NS",
 		"spec:",
 		"owner:",
 		"userID: posture-gate",
@@ -632,7 +632,7 @@ var goldenInventories = map[string][]string{
 		"storage:",
 		"size: 1Gi",
 		"EOF",
-		`if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
+		`if timeout 180 bash -c 'until kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then`,
 		`echo "OK: workspace reconcile proceeded past runtime resolution (the pod object exists)"`,
 		"else",
 		`echo "FAIL: no workspace pod within 180s — the reconcile wedged (the #1551 class: runtime resolution starved?)"`,

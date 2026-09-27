@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-25
 **Session:** Prod-bomb lane: the workspace runtime resolver wedges under the mandated namespace posture on the first named-runtime reconcile. Fix + the posture gate's reconcile-path assertion (the boot-only hole). Worker w4.
-**Status:** Complete; PR up.
+**Status:** r1 fixes pushed; awaiting re-review.
 
 ---
 
@@ -55,3 +55,15 @@ None. Note: this PR (helm/**) self-triggers the gate — Assert 5's FIRST live r
 - `.github/workflows/posture-gate.yml` (Assert 5)
 - `local/posture_gate_workflow_test.go` (Assert 5's specs + golden)
 - `worklogs/NNNN_2026-09-25_1551-runtime-env-reader.md` (this worklog)
+
+
+## r1 round record (the closure catch, the pin gaps, the NS consistency)
+
+r1 verified the chart fix red-first independently and greenlit the mechanism — and caught the closure claim: `Closes #1551` would auto-close the issue and orphan its controller-side findings (the issue's own words: the chart grant is the MINIMUM; the unbounded cache.Get and the missing watchdog are "the real problem"; the resume-path race is the secondary). Fixed:
+
+1. **The closure re-titled** — "Addresses the chart minimum of #1551" — and the remaining findings FILED and tracked: #1587 (the unbounded cache.Get — the direct-reader/fail-loud structural close), #1588 (the reconcile-worker watchdog), #1589 (the resume-path status-write race).
+2. **Verb PRESENCE pinned** (r1's missing-test 1): `ElementsMatch(get, list, watch)` — the subset check alone passed a `list`-dropped grant, which would reintroduce the exact wedge (the List fallback + the informer sync both need it).
+3. **The explicit `rbac.scope=namespace` render case** (r1's missing-test 2): the `| default "namespace"` branch's twin — both spellings of the prod posture must produce the reader.
+4. **Assert 5's namespace consistency** (r1's minor): the heredoc unquoted (`namespace: $NS` expands) and the inner until-loop reads `"$NS"` from the job env — no more hardcoded `llmsafespaces` beside `$NS`-using diagnostics.
+
+**The milestone held through r1**: the PR's own gate run (36291467117) — all five assertions SUCCESS, Assert 5's first live contact green (the workspace created, the resolver read through the reader grant, the pod object appeared). The self-triggering loop is closed.

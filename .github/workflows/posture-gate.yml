@@ -437,12 +437,12 @@ jobs:
         # POD EVER (the resolver blocked forever).
         run: |
           set -euo pipefail
-          cat <<'EOF' | kubectl apply -f -
+          cat <<EOF | kubectl apply -f -
           apiVersion: llmsafespaces.dev/v1
           kind: Workspace
           metadata:
             name: posture-gate-reconcile-probe
-            namespace: llmsafespaces
+            namespace: $NS
           spec:
             owner:
               userID: posture-gate
@@ -450,7 +450,7 @@ jobs:
             storage:
               size: 1Gi
           EOF
-          if timeout 180 bash -c 'until kubectl -n llmsafespaces get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then
+          if timeout 180 bash -c 'until kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace=posture-gate-reconcile-probe -o name | grep -q pod/; do sleep 5; done'; then
             echo "OK: workspace reconcile proceeded past runtime resolution (the pod object exists)"
           else
             echo "FAIL: no workspace pod within 180s — the reconcile wedged (the #1551 class: runtime resolution starved?)"
