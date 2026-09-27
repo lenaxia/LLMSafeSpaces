@@ -1,6 +1,6 @@
 # Epic 72 — Relay-only key delivery (design 0058)
 
-**Status:** Planning (design accepted pending review — implementation stories filed against this folder)
+**Status:** COMPLETE — closed on evidence 2026-09-26 (#820 closed COMPLETED; exit criterion green in run 36222755701: "all rows passed — the rogue agent finds nothing"); closure record: https://github.com/lenaxia/LLMSafeSpaces/issues/820#issuecomment-5844124874
 **Created:** 2026-09-15
 **Priority:** P1 (security — closes #820)
 **Tracking:** GitHub issue #820 (epic label `[epic-72]` to be applied when the epic issues are filed — #820 currently carries `P1`/`security`/`agent-integration` only); this document is the authoritative story map. Execution status lives on GitHub.
@@ -58,7 +58,7 @@ design §4.1/§9).
 | US-72.3 | Controller staging + Workspace conditions (`CredentialsStaged`/`CredentialStale`/`CredentialRejected`) + policy flag + quota/alerts | done (#1448 merged) | M | US-72.1, US-72.2 |
 | US-72.4 | agentd token-only emission (builder rewrite) + relay-only liveness + degrade codes | done (#1529) | M | US-72.0, US-72.2, US-72.3 |
 | US-72.5 | Lifecycle/policy gates + default flip + canary + rollback drill | landed (#1531 envtest-matrix repair; #1534 flip + runbook + drill; #1536 consumer pins + nightly drill wiring) — canary + rollback EXECUTED evidence begins with the first post-#1536 nightly drill run (US-72.6 sweep follows) | M | US-72.0–.4 |
-| US-72.6 | Migration: PVC scrub of legacy `auth.json` keys + e2e rogue-agent sweep (#820 close-out) | landing across two vehicles — #1537 (owner, OPEN at this writing: agentd `scrub-legacy-keys` + boot-scheduled one-shot + `LegacyKeysScrubbed` condition/event mirror + `local/us-72-rogue-agent-sweep.sh`) and this PR (the #1536-pattern nightly sweep wiring + structural pins — the exit-criterion evidence lane); the sweep's first EXECUTED evidence begins with the first post-merge nightly run. #820 NOTE: auto-closed at #1534's merge (2026-09-22 09:04Z) before the sweep ever executed — the design's exit criterion (a green sweep run) is unmet; reopen is an owner decision | S/M | US-72.5 |
+| US-72.6 | Migration: PVC scrub of legacy `auth.json` keys + e2e rogue-agent sweep (#820 close-out) | done (#1537 owner scrub+sweep; #1538 wiring; #1570 boot-scrub chain in sidecar mode + convergence gate; #1579 the applied gate) — **exit criterion EXECUTED GREEN**: run 36222755701 R1 zero-canary / R2 control+scrub / R3 boot-migration — all rows passed; #820 closed COMPLETED 2026-09-26 | S/M | US-72.5 |
 
 Sequencing (fixed by the decision record): **#910 first** — a relay-only default
 makes the one-shot injector's failure modes load-bearing; without re-arm, a
