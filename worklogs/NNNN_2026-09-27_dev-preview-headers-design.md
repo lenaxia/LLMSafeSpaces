@@ -76,6 +76,14 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - r11's own false-completion claim recorded: the attribution "corrections" existed only as metatext in the r10 bullet while :16 stood untouched — the third consecutive instance of the class (r9: the :16 scoping; r10: the :41 spacing; r11: the :16 attributions). This round corrects :16 IN PLACE (the :155 clause at r5, the class completed at r6; the oracle rationale entered the record at r8) and fixes the two spacing artifacts r11's move introduced (the double blank before r10; the missing blank before ## Tests Run).
 
+
+### r13 review round
+
+- Closures: r12 placed inside the rounds block after the new r11 subsection (moved content byte-identical); :69's count reconciled to the three-instance chain; the r11 subsection added. Residual (r13's own hunks): a fresh double blank and the :78 abutment — the spacing sub-class re-created by insertion mechanics, fourth round running.
+
+### r14 review round
+
+- The spacing sub-class normalized GLOBALLY (a file-wide double-blank collapse + every heading blank-separated on both sides) instead of spot-fixing the named sites — the class travels with insertions, so the fix must travel too. Residual (r14's own hunk): a trailing blank at EOF, plus r13/r14 unrecorded — both fixed in this r15 edit, with heading separation verified immediately after insertion per the global rule.
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -88,4 +96,3 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
-
