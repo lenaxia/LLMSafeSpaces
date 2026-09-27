@@ -237,6 +237,43 @@ func TestDeclaredTimeout_FoldHoldClearsOnRealEvent(t *testing.T) {
 	assert.True(t, a.State().Sessions["s1"].Busy, "live harness truth re-marks busy through the normal path")
 }
 
+// B1 (r3's reproduced finding): the fold-dead hold must SURVIVE
+// Reseed(StallWake) — the stall-wake reseed runs while the harness is
+// still dead in the SAME generation; the rebuilt record must not let
+// the stale store BUSY re-latch on the next pass (busy=true with zero
+// active parts — the wedge re-forming).
+func TestDeclaredTimeout_FoldHoldSurvivesStallWakeReseed(t *testing.T) {
+	store := &evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+		msgs:   map[string]map[string]bool{},
+	}
+	a := newReconcileAuthority(t, store)
+	a.mu.Lock()
+	a.sessions["s1"] = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	rec := a.sessions["s1"]
+	rec.busy = true
+	p := toolPartWithTimeout("p1", "c1", 60000)
+	p.GetPayload().(*abiv1.Part_Tool).Tool.State.StartedAt = tsp(time.Now().Add(-30 * time.Minute))
+	a.upsertPartLocked(rec, p)
+	a.mu.Unlock()
+
+	_ = a.Reconcile(context.Background()) // folds; hold armed
+	require.True(t, rec.foldedDead)
+	require.False(t, a.State().Sessions["s1"].Busy)
+
+	// The stall wake reseeds mid-generation (harness still dead — the
+	// store row unchanged, still BUSY).
+	require.NoError(t, a.Reseed(context.Background(), ReseedReasonStallWake))
+
+	// The post-reseed pass must NOT re-latch busy from the stale row.
+	_ = a.Reconcile(context.Background())
+	newRec := a.sessions["s1"]
+	require.NotNil(t, newRec)
+	assert.True(t, newRec.foldedDead, "the hold carried across the reseed")
+	assert.False(t, a.State().Sessions["s1"].Busy,
+		"the stall-wake reseed does not re-form the wedge: stale store BUSY stays refused")
+}
+
 // N2 (r2's provenance pin): a PLATFORM-sourced event on a fold-dead
 // session (a user answering a pending ask — actions.go's
 // resolveByAbsence path, applied directly like the lease diffs) must

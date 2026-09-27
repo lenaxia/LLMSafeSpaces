@@ -504,9 +504,26 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	}
 	a.seq = next
 	a.lastSeqAt = time.Now()
+	// F1 (#1584 r3): snapshot the fold-dead sessions BEFORE the map
+	// rebuild — Reseed(StallWake) runs while the harness is still dead
+	// in the SAME generation, and a fresh record (foldedDead=false)
+	// let the stale store's BUSY row re-latch on the next rederive,
+	// re-forming the exact wedge this PR kills. The hold's lift lives
+	// at the harness-event boundary (liftFoldDeadLocked); a reseed is
+	// store truth, not harness speech.
+	foldDeadBefore := map[string]bool{}
+	for id, old := range a.sessions {
+		if old != nil && old.foldedDead {
+			foldDeadBefore[id] = true
+		}
+	}
 	a.sessions = make(map[string]*sessionRecord, len(seeds))
 	for id, seed := range seeds {
-		a.sessions[id] = seedLocked(seed)
+		rec := seedLocked(seed)
+		if foldDeadBefore[id] && seed.Status == abiv1.SessionStatus_SESSION_STATUS_BUSY {
+			rec.foldedDead = true
+		}
+		a.sessions[id] = rec
 	}
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Reseeded{Reseeded: &abiv1.ReseedNotice{Seq: next, Reason: reason.proto()}}}
 	a.fanoutLocked(frame)

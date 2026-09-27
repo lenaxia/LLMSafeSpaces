@@ -145,6 +145,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 			// forever — r5 finding 1).
 			rec.busy = false
 			rec.inFly = nil
+			rec.toolDeadlines = map[string]time.Time{} // B2: no dangling deadlines on the surviving record (same class as the N1 crash)
 		}
 	case abiv1.EventType_EVENT_TYPE_SESSION_UPDATED:
 		if s := evt.GetSession(); s != nil {
