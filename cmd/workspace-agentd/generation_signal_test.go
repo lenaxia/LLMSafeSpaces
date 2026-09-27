@@ -40,12 +40,14 @@ func TestSupervisorGenerationSignal_PIDChangeFires(t *testing.T) {
 	require.False(t, gen.observe(1304, 0))
 }
 
-// TestSupervisorGenerationSignal_PIDReuseEpochFires (r1's composite-key
-// pin): a workspace-CONTAINER restart hands the supervisor a fresh PID
-// namespace — a deterministic early spawn can reproduce the SAME PID.
-// The monotone Restarts epoch is namespace-immune: same PID + bumped
-// epoch IS a generation boundary (missed by the PID-only key).
-func TestSupervisorGenerationSignal_PIDReuseEpochFires(t *testing.T) {
+// TestSupervisorGenerationSignal_EpochChangeFires: within ONE
+// supervisor (the epoch's monotone domain), an epoch bump IS a
+// generation boundary even when the PID is reused, and a later PID
+// change still fires. (Cross-container PID reuse at epoch 0 is the
+// stated known miss in generation_signal.go's comment — the composite
+// key does not claim it; the cross-container epoch marker is tracked
+// with layer 3.)
+func TestSupervisorGenerationSignal_EpochChangeFires(t *testing.T) {
 	gen := newGenerationSignal()
 
 	require.True(t, gen.observe(37, 0), "boot")

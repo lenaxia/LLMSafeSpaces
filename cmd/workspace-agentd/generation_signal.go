@@ -16,7 +16,7 @@ package main
 // counts into workspace_tracker_busy_resets_total, the orphaned-flag
 // datum for the owner's deferral decision) lives on the tracker; the
 // authority's generation reseed composes at the wiring sites (they own
-// the context). See worklog 1072_2026-09-26.
+// the context). See worklog NNNN_2026-09-26 (sentinel; bot assigns at merge).
 
 import (
 	"sync"
@@ -24,12 +24,17 @@ import (
 
 // generationSignal detects generation boundaries from the supervisor's
 // child PID + restart epoch: the first observation (boot) and every
-// change of EITHER component (respawn). The composite key is the r1
-// PID-reuse fix: a workspace-CONTAINER restart (#1573's exit-137
-// class) hands the supervisor a fresh PID namespace where a
-// deterministic early spawn can reproduce the SAME low PID — keyed on
-// PID alone that boundary was silently missed; the monotone Restarts
-// epoch is namespace-immune.
+// change of EITHER component. The composite key covers SAME-SUPERVISOR
+// boundaries: PID reuse within one supervisor (the epoch is monotone
+// in-process) and respawns that bump the epoch. KNOWN MISS (stated,
+// not claimed away): Restarts resets to 0 when the workspace CONTAINER
+// restarts (the supervisor dies with it) — if the new supervisor's
+// deterministic early spawn reproduces the pre-restart PID AND the
+// pre-restart epoch was 0 (the common healthy-workspace case), the
+// observation pair is identical and the boundary is silently missed.
+// Closing that class needs a cross-container epoch marker the new
+// supervisor inherits (persisted state) — tracked with the layer-3/PR4
+// liveness work, where a dead-harness signal catches it independently.
 type generationSignal struct {
 	mu      sync.Mutex
 	lastPID int

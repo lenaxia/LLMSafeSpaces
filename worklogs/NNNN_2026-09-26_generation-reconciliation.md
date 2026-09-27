@@ -1,4 +1,4 @@
-# NNNN 2026-09-26 — PR2: #1576 layers 1+2 + #1573 asks 2/3 (generation reconciliation + declared timeouts)
+# NNNN 2026-09-26 — PR2: #1576 layers 1+2 + #1573 ask 3 (generation reconciliation + declared timeouts)
 
 Lane: fix/1576-generation-reconciliation (w2), off main@99f6cdde.
 Split per the orchestrator: PR1 (#1578, MERGED) took the verify guards
@@ -56,10 +56,20 @@ Completed the WIP seam:
 7. **Style**: the glued reconcileLocked/enforce docs split; DeclaredTimeouts surfaced (fold-site log + stats on both paths). While writing the row I found two further bugs — sweepAgainstEvidence's return REPLACED stats (wiping DeclaredTimeouts) and the stats assignment order — both fixed and folded into the Reconcile-level pin.
 8. Fold-reason deviation documented in the PR body: the projection folds with the #1342-pinned "harness restart" reason, not the issue's literal orphaned_by_restart label.
 
+### Round 4 (#1584 r2 findings — all addressed)
+
+1. **CI-red ST1022**: the upsertPartLocked doc block sat above the exported DeclaredTimeoutReason const (the same glued-comment class r1 flagged elsewhere) — split.
+2. **Crash-class nil-map panic (reviewer-reproduced)**: the r1 "leak fix" set toolDeadlines=nil while the only write is unguarded — evidence-clear (everyday) + declared-timeout upsert (new turn) = sidecar-fatal panic. Fixed: empty map, not nil; N1 regression pinned (direct clearBusyFromEvidence call + surviving-record upsert; first cut self-deadlocked holding a.mu around the internally-locking clear — fixed).
+3. **Hold provenance**: the fold-dead hold now lifts ONLY at harness-event boundaries (liftFoldDeadLocked at Ingest + the IngestForTest shim) — store-derived lease-diff events and platform-local actions no longer re-arm the stale store's BUSY re-derivation; N2 provenance pin + the recovery row re-routed through the boundary.
+4. **Composite-key claim rescoped**: the comment now states the covered domain (same-supervisor PID reuse + epoch-bumped respawns) and the KNOWN MISS (container restart with epoch reset to 0 + same PID — needs a persisted cross-container epoch marker, tracked with layer 3); the pin renamed to what it actually exercises.
+5. **Worklog collision**: main's bot already assigned 1072; the manual rename reverted to the NNNN_ sentinel (file + title), and generation_signal.go's stale "worklog 1072" pointer restored to the sentinel.
+6. Title nit: "#1573 asks 2/3" → "ask 3" (ask 2 landed in #1578).
+
 ## Round log
 
 - (opening) Terrain mapped; tests first.
 - (w3) Resume assessment delivered + approved; gaps 1-2 closed, gap-3 untouched; force-leg datum live.
+- (w3 r2) The panic, the provenance leak, the overstated claim, the collision: closed. Full sessionstate family green 28.5s post-fix.
 - (w3 r1) Six+ findings closed: env-independence, the busy effect (three stacked causes), closure semantics, gate order, wiring pin, composite key, minors. Full sessionstate family green 31.4s; agentd targeted families green; full suites owned by CI.
 
 ## Round 1 code (two commits)
