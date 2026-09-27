@@ -623,3 +623,47 @@ subjects:
     name: {{ include "llmsafespaces.controller.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- /* Issue #1551 (the §8.1 pattern, second application): the workspace
+        runtime resolver (runtime_resolver.go) reads RuntimeEnvironment
+        through the manager's CACHED client — Get/List — on every
+        workspace pod build (pod_builder.go). RuntimeEnvironment is a
+        CLUSTER-scoped CRD, so a namespaced Role CANNOT grant it
+        (F1.3.4's removal was correct), and under the mandated
+        rbac.scope=namespace posture the read was granted nowhere: the
+        runtimeenvironments rule existed only in the cluster-scope
+        block. The informer is lazy — no boot-time watch, which is why
+        cold-boot gates passed — so the FIRST workspace create/update
+        with a named runtime wedged the reconcile worker silently (the
+        cached Get waits for an informer sync whose LIST is 403'd
+        forever; the pod is never built; nothing logs). The fix is the
+        relay-safe-crd-watch precedent: an ALWAYS-created (namespace
+        posture), read-only, no-Secrets ClusterRole + binding. Cluster
+        installs keep their broader block, which already grants this. */}}
+{{- if ne (.Values.rbac.scope | default "namespace") "cluster" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-controller-runtime-env-reader
+  labels:
+    {{- include "llmsafespaces.controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["llmsafespaces.dev"]
+    resources: ["runtimeenvironments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-controller-runtime-env-reader
+  labels:
+    {{- include "llmsafespaces.controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llmsafespaces.fullname" . }}-controller-runtime-env-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llmsafespaces.controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
