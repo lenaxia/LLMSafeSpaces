@@ -344,7 +344,7 @@ var assertionSpecs = []struct {
 // own named step — and no OTHER step may claim an "Assert N" name
 // (an extra assertion step would silently reorder or dilute the
 // contract).
-func TestPostureGate_FourAssertionsInOrder(t *testing.T) {
+func TestPostureGate_AssertionsInOrder(t *testing.T) {
 	steps := parsePostureGate(t)
 	last := -1
 	for _, spec := range assertionSpecs {

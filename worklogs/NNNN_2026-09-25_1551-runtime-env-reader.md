@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-25
 **Session:** Prod-bomb lane: the workspace runtime resolver wedges under the mandated namespace posture on the first named-runtime reconcile. Fix + the posture gate's reconcile-path assertion (the boot-only hole). Worker w4.
-**Status:** r1 fixes pushed; awaiting re-review.
+**Status:** r2 fixes pushed; awaiting re-review.
 
 ---
 
@@ -66,4 +66,9 @@ r1 verified the chart fix red-first independently and greenlit the mechanism —
 3. **The explicit `rbac.scope=namespace` render case** (r1's missing-test 2): the `| default "namespace"` branch's twin — both spellings of the prod posture must produce the reader.
 4. **Assert 5's namespace consistency** (r1's minor): the heredoc unquoted (`namespace: $NS` expands) and the inner until-loop reads `"$NS"` from the job env — no more hardcoded `llmsafespaces` beside `$NS`-using diagnostics.
 
-**The milestone held through r1**: the PR's own gate run (36291467117) — all five assertions SUCCESS, Assert 5's first live contact green (the workspace created, the resolver read through the reader grant, the pod object appeared). The self-triggering loop is closed.
+**The milestone held through r1** [r2: the r1 record originally cited run 36291467117 as "the milestone held through r1" — that run's head is 53df6d2a (r0), not r1's head; corrected here]: r0's run 36291467117 — all five assertions SUCCESS, Assert 5's first live contact green (the workspace created, the resolver read through the reader grant, the pod object appeared); and the r1 HEAD's own run 36293478961 (f1ef68d8) — SUCCESS, all five assertions, covering the $NS-consistency edits. The self-triggering loop is closed on both commits that touched the gate.
+
+
+## r2 round record (the three small closes)
+
+The r2 verdict cleared every hard gate; three items remained, all fixed: (1) the worklog's gate-run misattribution — the r1 record cited r0's run as r1's evidence; corrected in place, and the r1 HEAD's own run (36293478961, f1ef68d8) went SUCCESS with all five assertions, covering the $NS edits; (2) the stale test name — `TestPostureGate_FourAssertionsInOrder` renamed to `TestPostureGate_AssertionsInOrder` (five assertions since Assert 5 landed; the comment was fixed in r0, the name wasn't); (3) the subject pin exacted — `assert.Equal("test-release-llmsafespaces-controller", ...)` replaces the Contains substring match (a subject-substitution drift could pass the substring).

@@ -113,9 +113,12 @@ func TestRuntimeEnvReaderClusterRoleNamespaceScope(t *testing.T) {
 	require.Len(t, subjects, 1)
 	subj, _ := subjects[0].(map[string]any)
 	assert.Equal(t, "ServiceAccount", subj["kind"])
-	saName, _ := subj["name"].(string)
-	assert.True(t, strings.Contains(saName, "controller"),
-		"the subject is the controller's service account: %v", saName)
+	// r2: EXACT, not substring — a Contains pin accepts any future SA
+	// whose name merely contains "controller"; the fullname helper's
+	// actual output is pinned (the serviceAccountName helper renders
+	// <release>-<chart>-controller for this chart's conventions).
+	assert.Equal(t, "test-release-llmsafespaces-controller", subj["name"],
+		"the subject is exactly the controller's service account (the serviceAccountName helper's output)")
 	ns, _ := subj["namespace"].(string)
 	assert.Equal(t, "test-ns", ns, "the release namespace")
 }
