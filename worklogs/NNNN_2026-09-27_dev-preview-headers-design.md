@@ -142,6 +142,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The stale-on-arrival class broken STRUCTURALLY: this round edits the worklog only (the script untouched), so the r19–r27 range cannot be falsified by its own hunk — the self-perpetuation the r27 review identified (a range-correction commit that touches the script re-creates the defect) ends by not touching it. The r27 confession's off-by-one corrected (r25's was the second instance of the now-four-round chain).
 
+### r29 review round
+
+- The Files Modified entry's garbled trailing clause dropped (r28's appendage was false under both readings and promised a stability the tree cannot pin); the entry ends at "honest scoping" with the structural fix — the r28 bullet's precise "cannot be falsified by its own hunk" — carrying the explanation.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -153,5 +157,5 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
-- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping — every round through this line's own, which does NOT touch the script, making the range stable at last)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
