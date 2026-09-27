@@ -96,19 +96,18 @@ func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 	return a.reconcileLocked(ctx)
 }
 
-// reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
-// it with seeds it already read).
 // enforceDeclaredTimeoutsLocked is #1576 layer 2: tool parts still
 // RUNNING past their own DECLARED deadline (input "timeout" ms,
 // registered at upsert) fold terminal — ERROR with
 // DeclaredTimeoutReason and a completed stamp — so the turn fails
-// visibly and the busy derivation drops the dead leg. Zero heuristics:
-// parts without a declared timeout are untouched (layer 3's process
-// liveness owns that class). Returns how many parts terminated.
+// visibly; the busy derivation drops the dead leg via
+// activePartCount (terminal TOOL parts stop counting, projection.go).
+// Zero heuristics: parts without a declared timeout are untouched
+// (layer 3's process liveness owns that class). Returns how many
+// parts terminated.
 // a.mu must be held.
 func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
 	var terminated int64
-	stamp := timestamppb.New(now)
 	for _, rec := range a.sessions {
 		if rec == nil || len(rec.toolDeadlines) == 0 {
 			continue
@@ -128,11 +127,14 @@ func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
 				delete(rec.toolDeadlines, id)
 				continue
 			}
+			// Per-part stamp (r1): a single shared *timestamppb.Timestamp
+			// aliased across parts is read-only-safe today but fragile —
+			// any future mutation of one part's stamp would corrupt all.
 			tool.Tool.State = &abiv1.ToolState{
 				Status:      abiv1.ToolStatus_TOOL_STATUS_ERROR,
 				Error:       DeclaredTimeoutReason,
 				StartedAt:   tool.Tool.GetState().GetStartedAt(),
-				CompletedAt: stamp,
+				CompletedAt: timestamppb.New(now),
 			}
 			delete(rec.toolDeadlines, id)
 			terminated++
@@ -141,16 +143,24 @@ func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
 	return terminated
 }
 
+// reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
+// it with seeds it already read).
 func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
-	if a.cfg.Store == nil {
-		return ReconcileStats{}
-	}
-	// #1576 layer 2 runs FIRST and store-independent: past-deadline
-	// declared timeouts are objective dead signals — no evidence read
-	// should sit between the model's own contract and the fold.
+	// #1576 layer 2 runs FIRST and store-independent (r1 moved it
+	// above the store gate — its three "store-independent" comments
+	// were false below it): past-deadline declared timeouts are
+	// objective dead signals — no evidence read should sit between
+	// the model's own contract and the fold.
 	a.mu.Lock()
 	declaredTimeouts := a.enforceDeclaredTimeoutsLocked(time.Now())
 	a.mu.Unlock()
+	if declaredTimeouts > 0 {
+		zap.L().Info("sessionstate: declared-timeout fold terminated RUNNING parts",
+			zap.Int64("terminated", declaredTimeouts))
+	}
+	if a.cfg.Store == nil {
+		return ReconcileStats{DeclaredTimeouts: int(declaredTimeouts)} //nolint:gosec // G115: bounded by in-flight part count
+	}
 	var rows map[string]struct{}
 	if a.ledger != nil {
 		rows = a.ledger.unresolvedSessions()
@@ -349,6 +359,7 @@ func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStat
 	rec.busy = false
 	rec.status = evStatus
 	rec.inFly = nil
+	rec.toolDeadlines = nil // r1: stale deadline entries otherwise leak per reseed-less session
 	return 1
 }
 

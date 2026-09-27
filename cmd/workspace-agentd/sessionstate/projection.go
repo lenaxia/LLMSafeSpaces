@@ -318,7 +318,14 @@ func (a *Authority) enrichBusyLocked(id string, v *SessionView) {
 	if a.ledger != nil {
 		queue = int32(a.ledger.queueDepth(id)) //nolint:gosec // G115: bounded by delivery rate limits
 	}
-	comp := deriveBusyComponents(v.Busy, int32(len(v.InFlightParts)), queue, //nolint:gosec // G115: part count bounded by admission
+	// #1576 layer 2's busy effect (r1): the busy derivation counts
+	// only ACTIVE parts — a Tool part in a terminal state (the
+	// declared-timeout fold's ERROR, or a COMPLETED part pending
+	// cleanup) is a dead leg that must not hold the session busy; it
+	// stays in InFlightParts (renderable — the fold's whole point is
+	// visible failure) but drops out of the busy count. Components
+	// still report the residual parts as data (InFlightParts below).
+	comp := deriveBusyComponents(v.Busy, activePartCount(v.InFlightParts), queue, //nolint:gosec // G115: part count bounded by admission
 		pendingUserInputsOf(v.PendingInputs))
 	// The terminal veto (#1578 r3): an errored session does nothing
 	// autonomously — EVENT_TYPE_ERROR deliberately leaves its parts in
@@ -349,6 +356,26 @@ func pendingUserInputsOf(pending []*abiv1.InputRequest) int32 {
 		case abiv1.InputKind_INPUT_KIND_QUESTION, abiv1.InputKind_INPUT_KIND_PERMISSION:
 			n++
 		}
+	}
+	return n
+}
+
+// activePartCount counts the parts that may still hold the session
+// busy: every non-Tool part, plus Tool parts whose state is not
+// terminal. Terminal TOOL parts (the declared-timeout fold's ERROR,
+// COMPLETED parts awaiting cleanup) render in InFlightParts but are
+// dead legs (#1576 layer 2's stated busy effect — r1's finding was
+// that the fold alone left busy latched true forever).
+func activePartCount(parts []*abiv1.Part) int32 {
+	var n int32
+	for _, p := range parts {
+		if tool, isTool := p.GetPayload().(*abiv1.Part_Tool); isTool {
+			switch tool.Tool.GetState().GetStatus() {
+			case abiv1.ToolStatus_TOOL_STATUS_COMPLETED, abiv1.ToolStatus_TOOL_STATUS_ERROR:
+				continue
+			}
+		}
+		n++
 	}
 	return n
 }
