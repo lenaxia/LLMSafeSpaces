@@ -35,12 +35,25 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 - **The 502 mechanics corrected**: `Rewrite` has no error return — resolution happens at HANDLER level (after every gate), the director only applies resolved values; the ordering invariant restated at its true location.
 - Carried r0 staleness fixed (§2's DTO-vs-CRD gate claim, §3's dead namespace bullet, §9's dangling row); §4's gate-order list corrected (final r4 form: empty-id 400 :112-116 → kill-switch 503 :118-121 → port 400 :131-147 → 308 :164-172 → wsGetter-nil 503 :174-177 → 404 :179-183 → phase/PodIP 503 :185-192 → flag 503 :194-197 → pwProvider 500 :199-203 → conn-cap 429 :205-212 → handler-level resolution → proxy); citation drifts (Rewrite 248-307; bootstrap 612-614).
 
-### r3–r5 review rounds (the consistency pass)
+### r3 review round
 
 - r3 closed all five r2 findings (verified against source by the reviewer): the §3 mint/replace wording, the §8 rotation-path pin (delete+recreate asserted via UID change + the no-update-verb RBAC assertion), the identifier-disjointness negative, the sha8-collision triad (§5.0/§6/§8), and §4's gate-order list / in-handler kill-switch correction.
-- r4's two citation residuals: the "complete list" label gained the empty-workspaceID 400 (:112-116) and the port-parse span widened to :131-147 — a list labeled complete must actually be.
-- r5's two minors: the worklog's own five-count enumeration completed (the fifth was §4's gate-order/kill-switch fix — this very lane's subject); §4's second invariant clause scoped to HEADER Secrets (the password provider's cache-miss fetch legitimately precedes the 429 — it is the tunnel's credential, not header configuration).
-- r6: the IDENTICAL unscoped claim r5 fixed at :155 had survived six lines above (:149) — the instance was fixed, not the class; :149 now carries the scoped form (and the section header retitled to span r3–r5).
+### r4 review round
+
+- The two citation residuals: the "complete list" label gained the empty-workspaceID 400 (:112-116) and the port-parse span widened to :131-147 — a list labeled complete must actually be.
+
+### r5 review round
+
+- Two minors: the worklog's own five-count enumeration completed (the fifth was §4's gate-order/kill-switch fix — this very lane's subject); §4's second invariant clause scoped to HEADER Secrets (the password provider's cache-miss fetch legitimately precedes the 429 — it is the tunnel's credential, not header configuration).
+
+### r6 review round
+
+- The IDENTICAL unscoped claim r5 fixed at :155 had survived six lines above (:149) — the instance was fixed, not the class; :149 now carries the scoped form.
+
+### r7 review round
+
+- The header-staleness class fixed AT THE CLASS LEVEL: per-round subsections (this structure) so appending round N+1 can never stale a header again.
+- §5.2's example body had conflated the forged-spec and manual-deletion failure modes; replaced with the DELIBERATELY UNIFORM body (a per-class reason would hand a forged-spec prober an existence oracle over namespace Secrets) — the uniformity now stated as intentional, the WARN log carrying the server-side class.
 
 ## Tests Run
 
