@@ -100,6 +100,11 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - Process confession: r17's "both sweeps re-run on this edit" was FALSE — the inline awk detectors broke on shell quoting (empty output from ERROR, not from a clean pass — the exact ambiguity r16's lesson bans) and the push happened anyway. The tree happened to be clean (the post-push sweep via /tmp/opencode/detect.sh returns empty on both rules and a single EOF newline) — luck, not verification. The sweeps now live in a script whose output cannot be mistaken: lines above the terminator line are findings; nothing else is.
 
+### r19 review round
+
+- r16's dropped third prescription closed: the r14 commit-message truncation ("…so the fix must not") is immutable git history — recorded here as WONTFIX (the nit did not recur; r15+ messages are complete sentences).
+- The r18 verification story made DURABLE: the sweep script committed to the repo (scripts/worklog-spacing-sweep.sh — both pinned rules, the terminator-line pass state) so the methodology is reconstructable from the tree, not from a vanished /tmp path. Swept green on this edit in the push chain.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
