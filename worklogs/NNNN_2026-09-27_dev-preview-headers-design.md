@@ -50,6 +50,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The IDENTICAL unscoped claim r5 fixed at :155 had survived six lines above (:149) — the instance was fixed, not the class; :149 now carries the scoped form.
 
+### r8 review round
+
+- The uniform-body pin propagated to its dependents: §8's e2e arm and failure-semantics rows assert the ABSENCE of the Secret name in the 502 body (the anti-existence-oracle pin as the positive assertion); §9's rejection rationale restated on the WARN alone; this worklog's own ordering-pin fossil scoped to HEADER Secrets.
+
 ### r7 review round
 
 - The header-staleness class fixed AT THE CLASS LEVEL: per-round subsections (this structure) so appending round N+1 can never stale a header again.
@@ -67,3 +71,7 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
+
+### r9 review round
+
+- §5.3's "naming it" ambiguity resolved (naming the ENTRY, never the Secret) — the last uniform-body fossil.

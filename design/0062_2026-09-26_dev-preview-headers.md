@@ -184,7 +184,7 @@ A header entry that cannot be resolved is **misconfiguration, not degradation**:
 ### 5.3 Rotation + deletion (the mint model's semantics)
 
 - **Rotation:** PUT the config again with the new value — the service **deletes and recreates** the deterministic-named Secret (§5.1's RBAC pin: the API holds no `update` grant, and the chart documents why none is coming); the next request resolves the new object (no cache). The delete+recreate window is a per-request `Get` gap of milliseconds — a preview request inside it takes §5.2's 502, self-healing on retry.
-- **Deletion:** removing an entry from the PUT DELETES the minted Secret (the platform owns the artifact); workspace deletion garbage-collects all of them via `ownerReferences` (§5.0) — no finalizer work. An entry whose Secret is nonetheless missing (manual deletion) takes §5.2's 502 naming it.
+- **Deletion:** removing an entry from the PUT DELETES the minted Secret (the platform owns the artifact); workspace deletion garbage-collects all of them via `ownerReferences` (§5.0) — no finalizer work. An entry whose Secret is nonetheless missing (manual deletion) takes §5.2's uniform 502 naming **the entry, never the Secret**.
 - **Out-of-band platform Secrets are structurally unreachable** — there is no flow that mints a reference to anything not created by this service, and the resolve-time check backstops forged specs (§5.0).
 
 ---
