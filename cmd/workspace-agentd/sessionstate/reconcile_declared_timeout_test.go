@@ -15,6 +15,7 @@ package sessionstate
 // that class).
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -149,6 +150,91 @@ func newBareAuthority(t *testing.T) *Authority {
 	return &Authority{
 		sessions: map[string]*sessionRecord{"s1": newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_IDLE)},
 	}
+}
+
+// TestDeclaredTimeout_ReconcileLevel_StoreBackedAuthority (r1's
+// missing level): the fold must fire through the PUBLIC Reconcile on a
+// store-backed authority — the production shape. This is the test that
+// catches gate-order regressions (the fold once sat below the
+// Store==nil return, making its store-independence comments false) and
+// pins the fold's STATED busy effect end to end: a session observed
+// busy with a wedged past-deadline part reconciles to NOT busy with
+// the part folded terminal and still renderable.
+func TestDeclaredTimeout_ReconcileLevel_StoreBackedAuthority(t *testing.T) {
+	store := &evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+		msgs:   map[string]map[string]bool{},
+	}
+	a := newReconcileAuthority(t, store)
+	// Seed s1 directly into the sessions map (the store-wired
+	// authority's map is otherwise populated from unresolved ledger
+	// rows — the wedge scenario deliberately has none); the STORE
+	// stays wired, which is the point: the fold must run on the
+	// public pass BEFORE the store gate on a production-shaped
+	// authority.
+	a.mu.Lock()
+	a.sessions["s1"] = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	rec := a.sessions["s1"]
+	rec.busy = true // the observed wedge: busy with a dead tool leg
+	started := time.Now().Add(-30 * time.Minute)
+	p := toolPartWithTimeout("p1", "c1", 60000)
+	p.GetPayload().(*abiv1.Part_Tool).Tool.State.StartedAt = tsp(started)
+	a.upsertPartLocked(rec, p)
+	a.mu.Unlock()
+
+	// BUSY before: the dead leg is the only activity.
+	pre := a.State()
+	require.True(t, pre.Sessions["s1"].Busy, "pre-reconcile: the wedged part holds the session busy")
+
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.DeclaredTimeouts, "the fold ran through the public pass and counted")
+
+	post := a.State()
+	sv := post.Sessions["s1"]
+	assert.False(t, sv.Busy, "post-reconcile: the terminal part no longer holds busy (the fold's stated effect)")
+	// The part is STILL RENDERABLE — the fold's whole point is visible
+	// failure, not disappearance.
+	var toolStatus abiv1.ToolStatus
+	for _, part := range sv.InFlightParts {
+		if part.GetId() == "p1" {
+			toolStatus = part.GetPayload().(*abiv1.Part_Tool).Tool.GetState().GetStatus()
+		}
+	}
+	assert.Equal(t, abiv1.ToolStatus_TOOL_STATUS_ERROR, toolStatus,
+		"the folded part renders its ERROR state")
+}
+
+// The hold's OTHER direction (pinned both ways): a REAL harness event
+// after the fold clears foldedDead — the store's BUSY is live truth
+// again for the recovered session (a new turn re-marks busy normally).
+func TestDeclaredTimeout_FoldHoldClearsOnRealEvent(t *testing.T) {
+	store := &evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+		msgs:   map[string]map[string]bool{},
+	}
+	a := newReconcileAuthority(t, store)
+	a.mu.Lock()
+	a.sessions["s1"] = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	rec := a.sessions["s1"]
+	rec.busy = true
+	p := toolPartWithTimeout("p1", "c1", 60000)
+	p.GetPayload().(*abiv1.Part_Tool).Tool.State.StartedAt = tsp(time.Now().Add(-30 * time.Minute))
+	a.upsertPartLocked(rec, p)
+	a.mu.Unlock()
+
+	_ = a.Reconcile(context.Background()) // folds; foldedDead holds
+	require.True(t, rec.foldedDead, "the fold marked the session dead")
+	post := a.State().Sessions["s1"]
+	require.False(t, post.Busy, "the stale store BUSY does not re-latch")
+
+	// The harness speaks again (a real status event through the
+	// contract path — exactly what a recovered/new turn produces).
+	a.mu.Lock()
+	a.applyLocked(&abiv1.Event{SessionId: "s1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	a.mu.Unlock()
+	require.False(t, rec.foldedDead, "a real event clears the fold-dead hold")
+	assert.True(t, a.State().Sessions["s1"].Busy, "live harness truth re-marks busy through the normal path")
 }
 
 // tsp is the test timestamp helper.

@@ -105,7 +105,7 @@ func startSupervisorStatusPollerWithInterval(ctx context.Context, wg *sync.WaitG
 				return
 			}
 			store.set(st)
-			if onGeneration != nil && st.ChildPID != 0 && gen.observe(st.ChildPID) {
+			if onGeneration != nil && st.ChildPID != 0 && gen.observe(st.ChildPID, st.Restarts) {
 				onGeneration(st.ChildPID)
 			}
 		}

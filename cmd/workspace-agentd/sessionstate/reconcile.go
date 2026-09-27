@@ -138,6 +138,21 @@ func (a *Authority) enforceDeclaredTimeoutsLocked(now time.Time) int64 {
 			}
 			delete(rec.toolDeadlines, id)
 			terminated++
+			// The busy effect (r1's core finding): rec.busy is the
+			// SSE STREAMING flag — in the wedge scenario the harness
+			// is dead and NEVER sends the IDLE that would clear it,
+			// so dead parts alone kept busy latched true forever.
+			// When the fold terminates the session's LAST active
+			// part, the turn is dead by the model's own contract:
+			// clear the streaming flag and mark the session ERROR
+			// ("the turn fails visibly" — and the #1578 terminal veto
+			// arms: the residual terminal parts can never flip the
+			// view back to BUSY).
+			if activePartCount(rec.inFly) == 0 {
+				rec.busy = false
+				rec.status = abiv1.SessionStatus_SESSION_STATUS_ERROR
+				rec.foldedDead = true
+			}
 		}
 	}
 	return terminated
@@ -193,10 +208,14 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		return stats
 	}
 	var stats ReconcileStats
-	stats.DeclaredTimeouts = int(declaredTimeouts)
 	if a.ledger != nil {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
+	// AFTER the sweep (r1): the sweep's return REPLACES stats —
+	// assigning DeclaredTimeouts earlier let the field be wiped
+	// (the r1 test caught the fold counting 0 through the public
+	// pass while the deadline was consumed).
+	stats.DeclaredTimeouts = int(declaredTimeouts) //nolint:gosec // G115: bounded by in-flight part count
 	a.rederiveStatuses(seeds)
 	if ctx.Err() != nil {
 		// The sweep already returned partial stats; running the lease

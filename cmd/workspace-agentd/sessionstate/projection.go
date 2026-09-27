@@ -57,6 +57,14 @@ type sessionRecord struct {
 	// layer 2): partID → startedAt + input timeout ms. Only parts with
 	// a declared timeout appear here; entries clear at terminal folds.
 	toolDeadlines map[string]time.Time
+	// foldedDead marks a session the declared-timeout fold terminated
+	// (its LAST active part died past the model's own contract —
+	// #1576 layer 2): the store's stale BUSY must not re-latch the
+	// projection (the dead harness's table never writes IDLE). Cleared
+	// by any REAL harness event for the session (the harness speaking
+	// again is the definitive alive signal; a new turn re-marks busy
+	// through status events).
+	foldedDead bool
 }
 
 func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
@@ -118,6 +126,11 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		rec = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_UNKNOWN)
 		a.sessions[sid] = rec
 	}
+	// A REAL event for the session clears the #1576 layer-2 fold-dead
+	// hold: the harness is speaking again — its status events re-mark
+	// busy through the normal path and the store's BUSY is live truth
+	// once more (not the stale table of a dead harness).
+	rec.foldedDead = false
 
 	switch evt.Type {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:

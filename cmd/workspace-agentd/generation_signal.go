@@ -16,30 +16,38 @@ package main
 // counts into workspace_tracker_busy_resets_total, the orphaned-flag
 // datum for the owner's deferral decision) lives on the tracker; the
 // authority's generation reseed composes at the wiring sites (they own
-// the context). See worklog NNNN_2026-09-26.
+// the context). See worklog 1072_2026-09-26.
 
 import (
 	"sync"
 )
 
 // generationSignal detects generation boundaries from the supervisor's
-// child PID: the first observation (boot) and every change (respawn).
+// child PID + restart epoch: the first observation (boot) and every
+// change of EITHER component (respawn). The composite key is the r1
+// PID-reuse fix: a workspace-CONTAINER restart (#1573's exit-137
+// class) hands the supervisor a fresh PID namespace where a
+// deterministic early spawn can reproduce the SAME low PID — keyed on
+// PID alone that boundary was silently missed; the monotone Restarts
+// epoch is namespace-immune.
 type generationSignal struct {
-	mu   sync.Mutex
-	last int
+	mu      sync.Mutex
+	lastPID int
+	lastGen int
 }
 
 func newGenerationSignal() *generationSignal { return &generationSignal{} }
 
-// observe records a ChildPID observation; true when it opens a new
-// generation (including the boot observation).
-func (g *generationSignal) observe(pid int) bool {
+// observe records a (ChildPID, Restarts) observation; true when it
+// opens a new generation (including the boot observation).
+func (g *generationSignal) observe(pid, restarts int) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.last == pid {
+	if g.lastPID == pid && g.lastGen == restarts {
 		return false
 	}
-	g.last = pid
+	g.lastPID = pid
+	g.lastGen = restarts
 	return true
 }
 
@@ -47,5 +55,5 @@ func (g *generationSignal) observe(pid int) bool {
 func (g *generationSignal) lastKnown() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.last
+	return g.lastPID
 }

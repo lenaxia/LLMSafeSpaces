@@ -32,12 +32,27 @@ func TestSupervisorGenerationSignal_PIDChangeFires(t *testing.T) {
 	gen := newGenerationSignal()
 
 	require.Equal(t, 0, gen.lastKnown(), "no observation yet")
-	require.True(t, gen.observe(24), "first observation is the boot boundary")
+	require.True(t, gen.observe(24, 0), "first observation is the boot boundary")
 	require.Equal(t, 24, gen.lastKnown())
-	require.False(t, gen.observe(24), "same PID: no generation change")
-	require.True(t, gen.observe(1304), "respawn: new PID is a new generation")
+	require.False(t, gen.observe(24, 0), "same PID: no generation change")
+	require.True(t, gen.observe(1304, 0), "respawn: new PID is a new generation")
 	require.Equal(t, 1304, gen.lastKnown())
-	require.False(t, gen.observe(1304))
+	require.False(t, gen.observe(1304, 0))
+}
+
+// TestSupervisorGenerationSignal_PIDReuseEpochFires (r1's composite-key
+// pin): a workspace-CONTAINER restart hands the supervisor a fresh PID
+// namespace — a deterministic early spawn can reproduce the SAME PID.
+// The monotone Restarts epoch is namespace-immune: same PID + bumped
+// epoch IS a generation boundary (missed by the PID-only key).
+func TestSupervisorGenerationSignal_PIDReuseEpochFires(t *testing.T) {
+	gen := newGenerationSignal()
+
+	require.True(t, gen.observe(37, 0), "boot")
+	require.False(t, gen.observe(37, 0), "same PID, same epoch: no change")
+	require.True(t, gen.observe(37, 1), "PID reuse across a container restart: the epoch bump IS a new generation")
+	require.False(t, gen.observe(37, 1))
+	require.True(t, gen.observe(38, 1), "and a later PID change still fires")
 }
 
 // TestD2Reset_TheUnifiedTrackerHook: both topologies share the
