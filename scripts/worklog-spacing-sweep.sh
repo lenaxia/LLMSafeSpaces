@@ -16,7 +16,7 @@ out=$(mktemp); err=$(mktemp); trap 'rm -f "$out" "$err"' EXIT
   awk 'NR>1 && prev ~ /^#/ && $0 != "" {print NR": heading-abutment (below)"} {prev=$0}' "$f" 2>>"$err"
   # EOF rule: exactly one trailing newline — neither a trailing blank
   # line NOR a missing final newline. (Whitespace-only lines, single
-  # or doubled, are out of scope entirely — see the header.)
+  # or doubled, are out of scope — see the header.)
   if [ "$(tail -c 2 "$f" | od -An -c | tr -d ' ')" = "\n\n" ]; then echo "EOF: trailing blank"; fi
   if [ -n "$(tail -c 1 "$f")" ]; then echo "EOF: missing final newline"; fi
 } > "$out"

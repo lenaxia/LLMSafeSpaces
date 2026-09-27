@@ -130,6 +130,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The Files Modified range stale-on-arrival fixed (r19–r24 — the r24 hunk itself modified the script the same commit "corrected" to r19–r23); the method label fixed (repo-scan-false, not fixture-false); the script comment's "entirely" dropped per the strictest reading.
 
+### r26 review round
+
+- r25's "the script's 'entirely' fixed" was FALSE at push (the python replace targeted a non-matching string — the line-19 instance survived; the same silent no-op class as r9/r11). Fixed HERE via the file editor with the line verified before this push; the r25 bullet's claim stands corrected by this line, per the confession precedent.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
