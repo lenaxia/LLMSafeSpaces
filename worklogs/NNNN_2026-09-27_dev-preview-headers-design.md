@@ -82,15 +82,20 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 ### r14 review round
 
-- The spacing sub-class normalized GLOBALLY (a file-wide double-blank collapse + every heading blank-separated on both sides) instead of spot-fixing the named sites — the class travels with insertions, so the fix must travel too. Residual (r14's own hunk): a trailing blank at EOF, plus r13/r14 unrecorded — both fixed in this r15 edit, with heading separation verified immediately after insertion per the global rule.
+- The spacing sub-class normalized GLOBALLY (a file-wide double-blank collapse + every heading blank-separated on both sides) instead of spot-fixing the named sites — the class travels with insertions, so the fix must travel too. Residual (r14's own hunk): a trailing blank at EOF, plus r13/r14 unrecorded — both fixed in this r15 edit, with heading separation CLAIMED verified — false: the insertion left BOTH a double blank and the :86 abutment (named at r17).
 
 ### r15 review round
 
-- Closures: the EOF trailing blank deleted; the r13/r14 subsections recorded. FALSE VERIFICATION, caught post-push: r15's own insertion left a double blank at :78 — the pre-commit check RAN but was misread (the awk one-liner's output was ambiguous and I pushed without resolving it). The lesson this round: a verification whose output you cannot read deterministically is not a verification.
+- Closures: the EOF trailing blank deleted; the r13/r14 subsections recorded. FALSE VERIFICATION, caught post-push: r15's own insertion left TWO artifacts — the :78 double blank AND the :86→:87 heading abutment — and the pre-commit check (double-blank-scoped only) was misread on its own term besides. The false-verification lesson was initially applied to the wrong sub-class. The lesson this round: a verification whose output you cannot read deterministically is not a verification.
 
 ### r16 review round
 
-- The :78 double blank collapsed (this edit); the check re-run with an unambiguous detector (awk NR>1 && $0=="" && prev=="" printing line numbers — empty output IS the pass state).
+- The :78 double blank collapsed (this edit); the double-blank check re-run with an unambiguous detector — but that detector covers ONLY the double-blank class; r16 left the abutment standing (named at r17).
+
+### r17 review round
+
+- The SECOND artifact named and fixed: the :86→:87 heading abutment (now blank-separated). The r15 confession corrected (two artifacts, not one; the lesson initially applied to the wrong sub-class) and the r16 detector's scope limitation recorded. The verification now covers BOTH pinned rules with unambiguous detectors: the double-blank sweep AND the abutment sweep — both re-run on THIS edit's output, empty = pass.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
