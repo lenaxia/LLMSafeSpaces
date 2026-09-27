@@ -136,7 +136,11 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 ### r27 review round
 
-- CONFESSION (the lane's own convention applied to itself): r25's "the Files Modified range honest at HEAD" was FALSE at push — the range said r19–r24 while r25's own hunk made r19–r25 the honest form (stale-on-arrival the THIRD consecutive round; unconfessed until now). Fixed here to r19–r26 (r26's hunk modified the script again). The self-referential header pointer dropped.
+- CONFESSION (the lane's own convention applied to itself): r25's "the Files Modified range honest at HEAD" was FALSE at push — the range said r19–r24 while r25's own hunk made r19–r25 the honest form (stale-on-arrival — the SECOND instance of what is now a four-round chain: r24, r25, r26, r27 trees each shipped a range their own hunk falsified; unconfessed until now). Fixed here to r19–r26 (r26's hunk modified the script again). The self-referential header pointer dropped.
+
+### r28 review round
+
+- The stale-on-arrival class broken STRUCTURALLY: this round edits the worklog only (the script untouched), so the r19–r27 range cannot be falsified by its own hunk — the self-perpetuation the r27 review identified (a range-correction commit that touches the script re-creates the defect) ends by not touching it. The r27 confession's off-by-one corrected (r25's was the second instance of the now-four-round chain).
 
 ## Tests Run
 
@@ -149,5 +153,5 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
-- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r26: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping — every round through this line's own, which does NOT touch the script, making the range stable at last)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
