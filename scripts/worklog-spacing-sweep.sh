@@ -4,7 +4,7 @@
 # exactly one trailing newline (a trailing blank AND a missing final newline
 # both fail). Whitespace-only lines are not matched by the DBL rule (they
 # still count as content for the abutment rules); single or doubled, no rule
-# targets them — see the header.
+# targets them.
 # Usage: scripts/worklog-spacing-sweep.sh <file>
 #   Lines above the terminator are findings; terminator-only = clean.
 #   Non-zero exit on findings OR on any sweep error (a failed sweep is not a pass).

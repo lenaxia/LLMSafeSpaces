@@ -134,6 +134,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - r25's "the script's 'entirely' fixed" was FALSE at push (the python replace targeted a non-matching string — the line-19 instance survived; the same silent no-op class as r9/r11). Fixed HERE via the file editor with the line verified before this push; the r25 bullet's claim stands corrected by this line, per the confession precedent.
 
+### r27 review round
+
+- CONFESSION (the lane's own convention applied to itself): r25's "the Files Modified range honest at HEAD" was FALSE at push — the range said r19–r24 while r25's own hunk made r19–r25 the honest form (stale-on-arrival the THIRD consecutive round; unconfessed until now). Fixed here to r19–r26 (r26's hunk modified the script again). The self-referential header pointer dropped.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -145,5 +149,5 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
-- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r24: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r26: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
