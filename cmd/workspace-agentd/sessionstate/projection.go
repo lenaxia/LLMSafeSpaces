@@ -229,6 +229,12 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 	}
 }
 
+// DeclaredTimeoutReason is the synthetic terminal-state error folded
+// onto tool parts terminated by #1576 layer 2 — past their own
+// DECLARED timeout (the input's "timeout" milliseconds; the model
+// specified the bound, not a heuristic).
+const DeclaredTimeoutReason = "declared timeout exceeded"
+
 // upsertPartLocked stores a PRIVATE clone: the event object is also
 // referenced by the fanout frame (serialized outside the lock by the
 // Events handler) — retaining the shared pointer would race later
@@ -237,12 +243,6 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 // custom-valve counter (the retired API-side unknown-taxonomy signal's
 // agentd successor: extension kinds flowing through the valve, counted at
 // the projection — the sole place parts are applied).
-// DeclaredTimeoutReason is the synthetic terminal-state error folded
-// onto tool parts terminated by #1576 layer 2 — past their own
-// DECLARED timeout (the input's "timeout" milliseconds; the model
-// specified the bound, not a heuristic).
-const DeclaredTimeoutReason = "declared timeout exceeded"
-
 func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 	if p == nil || p.GetId() == "" {
 		return

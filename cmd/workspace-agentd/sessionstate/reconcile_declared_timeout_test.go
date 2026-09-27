@@ -237,5 +237,44 @@ func TestDeclaredTimeout_FoldHoldClearsOnRealEvent(t *testing.T) {
 	assert.True(t, a.State().Sessions["s1"].Busy, "live harness truth re-marks busy through the normal path")
 }
 
+// N1 regression (r2's crash finding, reviewer-reproduced): the
+// evidence-busy-clear empties toolDeadlines; the record SURVIVES; a
+// new turn in the same session upserts a declared-timeout tool part —
+// the deadline write must not panic on the cleared map (the sidecar's
+// Ingest recover wall covers the parser only, so a panic here killed
+// the process).
+func TestDeclaredTimeout_DeadlineWriteAfterEvidenceClear_NoPanic(t *testing.T) {
+	store := &evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE},
+		msgs:   map[string]map[string]bool{},
+	}
+	a := newReconcileAuthority(t, store)
+	a.mu.Lock()
+	a.sessions["s1"] = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	rec := a.sessions["s1"]
+	rec.busy = true
+	p := toolPartWithTimeout("p1", "c1", 0) // no deadline needed for the clear path
+	a.upsertPartLocked(rec, p)
+	a.mu.Unlock()
+
+	// The evidence sweep's busy-clear on the record (direct call: the
+	// sweep requires ledger rows; the clear itself is the crash site's
+	// caller) empties inFly + toolDeadlines — the record survives.
+	a.mu.Lock()
+	require.Equal(t, 1, a.clearBusyFromEvidence("s1", abiv1.SessionStatus_SESSION_STATUS_IDLE, 0))
+	require.NotNil(t, a.sessions["s1"])
+	a.mu.Unlock()
+
+	// The new turn's declared-timeout upsert on the SURVIVING record:
+	// must register cleanly, not panic.
+	a.mu.Lock()
+	p2 := toolPartWithTimeout("p2", "c2", 60000)
+	p2.GetPayload().(*abiv1.Part_Tool).Tool.State.StartedAt = tsp(time.Now())
+	a.upsertPartLocked(a.sessions["s1"], p2)
+	deadlines := len(a.sessions["s1"].toolDeadlines)
+	a.mu.Unlock()
+	assert.Equal(t, 1, deadlines, "the new deadline registered on the cleared record")
+}
+
 // tsp is the test timestamp helper.
 func tsp(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }

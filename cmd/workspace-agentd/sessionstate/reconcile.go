@@ -378,7 +378,12 @@ func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStat
 	rec.busy = false
 	rec.status = evStatus
 	rec.inFly = nil
-	rec.toolDeadlines = nil // r1: stale deadline entries otherwise leak per reseed-less session
+	// Empty map, NOT nil (r2's crash finding): a nil here panics the
+	// next declared-timeout upsert on the surviving record
+	// (assignment to entry in nil map) — the evidence-clear path is
+	// everyday (the lost-idle-event class), and the panic kills the
+	// sidecar (Ingest's recover wall covers the parser only).
+	rec.toolDeadlines = map[string]time.Time{}
 	return 1
 }
 
