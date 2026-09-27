@@ -77,4 +77,4 @@ None.
 - `local/dev-preview-tunnel-e2e.sh` — the DISABLED e2e arm (r1)
 - `cmd/workspace-agentd/feature_status.go` — NEW: the read tool's inventory (r2: the staging entry's truthful basis)
 - `cmd/workspace-agentd/mcp_server_test.go` — 4 new tests + the marshal helper
-- `worklogs/NNNN_2026-09-26_devpreview-loud-feature-status.md` — this worklog
+- `worklogs/1071_2026-09-26_devpreview-loud-feature-status.md` — this worklog
