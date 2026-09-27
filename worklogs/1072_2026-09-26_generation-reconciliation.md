@@ -45,10 +45,22 @@ Completed the WIP seam:
 - Gap 3 (the fake's advance-inside-Eventually timing coupling): agreed, left as-is.
 - Branch rebased onto v0.34.9 main; all seam + restart-decision + rearm + generation-signal families green; vet/gofmt clean.
 
+### Round 3 (#1584 r1 findings — all addressed)
+
+1. **The D2 test failed on clean checkouts** (WORKSPACE_ID normalization): t.Setenv pins the label; verified green under a deliberately EMPTY env. The "green locally" claim in the PR body was masked by the dev-pod env — owned, and the full-suite claim this round is left to CI (targeted families listed with commands instead).
+2. **The declared-timeout fold did not achieve its stated busy effect** — THREE stacked causes found and fixed: (a) the fold's terminal part stayed in the busy count → activePartCount counts only non-terminal parts (terminal TOOL parts render but stop counting); (b) rec.busy — the SSE STREAMING flag — kept busy latched with the harness dead → the fold clears busy and marks the session ERROR when it terminates the LAST active part (arming the #1578 terminal veto); (c) rederiveStatusLocked's un-gated up-direction re-latched busy from the dead harness's own stale store table → the fold-dead hold (rec.foldedDead) refuses store-BUSY re-derivation until any REAL harness event clears it (applyContractLocked). Pinned by the Reconcile-level row (store-backed authority, public pass, busy true→false with the ERROR part renderable) + FoldHoldClearsOnRealEvent (the recovery direction).
+3. **"Fixes #1576" overclaimed closure** (4-layer issue, layers 3+4 unlanded): commit footers reworded via filter-branch (Refs #1576 layers 1+2), PR body updated; #1573 ask-2 attribution corrected (landed in #1578's busyTruthFrom, not here).
+4. **Store-gate ordering**: enforceDeclaredTimeoutsLocked moved ABOVE the Store==nil return (its store-independence comments were false below it); the Reconcile-level row is the gate-order pin.
+5. **No revert-proof wiring pin**: sidecar_generation_pin_test.go source-greps the production callback (D2 reset + retrying reseed) — deleting the wire now goes red (the poller test injects its own callback and never caught it).
+6. **Robustness minors**: composite generation key (PID + Restarts epoch — PID reuse across container restarts pinned); toolDeadlines cleared with inFly (the per-session leak); per-part terminal stamps (the shared alias).
+7. **Style**: the glued reconcileLocked/enforce docs split; DeclaredTimeouts surfaced (fold-site log + stats on both paths). While writing the row I found two further bugs — sweepAgainstEvidence's return REPLACED stats (wiping DeclaredTimeouts) and the stats assignment order — both fixed and folded into the Reconcile-level pin.
+8. Fold-reason deviation documented in the PR body: the projection folds with the #1342-pinned "harness restart" reason, not the issue's literal orphaned_by_restart label.
+
 ## Round log
 
 - (opening) Terrain mapped; tests first.
 - (w3) Resume assessment delivered + approved; gaps 1-2 closed, gap-3 untouched; force-leg datum live.
+- (w3 r1) Six+ findings closed: env-independence, the busy effect (three stacked causes), closure semantics, gate order, wiring pin, composite key, minors. Full sessionstate family green 31.4s; agentd targeted families green; full suites owned by CI.
 
 ## Round 1 code (two commits)
 
