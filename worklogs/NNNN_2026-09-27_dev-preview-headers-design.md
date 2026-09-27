@@ -13,7 +13,7 @@ Settle the approved framing into a reviewable design: exact CRD v1 shape + migra
 ## Work Completed
 
 - **The proxy chain surveyed and grounded**: the two-hop path (API `HandleDevPreview` → agentd `devPreviewHandler` → the service); G34's fixed allowlist (`proxy_helpers.go:25`); the agentd hop's pass-through-minus-Authorization; the 503 gate stack; both topology modes funneling through the one director; the relay-handoff Secret-read precedent (API clientset, workspace namespace).
-- **design/0062 authored** — the shape: headers as a SIBLING list under `spec.networkAccess` (the bool toggle untouched → zero migration, no conversion webhook); injection LAST in the director (config can't be shadowed by caller input, callers can't be confused with injection); the reserved-header denylist as the mechanism making that ordering safe; per-request Secret resolution (no cache → rotation instant, load bounded by maxConns); loud 502-naming-the-Secret on missing config (the #1580 lesson — skip-on-missing is the silent-degradation class); gate ordering pinned (disabled/kill-switch 503 BEFORE any Secret read); forward's edge-trust boundary documented with the operator caveat; multi-port DEFERRED with the additive path recorded; feature_status's new entry on the count-pair projection (the basis question worked through honestly: the in-pod tool cannot read the DTO under D3 — counts project, names/refs/values never).
+- **design/0062 authored** — the shape: headers as a SIBLING list under `spec.networkAccess` (the bool toggle untouched → zero migration, no conversion webhook); injection LAST in the director (config can't be shadowed by caller input, callers can't be confused with injection); the reserved-header denylist as the mechanism making that ordering safe; per-request Secret resolution (no cache → rotation instant, load bounded by maxConns); loud 502 on unresolvable config (the #1580 lesson — skip-on-missing is the silent-degradation class; the r0 body-naming-the-Secret form was superseded by r7's DELIBERATELY UNIFORM body — the anti-existence-oracle pin); gate ordering pinned (disabled/kill-switch 503 BEFORE any HEADER-Secret read — the r0 unscoped form superseded by r5, the password fetch being the tunnel's own credential); forward's edge-trust boundary documented with the operator caveat; multi-port DEFERRED with the additive path recorded; feature_status's new entry on the count-pair projection (the basis question worked through honestly: the in-pod tool cannot read the DTO under D3 — counts project, names/refs/values never).
 - **A self-caught design error, fixed before review**: the first §7 draft proposed the count pair as pod env, then "corrected" itself mid-document to a DTO read — which D3 makes impossible for the in-pod tool. Rewritten to the honest resolution (counts project; the invariant is values-never/names-never-in-pod/counts-are-fine) rather than leaving correction theater in the record.
 
 ## Key Decisions
@@ -50,14 +50,18 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The IDENTICAL unscoped claim r5 fixed at :155 had survived six lines above (:149) — the instance was fixed, not the class; :149 now carries the scoped form.
 
-### r8 review round
-
-- The uniform-body pin propagated to its dependents: §8's e2e arm and failure-semantics rows assert the ABSENCE of the Secret name in the 502 body (the anti-existence-oracle pin as the positive assertion); §9's rejection rationale restated on the WARN alone; this worklog's own ordering-pin fossil scoped to HEADER Secrets.
-
 ### r7 review round
 
 - The header-staleness class fixed AT THE CLASS LEVEL: per-round subsections (this structure) so appending round N+1 can never stale a header again.
 - §5.2's example body had conflated the forged-spec and manual-deletion failure modes; replaced with the DELIBERATELY UNIFORM body (a per-class reason would hand a forged-spec prober an existence oracle over namespace Secrets) — the uniformity now stated as intentional, the WARN log carrying the server-side class.
+
+### r8 review round
+
+- The uniform-body pin propagated to its dependents: §8's e2e arm and failure-semantics rows assert the ABSENCE of the Secret name in the 502 body (the anti-existence-oracle pin as the positive assertion); §9's rejection rationale restated on the WARN alone.
+
+### r9 review round
+
+- §5.3's "naming it" ambiguity resolved (naming the ENTRY, never the Secret) — the last uniform-body fossil.
 
 ## Tests Run
 
@@ -72,6 +76,6 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
 
-### r9 review round
+### r10 review round
 
-- §5.3's "naming it" ambiguity resolved (naming the ENTRY, never the Secret) — the last uniform-body fossil.
+- The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE (the uniform-body and HEADER-Secret scoping pointers); r8's false worklog-scoping claim removed (the scoping happens HERE, in r10 — r9's edit targeted the wrong string and silently no-opped); r8/r9 restored to chronological position inside the rounds block; the r4 spacing nit fixed.
