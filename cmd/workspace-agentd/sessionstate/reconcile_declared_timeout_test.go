@@ -257,13 +257,12 @@ func TestDeclaredTimeout_DeadlineWriteAfterEvidenceClear_NoPanic(t *testing.T) {
 	a.upsertPartLocked(rec, p)
 	a.mu.Unlock()
 
-	// The evidence sweep's busy-clear on the record (direct call: the
-	// sweep requires ledger rows; the clear itself is the crash site's
-	// caller) empties inFly + toolDeadlines — the record survives.
-	a.mu.Lock()
+	// The evidence sweep's busy-clear on the record (direct call — it
+	// takes a.mu internally; the sweep requires ledger rows, the clear
+	// itself is the crash site's caller) empties inFly +
+	// toolDeadlines; the record survives.
 	require.Equal(t, 1, a.clearBusyFromEvidence("s1", abiv1.SessionStatus_SESSION_STATUS_IDLE, 0))
 	require.NotNil(t, a.sessions["s1"])
-	a.mu.Unlock()
 
 	// The new turn's declared-timeout upsert on the SURVIVING record:
 	// must register cleanly, not panic.
