@@ -1254,3 +1254,203 @@ func TestMCPHandler_RequestBodyAdditiveTolerancePinned(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Nil(t, resp.Error, "additive request-object keys are forward-compat surface")
 }
+
+// --- #1580: the dev-preview tool fails loud when the space disabled it ---
+
+func TestMCPHandler_DevPreview_DisabledFailsLoud(t *testing.T) {
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("WORKSPACE_DEV_PREVIEW_ENABLED", "false")
+	req := mcpRequest{JSONRPC: "2.0", ID: 21, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+		"name": "dev_preview_url", "arguments": map[string]any{"port": 5173},
+	})}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	assert.Equal(t, 200, w.Code)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.True(t, result["isError"].(bool), "disabled must be a LOUD tool error, not a minted URL")
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	assert.Contains(t, strings.ToLower(text), "disabled", "the reason must say disabled")
+	assert.Contains(t, text, "Workspace Settings", "the recovery hint must point at the toggle")
+	assert.NotContains(t, text, "LSP_DEV_PREVIEW_V1", "no URL is minted when the space disabled the feature")
+}
+
+func TestMCPHandler_DevPreview_EnabledMintsURL(t *testing.T) {
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("WORKSPACE_DEV_PREVIEW_ENABLED", "true")
+	req := mcpRequest{JSONRPC: "2.0", ID: 22, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+		"name": "dev_preview_url", "arguments": map[string]any{"port": 5173},
+	})}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	assert.False(t, isErr)
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	assert.Contains(t, text, "LSP_DEV_PREVIEW_V1")
+}
+
+func TestMCPHandler_DevPreview_ControllerSkewStillMints(t *testing.T) {
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	// An older controller does not project WORKSPACE_DEV_PREVIEW_ENABLED
+	// (one pod-generation of skew during upgrade): the tool keeps
+	// minting — with an explicit note that the state is unreported, so
+	// the caller can tell skew from silence. Never hard-fail a skew.
+	t.Setenv("WORKSPACE_DEV_PREVIEW_ENABLED", "")
+	req := mcpRequest{JSONRPC: "2.0", ID: 23, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+		"name": "dev_preview_url", "arguments": map[string]any{"port": 5173},
+	})}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	assert.False(t, isErr)
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	assert.Contains(t, text, "LSP_DEV_PREVIEW_V1")
+	assert.Contains(t, text, "controller did not report", "the skew is explicit, never silent")
+}
+
+// --- #1580: the feature_status read tool ---
+
+func TestMCPHandler_FeatureStatus_ListedAndShaped(t *testing.T) {
+	// Listed with an empty-args schema (read tool, first-class).
+	req := mcpRequest{JSONRPC: "2.0", ID: 24, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	tools := resp.Result.(map[string]any)["tools"].([]any)
+	var found bool
+	for _, tI := range tools {
+		tt := tI.(map[string]any)
+		if tt["name"] == "feature_status" {
+			found = true
+		}
+	}
+	assert.True(t, found, "feature_status must be listed")
+
+	// Called: machine-readable JSON with name/active/source per entry.
+	t.Setenv("WORKSPACE_DEV_PREVIEW_ENABLED", "false")
+	call := mcpRequest{JSONRPC: "2.0", ID: 25, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+		"name": "feature_status", "arguments": map[string]any{},
+	})}
+	cbody, _ := json.Marshal(call)
+	w2 := httptest.NewRecorder()
+	mcpHandler(mcpTestPassword)(w2, mcpAuthedRequest(cbody))
+	var resp2 mcpResponse
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
+	result := resp2.Result.(map[string]any)
+	isErr2, _ := result["isError"].(bool)
+	assert.False(t, isErr2)
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var statuses []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &statuses), "the tool emits machine-readable JSON")
+	require.NotEmpty(t, statuses)
+	var devPreview map[string]any
+	for _, st := range statuses {
+		if st["feature"] == "dev_preview" {
+			devPreview = st
+		}
+	}
+	require.NotNil(t, devPreview, "dev_preview must be reported")
+	assert.Equal(t, false, devPreview["active"])
+	assert.Equal(t, "space", devPreview["source"], "devPreview is the one space-set flag")
+	assert.Contains(t, devPreview["source_detail"], "networkAccess.devPreview")
+	assert.Equal(t, false, devPreview["controllable"], "the controllable set is empty today — reported, not assumed")
+
+	// The full inventory is pinned (r1: a silently dropped entry would
+	// have passed) — with the space flag false and every operator env
+	// absent, exactly these five features, all inactive, agent_sidecar
+	// NOT keyed on any phantom env.
+	names := make([]string, 0, len(statuses))
+	for _, st := range statuses {
+		names = append(names, st["feature"].(string))
+		assert.Equal(t, false, st["controllable"], "no entry is controllable today")
+		if st["feature"] != "dev_preview" {
+			assert.Equal(t, "operator", st["source"], "every other flag is operator-set")
+		}
+	}
+	assert.ElementsMatch(t, []string{"dev_preview", "dev_preview_per_workspace_origin", "inference_relay_plane", "upload_staging", "agent_sidecar"}, names)
+}
+
+func TestMCPHandler_FeatureStatus_ActiveArmsAndSkew(t *testing.T) {
+	// r1: every operator entry's ACTIVE arm + the dev_preview skew
+	// detail — table-driven, one call per env combination.
+	for _, tc := range []struct {
+		name     string
+		env      map[string]string
+		feature  string
+		wantAct  bool
+		wantTail string
+	}{
+		{"per-workspace-origin active", map[string]string{"PREVIEW_ORIGIN_BASE_DOMAIN": "safespaces.dev"}, "dev_preview_per_workspace_origin", true, ""},
+		{"relay plane active", map[string]string{"INFERENCE_RELAY_BASEURL": "http://relay"}, "inference_relay_plane", true, ""},
+		{"upload staging active", map[string]string{"AGENTD_SIDECAR_PASSWORD": "pw"}, "upload_staging", true, ""},
+		{"agent sidecar active", map[string]string{"AGENTD_SIDECAR_PASSWORD": "pw"}, "agent_sidecar", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			call := mcpRequest{JSONRPC: "2.0", ID: 30, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+				"name": "feature_status", "arguments": map[string]any{},
+			})}
+			body, _ := json.Marshal(call)
+			w := httptest.NewRecorder()
+			mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+			var resp mcpResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			result := resp.Result.(map[string]any)
+			text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+			var statuses []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(text), &statuses))
+			for _, st := range statuses {
+				if st["feature"] == tc.feature {
+					assert.Equal(t, tc.wantAct, st["active"])
+					return
+				}
+			}
+			t.Fatalf("feature %s missing from the inventory", tc.feature)
+		})
+	}
+
+	t.Run("dev_preview unreported skew detail", func(t *testing.T) {
+		call := mcpRequest{JSONRPC: "2.0", ID: 31, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
+			"name": "feature_status", "arguments": map[string]any{},
+		})}
+		body, _ := json.Marshal(call)
+		w := httptest.NewRecorder()
+		mcpHandler(mcpTestPassword)(w, mcpAuthedRequest(body))
+		var resp mcpResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		text := resp.Result.(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+		var statuses []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(text), &statuses))
+		for _, st := range statuses {
+			if st["feature"] == "dev_preview" {
+				assert.Equal(t, false, st["active"], "unreported is never guessed enabled")
+				assert.Contains(t, st["source_detail"], "UNREPORTED", "the skew detail is explicit")
+			}
+		}
+	})
+}
+
+func mcpMustMarshal(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}

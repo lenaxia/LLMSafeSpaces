@@ -218,7 +218,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Returns the preview URL for a web app running in this workspace, which you can offer to the user as an open-preview link (the chat UI renders it as a button; otherwise relay it as a markdown link). Offer it when: the user is working on frontend/UI changes (components, pages, styles) — offer to spin up the dev preview unprompted: start the dev server and share the link so they can follow the work as it lands, rather than waiting to be asked; you have started or verified a web server on a localhost port; you finish building a UI the user will want to inspect; the user asks to see or try the app. Do not use when: nothing is listening on that port and you have not offered to start it — the link does not start the app, it only points at it; you have already shared the URL for that port (it is deterministic — one link suffices); the port is below 1024 or in 4096-4098 (refused). Requirements: the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — if the preview does not load, point them there. No API call is made.",
+						Description: "Returns the preview URL for a web app running in this workspace, which you can offer to the user as an open-preview link (the chat UI renders it as a button; otherwise relay it as a markdown link). Offer it when: the user is working on frontend/UI changes (components, pages, styles) — offer to spin up the dev preview unprompted: start the dev server and share the link so they can follow the work as it lands, rather than waiting to be asked; you have started or verified a web server on a localhost port; you finish building a UI the user will want to inspect; the user asks to see or try the app. Do not use when: nothing is listening on that port and you have not offered to start it — the link does not start the app, it only points at it; you have already shared the URL for that port (it is deterministic — one link suffices); the port is below 1024 or in 4096-4098 (refused). Requirements: the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — the tool now FAILS LOUD with the recovery hint when the space has it disabled (no URL is minted; a note is added when the controller has not reported the state). No API call is made.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -226,6 +226,15 @@ func mcpHandler(password string) http.HandlerFunc {
 								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /). Carried through on path-based preview URLs; on per-workspace-origin deployments the preview opens at the app root"},
 							},
 							"required": []string{},
+						},
+					},
+					{
+						Name:        "feature_status",
+						Description: "Inspect this space's feature flags: which features are active, their SOURCE (space-set via the workspace CRD vs operator/chart-set), and whether any are agent-controllable (none today — the controllable set is reported as fact, not assumed). Read-only, no API call. Use when: diagnosing why a feature (e.g. dev preview) is not working before assuming breakage; checking whether the inference relay plane is active; understanding the deployment shape (sidecar vs single-container, upload staging). Output: a machine-readable JSON array of {feature, active, source, source_detail, controllable}. Note: instance-level operator settings (rate limits, workflow/triggers knobs, the dev-preview kill-switch) live in the API's settings store and are intentionally NOT readable from inside the space — their absence here is the D3 posture, not an omission.",
+						InputSchema: map[string]any{
+							"type":       "object",
+							"properties": map[string]any{},
+							"required":   []string{},
 						},
 					},
 					{
@@ -567,11 +576,25 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "session_metadata":
 		sessionID, _ := args["session_id"].(string)
 		return mcpSessionMetadata(ctx, password, sessionID)
+	case "feature_status":
+		return mcpFeatureStatus()
 	case "compact":
 		sessionID, _ := args["session_id"].(string)
 		model, _ := args["model"].(string)
 		return mcpCompact(ctx, password, sessionID, model)
 	case "dev_preview_url":
+		// #1580: the space's dev-preview state is projected by the
+		// controller as WORKSPACE_DEV_PREVIEW_ENABLED (spec.
+		// networkAccess.devPreview). Explicit false = the feature is
+		// DISABLED for this space: fail LOUD with the recovery hint —
+		// the caller must distinguish disabled from broken, not learn
+		// it as a late 503 from the minted URL. Absent = an older
+		// controller (one pod-generation of upgrade skew): keep
+		// minting, with the unreported state called out — never
+		// hard-fail a transition.
+		if os.Getenv("WORKSPACE_DEV_PREVIEW_ENABLED") == "false" {
+			return "", fmt.Errorf("dev preview is DISABLED for this space — no URL is minted. Enable it in Workspace Settings → Dev Preview (the space's networkAccess.devPreview); until then nothing at this port can be previewed. This is a configuration state, not a failure: nothing is broken")
+		}
 		// Port is optional: default 5173 (the Vite default, the common
 		// case; the landing page's form defaults to the same).
 		port := 5173
@@ -629,6 +652,13 @@ func mcpDevPreviewURL(port int, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// #1580: the controller-skew case — the env is absent under an
+	// older controller. Mint, but say the state is unreported so the
+	// caller can tell skew from silence.
+	skewNote := ""
+	if os.Getenv("WORKSPACE_DEV_PREVIEW_ENABLED") == "" {
+		skewNote = "\nNOTE: the controller did not report this space's dev-preview state (upgrade skew?) — verify Workspace Settings → Dev Preview."
+	}
 
 	// First line is a machine-readable marker the chat UI keys on to
 	// render an open-preview button; everything after is for humans.
@@ -643,13 +673,13 @@ func mcpDevPreviewURL(port int, path string) (string, error) {
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
 		return fmt.Sprintf(
 			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
-			port, base, port, url, workspaceID, port, port), nil
+			port, base, port, url, workspaceID, port, port) + skewNote, nil
 	}
 
 	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
 	return fmt.Sprintf(
 		"LSP_DEV_PREVIEW_V1 port=%d mode=path\n[Open dev preview :%d](%s)\nOpens the dev preview tunnel (workspace %s, port %d). Requires dev preview enabled (Workspace Settings → Dev Preview → Enable); otherwise the URL returns 503. The app must be listening on localhost:%d in the workspace.",
-		port, port, url, workspaceID, port, port), nil
+		port, port, url, workspaceID, port, port) + skewNote, nil
 }
 
 // mcpPublicAPIOrigin resolves the PUBLICLY REACHABLE API origin for

@@ -102,6 +102,22 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			{Name: "WORKSPACE_ID", Value: workspace.Name},
 			{Name: "WORKSPACE_DIR", Value: agentd.WorkspacePath},
 
+			// #1580: project the space's dev-preview state so agentd's
+			// dev_preview_url MCP tool fails LOUD when the space disabled
+			// it (the caller must distinguish disabled from broken) and
+			// feature_status can report it with source=space. Explicit
+			// false projects "false" — absence is reserved for the
+			// one-pod-generation controller-skew case during upgrades.
+			// (NetworkAccess is a nil-able pointer; unset = the CRD
+			// default, false.)
+			func() corev1.EnvVar {
+				devPreview := false
+				if workspace.Spec.NetworkAccess != nil {
+					devPreview = workspace.Spec.NetworkAccess.DevPreview
+				}
+				return corev1.EnvVar{Name: "WORKSPACE_DEV_PREVIEW_ENABLED", Value: strconv.FormatBool(devPreview)}
+			}(),
+
 			// Epic 68 prerequisite fix: LLMSAFESPACE_API_URL must be set in the
 			// main container so agentd's mcpDevPreviewURL can emit absolute
 			// bootstrap links. Previously only set in the credential-setup init

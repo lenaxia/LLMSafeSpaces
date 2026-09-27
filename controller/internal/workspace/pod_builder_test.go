@@ -484,3 +484,52 @@ func TestPodBuilder_FSGroupChangePolicy_OnRootMismatch(t *testing.T) {
 	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
 		"must be OnRootMismatch — OnWait/Always chowns every file on every pod start")
 }
+
+// TestPodBuilder_ContainerEnv_DevPreviewStateProjected pins #1580's
+// controller half: the space's spec.networkAccess.devPreview reaches
+// the workspace container as WORKSPACE_DEV_PREVIEW_ENABLED — the one
+// space-set flag agentd's dev_preview_url tool and feature_status
+// read. Explicit true AND explicit false must both project (the
+// agentd side fails loud on "false"; absence is reserved for the
+// one-pod-generation controller-skew case).
+func TestPodBuilder_ContainerEnv_DevPreviewStateProjected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag *bool
+		want string
+	}{
+		{"enabled projects true", ptrTo(true), "true"},
+		{"disabled projects false", ptrTo(false), "false"},
+		// r1: nil NetworkAccess is a REAL production state (the CRD
+		// gives networkAccess no object-level default) — it must
+		// project the CRD default, false.
+		{"nil networkAccess projects the CRD default false", nil, "false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newWorkspaceForPodBuilder(t)
+			if tc.flag != nil {
+				ws.Spec.NetworkAccess = &v1.WorkspaceNetworkAccess{DevPreview: *tc.flag}
+			}
+			r := reconcilerFor(t)
+			pod, err := r.buildPod(context.Background(), ws)
+			require.NoError(t, err)
+
+			var val string
+			var found bool
+			for _, c := range pod.Spec.Containers {
+				if c.Name != "workspace" {
+					continue
+				}
+				for _, e := range c.Env {
+					if e.Name == "WORKSPACE_DEV_PREVIEW_ENABLED" {
+						val, found = e.Value, true
+					}
+				}
+			}
+			require.True(t, found, "WORKSPACE_DEV_PREVIEW_ENABLED must be projected into the workspace container")
+			assert.Equal(t, tc.want, val)
+		})
+	}
+}
+
+func ptrTo(b bool) *bool { return &b }

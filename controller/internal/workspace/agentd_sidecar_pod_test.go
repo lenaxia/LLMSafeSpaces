@@ -313,6 +313,12 @@ func TestAgentdSidecar_Enabled_MainContainerSwitchesToSupervisorMode(t *testing.
 func TestAgentdSidecar_Enabled_WorkspaceIDAndRelayEnv(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentdSidecar(t)
+	// r3: the guarded preview-origin append must FIRE for the env
+	// uniqueness pin below (r2 set the field in the WRONG test — a
+	// different function's fixture, empirically invisible to this pin;
+	// the reviewer re-introduced the r1 duplicate and watched the
+	// suite stay green). Set HERE, in the pin's own fixture.
+	r.PreviewOriginBaseDomain = "safespaces.dev"
 	r.InferenceRelayURL = "https://relay.example/"
 
 	pod, err := r.buildPod(context.Background(), ws)
@@ -322,6 +328,26 @@ func TestAgentdSidecar_Enabled_WorkspaceIDAndRelayEnv(t *testing.T) {
 	require.NotNil(t, sc)
 	id := sidecarEnvVar(sc, "WORKSPACE_ID")
 	require.NotNil(t, id, "ops-metrics labels and bootstrap identity need WORKSPACE_ID")
+	// #1580: the sidecar runs the dev_preview_url MCP tool (#1332) —
+	// the space's dev-preview state must project here too. The
+	// fixture's workspace leaves NetworkAccess nil → the CRD default,
+	// false (a REAL production state — the CRD gives networkAccess no
+	// object-level default).
+	dp := sidecarEnvVar(sc, "WORKSPACE_DEV_PREVIEW_ENABLED")
+	require.NotNil(t, dp, "the sidecar's MCP tooling needs the space's dev-preview state")
+	require.Equal(t, "false", dp.Value)
+
+	// r1's duplicate-env finding, pinned: with the preview-origin base
+	// domain set (the exact combination that produced the duplicate),
+	// every env NAME in the sidecar appears EXACTLY ONCE — a
+	// misplaced-insertion accident fails here, not in a live pod.
+	seen := make(map[string]int)
+	for _, e := range sc.Env {
+		seen[e.Name]++
+	}
+	for name, n := range seen {
+		require.Equal(t, 1, n, "sidecar env %s appears %d times — the r1 duplicate-env class", name, n)
+	}
 	require.Equal(t, ws.Name, id.Value)
 	require.NotNil(t, sidecarEnvVar(sc, "INFERENCE_RELAY_BASEURL"),
 		"the relay injector lives in the sidecar now")

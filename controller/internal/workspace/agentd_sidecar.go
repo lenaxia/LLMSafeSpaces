@@ -29,6 +29,7 @@ package workspace
 
 import (
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -162,14 +163,17 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 	// coordinate the boot phase requires — user-facing URLs must come
 	// from the dedicated public origin instead. The preview-origin base
 	// domain rides along so origin mode (bootstrap URL → per-workspace
-	// preview origin) works from the sidecar exactly as it does from the
-	// main container.
+	// preview origin) works from the sidecar exactly as it does from
+	// the main container. #1580: the space's dev-preview state rides
+	// along too (the tool fails loud on disabled; feature_status
+	// reports it) — same projection the main container gets.
 	if public := r.publicAPIURL(); public != "" {
 		env = append(env, corev1.EnvVar{Name: "LLMSAFESPACE_API_PUBLIC_URL", Value: public})
 	}
 	if r.PreviewOriginBaseDomain != "" {
 		env = append(env, corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain})
 	}
+	env = append(env, corev1.EnvVar{Name: "WORKSPACE_DEV_PREVIEW_ENABLED", Value: strconv.FormatBool(workspace.Spec.NetworkAccess != nil && workspace.Spec.NetworkAccess.DevPreview)})
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
 	}

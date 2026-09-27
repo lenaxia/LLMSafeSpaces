@@ -257,4 +257,25 @@ url="$(tool_url "${out}")"
 [[ "${out}" != *".svc"* ]] || die "svc origin leaked into tool output: ${out:0:300}"
 ok "origin mode emits the bootstrap URL on the public origin"
 
+# --- #1580: the DISABLED arm (r1's missing unhappy path) — the space
+# turns dev preview OFF; the projected flag flips via a pod recreate;
+# the tool must refuse LOUD (no marker, no URL) instead of minting.
+log "#1580: disabled arm — patch devPreview false, recreate, expect the loud refusal"
+kc patch workspace "${WS}" --type merge \
+  -p '{"spec":{"networkAccess":{"devPreview":false}}}' >/dev/null
+OLD_UID="$(pod_uid)"
+kc delete pod "${POD}" --wait=false >/dev/null 2>&1 || true
+sleep 5
+wait_new_pod "${OLD_UID}" 300
+sleep 10 # agentd boot
+WS_PW=$(kc get secret "workspace-pw-${WS}" -o jsonpath='{.data.password}' | base64 -d)
+out="$(mcp_call "${WS_DEVPORT}")" || true
+[[ "${out}" == *"DISABLED"* ]] \
+  || die "a disabled space must fail LOUD with the DISABLED reason, got: ${out:0:300}"
+[[ "${out}" == *"Workspace Settings"* ]] \
+  || die "the refusal must carry the recovery hint, got: ${out:0:300}"
+[[ "${out}" != *LSP_DEV_PREVIEW_V1* ]] \
+  || die "no URL marker may be minted for a disabled space: ${out:0:300}"
+ok "disabled space: the tool fails loud (reason + hint, no marker minted)"
+
 log "dev-preview tunnel e2e: ALL LEGS GREEN"
