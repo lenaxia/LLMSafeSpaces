@@ -124,7 +124,11 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 ### r24 review round
 
-- The header's "no worklog in this repo carries them" parenthetical DROPPED (fixture-false repo-wide: seven worklogs carry whitespace-only lines — the fourth overclaim in this artifact, this time in the sentence closing the third); the "NOT detected" blanket tightened to the true claim (unmatched by the DBL rule; still content for the abutment rules); the Files Modified range corrected to r19–r23.
+- The header's "no worklog in this repo carries them" parenthetical DROPPED (repo-scan-false: seven worklogs carry whitespace-only lines — the fourth overclaim in this artifact, this time in the sentence closing the third); the "NOT detected" blanket tightened to the true claim (unmatched by the DBL rule; still content for the abutment rules); the Files Modified range corrected to r19–r23.
+
+### r25 review round
+
+- The Files Modified range stale-on-arrival fixed (r19–r24 — the r24 hunk itself modified the script the same commit "corrected" to r19–r23); the method label fixed (repo-scan-false, not fixture-false); the script comment's "entirely" dropped per the strictest reading.
 
 ## Tests Run
 
@@ -137,5 +141,5 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
-- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r23: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r24: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
