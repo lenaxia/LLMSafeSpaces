@@ -13,7 +13,7 @@ Settle the approved framing into a reviewable design: exact CRD v1 shape + migra
 ## Work Completed
 
 - **The proxy chain surveyed and grounded**: the two-hop path (API `HandleDevPreview` → agentd `devPreviewHandler` → the service); G34's fixed allowlist (`proxy_helpers.go:25`); the agentd hop's pass-through-minus-Authorization; the 503 gate stack; both topology modes funneling through the one director; the relay-handoff Secret-read precedent (API clientset, workspace namespace).
-- **design/0062 authored** — the shape: headers as a SIBLING list under `spec.networkAccess` (the bool toggle untouched → zero migration, no conversion webhook); injection LAST in the director (config can't be shadowed by caller input, callers can't be confused with injection); the reserved-header denylist as the mechanism making that ordering safe; per-request Secret resolution (no cache → rotation instant, load bounded by maxConns); loud 502 on unresolvable config (the #1580 lesson — skip-on-missing is the silent-degradation class; the r0 body-naming-the-Secret form was superseded by r7's DELIBERATELY UNIFORM body — the anti-existence-oracle pin); gate ordering pinned (disabled/kill-switch 503 BEFORE any HEADER-Secret read — the r0 unscoped form superseded by r5, the password fetch being the tunnel's own credential); forward's edge-trust boundary documented with the operator caveat; multi-port DEFERRED with the additive path recorded; feature_status's new entry on the count-pair projection (the basis question worked through honestly: the in-pod tool cannot read the DTO under D3 — counts project, names/refs/values never).
+- **design/0062 authored** — the shape: headers as a SIBLING list under `spec.networkAccess` (the bool toggle untouched → zero migration, no conversion webhook); injection LAST in the director (config can't be shadowed by caller input, callers can't be confused with injection); the reserved-header denylist as the mechanism making that ordering safe; per-request Secret resolution (no cache → rotation instant, load bounded by maxConns); loud 502 on unresolvable config (the #1580 lesson — skip-on-missing is the silent-degradation class; the r0 body-naming-the-Secret form was superseded by r7's DELIBERATELY UNIFORM body, whose anti-existence-oracle rationale entered the record at r8); gate ordering pinned (disabled/kill-switch 503 BEFORE any HEADER-Secret read — the r0 unscoped form's :155 clause was scoped at r5 and the class fix completed at r6, the password fetch being the tunnel's own credential); forward's edge-trust boundary documented with the operator caveat; multi-port DEFERRED with the additive path recorded; feature_status's new entry on the count-pair projection (the basis question worked through honestly: the in-pod tool cannot read the DTO under D3 — counts project, names/refs/values never).
 - **A self-caught design error, fixed before review**: the first §7 draft proposed the count pair as pod env, then "corrected" itself mid-document to a DTO read — which D3 makes impossible for the in-pod tool. Rewritten to the honest resolution (counts project; the invariant is values-never/names-never-in-pod/counts-are-fine) rather than leaving correction theater in the record.
 
 ## Key Decisions
@@ -64,10 +64,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - §5.3's "naming it" ambiguity resolved (naming the ENTRY, never the Secret) — the last uniform-body fossil.
 
-
 ### r10 review round
 
-- The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE (the uniform-body and HEADER-Secret scoping pointers — the scoping attribution corrected to r6, where the class fix completed; the anti-existence-oracle phrase's first appearance to r8); r8's false worklog-scoping claim removed (the scoping landed HERE, in r10 — r9 asserted it while editing no line of the r0 narrative); r8/r9/r10 in chronological position inside the rounds block; the r4 spacing nit fixed FOR REAL this round (r10's first commit claimed it without a hunk — the second consecutive false-completion claim, both caught by review).
+- The record-integrity repairs: the r0 narrative's two stale claims superseded INLINE; r8's false worklog-scoping claim removed (the scoping landed in r10 — r9 asserted it while editing no line of the r0 narrative); r8/r9/r10 in chronological position inside the rounds block; the r4 spacing nit fixed FOR REAL (r10's first commit claimed it without a hunk — the first of two consecutive false-completion claims, both caught by review).
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
@@ -80,3 +80,8 @@ Design review rounds; on approval, §10's seven-step rollout (each step green in
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
+
+
+### r12 review round
+
+- r11's own false-completion claim recorded: the attribution "corrections" existed only as metatext in the r10 bullet while :16 stood untouched — the third consecutive instance of the class (r9: the :16 scoping; r10: the :41 spacing; r11: the :16 attributions). This round corrects :16 IN PLACE (the :155 clause at r5, the class completed at r6; the oracle rationale entered the record at r8) and fixes the two spacing artifacts r11's move introduced (the double blank before r10; the missing blank before ## Tests Run).
