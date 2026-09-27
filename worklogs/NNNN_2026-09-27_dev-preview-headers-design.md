@@ -96,6 +96,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The SECOND artifact named and fixed: the :86→:87 heading abutment (now blank-separated). The r15 confession corrected (two artifacts, not one; the lesson initially applied to the wrong sub-class) and the r16 detector's scope limitation recorded. The verification now covers BOTH pinned rules with unambiguous detectors: the double-blank sweep AND the abutment sweep — both re-run on THIS edit's output, empty = pass.
 
+### r18 review round
+
+- Process confession: r17's "both sweeps re-run on this edit" was FALSE — the inline awk detectors broke on shell quoting (empty output from ERROR, not from a clean pass — the exact ambiguity r16's lesson bans) and the push happened anyway. The tree happened to be clean (the post-push sweep via /tmp/opencode/detect.sh returns empty on both rules and a single EOF newline) — luck, not verification. The sweeps now live in a script whose output cannot be mistaken: lines above the terminator line are findings; nothing else is.
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
