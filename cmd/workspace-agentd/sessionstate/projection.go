@@ -126,11 +126,11 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		rec = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_UNKNOWN)
 		a.sessions[sid] = rec
 	}
-	// A REAL event for the session clears the #1576 layer-2 fold-dead
-	// hold: the harness is speaking again — its status events re-mark
-	// busy through the normal path and the store's BUSY is live truth
-	// once more (not the stale table of a dead harness).
-	rec.foldedDead = false
+	// NOTE: the #1576 fold-dead hold is NOT cleared here (r2's
+	// provenance fix) — applyContractLocked sees store-derived
+	// lease-diff events and platform-local action events too; the hold
+	// lifts only at the HARNESS-event boundary (Ingest), where
+	// provenance is structural.
 
 	switch evt.Type {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:

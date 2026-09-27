@@ -227,14 +227,48 @@ func TestDeclaredTimeout_FoldHoldClearsOnRealEvent(t *testing.T) {
 	post := a.State().Sessions["s1"]
 	require.False(t, post.Busy, "the stale store BUSY does not re-latch")
 
-	// The harness speaks again (a real status event through the
-	// contract path — exactly what a recovered/new turn produces).
-	a.mu.Lock()
-	a.applyLocked(&abiv1.Event{SessionId: "s1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+	// The harness speaks again — through the HARNESS-EVENT boundary
+	// (Ingest's test shim): provenance is structural there (r2's fix;
+	// applyLocked is also fed by store-derived and platform-local
+	// events, which must NOT lift the hold).
+	a.IngestForTest(&abiv1.Event{SessionId: "s1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
 		Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
-	a.mu.Unlock()
-	require.False(t, rec.foldedDead, "a real event clears the fold-dead hold")
+	require.False(t, rec.foldedDead, "a real harness event clears the fold-dead hold")
 	assert.True(t, a.State().Sessions["s1"].Busy, "live harness truth re-marks busy through the normal path")
+}
+
+// N2 (r2's provenance pin): a PLATFORM-sourced event on a fold-dead
+// session (a user answering a pending ask — actions.go's
+// resolveByAbsence path, applied directly like the lease diffs) must
+// NOT lift the hold: the next pass still refuses the dead harness's
+// stale store-BUSY.
+func TestDeclaredTimeout_FoldHoldSurvivesPlatformEvents(t *testing.T) {
+	store := &evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+		msgs:   map[string]map[string]bool{},
+	}
+	a := newReconcileAuthority(t, store)
+	a.mu.Lock()
+	a.sessions["s1"] = newSessionRecord(abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	rec := a.sessions["s1"]
+	rec.busy = true
+	p := toolPartWithTimeout("p1", "c1", 60000)
+	p.GetPayload().(*abiv1.Part_Tool).Tool.State.StartedAt = tsp(time.Now().Add(-30 * time.Minute))
+	a.upsertPartLocked(rec, p)
+	a.mu.Unlock()
+
+	_ = a.Reconcile(context.Background()) // folds; hold armed
+	require.True(t, rec.foldedDead)
+
+	// A platform-local event applied directly (the lease-diff/actions
+	// shape — same applyLocked path, NOT the Ingest boundary).
+	a.mu.Lock()
+	a.applyLocked(&abiv1.Event{SessionId: "s1", Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED})
+	a.mu.Unlock()
+
+	require.True(t, rec.foldedDead, "platform-sourced events do not lift the hold")
+	assert.False(t, a.State().Sessions["s1"].Busy,
+		"the stale store BUSY still cannot re-latch after platform activity")
 }
 
 // N1 regression (r2's crash finding, reviewer-reproduced): the
