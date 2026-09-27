@@ -118,6 +118,10 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 - The r20 commit message's "fixture-verified both directions, green on the worklog" is marked FALSE here per the confession precedent (r12/r15/r18): the worklog was NOT green at r20 — the sweep caught :108 DBL + :112 abutment and the ;-chained push shipped them (r21's mechanism confession, now with the false claim named).
 - The sweep script's EOF rule completed to its header's claim: a MISSING final newline now fails too (fixture-verified exit 1); the header scopes the one out-of-scope case (a single whitespace-only tail line).
 
+### r23 review round
+
+- The script's whitespace-only scoping made honest (the r22 comment claimed doubled whitespace-only lines were DBL-caught — fixture-verified FALSE, the third claim-vs-enforcement recurrence in this artifact): both header and comment now scope whitespace-only lines out ENTIRELY (single or doubled, undetected).
+
 ## Tests Run
 
 None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
