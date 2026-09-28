@@ -754,6 +754,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			},
 			secretService,
 			&reconcileNotifyAdapter{pusher: agentPusher},
+			secretsreconcile.WithPolicySource(secretService),
 			secretsreconcile.WithInterval(secretsreconcile.IntervalFromEnv(secretsreconcile.DefaultInterval)),
 			secretsreconcile.WithLogger(log),
 		)

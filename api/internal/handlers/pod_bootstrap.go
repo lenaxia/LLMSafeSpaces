@@ -79,6 +79,13 @@ type bootstrapManifestSource interface {
 	CurrentRevision(ctx context.Context, workspaceID string) (seq int64, manifestHash string, ok bool, err error)
 }
 
+// bootstrapPolicySource is the global-default policy convergence seam
+// (binding provenance, migration 000033). Optional by type assertion:
+// an injector without it keeps the pre-policy bootstrap behavior.
+type bootstrapPolicySource interface {
+	SyncGlobalDefaultBindings(ctx context.Context, ownerUserID, workspaceID string) (added, removed []string, err error)
+}
+
 // bootstrapContractV2 is the negotiated delivery contract version: the
 // client understands the revisioned envelope + conditional 304s.
 const bootstrapContractV2 = 2
@@ -300,6 +307,23 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	if ws == nil {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
+	}
+
+	// Global-default policy convergence (bind_source rows): suspended
+	// workspaces are not in the reconcile loop's Active enumeration,
+	// so their bindings converge HERE at boot — before the manifest
+	// tier derives the live hash, so a policy flip that landed while
+	// the workspace was down 304-compares against the converged rows,
+	// not the stale ones. Best-effort by design: a failure is logged
+	// and the bootstrap proceeds (the reconcile loop re-converges once
+	// the workspace is Active).
+	if ps, ok := h.injector.(bootstrapPolicySource); ok {
+		if _, _, serr := ps.SyncGlobalDefaultBindings(c.Request.Context(), ws.UserID, req.WorkspaceID); serr != nil {
+			if h.logger != nil {
+				h.logger.Error("pod-bootstrap: global-default policy sync failed (continuing)", serr,
+					"workspaceID", req.WorkspaceID)
+			}
+		}
 	}
 
 	// US-70.2 conditional pull: a contract-v2 client presenting its last

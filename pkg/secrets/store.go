@@ -50,6 +50,17 @@ type SecretStore interface {
 	// Used by SetWorkspaceEnv to add new env-secrets without racing
 	// on a Get-then-Set window — see worklog 0094 pass-2 finding O1.
 	AddBindings(ctx context.Context, workspaceID string, secretIDs []string) error
+	// SyncGlobalDefaultBindings converges the workspace's
+	// bind_source='global_default' rows to exactly secretIDs in one
+	// atomic operation: inserts missing auto rows, removes auto rows
+	// whose secret is not in secretIDs (the flag flipped off — rows
+	// for deleted secrets are already gone via the table's ON DELETE
+	// CASCADE FK), and never touches manual rows (a manual row for
+	// the same secret is the stronger claim and shadows the insert).
+	// Returns the secret IDs actually added and removed so callers
+	// can audit and count the convergence. Implementations MUST take
+	// the same workspace-scoped advisory lock as SetBindings.
+	SyncGlobalDefaultBindings(ctx context.Context, workspaceID string, secretIDs []string) (added, removed []string, err error)
 	GetBindings(ctx context.Context, workspaceID string) ([]*UserSecret, error)
 	GetBindingsForSecret(ctx context.Context, secretID string) ([]string, error)
 

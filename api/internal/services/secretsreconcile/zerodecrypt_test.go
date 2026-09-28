@@ -238,6 +238,10 @@ func (s *reconcileStore) AddBindings(context.Context, string, []string) error {
 	s.unexpected("AddBindings")
 	return nil
 }
+func (s *reconcileStore) SyncGlobalDefaultBindings(context.Context, string, []string) ([]string, []string, error) {
+	s.unexpected("SyncGlobalDefaultBindings")
+	return nil, nil, nil
+}
 func (s *reconcileStore) GetBindingsForSecret(context.Context, string) ([]string, error) {
 	s.unexpected("GetBindingsForSecret")
 	return nil, nil

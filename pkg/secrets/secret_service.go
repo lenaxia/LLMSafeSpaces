@@ -476,27 +476,53 @@ func (s *SecretService) QueryAudit(ctx context.Context, userID string, query Aud
 // SeedGlobalDefaultSecrets binds all secrets with global_default=true owned
 // by userID to the given workspace. Called by the workspace service on
 // workspace creation as a best-effort operation (failure is logged but does
-// not roll back the workspace). Uses the service-level AddBindings so each
-// auto-bind is recorded in the audit log (matching every user-initiated
-// bind path) and is idempotent if called more than once for the same
-// workspace (ON CONFLICT DO NOTHING at the store layer).
+// not roll back the workspace) — the reconcile loop's policy-convergence
+// step re-asserts the same policy for existing workspaces every pass, so a
+// failed seed self-heals. Rows created here carry
+// bind_source=global_default (removable when the flag flips off) and each
+// add is audited (matching every user-initiated bind path); re-running is
+// idempotent.
 func (s *SecretService) SeedGlobalDefaultSecrets(ctx context.Context, workspaceID, userID string) error {
-	defaults, err := s.store.ListGlobalDefaultSecrets(ctx, userID)
+	_, _, err := s.SyncGlobalDefaultBindings(ctx, userID, workspaceID)
+	return err
+}
+
+// SyncGlobalDefaultBindings converges the workspace's global-default
+// policy into binding rows: the owner's current global_default secrets
+// end up bound with bind_source=global_default, and auto rows for
+// secrets that lost the flag (or were deleted) are removed. Manual
+// binding rows are never touched — the user's explicit claim is the
+// stronger one. Adds and removes are audited with the source recorded
+// in the audit metadata.
+//
+// This is the policy→state materialization seam (the "one builder, one
+// truth" contract stays intact: the batch builder keeps reading binding
+// rows only). Called by the workspace-create seeding path and, for
+// every Active workspace, by the secretsreconcile loop each pass — the
+// loop is the correctness path; notify-driven mutation is only a
+// latency optimization.
+func (s *SecretService) SyncGlobalDefaultBindings(ctx context.Context, ownerUserID, workspaceID string) (added, removed []string, err error) {
+	defaults, err := s.store.ListGlobalDefaultSecrets(ctx, ownerUserID)
 	if err != nil {
-		return fmt.Errorf("list global default secrets: %w", err)
-	}
-	if len(defaults) == 0 {
-		return nil
+		return nil, nil, fmt.Errorf("list global default secrets: %w", err)
 	}
 	ids := make([]string, len(defaults))
 	for i, d := range defaults {
 		ids[i] = d.ID
 	}
-	// Service-level AddBindings verifies ownership (already pre-filtered by
-	// ListGlobalDefaultSecrets) and emits a "bind" audit entry per secret,
-	// preserving the audit-trail contract every other bind path satisfies.
-	_, err = s.AddBindings(ctx, userID, workspaceID, ids)
-	return err
+	added, removed, err = s.store.SyncGlobalDefaultBindings(ctx, workspaceID, ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sync global default bindings: %w", err)
+	}
+	for _, id := range added {
+		sid := id
+		s.audit(ctx, ownerUserID, "bind", &sid, &workspaceID, map[string]string{"source": BindSourceGlobalDefault})
+	}
+	for _, id := range removed {
+		sid := id
+		s.audit(ctx, ownerUserID, "unbind", &sid, &workspaceID, map[string]string{"source": BindSourceGlobalDefault})
+	}
+	return added, removed, nil
 }
 
 // auditWorkspaceIDMaxLen matches the secret_audit_log.workspace_id

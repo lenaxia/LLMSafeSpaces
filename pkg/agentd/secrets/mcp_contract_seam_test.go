@@ -99,6 +99,9 @@ func (s *seamStore) ReEncryptUserSecrets(_ context.Context, _ string, _ int, _ f
 }
 func (s *seamStore) SetBindings(_ context.Context, _ string, _ []string) error { panic("unused") }
 func (s *seamStore) AddBindings(_ context.Context, _ string, _ []string) error { panic("unused") }
+func (s *seamStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	panic("unused")
+}
 
 func (s *seamStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
 	return 0, "", false, nil

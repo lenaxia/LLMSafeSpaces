@@ -18,11 +18,12 @@ import (
 
 type mockSecretStore struct {
 	mu                   sync.Mutex
-	secrets              map[string]*UserSecret // keyed by ID
-	bindings             map[string][]string    // workspace_id -> []secret_id
+	secrets              map[string]*UserSecret       // keyed by ID
+	bindings             map[string]map[string]string // workspace_id -> secret_id -> bind source
 	revisions            map[string]mockRevisionRow
 	audit                []*AuditEntry
 	listGlobalDefaultErr error // optional: forces ListGlobalDefaultSecrets to fail
+	syncBindingsErr      error // optional: forces SyncGlobalDefaultBindings to fail
 }
 
 type mockRevisionRow struct {
@@ -33,7 +34,7 @@ type mockRevisionRow struct {
 func newMockSecretStore() *mockSecretStore {
 	return &mockSecretStore{
 		secrets:   make(map[string]*UserSecret),
-		bindings:  make(map[string][]string),
+		bindings:  make(map[string]map[string]string),
 		revisions: make(map[string]mockRevisionRow),
 	}
 }
@@ -164,13 +165,10 @@ func (m *mockSecretStore) DeleteSecret(_ context.Context, userID, secretID strin
 	delete(m.secrets, secretID)
 	// Cascade bindings
 	for wsID, sids := range m.bindings {
-		var filtered []string
-		for _, sid := range sids {
-			if sid != secretID {
-				filtered = append(filtered, sid)
-			}
+		delete(sids, secretID)
+		if len(sids) == 0 {
+			delete(m.bindings, wsID)
 		}
-		m.bindings[wsID] = filtered
 	}
 	return nil
 }
@@ -178,7 +176,11 @@ func (m *mockSecretStore) DeleteSecret(_ context.Context, userID, secretID strin
 func (m *mockSecretStore) SetBindings(_ context.Context, workspaceID string, secretIDs []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.bindings[workspaceID] = secretIDs
+	next := make(map[string]string, len(secretIDs))
+	for _, sid := range secretIDs {
+		next[sid] = BindSourceManual
+	}
+	m.bindings[workspaceID] = next
 	return nil
 }
 
@@ -189,19 +191,57 @@ func (m *mockSecretStore) AddBindings(_ context.Context, workspaceID string, sec
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing := m.bindings[workspaceID]
-	seen := make(map[string]struct{}, len(existing)+len(secretIDs))
-	for _, id := range existing {
-		seen[id] = struct{}{}
+	if existing == nil {
+		existing = make(map[string]string)
+		m.bindings[workspaceID] = existing
 	}
 	for _, id := range secretIDs {
-		if _, dup := seen[id]; dup {
+		if _, dup := existing[id]; dup {
 			continue
 		}
-		seen[id] = struct{}{}
-		existing = append(existing, id)
+		existing[id] = BindSourceManual
 	}
-	m.bindings[workspaceID] = existing
 	return nil
+}
+
+// SyncGlobalDefaultBindings mirrors the PgSecretStore contract: insert
+// missing auto rows, remove auto rows whose secret is no longer in
+// secretIDs, never touch manual rows. Returns the changed secret IDs.
+func (m *mockSecretStore) SyncGlobalDefaultBindings(_ context.Context, workspaceID string, secretIDs []string) (added, removed []string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.syncBindingsErr != nil {
+		return nil, nil, m.syncBindingsErr
+	}
+	want := make(map[string]struct{}, len(secretIDs))
+	for _, sid := range secretIDs {
+		want[sid] = struct{}{}
+	}
+	rows := m.bindings[workspaceID]
+	if rows == nil {
+		rows = make(map[string]string)
+	}
+	for sid := range want {
+		if _, ok := rows[sid]; !ok {
+			rows[sid] = BindSourceGlobalDefault
+			added = append(added, sid)
+		}
+	}
+	for sid, src := range rows {
+		if src != BindSourceGlobalDefault {
+			continue
+		}
+		if _, ok := want[sid]; !ok {
+			delete(rows, sid)
+			removed = append(removed, sid)
+		}
+	}
+	if len(rows) == 0 {
+		delete(m.bindings, workspaceID)
+	} else {
+		m.bindings[workspaceID] = rows
+	}
+	return added, removed, nil
 }
 
 func (m *mockSecretStore) GetBindings(_ context.Context, workspaceID string) ([]*UserSecret, error) {
@@ -209,7 +249,7 @@ func (m *mockSecretStore) GetBindings(_ context.Context, workspaceID string) ([]
 	defer m.mu.Unlock()
 	sids := m.bindings[workspaceID]
 	var result []*UserSecret
-	for _, sid := range sids {
+	for sid := range sids {
 		if s, ok := m.secrets[sid]; ok {
 			cp := *s
 			result = append(result, &cp)
@@ -223,10 +263,8 @@ func (m *mockSecretStore) GetBindingsForSecret(_ context.Context, secretID strin
 	defer m.mu.Unlock()
 	var workspaces []string
 	for wsID, sids := range m.bindings {
-		for _, sid := range sids {
-			if sid == secretID {
-				workspaces = append(workspaces, wsID)
-			}
+		if _, ok := sids[secretID]; ok {
+			workspaces = append(workspaces, wsID)
 		}
 	}
 	return workspaces, nil

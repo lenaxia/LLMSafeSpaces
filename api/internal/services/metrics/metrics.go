@@ -598,14 +598,29 @@ var (
 	// secretsReconcileSkipsTotal counts per-workspace skips inside an
 	// otherwise-successful pass by reason: "manifest_read" (live
 	// manifest derivation failed), "row_read" (stored revision row
-	// unreadable), "mint" (drift mint failed). A skip costs one period
-	// of latency for THAT workspace only — the next pass retries.
+	// unreadable), "mint" (drift mint failed), "policy_sync"
+	// (global-default policy convergence failed). A skip costs one
+	// period of latency for THAT workspace only — the next pass
+	// retries.
 	secretsReconcileSkipsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmsafespaces_secrets_reconcile_skips_total",
-			Help: "Total per-workspace secrets reconcile skips by reason (manifest_read, row_read, mint) — skipped inside an otherwise-successful pass.",
+			Help: "Total per-workspace secrets reconcile skips by reason (manifest_read, row_read, mint, policy_sync) — skipped inside an otherwise-successful pass.",
 		},
 		[]string{"reason"},
+	)
+
+	// secretsReconcilePolicyBindingsTotal counts global-default policy
+	// binding rows the reconcile loop materialized (op=added) or
+	// withdrew (op=removed). Steady state is zero per pass; a
+	// sustained non-zero rate means policy flips (or a bug) are
+	// churning bindings.
+	secretsReconcilePolicyBindingsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_secrets_reconcile_policy_bindings_total",
+			Help: "Global-default policy binding rows converged by the secrets reconcile loop by op (added, removed).",
+		},
+		[]string{"op"},
 	)
 
 	// secretsDeliveryDivergentTotal counts divergent observations by
@@ -701,6 +716,22 @@ func RecordSecretsReconcileSkip(reason string) {
 // tests can reset it between cases.
 func SecretsReconcileSkipsCounter() *prometheus.CounterVec {
 	return secretsReconcileSkipsTotal
+}
+
+// RecordSecretsPolicyBinding increments the policy-bindings counter.
+// op must be one of "added", "removed"; an empty op is counted as
+// "unknown".
+func RecordSecretsPolicyBinding(op string) {
+	if op == "" {
+		op = "unknown"
+	}
+	secretsReconcilePolicyBindingsTotal.WithLabelValues(op).Inc()
+}
+
+// SecretsPolicyBindingsCounter exposes the underlying CounterVec so
+// tests can reset it between cases.
+func SecretsPolicyBindingsCounter() *prometheus.CounterVec {
+	return secretsReconcilePolicyBindingsTotal
 }
 
 // RecordSecretsDeliveryDivergent increments the divergence counter.

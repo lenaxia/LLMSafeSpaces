@@ -119,6 +119,9 @@ func (s *reloadE2EStore) SetBindings(_ context.Context, _ string, _ []string) er
 func (s *reloadE2EStore) AddBindings(_ context.Context, _ string, _ []string) error {
 	panic("unexpected AddBindings")
 }
+func (s *reloadE2EStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	panic("unexpected SyncGlobalDefaultBindings")
+}
 func (s *reloadE2EStore) GetBindingsForSecret(_ context.Context, _ string) ([]string, error) {
 	panic("unexpected GetBindingsForSecret")
 }

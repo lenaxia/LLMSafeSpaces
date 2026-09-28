@@ -140,8 +140,17 @@ func (s *e2eSecretStore) GetSecretByName(_ context.Context, _, _ string) (*secre
 func (s *e2eSecretStore) ListSecrets(_ context.Context, _ string) ([]*secrets.UserSecret, error) {
 	panic("unexpected ListSecrets in bootstrap e2e")
 }
+
+// The bootstrap handler's policy step calls the service-level
+// SyncGlobalDefaultBindings on EVERY boot (suspended workspaces
+// converge there), which reaches ListGlobalDefaultSecrets + the store
+// sync. This fixture models an owner with no global defaults: both
+// are manifest-tier reads that change nothing.
 func (s *e2eSecretStore) ListGlobalDefaultSecrets(_ context.Context, _ string) ([]*secrets.UserSecret, error) {
-	panic("unexpected ListGlobalDefaultSecrets in bootstrap e2e")
+	return nil, nil
+}
+func (s *e2eSecretStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	return nil, nil, nil
 }
 func (s *e2eSecretStore) UpdateSecret(_ context.Context, _ *secrets.UserSecret) error {
 	panic("unexpected UpdateSecret in bootstrap e2e")
