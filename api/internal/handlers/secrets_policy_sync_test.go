@@ -35,11 +35,17 @@ func TestTestSecretStoreSyncGlobalDefaultBindings_ManualShadowAndFlagFlip(t *tes
 	assert.ElementsMatch(t, []string{"sec-b"}, removed)
 	assert.Equal(t, []string{"sec-a"}, store.bindings[ws])
 
+	// Re-assert policy (sec-c materializes as an AUTO row), then a
+	// manual replace-set that INCLUDES sec-c: the replace clears auto
+	// tracking, so sec-c's row is now manual. The discriminating check:
+	// a subsequent flag-off sync must NOT remove sec-c — without the
+	// tracking clear it would still be auto-marked and get retracted.
 	_, _, err = store.SyncGlobalDefaultBindings(ctx, ws, []string{"sec-c"})
 	require.NoError(t, err)
-	require.NoError(t, store.SetBindings(ctx, ws, []string{"sec-a"}))
-	added, _, err = store.SyncGlobalDefaultBindings(ctx, ws, []string{"sec-c"})
+	require.NoError(t, store.SetBindings(ctx, ws, []string{"sec-c"}))
+	added, removed, err = store.SyncGlobalDefaultBindings(ctx, ws, nil)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"sec-c"}, added,
-		"policy re-asserts after a manual replace cleared the auto rows")
+	assert.Empty(t, added)
+	assert.Empty(t, removed, "sec-c went manual with the replace-set; flag-off must not retract it")
+	assert.Equal(t, []string{"sec-c"}, store.bindings[ws])
 }

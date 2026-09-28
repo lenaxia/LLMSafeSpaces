@@ -209,6 +209,18 @@ func WithPolicySource(p PolicySource) Option {
 	}
 }
 
+// PolicySource exposes the installed policy convergence seam. The
+// accessor exists for the app.go wiring pin (the
+// TestSecretsReconcile_PolicySourceWired pattern, mirroring
+// TestPodBootstrapHandler_LoggerWired): deleting the
+// WithPolicySource(secretService) line in app.go compiles and passes
+// every loop test (which construct their own Service), silently
+// disabling policy convergence for Active workspaces — the exact
+// regression shape this service exists to fix.
+func (s *Service) PolicySource() PolicySource {
+	return s.policy
+}
+
 // New constructs the reconcile Service. lister, revisions and notifier
 // are required; a nil dependency fails the first pass loudly.
 func New(lister WorkspaceLister, revisions RevisionSource, notifier Notifier, opts ...Option) *Service {

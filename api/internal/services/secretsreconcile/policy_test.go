@@ -130,9 +130,9 @@ func TestRunPass_NilPolicySourceStillReconciles(t *testing.T) {
 // TestRunPass_EmptyOwnerSkipsPolicyStep: an unparseable CRD owner
 // (empty spec.owner.userID) must not strip the workspace's auto rows —
 // an empty keep-set reads as "owner has no defaults". The manifest
-// tier was already owner-keyed (pre-existing), so the workspace is
-// skipped by the manifest step regardless; the guard keeps step 0
-// from being the first destructive reader.
+// step still runs for such workspaces (owner-keyed hashes are
+// pre-existing behavior); the guard only keeps step 0 from being a
+// destructive reader of the same broken owner field.
 func TestRunPass_EmptyOwnerSkipsPolicyStep(t *testing.T) {
 	resetReconcileMetrics()
 	store := newCompositionStore()

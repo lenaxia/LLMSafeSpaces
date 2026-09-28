@@ -52,6 +52,13 @@ Chose **policy materialization** (flag → binding rows, level-triggered by the 
 - **Missing boot-side e2e (added):** `TestPodBootstrap_GlobalDefaultSecretReachesBatch` — a real decryptable global-default env-secret created after the workspace, through the real SecretService + handler, asserted present in the delivered batch with plaintext intact and global_default provenance on the materialized row.
 - Reviewer's minor robustness note (empty `spec.owner.userID` stripping auto rows) closed by the guard above.
 
+### Review round 2 (PR #1597, automated reviewer: REQUEST CHANGES — no production-code defects; two test-side completions)
+
+- **Wiring pin (added):** `Service.PolicySource()` accessor + `TestSecretsReconcile_PolicySourceWired` in `secrets_wiring_test.go` mirroring app.go's exact construction sequence (and the without-option control) — deleting the `WithPolicySource(secretService)` line now has a test whose pattern forces lockstep, per the repo's `TestPodBootstrapHandler_LoggerWired` precedent.
+- **Discriminating replace-set interleaving (added):** all three fixture contract tests now materialize sec-c as AUTO, replace-set INCLUDES sec-c (flips it manual via the tracking clear), then flag-off must NOT retract it — red if the `SetBindings`-clears-tracking sub-fix is removed.
+- **Comment corrected:** the empty-owner test's justification no longer claims the manifest step skips (it doesn't — `ManifestFor` runs owner-keyed regardless).
+- **Boot-path empty-owner guard (symmetry, non-blocking note):** same `ws.UserID != ""` guard as the loop.
+
 ---
 
 ## Blockers

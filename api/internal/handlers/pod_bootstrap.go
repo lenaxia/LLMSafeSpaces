@@ -316,8 +316,11 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	// the workspace was down 304-compares against the converged rows,
 	// not the stale ones. Best-effort by design: a failure is logged
 	// and the bootstrap proceeds (the reconcile loop re-converges once
-	// the workspace is Active).
-	if ps, ok := h.injector.(bootstrapPolicySource); ok {
+	// the workspace is Active). The empty-owner guard mirrors the
+	// loop's: a broken owner field must not turn the sync into a
+	// destructive strip (ws.UserID comes from the DB row, so this is
+	// symmetry rather than a reachable path).
+	if ps, ok := h.injector.(bootstrapPolicySource); ok && ws.UserID != "" {
 		if _, _, serr := ps.SyncGlobalDefaultBindings(c.Request.Context(), ws.UserID, req.WorkspaceID); serr != nil {
 			if h.logger != nil {
 				h.logger.Error("pod-bootstrap: global-default policy sync failed (continuing)", serr,
