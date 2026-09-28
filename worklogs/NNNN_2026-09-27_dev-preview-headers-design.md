@@ -146,16 +146,20 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The Files Modified entry's garbled trailing clause dropped (r28's appendage was false under both readings and promised a stability the tree cannot pin); the entry ends at "honest scoping" with the structural fix — the r28 bullet's precise "cannot be falsified by its own hunk" — carrying the explanation.
 
+### r30 review round (owner simplification ruling, 2026-09-28 — design rewritten)
+
+The owner ruled a radical simplification, superseding every prior amendment framing: dev-preview headers become a **plain agentd MCP tool** — set/clear/list of header name+value, LITERAL values only, stored plainly in agentd (a JSON state file), injected at the agentd forwarding hop (devPreviewHandler's Rewrite, after the existing Authorization strip). The rewrite DELETED: the mint model, Secrets storage, write-only ceremony, owner-scoping, the consent-flow integration, the inject/forward mode split (now §8's one-line future note), the uniform-502 machinery, and the entire CRD/webhook/settings/DTO/SDK surface — the deleted-ledger table (§9) records each cut and why it is obviated rather than merely unfashionable. The threat model rewrites to the owner's argument: the terminal service is agent-owned; nothing on this surface is sensitive beyond what the agent already has; the ONLY guard is literal-values-only, which excludes platform-Secret referencing by construction (no reference machinery exists). 266 lines → ~120. Failure semantics: none — no resolution step, misconfiguration impossible by construction. Rollout: one agentd PR. The 29 prior rounds' record stands below as history: their findings were true of the deleted surface.
+
 ## Tests Run
 
-None (design doc); §8 defines the implementation PR's test contract (validation tables, director unit tests, gate-ordering pins, the pod-boundary source-scan pin, the e2e arm with a header-demanding fixture service).
+None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, persistence round-trip, the literal-only source-scan pin, the e2e arm).
 
 ## Next Steps
 
-Design review rounds; on approval, §10's seven-step rollout (each step green independently; the config's absence is the flag).
+Design review rounds on the simplified shape; on approval, §7's single-step rollout (one agentd PR).
 
 ## Files Modified
 
-- `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design)
+- `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design; r30: radically simplified per owner ruling)
 - `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
