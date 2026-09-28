@@ -307,7 +307,10 @@ func (a *dbSecretStoreAdapter) AddBindings(_ context.Context, workspaceID string
 
 // SyncGlobalDefaultBindings mirrors the PgSecretStore contract for the
 // in-memory dev-mode store: insert missing auto rows, remove auto rows
-// whose secret is not in secretIDs, never touch manual rows.
+// whose secret is not in secretIDs, never touch manual rows. A secret
+// whose row pre-exists as manual is shadowed exactly as ON CONFLICT DO
+// NOTHING shadows it in Postgres: the row stays manual forever, so a
+// later flag flip can never remove it.
 func (a *dbSecretStoreAdapter) SyncGlobalDefaultBindings(_ context.Context, workspaceID string, secretIDs []string) ([]string, []string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -338,24 +341,22 @@ func (a *dbSecretStoreAdapter) SyncGlobalDefaultBindings(_ context.Context, work
 		}
 		next = append(next, sid)
 	}
-	newAuto := make(map[string]struct{}, len(auto)+len(want))
-	for sid := range auto {
-		newAuto[sid] = struct{}{}
-	}
 	for sid := range want {
 		if _, ok := inList[sid]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim.
 			next = append(next, sid)
+			auto[sid] = struct{}{}
 			added = append(added, sid)
 		}
-		newAuto[sid] = struct{}{}
 	}
 	if len(next) > 0 {
 		a.bindings[workspaceID] = next
 	} else {
 		delete(a.bindings, workspaceID)
 	}
-	if len(newAuto) > 0 {
-		a.autoBound[workspaceID] = newAuto
+	if len(auto) > 0 {
+		a.autoBound[workspaceID] = auto
 	} else {
 		delete(a.autoBound, workspaceID)
 	}

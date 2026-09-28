@@ -44,6 +44,14 @@ Chose **policy materialization** (flag → binding rows, level-triggered by the 
 4. **Existing rows backfill `manual`, not `global_default`.** Retroactive distinction is impossible; manual is the conservative label (nothing is auto-removed).
 5. **Assumptions stated and validated** (Rule 7): bindings-table FKs are `ON DELETE CASCADE` (validated against live schema — invalidated my initial orphan-cleanup premise; the DeleteSecret tx change was reverted as unnecessary); `SyncGlobalDefaultBindings` on every bootstrap adds one manifest-tier query per boot (acceptable — boot is infrequent); reconcile pass cost grows by one `ListGlobalDefaultSecrets` + one advisory-locked tx per Active workspace per pass (same order as the existing manifest reads).
 
+### Review round 1 (PR #1597, automated reviewer: REQUEST CHANGES)
+
+- **Finding 1 (validated, fixed):** the three in-memory `SyncGlobalDefaultBindings` fixtures (dbSecretStoreAdapter / testSecretStore / memSecretStore) auto-marked every wanted secret — including rows that pre-existed as manual — so a later flag flip would retract a manual row (contract violation; PgSecretStore and mockSecretStore were correct). Fixed: auto-provenance applies only to rows the sync itself inserts; `SetBindings` replace now clears auto tracking in all three (the adapter already did). Added `ManualShadowAndFlagFlip` fixture tests for each of the three.
+- **Finding 2 (validated, fixed):** the ConcurrentWallTime threshold fix was self-contradictory (observed 235–329ms parallel under load vs a fixed 200ms bound). Replaced the absolute bound with a load-relative discriminator: a serialized baseline of the same N applies is measured in the same run, and concurrent must stay under 3/4 of the measured baseline.
+- **Missing composition coverage (added):** `TestRunPass_Composition_PolicyMaterializesForExistingWorkspace` — the REAL SecretService as both RevisionSource and PolicySource over a store fixture, one pass over a workspace that predates the secret: asserts the provenance-tagged row materializes, the manifest diverges, seq mints (1→2), and the pod is notified. Plus the flag-flip retraction / manual-survives composition twin, and an empty-owner guard test (`TestRunPass_EmptyOwnerSkipsPolicyStep`, guard added in service.go).
+- **Missing boot-side e2e (added):** `TestPodBootstrap_GlobalDefaultSecretReachesBatch` — a real decryptable global-default env-secret created after the workspace, through the real SecretService + handler, asserted present in the delivered batch with plaintext intact and global_default provenance on the materialized row.
+- Reviewer's minor robustness note (empty `spec.owner.userID` stripping auto rows) closed by the guard above.
+
 ---
 
 ## Blockers

@@ -376,7 +376,10 @@ func (s *Service) reconcileWorkspace(ctx context.Context, ws ActiveWorkspace) {
 	// global-default secrets undelivered to pre-existing workspaces).
 	// A failure skips THIS workspace this pass (counted, never fatal);
 	// manual binding rows are never touched (store-level contract).
-	if s.policy != nil {
+	// An empty owner (unparseable CRD spec.owner.userID) skips the
+	// step entirely: an empty keep-set would read as "owner has no
+	// defaults" and strip the workspace's auto rows every pass.
+	if s.policy != nil && ws.OwnerUserID != "" {
 		added, removed, err := s.policy.SyncGlobalDefaultBindings(ctx, ws.OwnerUserID, ws.WorkspaceID)
 		if err != nil {
 			metrics.RecordSecretsReconcileSkip(reasonPolicySync)

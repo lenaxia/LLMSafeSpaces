@@ -237,6 +237,11 @@ func (m *testSecretStore) SetBindings(_ context.Context, workspaceID string, sec
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bindings[workspaceID] = secretIDs
+	// A manual replace-set is the user's explicit claim over the whole
+	// set: any prior auto rows for this workspace are gone with it
+	// (mirrors the adapter; the reconciler re-asserts current policy
+	// on its next pass).
+	delete(m.autoBound, workspaceID)
 	return nil
 }
 
@@ -273,10 +278,13 @@ func (m *testSecretStore) SyncGlobalDefaultBindings(_ context.Context, workspace
 	}
 	for sid := range want {
 		if _, ok := inList[sid]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim and
+			// shadows the policy (matches PgSecretStore ON CONFLICT).
 			next = append(next, sid)
+			auto[sid] = struct{}{}
 			added = append(added, sid)
 		}
-		auto[sid] = struct{}{}
 	}
 	if len(next) > 0 {
 		m.bindings[workspaceID] = next

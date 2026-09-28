@@ -442,6 +442,9 @@ func (m *memSecretStore) DeleteSecret(_ context.Context, uid, id string) error {
 }
 func (m *memSecretStore) SetBindings(_ context.Context, ws string, ids []string) error {
 	m.bindings[ws] = ids
+	// A manual replace-set is the user's explicit claim over the whole
+	// set: any prior auto rows go with it (mirrors the adapter).
+	delete(m.autoBound, ws)
 	return nil
 }
 func (m *memSecretStore) AddBindings(_ context.Context, ws string, ids []string) error {
@@ -498,10 +501,13 @@ func (m *memSecretStore) SyncGlobalDefaultBindings(_ context.Context, ws string,
 	}
 	for id := range want {
 		if _, ok := inList[id]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim and
+			// shadows the policy (matches PgSecretStore ON CONFLICT).
 			next = append(next, id)
+			auto[id] = struct{}{}
 			added = append(added, id)
 		}
-		auto[id] = struct{}{}
 	}
 	m.bindings[ws] = next
 	if len(auto) > 0 {
