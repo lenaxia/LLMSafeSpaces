@@ -158,10 +158,13 @@ The r30 shape confirmed right ("the right ruling... the ledger records it honest
 
 The record-correction round re-created the record-defect class in its own hunks: (1) the "95 lines" correction was stale on arrival — the file is 108 at HEAD (r31's own edits grew it 95→108; 5th recurrence of the counting class); fixed by carrying measured `wc -l` values per shipped tree (ad2a4f53=95, HEAD=108) instead of hand counts. (2) Two `:87-89` spans survived the "citation spans corrected" claim — design §1 and inline in §3's code block (the r10 false-completion class); both fixed to `:87` (comment :85-86), and §1's lead mechanics sentence corrected in the same edit (the agentd hop also drops the stdlib-stripped X-Forwarded-* family, per §1's own pin). (3) r31 sat above r30 — reordered to ascending. Fold-ins: §1's garbled "minus nothing else it set itself" → "minus the tunnel Authorization the API hop set"; §3/§6 "the only headers that reach this hop"/"complete inbound set" → "caller-content" (Authorization/X-Forwarded-*/WS descriptors DO reach the hop; they're stripped around Rewrite); §6 storage arm tiered (unit-simulable fresh-handler-re-reads-JSON arm vs container-restart/suspend at e2e tier); §5 flags `source:"tool"` as a new enum value (code comment enumerates "space"|"operator"); PR body refreshed for r31/r32.
 
+### r33 review round (CHANGES_REQUESTED, 22:40:31Z — commit 0845b0d4)
+
+One residual, and it is mine twice over: a double blank at :160-161 (the r32 reorder splice did not consume the relocated blank) shipped RED under the committed sweep — because my r32 sweep invocation passed NO file argument, so it checked nothing (the "sweeps complete" line was vacuous; the script's usage is `<file>`). The r21 pin (&&-chained sweep-with-file blocks red pushes) was honored in form only. Fixed: blank collapsed; this round's sweep runs WITH the file argument and the push is &&-chained. Fold-ins: design §1's "(§1's pin)" self-citation → "below"; Tests Run's "persistence round-trip" name-drift → "storage lifecycle (tiered)" to match §6's arm.
 
 ## Tests Run
 
-None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, persistence round-trip, the literal-only source-scan pin, the e2e arm).
+None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, storage lifecycle (tiered) arm, the literal-only source-scan pin, the e2e arm).
 
 ## Next Steps
 
