@@ -9,6 +9,11 @@
 #   Lines above the terminator are findings; terminator-only = clean.
 #   Non-zero exit on findings OR on any sweep error (a failed sweep is not a pass).
 f="$1"
+# r34: the empty/missing-argument guard. Without it, $f="" makes the awk
+# sweeps silently skip (error never captured) and the tail errors go to the
+# script's own stderr — empty $out, terminator printed, exit 0: a vacuous
+# clean. This is the exact mechanism that let the r32 red tree ship.
+[ -n "$f" ] || { echo "SWEEP ERROR (not a pass): usage: $0 <file>" >&2; exit 2; }
 out=$(mktemp); err=$(mktemp); trap 'rm -f "$out" "$err"' EXIT
 {
   awk 'NR>1 && $0=="" && prev=="" {print NR": DBL"} {prev=$0}' "$f" 2>"$err"

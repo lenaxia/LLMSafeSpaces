@@ -148,7 +148,7 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 ### r30 review round (owner simplification ruling, 2026-09-28 — design rewritten)
 
-The owner ruled a radical simplification, superseding every prior amendment framing: dev-preview headers become a **plain agentd MCP tool** — set/clear/list of header name+value, LITERAL values only, stored plainly in agentd (a JSON state file), injected at the agentd forwarding hop (devPreviewHandler's Rewrite, after the existing Authorization strip). The rewrite DELETED: the mint model, Secrets storage, write-only ceremony, owner-scoping, the consent-flow integration, the inject/forward mode split (now §8's free-today note), the uniform-502 machinery, and the entire CRD/webhook/settings/DTO/SDK surface — the deleted-ledger table (§9) records each cut and why it is obviated rather than merely unfashionable. The threat model rewrites to the owner's argument: the terminal service is agent-owned; nothing on this surface is sensitive beyond what the agent already has; the ONLY guard is literal-values-only, which excludes platform-Secret referencing by construction (no reference machinery exists). 266 → 95 lines at r30 (r32 correction, `wc -l` of the shipped trees: ad2a4f53 = 95; r31's edits grew it to 108 at HEAD — the r31 correction claiming "the shipped file is 95" was stale on arrival, the 5th recurrence of the counting class; this entry now carries the measured values, not a hand count). Failure semantics: none — no resolution step, misconfiguration impossible by construction. Rollout: one agentd PR. The 29 prior rounds' record stands below as history: their findings were true of the deleted surface.
+The owner ruled a radical simplification, superseding every prior amendment framing: dev-preview headers become a **plain agentd MCP tool** — set/clear/list of header name+value, LITERAL values only, stored plainly in agentd (a JSON state file), injected at the agentd forwarding hop (devPreviewHandler's Rewrite, after the existing Authorization strip). The rewrite DELETED: the mint model, Secrets storage, write-only ceremony, owner-scoping, the consent-flow integration, the inject/forward mode split (now §8's free-today note), the uniform-502 machinery, and the entire CRD/webhook/settings/DTO/SDK surface — the deleted-ledger table (§9) records each cut and why it is obviated rather than merely unfashionable. The threat model rewrites to the owner's argument: the terminal service is agent-owned; nothing on this surface is sensitive beyond what the agent already has; the ONLY guard is literal-values-only, which excludes platform-Secret referencing by construction (no reference machinery exists). 266 → 95 lines at r30 (r32 correction, `wc -l` of the shipped trees: ad2a4f53 = 95; r31's edits grew it to 108 at HEAD — the r31 correction claiming "the shipped file is 95" was stale on arrival, the 5th recurrence of the counting class; this entry now carries the measured values, not a hand count). Failure semantics: none — no resolution step, misconfiguration impossible by construction. Rollout: one agentd PR. The 29 prior rounds' record stands above as history: their findings were true of the deleted surface.
 
 ### r31 review round (CHANGES_REQUESTED, 21:59:59Z — commit ad2a4f53)
 
@@ -164,7 +164,7 @@ One residual, and it is mine twice over: a double blank at :160-161 (the r32 reo
 
 ## Tests Run
 
-None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, storage lifecycle (tiered) arm, the literal-only source-scan pin, the e2e arm).
+None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, storage lifecycle (tiered) arm, the X-Forwarded disposition arm, the literal-only source-scan pin, the e2e arm).
 
 ## Next Steps
 
@@ -173,5 +173,5 @@ Design review rounds on the simplified shape; on approval, §7's single-step rol
 ## Files Modified
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design; r30: radically simplified per owner ruling)
-- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping)
+- `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping; r34: the empty-argument guard — vacuous-clean hole closed)
 - `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
