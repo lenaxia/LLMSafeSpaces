@@ -22,6 +22,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/secretsreconcile"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	kmocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	lmocks "github.com/lenaxia/llmsafespaces/mocks/logger"
@@ -563,3 +564,56 @@ func TestFailClosedRenamer(t *testing.T) {
 		t.Fatalf("fail-closed renamer must error on every call")
 	}
 }
+
+// TestSecretsReconcile_PolicySourceWired is the regression guard for the
+// WithPolicySource wiring in app.go. Without it, deleting that one line
+// compiles, passes every loop test (each constructs its own Service with
+// the option), and silently disables global-default policy convergence
+// for Active workspaces — resurrecting the shipped bug this feature
+// fixed. Mirrors TestPodBootstrapHandler_LoggerWired's approach: mirror
+// app.go's exact construction sequence and assert the seam landed.
+func TestSecretsReconcile_PolicySourceWired(t *testing.T) {
+	keyStore := &dbKeyStoreAdapter{}
+	dekCache := &memDEKCache{store: make(map[string][]byte)}
+	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
+	secretStore := &dbSecretStoreAdapter{}
+	secretService := secrets.NewSecretService(keyService, secretStore)
+
+	lister := &fakeActiveWorkspaceLister{}
+	notifier := &fakeReconcileNotifier{}
+
+	// Mirror the exact construction sequence app.go uses.
+	svc := secretsreconcile.New(
+		lister,
+		secretService,
+		notifier,
+		secretsreconcile.WithPolicySource(secretService),
+		secretsreconcile.WithInterval(secretsreconcile.DefaultInterval),
+	)
+	if svc.PolicySource() == nil {
+		t.Fatalf("WithPolicySource(secretService) must install the policy seam; without it global-default secrets never materialize for existing workspaces (the bug this fixes)")
+	}
+
+	// The control: the same construction WITHOUT the option leaves the
+	// seam absent — this is the state a deleted app.go line produces.
+	bare := secretsreconcile.New(lister, secretService, notifier,
+		secretsreconcile.WithInterval(secretsreconcile.DefaultInterval))
+	if bare.PolicySource() != nil {
+		t.Fatalf("constructing without WithPolicySource must leave the seam unset; the wiring pin's control case is wrong")
+	}
+}
+
+// fakeActiveWorkspaceLister satisfies secretsreconcile.WorkspaceLister
+// for the wiring test (the loop itself is covered in its own package).
+type fakeActiveWorkspaceLister struct{}
+
+func (f *fakeActiveWorkspaceLister) ListActiveWorkspaces(context.Context) ([]secretsreconcile.ActiveWorkspace, error) {
+	return nil, nil
+}
+
+// fakeReconcileNotifier satisfies secretsreconcile.Notifier.
+type fakeReconcileNotifier struct{}
+
+func (f *fakeReconcileNotifier) Notify(context.Context, string, string) error { return nil }

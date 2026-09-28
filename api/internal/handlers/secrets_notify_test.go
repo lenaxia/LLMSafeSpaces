@@ -207,6 +207,9 @@ func (s *notifyPathStore) AddBindings(_ context.Context, ws string, ids []string
 	s.bindings[ws] = append(s.bindings[ws], ids...)
 	return nil
 }
+func (s *notifyPathStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	return nil, nil, nil
+}
 
 func (s *notifyPathStore) QueryAudit(_ context.Context, _ string, _ secrets.AuditQuery) ([]*secrets.AuditEntry, error) {
 	return nil, nil

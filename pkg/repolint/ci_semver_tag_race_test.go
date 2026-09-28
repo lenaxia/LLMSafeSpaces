@@ -166,7 +166,7 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 		t.Fatalf("workflow does not parse: %v", err)
 	}
 	push, _ := wf.On["push"].(map[string]any)
-	raw, _ := push["tags"]
+	raw := push["tags"]
 	switch v := raw.(type) {
 	case nil:
 		return nil

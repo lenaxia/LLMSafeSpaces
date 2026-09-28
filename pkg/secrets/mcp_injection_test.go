@@ -97,6 +97,9 @@ func (m *mcpInjectionMockStore) SetBindings(_ context.Context, _ string, _ []str
 func (m *mcpInjectionMockStore) AddBindings(_ context.Context, _ string, _ []string) error {
 	return nil
 }
+func (m *mcpInjectionMockStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	return nil, nil, nil
+}
 func (m *mcpInjectionMockStore) GetBindingsForSecret(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

@@ -117,6 +117,16 @@ type Notifier interface {
 	Notify(ctx context.Context, userID, workspaceID string) error
 }
 
+// PolicySource materializes the global-default secret policy into
+// binding rows for one workspace (see SecretService.SyncGlobalDefaultBindings).
+// The loop calls it BEFORE deriving the live manifest so a policy flip
+// diverges the manifest in the SAME pass — mint and notify then follow
+// the existing machinery. Optional: nil disables policy convergence
+// (pre-policy wiring keeps its behavior).
+type PolicySource interface {
+	SyncGlobalDefaultBindings(ctx context.Context, ownerUserID, workspaceID string) (added, removed []string, err error)
+}
+
 // Divergence reasons (machine-readable, epic #1158 law 5). Note:
 // reasonLegacyFormat is counted in
 // secrets_delivery_divergent_total but deliberately does NOT mark the
@@ -128,6 +138,7 @@ const (
 	reasonStaleSeq     = "stale_seq"
 	reasonLegacyFormat = "legacy_format"
 	reasonNotifyFailed = "notify_failed"
+	reasonPolicySync   = "policy_sync"
 )
 
 type backoffState struct {
@@ -140,6 +151,7 @@ type Service struct {
 	lister      WorkspaceLister
 	revisions   RevisionSource
 	notifier    Notifier
+	policy      PolicySource
 	logger      pkginterfaces.LoggerInterface
 	interval    time.Duration
 	backoffBase time.Duration
@@ -184,6 +196,29 @@ func WithBackoff(base, cap time.Duration) Option {
 			s.backoffCap = cap
 		}
 	}
+}
+
+// WithPolicySource installs the global-default policy convergence seam.
+// A nil PolicySource (the zero Option value) is ignored — the loop then
+// keeps its pre-policy behavior.
+func WithPolicySource(p PolicySource) Option {
+	return func(s *Service) {
+		if p != nil {
+			s.policy = p
+		}
+	}
+}
+
+// PolicySource exposes the installed policy convergence seam. The
+// accessor exists for the app.go wiring pin (the
+// TestSecretsReconcile_PolicySourceWired pattern, mirroring
+// TestPodBootstrapHandler_LoggerWired): deleting the
+// WithPolicySource(secretService) line in app.go compiles and passes
+// every loop test (which construct their own Service), silently
+// disabling policy convergence for Active workspaces — the exact
+// regression shape this service exists to fix.
+func (s *Service) PolicySource() PolicySource {
+	return s.policy
 }
 
 // New constructs the reconcile Service. lister, revisions and notifier
@@ -345,6 +380,33 @@ func (s *Service) runPass(ctx context.Context) error {
 }
 
 func (s *Service) reconcileWorkspace(ctx context.Context, ws ActiveWorkspace) {
+	// Step 0 — global-default policy convergence. The batch builder
+	// and the manifest tier read binding rows only, so the
+	// global_default FLAG must be materialized into bindings before
+	// this pass derives the live manifest — otherwise a flag flip is
+	// invisible to every downstream step (the gap that left
+	// global-default secrets undelivered to pre-existing workspaces).
+	// A failure skips THIS workspace this pass (counted, never fatal);
+	// manual binding rows are never touched (store-level contract).
+	// An empty owner (unparseable CRD spec.owner.userID) skips the
+	// step entirely: an empty keep-set would read as "owner has no
+	// defaults" and strip the workspace's auto rows every pass.
+	if s.policy != nil && ws.OwnerUserID != "" {
+		added, removed, err := s.policy.SyncGlobalDefaultBindings(ctx, ws.OwnerUserID, ws.WorkspaceID)
+		if err != nil {
+			metrics.RecordSecretsReconcileSkip(reasonPolicySync)
+			s.warn("secretsreconcile: policy sync failed; skipping workspace this pass",
+				"workspaceID", ws.WorkspaceID, "error", err.Error())
+			return
+		}
+		for range added {
+			metrics.RecordSecretsPolicyBinding("added")
+		}
+		for range removed {
+			metrics.RecordSecretsPolicyBinding("removed")
+		}
+	}
+
 	// Step 1 — the LIVE manifest (zero decrypts), derived from the
 	// rows the builder would read, keyed by the workspace's OWNER. A
 	// read failure skips THIS workspace (counted, never fatal): the

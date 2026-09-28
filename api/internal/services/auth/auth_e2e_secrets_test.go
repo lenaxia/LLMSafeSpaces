@@ -345,6 +345,7 @@ func (m *memDEKCache) EvictDEK(_ context.Context, id string) error         { del
 type memSecretStore struct {
 	secrets   map[string]*secrets.UserSecret
 	bindings  map[string][]string
+	autoBound map[string]map[string]struct{} // workspace -> bind_source=global_default ids
 	audit     []*secrets.AuditEntry
 	counter   int
 	revisions map[string]memRevisionRow
@@ -441,6 +442,9 @@ func (m *memSecretStore) DeleteSecret(_ context.Context, uid, id string) error {
 }
 func (m *memSecretStore) SetBindings(_ context.Context, ws string, ids []string) error {
 	m.bindings[ws] = ids
+	// A manual replace-set is the user's explicit claim over the whole
+	// set: any prior auto rows go with it (mirrors the adapter).
+	delete(m.autoBound, ws)
 	return nil
 }
 func (m *memSecretStore) AddBindings(_ context.Context, ws string, ids []string) error {
@@ -461,6 +465,57 @@ func (m *memSecretStore) AddBindings(_ context.Context, ws string, ids []string)
 	}
 	m.bindings[ws] = existing
 	return nil
+}
+
+// SyncGlobalDefaultBindings mirrors the PgSecretStore contract: insert
+// missing auto rows, remove auto rows absent from ids, never touch
+// manual rows.
+func (m *memSecretStore) SyncGlobalDefaultBindings(_ context.Context, ws string, ids []string) ([]string, []string, error) {
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	if m.autoBound == nil {
+		m.autoBound = make(map[string]map[string]struct{})
+	}
+	auto := m.autoBound[ws]
+	if auto == nil {
+		auto = make(map[string]struct{})
+	}
+	var added, removed []string
+	existing := m.bindings[ws]
+	inList := make(map[string]struct{}, len(existing))
+	for _, id := range existing {
+		inList[id] = struct{}{}
+	}
+	next := existing[:0:0]
+	for _, id := range existing {
+		if _, isAuto := auto[id]; isAuto {
+			if _, isWant := want[id]; !isWant {
+				delete(auto, id)
+				removed = append(removed, id)
+				continue
+			}
+		}
+		next = append(next, id)
+	}
+	for id := range want {
+		if _, ok := inList[id]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim and
+			// shadows the policy (matches PgSecretStore ON CONFLICT).
+			next = append(next, id)
+			auto[id] = struct{}{}
+			added = append(added, id)
+		}
+	}
+	m.bindings[ws] = next
+	if len(auto) > 0 {
+		m.autoBound[ws] = auto
+	} else {
+		delete(m.autoBound, ws)
+	}
+	return added, removed, nil
 }
 func (m *memSecretStore) GetBindings(_ context.Context, ws string) ([]*secrets.UserSecret, error) {
 	sids := m.bindings[ws]

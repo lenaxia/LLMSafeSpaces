@@ -95,16 +95,18 @@ func (m *testDEKCache) EvictDEK(_ context.Context, sessionID string) error {
 }
 
 type testSecretStore struct {
-	mu       sync.Mutex
-	secrets  map[string]*secrets.UserSecret
-	bindings map[string][]string
-	audit    []*secrets.AuditEntry
+	mu        sync.Mutex
+	secrets   map[string]*secrets.UserSecret
+	bindings  map[string][]string
+	autoBound map[string]map[string]struct{} // workspace -> bind_source=global_default ids
+	audit     []*secrets.AuditEntry
 }
 
 func newTestSecretStore() *testSecretStore {
 	return &testSecretStore{
-		secrets:  make(map[string]*secrets.UserSecret),
-		bindings: make(map[string][]string),
+		secrets:   make(map[string]*secrets.UserSecret),
+		bindings:  make(map[string][]string),
+		autoBound: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -235,7 +237,66 @@ func (m *testSecretStore) SetBindings(_ context.Context, workspaceID string, sec
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bindings[workspaceID] = secretIDs
+	// A manual replace-set is the user's explicit claim over the whole
+	// set: any prior auto rows for this workspace are gone with it
+	// (mirrors the adapter; the reconciler re-asserts current policy
+	// on its next pass).
+	delete(m.autoBound, workspaceID)
 	return nil
+}
+
+// SyncGlobalDefaultBindings mirrors the PgSecretStore contract: insert
+// missing auto rows, remove auto rows absent from secretIDs, never
+// touch manual rows.
+func (m *testSecretStore) SyncGlobalDefaultBindings(_ context.Context, workspaceID string, secretIDs []string) ([]string, []string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	want := make(map[string]struct{}, len(secretIDs))
+	for _, sid := range secretIDs {
+		want[sid] = struct{}{}
+	}
+	auto := m.autoBound[workspaceID]
+	if auto == nil {
+		auto = make(map[string]struct{})
+	}
+	existing := m.bindings[workspaceID]
+	inList := make(map[string]struct{}, len(existing))
+	for _, sid := range existing {
+		inList[sid] = struct{}{}
+	}
+	var added, removed []string
+	next := existing[:0:0]
+	for _, sid := range existing {
+		if _, isAuto := auto[sid]; isAuto {
+			if _, isWant := want[sid]; !isWant {
+				delete(auto, sid)
+				removed = append(removed, sid)
+				continue
+			}
+		}
+		next = append(next, sid)
+	}
+	for sid := range want {
+		if _, ok := inList[sid]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim and
+			// shadows the policy (matches PgSecretStore ON CONFLICT).
+			next = append(next, sid)
+			auto[sid] = struct{}{}
+			added = append(added, sid)
+		}
+	}
+	if len(next) > 0 {
+		m.bindings[workspaceID] = next
+	} else {
+		delete(m.bindings, workspaceID)
+	}
+	if len(auto) > 0 {
+		m.autoBound[workspaceID] = auto
+	} else {
+		delete(m.autoBound, workspaceID)
+	}
+	return added, removed, nil
 }
 
 func (m *testSecretStore) AddBindings(_ context.Context, workspaceID string, secretIDs []string) error {

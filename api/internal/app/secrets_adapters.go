@@ -98,6 +98,7 @@ type dbSecretStoreAdapter struct {
 	mu        sync.Mutex
 	secrets   map[string]*secrets.UserSecret
 	bindings  map[string][]string
+	autoBound map[string]map[string]struct{} // workspace -> auto (bind_source=global_default) secret ids
 	revisions map[string]adapterRevisionRow
 	audit     []*secrets.AuditEntry
 }
@@ -118,6 +119,7 @@ func (a *dbSecretStoreAdapter) init() {
 	if a.secrets == nil {
 		a.secrets = make(map[string]*secrets.UserSecret)
 		a.bindings = make(map[string][]string)
+		a.autoBound = make(map[string]map[string]struct{})
 	}
 }
 
@@ -272,6 +274,11 @@ func (a *dbSecretStoreAdapter) SetBindings(_ context.Context, workspaceID string
 	defer a.mu.Unlock()
 	a.init()
 	a.bindings[workspaceID] = secretIDs
+	// A manual replace-set is the user's explicit claim over the whole
+	// set: any prior auto rows for this workspace are gone with it.
+	// (The reconcile loop re-asserts current global defaults on its
+	// next pass.)
+	delete(a.autoBound, workspaceID)
 	return nil
 }
 
@@ -296,6 +303,64 @@ func (a *dbSecretStoreAdapter) AddBindings(_ context.Context, workspaceID string
 	}
 	a.bindings[workspaceID] = existing
 	return nil
+}
+
+// SyncGlobalDefaultBindings mirrors the PgSecretStore contract for the
+// in-memory dev-mode store: insert missing auto rows, remove auto rows
+// whose secret is not in secretIDs, never touch manual rows. A secret
+// whose row pre-exists as manual is shadowed exactly as ON CONFLICT DO
+// NOTHING shadows it in Postgres: the row stays manual forever, so a
+// later flag flip can never remove it.
+func (a *dbSecretStoreAdapter) SyncGlobalDefaultBindings(_ context.Context, workspaceID string, secretIDs []string) ([]string, []string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.init()
+	want := make(map[string]struct{}, len(secretIDs))
+	for _, sid := range secretIDs {
+		want[sid] = struct{}{}
+	}
+	auto := a.autoBound[workspaceID]
+	if auto == nil {
+		auto = make(map[string]struct{})
+	}
+	existing := a.bindings[workspaceID]
+	inList := make(map[string]struct{}, len(existing))
+	for _, sid := range existing {
+		inList[sid] = struct{}{}
+	}
+
+	var added, removed []string
+	next := existing[:0:0]
+	for _, sid := range existing {
+		if _, isAuto := auto[sid]; isAuto {
+			if _, isWant := want[sid]; !isWant {
+				delete(auto, sid)
+				removed = append(removed, sid)
+				continue
+			}
+		}
+		next = append(next, sid)
+	}
+	for sid := range want {
+		if _, ok := inList[sid]; !ok {
+			// Only rows the sync itself inserts become auto — a
+			// pre-existing manual row is the stronger claim.
+			next = append(next, sid)
+			auto[sid] = struct{}{}
+			added = append(added, sid)
+		}
+	}
+	if len(next) > 0 {
+		a.bindings[workspaceID] = next
+	} else {
+		delete(a.bindings, workspaceID)
+	}
+	if len(auto) > 0 {
+		a.autoBound[workspaceID] = auto
+	} else {
+		delete(a.autoBound, workspaceID)
+	}
+	return added, removed, nil
 }
 
 func (a *dbSecretStoreAdapter) GetBindings(_ context.Context, workspaceID string) ([]*secrets.UserSecret, error) {

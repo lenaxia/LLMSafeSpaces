@@ -140,6 +140,9 @@ func (s *pushPathSessionStore) AddBindings(_ context.Context, ws string, ids []s
 	s.bindings[ws] = append(s.bindings[ws], ids...)
 	return nil
 }
+func (s *pushPathSessionStore) SyncGlobalDefaultBindings(_ context.Context, _ string, _ []string) ([]string, []string, error) {
+	return nil, nil, nil
+}
 func (s *pushPathSessionStore) GetBindingsForSecret(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

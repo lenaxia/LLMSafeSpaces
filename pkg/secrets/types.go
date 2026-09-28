@@ -121,6 +121,17 @@ type SecretBinding struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
+// Binding provenance (migration 000033). The source records WHY a
+// binding row exists: a user's explicit claim (manual — workspace
+// bindings UI, SetWorkspaceEnv, SetBindings) or the global_default
+// policy (global_default — workspace-create seeding and the reconcile
+// loop's policy-convergence step). Policy convergence never adds,
+// rewrites, or removes a manual row.
+const (
+	BindSourceManual        = "manual"
+	BindSourceGlobalDefault = "global_default"
+)
+
 // AuditEntry represents a secret audit log entry.
 type AuditEntry struct {
 	ID          int64           `json:"id"`

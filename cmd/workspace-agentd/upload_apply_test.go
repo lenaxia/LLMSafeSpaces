@@ -607,10 +607,24 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		t.Fatalf("baseline: %v", aerr)
 	}
 
+	// Serialized baseline: the same N applies run sequentially, measured
+	// in THIS test run. Host load scales both baselines and the
+	// concurrent measurement together (observed: parallel runs of
+	// 235–329ms on a loaded host vs a fixed 200ms bound — absolute
+	// thresholds false-fail), so the load-robust discriminator is the
+	// RATIO of concurrent wall to serialized wall, not an absolute bound.
+	start := time.Now()
+	for i := range ids {
+		if aerr := applyOne(ids[i]); aerr != nil {
+			t.Fatalf("serialized baseline apply %d: %v", i, aerr)
+		}
+	}
+	serializedWall := time.Since(start)
+
 	// Concurrent: N applies in parallel. With the global lock removed,
 	// wall ≈ one apply's duration (they overlap); with the lock,
-	// wall ≥ N× the duration.
-	start := time.Now()
+	// wall ≈ serializedWall (they serialize end-to-end).
+	start = time.Now()
 	var wg sync.WaitGroup
 	errs := make([]*applyError, n)
 	for i := range ids {
@@ -629,14 +643,13 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		}
 	}
 
-	// The wall-time bound: concurrent must be well under N × the
-	// per-apply duration (the lock's signature is wall ≥ N×duration).
-	// The injected 50ms per apply × 4 concurrent = 200ms serialized;
-	// parallel = ~50ms. Assert < 150ms (a 3× margin under the serialized
-	// bound, generous for scheduler noise).
-	serializedBound := time.Duration(n) * 50 * time.Millisecond
-	if concurrentWall > serializedBound*3/4 {
-		t.Fatalf("concurrent %d applies took %v — near the serialized bound %v: the #1539 applyMu serialization signature (parallel should be ~50ms)",
-			n, concurrentWall, serializedBound)
+	// The lock's signature is wall ≈ serializedWall (each apply waits
+	// for the previous). Parallel overlap lands near 1/N of it. Assert
+	// concurrent < 3/4 of the measured serialized baseline: well clear
+	// of the serialized signature, tolerant of scheduler noise on both
+	// sides because both measurements suffer the same load.
+	if concurrentWall > serializedWall*3/4 {
+		t.Fatalf("concurrent %d applies took %v — near the serialized baseline %v: the #1539 applyMu serialization signature (parallel should be ~1/N of it)",
+			n, concurrentWall, serializedWall)
 	}
 }

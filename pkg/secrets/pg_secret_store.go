@@ -394,6 +394,75 @@ func (s *PgSecretStore) AddBindings(ctx context.Context, workspaceID string, sec
 	return tx.Commit(ctx)
 }
 
+// SyncGlobalDefaultBindings converges the workspace's auto-source
+// binding rows to exactly secretIDs (see the SecretStore contract).
+// One transaction + the workspace advisory lock so it serializes
+// against Set/AddBindings; the inserts use ON CONFLICT DO NOTHING so a
+// manual row for the same secret survives with its provenance intact.
+func (s *PgSecretStore) SyncGlobalDefaultBindings(ctx context.Context, workspaceID string, secretIDs []string) (added, removed []string, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := s.acquireWorkspaceLock(ctx, tx, workspaceID); err != nil {
+		return nil, nil, err
+	}
+
+	for _, sid := range secretIDs {
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO user_secret_bindings (secret_id, workspace_id, bind_source)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (secret_id, workspace_id) DO NOTHING`,
+			sid, workspaceID, BindSourceGlobalDefault)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sync global default binding (%s, %s): %w", sid, workspaceID, err)
+		}
+		if tag.RowsAffected() == 1 {
+			added = append(added, sid)
+		}
+	}
+
+	// Remove auto rows whose secret is no longer a global default. With
+	// an empty keep-set every auto row goes; the <> ALL(empty) form
+	// would match nothing (SQL NULL semantics).
+	var rows pgx.Rows
+	if len(secretIDs) == 0 {
+		rows, err = tx.Query(ctx,
+			`DELETE FROM user_secret_bindings
+			 WHERE workspace_id = $1 AND bind_source = $2
+			 RETURNING secret_id`,
+			workspaceID, BindSourceGlobalDefault)
+	} else {
+		rows, err = tx.Query(ctx,
+			`DELETE FROM user_secret_bindings
+			 WHERE workspace_id = $1 AND bind_source = $2 AND secret_id <> ALL($3::uuid[])
+			 RETURNING secret_id`,
+			workspaceID, BindSourceGlobalDefault, secretIDs)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("remove stale global default bindings (%s): %w", workspaceID, err)
+	}
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("scan removed global default binding: %w", err)
+		}
+		removed = append(removed, sid)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate removed global default bindings: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+	return added, removed, nil
+}
+
 func (s *PgSecretStore) GetBindings(ctx context.Context, workspaceID string) ([]*UserSecret, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT s.id, s.user_id, s.name, s.type, s.ciphertext, s.key_version, s.version, s.metadata, s.global_default, s.created_at, s.updated_at
@@ -686,6 +755,9 @@ func (l *AsyncAuditLogger) SetBindings(ctx context.Context, workspaceID string, 
 }
 func (l *AsyncAuditLogger) AddBindings(ctx context.Context, workspaceID string, secretIDs []string) error {
 	return l.store.AddBindings(ctx, workspaceID, secretIDs)
+}
+func (l *AsyncAuditLogger) SyncGlobalDefaultBindings(ctx context.Context, workspaceID string, secretIDs []string) ([]string, []string, error) {
+	return l.store.SyncGlobalDefaultBindings(ctx, workspaceID, secretIDs)
 }
 func (l *AsyncAuditLogger) GetBindings(ctx context.Context, workspaceID string) ([]*UserSecret, error) {
 	return l.store.GetBindings(ctx, workspaceID)
