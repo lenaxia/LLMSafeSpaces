@@ -9,8 +9,8 @@ const proc = spawn(BIN, ["acp", "--pure", "--cwd", CWD], { stdio: ["pipe", "pipe
 let nextId = 1; const pending = new Map(); let buf = "";
 proc.stdout.on("data", (c) => { buf += c.toString(); let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue; let m; try { m = JSON.parse(line) } catch { continue }
   if (m.id !== undefined && (m.result !== undefined || m.error !== undefined)) { const p = pending.get(m.id); log("RESPONSE", { id: m.id, method: p?.method, result: m.result, error: m.error }); if (p) { pending.delete(m.id); p.resolve(m) } }
-  else if (m.method && m.id !== undefined) { log("AGENT-REQUEST", { method: m.method }); proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: {} }) + "\n") }
-  else if (m.method) { log("NTF", { method: m.method, update: m.params?.update?.sessionUpdate }) } } });
+  else if (m.method && m.id !== undefined) { log("AGENT-REQUEST", { method: m.method, params: m.params }); proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: {} }) + "\n") }
+  else if (m.method) { log("NTF", { method: m.method, params: m.params }) } } });
 function send(method, params) { const id = nextId++; proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); log("REQUEST", { id, method, params }); return new Promise(r => pending.set(id, { resolve: r, method })) }
 const main = async () => {
   await send("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } }, clientInfo: { name: "spike", version: "0" } });
