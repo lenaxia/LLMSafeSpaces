@@ -162,6 +162,12 @@ The record-correction round re-created the record-defect class in its own hunks:
 
 One residual, and it is mine twice over: a double blank at :160-161 (the r32 reorder splice did not consume the relocated blank) shipped RED under the committed sweep — because my r32 sweep invocation passed NO file argument, so it checked nothing (the "sweeps complete" line was vacuous; the script's usage is `<file>`). The r21 pin (&&-chained sweep-with-file blocks red pushes) was honored in form only. Fixed: blank collapsed; this round's sweep runs WITH the file argument and the push is &&-chained. Fold-ins: design §1's "(§1's pin)" self-citation → "below"; Tests Run's "persistence round-trip" name-drift → "storage lifecycle (tiered)" to match §6's arm.
 
+### r34 review round (CHANGES_REQUESTED, 23:08:22Z — commit 18c3b5c7)
+
+r33 closed the instance and confessed the mechanism; r34 demanded the mechanism be patched: the script's vacuous-clean hole (empty argument → awk silently skips, tail errors uncaptured, terminator printed, exit 0 — the exact mechanism that shipped the r32 red tree) remained open in the durable artifact, its header's "failed sweep is not a pass" contract false for that input class. Fixed structurally (the r27 principle: script-only edit, cannot falsify any record it ships with): a one-line empty-argument guard after `f="$1"` → `SWEEP ERROR (not a pass): usage: $0 <file>`, exit 2. Verified all three input classes: no-arg → exit 2; with-file → clean exit 0; bad-path → exit 2 (the r20 case). Fold-ins: the Tests Run enumeration completed to all six §6 arms (the X-Forwarded disposition arm had been omitted); the r30 tail's "stands below" → "above" (r1–r29 sit above the r30 subsection; false under the locational reading since r30 birth). Files Modified: the script entry's range extends r19–r27 → r19–r34 (this round's guard).
+
+**Self-caught, same round:** the r34 subsection itself initially failed to land — a python string-replace no-oped on a curly-apostrophe anchor (this lane's oldest silent-no-op class), and the verification grep was piped to `head`, whose exit 0 masked grep's failure. Caught by inspecting the committed diff before reporting; landed via the edit tool with an unpiped verification this push.
+
 ## Tests Run
 
 None (design doc); §6 defines the implementation PR's test contract (tool validation table, injection unit tests, storage lifecycle (tiered) arm, the X-Forwarded disposition arm, the literal-only source-scan pin, the e2e arm).
