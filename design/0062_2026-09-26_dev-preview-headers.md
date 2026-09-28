@@ -9,11 +9,11 @@
 
 ## 1. The problem, in half a page
 
-The dev preview proxies browser requests through two hops (browser → API `HandleDevPreview` → agentd `:4097` `devPreviewHandler` → `localhost:<port>`). Both hops strip or forward only: the API hop's G34 allowlist keeps `{Content-Type, Accept, X-Request-ID}` (so the caller's credentials never reach untrusted in-pod code — correct, untouched), and the agentd hop forwards what the API sent minus the tunnel's own Basic `Authorization` (`cmd/workspace-agentd/dev_preview.go:87-89`). A previewed service that expects a header (a service API key, a test identity) has no way to receive one: the preview loads broken.
+The dev preview proxies browser requests through two hops (browser → API `HandleDevPreview` → agentd `:4097` `devPreviewHandler` → `localhost:<port>`). Both hops strip or forward only: the API hop's G34 allowlist keeps `{Content-Type, Accept, X-Request-ID}` (so the caller's credentials never reach untrusted in-pod code — correct, untouched), and the agentd hop forwards what the API sent minus the tunnel's own Basic `Authorization` (`cmd/workspace-agentd/dev_preview.go:87`) — and minus the `X-Forwarded-*` family the stdlib strips before the agentd hop's outbound request is built (§1's pin). A previewed service that expects a header (a service API key, a test identity) has no way to receive one: the preview loads broken.
 
 The fix is now the simplest thing that works: **the agent sets headers directly, as literals, through an agentd MCP tool; agentd injects them at its own forwarding hop.** The values never traverse the API, never enter any spec, CRD, Secret, or log outside the pod — the API boundary and G34 are untouched, and no platform surface changes at all.
 
-One mechanics pin before the design: in `Rewrite` mode the stdlib proxy strips `Forwarded`, `X-Forwarded-For/Host/Proto`, and hop-by-hop headers from the outbound request **before** `Rewrite` runs (`net/http/httputil/reverseproxy.go:504-510`, hop-by-hop at :482), and re-establishes `Connection`/`Upgrade` for upgraded connections before `Rewrite` as well (:495-498). So although the API hop sets `X-Forwarded-*`, **they never arrive at the agentd hop's outbound request** — the agentd hop forwards exactly the G34-allowlisted three, minus nothing else it set itself.
+One mechanics pin before the design: in `Rewrite` mode the stdlib proxy strips `Forwarded`, `X-Forwarded-For/Host/Proto`, and hop-by-hop headers from the outbound request **before** `Rewrite` runs (`net/http/httputil/reverseproxy.go:504-510`, hop-by-hop at :482), and re-establishes `Connection`/`Upgrade` for upgraded connections before `Rewrite` as well (:495-498). So although the API hop sets `X-Forwarded-*`, **they never arrive at the agentd hop's outbound request** — of caller content, the agentd hop forwards exactly the G34-allowlisted three, minus the tunnel `Authorization` the API hop set.
 
 ## 2. The tool
 
@@ -47,7 +47,7 @@ Validation (tool-call time; a bad call is an MCP error — there is no later fai
 ```go
 // Strip the agentd Basic auth credential — the dev server
 // has no use for it and shouldn't see it.
-r.Out.Header.Del("Authorization")                    // existing, :87-89
+r.Out.Header.Del("Authorization")                    // existing, :87 (comment :85-86)
 
 // 0062 §3: the workspace's configured preview headers — agent-set
 // literals, last-writer before the localhost hop.
@@ -56,7 +56,7 @@ for name, value := range h.devPreviewHeaders() {     // in-memory map, loaded fr
 }
 ```
 
-Configured headers are last-writer over the API-allowlisted three (the only headers that reach this hop — the stdlib has already stripped `X-Forwarded-*`/`Forwarded`/hop-by-hop inbound, §1; the reserved denylist keeps configured names off the tunnel's own headers and the WS handshake machinery the stdlib re-establishes before `Rewrite`). Both topology modes (path and per-origin) funnel through this one handler — one injection point covers everything.
+Configured headers are last-writer over the caller-content set that reaches this hop (the G34-allowlisted three — the stdlib has already stripped `X-Forwarded-*`/`Forwarded`/hop-by-hop inbound, §1; the reserved denylist keeps configured names off the tunnel's own headers and the WS handshake machinery the stdlib re-establishes before `Rewrite`). Both topology modes (path and per-origin) funnel through this one handler — one injection point covers everything.
 
 **Failure semantics: none.** There is no resolution step, no remote read, no cache — a stored literal IS the injected value. Misconfiguration is impossible by construction; a header entry cannot be "unresolvable." The 502-with-uniform-body machinery of the prior design deleted in full.
 
@@ -68,7 +68,7 @@ What the design does NOT weaken: the API hop still terminates the authenticated 
 
 ## 5. `feature_status`
 
-One entry, trivial now that tool and state share a process — the five-field contract (`feature_status.go:32-38`), with `source: "tool"` naming local tool state (not projected platform config):
+One entry, trivial now that tool and state share a process — the five-field contract (`feature_status.go:32-38`), with `source: "tool"` naming local tool state (not projected platform config; a new enum value — the code comment enumerates `"space" | "operator"` today, extended by this design):
 
 ```json
 {"feature": "dev_preview_headers", "active": true, "source": "tool",
@@ -81,9 +81,9 @@ No env projection needed (the #1581 basis question dissolves when the state is o
 ## 6. Test strategy
 
 - **Tool validation table** — every §2 rule (canonicalization, denylist, size caps, `*` clear).
-- **Injection unit tests** — httptest through `devPreviewHandler`: configured headers present on the localhost-bound request, last-writer over the G34-allowlisted three (the complete inbound set at this hop — `X-Forwarded-*` are stripped by the stdlib before `Rewrite` and must remain absent unless configured); reserved names never overwrite the tunnel's or WS machinery; `Authorization` still stripped.
+- **Injection unit tests** — httptest through `devPreviewHandler`: configured headers present on the localhost-bound request, last-writer over the G34-allowlisted three (the complete caller-content set at this hop — `X-Forwarded-*` are stripped by the stdlib before `Rewrite` and must remain absent unless configured); reserved names never overwrite the tunnel's or WS machinery; `Authorization` still stripped.
 - **The X-Forwarded disposition arm** — an agent-set `X-Forwarded-User` IS delivered to the service (the free forward-mode, §2); an unconfigured `X-Forwarded-For` sent by the browser never arrives (stdlib strip, §1).
-- **Storage lifecycle** — set → agentd container restart → still injected (emptyDir survives the container); pod deletion/suspend → state gone, resumed workspace starts header-clean; file is under `/sandbox-runtime` (memory-backed class — a source-scan pins it is NOT under the PVC-durable `/platform`); mode 0600; atomic rename on mutation.
+- **Storage lifecycle** — tiered: the unit-simulable arm (fresh handler construction re-reads the JSON at boot, §3) runs in `cmd/workspace-agentd`; the container-restart arm (emptyDir survives the container) and the pod-deletion/suspend arm (state gone, resumed workspace starts header-clean) are pod-level — e2e tier. File is under `/sandbox-runtime` (memory-backed class — a source-scan pins it is NOT under the PVC-durable `/platform`); mode 0600; atomic rename on mutation.
 - **Literal-only pin** — the tool schema has NO field other than a literal `value` string (source-scan: no Secret reference, no env expansion, no file indirection).
 - **E2E** — fixture service rejects requests without `X-Service-Key`; agent sets it via the tool → preview renders; clear → service rejects again.
 
