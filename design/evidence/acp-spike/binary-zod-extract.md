@@ -90,6 +90,19 @@ z=f.object({_meta:…,additionalDirectories:f.array(f.string()).optional(),curso
 ```
 `limit` exists in the schema; the live server ignores it (24 sessions returned for `{limit:10}` — transcript-lifecycle.ndjson 23.68).
 
+## fs/read_text_file params (the doc's §3.4 line/limit-paging basis)
+
+```
+Cf=f.object({_meta:…,limit:f.number().int().gte(0).max(4294967295,…).nullish(),line:f.number().int().gte(0).max(4294967295,…).nullish(),path:f.string(),sessionId:w})
+```
+
+## session/prompt result (the doc's §3.1 `userMessageId?` basis)
+
+```
+hk=f.object({_meta:…,stopReason:kk,usage:qk.nullish(),userMessageId:f.string().nullish()})
+```
+(`kk` = the stopReason union, `qk` = the usage object — both excerpted above.)
+
 ## ContentBlock / toolCall kind / stopReason unions (verbatim)
 
 ```
