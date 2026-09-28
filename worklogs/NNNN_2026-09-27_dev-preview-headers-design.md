@@ -1,14 +1,14 @@
 # Worklog: #1583 — the dev-preview header configuration design doc (0062)
 
 **Date:** 2026-09-27
-**Session:** The design-first lane for dev-preview header configuration (inject via secretKeyRef + forward via allowlist) — design/0062 authored per the 0060/0061 convention, grounded file:line in the existing proxy chain
+**Session:** The design-first lane for dev-preview header configuration (inject via secretKeyRef + forward via allowlist) — design/0062 authored per the 0060/0061 convention, grounded file:line in the existing proxy chain. **[SUPERSEDED at r30: the owner's simplification ruling replaced this entire framing — the design is now a plain agentd MCP tool with literal values; see the r30 subsection.]**
 **Status:** Complete (design stage; implementation follows owner approval)
 
 ---
 
 ## Objective
 
-Settle the approved framing into a reviewable design: exact CRD v1 shape + migration, settings/API surface + authz, the injection component (and its interaction with the 503 gate and the origin/path topology modes), multi-service scoping (recommend), and Secret lifecycle (rotation, deletion).
+Settle the approved framing into a reviewable design: exact CRD v1 shape + migration, settings/API surface + authz, the injection component (and its interaction with the 503 gate and the origin/path topology modes), multi-service scoping (recommend), and Secret lifecycle (rotation, deletion). **[SUPERSEDED at r30: every object-level item here (CRD, settings/API, Secret lifecycle) was deleted by the owner's simplification; the settled design is the agentd tool of the r30 subsection.]**
 
 ## Work Completed
 
@@ -18,7 +18,7 @@ Settle the approved framing into a reviewable design: exact CRD v1 shape + migra
 
 ## Key Decisions
 
-- Sibling-not-nested CRD shape (zero migration); injection at the API boundary only; per-request Secret reads; loud 502 failure semantics; forward-allowlist extension of G34 with the identity-header trust assumption documented; counts-only projection for the in-pod inspector.
+- Sibling-not-nested CRD shape (zero migration); injection at the API boundary only; per-request Secret reads; loud 502 failure semantics; forward-allowlist extension of G34 with the identity-header trust assumption documented; counts-only projection for the in-pod inspector. **[SUPERSEDED at r30: every decision in this list described the deleted surface; the surviving decisions are in the r30 subsection — literal values only, agentd-side injection, no failure machinery.]**
 
 ## Blockers
 
@@ -146,9 +146,13 @@ The review's critical finding: the r0 shape (user-supplied `secretKeyRef`) was a
 
 - The Files Modified entry's garbled trailing clause dropped (r28's appendage was false under both readings and promised a stability the tree cannot pin); the entry ends at "honest scoping" with the structural fix — the r28 bullet's precise "cannot be falsified by its own hunk" — carrying the explanation.
 
+### r31 review round (CHANGES_REQUESTED, 21:59:59Z — commit ad2a4f53)
+
+The r30 shape confirmed right ("the right ruling... the ledger records it honestly"), but two load-bearing mechanics claims were false against the tree: (1) **storage lifecycle** — the cited `sessionstate` precedent writes to the PVC-durable `/platform` (survives suspend/resume), contradicting my "pod deletion deletes it" prose; fixed by pinning the state to the memory-backed class (`/sandbox-runtime`, `emptyDir` `StorageMediumMemory`) — survives agentd container restarts, wiped on pod deletion/suspend, resumed workspaces start header-clean; §6 gained the storage-lifecycle arm (restart → kept; suspend → gone; source-scan pins NOT under `/platform`). (2) **hop mechanics** — the stdlib strips `Forwarded`/`X-Forwarded-*`/hop-by-hop BEFORE `Rewrite` runs (reverseproxy.go:504-510) and re-establishes WS `Connection`/`Upgrade` before it too (:495-498); my "last-writer over the forwarded X-Forwarded-*" described headers that never arrive, and §6 contracted a test of an impossible inbound state. Corrected §1 (the hop forwards exactly the allowlisted three), §3, §6 — and the disposition OWNED rather than denied: `X-Forwarded-*` deliberately NOT on the denylist (nothing inbound to collide with), so an agent-set `X-Forwarded-User` delivers — §8 upgraded from "future note" to "forward-mode free today, agent-supplied edition," with §6's disposition arm pinning both directions (configured X-Forwarded-User delivered; browser-sent X-Forwarded-For never arrives). (3) **multi-port charter criterion restored** (§2 scope sentence: no port discriminator → workspace-scoped all ports; per-port matcher a clean future field). (4) Record fixes: citation spans corrected (Rewrite :76-88; the Del exactly :87), "~120" → 95 lines (here, corrected inline above), §5 feature_status example completed to the five-field contract with `source:"tool"`, and the three stale header-block claims (Session/Objective/Key Decisions) carry inline SUPERSEDED pointers per this worklog's own r7/r10 precedent.
+
 ### r30 review round (owner simplification ruling, 2026-09-28 — design rewritten)
 
-The owner ruled a radical simplification, superseding every prior amendment framing: dev-preview headers become a **plain agentd MCP tool** — set/clear/list of header name+value, LITERAL values only, stored plainly in agentd (a JSON state file), injected at the agentd forwarding hop (devPreviewHandler's Rewrite, after the existing Authorization strip). The rewrite DELETED: the mint model, Secrets storage, write-only ceremony, owner-scoping, the consent-flow integration, the inject/forward mode split (now §8's one-line future note), the uniform-502 machinery, and the entire CRD/webhook/settings/DTO/SDK surface — the deleted-ledger table (§9) records each cut and why it is obviated rather than merely unfashionable. The threat model rewrites to the owner's argument: the terminal service is agent-owned; nothing on this surface is sensitive beyond what the agent already has; the ONLY guard is literal-values-only, which excludes platform-Secret referencing by construction (no reference machinery exists). 266 lines → ~120. Failure semantics: none — no resolution step, misconfiguration impossible by construction. Rollout: one agentd PR. The 29 prior rounds' record stands below as history: their findings were true of the deleted surface.
+The owner ruled a radical simplification, superseding every prior amendment framing: dev-preview headers become a **plain agentd MCP tool** — set/clear/list of header name+value, LITERAL values only, stored plainly in agentd (a JSON state file), injected at the agentd forwarding hop (devPreviewHandler's Rewrite, after the existing Authorization strip). The rewrite DELETED: the mint model, Secrets storage, write-only ceremony, owner-scoping, the consent-flow integration, the inject/forward mode split (now §8's free-today note), the uniform-502 machinery, and the entire CRD/webhook/settings/DTO/SDK surface — the deleted-ledger table (§9) records each cut and why it is obviated rather than merely unfashionable. The threat model rewrites to the owner's argument: the terminal service is agent-owned; nothing on this surface is sensitive beyond what the agent already has; the ONLY guard is literal-values-only, which excludes platform-Secret referencing by construction (no reference machinery exists). 266 → 95 lines (r31 correction: the shipped file is 95; the "~120" first claimed here overshot by 25%). Failure semantics: none — no resolution step, misconfiguration impossible by construction. Rollout: one agentd PR. The 29 prior rounds' record stands below as history: their findings were true of the deleted surface.
 
 ## Tests Run
 
