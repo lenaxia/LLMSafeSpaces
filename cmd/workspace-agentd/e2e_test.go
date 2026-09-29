@@ -29,6 +29,14 @@ func TestMain(m *testing.M) {
 	// deterministic regardless of the runner's real disk fill; rows that
 	// exercise the notice override via withStubbedPodDiskUsage.
 	podDiskUsage = func() (uint64, uint64, error) { return 10, 100, nil }
+	// Same normalization for the controller's dev-preview projection:
+	// this suite also runs inside real workspace pods, where
+	// WORKSPACE_DEV_PREVIEW_ENABLED is set (a "false" projection made
+	// the pre-#1580 TestCallMCPTool_DevPreviewURL_* family fail-loud
+	// in-pod while passing in CI, where the env is unset). Normalize to
+	// the CI ambient; tests that exercise the projection itself pin it
+	// via t.Setenv (the #1580 family does).
+	os.Unsetenv("WORKSPACE_DEV_PREVIEW_ENABLED")
 	code := m.Run()
 	// Drain the shared test-binary temp dir recorded by buildAgentdBinary
 	// (secrets_test.go). Runs after all tests so the once-per-process
