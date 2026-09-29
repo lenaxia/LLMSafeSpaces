@@ -363,6 +363,11 @@ func TestAcpUnifiedPatchFidelity(t *testing.T) {
 	if !strings.Contains(created, "@@ -0,0 +1,1 @@") {
 		t.Fatalf("create patch header = %q, want @@ -0,0 +1,1 @@", created)
 	}
+	// Empty new text: the mirrored +0,0 header form (full deletion).
+	deleted := unifiedPatch("old\n", "")
+	if !strings.Contains(deleted, "@@ -1,1 +0,0 @@") {
+		t.Fatalf("delete patch header = %q, want @@ -1,1 +0,0 @@", deleted)
+	}
 }
 
 // The skip-not-crash paths for degenerate chunks.

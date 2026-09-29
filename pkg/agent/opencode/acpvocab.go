@@ -450,11 +450,14 @@ func unifiedPatch(oldText, newText string) string {
 }
 
 func hunkHeader(oldN, newN int) string {
-	oldStart := 1
+	oldStart, newStart := 1, 1
 	if oldN == 0 {
 		oldStart = 0
 	}
-	return fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldStart, oldN, 1, newN)
+	if newN == 0 {
+		newStart = 0
+	}
+	return fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldStart, oldN, newStart, newN)
 }
 
 // splitLines splits s into lines INCLUDING empty ones (the count is the
