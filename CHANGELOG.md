@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.11] - 2026-09-29
+
+### Fixed — global-default secrets reach existing workspaces (#1597)
+
+- **The "Include in all workspaces" flag now means what it says** (#1597):
+  global-default user secrets previously bound only at workspace
+  creation — a workspace created before the secret existed never
+  received it (no binding row → no revision mint → no push; restart
+  could not fix it, since bootstrap builds from the same empty
+  bindings). The flag is now POLICY materialized into binding rows:
+  the secretsreconcile loop converges every Active workspace's
+  global-default bindings each pass (before manifest derivation, so a
+  flag flip diverges, mints, and notifies in the SAME pass), and
+  pod-bootstrap runs the same sync at boot for suspended workspaces.
+- **Binding provenance (migration 000033)**: `user_secret_bindings`
+  gains `bind_source` (`manual` | `global_default`). Policy convergence
+  adds/removes only auto rows — a manual binding is the user's explicit
+  claim and always wins; a flag flip retracts the auto rows without
+  touching manual ones. Legacy rows backfill `manual` (conservative).
+  New metric `llmsafespaces_secrets_reconcile_policy_bindings_total{op}`
+  and per-workspace skip reason `policy_sync`.
+- **One builder, one truth preserved**: the batch builder and manifest
+  tier still read binding rows only — no builder-side union, so the
+  reconcile loop's convergence certification stays sound.
+- Also fixed in passing: a blocking staticcheck lint failure in
+  `pkg/repolint`, and `TestUploadApply_ConcurrentWallTime` false-failing
+  on loaded hosts (absolute wall threshold replaced with a same-run
+  measured serialized baseline — the load-robust discriminator).
+
 ## [0.34.10] - 2026-09-27
 
 ### Fixed — the busy-truth cluster, part 2: wedged-turn recovery (#1584, #1586)
