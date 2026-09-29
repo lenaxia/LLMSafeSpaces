@@ -63,4 +63,4 @@ Root cause, honestly: I wrote claims from my screen memory of runs I did not com
 
 - `design/0063_2026-09-28_acp-spike.md` (new; r1–r3 corrected)
 - `design/evidence/acp-spike/` — drivers (`acp_drive.mjs`, `acp_silentignore.mjs`, `acp_wedge2.mjs`, `acp_lifecycle.mjs`, `fork.mjs`), transcripts (`transcript-{ping2,tools2,perm3,editperm,editdiff,silentignore,wedge2,lifecycle,fork}.ndjson`), `playground-config/` (four ask-configs: editperm, silentignore, editdiff, wedge2), `post-run-state/` (the on-disk agent-side-write evidence), `binary-zod-extract.md` (added r1; extended r3)
-- `worklogs/NNNN_2026-09-28_acp-spike-design.md` (this file)
+- `worklogs/1075_2026-09-28_acp-spike-design.md` (this file)
