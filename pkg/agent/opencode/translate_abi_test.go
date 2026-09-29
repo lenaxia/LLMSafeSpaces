@@ -157,6 +157,14 @@ func TestTranslateABI_PartVariants(t *testing.T) {
 				assert.Equal(t, abiv1.ToolStatus_TOOL_STATUS_COMPLETED, tool.State.Status)
 				assert.Equal(t, int64(1788177600), tool.State.StartedAt.AsTime().Unix())
 			}},
+		{"tool unknown status stays UNSPECIFIED, never coerced to pending", `{"id":"p7","type":"tool","callID":"call4","tool":"bash","state":{"status":"half-done"},"messageID":"m1","sessionID":"s1"}`, abiv1.PartType_PART_TYPE_TOOL,
+			func(t *testing.T, p *abiv1.Part) {
+				tool := p.GetTool()
+				require.NotNil(t, tool)
+				require.NotNil(t, tool.State)
+				assert.Equal(t, abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED, tool.State.Status,
+					"unrecognized native statuses keep the historical UNSPECIFIED default — the vocabulary's strict form must not coerce them to pending")
+			}},
 		{"unknown_part_custom_valve", `{"id":"p4","type":"sonic-boom","weird":true,"messageID":"m1","sessionID":"s1"}`, abiv1.PartType_PART_TYPE_CUSTOM,
 			func(t *testing.T, p *abiv1.Part) {
 				c := p.GetCustom()

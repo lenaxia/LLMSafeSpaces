@@ -620,19 +620,36 @@ func translatePartABI(raw json.RawMessage) (*abiv1.Part, error) {
 	return out, nil
 }
 
-func mapToolStatus(s string) abiv1.ToolStatus {
-	switch s {
-	case "pending":
+// acpToolStatusToABI is the single ACP-status -> ABI-enum table (the
+// Stage A consolidation point: every tool-status translation in this
+// file routes through it — mapToolStatus for native history strings,
+// toolPartPayload for the typed lifecycle constants — so status
+// vocabulary changes land here and in acpvocab.go, not in per-caller
+// switches).
+func acpToolStatusToABI(st AcpToolStatus) abiv1.ToolStatus {
+	switch st {
+	case AcpToolStatusPending:
 		return abiv1.ToolStatus_TOOL_STATUS_PENDING
-	case "running":
+	case AcpToolStatusInProgress:
 		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
-	case "completed":
+	case AcpToolStatusCompleted:
 		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
-	case "error":
+	case AcpToolStatusFailed:
 		return abiv1.ToolStatus_TOOL_STATUS_ERROR
 	default:
 		return abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED
 	}
+}
+
+// mapToolStatus routes native status strings through the vocabulary's
+// strict normalizer; unrecognized strings (including an empty status
+// field) keep the historical UNSPECIFIED default — the strict form
+// exists so a miss is visible, never silently coerced to pending.
+func mapToolStatus(s string) abiv1.ToolStatus {
+	if st, ok := AcpToolStatusFromNativeStrict(s); ok {
+		return acpToolStatusToABI(st)
+	}
+	return abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED
 }
 
 func translateMessageRole(role string) abiv1.MessageType {
@@ -844,7 +861,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 			t.rememberTool(p.SessionID, partID, name, p.Input)
 		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
-		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, nil, "running")}
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, nil, AcpToolStatusInProgress)}
 	case "session.next.tool.input.delta", "session.next.tool.input.ended":
 		// Dropped deliberately: the contract has no tool-input delta
 		// event and nothing accumulates here — the part's input is
@@ -863,7 +880,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
-			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), toolResultOutput(p.Content, p.Structured), "completed")}
+			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), toolResultOutput(p.Content, p.Structured), AcpToolStatusCompleted)}
 	case "session.next.tool.failure":
 		memo := t.recallTool(p.SessionID, partID)
 		if memo.Name == "" && name == "" {
@@ -881,7 +898,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 			failureOut = toolResultOutput(p.Content, p.Structured)
 		}
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
-			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), failureOut, "failed")}
+			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), failureOut, AcpToolStatusFailed)}
 	default:
 		return nil, false, nil
 	}
@@ -934,9 +951,9 @@ func toolResultOutput(content *[]ocContentItem, structured *ocStructuredResult) 
 }
 
 // toolPartPayload builds the contract ToolPart payload shared by the
-// tool lifecycle translations. Status mapping is abiToolStatus (unknown
-// → RUNNING, the UI's working state).
-func toolPartPayload(name, callID string, input, output json.RawMessage, status string) *abiv1.Part_Tool {
+// tool lifecycle translations. Status is a vocabulary constant mapped
+// by the shared acpToolStatusToABI table.
+func toolPartPayload(name, callID string, input, output json.RawMessage, status AcpToolStatus) *abiv1.Part_Tool {
 	tp := &abiv1.ToolPart{CallId: callID, Name: name}
 	if len(input) > 0 {
 		tp.Input = input
@@ -944,20 +961,8 @@ func toolPartPayload(name, callID string, input, output json.RawMessage, status 
 	if len(output) > 0 {
 		tp.Output = output
 	}
-	tp.State = &abiv1.ToolState{Status: abiToolStatus(status)}
+	tp.State = &abiv1.ToolState{Status: acpToolStatusToABI(status)}
 	return &abiv1.Part_Tool{Tool: tp}
-}
-
-// abiToolStatus maps the lifecycle status onto the ABI enum.
-func abiToolStatus(status string) abiv1.ToolStatus {
-	switch status {
-	case "completed":
-		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
-	case "failed":
-		return abiv1.ToolStatus_TOOL_STATUS_ERROR
-	default:
-		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
-	}
 }
 
 func marshalOrEmpty(v any) json.RawMessage {
