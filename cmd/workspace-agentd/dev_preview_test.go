@@ -26,7 +26,7 @@ func backendPort(t *testing.T, backendURL string) string {
 func TestDevPreview_Unauthorized(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/5173/", nil)
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
@@ -37,7 +37,7 @@ func TestDevPreview_WrongPassword(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/5173/", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("wrong-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
@@ -48,7 +48,7 @@ func TestDevPreview_NonNumericPort(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/abc/", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
@@ -70,7 +70,7 @@ func TestDevPreview_PortOutOfRange(t *testing.T) {
 			req := httptest.NewRequest("GET", "/v1/dev-preview/"+tc.port+"/", nil)
 			req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 			w := httptest.NewRecorder()
-			h := devPreviewHandler("test-pass")
+			h := devPreviewHandler("test-pass", nil)
 			h(w, req)
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("expected 400 for port %s, got %d", tc.port, w.Code)
@@ -96,7 +96,7 @@ func TestDevPreview_DeniedPorts(t *testing.T) {
 			req := httptest.NewRequest("GET", "/v1/dev-preview/"+tc.port+"/", nil)
 			req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 			w := httptest.NewRecorder()
-			h := devPreviewHandler("test-pass")
+			h := devPreviewHandler("test-pass", nil)
 			h(w, req)
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("expected 400 for denied port %s, got %d", tc.port, w.Code)
@@ -109,7 +109,7 @@ func TestDevPreview_RecursionAttempt(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/4097/v1/dev-preview/5173/", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for recursion attempt via 4097, got %d", w.Code)
@@ -128,7 +128,7 @@ func TestDevPreview_HTTPRoundTrip(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/"+port+"/index.html", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 
 	if w.Code != http.StatusOK {
@@ -153,7 +153,7 @@ func TestDevPreview_HostRewritten(t *testing.T) {
 	req.Host = "api.platform.example.com"
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 
 	if w.Code != http.StatusOK {
@@ -171,7 +171,7 @@ func TestDevPreview_DevServerNotListening(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/dev-preview/59999/", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
 	w := httptest.NewRecorder()
-	h := devPreviewHandler("test-pass")
+	h := devPreviewHandler("test-pass", nil)
 	h(w, req)
 
 	if w.Code != http.StatusBadGateway {
@@ -209,7 +209,7 @@ func TestDevPreview_WebSocketUpgrade(t *testing.T) {
 
 	port := backendPort(t, backend.URL)
 
-	handler := devPreviewHandler("test-pass")
+	handler := devPreviewHandler("test-pass", nil)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -243,7 +243,7 @@ func TestDevPreview_AuthorizationStripped(t *testing.T) {
 
 	port := backendPort(t, backend.URL)
 
-	handler := devPreviewHandler("test-pass")
+	handler := devPreviewHandler("test-pass", nil)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -292,7 +292,7 @@ func TestDevPreview_WebSocketUpgrade_RoundTrip(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	agentd := httptest.NewServer(devPreviewHandler("test-pass"))
+	agentd := httptest.NewServer(devPreviewHandler("test-pass", nil))
 	defer agentd.Close()
 
 	wsURL := "ws://" + agentd.Listener.Addr().String() +
