@@ -213,10 +213,10 @@ type AcpCommand struct {
 // AcpUsage is the usage_update payload (session-level context gauge;
 // NEVER a Part — design 0063 §3.2 maps it to ContextUsage wiring).
 type AcpUsage struct {
-	Used int64            `json:"used"`
-	Size int64            `json:"size"`
-	Cost *session.Cost    `json:"cost,omitempty"`
-	Raw  json.RawMessage  `json:"-"`
+	Used int64           `json:"used"`
+	Size int64           `json:"size"`
+	Cost *session.Cost   `json:"cost,omitempty"`
+	Raw  json.RawMessage `json:"-"`
 }
 
 // AcpPlanEntry is one plan entry (the never-emitted variant).
@@ -229,13 +229,13 @@ type AcpPlanEntry struct {
 // AcpUpdate is one sessionUpdate event in the internal vocabulary.
 // Exactly one payload field is meaningful per Kind.
 type AcpUpdate struct {
-	Kind      AcpUpdateKind    `json:"sessionUpdate"`
-	MessageID string           `json:"messageId,omitempty"`
-	Content   AcpContentBlock  `json:"content,omitempty"`
-	ToolCall  *AcpToolCall     `json:"toolCall,omitempty"`
-	Commands  []AcpCommand     `json:"availableCommands,omitempty"`
-	Usage     *AcpUsage        `json:"usage,omitempty"`
-	Plan      []AcpPlanEntry   `json:"entries,omitempty"`
+	Kind      AcpUpdateKind   `json:"sessionUpdate"`
+	MessageID string          `json:"messageId,omitempty"`
+	Content   AcpContentBlock `json:"content,omitempty"`
+	ToolCall  *AcpToolCall    `json:"toolCall,omitempty"`
+	Commands  []AcpCommand    `json:"availableCommands,omitempty"`
+	Usage     *AcpUsage       `json:"usage,omitempty"`
+	Plan      []AcpPlanEntry  `json:"entries,omitempty"`
 }
 
 // ToPart maps one update to the contract Part per design 0063 §4.
@@ -364,14 +364,14 @@ func AcpUpdateFromPart(p session.Part) (AcpUpdate, bool) {
 			status = AcpToolStatusFailed
 		}
 		return AcpUpdate{Kind: AcpUpdateToolCall, ToolCall: &AcpToolCall{
-			ToolCallID: p.Tool.CallID,
-			Title:      p.Tool.Name,
-			Kind:       AcpToolKindFromName(p.Tool.Name),
-			Status:     status,
-			Error:      p.Tool.State.Error,
-			RawInput:   p.Tool.Input,
-			RawOutput:  p.Tool.Output,
-			StartedAt:  p.Tool.State.StartedAt,
+			ToolCallID:  p.Tool.CallID,
+			Title:       p.Tool.Name,
+			Kind:        AcpToolKindFromName(p.Tool.Name),
+			Status:      status,
+			Error:       p.Tool.State.Error,
+			RawInput:    p.Tool.Input,
+			RawOutput:   p.Tool.Output,
+			StartedAt:   p.Tool.State.StartedAt,
 			CompletedAt: p.Tool.State.CompletedAt,
 		}}, true
 	default:

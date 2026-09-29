@@ -208,17 +208,17 @@ func TestAcpUserMessageChunkHasNoNativeProducer(t *testing.T) {
 
 func TestAcpToolKindTable(t *testing.T) {
 	cases := map[string]AcpToolKind{
-		"bash":     AcpToolKindExecute,
-		"shell":    AcpToolKindExecute,
-		"write":    AcpToolKindEdit,
-		"edit":     AcpToolKindEdit,
-		"read":     AcpToolKindRead,
-		"glob":     AcpToolKindRead,
-		"grep":     AcpToolKindSearch,
-		"webfetch": AcpToolKindFetch,
+		"bash":      AcpToolKindExecute,
+		"shell":     AcpToolKindExecute,
+		"write":     AcpToolKindEdit,
+		"edit":      AcpToolKindEdit,
+		"read":      AcpToolKindRead,
+		"glob":      AcpToolKindRead,
+		"grep":      AcpToolKindSearch,
+		"webfetch":  AcpToolKindFetch,
 		"todowrite": AcpToolKindOther,
-		"task":     AcpToolKindOther,
-		"mystery":  AcpToolKindOther,
+		"task":      AcpToolKindOther,
+		"mystery":   AcpToolKindOther,
 	}
 	for name, want := range cases {
 		if got := AcpToolKindFromName(name); got != want {
