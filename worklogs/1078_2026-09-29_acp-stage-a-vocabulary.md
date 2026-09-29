@@ -42,4 +42,4 @@ None.
 - `pkg/agent/opencode/acpvocab.go` (new — the vocabulary + mappers)
 - `pkg/agent/opencode/acpvocab_test.go` (new — the §4 table + pins + consumer test)
 - `pkg/agent/opencode/translate.go` (translateTool/translateToolStatus routed through the vocabulary)
-- `worklogs/NNNN_2026-09-29_acp-stage-a-vocabulary.md` (this file)
+- `worklogs/1078_2026-09-29_acp-stage-a-vocabulary.md` (this file)

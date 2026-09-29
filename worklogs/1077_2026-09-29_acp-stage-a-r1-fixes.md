@@ -48,5 +48,5 @@ None.
 
 - `pkg/agent/opencode/translate_abi.go` (typed lifecycle constants; abiToolStatus deleted; single table; comment fixes)
 - `pkg/agent/opencode/translate_abi_test.go` (UNSPECIFIED pin row)
-- `worklogs/NNNN_2026-09-29_acp-stage-a-r1-fixes.md` (this file)
+- `worklogs/1077_2026-09-29_acp-stage-a-r1-fixes.md` (this file)
 - PR #1599 body (claim corrections + re-scope records — via `gh pr edit`)
