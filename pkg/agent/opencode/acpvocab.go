@@ -105,17 +105,28 @@ const (
 // "failed"); unknown values map to pending (the safe default the
 // inline translateToolStatus used — UI renders "working").
 func AcpToolStatusFromNative(s string) AcpToolStatus {
+	if st, ok := AcpToolStatusFromNativeStrict(s); ok {
+		return st
+	}
+	return AcpToolStatusPending
+}
+
+// AcpToolStatusFromNativeStrict is the recognizing form: ok=false for
+// unrecognized status strings. Callers with their own unknown-default
+// (e.g. the ABI translator's UNSPECIFIED) use this so the vocabulary
+// does not silently coerce their miss into pending.
+func AcpToolStatusFromNativeStrict(s string) (AcpToolStatus, bool) {
 	switch s {
 	case "pending":
-		return AcpToolStatusPending
+		return AcpToolStatusPending, true
 	case "running":
-		return AcpToolStatusInProgress
+		return AcpToolStatusInProgress, true
 	case "completed":
-		return AcpToolStatusCompleted
+		return AcpToolStatusCompleted, true
 	case "error":
-		return AcpToolStatusFailed
+		return AcpToolStatusFailed, true
 	default:
-		return AcpToolStatusPending
+		return "", false
 	}
 }
 
@@ -412,39 +423,48 @@ func AcpToolCallFromNative(t *ocTool) *AcpToolCall {
 // unifiedPatch renders a minimal unified diff for an old->new text
 // replacement (one hunk, full content). Deterministic; used only for
 // vocabulary-carried diffs — the authoritative FileChange patches for
-// history remain the filediff producer's (git-based).
+// history remain the filediff producer's (git-based). Blank lines are
+// rendered as bare -/+ lines (they count in the hunk header), and a
+// missing trailing newline is marked with the standard "\ No newline
+// at end of file" sentinel so "a\nb" and "a\nb\n" do not render
+// identically.
 func unifiedPatch(oldText, newText string) string {
+	oldLines, oldNoNL := splitLines(oldText)
+	newLines, newNoNL := splitLines(newText)
 	var b strings.Builder
-	fmt.Fprintf(&b, "--- old\n+++ new\n")
-	fmt.Fprintf(&b, "@@ -1,%d +1,%d @@\n", countLines(oldText), countLines(newText))
-	for _, l := range splitLines(oldText) {
-		if l != "" {
-			b.WriteString("-" + l + "\n")
-		}
+	b.WriteString("--- old\n+++ new\n")
+	b.WriteString(hunkHeader(len(oldLines), len(newLines)))
+	for _, l := range oldLines {
+		b.WriteString("-" + l + "\n")
 	}
-	for _, l := range splitLines(newText) {
-		if l != "" {
-			b.WriteString("+" + l + "\n")
-		}
+	if oldNoNL && len(oldLines) > 0 {
+		b.WriteString("\\ No newline at end of file\n")
+	}
+	for _, l := range newLines {
+		b.WriteString("+" + l + "\n")
+	}
+	if newNoNL && len(newLines) > 0 {
+		b.WriteString("\\ No newline at end of file\n")
 	}
 	return b.String()
 }
 
-func countLines(s string) int {
-	if s == "" {
-		return 0
+func hunkHeader(oldN, newN int) string {
+	oldStart := 1
+	if oldN == 0 {
+		oldStart = 0
 	}
-	n := strings.Count(s, "\n")
-	if !strings.HasSuffix(s, "\n") {
-		n++
-	}
-	return n
+	return fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldStart, oldN, 1, newN)
 }
 
-func splitLines(s string) []string {
+// splitLines splits s into lines INCLUDING empty ones (the count is the
+// hunk header's line count), and reports whether s lacked a trailing
+// newline. "" yields (nil, false).
+func splitLines(s string) ([]string, bool) {
 	if s == "" {
-		return nil
+		return nil, false
 	}
+	noNL := !strings.HasSuffix(s, "\n")
 	s = strings.TrimSuffix(s, "\n")
-	return strings.Split(s, "\n")
+	return strings.Split(s, "\n"), noNL
 }

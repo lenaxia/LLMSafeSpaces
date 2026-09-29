@@ -519,16 +519,14 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	return sm, changedFiles
 }
 
-// translateTool converts an opencode tool state to the platform
-// ToolPart shape. Nil opencode tool yields nil platform tool — the
-// caller skips the part entirely in that case.
 // translateTool converts one native tool part to a contract ToolPart
 // THROUGH the ACP vocabulary (design 0063 Stage A: the tool event class
 // is the vocabulary's live consumer on both the history and SSE paths —
 // native -> AcpToolCall -> ToolPart, byte-identical output, spec-shaped
 // internals). The status machine is the mapper's
 // (AcpToolStatusFromNative + ToContractStatus), no longer inline
-// switches here.
+// switches here. Nil opencode tool yields nil platform tool — the
+// caller skips the part entirely in that case.
 func translateTool(t *ocTool) *session.ToolPart {
 	if t == nil {
 		return nil

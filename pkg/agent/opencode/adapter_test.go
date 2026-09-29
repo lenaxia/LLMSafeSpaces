@@ -1336,6 +1336,36 @@ func TestAdapterClientEventsFromEvent(t *testing.T) {
 		assert.Equal(t, "hello world", e.Part.Text)
 	})
 
+	// Stage A's second consumer path (design 0063): a tool part through
+	// the live SSE bridge must route native -> AcpToolCall -> ToolPart.
+	// Without this pin the bridge could silently stop routing tools
+	// through the vocabulary and nothing would notice.
+	t.Run("tool part update routes through the vocabulary to part.end tool", func(t *testing.T) {
+		raw := `{"id":"evt2b","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_2b","sessionID":"ses_a","messageID":"msg_1","type":"tool","tool":"bash","callID":"call_b1","state":{"status":"running","input":{"command":"echo hi"}}}}}`
+		evts := a.ClientEventsFromEvent("message.part.updated", raw)
+		require.Len(t, evts, 1)
+		e := evts[0]
+		assert.Equal(t, session.EventPartEnd, e.Type)
+		assert.Equal(t, "prt_2b", e.PartID)
+		require.NotNil(t, e.Part)
+		assert.Equal(t, session.PartTool, e.Part.Type)
+		require.NotNil(t, e.Part.Tool)
+		assert.Equal(t, "bash", e.Part.Tool.Name)
+		assert.Equal(t, "call_b1", e.Part.Tool.CallID)
+		assert.Equal(t, session.ToolStatusRunning, e.Part.Tool.State.Status)
+		assert.JSONEq(t, `{"command":"echo hi"}`, string(e.Part.Tool.Input))
+	})
+
+	t.Run("tool part update with malformed properties yields no event", func(t *testing.T) {
+		raw := `{"id":"evt2c","type":"message.part.updated","properties":{"part":"not-an-object"}}`
+		assert.Empty(t, a.ClientEventsFromEvent("message.part.updated", raw))
+	})
+
+	t.Run("tool part update with null tool yields no tool part", func(t *testing.T) {
+		raw := `{"id":"evt2d","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_2d","sessionID":"ses_a","messageID":"msg_1","type":"tool","tool":null}}}`
+		assert.Empty(t, a.ClientEventsFromEvent("message.part.updated", raw))
+	})
+
 	t.Run("step-finish part update yields context usage session update", func(t *testing.T) {
 		raw := `{"id":"evt3","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_3","type":"step-finish","tokens":{"input":2310,"cache":{"read":1280,"write":0}}}}}`
 		evts := a.ClientEventsFromEvent("message.part.updated", raw)

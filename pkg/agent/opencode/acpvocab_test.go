@@ -305,3 +305,83 @@ func TestTranslateToolThroughVocabulary(t *testing.T) {
 		t.Fatal("translateTool(nil) must return nil")
 	}
 }
+
+// Design 0063 §4.2: "a Stage-A FileChange extractor must not assume the
+// update carries a diff" — create operations carry none (§3.3).
+func TestAcpFileChangeNoDiffBehavior(t *testing.T) {
+	// nil receiver.
+	var nilCall *AcpToolCall
+	if nilCall.FileChange() != nil {
+		t.Fatal("nil receiver must yield nil FileChange")
+	}
+	// completed call with content but NO diff entry -> nil.
+	tc := &AcpToolCall{
+		ToolCallID: "c1", Status: AcpToolStatusCompleted, Title: "write",
+		Content: []AcpToolContent{{Kind: AcpToolContentContent, Text: "Wrote file successfully."}},
+	}
+	if tc.FileChange() != nil {
+		t.Fatal("no-diff content must yield nil FileChange (create operations carry no diff)")
+	}
+	// no content at all -> nil.
+	if (&AcpToolCall{ToolCallID: "c2", Status: AcpToolStatusInProgress}).FileChange() != nil {
+		t.Fatal("contentless call must yield nil FileChange")
+	}
+	// the first diff entry wins when several ride along.
+	multi := &AcpToolCall{Content: []AcpToolContent{
+		{Kind: AcpToolContentContent, Text: "ignored"},
+		{Kind: AcpToolContentDiff, Path: "first.txt", OldText: "a", NewText: "b"},
+		{Kind: AcpToolContentDiff, Path: "second.txt", OldText: "c", NewText: "d"},
+	}}
+	if fd := multi.FileChange(); fd == nil || fd.Path != "first.txt" {
+		t.Fatalf("multi-diff FileChange = %+v, want first.txt", fd)
+	}
+}
+
+func TestAcpUnifiedPatchFidelity(t *testing.T) {
+	// Blank lines count in the header AND appear as bare -/+ lines.
+	p := unifiedPatch("a\n\nb\n", "x\n\ny\n")
+	if !strings.Contains(p, "@@ -1,3 +1,3 @@") {
+		t.Fatalf("hunk header = %q, want counts of 3/3 (blank lines counted)", firstLine(p, 3))
+	}
+	for _, want := range []string{"-a\n", "-\n", "-b\n", "+x\n", "+\n", "+y\n"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("patch %q missing %q", p, want)
+		}
+	}
+	// Missing trailing newline is marked, and differs from the
+	// newline-terminated rendering.
+	noNL := unifiedPatch("a\nb", "a\nB")
+	if !strings.Contains(noNL, "\\ No newline at end of file") {
+		t.Fatalf("no-trailing-newline patch missing sentinel: %q", noNL)
+	}
+	withNL := unifiedPatch("a\nb\n", "a\nB\n")
+	if noNL == withNL {
+		t.Fatal("\"a\\nb\" and \"a\\nb\\n\" must not render identically")
+	}
+	// Empty old text: the -0,0 header form.
+	created := unifiedPatch("", "new\n")
+	if !strings.Contains(created, "@@ -0,0 +1,1 @@") {
+		t.Fatalf("create patch header = %q, want @@ -0,0 +1,1 @@", created)
+	}
+}
+
+// The skip-not-crash paths for degenerate chunks.
+func TestAcpEmptyChunksReturnNoPart(t *testing.T) {
+	if _, ok := (AcpUpdate{Kind: AcpUpdateAgentMessageChunk}).ToPart(); ok {
+		t.Fatal("empty agent_message_chunk must return ok=false")
+	}
+	if _, ok := (AcpUpdate{Kind: AcpUpdateAgentThoughtChunk, Content: AcpContentBlock{Type: "text"}}).ToPart(); ok {
+		t.Fatal("empty agent_thought_chunk must return ok=false")
+	}
+	if _, ok := (AcpUpdate{Kind: AcpUpdateToolCall}).ToPart(); ok {
+		t.Fatal("nil-ToolCall update must return ok=false")
+	}
+}
+
+func firstLine(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) < n {
+		return s
+	}
+	return lines[n-1]
+}

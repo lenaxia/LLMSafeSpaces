@@ -620,19 +620,32 @@ func translatePartABI(raw json.RawMessage) (*abiv1.Part, error) {
 	return out, nil
 }
 
-func mapToolStatus(s string) abiv1.ToolStatus {
-	switch s {
-	case "pending":
+// acpToolStatusToABI is the single ACP-status -> ABI-enum table (the
+// Stage A consolidation point: status vocabulary changes land here and
+// in acpvocab.go, not in per-caller switches).
+func acpToolStatusToABI(st AcpToolStatus) abiv1.ToolStatus {
+	switch st {
+	case AcpToolStatusPending:
 		return abiv1.ToolStatus_TOOL_STATUS_PENDING
-	case "running":
+	case AcpToolStatusInProgress:
 		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
-	case "completed":
+	case AcpToolStatusCompleted:
 		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
-	case "error":
+	case AcpToolStatusFailed:
 		return abiv1.ToolStatus_TOOL_STATUS_ERROR
 	default:
 		return abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED
 	}
+}
+
+// mapToolStatus routes native statuses through the vocabulary's strict
+// normalizer; unrecognized strings (including the empty status of a
+// stateless tool part) keep the historical UNSPECIFIED default.
+func mapToolStatus(s string) abiv1.ToolStatus {
+	if st, ok := AcpToolStatusFromNativeStrict(s); ok {
+		return acpToolStatusToABI(st)
+	}
+	return abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED
 }
 
 func translateMessageRole(role string) abiv1.MessageType {
@@ -948,12 +961,16 @@ func toolPartPayload(name, callID string, input, output json.RawMessage, status 
 	return &abiv1.Part_Tool{Tool: tp}
 }
 
-// abiToolStatus maps the lifecycle status onto the ABI enum.
+// abiToolStatus maps lifecycle statuses (already ACP-shaped — the
+// session-state store persists ACP names) onto the ABI enum, with the
+// store's historical RUNNING default for anything unrecognized (its
+// contract treats unknown as live, unlike mapToolStatus's UNSPECIFIED
+// for native misses).
 func abiToolStatus(status string) abiv1.ToolStatus {
-	switch status {
-	case "completed":
+	switch AcpToolStatus(status) {
+	case AcpToolStatusCompleted:
 		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
-	case "failed":
+	case AcpToolStatusFailed:
 		return abiv1.ToolStatus_TOOL_STATUS_ERROR
 	default:
 		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
