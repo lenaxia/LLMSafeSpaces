@@ -528,7 +528,10 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev
 	// servers. The API server proxies to this endpoint, which forwards to
 	// localhost:<port>. Port denylist + Host rewrite per PREVIEW-CONTRACT.md.
-	userMux.HandleFunc("/v1/dev-preview/", devPreviewHandler(deps.password))
+	// The configured-headers store is the process-wide default the
+	// dev_preview_headers MCP tool mutates (design 0062) — one instance,
+	// shared by tool and tunnel in both deployment topologies.
+	userMux.HandleFunc("/v1/dev-preview/", devPreviewHandler(deps.password, currentDevPreviewHeaders()))
 
 	return userMux
 }

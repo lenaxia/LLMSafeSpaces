@@ -1373,17 +1373,23 @@ func TestMCPHandler_FeatureStatus_ListedAndShaped(t *testing.T) {
 
 	// The full inventory is pinned (r1: a silently dropped entry would
 	// have passed) — with the space flag false and every operator env
-	// absent, exactly these five features, all inactive, agent_sidecar
-	// NOT keyed on any phantom env.
+	// absent, exactly these six features (0062 §5 added
+	// dev_preview_headers as the one tool-sourced, controllable entry),
+	// all inactive, agent_sidecar NOT keyed on any phantom env.
 	names := make([]string, 0, len(statuses))
 	for _, st := range statuses {
 		names = append(names, st["feature"].(string))
-		assert.Equal(t, false, st["controllable"], "no entry is controllable today")
-		if st["feature"] != "dev_preview" {
-			assert.Equal(t, "operator", st["source"], "every other flag is operator-set")
+		if st["feature"] == "dev_preview_headers" {
+			assert.Equal(t, "tool", st["source"], "dev_preview_headers is tool-sourced local state (0062 §5)")
+			assert.Equal(t, true, st["controllable"], "dev_preview_headers is the one controllable entry today")
+		} else {
+			assert.Equal(t, false, st["controllable"], "no other entry is controllable today — reported, not assumed")
+			if st["feature"] != "dev_preview" {
+				assert.Equal(t, "operator", st["source"], "every other flag is operator-set")
+			}
 		}
 	}
-	assert.ElementsMatch(t, []string{"dev_preview", "dev_preview_per_workspace_origin", "inference_relay_plane", "upload_staging", "agent_sidecar"}, names)
+	assert.ElementsMatch(t, []string{"dev_preview", "dev_preview_per_workspace_origin", "inference_relay_plane", "upload_staging", "agent_sidecar", "dev_preview_headers"}, names)
 }
 
 func TestMCPHandler_FeatureStatus_ActiveArmsAndSkew(t *testing.T) {
@@ -1428,6 +1434,11 @@ func TestMCPHandler_FeatureStatus_ActiveArmsAndSkew(t *testing.T) {
 	}
 
 	t.Run("dev_preview unreported skew detail", func(t *testing.T) {
+		// Pin the absent-env arm: the ambient environment can carry a
+		// real projection (this test suite also runs inside workspace
+		// pods, where WORKSPACE_DEV_PREVIEW_ENABLED is set by the
+		// controller) — the skew arm must be exercised deterministically.
+		t.Setenv("WORKSPACE_DEV_PREVIEW_ENABLED", "")
 		call := mcpRequest{JSONRPC: "2.0", ID: 31, Method: "tools/call", Params: mcpMustMarshal(t, map[string]any{
 			"name": "feature_status", "arguments": map[string]any{},
 		})}

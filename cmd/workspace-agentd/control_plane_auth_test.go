@@ -126,7 +126,7 @@ func TestMCPEndpoint_WorkspacePasswordOnly(t *testing.T) {
 
 // TestDevPreview_WorkspacePasswordOnly: same carve-out for dev-preview.
 func TestDevPreview_WorkspacePasswordOnly(t *testing.T) {
-	h := devPreviewHandler(testWorkspacePW)
+	h := devPreviewHandler(testWorkspacePW, nil)
 	require.Equal(t, http.StatusUnauthorized, authedStatus(t, h, testAgentdPW, nil),
 		"agentdPassword must NOT authenticate on /v1/dev-preview (per-endpoint table)")
 }
