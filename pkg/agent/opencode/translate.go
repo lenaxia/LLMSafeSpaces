@@ -522,44 +522,29 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 // translateTool converts an opencode tool state to the platform
 // ToolPart shape. Nil opencode tool yields nil platform tool — the
 // caller skips the part entirely in that case.
+// translateTool converts one native tool part to a contract ToolPart
+// THROUGH the ACP vocabulary (design 0063 Stage A: the tool event class
+// is the vocabulary's live consumer on both the history and SSE paths —
+// native -> AcpToolCall -> ToolPart, byte-identical output, spec-shaped
+// internals). The status machine is the mapper's
+// (AcpToolStatusFromNative + ToContractStatus), no longer inline
+// switches here.
 func translateTool(t *ocTool) *session.ToolPart {
 	if t == nil {
 		return nil
 	}
-	tp := &session.ToolPart{
-		CallID: t.CallID,
-		Name:   t.Name,
-		Input:  t.Input,
-		Output: t.Output,
-		State:  session.ToolState{Status: session.ToolStatusPending}, // default
+	acp := AcpToolCallFromNative(t)
+	part, ok := (AcpUpdate{Kind: AcpUpdateToolCall, ToolCall: acp}).ToPart()
+	if !ok || part.Tool == nil {
+		return nil
 	}
-	if t.State != nil {
-		tp.State = session.ToolState{
-			Status:      translateToolStatus(t.State.Status),
-			Error:       t.State.Error,
-			StartedAt:   t.State.StartedAt,
-			CompletedAt: t.State.CompletedAt,
-		}
-	}
-	return tp
+	return part.Tool
 }
 
 // translateToolStatus maps opencode's tool-status strings to the
-// platform ToolStatus enum. Unknown values map to ToolStatusPending
-// (safe default — UI renders "working").
+// platform ToolStatus enum via the ACP state machine (Stage A seam).
 func translateToolStatus(s string) session.ToolStatus {
-	switch s {
-	case "pending":
-		return session.ToolStatusPending
-	case "running":
-		return session.ToolStatusRunning
-	case "completed":
-		return session.ToolStatusCompleted
-	case "error":
-		return session.ToolStatusError
-	default:
-		return session.ToolStatusPending
-	}
+	return AcpToolStatusFromNative(s).ToContractStatus()
 }
 
 // translateCost converts an opencode cost record to a session.Cost.
