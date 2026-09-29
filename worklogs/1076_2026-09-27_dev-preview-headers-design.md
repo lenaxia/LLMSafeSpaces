@@ -180,4 +180,4 @@ Design review rounds on the simplified shape; on approval, §7's single-step rol
 
 - `design/0062_2026-09-26_dev-preview-headers.md` — NEW (the design; r30: radically simplified per owner ruling)
 - `scripts/worklog-spacing-sweep.sh` — NEW (r19–r27: the durable spacing sweep; both-sides abutment, EOF contract, exit contract, honest scoping; r34: the empty-argument guard — vacuous-clean hole closed)
-- `worklogs/NNNN_2026-09-27_dev-preview-headers-design.md` — this worklog
+- `worklogs/1076_2026-09-27_dev-preview-headers-design.md` — this worklog
