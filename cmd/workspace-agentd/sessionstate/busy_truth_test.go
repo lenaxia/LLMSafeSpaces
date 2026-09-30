@@ -252,3 +252,49 @@ func TestBusyTerminalVetoLiftsOnNewTurn(t *testing.T) {
 		t.Fatalf("the new turn's parts are in flight: %+v", st.BusyComponents)
 	}
 }
+
+// TestBusyCompactingIsBusy: compaction is autonomous progress — the owner's
+// rule counts it busy. A COMPACTING status event arriving from an idle
+// session must mark busy exactly as a BUSY event does (the streaming leg);
+// before #1602 the event set rec.status only, so a bare compacting session
+// derived NOT busy on every surface (statusz rendered it idle — the
+// pre-existing #1578 gap). Event path only: the seed path stays untouched
+// (a store-seeded BUSY/COMPACTING must not re-latch — the #1584 fold-dead
+// wedge class).
+func TestBusyCompactingIsBusy(t *testing.T) {
+	a, p := newEventAuthority(t, nil)
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_COMPACTING))
+
+	st := a.State().Sessions["s1"]
+	if !st.BusyComponents.GetBusy() {
+		t.Fatalf("compacting is autonomous progress — busy must derive true: %+v", st.BusyComponents)
+	}
+	if !st.BusyComponents.GetStreaming() {
+		t.Fatalf("a COMPACTING status mark rides the streaming leg: %+v", st.BusyComponents)
+	}
+	if st.Status != abiv1.SessionStatus_SESSION_STATUS_BUSY {
+		t.Fatalf("status must render BUSY while compacting, got %v", st.Status)
+	}
+
+	// Compaction finishing ends the busy-mark like any turn end.
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	if b := busyOf(t, a, "s1"); b.GetBusy() {
+		t.Fatalf("compaction done, nothing in flight — not busy: %+v", b)
+	}
+}
+
+// TestBusyCompactingHoldsAcrossParts: compacting mid-busy (the common
+// shape: a turn's context compacts while parts are in flight) must not
+// CLEAR the busy-mark — the mark persists through the compaction window.
+func TestBusyCompactingHoldsAcrossParts(t *testing.T) {
+	a, p := newEventAuthority(t, nil)
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	feed(t, a, p, partEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "m1", "p1", ""))
+	feed(t, a, p, statusEvent("s1", abiv1.SessionStatus_SESSION_STATUS_COMPACTING))
+
+	b := busyOf(t, a, "s1")
+	if !b.GetBusy() || !b.GetStreaming() {
+		t.Fatalf("compacting mid-turn must hold busy: %+v", b)
+	}
+}
