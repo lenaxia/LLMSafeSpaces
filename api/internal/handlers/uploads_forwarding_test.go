@@ -290,3 +290,74 @@ func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T)
 		}
 	}
 }
+
+// TestUpload_EarlyRefusalDrainsClientBody pins the RST hazard the
+// bounded body capture exposed (nightlies 36758872210 + 36766849622,
+// byte-identical failures): when agentd refuses at Admit — before the
+// body streams — the API responds while most of the client's declared
+// body is UNREAD. A server closing with unread receive-buffer bytes
+// emits RST, clobbering the in-flight response (curl saw 000) and
+// choking the transport's tunnel. The handler must drain the unread
+// remainder (memory-free discard, bounded) so the exchange closes
+// cleanly — what the old unbounded pre-handler buffer accidentally
+// provided.
+func TestUpload_EarlyRefusalDrainsClientBody(t *testing.T) {
+	resetUploadMetrics(t)
+
+	// agentd refuses at Admit — before reading the body (design 0060
+	// §4.1's rejection shape).
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	wrapped := gin.New()
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	payload := make([]byte, 25<<20)
+	body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "drain.bin", content: payload})
+	total := int64(body.Len())
+
+	// A pipe body makes server-side consumption directly observable:
+	// the client's copy only completes when the SERVER has read every
+	// declared byte. An abandoned body leaves the writer blocked (or
+	// errored short) — the RST hazard.
+	pr, pw := io.Pipe()
+	sent := make(chan int64, 1)
+	sendErr := make(chan error, 1)
+	go func() {
+		n, err := io.Copy(pw, body)
+		sent <- n
+		sendErr <- err
+		_ = pw.Close()
+	}()
+	req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", pr)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", ct)
+	req.ContentLength = total
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusInsufficientStorage, resp.StatusCode)
+
+	select {
+	case n := <-sent:
+		require.NoError(t, <-sendErr)
+		assert.Equal(t, total, n,
+			"the server must DRAIN the refused upload's full declared body — abandoning it mid-stream emits RST and clobbers the response (nightlies 36758872210/36766849622)")
+	case <-time.After(15 * time.Second):
+		t.Fatal("server abandoned the body mid-stream: the client writer is still blocked — the RST hazard class")
+	}
+}

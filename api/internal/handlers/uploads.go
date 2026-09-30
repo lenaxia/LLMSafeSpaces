@@ -146,6 +146,59 @@ func (h *ProxyHandler) uploadStreamTimeout() time.Duration {
 	return uploadStreamTimeoutEnv
 }
 
+// uploadDrainDeadline bounds the post-response drain of an unread
+// request-body remainder (a stalled sender cannot pin the connection
+// past this).
+const uploadDrainDeadline = 10 * time.Second
+
+// countingBody counts the bytes the upload route consumes, so the
+// post-response drain knows the unread remainder exactly.
+type countingBody struct {
+	io.ReadCloser
+	n int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.n += int64(n)
+	return n, err
+}
+
+// scheduleUploadBodyDrain arms the early-response body drain for the
+// uploads route (#1607 follow-on; nightlies 36758872210/36766849622):
+// several responses on this route fire BEFORE the client's declared
+// body is consumed — the local gates (409/413/415/507), the 411
+// declared-length gate, and agentd's at-Admit refusals (507/429) which
+// now arrive MID-STREAM now that the middleware body capture is
+// bounded (pre-#1607, the unbounded io.ReadAll accidentally consumed
+// every body before any response existed). A server closing with
+// unread receive-buffer bytes emits RST — clobbering the in-flight
+// response (the nightlies' curl 000s) and choking shared transports
+// (the e2e port-forward tunnel died, taking every later request on the
+// step with it). The drain discards the remainder memory-free, bounded
+// by the declared ContentLength (itself bounded by the cap gate) and
+// by uploadDrainDeadline for stalled senders. The caller MUST defer
+// the returned closure: `defer scheduleUploadBodyDrain(c)()` — the
+// wrap happens at call time, the drain at handler return.
+func scheduleUploadBodyDrain(c *gin.Context) func() {
+	if c.Request.ContentLength <= 0 || c.Request.Body == nil {
+		return func() {}
+	}
+	ctr := &countingBody{ReadCloser: c.Request.Body}
+	c.Request.Body = ctr
+	return func() {
+		remaining := c.Request.ContentLength - ctr.n
+		if remaining <= 0 {
+			return
+		}
+		if fw, ok := c.Writer.(http.Flusher); ok {
+			fw.Flush()
+		}
+		_ = http.NewResponseController(c.Writer).SetReadDeadline(time.Now().Add(uploadDrainDeadline))
+		_, _ = io.CopyN(io.Discard, ctr, remaining)
+	}
+}
+
 // UploadFile handles POST /api/v1/workspaces/:id/uploads.
 //
 //	@Summary      Upload a file into the workspace
@@ -167,6 +220,7 @@ func (h *ProxyHandler) uploadStreamTimeout() time.Duration {
 //	@Failure      507 {object} object{error=string} "workspace disk is full"
 //	@Router       /workspaces/{id}/uploads [post]
 func (h *ProxyHandler) UploadFile(c *gin.Context) {
+	defer scheduleUploadBodyDrain(c)()
 	workspaceID := c.Param("id")
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
