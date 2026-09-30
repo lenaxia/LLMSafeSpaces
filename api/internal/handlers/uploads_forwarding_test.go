@@ -22,9 +22,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	realmiddleware "github.com/lenaxia/llmsafespaces/api/internal/middleware"
 )
 
 // The literal agentd shapes (frozen contract, worker-lane coordination
@@ -207,4 +211,82 @@ func TestUpload_DeclaredHeaderForwardedToAgentd(t *testing.T) {
 	defer rec.mu.Unlock()
 	assert.Equal(t, strconv.FormatInt(int64(declaredLen), 10), rec.declaredBodyBytes,
 		"the header must carry the client's declared Content-Length")
+}
+
+// TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares
+// reproduces nightly 36758872210's failure shape at the unit level: a
+// concurrent storm (6 large uploads) against an agentd that refuses
+// SOME at headers — BEFORE reading the body (design 0060 §4.1's Admit
+// rejections) — through the REAL logging + error-handler middleware
+// chain over real TCP. The bounded body capture made early refusals
+// arrive while the client body is still streaming (pre-fix, the
+// middleware had already swallowed the whole body, so agentd's
+// refusal could only ever come after it); the handler's
+// forwardUploadToAgentd waits on the copy goroutine AFTER the response
+// — this test pins that every refused upload resolves promptly with
+// the forwarded status, never a stall (curl's 000) or a deadlock.
+func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T) {
+	resetUploadMetrics(t)
+
+	// agentd admits nothing: every /v1/files PUT is refused at headers
+	// with 507 staging_full, body unread — Admit's rejection shape.
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted — retry after in-flight uploads settle or free tmpfs","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	// The REAL pre-handler middleware chain (the seats the bounded
+	// capture changed), wrapping the upload route — then a real TCP
+	// server so client pacing, early responses, and connection
+	// teardown behave as they do in the nightly.
+	wrapped := gin.New()
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	const storm = 6
+	payload := make([]byte, 4<<20) // 4MiB: still streaming when the refusal lands
+	type result struct {
+		status int
+		err    error
+	}
+	results := make(chan result, storm)
+	for i := 0; i < storm; i++ {
+		go func() {
+			body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "storm.bin", content: payload})
+			req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", body)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			req.Header.Set("Content-Type", ct)
+			resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			results <- result{status: resp.StatusCode}
+		}()
+	}
+
+	for i := 0; i < storm; i++ {
+		select {
+		case r := <-results:
+			require.NoError(t, r.err, "a refused upload must resolve, not stall or die (nightly 36758872210's 000s)")
+			assert.Equal(t, http.StatusInsufficientStorage, r.status,
+				"the early refusal forwards verbatim — never a 502, never a connection death")
+		case <-time.After(25 * time.Second):
+			t.Fatal("storm request hung: the early-refusal path deadlocks with the bounded body capture streaming")
+		}
+	}
 }
