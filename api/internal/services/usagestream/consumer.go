@@ -148,6 +148,10 @@ type Consumer struct {
 type gate struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// ctx is the gate's lifecycle context (Open→Close/idle-drop); the
+	// busy-truth consults derive from it so a torn-down gate cancels
+	// any in-flight consult promptly.
+	ctx context.Context
 
 	mu        sync.Mutex
 	busyNow   bool      // the last published fold state had a busy session
@@ -186,7 +190,7 @@ func (c *Consumer) Open(workspaceID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &gate{cancel: cancel, done: make(chan struct{}), idleSince: time.Now(), derived: map[string]bool{}}
+	g := &gate{cancel: cancel, done: make(chan struct{}), ctx: ctx, idleSince: time.Now(), derived: map[string]bool{}}
 	c.gates[workspaceID] = g
 	hook := c.cfg.OnGateChange
 	c.mu.Unlock()
@@ -308,7 +312,7 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
-		}, abiclient.WithAppliedEvents(func(evt *abiv1.Event, seq uint64) {
+		}, abiclient.WithAppliedEvents(func(evt *abiv1.Event, seq uint64) { //nolint:contextcheck // the applied-events callback cannot carry the stream ctx (abiclient's seam is ctx-less by design); the busy-truth consult inside derives from the GATE's lifecycle ctx — canceled at teardown, budget-capped otherwise.
 			c.onEvent(workspaceID, g, evt, seq)
 		}))
 		if ctx.Err() != nil {
@@ -491,11 +495,12 @@ func (c *Consumer) consultBusy(g *gate, sessionID string) (busy, ok bool) {
 	}
 	g.mu.Lock()
 	cl := g.client
+	gateCtx := g.ctx
 	g.mu.Unlock()
 	if cl == nil {
 		return false, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consultBudget)
+	ctx, cancel := context.WithTimeout(gateCtx, consultBudget)
 	defer cancel()
 	snap, err := cl.GetSnapshot(ctx, sessionID)
 	if err != nil || snap.GetBusy() == nil {
