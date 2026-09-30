@@ -37,6 +37,9 @@ type fakeClient struct {
 	mu          sync.Mutex
 	snapshots   map[string]*abiv1.SessionSnapshot
 	snapshotErr error
+	// kill (one-shot, closed by killStream) makes the CURRENT stream
+	// return an error — the reconnect path.
+	kill chan struct{}
 }
 
 func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error {
@@ -49,8 +52,30 @@ func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.Sessio
 	}
 	// Snapshot-first: the protocol's stamp.
 	onUpdate(&abiclient.SessionState{Seq: 0})
-	<-ctx.Done()
-	return context.Canceled
+	f.mu.Lock()
+	if f.kill == nil {
+		f.kill = make(chan struct{})
+	}
+	kill := f.kill
+	f.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return context.Canceled
+	case <-kill:
+		f.mu.Lock()
+		f.kill = nil // one-shot: the reconnect watches a fresh channel
+		f.mu.Unlock()
+		return errors.New("stream killed by test")
+	}
+}
+
+// killStream closes the current stream connection (one-shot).
+func (f *fakeClient) killStream() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kill != nil {
+		close(f.kill)
+	}
 }
 
 func (f *fakeClient) apply(seq uint64, evt *abiv1.Event) {
@@ -494,4 +519,31 @@ func TestDerivedBusyHoldsIdleGate(t *testing.T) {
 	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_END, SessionId: "s1", PartId: "p1"})
 	require.Eventually(t, func() bool { return c.Gates() == 0 }, 5*time.Second, 50*time.Millisecond,
 		"all-idle derived truth must still drop the gate")
+}
+
+// TestReconnectReconcilesDerivedTruth: a stale-true derived entry (the
+// consult truth from a PREVIOUS connection) must not hold the gate
+// open forever — the reconnect's snapshot publication is the authority's
+// current answer, and the flip baseline rebuilds from it. Without the
+// reconcile, a pod that moved on (session now idle, no events coming)
+// keeps one stream connection per workspace leased indefinitely — the
+// scale-to-zero violation.
+func TestReconnectReconcilesDerivedTruth(t *testing.T) {
+	c, fc, _, _ := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.setSnapshot("s1", true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1"})
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, c.Gates(), "precondition: derived busy holds the gate")
+
+	// The pod moves on: the session is idle now (the reconnect's fold
+	// publishes all-idle; the consult answers not-busy).
+	fc.setSnapshot("s1", false)
+	fc.killStream()
+
+	require.Eventually(t, func() bool { return c.Gates() == 0 },
+		5*time.Second, 50*time.Millisecond,
+		"a stale-true derived entry must reconcile against the reconnect snapshot — the gate must drop")
 }

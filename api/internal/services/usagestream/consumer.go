@@ -161,6 +161,10 @@ type gate struct {
 	// consult past). OR'd into busyNow so a silent-but-derived-busy
 	// tool run holds the gate and the final idle is never missed.
 	derived map[string]bool
+	// seededFold marks the connection's first fold publication (the
+	// snapshot frame) as not-yet-applied — the reconnect reconcile
+	// rebuilds derived from it.
+	seededFold bool
 }
 
 func New(cfg Config) *Consumer {
@@ -300,6 +304,7 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		g.mu.Lock()
 		g.frames = false
 		g.client = cl
+		g.seededFold = false
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
@@ -345,6 +350,29 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if !g.seededFold {
+		// Reconnect reconcile (#1602): the connection's first
+		// publication is the snapshot frame — the authority's current
+		// answer. Rebuild the flip baseline from it so a stale-true
+		// derived entry (the previous connection's consult truth for a
+		// session the pod has since moved past) cannot hold the gate
+		// open forever; the snapshot status is busy-aware, and the
+		// BusyComponents (carried since the clone fix) are the derived
+		// truth verbatim.
+		g.seededFold = true
+		rebuilt := map[string]bool{}
+		for sid, s := range st.Sessions {
+			derived := s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_BUSY ||
+				s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_COMPACTING
+			if b := s.GetBusy(); b != nil {
+				derived = b.GetBusy()
+			}
+			if derived {
+				rebuilt[sid] = true
+			}
+		}
+		g.derived = rebuilt
+	}
 	if !busy {
 		for _, v := range g.derived {
 			if v {
