@@ -491,6 +491,10 @@ SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
 # which the API's global rate limiter (status-identical 429s on
 # /uploads) never carries. Self-verifying post-hoc: if the holders
 # failed to hold, the 5th delivers 201 and the row fails loud.
+# The holders' RESPONSE BODIES are captured too (run 36740521434
+# triage): the report line's holders-ok=N cannot distinguish WHERE the
+# non-ok holders died — API rate-limit 429 (status-identical to
+# staging_busy), agentd admission, or transport. The body names it.
 SR6B_PIDS=()
 for i in 1 2 3 4; do
     (
@@ -499,18 +503,20 @@ for i in 1 2 3 4; do
         _st=$(curl -s -m 90 --limit-rate 64k -X POST \
             -H "Authorization: Bearer ${API_KEY}" \
             -F "file=@${_tmp};filename=sr-hold-${i}.bin" \
-            -w '%{http_code}' -o /dev/null \
+            -w '%{http_code}' -o "${SR6B_DIR}/res-hold-${i}-body" \
             "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/uploads" 2>/dev/null) || _st=000
         rm -f "${_tmp}"
         printf '%s' "${_st}" > "${SR6B_DIR}/res-hold-${i}"
     ) &
     SR6B_PIDS+=($!)
 done
+SR6B_T0=$(date +%s%3N)
 # Settle margin: the four Admits complete within ~1s of start; the
 # 16s trickle window dwarfs this sleep (it is NOT the determinism —
 # the trickled bodies are; this only orders the probe inside the
 # window's steady state).
 sleep 3
+SR6B_T5=$(date +%s%3N)
 # THE 5th, full speed — status AND body captured: the literal 429 must
 # carry reason staging_busy (the count cap's class), not the API rate
 # limiter's status-identical 429.
@@ -537,11 +543,32 @@ done
 # reopened.
 upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-retry" >/dev/null
 SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")
-REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} fifth-busy=${SR6B_5TH_BUSY} retry=${SR6B_RETRY}"
+REPORT6B="holders-ok=${SR6B_HOLDERS_OK} fifth=${SR6B_STATUS} fifth-busy=${SR6B_5TH_BUSY} retry=${SR6B_RETRY} probe-wait-ms=$((SR6B_T5 - SR6B_T0))"
 if [[ "${SR6B_5TH_BUSY}" -eq 1 && "${SR6B_HOLDERS_OK}" -eq 1 && "${SR6B_RETRY}" == "201" ]]; then
     ok "SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders; 5th=429/staging_busy; retry-after-release delivered; ${REPORT6B})"
 else
     note_fail "SR-6: the deterministic cap boundary failed (${REPORT6B}, body=$(head -c 120 "${SR6B_BODY_FILE}" 2>/dev/null))"
+    # Evidence dump (nightlies 36135708380…36740521434: 10 identical
+    # holders-ok=1 failures; the report line alone cannot seat the
+    # three non-ok holders). Per-holder status+body first — the API's
+    # rate limiter and agentd's admissions are status-identical 429s,
+    # distinguished only by body — then both processes' upload
+    # counters (the API's counter misses middleware rejections by
+    # construction; agentd's counts what actually reached /v1/files)
+    # and both log tails.
+    for i in 1 2 3 4; do
+        warn "SR-6B DIAGNOSE holder-${i}: status=$(cat "${SR6B_DIR}/res-hold-${i}" 2>/dev/null || echo missing) body=$(head -c 160 "${SR6B_DIR}/res-hold-${i}-body" 2>/dev/null || echo none)"
+    done
+    AGD_METRICS=$(scrape_metrics "${POD}")
+    printf '%s\n' "${AGD_METRICS}" | grep -E '^workspace_agentd_file_uploads_total' | while read -r _l; do warn "SR-6B DIAGNOSE agentd-counter: ${_l}"; done || true
+    printf '%s\n' "${AGD_METRICS}" | grep -E '^workspace_agentd_upload_staging' | while read -r _l; do warn "SR-6B DIAGNOSE staging-gauge: ${_l}"; done || true
+    API_METRICS=$(curl -sm 15 "http://127.0.0.1:${PORTFWD_PORT}/metrics" 2>/dev/null || true)
+    printf '%s\n' "${API_METRICS}" | grep -E '^llmsafespaces_uploads_total' | while read -r _l; do warn "SR-6B DIAGNOSE api-counter: ${_l}"; done || true
+    kc logs "${POD}" -c agentd --since=10m 2>/dev/null | grep -iE "upload|staging" | tail -n 30 | while read -r _l; do warn "SR-6B DIAGNOSE agentd-log: ${_l}"; done || true
+    API_POD=$(kc get pods -l app.kubernetes.io/component=api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "${API_POD}" ]]; then
+        kc logs "${API_POD}" --since=10m 2>/dev/null | grep -iE "upload|rate.?limit" | tail -n 30 | while read -r _l; do warn "SR-6B DIAGNOSE api-log: ${_l}"; done || true
+    fi
 fi
 rm -rf "${SR6B_DIR}"
 else

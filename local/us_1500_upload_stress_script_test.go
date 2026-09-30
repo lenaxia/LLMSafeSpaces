@@ -106,6 +106,17 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`SR6B_STATUS=$(cat "${SR6B_DIR}/res-5")`,
 		`SR6B_RETRY=$(cat "${SR6B_DIR}/res-retry")`,
 		`-eq 4 ]]; then`,
+		// SR-6B failure legibility (nightlies 36135708380…36740521434:
+		// 10 identical holders-ok=1 failures): per-holder bodies (the
+		// API rate-limiter 429 and agentd's staging_busy are
+		// status-identical), both processes' upload counters, and both
+		// log tails, ON THE FAILURE PATH.
+		`-o "${SR6B_DIR}/res-hold-${i}-body"`,
+		`SR-6B DIAGNOSE holder-`,
+		`^workspace_agentd_file_uploads_total`,
+		`^llmsafespaces_uploads_total`,
+		`SR-6B DIAGNOSE agentd-log`,
+		`SR-6B DIAGNOSE api-log`,
 		// Cleanup.
 		`trap cleanup EXIT`,
 	} {
