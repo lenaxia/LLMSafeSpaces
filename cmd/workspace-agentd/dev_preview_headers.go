@@ -101,13 +101,15 @@ type devPreviewHeaderStore struct {
 }
 
 // newDevPreviewHeaderStore builds a store over path, loading any
-// existing state. Boot-load honors the same validation as the tool:
-// entries whose canonicalized name/value fail validation (a
-// hand-edited file) are dropped, and an unparseable file loads empty.
-// The state is advisory tooling state on memory-backed storage — §3's
-// "failure semantics: none" — so a discard here starts the workspace
-// header-clean rather than failing agentd or honoring smuggled
-// entries; the next mutation rewrites the file valid.
+// existing state. Boot-load honors the same validation as the tool,
+// IN FULL: per-entry rules (a hand-edited file cannot smuggle
+// reserved/oversized/invalid names past the denylist) AND the ≤20-
+// entry cap (beyond-cap valid entries drop — the kept set is the
+// first 20 by sorted name, deterministic). An unparseable file loads
+// empty. The state is advisory tooling state on memory-backed storage
+// — §3's "failure semantics: none" — so a discard here starts the
+// workspace header-clean rather than failing agentd or honoring
+// smuggled entries; the next mutation rewrites the file valid.
 func newDevPreviewHeaderStore(path string) *devPreviewHeaderStore {
 	s := &devPreviewHeaderStore{path: path, entries: map[string]string{}}
 	raw, err := os.ReadFile(path)
@@ -118,12 +120,20 @@ func newDevPreviewHeaderStore(path string) *devPreviewHeaderStore {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return s
 	}
-	for name, value := range m {
-		canonical, err := validateDevPreviewHeader(name, value)
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if len(s.entries) >= devPreviewHeadersMaxEntries {
+			break
+		}
+		canonical, err := validateDevPreviewHeader(name, m[name])
 		if err != nil {
 			continue
 		}
-		s.entries[canonical] = value
+		s.entries[canonical] = m[name]
 	}
 	return s
 }
@@ -154,10 +164,17 @@ func (s *devPreviewHeaderStore) set(name, value string) error {
 }
 
 // clear removes one header by name ("*" clears every entry). Clearing
-// an absent name is an idempotent no-op.
+// an absent name is an idempotent no-op; a structurally invalid name
+// is refused (symmetric with set — an invalid name can never be
+// stored, and silently accepting it hides caller error).
 func (s *devPreviewHeaderStore) clear(name string) error {
 	if s == nil {
 		return fmt.Errorf("dev-preview header store is not available")
+	}
+	if name != "*" {
+		if _, err := validateDevPreviewHeaderName(name); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -246,6 +263,29 @@ func persistDevPreviewHeaders(path string, entries map[string]string) error {
 // canonicalized name. Every rule fails at tool-call time — there is
 // no later failure path (a stored literal IS the injected value).
 func validateDevPreviewHeader(name, value string) (string, error) {
+	canonical, err := validateDevPreviewHeaderName(name)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", fmt.Errorf("header value is required — clear removes an entry; an empty value is caller error, not a removal")
+	}
+	if len(value) > devPreviewHeadersMaxValueLen {
+		return "", fmt.Errorf("header value exceeds the 4 KiB cap")
+	}
+	for i := 0; i < len(value); i++ {
+		if !isValidHeaderFieldValueByte(value[i]) {
+			return "", fmt.Errorf("header value contains bytes that are not valid header bytes (byte %d)", i)
+		}
+	}
+	return canonical, nil
+}
+
+// validateDevPreviewHeaderName is the name half of §2's table:
+// non-empty, ≤128 chars, printable token characters, canonicalized,
+// not reserved. Shared by set (full validation) and clear (structural
+// symmetry — an invalid name can never have been stored).
+func validateDevPreviewHeaderName(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("header name is required")
 	}
@@ -260,17 +300,6 @@ func validateDevPreviewHeader(name, value string) (string, error) {
 	canonical := textproto.CanonicalMIMEHeaderKey(name)
 	if devPreviewHeadersReserved[canonical] || strings.HasPrefix(canonical, "Sec-Websocket-") {
 		return "", fmt.Errorf("header name %q is reserved (tunnel/session machinery) and cannot be configured", canonical)
-	}
-	if value == "" {
-		return "", fmt.Errorf("header value is required — clear removes an entry; an empty value is caller error, not a removal")
-	}
-	if len(value) > devPreviewHeadersMaxValueLen {
-		return "", fmt.Errorf("header value exceeds the 4 KiB cap")
-	}
-	for i := 0; i < len(value); i++ {
-		if !isValidHeaderFieldValueByte(value[i]) {
-			return "", fmt.Errorf("header value contains bytes that are not valid header bytes (byte %d)", i)
-		}
 	}
 	return canonical, nil
 }

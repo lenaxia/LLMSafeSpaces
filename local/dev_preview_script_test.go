@@ -53,6 +53,17 @@ func TestDevPreviewScript_AssertionRows(t *testing.T) {
 		{`--api-public-url`, "#1332-B: the controller flag patch drives the wiring-chain leg"},
 		{`workspace-pw-`, "the MCP call must authenticate with the workspace password secret (§D1)"},
 		{`devPreview: true`, "the seeded workspace must enable dev preview (the 503 gate)"},
+		// 0062 §6 e2e arms — the dev_preview_headers tool contract:
+		// reject-without-header, set→render, clear→reject, and the two
+		// pod-tier lifecycle arms. Each row keeps its leg from being
+		// silently dropped.
+		{`0062-e2e-reject`, "0062-A: the fixture must REJECT headerless requests (the unhappy arm)"},
+		{`0062-e2e-ok`, "0062-B: the happy arm must confirm the accepted request body"},
+		{`"action":"clear","name":"X-Service-Key"`, "0062-C: the clear leg must run the clear action through the tool"},
+		{`-c agentd -- kill 1`, "0062-D: the restart-keeps arm must restart the agentd container"},
+		{`agentd container restart`, "0062-D: the restart arm must assert state survival loudly"},
+		{`== "[]"`, "0062-E: the pod-death arm must assert the wiped state lists empty"},
+		{`starts header-clean`, "0062-E: the wipe arm's design citation must stay (memory-backed class)"},
 	}
 	for _, r := range rows {
 		if !strings.Contains(s, r.fragment) {
