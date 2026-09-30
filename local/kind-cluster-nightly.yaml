@@ -8,7 +8,16 @@
 # request ceiling the us-70 suite's row legs kept hitting). The wall is
 # requests-vs-allocatable, not real CPU: idle row workspaces stack
 # without failing scheduling — a second node doubles the allocatable
-# ceiling.
+# ceiling ONLY IF both nodes are schedulable. kind strips the
+# control-plane taint on single-node clusters only
+# (kubeadminit/init.go:124-155, "if we are only provisioning one node"),
+# so the untaint InitConfiguration patch below is what actually delivers
+# the doubling on this 2-node topology: without it (nightly runs
+# 36135708380…36740521434, 2026-09-25…30) the control-plane kept
+# node-role.kubernetes.io/control-plane:NoSchedule, every pod —
+# workspaces and infra alike — piled onto the worker, and the M2/M4
+# leg's 8th standing workspace pod pended forever on FailedScheduling
+# "1 Insufficient cpu, 1 node(s) had untolerated taint(s)".
 #
 # The SHARED kind-cluster.yaml stays single-node on purpose: the pool is
 # calibrated on exactly that topology (dind nesting, #1244-class network
@@ -17,7 +26,10 @@
 # them. Keep this file the shared shape plus nodes ONLY: every
 # dind-escape-prevention setting below (serviceSubnet, iptables
 # kube-proxy, certs.d) must stay identical to the shared config, pinned
-# by local/kind_cluster_config_test.go.
+# by local/kind_cluster_config_test.go. The untaint patch is the one
+# deliberate divergence — pinned by the same test
+# (TestNightlyKindConfig_ControlPlaneUntainted) and absent from the
+# shared config, where kind's single-node path already strips the taint.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: llmsafespaces
@@ -60,3 +72,12 @@ kubeadmConfigPatches:
   kind: KubeProxyConfiguration
   apiVersion: kubeproxy.config.k8s.io/v1alpha1
   mode: iptables
+- |
+  # The capacity completion (see header): kubeadm registers this
+  # control-plane with NO taints, making it schedulable alongside the
+  # worker — the doubling the 2-node retirement intended. kind itself
+  # only strips the taint on single-node clusters, so it must be asked
+  # explicitly here.
+  kind: InitConfiguration
+  nodeRegistration:
+    taints: []

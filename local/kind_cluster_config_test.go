@@ -8,15 +8,21 @@ package local_test
 // capacity walls — AC-1c, AC-13 wave 2, AC-11 — is a class retirement).
 // The nightly runs on a hosted runner whose single node tops out at
 // ~10 standing workspace pods of requests; a second node doubles the
-// allocatable ceiling. The SHARED local/kind-cluster.yaml stays
-// single-node: the pool is calibrated on exactly that topology (dind
-// nesting, #1244-class network sensitivities) and this change retires
-// the nightly's wall class, not the pool's envelope.
+// allocatable ceiling ONLY with the control-plane untaint (kind strips
+// that taint on single-node clusters only — see
+// TestNightlyKindConfig_ControlPlaneUntainted). The SHARED
+// local/kind-cluster.yaml stays single-node: the pool is calibrated on
+// exactly that topology (dind nesting, #1244-class network
+// sensitivities) and this change retires the nightly's wall class, not
+// the pool's envelope.
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -85,6 +91,85 @@ func TestNightlyKindConfig_TwoNodes(t *testing.T) {
 			t.Fatalf("the nightly config must keep the shared shape's %q — the nightly cluster is the shared shape plus a worker, never a fork", pin)
 		}
 	}
+}
+
+// TestNightlyKindConfig_ControlPlaneUntainted pins the capacity
+// completion for the 2-node retirement: kind only strips the
+// control-plane taint on SINGLE-node clusters (kind v0.32.0
+// pkg/cluster/internal/create/actions/kubeadminit/init.go:124-155 runs
+// `kubectl taint nodes --all node-role.kubernetes.io/control-plane-`
+// under "if we are only provisioning one node"). On the nightly's 2-node
+// cluster the control-plane kept node-role.kubernetes.io/control-plane
+// :NoSchedule, so every pod — workspaces and infra alike — piled onto
+// the worker and the promised allocatable doubling never materialized
+// (nightly runs 36135708380…36740521434: the M2/M4 leg's chain-end
+// workspace pod pended forever on FailedScheduling "1 Insufficient cpu,
+// 1 node(s) had untolerated taint(s)").
+//
+// The pin is YAML-parsed, not text-matched, because kind v0.32.0
+// SILENTLY DISCARDS patches that do not match a generated document
+// (pkg/internal/patch/kubeyaml.go drops the matches bool): a drifted
+// patch — most plausibly one "corrected" to declare an explicit
+// apiVersion that differs from the generated template's (kind selects
+// ConfigTemplateBetaV3 for node images < v1.36.0, kubeadm/config.go:677)
+// — would leave a text pin green while kind no-ops the patch and the
+// original failure returns. The asserted document must therefore be
+// EXACTLY {kind: InitConfiguration, nodeRegistration: {taints: []}}:
+// apiVersion ABSENT (the missing-apiVersion wildcard is what makes the
+// patch version-proof), and taints an explicit EMPTY LIST (`taints:
+// null` re-defaults to the control-plane taint; `taints: []` is
+// kubeadm's documented untaint form — v1beta3/v1beta4
+// NodeRegistrationOptions.Taints carry textually identical guidance).
+func TestNightlyKindConfig_ControlPlaneUntainted(t *testing.T) {
+	wantUntaint := map[string]interface{}{
+		"kind": "InitConfiguration",
+		"nodeRegistration": map[string]interface{}{
+			"taints": []interface{}{},
+		},
+	}
+	found := false
+	for _, doc := range parsedKubeadmPatches(t, kindConfigNightly) {
+		if reflect.DeepEqual(doc, wantUntaint) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the nightly kind config must carry, under kubeadmConfigPatches, a document EXACTLY equal to %v — no apiVersion (kind wildcards the match on a missing one and silently discards non-matching patches) and an explicit empty taints list (null re-defaults to the control-plane taint). Without a matching untaint patch kind keeps multi-node control-planes tainted and the second node contributes zero schedulable capacity", wantUntaint)
+	}
+	// Blast radius: the SHARED config must carry NO InitConfiguration
+	// patch at all. It is single-node, where kind itself already strips
+	// the taint at init — the pool's topology stays exactly as
+	// calibrated.
+	for _, doc := range parsedKubeadmPatches(t, kindConfigShared) {
+		if doc["kind"] == "InitConfiguration" {
+			t.Fatal("local/kind-cluster.yaml must stay single-node-stock: kind already untaints single-node control-planes, and the pool's calibrated topology must not drift")
+		}
+	}
+}
+
+type kindClusterConfigForPatches struct {
+	KubeadmConfigPatches []string `json:"kubeadmConfigPatches"`
+}
+
+// parsedKubeadmPatches parses a kind cluster config and returns every
+// kubeadmConfigPatches entry as a decoded document, failing the test on
+// any parse error (a config that stops parsing is itself a regression —
+// kind fails cluster creation on it).
+func parsedKubeadmPatches(t *testing.T, path string) []map[string]interface{} {
+	t.Helper()
+	var cfg kindClusterConfigForPatches
+	if err := yaml.Unmarshal([]byte(mustRead(t, path)), &cfg); err != nil {
+		t.Fatalf("%s: kind config failed to parse as YAML: %v", path, err)
+	}
+	docs := make([]map[string]interface{}, 0, len(cfg.KubeadmConfigPatches))
+	for i, patch := range cfg.KubeadmConfigPatches {
+		var doc map[string]interface{}
+		if err := yaml.Unmarshal([]byte(patch), &doc); err != nil {
+			t.Fatalf("%s: kubeadmConfigPatches[%d] failed to parse: %v", path, i, err)
+		}
+		docs = append(docs, doc)
+	}
+	return docs
 }
 
 // TestSharedKindConfig_StaysSingleNode is the BLAST-RADIUS pin: the
