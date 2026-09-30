@@ -40,6 +40,10 @@ type Resolve func(ctx context.Context, workspaceID string) (baseURL, password st
 // seam).
 type Client interface {
 	Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error
+	// GetSnapshot reads the authority's derived per-session truth
+	// (#1602: the bridge overlays the #1574 BusyComponents instead of
+	// the raw dialect status).
+	GetSnapshot(ctx context.Context, sessionID string) (*abiv1.SessionSnapshot, error)
 }
 
 // NewClient builds a Client for a resolved pod endpoint.
@@ -102,6 +106,12 @@ type Logger interface {
 const (
 	DefaultIdleDrop = 30 * time.Second // all-idle settle window before the gate drops
 	DefaultRetry    = 2 * time.Second  // reconnect backoff after a stream error
+
+	// consultBudget bounds one authority busy-truth consult (#1602).
+	// The serve is a projection read plus a coalesced lease gather —
+	// milliseconds in health; the bound only caps the fold goroutine's
+	// stall when a pod is slow, before the fail-open degrade takes over.
+	consultBudget = 2 * time.Second
 )
 
 // Config wires the consumer. Resolve and NewClient are required; the
@@ -143,6 +153,14 @@ type gate struct {
 	busyNow   bool      // the last published fold state had a busy session
 	idleSince time.Time // when the fold last reported all-idle (zero while busy)
 	frames    bool      // any frame received on the current connection
+	// client is the connection the consults ride (rebuilt per
+	// reconnect in run; nil before the first connect).
+	client Client
+	// derived is the consult-maintained busy truth per session (#1602):
+	// the last authority answer the bridge published (or failed to
+	// consult past). OR'd into busyNow so a silent-but-derived-busy
+	// tool run holds the gate and the final idle is never missed.
+	derived map[string]bool
 }
 
 func New(cfg Config) *Consumer {
@@ -164,7 +182,7 @@ func (c *Consumer) Open(workspaceID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &gate{cancel: cancel, done: make(chan struct{}), idleSince: time.Now()}
+	g := &gate{cancel: cancel, done: make(chan struct{}), idleSince: time.Now(), derived: map[string]bool{}}
 	c.gates[workspaceID] = g
 	hook := c.cfg.OnGateChange
 	c.mu.Unlock()
@@ -281,6 +299,7 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		cl := c.cfg.NewClient(baseURL, password)
 		g.mu.Lock()
 		g.frames = false
+		g.client = cl
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
@@ -310,6 +329,11 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 // the gate survives while the CURRENT fold has a busy session; once the
 // fold reports all-idle, the settle window starts (busy again cancels
 // it). A quiet-but-busy stream (long turn, no events) stays connected.
+// #1602: the consult-maintained derived truth (g.derived) joins the
+// OR — the raw fold reads all-idle during a silent tool run (the
+// harness's intermediate idle while a bash tool executes), and a gate
+// dropped there never sees the turn's final idle (the stuck-busy
+// aggravator).
 func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionState) {
 	busy := false
 	for _, s := range st.Sessions {
@@ -321,6 +345,14 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if !busy {
+		for _, v := range g.derived {
+			if v {
+				busy = true
+				break
+			}
+		}
+	}
 	g.busyNow = busy
 	if busy {
 		g.idleSince = time.Time{}
@@ -371,10 +403,35 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			return
 		}
 		switch evt.GetStatus() {
-		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING:
-			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), true)
-		case abiv1.SessionStatus_SESSION_STATUS_IDLE:
-			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), false)
+		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING, abiv1.SessionStatus_SESSION_STATUS_IDLE:
+			// #1602: the emission carries the authority's DERIVED busy
+			// truth (#1574 BusyComponents — read via GetSnapshot, never
+			// recomputed here). The raw dialect status is streaming-only
+			// semantics — its idle while a tool executes is the incident
+			// this fixes. Consult failure (pod glitch, projection-
+			// unknown session) fails open to the raw mapping: the pipe
+			// goes legacy, never quiet.
+			busy := evt.GetStatus() != abiv1.SessionStatus_SESSION_STATUS_IDLE
+			if derived, ok := c.consultBusy(g, evt.GetSessionId()); ok {
+				busy = derived
+			}
+			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
+		}
+	// Busy-flip candidates that fire NO status event (a tool part
+	// starting after the harness's idle, an errored turn, a message
+	// starting): consult the derived truth and publish the FLIP only —
+	// these legs never bridged before, so every-event emission would
+	// spam the user stream.
+	case abiv1.EventType_EVENT_TYPE_PART_START, abiv1.EventType_EVENT_TYPE_PART_END,
+		abiv1.EventType_EVENT_TYPE_MESSAGE_START, abiv1.EventType_EVENT_TYPE_ERROR:
+		if c.cfg.Bridge == nil || evt.GetSessionId() == "" {
+			return
+		}
+		g.mu.Lock()
+		prev := g.derived[evt.GetSessionId()]
+		g.mu.Unlock()
+		if derived, ok := c.consultBusy(g, evt.GetSessionId()); ok && derived != prev {
+			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), derived)
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if c.cfg.Bridge != nil && evt.GetInput() != nil {
@@ -391,6 +448,36 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			}
 		}
 	}
+}
+
+// consultBusy asks the authority for one session's derived busy truth
+// (the #1574 BusyComponents, read verbatim — the one definition, never
+// recomputed here) and records the answer as the gate's flip baseline.
+// ok=false means no answer (no connection yet, consult failure, or a
+// Busy-less snapshot) — callers fail open to the raw status mapping.
+// Called from the fold goroutine (onEvent), so consults serialize in
+// stream order; the budget caps the stall a slow pod can impose.
+func (c *Consumer) consultBusy(g *gate, sessionID string) (busy, ok bool) {
+	if sessionID == "" {
+		return false, false
+	}
+	g.mu.Lock()
+	cl := g.client
+	g.mu.Unlock()
+	if cl == nil {
+		return false, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), consultBudget)
+	defer cancel()
+	snap, err := cl.GetSnapshot(ctx, sessionID)
+	if err != nil || snap.GetBusy() == nil {
+		return false, false
+	}
+	busy = snap.GetBusy().GetBusy()
+	g.mu.Lock()
+	g.derived[sessionID] = busy
+	g.mu.Unlock()
+	return busy, true
 }
 
 // handleError is the death-detection seam for connections that failed

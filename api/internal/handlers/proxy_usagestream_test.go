@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -170,6 +171,14 @@ func (g *gateTestClient) Stream(ctx context.Context, onUpdate func(*abiclient.Se
 		g.disconnected <- struct{}{}
 	}
 	return context.Canceled
+}
+
+// GetSnapshot arms the #1602 busy-truth consult with no authority
+// answer by default: these wiring tests pin the fail-open (legacy raw
+// status) bridging; consult-scripted behavior lives in the
+// usagestream consumer tests and the busy-truth e2e.
+func (g *gateTestClient) GetSnapshot(ctx context.Context, sessionID string) (*abiv1.SessionSnapshot, error) {
+	return nil, errors.New("no authority snapshot scripted")
 }
 
 // apply pushes one ABI event through the captured callbacks (and the

@@ -5,7 +5,9 @@ package usagestream
 
 import (
 	"context"
+	"errors"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,12 @@ import (
 	abiclient "github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
+
+// errNoSuchSession models the authority's NotFound for projection-unknown
+// sessions (the fail-open leg).
+type errNoSuchSession string
+
+func (e errNoSuchSession) Error() string { return "unknown session: " + string(e) }
 
 // fakeClient fakes abiclient.Client's Stream: snapshots then scripted
 // applied events, under the test's control.
@@ -24,6 +32,11 @@ type fakeClient struct {
 	// Minimal fold: BUSY/COMPACTING status events mark the session busy
 	// (mirrors the reference client's folded-state publications).
 	busy map[string]bool
+	// #1602: scriptable GetSnapshot answers (the authority truth the
+	// bridge consults).
+	mu          sync.Mutex
+	snapshots   map[string]*abiv1.SessionSnapshot
+	snapshotErr error
 }
 
 func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error {
@@ -337,4 +350,148 @@ func TestGateChangeHook(t *testing.T) {
 		t.Fatalf("double close event, got %v", v)
 	case <-time.After(150 * time.Millisecond):
 	}
+}
+
+// --- #1602: the session.status bridge carries the authority's derived
+// busy truth (#1574 BusyComponents — read, never recompute) -----------
+
+// setSnapshot scripts the fake's GetSnapshot answer for a session.
+func (f *fakeClient) setSnapshot(sid string, busy bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.snapshots == nil {
+		f.snapshots = map[string]*abiv1.SessionSnapshot{}
+	}
+	f.snapshots[sid] = &abiv1.SessionSnapshot{SessionId: sid, Busy: &abiv1.BusyComponents{Busy: busy, Streaming: busy}}
+}
+
+// failSnapshot arms a permanent GetSnapshot failure (fail-open leg).
+func (f *fakeClient) failSnapshot(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotErr = err
+}
+
+func (f *fakeClient) GetSnapshot(ctx context.Context, sessionID string) (*abiv1.SessionSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.snapshotErr != nil {
+		return nil, f.snapshotErr
+	}
+	if s, ok := f.snapshots[sessionID]; ok {
+		return s, nil
+	}
+	return nil, errNoSuchSession(sessionID)
+}
+
+// TestRunningToolBridgesBusyTruth: THE acceptance row at the bridge
+// level. The harness reports IDLE (streaming-only semantics) while the
+// authority's components say busy (a bash tool mid-execution) — the
+// bridge must publish BUSY, not the raw idle. The reverse leg: the
+// harness's BUSY mark while the authority carved the session out
+// (permission wait, nothing else in flight) publishes IDLE.
+func TestRunningToolBridgesBusyTruth(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.setSnapshot("s1", true) // bash mid-execution: derived busy
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:s1:busy"}, br.statuses,
+		"the intermediate idle must be overlaid with the authority's busy truth")
+
+	fc.setSnapshot("s2", false) // permission wait: the carve-out leg
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s2", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	require.Equal(t, []string{"ws1:s1:busy", "ws1:s2:idle"}, br.statuses,
+		"a tracker-side busy the authority does not back must publish idle")
+}
+
+// TestPartStartBridgesBusyFlip: busy flips that happen WITHOUT any
+// status event (the tool part starts after the harness's idle) are the
+// incident's silent class — the candidate consult catches the flip and
+// publishes it. One emission per flip, not per event.
+func TestPartStartBridgesBusyFlip(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.setSnapshot("s1", false)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:s1:idle"}, br.statuses)
+
+	fc.setSnapshot("s1", true) // the tool starts: derived busy flips
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1",
+		Part: &abiv1.Part{Id: "p1", Type: abiv1.PartType_PART_TYPE_TOOL}})
+	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_DELTA, SessionId: "s1", PartId: "p1", Delta: "x"})
+	fc.apply(4, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_END, SessionId: "s1", PartId: "p1",
+		Part: &abiv1.Part{Id: "p1", Type: abiv1.PartType_PART_TYPE_TOOL}})
+	require.Equal(t, []string{"ws1:s1:idle", "ws1:s1:busy"}, br.statuses,
+		"one busy emission on the flip; the delta/end events that keep it busy must not re-emit")
+
+	fc.setSnapshot("s1", false) // the turn truly ends
+	fc.apply(5, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_END, SessionId: "s1", PartId: "p1",
+		Part: &abiv1.Part{Id: "p1", Type: abiv1.PartType_PART_TYPE_TOOL}})
+	require.Equal(t, []string{"ws1:s1:idle", "ws1:s1:busy", "ws1:s1:idle"}, br.statuses,
+		"the flip back to idle publishes exactly once")
+}
+
+// TestErrorEventClearsBusyViaAuthority: an ERROR event is a candidate —
+// the vetoed derivation (busy=false) reaches the bridge, clearing an
+// indicator that today's raw path leaves stuck busy (ERROR status
+// events were never bridged at all).
+func TestErrorEventClearsBusyViaAuthority(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.setSnapshot("s1", true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	require.Equal(t, []string{"ws1:s1:busy"}, br.statuses)
+
+	fc.setSnapshot("s1", false) // terminal ERROR vetoes busy in the derivation
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_ERROR, SessionId: "s1", Error: &abiv1.Error{Code: "turn.failed"}})
+	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.statuses)
+}
+
+// TestConsultFailureFailsOpenToRawStatus: GetSnapshot unavailable (pod
+// glitch, projection-unknown session) degrades to today's raw-status
+// bridging — the pipe never goes quiet, it goes legacy.
+func TestConsultFailureFailsOpenToRawStatus(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.failSnapshot(errors.New("pod unavailable"))
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.statuses)
+
+	// Non-status candidates during a failure publish nothing new.
+	n := len(br.statuses)
+	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1"})
+	require.Len(t, br.statuses, n)
+}
+
+// TestDerivedBusyHoldsIdleGate: the idle-drop gate must not tear down
+// the subscription while the DERIVED truth says busy — the raw fold
+// reads all-idle during a silent tool run (the intermediate harness
+// idle), and a drop there would miss the final idle entirely (the
+// stuck-busy aggravator). When the derived truth goes idle, the settle
+// window runs and the gate drops as designed.
+func TestDerivedBusyHoldsIdleGate(t *testing.T) {
+	c, fc, _, _ := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	// The harness went idle; the tool is still running (derived busy).
+	fc.setSnapshot("s1", true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1"})
+
+	// Long enough for the idle watchdog to have dropped an
+	// un-OR'd gate several times over.
+	time.Sleep(4 * c.cfg.IdleDrop)
+	require.Equal(t, 1, c.Gates(), "derived busy must hold the gate open through the silent tool run")
+
+	// The turn truly ends: the derived truth goes idle, the settle
+	// window elapses, the gate drops (scale-to-zero preserved).
+	fc.setSnapshot("s1", false)
+	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_END, SessionId: "s1", PartId: "p1"})
+	require.Eventually(t, func() bool { return c.Gates() == 0 }, 5*time.Second, 50*time.Millisecond,
+		"all-idle derived truth must still drop the gate")
 }
