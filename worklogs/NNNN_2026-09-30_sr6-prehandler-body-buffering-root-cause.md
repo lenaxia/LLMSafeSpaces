@@ -111,52 +111,86 @@ Bonus kills (both real, both filed in #1607): the unauthenticated memory-exhaust
 - No local kind in this pod (no docker/kubectl) — verification rides branch-dispatched
   nightly runs (~50min each).
 
-### Verification run 1 (36758872210): infra flake, not a fix verdict
+### Verification run 1 (36758872210): mis-adjudicated as a flake — actually a second defect
 
 The fix's first full-stack run failed the upload row from SR-1 onward with transport-level
-000s — including the BODYLESS reload-secrets POST (unreachable by the body-capture change) —
-while the very next step's e2e passed against the same API deployment, and small uploads
-through the new API had delivered 201s minutes earlier (attachments step, 6–18ms). Verdict:
-the step's own kubectl port-forward died mid-step. Local disproof of the one plausible
-code-level mechanism (early agentd refusals arriving while bodies stream — newly reachable
-with the bounded capture — stalling `forwardUploadToAgentd`'s `cr := <-copyCh`):
-`TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares` (six concurrent 4MiB uploads
-against header-time refusals through the REAL middleware chain over real TCP) resolves all
-six promptly with forwarded 507s. The run's M2/M4 failure is the same known
-`FailedScheduling — Insufficient cpu` kind flake as the original nightly 36740521434.
-Re-dispatched for the actual SR-6 verdict.
+000s — including the BODYLESS reload-secrets POST — while the next step's e2e passed against
+the same API. I adjudicated it an infra flake (port-forward death) and backed that with a
+unit-level storm test that passed. **Verification run 2 (36766849622) failed BYTE-IDENTICALLY
+— deterministic, so the flake call was wrong and the unit disproof was testing the wrong
+layer** (direct TCP; loopback socket buffers absorb what the tunnel cannot).
+
+### The second peeled layer: RST on early refusals (fix 2, f9ee2b60)
+
+Real mechanism, both runs: with the bounded capture, agentd's at-Admit refusals arrive
+MID-STREAM for the first time. The API writes the 507 while ~24MiB of the client's declared
+body is unread; a server closing with unread receive-buffer bytes emits RST — clobbering the
+in-flight response (curl 000) and killing the step's port-forward tunnel (every later request
+on the step 000'd). The old unbounded `io.ReadAll` had accidentally consumed every body before
+any response existed — masking this hazard since the route shipped. The route's
+"never buffered" contract was broken TWICE: the buffer hid the RST hazard; fixing one exposed
+the other.
+
+Fix: `scheduleUploadBodyDrain` (uploads.go) — after an early response, flush, then discard
+exactly ContentLength − consumed (`countingBody` wrapper), memory-free, deadline-bounded
+(10s) for stalled senders; chunked bodies keep the old behavior. Red test:
+`TestUpload_EarlyRefusalDrainsClientBody` — a 25MiB body (at the cap) through a synchronous
+`io.Pipe` so socket buffers cannot absorb it; fails on prior code with
+`io: read/write on closed pipe`.
+
+TDD stumble, owned: the first drain implementation deferred inside the helper — the drain ran
+BEFORE the handler (consumed the body, flushed an empty 200). The existing shape-table tests
+caught it immediately (400s became 200s); fixed with the returned-closure idiom
+(`defer scheduleUploadBodyDrain(c)()`).
+
+### Verification run 3 (36774677154, commit f9ee2b60): GREEN
+
+```
+✓ SR-1: concurrent storm complete + terminal-clean (delivered=2 refused=4 other=0 total=6)
+✓ SR-6: 5th-concurrent 429 boundary observed DETERMINISTICALLY (4 trickled holders;
+  5th=429/staging_busy; retry-after-release delivered; holders-ok=1 fifth=429 fifth-busy=1
+  retry=201 probe-wait-ms=3004)
+✓ upload stress harness: all rows passed (loud skips: 2)
+```
+
+The §6.6 boundary exercised deterministically for the first time since #1567 landed. Remaining
+skips are known lanes, not regressions: the #1539 serialization guard still fires
+(706ms > 610ms — its own follow-up; with uploads now streaming, the residual seat is worth a
+fresh triage there), and SR-3 awaits the PR 1/2 fault seam. The upload row no longer blocks
+the downstream nightly lane (#1541).
 
 ---
 
 ## Tests Run
 
 - `go test ./api/internal/middleware/...` — green (incl. 3 new pins)
+- `go test ./api/internal/handlers/` — green (incl. 2 new storm/drain pins; the shape table caught the drain defer bug red)
 - `go test ./api/...` — 42 packages, all green
 - `go test -run TestUploadStress ./local/` — green (harness pin suite + new diagnostic pins)
-- Nightly on branch, instrumentation run 36749714653: SR-6 evidence captured (row still red
-  pre-fix, as expected); **fix verification run 36758872210 in flight at session end**
+- Nightly on branch, 4 dispatches: 36749714653 (instrumentation — evidence), 36758872210 +
+  36766849622 (fix 1 — exposed layer 2, byte-identical failures), **36774677154 (fix 2 —
+  SR-6 green deterministically; full harness pass)**
 
 ---
 
 ## Next Steps
 
-1. Verdict of run 36758872210: SR-6B must pass (`5th=429/staging_busy` with holders holding);
-   watch whether the #1539 p95 skip still fires — if it now passes, propose tightening the
-   guard override back to note_fail in a follow-up.
-2. Open the PR (body: root cause, evidence, the 4KiB-cap/loss tradeoff rationale, the #1567
-   premise note, verification run link). Hold for webhook recovery.
-3. Comment on #1541 pointing at #1607 + the fix (unblocks the epic-72 lane).
-4. Post-merge: the post-merge bot assigns this worklog's number.
+1. PR review + merge (webhook-recovery-gated). 2. Post-merge: the #1539 guard's residual
+   706ms seat deserves fresh triage now that uploads stream end-to-end (its skip note says
+   "tighten on fix"). 3. `validation.go`'s per-route `io.ReadAll` (opt-in routes, flagged in
+   #1607) for its owners. 4. Post-merge bot assigns this worklog's number.
 
 ---
 
 ## Files Modified
 
-- `local/us-1500-upload-stress-e2e.sh` — SR-6B failure legibility (holder bodies, timing, evidence dump)
-- `local/us_1500_upload_stress_script_test.go` — pins for the diagnostics
 - `api/internal/middleware/logging.go` — bounded capture + stream-through (+ shared captureRequestBody/streamedBody)
 - `api/internal/middleware/error_handler.go` — bounded capture (second seat)
 - `api/internal/middleware/tests/logging_test.go` — 2 red-first pins + chunkedBody test reader
 - `api/internal/middleware/tests/error_handler_test.go` — second-seat pin
+- `api/internal/handlers/uploads.go` — early-response body drain (countingBody + scheduleUploadBodyDrain)
+- `api/internal/handlers/uploads_forwarding_test.go` — concurrent early-refusal storm pin + drain red test
+- `local/us-1500-upload-stress-e2e.sh` — SR-6B failure legibility (holder bodies, timing, evidence dump)
+- `local/us_1500_upload_stress_script_test.go` — pins for the diagnostics
 - `COORDINATE.md` — active claim row
-- Issue #1607 filed; worklog (this file)
+- Issue #1607 filed (+ follow-up comment with layer 2 + green run); #1541 cross-comment; worklog (this file)
