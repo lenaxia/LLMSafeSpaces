@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +27,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // newTestStore builds a store over a temp dir (each test its own file).
@@ -169,6 +173,14 @@ func TestDevPreviewHeadersClearAndList(t *testing.T) {
 	if err := s.clear("X-Absent"); err != nil {
 		t.Fatalf("clear absent: %v", err)
 	}
+	// A structurally INVALID name is refused — symmetric with set: an
+	// invalid name can never be stored, but accepting it silently is
+	// asymmetric and hides caller error (r1 correctness-2).
+	for _, junk := range []string{"X Bad", "", "X-Bad\x01Name"} {
+		if err := s.clear(junk); err == nil || !strings.Contains(err.Error(), "header name") {
+			t.Fatalf("clear(%q): expected a header-name error, got %v", junk, err)
+		}
+	}
 }
 
 // --- §3: storage ------------------------------------------------------
@@ -232,6 +244,54 @@ func TestDevPreviewHeadersBootLoadCorruptFile(t *testing.T) {
 	}
 }
 
+// The boot-load cap (r1 correctness-1): a hand-edited file with more
+// than 20 VALID entries cannot bypass the tool's ≤20-entry contract —
+// the boot loop keeps the first 20 by sorted name and drops the rest,
+// deterministically.
+func TestDevPreviewHeadersBootLoadCapsEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dev-preview-headers.json")
+	file := make(map[string]string, 22)
+	for i := 0; i < 22; i++ {
+		file[fmt.Sprintf("X-Header-%02d", i)] = fmt.Sprintf("v%d", i)
+	}
+	raw, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries := newDevPreviewHeaderStore(path).list()
+	if len(entries) != 20 {
+		t.Fatalf("boot load must cap at 20 entries, got %d", len(entries))
+	}
+	if entries[0].Name != "X-Header-00" || entries[19].Name != "X-Header-19" {
+		t.Fatalf("the kept entries must be the first 20 by sorted name: %s…%s", entries[0].Name, entries[19].Name)
+	}
+	for _, e := range entries {
+		if e.Name == "X-Header-20" || e.Name == "X-Header-21" {
+			t.Fatalf("beyond-cap entry survived boot load: %+v", e)
+		}
+	}
+}
+
+// Boundary ACCEPTS (r1 missing-test 3): exactly-128-char names and
+// exactly-4096-byte values are valid — a cap regression to >= would
+// otherwise pass the rejection-side rows alone.
+func TestDevPreviewHeadersBoundaryAccepts(t *testing.T) {
+	s := newTestStore(t)
+	name := "X-" + strings.Repeat("a", 126) // exactly 128
+	if len(name) != 128 {
+		t.Fatalf("fixture: name is %d chars", len(name))
+	}
+	if err := s.set(name, "v"); err != nil {
+		t.Fatalf("128-char name must be accepted: %v", err)
+	}
+	if err := s.set("X-Max-Value", strings.Repeat("a", 4096)); err != nil {
+		t.Fatalf("4096-byte value must be accepted: %v", err)
+	}
+}
+
 // Mode 0600 and the atomic-rename write (no .tmp residue, file is JSON).
 func TestDevPreviewHeadersFileShape(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dev-preview-headers.json")
@@ -279,6 +339,13 @@ func TestDevPreviewHeadersPersistFailureAtomic(t *testing.T) {
 	entries := s.list()
 	if len(entries) != 1 || entries[0].Name != "X-K" || entries[0].Value != "v" {
 		t.Fatalf("failed set must not mutate state: %+v", entries)
+	}
+	// The same atomicity holds on clear (r1 missing-test 4).
+	if err := s.clear("X-K"); err == nil {
+		t.Fatal("expected persist failure to surface on clear")
+	}
+	if entries := s.list(); len(entries) != 1 || entries[0].Name != "X-K" {
+		t.Fatalf("failed clear must not mutate state: %+v", entries)
 	}
 }
 
@@ -412,6 +479,56 @@ func TestDevPreviewHeadersForwardedDisposition(t *testing.T) {
 	}
 	if got.Get("X-Forwarded-For") != "" {
 		t.Fatalf("caller X-Forwarded-For still absent alongside the configured forward: %v", got)
+	}
+}
+
+// WS-upgrade injection (r1 missing-test 2): Rewrite runs on the
+// upgrade path too — the configured header must be present on the
+// backend's 101 handshake request, so a future refactor confining the
+// injection loop to the non-upgrade branch fails this pin.
+func TestDevPreviewHeadersInjectedOnWSUpgrade(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.set("X-Service-Key", "ws-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	recv := make(chan http.Header, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recv <- r.Header.Clone()
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("up"))
+	}))
+	t.Cleanup(backend.Close)
+
+	agentd := httptest.NewServer(devPreviewHandler("pw", s))
+	t.Cleanup(agentd.Close)
+
+	wsURL := "ws://" + agentd.Listener.Addr().String() + "/v1/dev-preview/" + fmt.Sprint(portOf(t, backend)) + "/ws"
+	header := http.Header{}
+	header.Set("Authorization", "Basic "+basicAuth("pw"))
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		body := ""
+		if resp != nil && resp.Body != nil {
+			b, _ := io.ReadAll(resp.Body)
+			body = string(b)
+		}
+		t.Fatalf("WS dial through agentd failed: %v (status=%v body=%s)", err, resp, body)
+	}
+	defer conn.Close()
+
+	select {
+	case got := <-recv:
+		if got.Get("X-Service-Key") != "ws-key" {
+			t.Fatalf("configured header missing on the upgrade request: %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend never received the upgrade request")
 	}
 }
 
