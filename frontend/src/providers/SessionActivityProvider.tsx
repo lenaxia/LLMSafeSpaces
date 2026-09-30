@@ -593,6 +593,55 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
               );
             });
           }
+        } else if (evt.status === "aborted" || evt.status === "deleted") {
+          // #786: aborted (force-stop) and deleted were silently dropped
+          // here — the busy indicator kept stale state until a hard
+          // refresh. Both end every in-flight thing for the session;
+          // neither carries a response, so neither marks unread.
+          const sid = evt.session_id!;
+          const wsId = evt.workspace_id!;
+          clearedRef.current.delete(sid);
+          setBusySessions((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Map(prev);
+            next.delete(sid);
+            return next;
+          });
+          setPendingActions((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Map(prev);
+            next.delete(sid);
+            return next;
+          });
+          if (evt.status === "deleted") {
+            // The session is gone: drop it from the unread set and the
+            // sessions cache so sidebars render its removal live.
+            setPendingUnread((prev) => {
+              if (!prev.has(sid)) return prev;
+              const next = new Map(prev);
+              next.delete(sid);
+              return next;
+            });
+            const sessionsKey = ["sessions", wsId];
+            const existing = queryClient.getQueryData(sessionsKey);
+            if (existing) {
+              queryClient.setQueryData(sessionsKey, (old: unknown) => {
+                if (!Array.isArray(old)) return old;
+                return old.filter((s: Record<string, unknown>) => s.id !== sid);
+              });
+            }
+          } else {
+            const sessionsKey = ["sessions", wsId];
+            const existing = queryClient.getQueryData(sessionsKey);
+            if (existing) {
+              queryClient.setQueryData(sessionsKey, (old: unknown) => {
+                if (!Array.isArray(old)) return old;
+                return old.map((s: Record<string, unknown>) =>
+                  s.id === sid ? { ...s, status: "idle" } : s
+                );
+              });
+            }
+          }
         } else if (evt.status === "idle") {
           setBusySessions((prev) => {
             const next = new Map(prev);
