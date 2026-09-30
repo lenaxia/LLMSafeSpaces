@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { waitFor, act } from "@testing-library/react";
+import { waitFor, act, screen } from "@testing-library/react";
 import { render } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
@@ -29,6 +29,7 @@ vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn().mockResolvedV
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../providers/SessionActivityProvider", () => ({
   useWhileAwayStalenessSweep: () => {},
+  useIsSessionDeleted: () => deletedFlag.current,
   useClearPendingUnread: () => vi.fn(),
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,
@@ -49,6 +50,9 @@ vi.mock("../providers/SessionActivityProvider", () => ({
 }));
 
 import { workspacesApi } from "../api/workspaces";
+
+// deletedFlag drives the mocked useIsSessionDeleted (the #786 rows).
+const deletedFlag = { current: false };
 
 function renderChat(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -151,5 +155,65 @@ describe("Mark-seen on navigate (US-37.8)", () => {
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["sessions", "ws-1"] }));
+  });
+});
+
+// --- #786: the tab viewing a deleted session leaves the route ---
+
+function LocationProbe() {
+  const p = useParams();
+  return <div data-testid="route-location">{`/chat/${p.workspaceId ?? ""}${p.sessionId ? `/${p.sessionId}` : ""}`}</div>;
+}
+
+describe("Deleted-session navigation (#786)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deletedFlag.current = false;
+  });
+
+  it("navigates to the session list when the current session is deleted", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    function Harness() {
+      return (
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
+            <TooltipProvider delayDuration={0}>
+              <Routes>
+                <Route path="/chat/:workspaceId/:sessionId" element={<><ChatPage /><LocationProbe /></>} />
+                <Route path="/chat/:workspaceId" element={<LocationProbe />} />
+              </Routes>
+            </TooltipProvider>
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    }
+    const r = render(<Harness />);
+    await waitFor(() => expect(screen.getByTestId("route-location").textContent).toBe("/chat/ws-1/sess-1"));
+
+    deletedFlag.current = true;
+    act(() => { r.rerender(<Harness />); });
+    await waitFor(() => {
+      expect(screen.getByTestId("route-location").textContent).toBe("/chat/ws-1");
+    });
+  });
+
+  it("does not navigate while the session is alive", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
+          <TooltipProvider delayDuration={0}>
+            <Routes>
+              <Route path="/chat/:workspaceId/:sessionId" element={<><ChatPage /><LocationProbe /></>} />
+              <Route path="/chat/:workspaceId" element={<LocationProbe />} />
+            </Routes>
+          </TooltipProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("route-location").textContent).toBe("/chat/ws-1/sess-1"));
+    // Stay put across a rerender with the flag still false.
+    await new Promise((res) => setTimeout(res, 50));
+    expect(screen.getByTestId("route-location").textContent).toBe("/chat/ws-1/sess-1");
   });
 });

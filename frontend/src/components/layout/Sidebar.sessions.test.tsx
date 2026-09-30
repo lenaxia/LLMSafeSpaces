@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
+import { SessionActivityProvider } from "../../providers/SessionActivityProvider";
 import { AuthProvider } from "../../providers/AuthProvider";
 import type { SessionListItem } from "../../api/types";
 
@@ -262,5 +263,50 @@ describe("S36.5 — per-session context usage indicator in sidebar", () => {
       expect(screen.getAllByText("75K").length).toBeGreaterThan(0);
       expect(screen.queryByText("10K")).not.toBeInTheDocument();
     });
+  });
+});
+
+// --- #786: the interrupted indicator ---
+
+let capturedAbortedEvent: ((data: unknown) => void) | undefined;
+
+vi.mock("../../hooks/useUserEventStream", () => ({
+  useUserEventStream: (options?: { onEvent?: (data: unknown) => void }) => {
+    capturedAbortedEvent = options?.onEvent;
+  },
+}));
+
+describe("Sidebar — interrupted sessions (#786)", () => {
+  it("renders the interrupted marker for a force-stopped session, distinct from plain idle", async () => {
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{ id: "ws-1", name: "My Workspace", phase: "Active", userId: "u1", runtime: "base", storageSize: "5Gi", createdAt: "", updatedAt: "" }],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "sess-1", title: "Was running", messageCount: 3, status: "busy", hasUnread: false },
+    ]);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <AuthProvider>
+          <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
+            <SessionActivityProvider>
+              <Sidebar />
+            </SessionActivityProvider>
+          </MemoryRouter>
+        </AuthProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Was running")).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText("Session was interrupted")).not.toBeInTheDocument();
+
+    act(() => {
+      capturedAbortedEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(await screen.findByLabelText("Session was interrupted")).toBeInTheDocument();
   });
 });

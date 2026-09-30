@@ -57,6 +57,7 @@ vi.mock("../api/workspaces", () => ({
 }));
 
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useWhileAwayStalenessSweep: () => {},
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,

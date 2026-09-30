@@ -559,3 +559,38 @@ func lastSeqOf(s *abiclient.SessionState) uint64 {
 	}
 	return s.Seq
 }
+
+// TestStreamSnapshotCarriesBusyComponents: the snapshot frame's derived
+// busy truth (#1574/#1578 BusyComponents — read them, never recompute)
+// must survive into the client fold. cloneSessionSnapshot dropped the
+// busy field entirely, so a session the authority rendered busy at
+// connect folded as busy-status-but-no-components — consumers reading
+// the ABI's own truth field got nil (#1602).
+func TestStreamSnapshotCarriesBusyComponents(t *testing.T) {
+	// The incident shape, armed before connect: status IDLE (the
+	// harness's only signal) with a bash tool part in flight — the
+	// authority derives busy from data.
+	a, ts, _ := newSurface(t, nil, nil)
+	a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1",
+		Part: &abiv1.Part{Id: "p1", Type: abiv1.PartType_PART_TYPE_TOOL,
+			Payload: &abiv1.Part_Tool{Tool: &abiv1.ToolPart{CallId: "call_1", Name: "bash",
+				State: &abiv1.ToolState{Status: abiv1.ToolStatus_TOOL_STATUS_RUNNING}}}}})
+
+	c := clientFor(ts)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates := make(chan *abiclient.SessionState, 4)
+	go func() { _ = c.Stream(ctx, func(s *abiclient.SessionState) { updates <- s }) }()
+
+	select {
+	case s := <-updates:
+		snap := s.Sessions["s1"]
+		require.NotNil(t, snap, "seed snapshot must carry the session")
+		require.NotNil(t, snap.GetBusy(), "the fold must retain the snapshot's BusyComponents")
+		require.True(t, snap.GetBusy().GetBusy(), "tool in flight while status says IDLE — the derived truth is busy")
+		require.EqualValues(t, 1, snap.GetBusy().GetInFlightParts())
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot frame within budget")
+	}
+}

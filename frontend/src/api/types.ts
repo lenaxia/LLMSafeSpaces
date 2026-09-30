@@ -260,7 +260,9 @@ export interface WorkspacePhaseEvent {
 export interface SessionStatusEvent {
   type: "session.status";
   session_id: string;
-  status: "idle" | "busy" | "retry";
+  // #786: "aborted" (force-stop) and "deleted" (session removal) ride
+  // the same event — consumers must not drop them silently.
+  status: "idle" | "busy" | "retry" | "aborted" | "deleted";
 }
 
 // --- Agent input request types (Epic 16) ---

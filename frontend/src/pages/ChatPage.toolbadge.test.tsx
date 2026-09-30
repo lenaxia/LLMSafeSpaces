@@ -55,6 +55,7 @@ vi.mock("../api/messages", () => {
   return { messagesApi: { getHistory: gh, getHistoryPage: vi.fn().mockImplementation(async () => { const msgs = await gh(); return { messages: msgs, nextCursor: undefined }; }), sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined) } };
 });
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

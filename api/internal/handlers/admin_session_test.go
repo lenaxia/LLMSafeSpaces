@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -252,4 +253,34 @@ func TestAdminSession_ForceAbort_NoBroker_DoesNotPanic(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 	})
 	assert.False(t, proxy.isSessionActive(context.Background(), "ws-1", "sess-stuck"))
+}
+
+// TestAdminSession_ForceAbort_PublishesUserStreamAborted: #786 — the
+// aborted event must reach the USER stream (SessionActivityProvider's
+// stream) with the workspace routing key stamped, so force-stopped
+// sessions clear their busy indicator in every open tab.
+func TestAdminSession_ForceAbort_PublishesUserStreamAborted(t *testing.T) {
+	proxy := newProxyForAdminTest(t)
+	h := newAdminSessionHandlerForTest(t, proxy, nil)
+	r := setupAdminSessionRouter(t, h, "admin")
+
+	proxy.SetActiveSessionsForTest("ws-1", []string{"sess-stuck"})
+	proxy.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+
+	sub, err := proxy.userBroker.SubscribeUser("user-1")
+	require.NoError(t, err)
+	defer proxy.userBroker.UnsubscribeUser("user-1", sub)
+
+	w := doAdminForceAbort(r, "ws-1", "sess-stuck")
+	require.Equal(t, http.StatusOK, w.Code)
+
+	select {
+	case evt := <-sub.Ch:
+		assert.Equal(t, "session.status", evt.Type)
+		assert.Equal(t, "sess-stuck", evt.SessionID)
+		assert.Equal(t, "aborted", evt.Status)
+		assert.Equal(t, "ws-1", evt.WorkspaceID, "the user-stream copy must carry the routing key")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected user-stream session.status=aborted SSE event, got none")
+	}
 }

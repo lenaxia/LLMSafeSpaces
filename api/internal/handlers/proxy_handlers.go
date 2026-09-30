@@ -778,7 +778,10 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 			h.sessionParents.invalidate(workspaceID)
 		}
 		if h.userBroker != nil {
-			h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			// #786: deleted must reach the USER stream too (the
+			// activity provider's stream) — the workspace-scoped copy
+			// alone left every other tab rendering a live session.
+			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 				Type:      "session.status",
 				SessionID: sid,
 				Status:    "deleted",

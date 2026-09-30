@@ -28,6 +28,7 @@ vi.mock("../api/messages", () => {
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

@@ -3,7 +3,7 @@ import { renderHook } from "@testing-library/react";
 import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { useWhileAwayStalenessSweep, SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useDropPendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
+import { useWhileAwayStalenessSweep, SessionActivityProvider, useIsSessionBusy, useIsSessionAborted, useIsSessionDeleted, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useDropPendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
 import type { InputRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
@@ -29,6 +29,7 @@ function renderProvider(children?: React.ReactNode) {
   );
   return { qc, ...result };
 }
+
 
 describe("SessionActivityProvider", () => {
   beforeEach(() => {
@@ -2715,3 +2716,208 @@ describe("useWhileAwayStalenessSweep (#1365, timer-driven)", () => {
     vi.useRealTimers();
   });
 });
+
+  // --- #786: aborted/deleted session.status events were silently dropped ---
+
+  it("clears busy without marking unread on session.status aborted (#786)", () => {
+    function Display() {
+      const isBusy = useIsSessionBusy("sess-1");
+      const isUnread = useIsSessionUnread("sess-1");
+      return (
+        <>
+          <span data-testid="busy">{isBusy ? "yes" : "no"}</span>
+          <span data-testid="unread">{isUnread ? "yes" : "no"}</span>
+        </>
+      );
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "busy" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(screen.getByTestId("unread").textContent).toBe("no");
+  });
+
+  it("clears busy, unread, and drops the session from the cache on session.status deleted (#786)", () => {
+    function Display() {
+      const isBusy = useIsSessionBusy("sess-1");
+      const isUnread = useIsSessionUnread("sess-1");
+      return (
+        <>
+          <span data-testid="busy">{isBusy ? "yes" : "no"}</span>
+          <span data-testid="unread">{isUnread ? "yes" : "no"}</span>
+        </>
+      );
+    }
+
+    const { qc } = renderProvider(<Display />);
+    qc.setQueryData(["sessions", "ws-1"], [
+      { id: "sess-1", status: "busy" },
+      { id: "sess-2", status: "idle" },
+    ]);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "busy" });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "sess-1", request_id: "q1" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(screen.getByTestId("unread").textContent).toBe("no");
+
+    const cached = qc.getQueryData(["sessions", "ws-1"]) as Array<{ id: string }>;
+    expect(cached.map((s) => s.id)).toEqual(["sess-2"]);
+  });
+
+  it("clears pending prompts for the session on aborted and deleted (#786)", () => {
+    function Display() {
+      const pending = useIsSessionPendingAction("sess-1");
+      return <span data-testid="pending">{pending ? "yes" : "no"}</span>;
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "sess-1", request_id: "q1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "sess-1", request_id: "q2" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+  });
+
+  // --- #786 r2: the interrupted indicator, deleted navigation, cache teardown ---
+
+  it("exposes the aborted state and clears it when a new turn starts (#786)", () => {
+    function Display() {
+      const isBusy = useIsSessionBusy("sess-1");
+      const isAborted = useIsSessionAborted("sess-1");
+      return (
+        <>
+          <span data-testid="busy">{isBusy ? "yes" : "no"}</span>
+          <span data-testid="aborted">{isAborted ? "yes" : "no"}</span>
+        </>
+      );
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "busy" });
+    });
+    expect(screen.getByTestId("aborted").textContent).toBe("no");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(screen.getByTestId("aborted").textContent).toBe("yes");
+
+    // A new turn clears the interrupted marker (the session lives again).
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "busy" });
+    });
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    expect(screen.getByTestId("aborted").textContent).toBe("no");
+  });
+
+  it("records status:aborted in the sessions cache — the distinction is not erased (#786)", () => {
+    const { qc } = renderProvider();
+    qc.setQueryData(["sessions", "ws-1"], [{ id: "sess-1", status: "busy" }]);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    const cached = qc.getQueryData(["sessions", "ws-1"]) as Array<{ id: string; status: string }>;
+    expect(cached.map((c) => c.status)).toEqual(["aborted"]);
+  });
+
+  it("records deleted sessions for the route-level consumer (#786)", () => {
+    function Display() {
+      const gone = useIsSessionDeleted("sess-1");
+      const other = useIsSessionDeleted("sess-2");
+      return (
+        <>
+          <span data-testid="gone">{gone ? "yes" : "no"}</span>
+          <span data-testid="other">{other ? "yes" : "no"}</span>
+        </>
+      );
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(screen.getByTestId("gone").textContent).toBe("yes");
+    expect(screen.getByTestId("other").textContent).toBe("no");
+  });
+
+  it("invalidates the deleted session's per-session caches (#786)", () => {
+    const { qc } = renderProvider();
+    qc.setQueryData(["messages", "ws-1", "sess-1"], [{ id: "m1" }]);
+    qc.setQueryData(["session-title", "ws-1", "sess-1"], "old title");
+    qc.setQueryData(["messages", "ws-1", "sess-2"], [{ id: "m2" }]);
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(qc.getQueryData(["messages", "ws-1", "sess-1"])).toBeUndefined();
+    expect(qc.getQueryData(["session-title", "ws-1", "sess-1"])).toBeUndefined();
+    expect(qc.getQueryData(["messages", "ws-1", "sess-2"])).toBeDefined();
+  });
+
+  it("prunes the ask content of a deleted/aborted session — no orphan pills in parent tabs (#786 r2)", () => {
+    function Display() {
+      const questions = usePendingQuestionsForSession("sess-1");
+      const addQuestion = useAddPendingQuestion();
+      return (
+        <>
+          <span data-testid="pills">{questions.length}</span>
+          <button
+            data-testid="add-ask"
+            onClick={() =>
+              addQuestion("ws-1", { id: `q${questions.length + 1}`, sessionId: "sess-1", kind: "question", question: "Go?" })
+            }
+          />
+        </>
+      );
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      screen.getByTestId("add-ask").click();
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("1");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("0");
+
+    act(() => {
+      screen.getByTestId("add-ask").click();
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("1");
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("0");
+  });

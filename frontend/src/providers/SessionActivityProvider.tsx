@@ -54,6 +54,13 @@ interface SessionActivityContextValue {
   clearPendingUnread: (sessionId: string) => void;
   isSessionPendingAction: (sessionId: string) => boolean;
   pendingActionSessionIds: Set<string>;
+  // #786: sessions interrupted by a force-stop — the "was interrupted"
+  // indicator's surface. Cleared when a new turn starts (busy) or the
+  // session is deleted.
+  isSessionAborted: (sessionId: string) => boolean;
+  // #786: sessions deleted while this tab was open — ChatPage navigates
+  // away from a deleted current session.
+  isSessionDeleted: (sessionId: string) => boolean;
   addPendingAction: (workspaceId: string, sessionId: string, requestId: string) => void;
   removePendingAction: (requestId: string) => void;
   // Absence-evidence removal (no tombstone) — see dropPendingAction below.
@@ -118,6 +125,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // so the sidebar badge survives session switches.
   const [hungWorkspaces, setHungWorkspaces] = useState<Set<string>>(new Set());
   const [pendingUnread, setPendingUnread] = useState<Map<string, string>>(new Map());
+  // #786: force-stopped sessions — the interrupted indicator's source.
+  const [abortedSessions, setAbortedSessions] = useState<Set<string>>(new Set());
+  // #786: deleted sessions — the route-level consumer (ChatPage) owns
+  // navigation away; the provider records the fact because it lives
+  // above the routes (useParams here is always empty in production).
+  const [deletedSessions, setDeletedSessions] = useState<Set<string>>(new Set());
   const queryClient = useQueryClient();
   const params = useParams();
   const currentSessionId = params.sessionId;
@@ -577,6 +590,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (evt.type === "session.status" && evt.session_id && evt.workspace_id) {
         if (evt.status === "busy") {
           clearedRef.current.delete(evt.session_id);
+          // #786: a new turn un-aborts — the interrupted marker dies
+          // with the session's next activity.
+          setAbortedSessions((prev) => {
+            if (!prev.has(evt.session_id!)) return prev;
+            const next = new Set(prev);
+            next.delete(evt.session_id!);
+            return next;
+          });
           setBusySessions((prev) => {
             const next = new Map(prev);
             next.set(evt.session_id!, evt.workspace_id!);
@@ -592,6 +613,92 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
                 s.id === evt.session_id ? { ...s, status: "active" } : s
               );
             });
+          }
+        } else if (evt.status === "aborted" || evt.status === "deleted") {
+          // #786: aborted (force-stop) and deleted were silently dropped
+          // here — the busy indicator kept stale state until a hard
+          // refresh. Both end every in-flight thing for the session;
+          // neither carries a response, so neither marks unread.
+          const sid = evt.session_id!;
+          const wsId = evt.workspace_id!;
+          clearedRef.current.delete(sid);
+          // Collect the session's own ask ids BEFORE clearing the
+          // indicator — the fold-sync reconcile (snapshot_complete)
+          // walks pendingActions, so clearing first would orphan the
+          // content maps behind a blinded prune path (r2 review
+          // finding: stale un-dismissable pills in parent tabs).
+          const doomed = new Set<string>();
+          for (const rid of pendingActions.get(sid) ?? []) doomed.add(rid);
+          const collectSessionAsks = (m: Map<string, StoredInputRequest>) => {
+            for (const v of m.values()) {
+              if (v.sessionId === sid) doomed.add(v.id);
+            }
+          };
+          collectSessionAsks(pendingQuestionContent);
+          collectSessionAsks(pendingPermissionContent);
+          if (doomed.size > 0) {
+            setPendingQuestionContent((prev) => pruneMany(prev, doomed));
+            setPendingPermissionContent((prev) => pruneMany(prev, doomed));
+            for (const rid of doomed) {
+              requestToSessionRef.current.delete(rid);
+              requestFirstSeenRef.current.delete(rid);
+            }
+          }
+          setBusySessions((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Map(prev);
+            next.delete(sid);
+            return next;
+          });
+          setPendingActions((prev) => {
+            if (!prev.has(sid)) return prev;
+            const next = new Map(prev);
+            next.delete(sid);
+            return next;
+          });
+          if (evt.status === "aborted") {
+            // The interrupted marker survives until a new turn starts —
+            // the sidebar renders "was interrupted", not plain idle.
+            setAbortedSessions((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
+            const sessionsKey = ["sessions", wsId];
+            const existing = queryClient.getQueryData(sessionsKey);
+            if (existing) {
+              queryClient.setQueryData(sessionsKey, (old: unknown) => {
+                if (!Array.isArray(old)) return old;
+                return old.map((s: Record<string, unknown>) =>
+                  s.id === sid ? { ...s, status: "aborted" } : s
+                );
+              });
+            }
+          } else {
+            // The session is gone: drop every trace — unread, the
+            // aborted marker, the sessions cache row, and the
+            // per-session query caches (messages, title, context) —
+            // and leave the route if the user is viewing it.
+            setAbortedSessions((prev) => {
+              if (!prev.has(sid)) return prev;
+              const next = new Set(prev);
+              next.delete(sid);
+              return next;
+            });
+            setPendingUnread((prev) => {
+              if (!prev.has(sid)) return prev;
+              const next = new Map(prev);
+              next.delete(sid);
+              return next;
+            });
+            const sessionsKey = ["sessions", wsId];
+            const existing = queryClient.getQueryData(sessionsKey);
+            if (existing) {
+              queryClient.setQueryData(sessionsKey, (old: unknown) => {
+                if (!Array.isArray(old)) return old;
+                return old.filter((s: Record<string, unknown>) => s.id !== sid);
+              });
+            }
+            queryClient.removeQueries({
+              predicate: (q) => Array.isArray(q.queryKey) && q.queryKey.includes(sid),
+            });
+            setDeletedSessions((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
           }
         } else if (evt.status === "idle") {
           setBusySessions((prev) => {
@@ -942,6 +1049,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     [pendingActions]
   );
 
+  const isSessionAborted = useCallback(
+    (sessionId: string) => abortedSessions.has(sessionId),
+    [abortedSessions]
+  );
+
+  const isSessionDeleted = useCallback(
+    (sessionId: string) => deletedSessions.has(sessionId),
+    [deletedSessions]
+  );
+
   const pendingActionSessionIds = useMemo(
     () => new Set(pendingActions.keys()),
     [pendingActions]
@@ -954,7 +1071,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   return (
     <SessionActivityContext.Provider
-      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, dropPendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
+      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, isSessionAborted, isSessionDeleted, pendingActionSessionIds, addPendingAction, removePendingAction, dropPendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
     >
       {children}
     </SessionActivityContext.Provider>
@@ -997,6 +1114,22 @@ export function useIsSessionPendingAction(sessionId: string): boolean {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return false;
   return ctx.isSessionPendingAction(sessionId);
+}
+
+// useIsSessionAborted (#786): true after a force-stop until the
+// session's next turn — drives the "was interrupted" indicator.
+export function useIsSessionAborted(sessionId: string): boolean {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return false;
+  return ctx.isSessionAborted(sessionId);
+}
+
+// useIsSessionDeleted (#786): true for sessions deleted while this tab
+// was open — the route-level consumer navigates away from them.
+export function useIsSessionDeleted(sessionId: string): boolean {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return false;
+  return ctx.isSessionDeleted(sessionId);
 }
 
 export function useAddPendingAction(): (workspaceId: string, sessionId: string, requestId: string) => void {

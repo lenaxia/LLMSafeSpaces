@@ -51,6 +51,7 @@ import { SessionSnapshotSchema } from "../abi/llmsafespaces/abi/v1/abi_pb";
 const promptStore = vi.hoisted(() => ({ questions: [] as Array<Record<string, unknown>> }));
 
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

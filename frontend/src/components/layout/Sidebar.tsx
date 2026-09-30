@@ -7,7 +7,7 @@ import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
-import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions, useWorkspaceHung } from "../../providers/SessionActivityProvider";
+import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions, useWorkspaceHung, useIsSessionAborted } from "../../providers/SessionActivityProvider";
 import type { SessionDisplayStatus } from "../../providers/SessionActivityProvider";
 import { RenameWorkspaceDialog } from "../workspace/RenameWorkspaceDialog";
 import { NewWorkspaceSplitButton } from "../workspace/NewWorkspaceSplitButton";
@@ -24,6 +24,7 @@ import {
   Circle,
   MessageSquare,
   MessageSquareText,
+  OctagonX,
   HelpCircle,
   ChevronRight,
   ChevronDown,
@@ -806,6 +807,10 @@ function SessionTreeRow({
   const now = useNow();
   const title = sessionDisplayTitle(s.title, s.lastMessageAt);
   const status = useSessionStatus(s.id);
+  // #786: a force-stopped session renders interrupted until its next
+  // turn — distinct from plain idle (something happened; nothing is
+  // running).
+  const aborted = useIsSessionAborted(s.id);
   const isSelected = s.id === selectedSessionId;
   const rowStatus: SessionDisplayStatus =
     depth === 0 && pendingIndicatorIds.has(s.id) ? "pending_input"
@@ -892,6 +897,8 @@ function SessionTreeRow({
             <BusyIndicator />
           ) : rowStatus === "unread" ? (
             <MessageSquareText className="h-3.5 w-3.5 flex-shrink-0 animate-unread-pulse" />
+          ) : aborted ? (
+            <OctagonX className="h-3.5 w-3.5 flex-shrink-0 text-destructive" aria-label="Session was interrupted" />
           ) : (
             <MessageSquare className="h-3.5 w-3.5 flex-shrink-0" />
           )}

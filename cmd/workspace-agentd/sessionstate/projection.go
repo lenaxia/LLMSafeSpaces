@@ -136,7 +136,12 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
 		rec.status = evt.Status
 		switch evt.Status {
-		case abiv1.SessionStatus_SESSION_STATUS_BUSY:
+		// BUSY and COMPACTING both mark busy (#1602): compaction is
+		// autonomous progress — the owner's rule and the harness's own
+		// live-activity mapping (busy/retry/compacting) agree. Event
+		// path only; the reseed seed path deliberately does NOT mark
+		// (a store-seeded BUSY re-latch is the #1584 fold-dead wedge).
+		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING:
 			rec.markBusy(a.seq)
 		case abiv1.SessionStatus_SESSION_STATUS_IDLE, abiv1.SessionStatus_SESSION_STATUS_ERROR:
 			// ERROR ends the turn exactly as IDLE does (the ERROR event
