@@ -79,9 +79,8 @@ func (b *syncBridge) snapshot() []string {
 // e2eStore is the authority's store-reader seam: scriptable seeds for
 // the reseed path (Reseed rebuilds the projection from store truth).
 type e2eStore struct {
-	mu    sync.Mutex
-	seed  map[string]sessionstate.SessionSeed
-	calls int
+	mu   sync.Mutex
+	seed map[string]sessionstate.SessionSeed
 }
 
 func (s *e2eStore) set(seeds map[string]sessionstate.SessionSeed) {
@@ -93,7 +92,6 @@ func (s *e2eStore) set(seeds map[string]sessionstate.SessionSeed) {
 func (s *e2eStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls++
 	out := make(map[string]sessionstate.SessionSeed, len(s.seed))
 	for k, v := range s.seed {
 		out[k] = v
