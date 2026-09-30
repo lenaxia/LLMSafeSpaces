@@ -107,9 +107,24 @@ Bonus kills (both real, both filed in #1607): the unauthenticated memory-exhaust
 ## Blockers
 
 - GitHub webhook delivery outage: the PR gets no CI/review until recovery. Branch pushed,
-  second nightly dispatched via the API for full-stack verification.
+  nightly dispatched via the API for full-stack verification.
 - No local kind in this pod (no docker/kubectl) — verification rides branch-dispatched
-  nightly runs (~40min each).
+  nightly runs (~50min each).
+
+### Verification run 1 (36758872210): infra flake, not a fix verdict
+
+The fix's first full-stack run failed the upload row from SR-1 onward with transport-level
+000s — including the BODYLESS reload-secrets POST (unreachable by the body-capture change) —
+while the very next step's e2e passed against the same API deployment, and small uploads
+through the new API had delivered 201s minutes earlier (attachments step, 6–18ms). Verdict:
+the step's own kubectl port-forward died mid-step. Local disproof of the one plausible
+code-level mechanism (early agentd refusals arriving while bodies stream — newly reachable
+with the bounded capture — stalling `forwardUploadToAgentd`'s `cr := <-copyCh`):
+`TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares` (six concurrent 4MiB uploads
+against header-time refusals through the REAL middleware chain over real TCP) resolves all
+six promptly with forwarded 507s. The run's M2/M4 failure is the same known
+`FailedScheduling — Insufficient cpu` kind flake as the original nightly 36740521434.
+Re-dispatched for the actual SR-6 verdict.
 
 ---
 
