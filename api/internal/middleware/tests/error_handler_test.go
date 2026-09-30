@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,4 +188,55 @@ func TestErrorHandlerMiddleware_SensitiveDataRedaction(t *testing.T) {
 	assert.Equal(t, "testuser", requestBody["username"])
 
 	mockLogger.AssertExpectations(t)
+}
+
+// TestErrorHandlerMiddleware_BodyCaptureBoundedStreamsThrough pins the
+// error handler's side of run 36749714653: its pre-handler body read
+// must stop at requestBodyCaptureLimit so a client-paced body streams
+// through to the handler (the unbounded io.ReadAll it replaced would
+// have swallowed the SR-6B trickle even with the logging middleware
+// fixed — two pre-handler buffers sat on the upload path).
+func TestErrorHandlerMiddleware_BodyCaptureBoundedStreamsThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := mocklogger.NewMockLogger()
+	mockLogger.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	mockLogger.On("Warn", mock.Anything, mock.Anything).Maybe()
+	mockLogger.On("Info", mock.Anything, mock.Anything).Maybe()
+
+	const bodySize = 64 * 1024
+	body := &chunkedBody{
+		data:       bytes.Repeat([]byte{0xC3}, bodySize),
+		lastServed: make(chan struct{}),
+	}
+
+	handlerRanAfterFullBody := false
+	var handlerReadTotal int64
+
+	router := gin.New()
+	router.Use(middleware.ErrorHandlerMiddleware(mockLogger, middleware.ErrorHandlerConfig{}))
+	router.POST("/upload", func(c *gin.Context) {
+		buf := make([]byte, 1)
+		if _, err := c.Request.Body.Read(buf); err != nil {
+			t.Errorf("handler first read failed: %v", err)
+		}
+		select {
+		case <-body.lastServed:
+			handlerRanAfterFullBody = true
+		default:
+		}
+		n, _ := io.Copy(io.Discard, c.Request.Body)
+		handlerReadTotal = int64(n) + 1
+		c.String(http.StatusOK, "ok")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/upload", body)
+	req.ContentLength = int64(bodySize)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.False(t, handlerRanAfterFullBody,
+		"the handler must start while the body is still arriving — the error handler's capture is bounded and replays")
+	assert.Equal(t, int64(bodySize), handlerReadTotal,
+		"the handler must observe the COMPLETE body (capture replays, remainder streams)")
 }

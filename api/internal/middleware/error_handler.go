@@ -4,10 +4,8 @@
 package middleware
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -54,11 +52,16 @@ func ErrorHandlerMiddleware(log interfaces.LoggerInterface, config ...ErrorHandl
 	}
 
 	return func(c *gin.Context) {
-		// Create a copy of the request body for logging
+		// Create a bounded capture of the request body for error
+		// logging (requestBodyCaptureLimit — the shared bound; see its
+		// comment in logging.go for why an unbounded pre-handler read
+		// is load-bearing-wrong: it runs before auth on every route
+		// and swallows client-paced upload streams whole). The capture
+		// replays: the handler reads the prefix from memory and the
+		// remainder live.
 		var requestBody []byte
 		if c.Request.Body != nil && c.Request.ContentLength > 0 {
-			requestBody, _ = io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+			requestBody, _ = captureRequestBody(c, requestBodyCaptureLimit)
 		}
 
 		// Create a response writer that captures the response
