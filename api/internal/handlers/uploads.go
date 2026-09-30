@@ -114,6 +114,12 @@ func envUploadDurationMsOr(key string, def time.Duration) time.Duration {
 	return def
 }
 
+// errUploadStoppedAfterResponse is the deliberate post-response stop of
+// the client-body copy goroutine (see forwardUploadToAgentd): the agentd
+// response is authoritative, and a live body reader would withhold this
+// request's own response server-side.
+var errUploadStoppedAfterResponse = errors.New("upload body streaming stopped after response")
+
 // uploadForwardError is the typed classification of a failed agentd
 // dispatch: the HTTP status to emit, the metric reason, and a
 // public-safe message (agentd internals never leak).
@@ -148,8 +154,11 @@ func (h *ProxyHandler) uploadStreamTimeout() time.Duration {
 
 // uploadDrainDeadline bounds the post-response drain of an unread
 // request-body remainder (a stalled sender cannot pin the connection
-// past this).
-const uploadDrainDeadline = 10 * time.Second
+// past this). A var for the stalled-sender regression pin; the
+// deadline engages through the middleware capture layers via
+// BodyCaptureWriter.Unwrap and is RESET after the drain so it cannot
+// leak onto keep-alive reuse.
+var uploadDrainDeadline = 10 * time.Second
 
 // countingBody counts the bytes the upload route consumes, so the
 // post-response drain knows the unread remainder exactly.
@@ -191,10 +200,18 @@ func scheduleUploadBodyDrain(c *gin.Context) func() {
 		if remaining <= 0 {
 			return
 		}
-		if fw, ok := c.Writer.(http.Flusher); ok {
-			fw.Flush()
+		// Drain BEFORE any flush: the server's response machinery
+		// coordinates with the request-body stream (an explicit flush
+		// with the body mid-flight blocks server-side until the client
+		// unblocks it — pinned at the #1608 review's stall pin). With
+		// the remainder discarded first, the chain's normal flush
+		// delivers the response on the proven clean-exchange path.
+		rc := http.NewResponseController(c.Writer)
+		if err := rc.SetReadDeadline(time.Now().Add(uploadDrainDeadline)); err == nil {
+			// Reset after the drain: a leaked read deadline would abort the
+			// next request on a reused keep-alive connection at drain+10s.
+			defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
 		}
-		_ = http.NewResponseController(c.Writer).SetReadDeadline(time.Now().Add(uploadDrainDeadline))
 		_, _ = io.CopyN(io.Discard, ctr, remaining)
 	}
 }
@@ -288,7 +305,7 @@ func (h *ProxyHandler) UploadFile(c *gin.Context) {
 		return
 	}
 
-	resp, fwdErr := h.forwardUploadToAgentd(c.Request.Context(), workspace.Status.PodIP, filename, password, filePart, cap, c.Request.ContentLength)
+	resp, fwdErr := h.forwardUploadToAgentd(c.Request.Context(), c.Writer, workspace.Status.PodIP, filename, password, filePart, cap, c.Request.ContentLength)
 	if fwdErr != nil {
 		metrics.RecordUploadRequest(fwdErr.reason)
 		c.JSON(fwdErr.status, gin.H{"error": fwdErr.public})
@@ -470,6 +487,7 @@ func forwardedUploadReason(status int, body []byte) string {
 // any body error — US-68.1 D3).
 func (h *ProxyHandler) forwardUploadToAgentd(
 	ctx context.Context,
+	w http.ResponseWriter,
 	podIP, filename, password string,
 	filePart *multipart.Part,
 	cap int64,
@@ -550,6 +568,19 @@ func (h *ProxyHandler) forwardUploadToAgentd(
 		}
 	}
 
+	// The response is authoritative once received — but a still-live
+	// body read WITHHOLDS it: the server's response-write coordination
+	// waits while a request-body Read is in flight, and the copy
+	// goroutine reads the CLIENT's stream (the bounded capture made it
+	// live where pre-#1607 it read from memory). A stalled client
+	// would pin this request's own refusal indefinitely. Arm the
+	// connection read deadline FIRST — it fires the blocked read —
+	// then close the pipe (any pending write errors instantly) and
+	// join: the goroutine exits within the bound, the response write
+	// proceeds, and UploadFile's drain re-arms and finally resets the
+	// deadline. (The #1608 review's stall pin.)
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadDrainDeadline))
+	_ = pr.CloseWithError(errUploadStoppedAfterResponse)
 	cr := <-copyCh
 	if errors.Is(cr.err, errUploadOverCap) {
 		_ = resp.Body.Close()
@@ -559,11 +590,12 @@ func (h *ProxyHandler) forwardUploadToAgentd(
 			public: "file exceeds size cap",
 		}
 	}
-	if cr.err != nil {
+	if cr.err != nil && !errors.Is(cr.err, errUploadStoppedAfterResponse) {
 		// The copy failed after agentd already answered (e.g. agentd
 		// responded early with a smaller cap and dropped the rest of
 		// the body). agentd's status is authoritative for what landed
-		// on disk — fall through and map it below.
+		// on disk — fall through and map it below. The deliberate
+		// post-response stop is not a warning.
 		h.logger.Warn("upload: body stream ended with error after agentd response", "error", cr.err.Error())
 	}
 

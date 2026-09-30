@@ -7,18 +7,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	apiErrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	mocklogger "github.com/lenaxia/llmsafespaces/mocks/logger"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 func TestErrorHandlerMiddleware_APIError(t *testing.T) {
@@ -239,4 +244,67 @@ func TestErrorHandlerMiddleware_BodyCaptureBoundedStreamsThrough(t *testing.T) {
 		"the handler must start while the body is still arriving — the error handler's capture is bounded and replays")
 	assert.Equal(t, int64(bodySize), handlerReadTotal,
 		"the handler must observe the COMPLETE body (capture replays, remainder streams)")
+}
+
+// TestErrorHandlerMiddleware_OversizedCaptureLogsNoBytes pins the
+// #1608 review's correctness finding 2: a JSON body LARGER than the
+// capture limit that reaches an error path must contribute NO bytes to
+// the error log. Pre-fix, the incomplete capture fell into logError's
+// non-JSON branch, logging a raw ~1KiB truncated string — bypassing
+// JSON field masking for oversized JSON bodies that previously (under
+// the unbounded read) parsed and were masked.
+// recordingLogger captures every Error call's key-values at any arity
+// (the testify mock's fixed-arity On() made an earlier field assertion
+// vacuous — the real call is log.Error(msg, err, kv...) with ~20 kv).
+type recordingLogger struct {
+	mu      sync.Mutex
+	errKVs  []interface{}
+	errMsgs []string
+}
+
+func (l *recordingLogger) Debug(msg string, kv ...interface{}) {}
+func (l *recordingLogger) Info(msg string, kv ...interface{})  {}
+func (l *recordingLogger) Warn(msg string, kv ...interface{})  {}
+func (l *recordingLogger) Error(msg string, err error, kv ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errMsgs = append(l.errMsgs, msg)
+	l.errKVs = append(l.errKVs, kv...)
+}
+func (l *recordingLogger) Fatal(msg string, err error, kv ...interface{})       {}
+func (l *recordingLogger) With(kv ...interface{}) pkginterfaces.LoggerInterface { return l }
+func (l *recordingLogger) Sync() error                                          { return nil }
+
+func TestErrorHandlerMiddleware_OversizedCaptureLogsNoBytes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := &recordingLogger{}
+
+	router := gin.New()
+	router.Use(middleware.ErrorHandlerMiddleware(rec, middleware.DefaultErrorHandlerConfig()))
+	router.POST("/secret", func(c *gin.Context) {
+		_ = c.Request.Body // the capture already ran pre-handler
+		middleware.HandleAPIError(c, apiErrors.NewInternalError("boom", errors.New("cause")))
+	})
+
+	// An >4KiB JSON body whose masking-relevant field sits inside the
+	// first 1KiB (the truncated-string branch's display window).
+	var sb strings.Builder
+	sb.WriteString(`{"password":"OVERSIZED_SECRET_VALUE_9f1c","pad":"`)
+	for len(sb.String()) < 8192 {
+		sb.WriteString("x")
+	}
+	sb.WriteString(`"}`)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/secret", bytes.NewReader([]byte(sb.String())))
+	router.ServeHTTP(w, req)
+
+	assert.NotEqual(t, http.StatusOK, w.Code)
+	require.NotEmpty(t, rec.errMsgs, "the error must be logged")
+	var logOutput string
+	for _, v := range rec.errKVs {
+		logOutput += fmt.Sprintf("%v ", v)
+	}
+	assert.NotContains(t, logOutput, "OVERSIZED_SECRET_VALUE_9f1c",
+		"an oversized capture must contribute NO bytes to error logs — the raw truncated string bypasses JSON masking")
 }

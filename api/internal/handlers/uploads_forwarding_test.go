@@ -16,7 +16,9 @@ package handlers
 //     still forwards verbatim but labels agentd_error.
 
 import (
+	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -359,5 +361,77 @@ func TestUpload_EarlyRefusalDrainsClientBody(t *testing.T) {
 			"the server must DRAIN the refused upload's full declared body — abandoning it mid-stream emits RST and clobbers the response (nightlies 36758872210/36766849622)")
 	case <-time.After(15 * time.Second):
 		t.Fatal("server abandoned the body mid-stream: the client writer is still blocked — the RST hazard class")
+	}
+}
+
+// TestUpload_DrainTimeBoundStalledSender pins the #1608 review's
+// correctness finding 1: a sender that stalls mid-body after an early
+// refusal cannot pin the HANDLER past uploadDrainDeadline. The bound
+// engages through the middleware capture layers via
+// BodyCaptureWriter.Unwrap (pre-fix, SetReadDeadline returned
+// ErrNotSupported through the double capture wrap and the drain was
+// bytes-bounded only); the copy goroutine is stopped deterministically
+// (pipe close after the deadline arms), so every server-side step --
+// forward join, response decision, drain -- completes within the bound.
+//
+// What this test deliberately does NOT assert: response-byte delivery
+// to the stalling client. net/http withholds a request's response
+// bytes at finish while body bytes remain unread (the same server
+// behavior the pre-existing 411/SR-A chunked path rides); the conn is
+// torn down when the client goes away. No goroutine, buffer, or
+// deadline is pinned -- that is the property under test.
+func TestUpload_DrainTimeBoundStalledSender(t *testing.T) {
+	resetUploadMetrics(t)
+
+	origDeadline := uploadDrainDeadline
+	uploadDrainDeadline = 500 * time.Millisecond
+	t.Cleanup(func() { uploadDrainDeadline = origDeadline })
+
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	handlerDone := make(chan struct{})
+	wrapped := gin.New()
+	wrapped.Use(func(c *gin.Context) { c.Next(); close(handlerDone) })
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	// A raw client that declares 1MiB, sends a fraction, then stalls
+	// with the connection held open.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(api.URL, "http://"))
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	_, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "stall.bin", content: make([]byte, 32)})
+	boundary := strings.TrimPrefix(ct, "multipart/form-data; boundary=")
+	var head strings.Builder
+	head.WriteString("POST /api/v1/workspaces/ws-1/uploads HTTP/1.1\r\nHost: t\r\n")
+	head.WriteString("Content-Type: " + ct + "\r\n")
+	head.WriteString("Content-Length: 1048576\r\n\r\n")
+	head.WriteString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stall.bin\"\r\n\r\n")
+	_, err = conn.Write([]byte(head.String()))
+	require.NoError(t, err)
+	_, err = conn.Write(bytes.Repeat([]byte{0x61}, 320<<10))
+	require.NoError(t, err)
+
+	// THE PIN: the handler chain (forward join + response decision +
+	// drain) must complete within the deadline bound -- the stalled
+	// sender pins nothing.
+	select {
+	case <-handlerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled sender pinned the handler: the read deadline never engaged (BodyCaptureWriter unwrap) or the copy goroutine was abandoned live")
 	}
 }

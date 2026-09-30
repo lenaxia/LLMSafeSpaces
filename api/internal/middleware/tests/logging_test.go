@@ -727,3 +727,45 @@ func TestLoggingMiddleware_OversizedBodyCaptureNotLogged(t *testing.T) {
 	assert.Equal(t, 8192, sizeValue, "request_body_size must carry the true declared size")
 	mockLogger.AssertExpectations(t)
 }
+
+// TestMiddlewareChain_BoundedCapturesComposeStreamsThrough pins the
+// both-middlewares composition the #1608 review flagged as unguarded:
+// the logging seat captures 4KiB+1 off the wire and replays it; the
+// error-handler seat then captures from the REPLAYED prefix (never the
+// wire); the handler must observe the oversized body byte-exactly.
+// The highest-risk future edit — changing either capture's read amount
+// — breaks this pin.
+func TestMiddlewareChain_BoundedCapturesComposeStreamsThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Info", "Request received", mock.Anything).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	const bodySize = 64 * 1024
+	payload := make([]byte, bodySize)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	var got []byte
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, middleware.LoggingConfig{LogRequestBody: true, MaxBodyLogSize: 1024}))
+	router.Use(middleware.ErrorHandlerMiddleware(mockLogger))
+	router.POST("/compose", func(c *gin.Context) {
+		var err error
+		got, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			t.Errorf("handler read failed: %v", err)
+		}
+		c.String(http.StatusOK, "ok")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/compose", bytes.NewReader(payload))
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, got, bodySize, "the handler must see the complete oversized body through both captures")
+	assert.Equal(t, payload, got, "the composed capture replay must be byte-exact")
+	mockLogger.AssertExpectations(t)
+}

@@ -59,9 +59,19 @@ func ErrorHandlerMiddleware(log interfaces.LoggerInterface, config ...ErrorHandl
 		// and swallows client-paced upload streams whole). The capture
 		// replays: the handler reads the prefix from memory and the
 		// remainder live.
+		//
+		// An INCOMPLETE capture (body over the limit) contributes NO
+		// bytes to error logs — logError's non-JSON branch logs a raw
+		// truncated string, which would bypass JSON field masking for
+		// oversized JSON bodies that previously parsed and were masked
+		// (the #1608 review's correctness finding 2). Same policy as
+		// the logging seat.
 		var requestBody []byte
 		if c.Request.Body != nil && c.Request.ContentLength > 0 {
-			requestBody, _ = captureRequestBody(c, requestBodyCaptureLimit)
+			captured, complete := captureRequestBody(c, requestBodyCaptureLimit)
+			if complete {
+				requestBody = captured
+			}
 		}
 
 		// Create a response writer that captures the response
