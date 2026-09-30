@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	abiconnect "github.com/lenaxia/llmsafespaces/pkg/abi/v1/abiconnect"
@@ -418,6 +419,16 @@ func upsertPart(snap *abiv1.SessionSnapshot, p *abiv1.Part) {
 	snap.InFlightParts = append(snap.InFlightParts, p)
 }
 
+// cloneBusy deep-copies the authority-derived components (nil-safe —
+// proto.Clone on a nil message returns an untyped nil the caller cannot
+// assert back).
+func cloneBusy(b *abiv1.BusyComponents) *abiv1.BusyComponents {
+	if b == nil {
+		return nil
+	}
+	return proto.Clone(b).(*abiv1.BusyComponents)
+}
+
 func cloneSessionSnapshot(s *abiv1.SessionSnapshot) *abiv1.SessionSnapshot {
 	out := &abiv1.SessionSnapshot{
 		SessionId:     s.GetSessionId(),
@@ -425,6 +436,11 @@ func cloneSessionSnapshot(s *abiv1.SessionSnapshot) *abiv1.SessionSnapshot {
 		QueueDepth:    s.GetQueueDepth(),
 		InFlightParts: append([]*abiv1.Part(nil), s.GetInFlightParts()...),
 		PendingInputs: append([]*abiv1.InputRequest(nil), s.GetPendingInputs()...),
+		// The #1574 derived busy truth is authority-computed and rides
+		// the snapshot verbatim — consumers must read it, never
+		// recompute it. Dropping it here served busy-status sessions
+		// with nil components (#1602).
+		Busy: cloneBusy(s.GetBusy()),
 	}
 	return out
 }
