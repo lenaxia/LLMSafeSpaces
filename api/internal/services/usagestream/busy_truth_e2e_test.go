@@ -84,6 +84,12 @@ type e2eStore struct {
 	calls int
 }
 
+func (s *e2eStore) set(seeds map[string]sessionstate.SessionSeed) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seed = seeds
+}
+
 func (s *e2eStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,10 +280,15 @@ func TestBusyTruthE2E_PermissionWaitIsNotBusy(t *testing.T) {
 // gate releases when the reseeded truth is idle, preserving
 // scale-to-zero through the wedge-recovery path.
 func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
+	// The store is wired at construction; its (mutex-guarded) seed is
+	// swapped for the reseed. SetStoreForTest is NOT used: it swaps the
+	// store pointer on a live-served authority, racing the consumer's
+	// concurrent GetSnapshot consults.
+	store := &e2eStore{}
 	auth, err := sessionstate.New(sessionstate.Config{
 		PlatformDir: t.TempDir(),
 		Parser:      jsonEventParser{},
-		Store:       &e2eStore{},
+		Store:       store,
 		Passwords:   []string{"pw"},
 	})
 	require.NoError(t, err)
@@ -302,10 +313,9 @@ func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
 	// The harness dies; the store's truth says idle. The reseed is an
 	// IN-STREAM frame — the client redials and resnapshots without the
 	// consumer's run loop ever reconnecting.
-	store := &e2eStore{seed: map[string]sessionstate.SessionSeed{
+	store.set(map[string]sessionstate.SessionSeed{
 		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
-	}}
-	auth.SetStoreForTest(store)
+	})
 	require.NoError(t, auth.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
 
 	require.Equal(t, 1, c.Gates(), "the gate lives through the reseed itself")
