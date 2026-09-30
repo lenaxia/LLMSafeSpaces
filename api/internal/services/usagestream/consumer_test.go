@@ -40,6 +40,10 @@ type fakeClient struct {
 	// kill (one-shot, closed by killStream) makes the CURRENT stream
 	// return an error — the reconnect path.
 	kill chan struct{}
+	// resynced is the WithResynced callback (nil until the consumer
+	// arms it) — fired by reseed to simulate the in-stream
+	// projection.reseeded redial.
+	resynced func()
 }
 
 func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error {
@@ -47,6 +51,7 @@ func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.Sessio
 	// that wrap Stream (this fake is one).
 	f.onEvent = abiclient.AppliedEventsOf(opts)
 	f.onUpdate = onUpdate
+	f.resynced = abiclient.ResyncedOf(opts)
 	if f.connected != nil {
 		f.connected <- struct{}{}
 	}
@@ -546,4 +551,94 @@ func TestReconnectReconcilesDerivedTruth(t *testing.T) {
 	require.Eventually(t, func() bool { return c.Gates() == 0 },
 		5*time.Second, 50*time.Millisecond,
 		"a stale-true derived entry must reconcile against the reconnect snapshot — the gate must drop")
+}
+
+// reseed simulates abiclient's IN-STREAM projection.reseeded handling:
+// the client redials, applies the fresh snapshot, fires the resynced
+// callback, and republishes — WITHOUT Stream returning (the run loop
+// and its per-connection resets never observe it).
+func (f *fakeClient) reseed(sessions map[string]*abiv1.SessionSnapshot) {
+	f.mu.Lock()
+	f.busy = nil
+	resynced := f.resynced
+	f.mu.Unlock()
+	if resynced != nil {
+		resynced()
+	}
+	f.onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
+}
+
+// TestInStreamReseedReconcilesDerivedTruth: the review-r1 gap — the
+// reseed redial happens inside abiclient.Stream (no return, no run-loop
+// reconnect), so the per-connection seededFold reset never fires. A
+// stale-true derived entry across an in-stream reseed must still
+// reconcile against the fresh snapshot — the no-stale-lease invariant
+// holds on this path too.
+func TestInStreamReseedReconcilesDerivedTruth(t *testing.T) {
+	c, fc, _, _ := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	fc.setSnapshot("s1", true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1"})
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, c.Gates(), "precondition: derived busy holds the gate")
+
+	// The authority reseeds from a store that says idle — the fresh
+	// snapshot (all idle, no Busy components) is the new truth.
+	fc.setSnapshot("s1", false)
+	fc.reseed(map[string]*abiv1.SessionSnapshot{})
+
+	require.Eventually(t, func() bool { return c.Gates() == 0 },
+		5*time.Second, 50*time.Millisecond,
+		"an in-stream reseed's snapshot must rebuild the derived baseline — the gate must drop")
+}
+
+// recordingLogger captures warns (the fail-open observability row).
+type recordingLogger struct {
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *recordingLogger) Warn(msg string, keysAndValues ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, msg)
+}
+
+func (l *recordingLogger) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.warns)
+}
+
+// TestConsultFailureIsObservable: a persistently failing consult must
+// not be silent — the fix's entire purpose is the truth overlay, and a
+// silent degrade would reproduce the incident with no signal. Warn on
+// the first failure, rate-limited afterwards (every 50th).
+func TestConsultFailureIsObservable(t *testing.T) {
+	connected := make(chan struct{}, 4)
+	fc := &fakeClient{connected: connected}
+	lg := &recordingLogger{}
+	br := &recordedBridge{}
+	c := New(Config{
+		Resolve:   func(ctx context.Context, workspaceID string) (string, string, error) { return "http://pod", "pw", nil },
+		NewClient: func(baseURL, password string) Client { return fc },
+		Bridge:    br,
+		Logger:    lg,
+		IdleDrop:  time.Hour,
+	})
+	requireOpen(t, c, fc)
+
+	fc.failSnapshot(errors.New("pod glitch"))
+	for i := 1; i <= 3; i++ {
+		fc.apply(uint64(i), &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	}
+	require.Len(t, br.statuses, 3, "the raw fail-open mapping still publishes")
+	require.Equal(t, 1, lg.count(), "first failure warns; the next two are rate-limited silent")
+
+	for i := 4; i <= 52; i++ {
+		fc.apply(uint64(i), &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	}
+	require.Equal(t, 2, lg.count(), "the 51st failure warns again (every 50th)")
 }

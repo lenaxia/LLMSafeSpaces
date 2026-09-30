@@ -18,6 +18,7 @@ let mockWorkspaceHung = (_wsid: string) => false;
 let mockSessionPendingActions = (): Set<string> => new Set<string>();
 
 vi.mock("../../providers/SessionActivityProvider", () => ({
+  useIsSessionAborted: () => false,
   useIsSessionBusy: (sid: string) => mockIsSessionBusy(sid),
   useIsSessionUnread: (sid: string) => mockIsSessionUnread(sid),
   useWorkspaceBusyCount: (wsid: string) => mockWorkspaceBusyCount(wsid),

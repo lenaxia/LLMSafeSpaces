@@ -209,6 +209,7 @@ type StreamOption func(*streamOptions)
 
 type streamOptions struct {
 	appliedEvents func(evt *abiv1.Event, seq uint64)
+	resynced      func()
 }
 
 // AppliedEventsOf composes opts into the single applied-events callback
@@ -221,6 +222,28 @@ func AppliedEventsOf(opts []StreamOption) func(evt *abiv1.Event, seq uint64) {
 		o(&so)
 	}
 	return so.appliedEvents
+}
+
+// WithResynced registers a callback fired whenever the fold is rebuilt
+// from a fresh snapshot frame — the initial connect AND the in-stream
+// projection.reseeded redial (Stream handles the reseed internally
+// without returning, so run-loop-level reconnect hooks never see it).
+// Fired BEFORE the onUpdate publication of the rebuilt state, so
+// consumers can re-arm snapshot-based reconciliation. The #1602
+// stale-truth reconcile is the consumer.
+func WithResynced(fn func()) StreamOption {
+	return func(o *streamOptions) { o.resynced = fn }
+}
+
+// ResyncedOf composes opts into the single resynced callback they
+// configure (nil when none) — the WithResynced counterpart of
+// AppliedEventsOf for consumers that wrap Stream (test fakes).
+func ResyncedOf(opts []StreamOption) func() {
+	var so streamOptions
+	for _, o := range opts {
+		o(&so)
+	}
+	return so.resynced
 }
 
 // WithAppliedEvents registers a callback invoked for every event the
@@ -274,6 +297,12 @@ func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState), opts 
 				if snap := f.GetSnapshot(); snap != nil {
 					applySnapshot(st, snap)
 					seeded = true
+					// The fold was rebuilt from a stamped snapshot —
+					// the initial connect and the post-reseed redial
+					// both land here (the reseed is handled in-stream).
+					if so.resynced != nil {
+						so.resynced()
+					}
 					if onUpdate != nil {
 						onUpdate(st.clone())
 					}

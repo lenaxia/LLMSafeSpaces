@@ -49,6 +49,7 @@ const promptStore = vi.hoisted(() => ({
   clearSessionPrompts: vi.fn(),
 }));
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

@@ -64,6 +64,7 @@ vi.mock("../api/workspaces", () => ({
   },
 }));
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,
@@ -165,7 +166,7 @@ const HOOK_CALL = /\buse[A-Z][A-Za-z0-9]*\s*[<(]/g;
 // intentionally add or remove a hook in ChatPage, update this number —
 // an unexpected change means hooks moved across the early-return guard
 // or the hook order was accidentally restructured.
-const EXPECTED_HOOK_CALLS = 70; // +useEffect session_gone sidebar invalidation (#1340)
+const EXPECTED_HOOK_CALLS = 72; // +useIsSessionDeleted +useEffect (#786 deleted-session navigation)
 
 describe("ChatPage hook count stability (React error #310 regression guard)", () => {
   beforeEach(() => {

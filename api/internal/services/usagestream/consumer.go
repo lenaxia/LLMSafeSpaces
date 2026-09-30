@@ -169,6 +169,9 @@ type gate struct {
 	// snapshot frame) as not-yet-applied — the reconnect reconcile
 	// rebuilds derived from it.
 	seededFold bool
+	// consultFails counts consecutive-or-not consult failures for the
+	// rate-limited observability warn (first + every 50th).
+	consultFails int
 }
 
 func New(cfg Config) *Consumer {
@@ -312,7 +315,15 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
-		}, abiclient.WithAppliedEvents(func(evt *abiv1.Event, seq uint64) { //nolint:contextcheck // the applied-events callback cannot carry the stream ctx (abiclient's seam is ctx-less by design); the busy-truth consult inside derives from the GATE's lifecycle ctx — canceled at teardown, budget-capped otherwise.
+		}, abiclient.WithResynced(func() {
+			// In-stream reseed: abiclient redials on projection.reseeded
+			// WITHOUT returning, so run()'s per-connection reset never
+			// fires — re-arm the snapshot reconcile here (review r1
+			// finding 1: the stale-true lease on this path).
+			g.mu.Lock()
+			g.seededFold = false
+			g.mu.Unlock()
+		}), abiclient.WithAppliedEvents(func(evt *abiv1.Event, seq uint64) { //nolint:contextcheck // the applied-events callback cannot carry the stream ctx (abiclient's seam is ctx-less by design); the busy-truth consult inside derives from the GATE's lifecycle ctx — canceled at teardown, budget-capped otherwise.
 			c.onEvent(workspaceID, g, evt, seq)
 		}))
 		if ctx.Err() != nil {
@@ -444,7 +455,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			// unknown session) fails open to the raw mapping: the pipe
 			// goes legacy, never quiet.
 			busy := evt.GetStatus() != abiv1.SessionStatus_SESSION_STATUS_IDLE
-			if derived, ok := c.consultBusy(g, evt.GetSessionId()); ok {
+			if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok {
 				busy = derived
 			}
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
@@ -462,7 +473,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		g.mu.Lock()
 		prev := g.derived[evt.GetSessionId()]
 		g.mu.Unlock()
-		if derived, ok := c.consultBusy(g, evt.GetSessionId()); ok && derived != prev {
+		if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok && derived != prev {
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), derived)
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
@@ -486,10 +497,13 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 // (the #1574 BusyComponents, read verbatim — the one definition, never
 // recomputed here) and records the answer as the gate's flip baseline.
 // ok=false means no answer (no connection yet, consult failure, or a
-// Busy-less snapshot) — callers fail open to the raw status mapping.
-// Called from the fold goroutine (onEvent), so consults serialize in
-// stream order; the budget caps the stall a slow pod can impose.
-func (c *Consumer) consultBusy(g *gate, sessionID string) (busy, ok bool) {
+// Busy-less snapshot) — callers fail open to the raw status mapping,
+// and the failure is OBSERVABLE: warn on the first failure and every
+// 50th after (a silent degrade would reproduce the #1602 incident with
+// no signal). Called from the fold goroutine (onEvent), so consults
+// serialize in stream order; the budget caps the stall a slow pod can
+// impose.
+func (c *Consumer) consultBusy(workspaceID string, g *gate, sessionID string) (busy, ok bool) {
 	if sessionID == "" {
 		return false, false
 	}
@@ -504,6 +518,17 @@ func (c *Consumer) consultBusy(g *gate, sessionID string) (busy, ok bool) {
 	defer cancel()
 	snap, err := cl.GetSnapshot(ctx, sessionID)
 	if err != nil || snap.GetBusy() == nil {
+		g.mu.Lock()
+		g.consultFails++
+		n := g.consultFails
+		g.mu.Unlock()
+		if c.cfg.Logger != nil && (n == 1 || n%50 == 0) {
+			if err != nil {
+				c.cfg.Logger.Warn("usagestream: busy-truth consult failed — failing open to raw status", "workspaceID", workspaceID, "sessionID", sessionID, "error", err)
+			} else {
+				c.cfg.Logger.Warn("usagestream: busy-truth consult returned no components — failing open to raw status", "workspaceID", workspaceID, "sessionID", sessionID)
+			}
+		}
 		return false, false
 	}
 	busy = snap.GetBusy().GetBusy()

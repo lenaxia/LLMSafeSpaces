@@ -37,7 +37,7 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useIsSessionDeleted, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
@@ -235,6 +235,15 @@ export function ChatPage() {
   // omitting a live ask is the incident's own failure mode (#1365 r1).
   const dropPendingAction = useDropPendingAction();
   const clearSessionPendingPrompts = useClearSessionPendingPrompts();
+  // #786: a session deleted under this tab (another tab, the API) — the
+  // provider records it; the ROUTE-level consumer owns navigation away
+  // (the provider lives above the routes and cannot see the params).
+  const isSessionDeleted = useIsSessionDeleted(sessionId ?? "");
+
+  useEffect(() => {
+    if (!sessionId || !isSessionDeleted) return;
+    navigate(`/chat/${workspaceId}`);
+  }, [sessionId, isSessionDeleted, workspaceId, navigate]);
 
   useEffect(() => {
     if (!workspaceId || !sessionId || !isReady) return;

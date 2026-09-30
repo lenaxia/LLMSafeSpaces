@@ -52,6 +52,7 @@ const mockBusyState = vi.hoisted(() => {
 vi.mock("../providers/SessionActivityProvider", async () => {
   const { useState, useEffect } = await vi.importActual<typeof import("react")>("react");
   return {
+    useIsSessionDeleted: () => false,
     useWhileAwayStalenessSweep: () => {},
     useClearPendingUnread: () => () => {},
     useIsSessionBusy: () => {

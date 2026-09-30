@@ -76,11 +76,39 @@ func (b *syncBridge) snapshot() []string {
 	return append([]string(nil), b.statuses...)
 }
 
+// e2eStore is the authority's store-reader seam: scriptable seeds for
+// the reseed path (Reseed rebuilds the projection from store truth).
+type e2eStore struct {
+	mu    sync.Mutex
+	seed  map[string]sessionstate.SessionSeed
+	calls int
+}
+
+func (s *e2eStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	out := make(map[string]sessionstate.SessionSeed, len(s.seed))
+	for k, v := range s.seed {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *e2eStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (s *e2eStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
 func newBusyTruthE2E(t *testing.T) (*sessionstate.Authority, *Consumer, *syncBridge) {
 	t.Helper()
 	auth, err := sessionstate.New(sessionstate.Config{
 		PlatformDir: t.TempDir(),
 		Parser:      jsonEventParser{},
+		Store:       &e2eStore{},
 		Passwords:   []string{"pw"},
 	})
 	require.NoError(t, err)
@@ -91,24 +119,33 @@ func newBusyTruthE2E(t *testing.T) (*sessionstate.Authority, *Consumer, *syncBri
 	t.Cleanup(ts.Close)
 
 	br := &syncBridge{}
-	c := New(Config{
-		Resolve: func(ctx context.Context, workspaceID string) (string, string, error) {
-			return ts.URL, "pw", nil
-		},
-		NewClient: func(baseURL, password string) Client {
-			return abiclient.New(&http.Client{Transport: basicTransport{password: password}}, baseURL)
-		},
-		Bridge:   br,
-		IdleDrop: time.Hour, // the test tears down via CloseAll
-	})
+	c := newBusyTruthConsumer(t, ts.URL, br, time.Hour)
 	c.Open("ws1")
-	t.Cleanup(c.CloseAll)
 
 	// The gate connects asynchronously and the stream has no replay:
 	// wait until the subscription is registered before feeding events.
 	require.Eventually(t, func() bool { return auth.Metrics().Subscribers == 1 },
 		10*time.Second, 10*time.Millisecond, "consumer never subscribed to the authority stream")
 	return auth, c, br
+}
+
+// newBusyTruthConsumer wires the REAL abiclient over the authority's
+// HTTP surface (idleDrop tunable: most tests park it at an hour and
+// tear down via CloseAll; the gate-lifecycle rows need it short).
+func newBusyTruthConsumer(t *testing.T, baseURL string, br Bridge, idleDrop time.Duration) *Consumer {
+	t.Helper()
+	c := New(Config{
+		Resolve: func(ctx context.Context, workspaceID string) (string, string, error) {
+			return baseURL, "pw", nil
+		},
+		NewClient: func(baseURL, password string) Client {
+			return abiclient.New(&http.Client{Transport: basicTransport{password: password}}, baseURL)
+		},
+		Bridge:   br,
+		IdleDrop: idleDrop,
+	})
+	t.Cleanup(c.CloseAll)
+	return c
 }
 
 func ingest(t *testing.T, auth *sessionstate.Authority, evt *abiv1.Event) {
@@ -228,4 +265,51 @@ func TestBusyTruthE2E_PermissionWaitIsNotBusy(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.snapshot(),
 		"waiting on the user is not busy — no flip, no emission")
+}
+
+// TestBusyTruthE2E_InStreamReseedReconciles: the review-r1 row — a
+// generation-change reseed (the harness died; the store rebuilds from
+// truth) happens INSIDE the client's stream (redial, no return). The
+// consumer's derived baseline must rebuild from the fresh snapshot: the
+// gate releases when the reseeded truth is idle, preserving
+// scale-to-zero through the wedge-recovery path.
+func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
+	auth, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      jsonEventParser{},
+		Store:       &e2eStore{},
+		Passwords:   []string{"pw"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = auth.Close() })
+	_, h := auth.Handler()
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	// A short settle window: this row asserts the gate DROPS once the
+	// reseeded truth is idle.
+	br := &syncBridge{}
+	c := newBusyTruthConsumer(t, ts.URL, br, 100*time.Millisecond)
+	c.Open("ws1")
+	require.Eventually(t, func() bool { return auth.Metrics().Subscribers >= 1 },
+		10*time.Second, 10*time.Millisecond, "consumer never subscribed")
+
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1", Part: runningToolPart("p1")})
+	waitForStatuses(t, br, []string{"ws1:s1:busy"})
+	require.Equal(t, 1, c.Gates(), "precondition: the running tool holds the gate")
+
+	// The harness dies; the store's truth says idle. The reseed is an
+	// IN-STREAM frame — the client redials and resnapshots without the
+	// consumer's run loop ever reconnecting.
+	store := &e2eStore{seed: map[string]sessionstate.SessionSeed{
+		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
+	}}
+	auth.SetStoreForTest(store)
+	require.NoError(t, auth.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
+
+	require.Equal(t, 1, c.Gates(), "the gate lives through the reseed itself")
+	require.Eventually(t, func() bool { return c.Gates() == 0 },
+		15*time.Second, 50*time.Millisecond,
+		"the in-stream reseed's snapshot must rebuild the derived baseline — the gate must drop")
 }
