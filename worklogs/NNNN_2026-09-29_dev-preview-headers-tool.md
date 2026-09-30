@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29
 **Session:** Implement the r30-simplified design 0062 in cmd/workspace-agentd: the `dev_preview_headers` MCP tool, its JSON state, the Rewrite injection, and the `feature_status` entry. Full lane protocol (TDD red-first, PR #1600, iterate with the automated reviewer).
-**Status:** In Progress — PR #1600 open, awaiting the automated reviewer
+**Status:** In Progress — PR #1600 r1 remediation pushed (9b9bd996), awaiting r2
 
 ---
 
@@ -35,7 +35,15 @@ Deliver design 0062 (refs #1583, owner-simplified r30): the agent sets dev-previ
 ### Rule 5 fix riding along (commit d7463f59)
 - 17 pre-existing `TestCallMCPTool_DevPreviewURL_*` failures when the suite runs inside a real workspace pod: the controller projects `WORKSPACE_DEV_PREVIEW_ENABLED=false`, CI runs with it unset. Verified failing on pristine main v0.34.10 in-pod. Fixed by TestMain normalization (the `podDiskUsage` ambient precedent); the `dev_preview unreported skew` subtest additionally pins its own env via `t.Setenv("")`.
 
+### r1 remediation (review round 1, commit 9b9bd996)
+- **Boot-load entry cap (r1 correctness-1)**: the constructor now enforces the full §2 contract on reload — beyond-cap valid entries drop, keeping the first 20 by sorted name (deterministic); reachable via RW tmpfs + hand-edit + agentd container restart. Red-first pin: a 22-valid-entry file loads exactly 20 (`X-Header-00`…`X-Header-19`).
+- **clear() name symmetry (r1 correctness-2)**: structurally invalid names are refused (`validateDevPreviewHeaderName` split out of the full validator and shared); absent VALID names remain idempotent no-ops.
+- **Missing-test rows**: boundary ACCEPTS (128-char name, 4096-byte value — a `>=` cap regression now fails); WS-upgrade injection pin (configured header present on the backend's 101 handshake — gorilla dial through the real handler, header captured server-side); clear-side persist-failure atomicity.
+- **The §6 e2e arms (the round's substance)** in `local/dev-preview-tunnel-e2e.sh`, riding the existing kind harness: 0062-A fixture (python http.server in-pod, base64-delivered) rejects headerless previews with 401; 0062-B `set` via the tool through the pod's user mux → preview renders 200 + fixture marker; 0062-C `clear` → 401 again; 0062-D agentd container `kill 1` → list still shows the entry (emptyDir outlives the container) and the preview still renders — guarded to the sidecar topology (warn-skip when no agentd container; the nightly installs sidecar mode); 0062-E pod recreate → `list` returns `[]` and the fixture rejects (memory-backed wipe; the fixture's /tmp files survive on the PVC subPath, the process does not — restarted by `start_fixture`). Script-shape pins extended (`TestDevPreviewScript_AssertionRows` +8 rows); the nightly wiring already runs the script (pinned pre-existing).
+- COORDINATE claim list gained `e2e_test.go` + the `local/` pair (r1 nit).
+
 ### Salvage audit (recorded per the orchestrator's request)
+
 - The retired predecessor left an untracked `dev_preview_headers_test.go` referencing nonexistent APIs; its `throughPreview` helper was broken (created a probe backend, discarded its server, then proxied to a different port — `<-recv` would block forever; the file never compiled against the tree). Sound arms kept (validation table, cap, clear/list, boot-reload, file shape, source scans); the helper rewritten to proxy to its own probe backend.
 
 ---
@@ -58,11 +66,12 @@ None. Residual: the pod-tier lifecycle arms (container-restart survival via the 
 
 ## Tests Run
 
-Red-first: the full test file was written before any implementation; `go test -run TestDevPreviewHeaders` failed compile-red (all referenced APIs undefined) before the implementation existed.
+Red-first: the full test file was written before any implementation; `go test -run TestDevPreviewHeaders` failed compile-red (all referenced APIs undefined) before the implementation existed. The r1 rows (boot-load cap, clear symmetry, boundary accepts, clear atomicity) were added red-first against the r0 implementation — the cap row failed with 22 entries loading, the clear-symmetry row failed with junk accepted, before the fixes.
 
 Targeted (in-pod, `PATH=/tmp/opencode/bin:$PATH GOBIN=/tmp/opencode/bin go test -timeout 300s -run '...' ./cmd/workspace-agentd/`):
-- `TestDevPreviewHeaders|TestDevPreview_` — PASS, 34 subtest PASS lines (validation table ×30 incl. denylist ×14 + byte arms; forward-names accepted; entry cap; clear/list; boot reload; boot-load drop-invalid; corrupt-file repair; file shape 0600/JSON/no-tmp-residue; persist-failure atomicity; memory-backed source-scan; nil-store; injection; last-writer; Authorization-still-stripped; X-Forwarded disposition both arms; MCP dispatch set/clear/list/"*"; dispatch errors ×7; registration schema + enum pin; literal-only pin; JSON-RPC roundtrip incl. clear-reverts; feature_status entry).
+- `TestDevPreviewHeaders|TestDevPreview_` — PASS, 24 top-level arms (r1 added BootLoadCaps, BoundaryAccepts, InjectedOnWSUpgrade; extended ClearAndList and PersistFailureAtomic) incl. the 30-case validation table, the JSON-RPC roundtrip, and the feature_status entry.
 - `TestMCPHandler_FeatureStatus|TestCallMCPTool_DevPreviewURL|TestSecretsResync_Registration|TestControlPlane` — ok.
+- `go test -run TestDevPreviewScript ./local/` — ok (bash -n, assertion rows ×8 new, UUID contract, nightly wiring).
 - Full-package `go test ./cmd/workspace-agentd/` — attempted twice; the turn died mid-run both times (shared-pod turn-death, not a test failure). Verification basis: the targeted suites above; CI owns the full sweep.
 
 ---
@@ -76,8 +85,8 @@ Targeted (in-pod, `PATH=/tmp/opencode/bin:$PATH GOBIN=/tmp/opencode/bin go test 
 
 ## Files Modified
 
-- `cmd/workspace-agentd/dev_preview_headers.go` (new — store, validation, tool def, dispatch)
-- `cmd/workspace-agentd/dev_preview_headers_test.go` (new — all §6 unit/integration arms)
+- `cmd/workspace-agentd/dev_preview_headers.go` (new — store, validation, tool def, dispatch; r1: boot-load cap, clear-name symmetry, validator split)
+- `cmd/workspace-agentd/dev_preview_headers_test.go` (new — all §6 unit/integration arms; r1: cap pin, boundary accepts, clear symmetry/atomicity, WS-upgrade pin)
 - `cmd/workspace-agentd/dev_preview.go` (store param + Rewrite injection)
 - `cmd/workspace-agentd/server.go` (wire the shared default store)
 - `cmd/workspace-agentd/mcp_server.go` (registration + dispatch; feature_status description)
@@ -85,4 +94,6 @@ Targeted (in-pod, `PATH=/tmp/opencode/bin:$PATH GOBIN=/tmp/opencode/bin go test 
 - `cmd/workspace-agentd/mcp_server_test.go` (inventory pin → six features; skew subtest env pin; arity)
 - `cmd/workspace-agentd/dev_preview_test.go`, `cmd/workspace-agentd/control_plane_auth_test.go` (arity only)
 - `cmd/workspace-agentd/e2e_test.go` (TestMain env normalization — Rule 5 fix)
-- `COORDINATE.md` (lane claim)
+- `local/dev-preview-tunnel-e2e.sh` (r1: the 0062 §6 e2e arms A–E + helpers)
+- `local/dev_preview_script_test.go` (r1: +8 assertion rows)
+- `COORDINATE.md` (lane claim; r1: file list completed)
