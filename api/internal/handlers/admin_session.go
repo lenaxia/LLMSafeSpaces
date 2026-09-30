@@ -67,7 +67,9 @@ func (h *AdminSessionHandler) ForceAbortSession(c *gin.Context) {
 
 	h.proxyHandler.removeActiveSession(c.Request.Context(), workspaceID, sessionID)
 
-	h.proxyHandler.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+	// #786: aborted must reach the USER stream too (the activity
+	// provider's stream) so the busy indicator clears in every open tab.
+	h.proxyHandler.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 		Type:      "session.status",
 		SessionID: sessionID,
 		Status:    "aborted",

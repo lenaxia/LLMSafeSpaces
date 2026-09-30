@@ -1392,3 +1392,42 @@ func TestProxy_OnPhaseChange_NoMeteringService_NoPanic(t *testing.T) {
 		handler.onPhaseChange(ws)
 	})
 }
+
+// TestProxy_DeleteSession_PublishesUserStreamEvent: #786 — the deleted
+// event must reach the USER stream (SessionActivityProvider's stream)
+// with the workspace routing key stamped, not just the workspace
+// stream; otherwise every open tab but the workspace-scoped subscriber
+// keeps the session until a hard refresh.
+func TestProxy_DeleteSession_PublishesUserStreamEvent(t *testing.T) {
+	si := &recordingDeleteSessionIndex{}
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
+	})
+	env.handler.SetSessionIndex(si)
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+
+	sub, err := env.handler.userBroker.SubscribeUser("user-1")
+	require.NoError(t, err)
+	defer env.handler.userBroker.UnsubscribeUser("user-1", sub)
+
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	assert.Equal(t, http.StatusNoContent, w.Code)
+
+	select {
+	case evt := <-sub.Ch:
+		assert.Equal(t, "session.status", evt.Type)
+		assert.Equal(t, "s1", evt.SessionID)
+		assert.Equal(t, "deleted", evt.Status)
+		assert.Equal(t, "ws-1", evt.WorkspaceID, "the user-stream copy must carry the routing key")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for user-stream session.status deleted event")
+	}
+}

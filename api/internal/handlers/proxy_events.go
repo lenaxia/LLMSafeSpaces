@@ -253,9 +253,11 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 			h.removeActiveSession(ctx, workspaceID, sess.ID)
 			// Publish session.status=idle so connected clients update their UI.
 			// Without this, browsers showing the session keep their busy
-			// indicator until the next page reload.
+			// indicator until the next page reload. #786: the user-stream
+			// copy reaches tabs outside the workspace view (the provider's
+			// stuck-busy clear).
 			if h.userBroker != nil {
-				h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+				h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 					Type:      "session.status",
 					SessionID: sess.ID,
 					Status:    "idle",
