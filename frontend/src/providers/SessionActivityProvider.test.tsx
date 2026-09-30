@@ -2883,3 +2883,41 @@ describe("useWhileAwayStalenessSweep (#1365, timer-driven)", () => {
     expect(qc.getQueryData(["session-title", "ws-1", "sess-1"])).toBeUndefined();
     expect(qc.getQueryData(["messages", "ws-1", "sess-2"])).toBeDefined();
   });
+
+  it("prunes the ask content of a deleted/aborted session — no orphan pills in parent tabs (#786 r2)", () => {
+    function Display() {
+      const questions = usePendingQuestionsForSession("sess-1");
+      const addQuestion = useAddPendingQuestion();
+      return (
+        <>
+          <span data-testid="pills">{questions.length}</span>
+          <button
+            data-testid="add-ask"
+            onClick={() =>
+              addQuestion("ws-1", { id: `q${questions.length + 1}`, sessionId: "sess-1", kind: "question", question: "Go?" })
+            }
+          />
+        </>
+      );
+    }
+
+    renderProvider(<Display />);
+    act(() => {
+      screen.getByTestId("add-ask").click();
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("1");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "deleted" });
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("0");
+
+    act(() => {
+      screen.getByTestId("add-ask").click();
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("1");
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-1", status: "aborted" });
+    });
+    expect(screen.getByTestId("pills").textContent).toBe("0");
+  });

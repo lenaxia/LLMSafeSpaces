@@ -622,6 +622,28 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const sid = evt.session_id!;
           const wsId = evt.workspace_id!;
           clearedRef.current.delete(sid);
+          // Collect the session's own ask ids BEFORE clearing the
+          // indicator — the fold-sync reconcile (snapshot_complete)
+          // walks pendingActions, so clearing first would orphan the
+          // content maps behind a blinded prune path (r2 review
+          // finding: stale un-dismissable pills in parent tabs).
+          const doomed = new Set<string>();
+          for (const rid of pendingActions.get(sid) ?? []) doomed.add(rid);
+          const collectSessionAsks = (m: Map<string, StoredInputRequest>) => {
+            for (const v of m.values()) {
+              if (v.sessionId === sid) doomed.add(v.id);
+            }
+          };
+          collectSessionAsks(pendingQuestionContent);
+          collectSessionAsks(pendingPermissionContent);
+          if (doomed.size > 0) {
+            setPendingQuestionContent((prev) => pruneMany(prev, doomed));
+            setPendingPermissionContent((prev) => pruneMany(prev, doomed));
+            for (const rid of doomed) {
+              requestToSessionRef.current.delete(rid);
+              requestFirstSeenRef.current.delete(rid);
+            }
+          }
           setBusySessions((prev) => {
             if (!prev.has(sid)) return prev;
             const next = new Map(prev);
