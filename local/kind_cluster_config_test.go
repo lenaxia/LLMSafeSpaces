@@ -8,10 +8,13 @@ package local_test
 // capacity walls — AC-1c, AC-13 wave 2, AC-11 — is a class retirement).
 // The nightly runs on a hosted runner whose single node tops out at
 // ~10 standing workspace pods of requests; a second node doubles the
-// allocatable ceiling. The SHARED local/kind-cluster.yaml stays
-// single-node: the pool is calibrated on exactly that topology (dind
-// nesting, #1244-class network sensitivities) and this change retires
-// the nightly's wall class, not the pool's envelope.
+// allocatable ceiling ONLY with the control-plane untaint (kind strips
+// that taint on single-node clusters only — see
+// TestNightlyKindConfig_ControlPlaneUntainted). The SHARED
+// local/kind-cluster.yaml stays single-node: the pool is calibrated on
+// exactly that topology (dind nesting, #1244-class network
+// sensitivities) and this change retires the nightly's wall class, not
+// the pool's envelope.
 
 import (
 	"regexp"
