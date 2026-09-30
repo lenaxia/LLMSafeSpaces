@@ -87,6 +87,35 @@ func TestNightlyKindConfig_TwoNodes(t *testing.T) {
 	}
 }
 
+// TestNightlyKindConfig_ControlPlaneUntainted pins the capacity
+// completion for the 2-node retirement: kind only strips the
+// control-plane taint on SINGLE-node clusters (kind v0.32.0
+// pkg/cluster/internal/create/actions/kubeadminit/init.go:124-155 runs
+// `kubectl taint nodes --all node-role.kubernetes.io/control-plane-`
+// under "if we are only provisioning one node"). On the nightly's 2-node
+// cluster the control-plane kept node-role.kubernetes.io/control-plane
+// :NoSchedule, so every pod — workspaces and infra alike — piled onto
+// the worker and the promised allocatable doubling never materialized
+// (nightly runs 36135708380…36740521434: the M2/M4 leg's 8th standing
+// workspace pod pended forever on FailedScheduling "1 Insufficient cpu,
+// 1 node(s) had untolerated taint(s)"). The nightly config must
+// explicitly register the control-plane with no taints.
+func TestNightlyKindConfig_ControlPlaneUntainted(t *testing.T) {
+	if !untaintPatchRe.MatchString(mustRead(t, kindConfigNightly)) {
+		t.Fatalf("the nightly kind config must carry the control-plane untaint patch (kubeadmConfigPatches InitConfiguration nodeRegistration.taints: []) — without it kind keeps the control-plane tainted on multi-node clusters and the second node contributes zero schedulable capacity")
+	}
+	// Blast radius: the SHARED config must NOT carry the patch. It is
+	// single-node, where kind itself already strips the taint at init —
+	// the pool's topology stays exactly as calibrated.
+	if untaintPatchRe.MatchString(mustRead(t, kindConfigShared)) {
+		t.Fatal("local/kind-cluster.yaml must stay single-node-stock: kind already untaints single-node control-planes, and the pool's calibrated topology must not drift")
+	}
+}
+
+// untaintPatchRe matches the InitConfiguration untaint patch inside a
+// kubeadmConfigPatches literal block (indented under the `- |` scalar).
+var untaintPatchRe = regexp.MustCompile(`(?m)^\s+kind: InitConfiguration\n\s+nodeRegistration:\n\s+taints: \[\]\s*$`)
+
 // TestSharedKindConfig_StaysSingleNode is the BLAST-RADIUS pin: the
 // shared config serves the pool (calibrated single-node dind topology,
 // #1244 sensitivities) and the weekly attachments run — this class
