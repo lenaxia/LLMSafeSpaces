@@ -300,3 +300,79 @@ func TestRelayFrontableProvider_Matrix(t *testing.T) {
 		"a non-stageable kind is never frontable regardless of BaseURL")
 	assert.False(t, RelayFrontableProvider(LLMProviderData{Kind: ""}), "no kind, no fronting")
 }
+
+// TestRelayFallback_StrictTwoFrontableAbsent_CountsBatchOnce: the strict
+// per-provider mute fires relay_degraded_batches_total ONCE PER BATCH
+// (the counter's unit — the class-level path's shape), no matter how
+// many frontable providers the all-mints-failed handoff is missing.
+// Review r1 finding 1's missing test: the guard was a dead store inside
+// the binding loop (per-ENTRY counting, 2.0 here).
+func TestRelayFallback_StrictTwoFrontableAbsent_CountsBatchOnce(t *testing.T) {
+	resetRelayCounters(t)
+	svc, env, _ := setupBuilder(t)
+	anthropic := CredentialBinding{
+		ID: "cred-anthropic", OwnerType: "admin", OwnerID: "_platform", Kind: "anthropic", Slug: "anthropic-row-slug",
+		Ciphertext: adminCiphertext(t, env.adminKey, LLMProviderData{
+			Kind: "anthropic", Slug: "anthropic", APIKey: "anthropic-raw-key",
+			Models: []LLMModelConfig{{ID: "claude-sonnet-4-5"}},
+		}),
+		Version: 2, SourceType: "auto",
+	}
+	env.creds = &mockCredentialStore{bindings: []CredentialBinding{env.adminCred, anthropic}}
+	svc.store = env.store()
+	svc.SetRelayTokenSource(&fakeRelayTokenSource{handoff: testHandoff("rTWO0001")})
+	resetAudit(env.secrets)
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Nil(t, degrade, "per-provider mute is not a class degrade")
+
+	_, ok := findEntry(batch, SecretTypeLLMProvider, "openai")
+	assert.False(t, ok)
+	_, ok = findEntry(batch, SecretTypeLLMProvider, "anthropic")
+	assert.False(t, ok, "both frontable providers muted under strict")
+	assert.Equal(t, 1.0, degradedDelta(t, "ws-1", DegradeRelayStagingNotReady),
+		"ONE batch-level increment regardless of muted-provider count (the counter's unit)")
+}
+
+// TestRelayFallback_StrictDuplicateRows_SingleMutePerSlug: the same
+// decrypted slug reached via two binding rows (the legacy row-slug-only
+// dedup shape) mutes EXACTLY once — one audit row, one batch counter
+// tick. Review r1 finding 1's dedup bypass: the mute's continue skipped
+// the pd-slug seen mark, double-firing audit and counter per row.
+func TestRelayFallback_StrictDuplicateRows_SingleMutePerSlug(t *testing.T) {
+	resetRelayCounters(t)
+	svc, env, _ := setupBuilder(t)
+	dup := CredentialBinding{
+		ID: "cred-admin-dup", OwnerType: "admin", OwnerID: "_platform", Kind: "openai", Slug: "openai-dup-row",
+		Ciphertext: adminCiphertext(t, env.adminKey, LLMProviderData{Kind: "openai", Slug: "openai", APIKey: "admin-key"}),
+		Version:    3, SourceType: "auto",
+	}
+	env.creds = &mockCredentialStore{bindings: []CredentialBinding{env.adminCred, dup}}
+	svc.store = env.store()
+	svc.SetRelayTokenSource(&fakeRelayTokenSource{handoff: testHandoff("rDUP0001")})
+	resetAudit(env.secrets)
+
+	batch, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, func() int {
+		n := 0
+		for _, e := range batch.Entries {
+			if e.Type == SecretTypeLLMProvider {
+				n++
+			}
+		}
+		return n
+	}(), "no llm-provider entries under the strict mute")
+
+	muteRows := 0
+	env.secrets.mu.Lock()
+	for _, a := range env.secrets.audit {
+		if a.Action == "credential_skipped_relay_not_ready" {
+			muteRows++
+		}
+	}
+	env.secrets.mu.Unlock()
+	assert.Equal(t, 1, muteRows, "exactly ONE mute audit for the duplicate-row slug")
+	assert.Equal(t, 1.0, degradedDelta(t, "ws-1", DegradeRelayStagingNotReady), "one batch-level tick")
+}

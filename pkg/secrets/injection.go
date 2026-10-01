@@ -350,6 +350,11 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 
 	muteClass := s.relayTokens != nil && !s.relayFallback && (handoffErr != nil || handoff == nil)
 	seen := make(map[string]bool)
+	// Per-batch flag: relay_degraded_batches_total counts BATCHES, so a
+	// strict mute of N frontable providers in one build increments once —
+	// the same unit the class-level path uses (relay_batch.go's
+	// relayBatchDegrade). Lives OUTSIDE the binding loop by construction.
+	stageableMuted := false
 	var out []BatchEntry
 	for _, b := range bindings {
 		if seen[b.Slug] {
@@ -399,7 +404,6 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 			continue
 		}
 		var relayMeta json.RawMessage
-		stageableMuted := false
 		if handoff != nil {
 			meta, outcome := applyRelayHandoff(&pd, handoff, s.relayFallback)
 			switch outcome {
@@ -439,13 +443,19 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 					} else {
 						// STRICT: zero raw-key delivery for frontable
 						// providers — the same fail-closed posture as the
-						// whole-handoff-absent mute, per-provider.
+						// whole-handoff-absent mute, per-provider. The
+						// slug is marked seen BEFORE continuing so a
+						// duplicate binding row for the same decrypted
+						// slug does not re-audit (parity with the
+						// migration path's pd-slug dedup).
 						s.audit(ctx, ownerUserID, "credential_skipped_relay_not_ready", nil, &workspaceID,
 							map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind, "reason": "frontable provider absent from present handoff"})
 						if !stageableMuted {
 							relayDegradedBatches.WithLabelValues(workspaceID, DegradeRelayStagingNotReady).Inc()
 							stageableMuted = true
 						}
+						seen[b.Slug] = true
+						seen[pd.Slug] = true
 						continue
 					}
 				} else {

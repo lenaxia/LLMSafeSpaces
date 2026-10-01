@@ -44,7 +44,8 @@ func TestRelayStaging_CatchUp_ConvergesPreArmingActiveWorkspace(t *testing.T) {
 	src := &fakeProviderSource{providers: []secrets.LLMProviderData{
 		openaiPD("openai", "sk-catchup-live"),
 	}}
-	r := stagingReconciler(t, src, &fakeRouterClient{}, nil, pubSec, ws, pod, pw)
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws, pod, pw)
 
 	// Pre-arming ground truth: no handoff Secret exists.
 	err := r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: handoffSecretName("ws-catchup")}, &corev1.Secret{})
@@ -72,16 +73,17 @@ func TestRelayStaging_CatchUp_ConvergesPreArmingActiveWorkspace(t *testing.T) {
 	assert.Equal(t, v1.ReasonCredentialsStaged, staged.Reason)
 
 	// And the second reconcile is a no-op steady state (change-gated
-	// persistence): the same handoff bytes survive untouched.
-	mintsBefore := func() int {
-		return len(h.Providers)
-	}
+	// persistence): the same handoff bytes survive untouched and no new
+	// mint fires (the cached unexpired token is retained).
 	_, err = r.Reconcile(context.Background(), reqFor("ws-catchup", "default"))
 	require.NoError(t, err)
 	ho2 := getSecret(t, r, "default", handoffSecretName("ws-catchup"))
 	assert.Equal(t, ho.Data[relayHandoffDataKey], ho2.Data[relayHandoffDataKey],
 		"steady state: the cached unexpired token is retained, not re-minted")
-	assert.Equal(t, mintsBefore(), 1)
+	router.mu.Lock()
+	mints := router.mints
+	router.mu.Unlock()
+	assert.Equal(t, 1, mints, "exactly one mint across both reconciles")
 }
 
 // TestRelayStaging_TriggerIsLevelTriggeredInBothPhaseHandlers: the
@@ -89,17 +91,20 @@ func TestRelayStaging_CatchUp_ConvergesPreArmingActiveWorkspace(t *testing.T) {
 // reconcileRelayStaging, positioned BEFORE the lifecycle branches (pod
 // build in Creating; restart-generation in Active), so a pre-arming
 // workspace converges on its regular reconcile cadence (requeueActive
-// 15s / requeueCreating 2s) with no event dependency. Deleting either
-// call site — or moving it behind an early-return branch — fails here.
+// 15s / requeueCreating 2s) with no event dependency. What this pins:
+// DELETING either call site, or moving it below its lifecycle marker.
+// What it deliberately does NOT pin: control flow — a return hoisted
+// above the call site leaves callIdx < markerIdx and passes while the
+// pass is unreachable; that class is covered behaviorally by
+// TestRelayStaging_CatchUp_ConvergesPreArmingActiveWorkspace above.
 func TestRelayStaging_TriggerIsLevelTriggeredInBothPhaseHandlers(t *testing.T) {
 	for _, tc := range []struct {
-		file    string
-		fun     string
-		marker  string // the lifecycle branch the staging pass must precede
-		marker2 string
+		file   string
+		fun    string
+		marker string // the lifecycle branch the staging pass must precede
 	}{
-		{"phase_creating.go", "func (r *WorkspaceReconciler) handleCreating", "buildPod(ctx, workspace)", ""},
-		{"phase_active.go", "func (r *WorkspaceReconciler) handleActive", "workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration", ""},
+		{"phase_creating.go", "func (r *WorkspaceReconciler) handleCreating", "buildPod(ctx, workspace)"},
+		{"phase_active.go", "func (r *WorkspaceReconciler) handleActive", "workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration"},
 	} {
 		raw, err := os.ReadFile(tc.file)
 		require.NoError(t, err, "%s unreadable", tc.file)
