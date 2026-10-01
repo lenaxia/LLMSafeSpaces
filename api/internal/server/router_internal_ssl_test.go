@@ -51,9 +51,9 @@ func TestRouter_InternalAPIRoutesNotSSLRedirected(t *testing.T) {
 	// which is exactly the assertion: the request must REACH the handler
 	// (403), not die in the middleware (301).
 	router := NewRouter(svc, log, nil, RouterConfig{
-		Debug:                          false,
-		InternalLLMProvidersHandler:    &handlers.InternalLLMProvidersHandler{},
-		InternalOrgStatusHandler:       &handlers.InternalOrgStatusHandler{},
+		Debug:                       false,
+		InternalLLMProvidersHandler: &handlers.InternalLLMProvidersHandler{},
+		InternalOrgStatusHandler:    &handlers.InternalOrgStatusHandler{},
 	})
 
 	t.Setenv("LLMSAFESPACES_INTERNAL_TOKEN", "")
