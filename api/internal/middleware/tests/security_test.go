@@ -154,3 +154,50 @@ func TestSecurityMiddleware_TrustsXForwardedProto(t *testing.T) {
 		assert.Equal(t, http.StatusMovedPermanently, w.Code)
 	})
 }
+
+// TestSecurityMiddleware_InternalAPIPathsSkipSSLRedirect pins the contract
+// that the controller-facing cluster-internal endpoints (prefix
+// /api/v1/internal/ — org-status and the US-72.3 llm-providers credential
+// source) are served over plain HTTP in-cluster and must never be 301'd.
+//
+// Regression (worklog 2026-10-01): the epic-35 exemption matched only
+// /internal/, while the controller endpoints live under /api/v1/internal/.
+// SSLRedirect (empty SSLHost) answered plain-HTTP ClusterIP calls with a
+// 301 to https://<same-host>:8080 — TLS on the plaintext port. The
+// controller's Go client followed the redirect and failed with
+// "http: server gave HTTP response to HTTPS client", marking every
+// workspace CredentialsStaged=False (StageFailed) so relay-only key
+// delivery could never stage and the raw-key fallback became permanent.
+func TestSecurityMiddleware_InternalAPIPathsSkipSSLRedirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Warn", mock.Anything, mock.Anything).Maybe()
+
+	router := gin.New()
+	config := middleware.SecurityConfig{
+		RequireHTTPS: true,
+		Development:  false,
+	}
+	router.Use(middleware.SecurityMiddleware(mockLogger, config))
+	router.GET("/api/v1/internal/workspaces/:workspaceID/llm-providers", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	router.GET("/api/v1/internal/orgs/:orgID/status", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	for _, path := range []string{
+		"/api/v1/internal/workspaces/ses_x/llm-providers",
+		"/api/v1/internal/orgs/org-1/status",
+	} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", path, nil)
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code,
+				"in-cluster internal endpoint must reach the handler, not redirect; "+
+					"got status %d location %q", w.Code, w.Header().Get("Location"))
+		})
+	}
+}
