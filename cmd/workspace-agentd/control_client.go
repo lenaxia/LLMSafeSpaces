@@ -211,17 +211,44 @@ func decodeControlStatus(res map[string]any) (*controlStatus, error) {
 
 // Restart requests a child restart with a closed-enum reason (A.4
 // invariant 2) and the SIGTERM→SIGKILL grace in seconds.
+// Restart posts a `restart` request. The supervisor answers
+// SYNCHRONOUSLY — only after the full SIGTERM→grace→respawn window
+// (defaultRestartGrace is 5s, and callers may ask for up to 300) — so
+// this call arms a deadline that COVERS the restart window, not the
+// client's 2s default: a real restart routinely exceeds 2s, and a
+// deadline error here would make the outcome unobservable to the
+// caller (socketReloadProc's restart/suppress counters key off this
+// response). The ctx bounds dialing AND caps the total wait.
 func (c *controlClient) Restart(ctx context.Context, reason string, graceSeconds int) (*controlRestartResult, error) {
-	res, err := c.call(ctx, "restart", map[string]any{
+	deadline := restartCallBudget(graceSeconds)
+	if d, ok := ctx.Deadline(); ok && time.Until(d) < deadline {
+		deadline = time.Until(d)
+	}
+	res, err, _ := c.callDeadline(ctx, "restart", map[string]any{
 		"reason":        reason,
 		"grace_seconds": graceSeconds,
-	})
+	}, deadline)
 	if err != nil {
 		return nil, err
 	}
 	r := &controlRestartResult{}
 	_ = json.Unmarshal(mustMarshal(res), r)
 	return r, nil
+}
+
+// restartCallBudget is the conn deadline for a synchronous restart
+// round trip: the requested grace window plus fixed slack for the
+// spawn-time pull and process setup, clamped to a sane ceiling.
+func restartCallBudget(graceSeconds int) time.Duration {
+	grace := time.Duration(graceSeconds) * time.Second
+	if grace <= 0 {
+		grace = defaultRestartGrace
+	}
+	budget := grace + 10*time.Second
+	if budget > 90*time.Second {
+		budget = 90 * time.Second
+	}
+	return budget
 }
 
 // SupervisorSpawnStatus is the status method's terminal spawn fields

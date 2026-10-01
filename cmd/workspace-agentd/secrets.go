@@ -1273,15 +1273,16 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 			// metric form (env_secrets / api_key) matching the help text and
 			// the crash/oom reasons.
 			//
-			// EXCEPT the socket topology: *socketReloadProc reaches the
-			// supervisor's credential_reload rev gate, which may SUPPRESS
-			// the restart — counting here, at request time, would show a
-			// restart for every push regardless of the gate's verdict and
-			// bury the suppression signal under the exact churn this gate
-			// exists to expose. socketReloadProc.restart records the
-			// outcome-truthful counter pair (restarts / restarts_suppressed)
-			// in the sidecar registry the PodMonitor scrapes.
-			if _, socketPath := proc.(*socketReloadProc); !socketPath {
+			// EXCEPT the socket topology (see shouldPreRecordRestartMetric):
+			// *socketReloadProc reaches the supervisor's credential_reload
+			// rev gate, which may SUPPRESS the restart — counting here, at
+			// request time, would show a restart for every push regardless
+			// of the gate's verdict and bury the suppression signal under
+			// the exact churn this gate exists to expose.
+			// socketReloadProc.restart records the outcome-truthful counter
+			// pair (restarts / restarts_suppressed) in the sidecar registry
+			// the PodMonitor scrapes.
+			if shouldPreRecordRestartMetric(proc) {
 				pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
 			}
 		}
@@ -1347,6 +1348,19 @@ func metricRestartReason(markerReason string) string {
 	default:
 		return markerReason
 	}
+}
+
+// shouldPreRecordRestartMetric reports whether the reload handler
+// should count the restart at REQUEST time. True for every topology
+// except *socketReloadProc: the socket path's OUTCOME is observable
+// (the supervisor's credential_reload rev gate answers through the
+// control-socket response) and is recorded outcome-truthfully by
+// recordSocketReloadOutcome in the sidecar registry the PodMonitor
+// scrapes — pre-recording here would double-count real restarts and
+// bury suppressions under request-time churn.
+func shouldPreRecordRestartMetric(proc restartableProcess) bool {
+	_, socket := proc.(*socketReloadProc)
+	return !socket
 }
 
 func shouldRestart(batch []secrets.Secret) bool {

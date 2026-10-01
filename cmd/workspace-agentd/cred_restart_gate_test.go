@@ -156,6 +156,73 @@ func TestRecordSocketReloadOutcome(t *testing.T) {
 	})
 }
 
+// TestSocketReload_SlowRestartStillCounted pins review-r2 finding 1:
+// a REAL restart whose grace window exceeds the control client's 2s
+// default deadline must still be counted. The supervisor answers
+// `restart` synchronously after the full SIGTERM→grace window — the
+// client must arm a deadline covering that window (restartCallBudget),
+// or a slow restart returns a deadline error and the outcome vanishes
+// from the scraped metrics (and this is the wiring pin for the
+// recorder: deleting recordSocketReloadOutcome fails this test).
+func TestSocketReload_SlowRestartStillCounted(t *testing.T) {
+	withTestLogger(t)
+	// Child IGNORES SIGTERM: a grace-4 restart round trip takes ~4s —
+	// comfortably past the 2s default the fix replaces.
+	port := freeTCPPort(t)
+	p := &managedProcess{}
+	p.cmdFactory = func() *exec.Cmd {
+		//nolint:gosec // os.Args[0] is the trusted test binary path
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+		cmd.Env = []string{
+			"GO_TEST_FAKE_OPENCODE=1",
+			"FAKE_PORT=" + strconv.Itoa(port),
+			"IGNORE_SIGTERM=1",
+		}
+		return cmd
+	}
+	p.healthCheckURL = ""
+	p.start()
+	t.Cleanup(p.stop)
+	requireFakeReachable(t, port, 2*time.Second)
+
+	// New rev vs anchor → the gate fails open and the restart fires.
+	puller := &fakeCredentialPuller{res: spawnEnvResponse{Rev: "99:zzz:hash"}}
+	a := &managedProcAdapter{p: p, puller: puller, pullCtx: context.Background()}
+	a.pullMu.Lock()
+	a.servedEnvRevAnchor = "12:abc"
+	a.pullMu.Unlock()
+
+	addr := "127.0.0.1:" + strconv.Itoa(freeTCPPort(t))
+	srv, err := newSupervisorControlServer(addr, a, nil)
+	require.NoError(t, err)
+	go srv.serve()
+	defer srv.close()
+
+	cc := newControlClient(addr) // production wiring: 2s DEFAULT timeout
+	proc := newSocketReloadProc(cc)
+	before := testutil.ToFloat64(restartsTotalFor(t, "credential_reload"))
+
+	proc.restart()
+
+	require.Greater(t, testutil.ToFloat64(restartsTotalFor(t, "credential_reload")), before,
+		"a slow (>2s) real restart must still be counted — the restart call's deadline must cover the grace window")
+}
+
+// TestShouldPreRecordRestartMetric pins the secrets.go wiring: ONLY the
+// socket topology skips the request-time restart count (its outcome is
+// recorded from the socket response instead — removing the skip
+// double-counts every real restart).
+func TestShouldPreRecordRestartMetric(t *testing.T) {
+	require.False(t, shouldPreRecordRestartMetric(newSocketReloadProc(&controlClient{})),
+		"the socket topology records outcomes from the socket response, not at request time")
+	require.True(t, shouldPreRecordRestartMetric(&fakeRestartableProc{}),
+		"every other topology keeps the request-time count")
+}
+
+type fakeRestartableProc struct{}
+
+func (fakeRestartableProc) restart() {}
+
 // restartsTotalFor fetches the restart counter with the test's label.
 func restartsTotalFor(t *testing.T, reason string) prometheus.Counter {
 	t.Helper()

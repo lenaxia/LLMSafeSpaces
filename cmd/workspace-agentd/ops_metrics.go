@@ -73,12 +73,12 @@ func newOpsMetrics() *opsMetrics {
 	return &opsMetrics{
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
-			Help: "Total opencode restarts by reason (env_secrets, api_key, crash, oom, user_requested, health_watchdog)",
+			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog)",
 		}, []string{"workspace_id", "reason"}),
 
 		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_suppressed_total",
-			Help: "Restart requests withheld by the credential_reload rev gate (served revision already spawned)",
+			Help: "Restart requests withheld by the supervisor's credential_reload rev gate (served revision already spawned); recorded by the sidecar from the control-socket outcome",
 		}, []string{"workspace_id", "reason"}),
 
 		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
