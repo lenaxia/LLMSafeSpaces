@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.13] - 2026-10-01
+
+### Fixed — relay staging un-break: the SSL 301 that made the raw-key fallback permanent (#1611)
+
+- **Relay-only key delivery can actually stage now.** Since the secure
+  path went live, EVERY workspace's staging pass died at its first
+  credential fetch: the controller calls the API's internal
+  llm-providers endpoint over plain HTTP in-cluster, but the security
+  middleware's `SSLRedirect` (enabled by `RequireHTTPS`, empty
+  `SSLHost`) answered with a 301 to `https://<same-host>:8080` — TLS
+  on the plaintext port. The controller's Go client followed the
+  redirect and failed (`http: server gave HTTP response to HTTPS
+  client`), marking every workspace `CredentialsStaged=False /
+  StageFailed`. The epic-35 exemption matched only `/internal/`; the
+  US-72.3 controller endpoints live under `/api/v1/internal/`. Fix:
+  the pre-redirect skip now covers both prefixes.
+- **Impact:** nothing ever staged (zero envelope/handoff Secrets, no
+  staged annotations), so the pre-flip raw-key fallback bridge became
+  a permanent resident for every workspace and the strict-mode
+  wind-down clock (7 clean days) never started. Post-deploy, staging
+  should succeed on the next reconcile, `CredentialsStaged` flips to
+  `True`, and the fallback delivery counter finally begins its
+  decline.
+- **org-status had the identical latent bug** (same prefix class,
+  router.go) — fixed by the same exemption rather than leaving the
+  next outage one call away.
+- **Tests pin the seam in both directions:** middleware regression
+  (mutation-verified red/green), narrowness negatives (no-trailing-
+  slash / dash-lookalike / substring traps must still 301), the
+  legacy `/internal/` epic-35 exemption pinned against refactor
+  deletion, and a router-level integration test through the real
+  `NewRouter` wiring armed with `DefaultRouterConfig()`'s
+  `RequireHTTPS: true` posture (fails 301-vs-403 with the exemption
+  deleted, plus a non-internal-route still-301s parity pin).
+- **Verified live** against workspace `d8bed486` (the 301 reproduced
+  in-cluster pre-fix; root-cause chain documented in the PR worklog).
+
 ## [0.34.12] - 2026-10-01
 
 ### Fixed — the API's pre-handler body buffering (SR-6's root, PR #1608)
