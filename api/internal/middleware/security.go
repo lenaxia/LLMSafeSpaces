@@ -126,7 +126,8 @@ func SecurityMiddleware(log interfaces.LoggerInterface, config ...SecurityConfig
 			c.Next()
 			return
 		}
-		if strings.HasPrefix(c.Request.URL.Path, "/internal/") {
+		if strings.HasPrefix(c.Request.URL.Path, "/internal/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/v1/internal/") {
 			c.Next()
 			return
 		}

@@ -154,3 +154,120 @@ func TestSecurityMiddleware_TrustsXForwardedProto(t *testing.T) {
 		assert.Equal(t, http.StatusMovedPermanently, w.Code)
 	})
 }
+
+// TestSecurityMiddleware_InternalAPIPathsSkipSSLRedirect pins the contract
+// that the controller-facing cluster-internal endpoints (prefix
+// /api/v1/internal/ — org-status and the US-72.3 llm-providers credential
+// source) are served over plain HTTP in-cluster and must never be 301'd.
+//
+// Regression (worklog 2026-10-01): the epic-35 exemption matched only
+// /internal/, while the controller endpoints live under /api/v1/internal/.
+// SSLRedirect (empty SSLHost) answered plain-HTTP ClusterIP calls with a
+// 301 to https://<same-host>:8080 — TLS on the plaintext port. The
+// controller's Go client followed the redirect and failed with
+// "http: server gave HTTP response to HTTPS client", marking every
+// workspace CredentialsStaged=False (StageFailed) so relay-only key
+// delivery could never stage and the raw-key fallback became permanent.
+func TestSecurityMiddleware_InternalAPIPathsSkipSSLRedirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Warn", mock.Anything, mock.Anything).Maybe()
+
+	router := gin.New()
+	config := middleware.SecurityConfig{
+		RequireHTTPS: true,
+		Development:  false,
+	}
+	router.Use(middleware.SecurityMiddleware(mockLogger, config))
+	router.GET("/api/v1/internal/workspaces/:workspaceID/llm-providers", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	router.GET("/api/v1/internal/orgs/:orgID/status", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	for _, path := range []string{
+		"/api/v1/internal/workspaces/ses_x/llm-providers",
+		"/api/v1/internal/orgs/org-1/status",
+	} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", path, nil)
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code,
+				"in-cluster internal endpoint must reach the handler, not redirect; "+
+					"got status %d location %q", w.Code, w.Header().Get("Location"))
+		})
+	}
+}
+
+// TestSecurityMiddleware_InternalPrefixExemptionIsNarrow pins the boundary
+// of the security carve-out: the exemption is a prefix match on exactly
+// "/internal/" and "/api/v1/internal/", and it must stay that narrow. These
+// negatives would silently stop redirecting (an SSL-redirect bypass for
+// public lookalike paths) if a future edit broadened the match — dropped
+// the trailing slash (matching "/api/v1/internal-anything") or switched to
+// a substring match.
+func TestSecurityMiddleware_InternalPrefixExemptionIsNarrow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Warn", mock.Anything, mock.Anything).Maybe()
+
+	router := gin.New()
+	config := middleware.SecurityConfig{
+		RequireHTTPS: true,
+		Development:  false,
+	}
+	router.Use(middleware.SecurityMiddleware(mockLogger, config))
+	router.GET("/api/v1/auth/config", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	for _, path := range []string{
+		"/api/v1/internal",           // no trailing slash — NOT exempt
+		"/api/v1/internal-lookalike", // dash-extended prefix — NOT exempt
+		"/api/v1/internalish/v1/x",   // substring trap — NOT exempt
+	} {
+		t.Run(path+" still redirects", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", path, nil)
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusMovedPermanently, w.Code,
+				"non-exempt path must still be SSL-redirected; got status %d location %q",
+				w.Code, w.Header().Get("Location"))
+			assert.NotEmpty(t, w.Header().Get("Location"))
+		})
+	}
+}
+
+// TestSecurityMiddleware_LegacyInternalPrefixStillExempt pins the ORIGINAL
+// epic-35 exemption ("/internal/…": automation webhooks, pod-bootstrap,
+// workspace-rename, image-factory callback) in the same file the
+// /api/v1/internal/ sibling lives in. Deleting the old condition while
+// refactoring the pair would pass every other test — and re-break the
+// pod-bootstrap seam with the identical outage this PR fixed.
+func TestSecurityMiddleware_LegacyInternalPrefixStillExempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Warn", mock.Anything, mock.Anything).Maybe()
+
+	router := gin.New()
+	config := middleware.SecurityConfig{
+		RequireHTTPS: true,
+		Development:  false,
+	}
+	router.Use(middleware.SecurityMiddleware(mockLogger, config))
+	router.GET("/internal/v1/automation/triggers/:id", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/internal/v1/automation/triggers/trg_1", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code,
+		"legacy /internal/ prefix must remain exempt; got status %d location %q",
+		w.Code, w.Header().Get("Location"))
+}
