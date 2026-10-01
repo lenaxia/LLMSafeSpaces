@@ -1,0 +1,88 @@
+# Worklog: Credential-reload restart gate + cross-uid restart-reason marker (the 2026-10-01 restart-storm fixes)
+
+**Date:** 2026-10-01
+**Session:** Fix the two agentd defects behind the dda717cb restart storm: ungated control-path credential restarts, and the restart-reason marker's cross-uid write hole. Scope deliberately excludes the wedge detector (design discussion landed on storm prevention only; the wedge stays latent until any future storm, at which point a manual pod bounce remains the remedy).
+**Status:** Complete
+
+---
+
+## Objective
+
+After the v0.34.13 relay-staging fix went live, workspace dda717cb received its first credential handoff — and agentd restarted opencode **6 times in 11 seconds** (18:20:47–58: five `control: restart requested | credential_reload` from the control-socket path plus one xdg-watcher restart). The storm killed an in-flight turn and left the surviving opencode wedged (every subsequent turn aborted at birth, fresh sessions included) until a manual pod bounce. Root-cause the restart mechanics and fix them at the right level; leave the (functional-death) wedge detector as an explicitly out-of-scoped follow-up.
+
+---
+
+## Work Completed
+
+### Finding: the watcher was already gated — the control path was not
+
+The xdg agent-config watcher (xdg_config_layer.go:398) already has BOTH defenses: a content fingerprint (`cur == last: continue`) AND a 60s cooldown. The storm did not come from it (it fired once, correctly). The storm came from `managedProcAdapter.Restart` (supervise_opencode.go): the sidecar's credential events fan out one control-socket `Restart("credential_reload")` per push, and that path had **no gate of any kind** — every push, however redundant, restarted the child. The five pushes in the storm window all carried the same revision (the handoff content didn't change again until 18:23); four of the six restarts were pure waste.
+
+### Fix 1: the credential_reload rev gate (`supervise_opencode.go`)
+
+`Restart` now consults `suppressRedundantCredentialRestart()` before touching the child — but only for `credential_reload`. The gate **peeks** the spawn-env mux read-only via a new narrow `credentialPuller` interface (production wires `*spawnEnvPuller`; `pullBounded` is a pure read — the commit to `currentDelta`/anchor happens only in `preSpawn` at spawn time, so peeking cannot corrupt the anchor invariant) and suppresses the restart iff the exact triple holds: clean pull ∧ not degraded ∧ `anchoredPrefix(servedRev) == servedEnvRevAnchor` — i.e. the mux is serving precisely what the current child already spawned with. Every doubtful case (pull error, degrade latch, unanchorable rev, anchor mismatch, nil puller) fails OPEN and restarts exactly as before. Suppressed requests are counted on a new `workspace_restarts_suppressed_total{workspace_id,reason}` counter (scraped on the existing agentd PodMonitor) — non-zero under controller push churn is the gate working, not lost restarts.
+
+Why rev-comparison rather than content-hashing: the push protocol already carries revisions, the adapter already anchors the spawned revision (`servedEnvRevAnchor`, US-70.2), and the anchors' meaning ("exactly what this child booted with") is precisely the predicate a redundant-restart gate needs. Content hashing would re-derive a worse version of the same signal.
+
+Why the gate lives in the adapter, not the sidecar consumer: the component that owns the process owns the restart policy. This one site covers both the socket path and any future credential_reload caller, in both topologies that route through the supervisor adapter, with no protocol change (the socket's Restart payload carries no rev).
+
+### Fix 2: the restart-reason marker's cross-uid rotation hole (`restart_reason.go`)
+
+The shared marker path (`/sandbox-runtime/last-restart-reason.json`) sits in a **sticky**, root-owned dir, and the file is 0640 — group-READ for the shared group, never write. Sidecar agentd (uid 2000) and supervisor agentd (uid 1000) are both writers; whichever uid wrote the marker last owns it until the pod dies, and every write from the other uid fails EACCES (the sticky bit also blocks the unlink/rename that would otherwise replace it). Observed live as `agent-config watcher: marker write failed ... permission denied` (the code's own comment documents the two-writer intent; the write path just couldn't honor it).
+
+- `writeRestartReasonMarker` now falls back to a per-uid sibling (`<path>.uid<N>`, same 0640) when the primary write fails; attribution survives while each writer stays inside its own file.
+- `readRestartReasonMarker` resolves the **newest** marker across the primary + fallback names (the other uid's fallback can be newer than a stale primary; freshest = truthful).
+- `logRestartReason` (the boot-time one-shot) consumes the newest and sweeps stale siblings so they cannot re-surface as stale attributions on later boots.
+
+This is a diagnostics fix, honestly labeled: the marker write failure did NOT cause the storm (nothing reads the marker for control decisions — the watcher's cooldown is in-memory). It makes restart attribution truthful in sidecar mode, which during an incident like this one is the difference between seeing five credential restarts and seeing one.
+
+---
+
+## Key Decisions
+
+1. **Storm prevention only — no wedge detector.** The design review explicitly scoped down: the functional-death wedge (opencode vitally alive, turns aborting at birth) deserves its own detector in the existing health-watchdog framework, but it is a separate change with its own risk profile. With the storm gone, the wedge's only known trigger is gone with it; a future storm requires a manual pod bounce (documented remedy).
+2. **Gate fails OPEN.** A wrongly-suppressed restart would silently starve credentials; a wrongly-allowed restart is merely yesterday's behavior. The predicate therefore requires certainty and the counter makes suppressions observable.
+3. **Rev comparison over content hashing** (rationale above) and **adapter-level gating over consumer-level** (rationale above).
+4. **Per-uid fallback files over loosening permissions.** Changing the dir mode or the marker to 0660 broadens an attack surface for a diagnostics artifact; unique files keep each writer inside its own uid while the newest-wins reader preserves the single-reason contract. Sticky-dir semantics make rename-replace impossible cross-uid anyway.
+
+### Assumptions (Rule 7)
+
+- The spawn-env mux is updated by the sidecar BEFORE its consumer issues the control-socket Restart (same process, push handler ordering), so a peek can never "see the future" — if it ever raced, the peek would return the OLD rev == anchor and suppress a restart whose new rev lands unapplied. Ordering is asserted by the existing spawn_env push flow; a future protocol change should re-examine this.
+- `anchoredPrefix` semantics (3-part `seq:manifestHash:contentHash`) are load-bearing for the comparison; a bare content hash yields "" and fails the gate open by construction.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+- `go test ./cmd/workspace-agentd/ -run TestCredentialReloadGate -count=1` — PASS (suppress-same-rev, five fail-open cases, other-reasons-ungated, nil-puller).
+- Mutation red/green: disabling the gate call makes `TestCredentialReloadGate_SuppressesSameRev` FAIL; re-enabled, PASS.
+- `go test ./cmd/workspace-agentd/ -run 'TestWriteRestartReasonMarker_ForeignOwned|TestReadRestartReasonMarker_NewestWins|TestLogRestartReason_ConsumesNewest' -count=1` — PASS (0444-primary fallback, newest-wins both directions, one-shot sweep).
+- `go test ./cmd/workspace-agentd/ -count=1 -short` — one failure: `TestRestart1342_ProgressStops_ForcePathFires`, a load-sensitive timing flake in the session-aware restart suite (zero references to credential_reload or the adapter; passes in isolation at 0.37s). Pre-existing class, same family as the usagestream race flake documented on PR #1611.
+- `go vet ./cmd/workspace-agentd/`, `gofmt -l` — clean.
+
+---
+
+## Next Steps
+
+1. Merge + release (v0.34.14 candidate) + prod bump; then watch `workspace_restarts_suppressed_total` on the agentd PodMonitor — expect non-zero on controller push churn.
+2. Wedge detector as its own lane if storms recur from a new trigger: consecutive zero-token instant-aborts observed at the delivery seam, firing through the existing health-watchdog framework (rate-limited, session-aware).
+3. API-side push-storm source (why five pushes in 11s for one revision) — harmless under the gate, but the churn deserves its own investigation.
+
+---
+
+## Files Modified
+
+- `cmd/workspace-agentd/supervise_opencode.go` — `credentialPuller` seam, the rev gate in `Restart`, `suppressRedundantCredentialRestart`.
+- `cmd/workspace-agentd/ops_metrics.go` — `workspace_restarts_suppressed_total` + `RecordRestartSuppressed`.
+- `cmd/workspace-agentd/restart_reason.go` — per-uid write fallback, newest-wins read, boot-time sibling sweep.
+- `cmd/workspace-agentd/cred_restart_gate_test.go` — gate unit tests (mutation-verified).
+- `cmd/workspace-agentd/restart_marker_crossuid_test.go` — marker cross-uid tests.
+- `cmd/workspace-agentd/spawn_env_pull_adapter_test.go` — mechanical: hold the concrete puller in a local before assigning the now-interface field.
+- `COORDINATE.md` — claim row.
+- This worklog.

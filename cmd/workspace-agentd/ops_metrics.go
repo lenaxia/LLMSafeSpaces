@@ -21,6 +21,14 @@ type opsMetrics struct {
 	memoryBytes       *prometheus.GaugeVec
 	activeSessions    *prometheus.GaugeVec
 	contextTokens     *prometheus.GaugeVec
+	// restartsSuppressed counts restart requests the credential_reload
+	// rev gate withheld because the spawn-env mux is already serving
+	// exactly the revision the current child spawned with (the
+	// 2026-10-01 restart storm: 6 same-rev pushes in 11s killed an
+	// in-flight turn and wedged opencode). Non-zero on a healthy
+	// workspace is EXPECTED under controller push churn; it means the
+	// gate is doing its job, not that restarts were lost.
+	restartsSuppressed *prometheus.CounterVec
 	// watchdogSuppressions counts would-fire moments the health-watchdog
 	// withheld because vitals corroboration (watchdog_vitals.go) showed a
 	// non-lethal state: starved (CPU advancing), flat (blocked on
@@ -66,6 +74,11 @@ func newOpsMetrics() *opsMetrics {
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
 			Help: "Total opencode restarts by reason (env_secrets, api_key, crash, oom, user_requested, health_watchdog)",
+		}, []string{"workspace_id", "reason"}),
+
+		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_restarts_suppressed_total",
+			Help: "Restart requests withheld by the credential_reload rev gate (served revision already spawned)",
 		}, []string{"workspace_id", "reason"}),
 
 		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
@@ -242,6 +255,16 @@ func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 		workspaceID = "unknown"
 	}
 	m.restartsTotal.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// RecordRestartSuppressed increments the withheld-restart counter for a
+// restart request the credential_reload rev gate answered without
+// touching the child.
+func (m *opsMetrics) RecordRestartSuppressed(workspaceID, reason string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.restartsSuppressed.WithLabelValues(workspaceID, reason).Inc()
 }
 
 // SetMemoryUsage sets the current memory usage gauge.
