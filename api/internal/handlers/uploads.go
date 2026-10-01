@@ -153,11 +153,17 @@ func (h *ProxyHandler) uploadStreamTimeout() time.Duration {
 }
 
 // uploadDrainDeadline bounds the post-response drain of an unread
-// request-body remainder (a stalled sender cannot pin the connection
-// past this). A var for the stalled-sender regression pin; the
-// deadline engages through the middleware capture layers via
-// BodyCaptureWriter.Unwrap and is RESET after the drain so it cannot
-// leak onto keep-alive reuse.
+// request-body remainder. A var for the stalled-sender regression
+// pin; the deadline engages through the middleware capture layers via
+// BodyCaptureWriter.Unwrap. The bound's scope, precisely: it caps THIS
+// handler's drain read. Two adjacent waits are bounded elsewhere — a
+// stalled sender that supplied < net/http's 256KiB post-handler
+// discard of the AGENTD hop can hold forwardUploadToAgentd's Do()
+// until uploadStreamTimeout (the hop's ctx bound, pre-existing and
+// strictly tighter than the pre-#1607 indefinite ReadAll), and the
+// server's own post-handler discard escapes via closeAfterReply when
+// the chain closes the body (the fired deadline surviving the drain
+// is the backstop — see the drain below).
 var uploadDrainDeadline = 10 * time.Second
 
 // countingBody counts the bytes the upload route consumes, so the
@@ -207,12 +213,21 @@ func scheduleUploadBodyDrain(c *gin.Context) func() {
 		// the remainder discarded first, the chain's normal flush
 		// delivers the response on the proven clean-exchange path.
 		rc := http.NewResponseController(c.Writer)
-		if err := rc.SetReadDeadline(time.Now().Add(uploadDrainDeadline)); err == nil {
-			// Reset after the drain: a leaked read deadline would abort the
-			// next request on a reused keep-alive connection at drain+10s.
-			defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+		deadlineArmed := rc.SetReadDeadline(time.Now().Add(uploadDrainDeadline)) == nil
+		_, drainErr := io.CopyN(io.Discard, ctr, remaining)
+		if deadlineArmed && drainErr == nil {
+			// Reset ONLY on drain success. On timeout the FIRED deadline
+			// must survive: the server's post-handler discard (bounded
+			// 256KiB, on the serve goroutine) inherits the connection
+			// deadline — resetting here would let a stalled sender block
+			// it indefinitely and withhold this request's buffered
+			// response (net/http's closeAfterReply escape fires on read
+			// error). net/http clears read deadlines itself at idle
+			// entry, so a surviving fired deadline cannot bleed into a
+			// reused connection's next request; resetting on success is
+			// pure hygiene.
+			_ = rc.SetReadDeadline(time.Time{})
 		}
-		_, _ = io.CopyN(io.Discard, ctr, remaining)
 	}
 }
 
@@ -542,6 +557,12 @@ func (h *ProxyHandler) forwardUploadToAgentd(
 	// it and caps its body read at the declared value.
 	req.Header.Set("X-LLS-Declared-Body-Bytes", strconv.FormatInt(declaredBodyBytes, 10))
 
+	// Do()'s return is bounded by upCtx (uploadStreamTimeout): agentd's
+	// own server performs a bounded post-handler discard of THIS hop's
+	// body, so a client that stalls after supplying < that bound can
+	// hold Do() until the stream timeout (a pre-existing shape, tighter
+	// than the pre-#1607 indefinite pre-handler ReadAll; named here so
+	// the drain's deadline claim is not over-read).
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		cancel()

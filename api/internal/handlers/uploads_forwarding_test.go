@@ -364,22 +364,16 @@ func TestUpload_EarlyRefusalDrainsClientBody(t *testing.T) {
 	}
 }
 
-// TestUpload_DrainTimeBoundStalledSender pins the #1608 review's
-// correctness finding 1: a sender that stalls mid-body after an early
-// refusal cannot pin the HANDLER past uploadDrainDeadline. The bound
-// engages through the middleware capture layers via
-// BodyCaptureWriter.Unwrap (pre-fix, SetReadDeadline returned
-// ErrNotSupported through the double capture wrap and the drain was
-// bytes-bounded only); the copy goroutine is stopped deterministically
-// (pipe close after the deadline arms), so every server-side step --
-// forward join, response decision, drain -- completes within the bound.
-//
-// What this test deliberately does NOT assert: response-byte delivery
-// to the stalling client. net/http withholds a request's response
-// bytes at finish while body bytes remain unread (the same server
-// behavior the pre-existing 411/SR-A chunked path rides); the conn is
-// torn down when the client goes away. No goroutine, buffer, or
-// deadline is pinned -- that is the property under test.
+// TestUpload_DrainTimeBoundStalledSender pins the r2 blocking finding
+// in the SMALL-REMAINDER shape: declared 300KiB, 280KiB sent -- the
+// unread remainder sits INSIDE net/http's 256KiB post-handler discard
+// bound, the only shape where the serve goroutine itself must read the
+// remaining body (a remainder >= 256KiB+1 takes the tooBig path and
+// frees the conn regardless, structurally blind to the bug). The drain's
+// fired deadline must SURVIVE a drain timeout: the r1 code reset it
+// unconditionally, letting the server's discard block forever on a
+// stalled sender -- the buffered refusal was never delivered. The pin
+// asserts RESPONSE DELIVERY to the stalled client within the bound.
 func TestUpload_DrainTimeBoundStalledSender(t *testing.T) {
 	resetUploadMetrics(t)
 
@@ -408,8 +402,6 @@ func TestUpload_DrainTimeBoundStalledSender(t *testing.T) {
 	api := httptest.NewServer(wrapped)
 	defer api.Close()
 
-	// A raw client that declares 1MiB, sends a fraction, then stalls
-	// with the connection held open.
 	conn, err := net.Dial("tcp", strings.TrimPrefix(api.URL, "http://"))
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
@@ -419,19 +411,26 @@ func TestUpload_DrainTimeBoundStalledSender(t *testing.T) {
 	var head strings.Builder
 	head.WriteString("POST /api/v1/workspaces/ws-1/uploads HTTP/1.1\r\nHost: t\r\n")
 	head.WriteString("Content-Type: " + ct + "\r\n")
-	head.WriteString("Content-Length: 1048576\r\n\r\n")
+	head.WriteString("Content-Length: " + strconv.Itoa(300<<10) + "\r\n\r\n")
 	head.WriteString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stall.bin\"\r\n\r\n")
 	_, err = conn.Write([]byte(head.String()))
 	require.NoError(t, err)
-	_, err = conn.Write(bytes.Repeat([]byte{0x61}, 320<<10))
+	_, err = conn.Write(bytes.Repeat([]byte{0x61}, (280<<10)-len(head.String())))
 	require.NoError(t, err)
 
-	// THE PIN: the handler chain (forward join + response decision +
-	// drain) must complete within the deadline bound -- the stalled
-	// sender pins nothing.
+	// THE PIN: the refusal must be DELIVERED to the stalled sender
+	// within the drain bound. With the r1 unconditional reset (the
+	// mutation), the server's post-handler discard blocks on the
+	// stalled client with no deadline and this read times out.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1024)
+	n, rerr := conn.Read(buf)
+	require.NoError(t, rerr, "the refusal must be delivered to the stalled sender")
+	assert.Contains(t, string(buf[:n]), " 507 ", "the early refusal arrives within the drain bound")
+
 	select {
 	case <-handlerDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the stalled sender pinned the handler: the read deadline never engaged (BodyCaptureWriter unwrap) or the copy goroutine was abandoned live")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler chain did not complete")
 	}
 }

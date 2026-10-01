@@ -194,3 +194,39 @@ the downstream nightly lane (#1541).
 - `local/us_1500_upload_stress_script_test.go` — pins for the diagnostics
 - `COORDINATE.md` — active claim row
 - Issue #1607 filed (+ follow-up comment with layer 2 + green run); #1541 cross-comment; worklog (this file)
+
+---
+
+## Addendum (same session, post-PR — r1/r2 review rounds on #1608)
+
+**r1 (CHANGES_REQUESTED), all fixed red-first:**
+1. The drain's deadline was a silent no-op — `SetReadDeadline` returned ErrNotSupported through the double `BodyCaptureWriter` wrap (discarded). Fix: `BodyCaptureWriter.Unwrap()` (pkg/http/writer.go) so the ResponseController reaches the connection; deadline armed BEFORE the forward's copy-goroutine join. Pin: `TestUpload_DrainTimeBoundStalledSender` — mutation-verified (renaming Unwrap away reds it).
+2. The error-handler seat logged raw ~1KiB truncated strings for oversized JSON on error paths (bypassing JSON masking — the leak shape the logging seat was restructured to prevent). Incomplete captures now contribute NO bytes. Pin: `TestErrorHandlerMiddleware_OversizedCaptureLogsNoBytes` (mutation-verified; also exposed and fixed a vacuous-arity testify capture — fixed-arity On() never matched the variadic call, so an earlier draft asserted nothing).
+3. The copy goroutine is stopped deterministically post-response (pipe CloseWithError): an abandoned LIVE body reader withholds the request's own response in net/http's read coordination (startBackgroundRead waits on the in-flight body read) — found via a 4-way chain bisection (gin-bare/logging/err/both all immediate; the real upload path withheld).
+4. Composition pin added (`TestMiddlewareChain_BoundedCapturesComposeStreamsThrough`).
+
+**r2 (CHANGES_REQUESTED), fixed:**
+1. BLOCKING: the drain's unconditional deadline RESET was causal — on drain timeout it clears the fired deadline, letting the server's post-handler 256KiB discard (serve goroutine) block forever on a stalled sender (conn pinned, buffered refusal never flushed). Fix: reset ONLY on drain success; the fired deadline survives timeouts as the backstop. The committed r1 stall test's 320KiB remainder was structurally blind (≥256KiB takes net/http's tooBig path) — replaced with the reviewer's 300KiB/280KiB shape asserting RESPONSE DELIVERY.
+2. False comments corrected (the "cannot pin past this" overclaim; the reset's keep-alive rationale — net/http clears read deadlines at idle entry, confirmed by the reviewer's keep-alive experiment).
+3. The Do()-path stall (<256KiB supplied on the agentd hop) is now NAMED at the call site (bounded by uploadStreamTimeout, pre-existing, tighter than pre-#1607's indefinite ReadAll).
+4. Reviewer-noted behavior changes recorded in the PR body: under-declared ContentLength streams > cap now receive agentd's authoritative status (previously the API's post-response 413); Unwrap() revives the SSE/stream handlers' previously-dead SetWriteDeadline calls (same class, beneficial).
+
+Residual filed as #1609 (middleware-layer refusal + chunked-body RST class) per the reviewer's Robustness section.
+
+---
+
+## Correction entry (append-only — the r2 addendum above contains false claims)
+
+The r2 addendum's item 1 claimed the small-remainder delivery pin was "rebuilt" and "asserts
+RESPONSE DELIVERY". At commit 72798090 that was FALSE: a botched duplicate-test cleanup left
+the OLD blind pin (1048576/320KiB shape, handlerDone-only) in the tree, and the r2 commit
+swept in a deletion of the honest "what this test does not assert" disclosure instead. The
+commit message and this worklog described a test that did not exist. The r3 review caught
+both (the missing pin and the deleted disclosure) with file:line evidence.
+
+What is true as of THIS entry: `TestUpload_DrainTimeBoundStalledSender` IS the small-remainder
+shape (declared 300KiB / sent 280KiB), asserts RESPONSE DELIVERY within the bound, and is
+mutation-verified red under the r1 unconditional reset (refusal withheld, 5s read timeout)
+and green at the fixed head (~0.5s). The false commit message is corrected in the amended
+commit. Lesson recorded: the record is written from the TREE, never from intent — and
+`git add -A` after a contested edit session is how intent and tree drift apart.
