@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -221,6 +222,51 @@ func TestIntegration1342_CredentialChangeDuringStreamingTurn_Defers(t *testing.T
 		15*time.Second, 10*time.Millisecond, "grace expired — the restart applies the credential")
 	require.Eventually(t, func() bool { return pending.snapshot() == nil },
 		2*time.Second, 10*time.Millisecond, "applied restart clears the pending surface")
+}
+
+// TestApplyBatch_RequestTimeMetricOnlyForNonSocketProc pins the
+// secrets.go wiring (not just the predicate): the reload pipeline's
+// request-time restart counter must fire ONLY for non-socket process
+// topologies. The socket topology's outcome is recorded by
+// recordSocketReloadOutcome from the control-socket response instead —
+// removing the shouldPreRecordRestartMetric guard (unconditional
+// request-time recording) double-counts every real restart and buries
+// suppressions, and must fail this test.
+func TestApplyBatch_RequestTimeMetricOnlyForNonSocketProc(t *testing.T) {
+	withTestLogger(t)
+	batch := []secrets.Secret{{Type: "env-secret", Name: "tok", Metadata: map[string]string{"var_name": "TOK"}, Plaintext: "v"}}
+
+	t.Run("non-socket proc counts at request time", func(t *testing.T) {
+		proc := &mockManagedProcess{}
+		cfg, deps := integrationApplyDeps(t, proc, newPendingApplyTracker())
+		deps.Tracker.set("ses_x", "idle")
+		before := testutil.ToFloat64(pkgOpsMetrics.restartCounter(metricWorkspaceID(), "env_secrets"))
+
+		_, aErr := applySecretsBatch(context.Background(), cfg, deps, batch, nil)
+		require.Nil(t, aErr)
+		assert.Equal(t, 1, proc.restartCount(), "idle session — the restart verb must fire")
+		assert.Greater(t, testutil.ToFloat64(pkgOpsMetrics.restartCounter(metricWorkspaceID(), "env_secrets")), before,
+			"single-container semantics: request-time count is the ONLY count")
+	})
+
+	t.Run("socket proc skips the request-time count", func(t *testing.T) {
+		// Dead control client: socketReloadProc.restart dials, fails,
+		// Warns (outcome unobservable) — and crucially records NOTHING.
+		// The request-time count must not fire for this topology either.
+		proc := newSocketReloadProc(newControlClient("127.0.0.1:1"))
+		cfg, deps := integrationApplyDeps(t, proc, newPendingApplyTracker())
+		deps.Tracker.set("ses_x", "idle")
+		restarts := pkgOpsMetrics.restartCounter(metricWorkspaceID(), "env_secrets")
+		suppressed := pkgOpsMetrics.restartSuppressedCounter(metricWorkspaceID(), "credential_reload")
+		beforeR, beforeS := testutil.ToFloat64(restarts), testutil.ToFloat64(suppressed)
+
+		_, aErr := applySecretsBatch(context.Background(), cfg, deps, batch, nil)
+		require.Nil(t, aErr)
+		assert.Equal(t, beforeR, testutil.ToFloat64(restarts),
+			"socket topology: the request-time count must be skipped — outcome recording belongs to socketReloadProc")
+		assert.Equal(t, beforeS, testutil.ToFloat64(suppressed),
+			"a dead client outcome (transport error) records nothing anywhere — unknown, not zero")
+	})
 }
 
 // TestIntegration1342_IdleCredentialChange_AppliesImmediately: the

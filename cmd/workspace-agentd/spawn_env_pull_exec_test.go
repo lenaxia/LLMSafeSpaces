@@ -152,7 +152,8 @@ func TestSupervisorSubprocess_SpawnPull_RecoveryAndLastGood(t *testing.T) {
 	// mux stays reachable, exercising the degraded-response class. Each
 	// spawn now eats the full pull bound, so the restart's "next child
 	// up" wait spans it; mirror the production reload caller's generous
-	// control-client budget (socketReloadProc uses 60s).
+	// wait (the ctx is 60s; the restart round trip arms
+	// restartCallBudget — grace + slack — independent of this timeout).
 	cc.timeout = 30 * time.Second
 	require.NoError(t, os.WriteFile(secretsEnv, []byte("not the canonical encoder output\n"), 0o600))
 

@@ -321,16 +321,23 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# F7 — credential_reload rev gate (the 2026-10-01 restart storm, end to
-# end at pod level): a same-rev credential_restart answered over the
-# control socket must NOT restart opencode, must increment the SUPPRESSED
-# counter on the sidecar /metrics surface (the one the PodMonitor
-# scrapes), and must leave workspace_restarts_total flat; an ungated
-# reason (manual) must still restart and count. The socket is driven
-# from inside the pod (127.0.0.1:4099 — loopback by wire contract) via
-# the WORKSPACE container's python3, which shares the pod netns.
+# F7 — credential_reload rev gate (the 2026-10-01 restart storm) at pod
+# level, asserting ONLY what each process can observe:
+#   (a) SUPPRESSION: a same-rev credential_restart driven over the real
+#       control socket (in-pod python3 in the workspace container — the
+#       socket is loopback-by-contract) answers {restarted:false,
+#       in_progress:false} and leaves the supervisor's child pid alone.
+#       Both facts come from the socket itself — the supervisor's own
+#       counters live in a process with no HTTP surface, so scraped-side
+#       suppression assertions are unsatisfiable by construction (r3
+#       review finding; asserting them was a red-in-waiting).
+#   (b) COUNTED RESTART: a sidecar-INITIATED restart (new env value →
+#       controller push → reload handler → socketReloadProc) is recorded
+#       by the sidecar in the registry the PodMonitor scrapes —
+#       workspace_restarts_total{reason="credential_reload"} moves and
+#       the new value reaches the child.
 # -----------------------------------------------------------------------------
-log "F7 — credential_reload rev gate: same-rev restart suppressed, ungated restart fires"
+log "F7 — credential_reload rev gate: same-rev suppressed (socket-verifiable), new-rev restart counted (sidecar-verifiable)"
 
 WS7=$(ws_id 7)
 seed_workspace "${WS7}"
@@ -341,29 +348,16 @@ if ! env_in_child "${WS7}" "SD_F7=gate-f7-value"; then
     die "F7: pre-probe env missing — setup broken"
 fi
 
-# Baseline counters from the sidecar admin /metrics (unauthenticated
-# promhttp; port-forward rides the apiserver to pod-ip:4098).
-MPORT=$(( RESYNC_PORT + 210 ))
-kc port-forward "pod/$(pod_of "${WS7}")" "${MPORT}:4098" >/dev/null 2>&1 &
-M7_PID=$!
-sleep 2
-metric_f7() {
-    curl -sm 10 "http://127.0.0.1:${MPORT}/metrics" 2>/dev/null \
-        | awk -v name="$1" -v ws="${WS7}" '$1 ~ "^"name && $0 ~ "workspace_id=\""ws"\"" {s+=$NF} END {print s+0}'
-}
-R7_A=$(metric_f7 workspace_restarts_total)
-S7_A=$(metric_f7 workspace_restarts_suppressed_total)
-ok "F7: baseline counters restarts=${R7_A} suppressed=${S7_A}"
-
-# One in-pod socket round trip: python3 in the workspace container
-# shares the pod netns, so 127.0.0.1:4099 is the supervisor's control
-# socket even though no forward can reach it.
-ctl_restart_f7() {
+# --- (a) suppression, verified through the socket only ----------------------
+ctl_f7() {
+    # $1 = method, $2 = reason (empty for status). Prints the parsed
+    # result as name=value lines for the caller's asserts.
     kc exec -c workspace "$(pod_of "${WS7}")" -- python3 -c "
 import json, socket, sys
 s = socket.create_connection(('127.0.0.1', 4099), timeout=60)
-s.sendall((json.dumps({'v': 1, 'id': 7, 'method': 'restart',
-    'params': {'reason': sys.argv[1], 'grace_seconds': 5}}) + '\n').encode())
+params = {'reason': sys.argv[2], 'grace_seconds': 5} if sys.argv[2] else {}
+s.sendall((json.dumps({'v': 1, 'id': 7, 'method': sys.argv[1],
+                       'params': params}) + '\n').encode())
 buf = b''
 while True:
     chunk = s.recv(4096)
@@ -374,37 +368,52 @@ while True:
         r = json.loads(buf)
     except Exception:
         continue
-    print(int(r['result'].get('restarted', False)), int(r['result'].get('in_progress', False)))
+    res = r.get('result') or {}
+    print('restarted=%s' % res.get('restarted'))
+    print('in_progress=%s' % res.get('in_progress'))
+    print('child_pid=%s' % res.get('child_pid'))
     s.close()
     sys.exit(0)
 sys.exit(3)
-" "$1" 2>/dev/null
+" "$1" "$2" 2>/dev/null
 }
 
-# The storm shape: a credential_reload against the ALREADY-CONVERGED pod.
-OUT7=$(ctl_restart_f7 credential_reload)
-[[ "${OUT7}" == "0 0" ]] \
-    || die "F7 FAIL: same-rev credential_reload not suppressed at the socket (restarted/in_progress=${OUT7})"
-ok "F7: socket answered {restarted:false, in_progress:false} (suppressed)"
+PID7_A=$(ctl_f7 status "" | grep '^child_pid=' | cut -d= -f2)
+[[ -n "${PID7_A}" ]] || die "F7 FAIL: status over the control socket returned no child_pid"
 
-sleep 3
-R7_B=$(metric_f7 workspace_restarts_total)
-S7_B=$(metric_f7 workspace_restarts_suppressed_total)
-[[ "${S7_B}" -gt "${S7_A}" ]] \
-    || die "F7 FAIL: workspace_restarts_suppressed_total did not move (${S7_A} -> ${S7_B}) — suppression invisible on the scraped surface"
-[[ "${R7_B}" -eq "${R7_A}" ]] \
-    || die "F7 FAIL: workspace_restarts_total moved on a suppressed request (${R7_A} -> ${R7_B}) — request-time over-count regressed"
-ok "F7: suppressed=${S7_A}->${S7_B} restarts flat (${R7_A}==${R7_B})"
+RES7=$(ctl_f7 restart credential_reload)
+echo "${RES7}" | grep -q '^restarted=False' \
+    || die "F7 FAIL: same-rev credential_reload not suppressed at the socket ($(echo "${RES7}" | tr '\n' ' '))"
+echo "${RES7}" | grep -q '^in_progress=False' \
+    || die "F7 FAIL: suppression confused with an in-progress drop ($(echo "${RES7}" | tr '\n' ' '))"
+ok "F7: socket answered {restarted:False, in_progress:False} (suppressed)"
 
-# Fail-open/control leg: manual is ungated — must restart AND count.
-OUT7M=$(ctl_restart_f7 manual)
-[[ "${OUT7M}" == "1 0" ]] \
-    || die "F7 FAIL: ungated manual restart did not fire (restarted/in_progress=${OUT7M})"
-R7_C=$(metric_f7 workspace_restarts_total)
-[[ "${R7_C}" -gt "${R7_B}" ]] \
-    || die "F7 FAIL: real restart not counted on /metrics (${R7_B} -> ${R7_C})"
+PID7_B=$(ctl_f7 status "" | grep '^child_pid=' | cut -d= -f2)
+[[ "${PID7_B}" == "${PID7_A}" ]] \
+    || die "F7 FAIL: suppressed restart changed the child pid (${PID7_A} -> ${PID7_B})"
+ok "F7: child pid unchanged across the suppressed request (${PID7_A})"
+
+# --- (b) sidecar-initiated restart, counted on the scraped surface ----------
+MPORT=$(( RESYNC_PORT + 210 ))
+kc port-forward "pod/$(pod_of "${WS7}")" "${MPORT}:4098" >/dev/null 2>&1 &
+M7_PID=$!
+sleep 2
+metric_f7() {
+    curl -sm 10 "http://127.0.0.1:${MPORT}/metrics" 2>/dev/null \
+        | awk -v ws="${WS7}" '$0 ~ "workspace_restarts_total" && $0 ~ "workspace_id=\""ws"\"" && $0 ~ "credential_reload" {s+=$NF} END {print s+0}'
+}
+R7_A=$(metric_f7)
+
+bind_env "${WS7}" "SD_F7" "gate-f7-value-2"
+if ! wait_env_present "${WS7}" "SD_F7=gate-f7-value-2" 360; then
+    kill "${M7_PID}" 2>/dev/null || true
+    die "F7 FAIL: new env value never reached the child — the sidecar restart path did not converge"
+fi
+R7_B=$(metric_f7)
 kill "${M7_PID}" 2>/dev/null || true
-ok "F7 PASS: same-rev suppressed + counted, manual restart fired + counted (2026-10-01 storm class closed at pod level)"
+[[ "${R7_B}" -gt "${R7_A}" ]] \
+    || die "F7 FAIL: sidecar-initiated restart not counted on the scraped surface (${R7_A} -> ${R7_B})"
+ok "F7 PASS: same-rev suppressed + child untouched; new-rev sidecar restart fired, converged, and counted (${R7_A} -> ${R7_B})"
 PASS=$((PASS + 1))
 
 # -----------------------------------------------------------------------------
