@@ -1272,7 +1272,18 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 			// regardless of marker outcome. The reason label is the short
 			// metric form (env_secrets / api_key) matching the help text and
 			// the crash/oom reasons.
-			pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+			//
+			// EXCEPT the socket topology: *socketReloadProc reaches the
+			// supervisor's credential_reload rev gate, which may SUPPRESS
+			// the restart — counting here, at request time, would show a
+			// restart for every push regardless of the gate's verdict and
+			// bury the suppression signal under the exact churn this gate
+			// exists to expose. socketReloadProc.restart records the
+			// outcome-truthful counter pair (restarts / restarts_suppressed)
+			// in the sidecar registry the PodMonitor scrapes.
+			if _, socketPath := proc.(*socketReloadProc); !socketPath {
+				pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+			}
 		}
 		//nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
 		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartDecisionConfig{

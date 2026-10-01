@@ -171,7 +171,37 @@ func newSocketReloadProc(cc *controlClient) *socketReloadProc {
 func (s *socketReloadProc) restart() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, _ = s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+	res, err := s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+	recordSocketReloadOutcome(res, err)
+}
+
+// recordSocketReloadOutcome records the restart TRUTH in THIS (sidecar)
+// process's registry — the one the agentd PodMonitor actually scrapes
+// (the supervisor serves no HTTP; its own mirror of these counters is
+// unreachable). The three outcomes are distinct:
+//
+//   - restarted           → workspace_restarts_total{reason=credential_reload}
+//   - suppressed          → workspace_restarts_suppressed_total — the
+//     supervisor's credential_reload rev gate answered without touching
+//     the child (same-rev push churn; the 2026-10-01 storm class).
+//   - in_progress / error → nothing: the in-flight restart already
+//     counted, and transport errors are logged at the call site.
+//
+// The reason the reload handler's own pre-record is skipped for this
+// topology (secrets.go): request-time counting would show a restart for
+// every push regardless of the gate's verdict — the pre-fix signature
+// verbatim, invisible churn and all.
+func recordSocketReloadOutcome(res *controlRestartResult, err error) {
+	if err != nil {
+		return
+	}
+	if res.Restarted {
+		pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), "credential_reload")
+		return
+	}
+	if !res.InProgress {
+		pkgOpsMetrics.RecordRestartSuppressed(workspaceIDFromEnv(), "credential_reload")
+	}
 }
 
 // refreshFiles applies freshly staged spawn-files without restarting the

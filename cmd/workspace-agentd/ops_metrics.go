@@ -267,6 +267,17 @@ func (m *opsMetrics) RecordRestartSuppressed(workspaceID, reason string) {
 	m.restartsSuppressed.WithLabelValues(workspaceID, reason).Inc()
 }
 
+// restartCounter and restartSuppressedCounter expose the labeled
+// counters for tests (testutil.ToFloat64 assertions on the registry the
+// PodMonitor scrapes); production code goes through the Record* methods.
+func (m *opsMetrics) restartCounter(workspaceID, reason string) prometheus.Counter {
+	return m.restartsTotal.WithLabelValues(workspaceID, reason)
+}
+
+func (m *opsMetrics) restartSuppressedCounter(workspaceID, reason string) prometheus.Counter {
+	return m.restartsSuppressed.WithLabelValues(workspaceID, reason)
+}
+
 // SetMemoryUsage sets the current memory usage gauge.
 func (m *opsMetrics) SetMemoryUsage(workspaceID string, bytes int64) {
 	if workspaceID == "" {

@@ -295,6 +295,10 @@ func (a *managedProcAdapter) Restart(reason string, graceSeconds int) (bool, boo
 	// reason — crash, oom, health_watchdog, manual — restarts
 	// unconditionally; the gate only ever suppresses redundant
 	// credential restarts, and it fails OPEN (restarts) on any doubt.
+	// Note: the peek runs while the socket's restartMu is held, adding
+	// up to pullBounded's bound (~2.5s worst case, mux down) to the
+	// in_progress-drop window — bounded, fail-open, and cheaper than
+	// the ~5s SIGTERM window every real restart already spends there.
 	if reason == "credential_reload" && a.suppressRedundantCredentialRestart() {
 		return false, false
 	}
@@ -382,6 +386,40 @@ func (a *managedProcAdapter) preSpawn() {
 // the control socket's refresh_files method (live-reload path). Safe for
 // concurrent callers: pullMu serializes state writes; a pull racing a
 // spawn simply applies the newer set on the next pass.
+func (a *managedProcAdapter) refreshFiles() {
+	if a.filesPuller == nil {
+		return
+	}
+	files, reason, err := a.filesPuller.pullFilesBounded(a.pullCtx)
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	if err != nil {
+		if a.filesReason != reason {
+			log.Warn("spawn-files pull failed; keeping the delivered set",
+				zap.String("reason", reason), zap.Error(err))
+		}
+		a.filesReason = reason
+		return
+	}
+	rev, applyErr := a.delivery.apply(files.Files)
+	if applyErr != nil {
+		if errors.Is(applyErr, errBadDeliveryPath) {
+			reason = spawnFilesReasonBadPath
+		} else {
+			reason = spawnFilesReasonUnavailable
+		}
+		if a.filesReason != reason {
+			log.Warn("spawn-files delivery failed; keeping the delivered set",
+				zap.String("reason", reason), zap.Error(applyErr))
+		}
+		a.filesReason = reason
+		return
+	}
+	a.filesReason = ""
+	a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
+	a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
+}
+
 // credentialPuller is the read-only seam the credential_reload gate peeks
 // through (narrow so tests can pin the rev arithmetic without a live
 // mux; production wires *spawnEnvPuller, whose pullBounded is a pure
@@ -426,40 +464,6 @@ func (a *managedProcAdapter) suppressRedundantCredentialRestart() bool {
 		zap.String("anchor", anchor))
 	pkgOpsMetrics.RecordRestartSuppressed(workspaceIDFromEnv(), "credential_reload")
 	return true
-}
-
-func (a *managedProcAdapter) refreshFiles() {
-	if a.filesPuller == nil {
-		return
-	}
-	files, reason, err := a.filesPuller.pullFilesBounded(a.pullCtx)
-	a.pullMu.Lock()
-	defer a.pullMu.Unlock()
-	if err != nil {
-		if a.filesReason != reason {
-			log.Warn("spawn-files pull failed; keeping the delivered set",
-				zap.String("reason", reason), zap.Error(err))
-		}
-		a.filesReason = reason
-		return
-	}
-	rev, applyErr := a.delivery.apply(files.Files)
-	if applyErr != nil {
-		if errors.Is(applyErr, errBadDeliveryPath) {
-			reason = spawnFilesReasonBadPath
-		} else {
-			reason = spawnFilesReasonUnavailable
-		}
-		if a.filesReason != reason {
-			log.Warn("spawn-files delivery failed; keeping the delivered set",
-				zap.String("reason", reason), zap.Error(applyErr))
-		}
-		a.filesReason = reason
-		return
-	}
-	a.filesReason = ""
-	a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
-	a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
 }
 
 // RefreshFiles is the control-socket entry point for refresh_files: the
