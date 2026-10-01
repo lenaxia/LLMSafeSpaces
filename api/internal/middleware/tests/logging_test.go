@@ -6,6 +6,7 @@ package tests
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -598,4 +599,173 @@ func TestLoggingMiddleware_G25_ValueFieldMaskedOnUnlistedPath(t *testing.T) {
 	// break if MaskString's format changes.
 	assert.Contains(t, logOutput, "...",
 		"masked 'value' field should contain MaskString's '...' marker")
+}
+
+// chunkedBody serves a fixed byte budget and exposes when its LAST byte
+// has been served — the observable for the streaming-contract tests: a
+// pre-handler full-body buffer can only run the handler after
+// lastServed is closed; a bounded capture runs it while bytes remain.
+type chunkedBody struct {
+	data       []byte
+	offset     int
+	lastServed chan struct{}
+}
+
+func (r *chunkedBody) Read(p []byte) (int, error) {
+	if r.offset >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.offset:])
+	r.offset += n
+	if r.offset >= len(r.data) {
+		close(r.lastServed)
+	}
+	return n, nil
+}
+
+// TestLoggingMiddleware_SlowBodyStreamsToHandler pins run 36749714653's
+// root cause: the logging middleware's pre-handler body read must be
+// BOUNDED, so a client-paced body (the SR-6B trickled holders, 1MiB at
+// 64k/s) streams through to the handler while it is still arriving.
+// The unbounded io.ReadAll the fix replaced swallowed the whole
+// transfer before the upload handler — and thus agentd's admission —
+// ever started, holding nothing (nightlies 36135708380..36740521434).
+func TestLoggingMiddleware_SlowBodyStreamsToHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Info", "Request received", mock.Anything).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	config := middleware.LoggingConfig{LogRequestBody: true, MaxBodyLogSize: 1024}
+
+	const bodySize = 64 * 1024
+	body := &chunkedBody{
+		data:       bytes.Repeat([]byte{0xA5}, bodySize),
+		lastServed: make(chan struct{}),
+	}
+
+	handlerRanAfterFullBody := false
+	var handlerReadTotal int64
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.POST("/upload", func(c *gin.Context) {
+		buf := make([]byte, 1)
+		if _, err := c.Request.Body.Read(buf); err != nil {
+			t.Errorf("handler first read failed: %v", err)
+		}
+		select {
+		case <-body.lastServed:
+			handlerRanAfterFullBody = true
+		default:
+		}
+		n, _ := io.Copy(io.Discard, c.Request.Body)
+		handlerReadTotal = int64(n) + 1
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/upload", body)
+	req.ContentLength = int64(bodySize)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.False(t, handlerRanAfterFullBody,
+		"the handler must start while the body is still arriving — a pre-handler full-body buffer swallows client-paced uploads (design 0060's never-buffered upload contract; nightly SR-6B seat, run 36749714653)")
+	assert.Equal(t, int64(bodySize), handlerReadTotal,
+		"the handler must observe the COMPLETE body (capture replays, remainder streams)")
+	mockLogger.AssertExpectations(t)
+}
+
+// TestLoggingMiddleware_OversizedBodyCaptureNotLogged pins the logging
+// fidelity contract of the bounded capture: a body larger than the
+// capture limit logs its declared size but NEVER body bytes — the
+// truncated-string branch would bypass JSON field masking.
+func TestLoggingMiddleware_OversizedBodyCaptureNotLogged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+
+	var requestFields []interface{}
+	mockLogger.On("Info", "Request received", mock.Anything).Run(func(args mock.Arguments) {
+		requestFields = args.Get(1).([]interface{})
+	}).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	config := middleware.LoggingConfig{LogRequestBody: true, MaxBodyLogSize: 1024}
+
+	var handlerReadTotal int64
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.POST("/upload", func(c *gin.Context) {
+		n, _ := io.Copy(io.Discard, c.Request.Body)
+		handlerReadTotal = n
+		c.String(http.StatusOK, "ok")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/upload", bytes.NewReader(bytes.Repeat([]byte{0x5A}, 8192)))
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int64(8192), handlerReadTotal, "the handler must see the full oversized body")
+
+	var hasRequestBody, hasSize bool
+	var sizeValue int
+	for i := 0; i+1 < len(requestFields); i += 2 {
+		switch requestFields[i] {
+		case "request_body":
+			hasRequestBody = true
+		case "request_body_size":
+			hasSize = true
+			if v, ok := requestFields[i+1].(int); ok {
+				sizeValue = v
+			}
+		}
+	}
+	assert.False(t, hasRequestBody,
+		"an oversized capture must not log body bytes — the truncated-string branch bypasses JSON masking")
+	assert.True(t, hasSize, "the declared size must still be logged")
+	assert.Equal(t, 8192, sizeValue, "request_body_size must carry the true declared size")
+	mockLogger.AssertExpectations(t)
+}
+
+// TestMiddlewareChain_BoundedCapturesComposeStreamsThrough pins the
+// both-middlewares composition the #1608 review flagged as unguarded:
+// the logging seat captures 4KiB+1 off the wire and replays it; the
+// error-handler seat then captures from the REPLAYED prefix (never the
+// wire); the handler must observe the oversized body byte-exactly.
+// The highest-risk future edit — changing either capture's read amount
+// — breaks this pin.
+func TestMiddlewareChain_BoundedCapturesComposeStreamsThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Info", "Request received", mock.Anything).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	const bodySize = 64 * 1024
+	payload := make([]byte, bodySize)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	var got []byte
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, middleware.LoggingConfig{LogRequestBody: true, MaxBodyLogSize: 1024}))
+	router.Use(middleware.ErrorHandlerMiddleware(mockLogger))
+	router.POST("/compose", func(c *gin.Context) {
+		var err error
+		got, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			t.Errorf("handler read failed: %v", err)
+		}
+		c.String(http.StatusOK, "ok")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/compose", bytes.NewReader(payload))
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Len(t, got, bodySize, "the handler must see the complete oversized body through both captures")
+	assert.Equal(t, payload, got, "the composed capture replay must be byte-exact")
+	mockLogger.AssertExpectations(t)
 }

@@ -16,15 +16,21 @@ package handlers
 //     still forwards verbatim but labels agentd_error.
 
 import (
+	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	realmiddleware "github.com/lenaxia/llmsafespaces/api/internal/middleware"
 )
 
 // The literal agentd shapes (frozen contract, worker-lane coordination
@@ -207,4 +213,224 @@ func TestUpload_DeclaredHeaderForwardedToAgentd(t *testing.T) {
 	defer rec.mu.Unlock()
 	assert.Equal(t, strconv.FormatInt(int64(declaredLen), 10), rec.declaredBodyBytes,
 		"the header must carry the client's declared Content-Length")
+}
+
+// TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares
+// reproduces nightly 36758872210's failure shape at the unit level: a
+// concurrent storm (6 large uploads) against an agentd that refuses
+// SOME at headers — BEFORE reading the body (design 0060 §4.1's Admit
+// rejections) — through the REAL logging + error-handler middleware
+// chain over real TCP. The bounded body capture made early refusals
+// arrive while the client body is still streaming (pre-fix, the
+// middleware had already swallowed the whole body, so agentd's
+// refusal could only ever come after it); the handler's
+// forwardUploadToAgentd waits on the copy goroutine AFTER the response
+// — this test pins that every refused upload resolves promptly with
+// the forwarded status, never a stall (curl's 000) or a deadlock.
+func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T) {
+	resetUploadMetrics(t)
+
+	// agentd admits nothing: every /v1/files PUT is refused at headers
+	// with 507 staging_full, body unread — Admit's rejection shape.
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted — retry after in-flight uploads settle or free tmpfs","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	// The REAL pre-handler middleware chain (the seats the bounded
+	// capture changed), wrapping the upload route — then a real TCP
+	// server so client pacing, early responses, and connection
+	// teardown behave as they do in the nightly.
+	wrapped := gin.New()
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	const storm = 6
+	payload := make([]byte, 4<<20) // 4MiB: still streaming when the refusal lands
+	type result struct {
+		status int
+		err    error
+	}
+	results := make(chan result, storm)
+	for i := 0; i < storm; i++ {
+		go func() {
+			body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "storm.bin", content: payload})
+			req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", body)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			req.Header.Set("Content-Type", ct)
+			resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			results <- result{status: resp.StatusCode}
+		}()
+	}
+
+	for i := 0; i < storm; i++ {
+		select {
+		case r := <-results:
+			require.NoError(t, r.err, "a refused upload must resolve, not stall or die (nightly 36758872210's 000s)")
+			assert.Equal(t, http.StatusInsufficientStorage, r.status,
+				"the early refusal forwards verbatim — never a 502, never a connection death")
+		case <-time.After(25 * time.Second):
+			t.Fatal("storm request hung: the early-refusal path deadlocks with the bounded body capture streaming")
+		}
+	}
+}
+
+// TestUpload_EarlyRefusalDrainsClientBody pins the RST hazard the
+// bounded body capture exposed (nightlies 36758872210 + 36766849622,
+// byte-identical failures): when agentd refuses at Admit — before the
+// body streams — the API responds while most of the client's declared
+// body is UNREAD. A server closing with unread receive-buffer bytes
+// emits RST, clobbering the in-flight response (curl saw 000) and
+// choking the transport's tunnel. The handler must drain the unread
+// remainder (memory-free discard, bounded) so the exchange closes
+// cleanly — what the old unbounded pre-handler buffer accidentally
+// provided.
+func TestUpload_EarlyRefusalDrainsClientBody(t *testing.T) {
+	resetUploadMetrics(t)
+
+	// agentd refuses at Admit — before reading the body (design 0060
+	// §4.1's rejection shape).
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	wrapped := gin.New()
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	payload := make([]byte, 25<<20)
+	body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "drain.bin", content: payload})
+	total := int64(body.Len())
+
+	// A pipe body makes server-side consumption directly observable:
+	// the client's copy only completes when the SERVER has read every
+	// declared byte. An abandoned body leaves the writer blocked (or
+	// errored short) — the RST hazard.
+	pr, pw := io.Pipe()
+	sent := make(chan int64, 1)
+	sendErr := make(chan error, 1)
+	go func() {
+		n, err := io.Copy(pw, body)
+		sent <- n
+		sendErr <- err
+		_ = pw.Close()
+	}()
+	req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", pr)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", ct)
+	req.ContentLength = total
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusInsufficientStorage, resp.StatusCode)
+
+	select {
+	case n := <-sent:
+		require.NoError(t, <-sendErr)
+		assert.Equal(t, total, n,
+			"the server must DRAIN the refused upload's full declared body — abandoning it mid-stream emits RST and clobbers the response (nightlies 36758872210/36766849622)")
+	case <-time.After(15 * time.Second):
+		t.Fatal("server abandoned the body mid-stream: the client writer is still blocked — the RST hazard class")
+	}
+}
+
+// TestUpload_DrainTimeBoundStalledSender pins the r2 blocking finding
+// in the SMALL-REMAINDER shape: declared 300KiB, 280KiB sent -- the
+// unread remainder sits INSIDE net/http's 256KiB post-handler discard
+// bound, the only shape where the serve goroutine itself must read the
+// remaining body (a remainder >= 256KiB+1 takes the tooBig path and
+// frees the conn regardless, structurally blind to the bug). The drain's
+// fired deadline must SURVIVE a drain timeout: the r1 code reset it
+// unconditionally, letting the server's discard block forever on a
+// stalled sender -- the buffered refusal was never delivered. The pin
+// asserts RESPONSE DELIVERY to the stalled client within the bound.
+func TestUpload_DrainTimeBoundStalledSender(t *testing.T) {
+	resetUploadMetrics(t)
+
+	origDeadline := uploadDrainDeadline
+	uploadDrainDeadline = 500 * time.Millisecond
+	t.Cleanup(func() { uploadDrainDeadline = origDeadline })
+
+	agentd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"staging budget exhausted","reason":"staging_full"}`))
+	}))
+	defer agentd.Close()
+
+	env := newUploadEnv(t, &uploadCaptureTransport{server: agentd})
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	handlerDone := make(chan struct{})
+	wrapped := gin.New()
+	wrapped.Use(func(c *gin.Context) { c.Next(); close(handlerDone) })
+	wrapped.Use(realmiddleware.LoggingMiddleware(&testLogger{}, realmiddleware.DefaultLoggingConfig()))
+	wrapped.Use(realmiddleware.ErrorHandlerMiddleware(&testLogger{}))
+	grp := wrapped.Group("/api/v1/workspaces/:id")
+	grp.POST("/uploads", env.handler.UploadFile)
+	api := httptest.NewServer(wrapped)
+	defer api.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(api.URL, "http://"))
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	_, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "stall.bin", content: make([]byte, 32)})
+	boundary := strings.TrimPrefix(ct, "multipart/form-data; boundary=")
+	var head strings.Builder
+	head.WriteString("POST /api/v1/workspaces/ws-1/uploads HTTP/1.1\r\nHost: t\r\n")
+	head.WriteString("Content-Type: " + ct + "\r\n")
+	head.WriteString("Content-Length: " + strconv.Itoa(300<<10) + "\r\n\r\n")
+	head.WriteString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stall.bin\"\r\n\r\n")
+	_, err = conn.Write([]byte(head.String()))
+	require.NoError(t, err)
+	_, err = conn.Write(bytes.Repeat([]byte{0x61}, (280<<10)-len(head.String())))
+	require.NoError(t, err)
+
+	// THE PIN: the refusal must be DELIVERED to the stalled sender
+	// within the drain bound. With the r1 unconditional reset (the
+	// mutation), the server's post-handler discard blocks on the
+	// stalled client with no deadline and this read times out.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1024)
+	n, rerr := conn.Read(buf)
+	require.NoError(t, rerr, "the refusal must be delivered to the stalled sender")
+	assert.Contains(t, string(buf[:n]), " 507 ", "the early refusal arrives within the drain bound")
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler chain did not complete")
+	}
 }

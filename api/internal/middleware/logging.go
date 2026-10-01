@@ -6,6 +6,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"time"
@@ -202,6 +203,16 @@ func logRequest(c *gin.Context, log interfaces.LoggerInterface, requestID string
 					fields = append(fields, "request_body", string(body))
 				}
 			}
+		} else {
+			// The capture stopped at requestBodyCaptureLimit (or the
+			// client died mid-read): log the declared size, never the
+			// partial bytes — the truncated-string branch would bypass
+			// JSON field masking.
+			size := c.Request.ContentLength
+			if size < 0 {
+				size = 0
+			}
+			fields = append(fields, "request_body_size", int(size))
 		}
 	}
 
@@ -260,14 +271,68 @@ func logResponse(c *gin.Context, log interfaces.LoggerInterface, requestID strin
 	log.Info("Request completed", fields...)
 }
 
-func readAndReplaceBody(c *gin.Context) ([]byte, error) {
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return nil, err
-	}
-	_ = c.Request.Body.Close()
+// requestBodyCaptureLimit bounds how much of a request body the
+// logging and error-handler middlewares read before the handler runs.
+// The bound is load-bearing, not cosmetic:
+//
+//   - The upload endpoint's design contract (0060, uploads.go) is that
+//     the client's body is NEVER buffered — it streams through to
+//     agentd, whose admission (Admit → stageStream) must observe the
+//     client's pace. An unbounded pre-handler read swallows the whole
+//     transfer first: a client-paced 1MiB trickle at 64k/s held
+//     NOTHING at agentd for its entire 16s transfer because the
+//     handler (and the agentd forward) only started after the last
+//     byte arrived — the nightly SR-6B row failed 10/10 on exactly
+//     this (runs 36135708380..36749521434; instrumented proof run
+//     36749714653: holders "Request received" at the API only at
+//     T+16.0s, the 5th full-speed upload admitted into the empty cap).
+//   - The middlewares run BEFORE auth, on every route: an unbounded
+//     ReadAll is an unauthenticated memory-exhaustion amplifier — any
+//     body size is fully buffered before any handler-side cap applies.
+//
+// The capture replays through io.MultiReader, so bodies larger than
+// the limit stream the remainder live to the handler.
+const requestBodyCaptureLimit = int64(4 << 10)
 
-	// Replace body with a new reader
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+// captureRequestBody reads at most limit bytes of the request body and
+// replaces c.Request.Body with a stream that replays the captured
+// prefix followed by the unread remainder. It returns the captured
+// bytes and whether the WHOLE body was read (no remainder).
+func captureRequestBody(c *gin.Context, limit int64) ([]byte, bool) {
+	rest := c.Request.Body
+	captured, err := io.ReadAll(io.LimitReader(rest, limit+1))
+	c.Request.Body = newStreamedBody(captured, rest)
+	if err != nil {
+		return captured, false
+	}
+	return captured, int64(len(captured)) <= limit
+}
+
+// streamedBody is the capture-replay body: the captured prefix from
+// memory, the remainder live from the original; Close propagates.
+type streamedBody struct {
+	io.Reader
+	orig io.Closer
+}
+
+func newStreamedBody(captured []byte, rest io.ReadCloser) *streamedBody {
+	return &streamedBody{
+		Reader: io.MultiReader(bytes.NewReader(captured), rest),
+		orig:   rest,
+	}
+}
+
+func (b *streamedBody) Close() error { return b.orig.Close() }
+
+func readAndReplaceBody(c *gin.Context) ([]byte, error) {
+	body, complete := captureRequestBody(c, requestBodyCaptureLimit)
+	if !complete {
+		return nil, errBodyCaptureIncomplete
+	}
 	return body, nil
 }
+
+// errBodyCaptureIncomplete reports that the capture stopped at the
+// limit (or a short read) — callers treat it as "no body to log", never
+// as a request error: the handler's stream is unaffected.
+var errBodyCaptureIncomplete = errors.New("request body capture incomplete")
