@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.12] - 2026-10-01
+
+### Fixed — the API's pre-handler body buffering (SR-6's root, PR #1608)
+
+- **Two latent contract breaks on the uploads route, both as old as the
+  feature**: the logging and error-handler middlewares each buffered the
+  ENTIRE request body before the handler ran (voiding the streaming
+  contract — client pacing never reached agentd's admission control, so
+  the §6.6 concurrent-cap boundary was unreachable and #1567's
+  deterministic row failed 10 consecutive nightlies), and early
+  refusals closed the connection over unread body bytes (RST clobbering
+  the API's own 507/429 response — masked until the buffering fix
+  exposed it). Captures are now bounded at 4KiB with live stream-through
+  (MultiReader), early responses drain exactly the declared remainder
+  (memory-free, deadline-bounded with the fired-deadline-survives
+  semantics), and oversized captures log declared size only. Also closes
+  an unauthenticated memory-exhaustion amplifier (both middlewares ran
+  pre-auth on every route with unbounded reads).
+
+### Fixed — busy truth through the SSE pipe (#1602/#1603)
+
+- The frontend's session busy indicator now carries the derived truth:
+  running/queued tool work, in-flight parts, and queue depth flow
+  through the API's session.status emissions (overlaid from the
+  authority snapshot, fail-open documented), the snapshot clone no
+  longer drops the Busy field, silent tool runs hold the idle-drop gate
+  (stuck-busy closed), compaction counts as busy, and aborted/deleted
+  sessions render properly (#786 folded in).
+
+### Features — ACP Stage A (design 0063, PR #1599)
+
+- The adapter's internal event vocabulary for tool executions now
+  speaks ACP: native dialect → spec-shaped (status machine, kind table,
+  diff content) → the five contract part types, on both the live SSE
+  path and history. Unknown events map to Custom and are never
+  silently dropped; the part contract is unchanged (byte-identical
+  where it matters). No transport change (Stage B remains
+  trigger-gated).
+
+### Fixed — nightly test-cluster capacity (PR #1605)
+
+- The 2-node kind retirement never doubled schedulable capacity (the
+  control-plane stayed tainted); the nightly config now untaints it,
+  pinned by an exact-shape parsed-YAML assertion. First material for
+  the migration e2e's rows to ever run.
+
+### Docs — designs 0062 (dev-preview headers) and 0063 (ACP spike) merged
+
 ## [0.34.11] - 2026-09-29
 
 ### Fixed — global-default secrets reach existing workspaces (#1597)
