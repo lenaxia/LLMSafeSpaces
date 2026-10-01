@@ -50,11 +50,17 @@ func TestRouter_InternalAPIRoutesNotSSLRedirected(t *testing.T) {
 	// handlers fail closed (403) with no LLMSAFESPACES_INTERNAL_TOKEN —
 	// which is exactly the assertion: the request must REACH the handler
 	// (403), not die in the middleware (301).
-	router := NewRouter(svc, log, nil, RouterConfig{
-		Debug:                       false,
-		InternalLLMProvidersHandler: &handlers.InternalLLMProvidersHandler{},
-		InternalOrgStatusHandler:    &handlers.InternalOrgStatusHandler{},
-	})
+	//
+	// The config MUST be based on DefaultRouterConfig(): NewRouter uses
+	// the provided config verbatim with NO defaults merge, and the zero
+	// RouterConfig carries a zero SecurityConfig — RequireHTTPS=false —
+	// which disarms SSLRedirect entirely and turns this test into a
+	// tautology (it would pass with the exemption deleted). The default
+	// config is the production posture: RequireHTTPS=true.
+	rc := DefaultRouterConfig()
+	rc.InternalLLMProvidersHandler = &handlers.InternalLLMProvidersHandler{}
+	rc.InternalOrgStatusHandler = &handlers.InternalOrgStatusHandler{}
+	router := NewRouter(svc, log, nil, rc)
 
 	t.Setenv("LLMSAFESPACES_INTERNAL_TOKEN", "")
 
@@ -76,4 +82,20 @@ func TestRouter_InternalAPIRoutesNotSSLRedirected(t *testing.T) {
 				"no redirect may be issued for in-cluster internal routes")
 		})
 	}
+
+	// Production-parity posture pin through the same real wiring: with
+	// RequireHTTPS armed (the DefaultRouterConfig posture above), a
+	// NON-internal route must still 301. If a future config regression
+	// disarms SSLRedirect router-wide (zeroed SecurityConfig), the
+	// internal-route subtests above would keep passing while the
+	// redirect guarantee silently vanished — this subtest catches that.
+	t.Run("non-internal route still SSL-redirects", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusMovedPermanently, rec.Code,
+			"public routes must still redirect under RequireHTTPS; got %d", rec.Code)
+		assert.NotEmpty(t, rec.Header().Get("Location"))
+	})
 }

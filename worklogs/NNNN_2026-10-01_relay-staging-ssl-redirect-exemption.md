@@ -51,11 +51,43 @@ The controller's `--api-service-url` has been `http://…` in every ReplicaSet s
 ### Assumptions (Rule 7)
 
 - No internal caller legitimately relies on the 301 for these routes (they call http:// directly and never follow redirects — Go's default client follows up to 10, which is what produced the TLS-on-plaintext error rather than a clean one).
-- The ingress does not route `/api/v1/internal/` publicly (these endpoints carry the internal token auth; the router registers them on the same gin engine but the ingress pathing was not changed here — pre-existing posture, unchanged by this fix).
+- ~~The ingress does not route `/api/v1/internal/` publicly.~~ **CORRECTED (review r2):** `helm/values.yaml` defaults `api.ingress.enabled=false`, but when an operator enables it the path list is `path: /, pathType: Prefix` — `/api/v1/internal/*` WOULD be publicly routed. The exposure delta of this fix is bounded: over HTTPS through a TLS-terminating ingress, `X-Forwarded-Proto: https` already suppressed the 301 pre-fix, so token-gated HTTPS exposure is unchanged; the delta is plaintext-via-ingress (now served instead of 301ing). Mitigated by ingress-default-off + the handlers' fail-closed `X-Internal-Token` auth (constant-time compare), and identical in kind to the pre-existing `/internal/` carve-out. Follow-up filed below: an ingress path carve-out for `/api/v1/internal/`.
 
 ---
 
-## Follow-ups
+## Blockers
 
-- Post-deploy: watch `CredentialsStaged` flip to `True` on Active workspaces and envelope/handoff Secrets appear; then the fallback-delivery counter should begin its decline and the 7-clean-days clock for the strict-mode flip finally starts.
-- The `StageFailed`-is-not-an-error design means a silently-broken source persists indefinitely with only a condition as evidence — worth a controller-side alert on `CredentialsStaged=False` age (candidate for the .13 queue).
+None.
+
+---
+
+## Tests Run
+
+- `go test ./api/internal/middleware/...` — PASS (both packages).
+- `go test ./api/internal/server/ -run TestRouter_InternalAPIRoutesNotSSLRedirected` — PASS (gofmt-clean after r2's alignment fix).
+- Mutation verification (r2 finding): with the `/api/v1/internal/` exemption condition removed from security.go, the seam test FAILS (`expected 403, got 301`) and the middleware subtests FAIL (`301 vs 200`); restored, all pass. The seam test is based on `DefaultRouterConfig()` — the production `RequireHTTPS: true` posture — after r2 identified that a zero-value `RouterConfig` leaves a zero `SecurityConfig` and disarms `SSLRedirect` entirely (the test was tautological as first written).
+- Live-cluster reproduction of the 301 (python3 http.client from the workspace pod, redirects not followed) pre-fix; post-deploy assertion: `CredentialsStaged` flips to `True`.
+
+---
+
+## Next Steps
+
+1. Merge + release v0.34.13 (CHANGELOG entry + `helm/Chart.yaml` bump, `make release-tag VERSION=0.34.13`).
+2. Post-deploy: watch `CredentialsStaged` flip to `True` across Active workspaces and `llm-relay-env-*` / `workspace-relay-*` Secrets appear; then the fallback-delivery counter should begin its decline and the 7-clean-days clock for the strict-mode flip finally starts.
+3. File the follow-up issue: helm ingress path carve-out so `/api/v1/internal/*` is never publicly routed when `api.ingress.enabled=true`.
+4. Candidate for the .13 queue: alert on `CredentialsStaged=False` age — the StageFailed-is-not-an-error design let this outage persist for 5 days with only a condition as evidence.
+
+---
+
+## Files Modified
+
+- `api/internal/middleware/security.go` — the exemption: `/api/v1/internal/` added beside the epic-35 `/internal/` skip.
+- `api/internal/middleware/tests/security_test.go` — `TestSecurityMiddleware_InternalAPIPathsSkipSSLRedirect`, `TestSecurityMiddleware_InternalPrefixExemptionIsNarrow`, `TestSecurityMiddleware_LegacyInternalPrefixStillExempt`.
+- `api/internal/server/router_internal_ssl_test.go` — `TestRouter_InternalAPIRoutesNotSSLRedirected` (real NewRouter wiring; mutation-verified).
+- `COORDINATE.md` — claim row.
+- This worklog.
+
+### Review rounds (PR #1611, automated reviewer)
+
+- **r1 (REQUEST CHANGES):** worklog number picked manually (collided with main's 1075) → renamed to the `NNNN_` sentinel; narrowness unpinned → negative subtests added (no-trailing-slash, dash-lookalike, substring trap all still 301); old `/internal/` condition unpinned → `LegacyInternalPrefixStillExempt`; no router↔middleware composition test → `TestRouter_InternalAPIRoutesNotSSLRedirected` added.
+- **r2 (REQUEST CHANGES):** the seam test as first written was tautological (zero-value `RouterConfig` → zero `SecurityConfig` → `SSLRedirect` disarmed) → rebased on `DefaultRouterConfig()`, mutation-verified failing without the fix, plus a non-internal-route still-301s posture pin; gofmt failure on the test file (struct-literal alignment) → fixed; worklog structure sections missing + disproven ingress assumption → corrected here.
