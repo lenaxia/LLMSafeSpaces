@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.14] - 2026-10-02
+
+### Fixed — agentd restart-storm defenses (the 2026-10-01 incident) (#1613)
+
+- **credential_reload rev gate.** The first relay credential handoff
+  (v0.34.13) restarted one workspace's opencode 6 times in 11 seconds:
+  the xdg config watcher was already fingerprint+cooldown gated, but
+  the CONTROL path (one socket Restart per sidecar credential event)
+  had no gate at all. The storm killed an in-flight turn and wedged
+  opencode (every turn aborting at birth) until a manual pod bounce.
+  `managedProcAdapter.Restart` now peeks the spawn-env mux read-only
+  (new `credentialPuller` seam) and suppresses a credential restart iff
+  clean pull ∧ not degraded ∧ served rev == the anchored rev the child
+  spawned with — failing OPEN on any doubt. Four review rounds hardened
+  the deliverable: the suppression is recorded on the SCRAPED sidecar
+  registry from the socket outcome (`workspace_restarts_suppressed_
+  total`), the sidecar no longer request-time over-counts suppressed
+  pushes, restart round trips arm a deadline covering the grace window
+  (the 2s client default silently under-counted slow restarts), and
+  outcome-unknown transport failures Warn loudly.
+- **Cross-uid restart-reason marker.** The shared marker sits in a
+  STICKY root-owned dir and 0640 grants the other writer uid group-READ
+  only — cross-uid rotation could never work (live EACCES observed).
+  Per-uid fallback file on write failure + newest-wins boot read +
+  sibling sweep; attribution survives in sidecar mode.
+- **F7 e2e row** in the US-70 kind harness: same-rev credential restart
+  suppressed with the child pid untouched (socket-verifiable), and a
+  sidecar-initiated restart counted on the scraped surface.
+- **Label semantics change (socket topology):** credential restart
+  events are now outcome-counted as `credential_reload` (previously
+  request-time as `env_secrets`/`api_key`). No chart consumer filters
+  by reason today.
+
 ## [0.34.13] - 2026-10-01
 
 ### Fixed — relay staging un-break: the SSL 301 that made the raw-key fallback permanent (#1611)
