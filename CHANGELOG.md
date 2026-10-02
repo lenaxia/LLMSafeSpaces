@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.16] - 2026-10-02
+
+### Features — dev-preview header configuration (design 0062, #1600/#1583)
+
+- **The dev_preview_headers MCP tool**: agents set/clear/list literal
+  header name+value pairs for their own dev preview (set/clear/list;
+  literal values only — no Secret references, the structural guard;
+  ≤20 entries, ≤4KiB values, canonical names, reserved-header denylist).
+  State: plain JSON in the memory-backed volume (0600, atomic writes;
+  survives agentd container restart, wiped on pod recreation).
+  Injection at the dev-preview proxy hop after the tunnel Authorization
+  strip — one handler covers both topology modes; agent-set
+  X-Forwarded-User delivers clean (the stdlib strips inbound copies
+  before the injection point — forward-mode for free). e2e: five arms
+  incl. the restart/wipe lifecycle. Note: merged via owner-approved
+  override after r1 remediation — GitHub\'s multi-day pull_request
+  event failure blocked the r2 review on four PR carriers.
+
 ## [0.34.15] - 2026-10-02
 
 ### Fixed — the strict-flip counters made trustworthy (#1614/#1615)
