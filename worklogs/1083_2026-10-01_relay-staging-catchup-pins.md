@@ -80,4 +80,4 @@ None. (Note: GitHub pull_request webhook delivery was flapping per the charter �
 - controller/internal/workspace/staging.go — relayDesiredSet onto the shared predicate; honest staged message
 - controller/internal/workspace/staging_test.go — TokensFailedMessageIsHonest
 - controller/internal/workspace/relay_catchup_test.go — new: catch-up pin + trigger source-pin
-- worklogs/NNNN_2026-10-01_relay-staging-catchup-pins.md — this file
+- worklogs/1083_2026-10-01_relay-staging-catchup-pins.md — this file
