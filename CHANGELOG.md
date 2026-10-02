@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.15] - 2026-10-02
+
+### Fixed — the strict-flip counters made trustworthy (#1614/#1615)
+
+- **A frontable provider missing from a PRESENT handoff** (the
+  all-mints-failed shape — the residual failure class of the five-day
+  #1611 staging outage) previously delivered raw keys UNCOUNTED in
+  migration mode (invisible to the 7-day-zero strict-flip criterion)
+  and raw in strict mode (a fail-open arm inside fail-closed). Now:
+  migration counts it (relay_fallback_deliveries_total + audit, raw
+  still delivers); strict mutes it (per-batch degraded counter,
+  slug-deduped). One shared stageability predicate
+  (RelayFrontableProvider) governs both the controller's staging set
+  and the builder's classification.
+- **Controller status honesty**: CredentialsStaged=True now counts
+  actually-staged tokens and names mint shortfalls (during the outage
+  it claimed "1 staged" with zero staged).
+- **Catch-up pins**: pre-arming Active workspaces stage on reconcile
+  (the disproven event-tie hypothesis, now guarded green), plus the
+  trigger source-pin.
+
 ## [0.34.14] - 2026-10-02
 
 ### Fixed — agentd restart-storm defenses (the 2026-10-01 incident) (#1613)
