@@ -230,13 +230,14 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "feature_status",
-						Description: "Inspect this space's feature flags: which features are active, their SOURCE (space-set via the workspace CRD vs operator/chart-set), and whether any are agent-controllable (none today — the controllable set is reported as fact, not assumed). Read-only, no API call. Use when: diagnosing why a feature (e.g. dev preview) is not working before assuming breakage; checking whether the inference relay plane is active; understanding the deployment shape (sidecar vs single-container, upload staging). Output: a machine-readable JSON array of {feature, active, source, source_detail, controllable}. Note: instance-level operator settings (rate limits, workflow/triggers knobs, the dev-preview kill-switch) live in the API's settings store and are intentionally NOT readable from inside the space — their absence here is the D3 posture, not an omission.",
+						Description: "Inspect this space's feature flags: which features are active, their SOURCE (space-set via the workspace CRD vs operator/chart-set), and whether any are agent-controllable (one today: dev_preview_headers — the rest are reported as fact, not assumed). Read-only, no API call. Use when: diagnosing why a feature (e.g. dev preview) is not working before assuming breakage; checking whether the inference relay plane is active; understanding the deployment shape (sidecar vs single-container, upload staging). Output: a machine-readable JSON array of {feature, active, source, source_detail, controllable}. Note: instance-level operator settings (rate limits, workflow/triggers knobs, the dev-preview kill-switch) live in the API's settings store and are intentionally NOT readable from inside the space — their absence here is the D3 posture, not an omission.",
 						InputSchema: map[string]any{
 							"type":       "object",
 							"properties": map[string]any{},
 							"required":   []string{},
 						},
 					},
+					devPreviewHeadersTool,
 					{
 						// US-70.3 PR-4 (design 0052 §4.7): the agent's
 						// on-demand re-materialization escape hatch. No
@@ -578,6 +579,11 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpSessionMetadata(ctx, password, sessionID)
 	case "feature_status":
 		return mcpFeatureStatus()
+	case "dev_preview_headers":
+		// Design 0062: agent-owned literals over the shared default
+		// store. Tool-argument keys stay free-form at this layer (the
+		// wire convention); the tool's own schema owns the surface.
+		return mcpDevPreviewHeaders(args)
 	case "compact":
 		sessionID, _ := args["session_id"].(string)
 		model, _ := args["model"].(string)

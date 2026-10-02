@@ -31,7 +31,7 @@ var devPreviewDeniedPorts = map[int]string{
 	4098: "agentd admin mux (4098)",
 }
 
-func devPreviewHandler(password string) http.HandlerFunc {
+func devPreviewHandler(password string, configured *devPreviewHeaderStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuth(r, password) {
 			rejectUnauthorized(w)
@@ -85,6 +85,18 @@ func devPreviewHandler(password string) http.HandlerFunc {
 				// Strip the agentd Basic auth credential — the dev server
 				// has no use for it and shouldn't see it.
 				r.Out.Header.Del("Authorization")
+
+				// Design 0062 §3: the workspace's configured preview
+				// headers — agent-set literals via the dev_preview_headers
+				// tool, last-writer over the caller content that reached
+				// this hop (the G34-allowlisted three; the stdlib already
+				// stripped inbound X-Forwarded-*/hop-by-hop before Rewrite,
+				// so configured forward headers are deliverable here). The
+				// store's denylist keeps configured names off the tunnel's
+				// own Authorization and the WS handshake machinery.
+				for name, value := range configured.headers() {
+					r.Out.Header.Set(name, value)
+				}
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				http.Error(w, "dev server unreachable on port "+strconv.Itoa(port), http.StatusBadGateway)

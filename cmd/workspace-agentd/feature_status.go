@@ -15,15 +15,16 @@ package main
 // deliberately NOT fabricated here; the tool's description names
 // that class so the absence reads as design, not omission.
 //
-// The CONTROLLABLE set is empty today: agentd holds no write path to
-// any flag (the CRD is owner territory, instance settings are
-// operator territory, pod env is immutable at runtime). Every entry
-// reports controllable:false as FACT; candidate-dynamic flags are
-// enumerated in #1580's PR for the owner to bless — no control
-// surface is invented ahead of that blessing.
+// The CONTROLLABLE set has one entry today: dev_preview_headers
+// (design 0062) — agent-owned local tool state, written through the
+// agentd MCP tool. Everything else still reports controllable:false
+// as FACT; candidate-dynamic flags are enumerated in #1580's PR for
+// the owner to bless — no control surface is invented ahead of that
+// blessing.
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 )
 
@@ -32,9 +33,9 @@ import (
 type featureFlag struct {
 	Feature      string `json:"feature"`
 	Active       bool   `json:"active"`
-	Source       string `json:"source"`        // "space" | "operator"
-	SourceDetail string `json:"source_detail"` // the CRD path / env surface behind it
-	Controllable bool   `json:"controllable"`  // false today, reported not assumed
+	Source       string `json:"source"`        // "space" | "operator" | "tool"
+	SourceDetail string `json:"source_detail"` // the CRD path / env surface / local tool state behind it
+	Controllable bool   `json:"controllable"`  // one true entry today (dev_preview_headers); the rest reported, not assumed
 }
 
 // mcpFeatureStatus assembles the flag inventory from the boot env.
@@ -108,6 +109,20 @@ func mcpFeatureStatus() (string, error) {
 		Active:       os.Getenv("AGENTD_SIDECAR_PASSWORD") != "",
 		Source:       "operator",
 		SourceDetail: "AGENTD_SIDECAR_PASSWORD (projected only into the sidecar container; absent in this process = single-container deployment)",
+	})
+
+	// Tool-set (design 0062 §5): the agent's own preview-header
+	// configuration — local tool state one process away, not projected
+	// platform config. Active means entries are configured (headers
+	// are being injected); the count and the tool itself are the
+	// control surface, hence controllable:true.
+	n := currentDevPreviewHeaders().count()
+	flags = append(flags, featureFlag{
+		Feature:      "dev_preview_headers",
+		Active:       n > 0,
+		Source:       "tool",
+		SourceDetail: fmt.Sprintf("%d entries (agent-set literals in agentd memory-backed state)", n),
+		Controllable: true,
 	})
 
 	out, err := json.MarshalIndent(flags, "", "  ")
