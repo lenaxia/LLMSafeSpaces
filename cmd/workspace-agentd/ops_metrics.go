@@ -21,6 +21,14 @@ type opsMetrics struct {
 	memoryBytes       *prometheus.GaugeVec
 	activeSessions    *prometheus.GaugeVec
 	contextTokens     *prometheus.GaugeVec
+	// restartsSuppressed counts restart requests the credential_reload
+	// rev gate withheld because the spawn-env mux is already serving
+	// exactly the revision the current child spawned with (the
+	// 2026-10-01 restart storm: 6 same-rev pushes in 11s killed an
+	// in-flight turn and wedged opencode). Non-zero on a healthy
+	// workspace is EXPECTED under controller push churn; it means the
+	// gate is doing its job, not that restarts were lost.
+	restartsSuppressed *prometheus.CounterVec
 	// watchdogSuppressions counts would-fire moments the health-watchdog
 	// withheld because vitals corroboration (watchdog_vitals.go) showed a
 	// non-lethal state: starved (CPU advancing), flat (blocked on
@@ -65,7 +73,12 @@ func newOpsMetrics() *opsMetrics {
 	return &opsMetrics{
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
-			Help: "Total opencode restarts by reason (env_secrets, api_key, crash, oom, user_requested, health_watchdog)",
+			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog)",
+		}, []string{"workspace_id", "reason"}),
+
+		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_restarts_suppressed_total",
+			Help: "Restart requests withheld by the supervisor's credential_reload rev gate (served revision already spawned); recorded by the sidecar from the control-socket outcome",
 		}, []string{"workspace_id", "reason"}),
 
 		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
@@ -236,12 +249,34 @@ func (m *opsMetrics) RecordUploadScrub(workspaceID string, files int) {
 }
 
 // RecordRestart increments the restart counter for the given reason.
-// Reasons: env_secrets, api_key, crash, oom, user_requested, health_watchdog.
+// Reasons: env_secrets, api_key, credential_reload (socket-topology
+// outcome-recorded), crash, oom, user_requested, health_watchdog.
 func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 	if workspaceID == "" {
 		workspaceID = "unknown"
 	}
 	m.restartsTotal.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// RecordRestartSuppressed increments the withheld-restart counter for a
+// restart request the credential_reload rev gate answered without
+// touching the child.
+func (m *opsMetrics) RecordRestartSuppressed(workspaceID, reason string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.restartsSuppressed.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// restartCounter and restartSuppressedCounter expose the labeled
+// counters for tests (testutil.ToFloat64 assertions on the registry the
+// PodMonitor scrapes); production code goes through the Record* methods.
+func (m *opsMetrics) restartCounter(workspaceID, reason string) prometheus.Counter {
+	return m.restartsTotal.WithLabelValues(workspaceID, reason)
+}
+
+func (m *opsMetrics) restartSuppressedCounter(workspaceID, reason string) prometheus.Counter {
+	return m.restartsSuppressed.WithLabelValues(workspaceID, reason)
 }
 
 // SetMemoryUsage sets the current memory usage gauge.

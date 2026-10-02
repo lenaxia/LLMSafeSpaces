@@ -98,8 +98,9 @@ func TestAdapterPreSpawn_EmptyPullSupersedesLastGood(t *testing.T) {
 	a.preSpawn()
 	srv.Close()
 	empty := serveSpawnEnv(t, "pw", map[string]string{})
-	a.puller = newSpawnEnvPuller(hostOf(t, empty), "pw")
-	a.puller.bound, a.puller.attempt, a.puller.retryGap = fastTiming()
+	fresh := newSpawnEnvPuller(hostOf(t, empty), "pw")
+	fresh.bound, fresh.attempt, fresh.retryGap = fastTiming()
+	a.puller = fresh
 
 	a.preSpawn()
 	cmd := a.composeChild()

@@ -171,7 +171,48 @@ func newSocketReloadProc(cc *controlClient) *socketReloadProc {
 func (s *socketReloadProc) restart() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, _ = s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+	res, err := s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+	if err != nil {
+		// A transport failure here means the restart's OUTCOME is
+		// unknown (the supervisor answers restart synchronously — the
+		// child may well have been restarted). Log loudly: the metric
+		// pair below is the truthful-when-observable surface, and a
+		// silent drop would be indistinguishable from "nothing
+		// happened" on the dashboards.
+		log.Warn("credential reload: restart outcome unobservable — control socket round trip failed",
+			zap.Error(err))
+	}
+	recordSocketReloadOutcome(res, err)
+}
+
+// recordSocketReloadOutcome records the restart TRUTH in THIS (sidecar)
+// process's registry — the one the agentd PodMonitor actually scrapes
+// (the supervisor serves no HTTP; its own mirror of these counters is
+// unreachable). The three outcomes are distinct:
+//
+//   - restarted           → workspace_restarts_total{reason=credential_reload}
+//   - suppressed          → workspace_restarts_suppressed_total — the
+//     supervisor's credential_reload rev gate answered without touching
+//     the child (same-rev push churn; the 2026-10-01 storm class).
+//   - in_progress / error → no counter: the in-flight restart already
+//     counted, and transport errors are logged by the caller (the
+//     outcome is genuinely unknown, not zero).
+//
+// The reason the reload handler's own pre-record is skipped for this
+// topology (secrets.go): request-time counting would show a restart for
+// every push regardless of the gate's verdict — the pre-fix signature
+// verbatim, invisible churn and all.
+func recordSocketReloadOutcome(res *controlRestartResult, err error) {
+	if err != nil {
+		return
+	}
+	if res.Restarted {
+		pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), "credential_reload")
+		return
+	}
+	if !res.InProgress {
+		pkgOpsMetrics.RecordRestartSuppressed(workspaceIDFromEnv(), "credential_reload")
+	}
 }
 
 // refreshFiles applies freshly staged spawn-files without restarting the

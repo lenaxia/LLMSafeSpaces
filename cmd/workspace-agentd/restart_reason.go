@@ -108,9 +108,52 @@ func writeRestartReasonMarker(path, reason string, secretNames []string) error {
 	// 2000, supervisor 1000) with the pod's shared group 1000; in
 	// single-container mode the group bit is inert.
 	if err := os.WriteFile(path, data, 0640); err != nil { //nolint:gosec // G306: design 0051 — cross-uid marker (sidecar 2000 + supervisor 1000 writers, shared gid 1000)
-		return fmt.Errorf("write restart-reason marker %s: %w", path, err)
+		// Cross-uid rotation hole (2026-10-01): the shared marker path
+		// sits in the STICKY /sandbox-runtime dir, and 0640 grants the
+		// other writer group-READ, never write — so whichever uid wrote
+		// the marker last owns it until the pod dies, and every write
+		// from the other uid fails EACCES (the sticky bit also blocks
+		// the unlink/rename that would otherwise replace it). Fall back
+		// to a per-uid sibling (path + ".uid<N>"): the boot reader
+		// resolves the NEWEST marker across both names, so attribution
+		// survives while each writer stays inside its own file.
+		fallback := fmt.Sprintf("%s.uid%d", path, os.Getuid())
+		if ferr := os.WriteFile(fallback, data, 0640); ferr != nil { //nolint:gosec // G306: same cross-uid marker contract as the primary path
+			return fmt.Errorf("write restart-reason marker %s (fallback %s): %w (fallback: %v)", path, fallback, err, ferr)
+		}
 	}
 	return nil
+}
+
+// restartMarkerCandidates returns every marker file that could hold the
+// freshest reason: the primary path plus any per-uid fallback siblings
+// written when the primary was owned by the other container's uid.
+func restartMarkerCandidates(path string) []string {
+	candidates := []string{}
+	if _, err := os.Stat(path); err == nil {
+		candidates = append(candidates, path)
+	}
+	if uidFiles, err := filepath.Glob(path + ".uid*"); err == nil {
+		candidates = append(candidates, uidFiles...)
+	}
+	return candidates
+}
+
+// newestRestartMarker picks the candidate with the most recent modtime —
+// the other uid's fallback can be newer than a stale primary, and the
+// freshest reason is the truthful attribution.
+func newestRestartMarker(candidates []string) (string, bool) {
+	newest, newestMod := "", int64(-1)
+	for _, c := range candidates {
+		fi, err := os.Stat(c)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		if fi.ModTime().UnixNano() > newestMod {
+			newest, newestMod = c, fi.ModTime().UnixNano()
+		}
+	}
+	return newest, newest != ""
 }
 
 // logRestartReasonAtWrite is the PRIMARY logging path: emit a real-time
@@ -144,21 +187,28 @@ func logRestartReasonAtWrite(reason string, secretNames []string, core zapcore.C
 // Returns (reason, true) on success. A missing file returns (zero, false)
 // silently. A corrupt or unreadable file returns (zero, false) with a
 // warning logged via the injected core — the marker must never fail the
-// boot.
+// boot. When both the primary and per-uid fallback markers exist (the
+// two-writer cross-uid reality of sidecar mode), the NEWEST wins.
 func readRestartReasonMarker(path string, core zapcore.Core) (restartReason, bool) {
 	logger := zap.New(core)
-	data, err := os.ReadFile(path)
+	// Resolve the freshest marker across the primary + fallback names;
+	// remember which path won so failure logs name the real file.
+	resolved := path
+	if newest, ok := newestRestartMarker(restartMarkerCandidates(path)); ok {
+		resolved = newest
+	}
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			logger.Warn("restart-reason marker: failed to read",
-				zap.String("path", path), zap.Error(err))
+				zap.String("path", resolved), zap.Error(err))
 		}
 		return restartReason{}, false
 	}
 	var r restartReason
 	if err := json.Unmarshal(data, &r); err != nil {
 		logger.Warn("restart-reason marker: corrupt JSON, ignoring",
-			zap.String("path", path), zap.Error(err))
+			zap.String("path", resolved), zap.Error(err))
 		return restartReason{}, false
 	}
 	return r, true
@@ -182,11 +232,23 @@ func readRestartReasonMarker(path string, core zapcore.Core) (restartReason, boo
 //
 // The core parameter is injected so tests can assert on emitted fields.
 func logRestartReason(markerPath string, core zapcore.Core) {
+	// Consume the NEWEST marker (primary or per-uid fallback) and sweep
+	// any stale siblings from the other uid so they cannot re-surface
+	// as stale attributions on later boots.
+	resolved := markerPath
+	if newest, ok := newestRestartMarker(restartMarkerCandidates(markerPath)); ok {
+		resolved = newest
+	}
 	r, ok := readRestartReasonMarker(markerPath, core)
 	if !ok {
 		return
 	}
-	defer func() { _ = os.Remove(markerPath) }()
+	defer func() {
+		for _, c := range restartMarkerCandidates(markerPath) {
+			_ = os.Remove(c)
+		}
+		_ = os.Remove(resolved)
+	}()
 
 	logger := zap.New(core).With(
 		zap.String("reason", r.Reason),

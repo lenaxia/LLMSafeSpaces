@@ -252,7 +252,7 @@ type managedProcAdapter struct {
 	// never block restart/state/metrics readers), and the socket's
 	// spawn_env push can land between spawns.
 	pullMu         sync.Mutex
-	puller         *spawnEnvPuller
+	puller         credentialPuller
 	pullCtx        context.Context
 	currentDelta   map[string]string
 	degradedReason string
@@ -289,6 +289,18 @@ func (a *managedProcAdapter) factory() func() *exec.Cmd {
 func (a *managedProcAdapter) Restart(reason string, graceSeconds int) (bool, bool) {
 	if reason != "" {
 		log.Info("control: restart requested", zap.String("reason", reason))
+	}
+	// The credential_reload rev gate: same-rev pushes (controller push
+	// churn) are answered without touching the child. Every OTHER
+	// reason — crash, oom, health_watchdog, manual — restarts
+	// unconditionally; the gate only ever suppresses redundant
+	// credential restarts, and it fails OPEN (restarts) on any doubt.
+	// Note: the peek runs while the socket's restartMu is held, adding
+	// up to pullBounded's bound (~2.5s worst case, mux down) to the
+	// in_progress-drop window — bounded, fail-open, and cheaper than
+	// the ~5s SIGTERM window every real restart already spends there.
+	if reason == "credential_reload" && a.suppressRedundantCredentialRestart() {
+		return false, false
 	}
 	// grace_seconds maps to the SIGTERM→SIGKILL window (US-2 wiring of
 	// the deferred US-1 item). Out-of-range values collapse to the
@@ -406,6 +418,52 @@ func (a *managedProcAdapter) refreshFiles() {
 	a.filesReason = ""
 	a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
 	a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
+}
+
+// credentialPuller is the read-only seam the credential_reload gate peeks
+// through (narrow so tests can pin the rev arithmetic without a live
+// mux; production wires *spawnEnvPuller, whose pullBounded is a pure
+// read — the commit to currentDelta/anchor happens only in preSpawn at
+// spawn time).
+type credentialPuller interface {
+	pullBounded(ctx context.Context) (spawnEnvResponse, string, error)
+}
+
+// suppressRedundantCredentialRestart peeks the spawn-env mux and
+// suppresses a credential_reload restart when the current child already
+// spawned with exactly the revision the mux is serving. This is the
+// 2026-10-01 storm gate: the sidecar's credential events fan out one
+// control-socket Restart per push, and a controller reconcile burst can
+// push the SAME revision several times in a few seconds (observed: 6
+// restarts in 11s when the first relay staging landed — an in-flight
+// turn was killed and the surviving opencode wedged, aborting every
+// subsequent turn until a manual pod bounce).
+//
+// Suppression requires CERTAINTY — the gate fails OPEN (restarts) on
+// any doubt: pull error, a degrade latch, an unanchorable rev, or an
+// anchor mismatch all proceed exactly as before. Only the exact triple
+// (clean pull ∧ not degraded ∧ served == spawned) is withheld, and the
+// withheld request is counted so the suppression itself is observable.
+func (a *managedProcAdapter) suppressRedundantCredentialRestart() bool {
+	if a.puller == nil {
+		return false
+	}
+	res, _, err := a.puller.pullBounded(a.pullCtx)
+	if err != nil {
+		return false
+	}
+	a.pullMu.Lock()
+	anchor, degraded := a.servedEnvRevAnchor, a.degradedReason
+	a.pullMu.Unlock()
+	serving := anchoredPrefix(res.Rev)
+	if degraded != "" || serving == "" || serving != anchor {
+		return false
+	}
+	log.Info("control: credential_reload suppressed — mux already serving the spawned revision",
+		zap.String("servedRev", res.Rev),
+		zap.String("anchor", anchor))
+	pkgOpsMetrics.RecordRestartSuppressed(workspaceIDFromEnv(), "credential_reload")
+	return true
 }
 
 // RefreshFiles is the control-socket entry point for refresh_files: the

@@ -1272,7 +1272,19 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 			// regardless of marker outcome. The reason label is the short
 			// metric form (env_secrets / api_key) matching the help text and
 			// the crash/oom reasons.
-			pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+			//
+			// EXCEPT the socket topology (see shouldPreRecordRestartMetric):
+			// *socketReloadProc reaches the supervisor's credential_reload
+			// rev gate, which may SUPPRESS the restart — counting here, at
+			// request time, would show a restart for every push regardless
+			// of the gate's verdict and bury the suppression signal under
+			// the exact churn this gate exists to expose.
+			// socketReloadProc.restart records the outcome-truthful counter
+			// pair (restarts / restarts_suppressed) in the sidecar registry
+			// the PodMonitor scrapes.
+			if shouldPreRecordRestartMetric(proc) {
+				pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+			}
 		}
 		//nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
 		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartDecisionConfig{
@@ -1325,8 +1337,9 @@ func hasFileClassEntries(batch []secrets.Secret) bool {
 // metricRestartReason maps a marker reason (from classifySecretRestartReason,
 // used in the on-disk restart-reason marker) to the short Prometheus label
 // used by opsMetrics.RecordRestart. The metric help text enumerates:
-// env_secrets, api_key, crash, oom, user_requested. Unknown reasons pass
-// through unchanged so the metric remains useful if new reasons are added.
+// env_secrets, api_key, credential_reload, crash, oom, user_requested,
+// health_watchdog. Unknown reasons pass through unchanged so the metric
+// remains useful if new reasons are added.
 func metricRestartReason(markerReason string) string {
 	switch markerReason {
 	case "env_secrets_changed":
@@ -1336,6 +1349,19 @@ func metricRestartReason(markerReason string) string {
 	default:
 		return markerReason
 	}
+}
+
+// shouldPreRecordRestartMetric reports whether the reload handler
+// should count the restart at REQUEST time. True for every topology
+// except *socketReloadProc: the socket path's OUTCOME is observable
+// (the supervisor's credential_reload rev gate answers through the
+// control-socket response) and is recorded outcome-truthfully by
+// recordSocketReloadOutcome in the sidecar registry the PodMonitor
+// scrapes — pre-recording here would double-count real restarts and
+// bury suppressions under request-time churn.
+func shouldPreRecordRestartMetric(proc restartableProcess) bool {
+	_, socket := proc.(*socketReloadProc)
+	return !socket
 }
 
 func shouldRestart(batch []secrets.Secret) bool {
