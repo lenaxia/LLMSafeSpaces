@@ -350,6 +350,11 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 
 	muteClass := s.relayTokens != nil && !s.relayFallback && (handoffErr != nil || handoff == nil)
 	seen := make(map[string]bool)
+	// Per-batch flag: relay_degraded_batches_total counts BATCHES, so a
+	// strict mute of N frontable providers in one build increments once —
+	// the same unit the class-level path uses (relay_batch.go's
+	// relayBatchDegrade). Lives OUTSIDE the binding loop by construction.
+	stageableMuted := false
 	var out []BatchEntry
 	for _, b := range bindings {
 		if seen[b.Slug] {
@@ -411,7 +416,7 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 				// check is skipped THERE and the rewrite delivers the
 				// token via relayEmitted — the renewal path owns expiry,
 				// unchanged). The raw fallback DELIVERS + counts.
-				s.audit(ctx, ownerUserID, "relay_fallback_delivery", nil, &workspaceID,
+				s.audit(ctx, ownerUserID, DegradeRelayFallbackDelivery, nil, &workspaceID,
 					map[string]string{"slug": pd.Slug, "kind": pd.Kind, "reason": "token_expired"})
 				relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
 			case relayEmptyToken:
@@ -421,18 +426,52 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 					map[string]string{"slug": pd.Slug, "kind": pd.Kind})
 				continue
 			case relayNotStaged:
-				// Mixed-fleet raw path (US-72.3 D5) — but AUDITED: under
-				// flag-on a raw emission is operator-relevant state (a
-				// frontable provider bound after the last staging pass,
-				// or a torn handoff, would land here too and be
-				// unobservable until the US-72.6 sweep otherwise). The
-				// audit names the slug so the row is actionable; the
-				// builder deliberately does NOT gate on kind (it cannot
-				// distinguish non-frontable-by-design from
-				// not-yet-staged — #1529 review ruling).
-				s.audit(ctx, ownerUserID, "relay_raw_emission", nil, &workspaceID,
-					map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind,
-						"reason": "absent from staged handoff"})
+				// Per-provider readiness (design 0061 §4): a FRONTABLE
+				// provider missing from a present handoff — mint failure,
+				// staging lag, a torn handoff — is not-ready for THIS
+				// credential (the 5-day #1611 outage's residual failure
+				// shape: the handoff present, every token missing). The
+				// #1529 "cannot distinguish" ruling held for the MUTE
+				// decision on kind alone; the shared RelayFrontableProvider
+				// predicate IS the controller's own stageability decision,
+				// so counting on it cannot misclassify the D5 class.
+				if RelayFrontableProvider(pd) {
+					if s.relayFallback {
+						s.audit(ctx, ownerUserID, DegradeRelayFallbackDelivery, nil, &workspaceID,
+							map[string]string{"slug": pd.Slug, "kind": pd.Kind, "reason": "absent_from_handoff"})
+						relayFallbackDeliveries.WithLabelValues(workspaceID, pd.Slug).Inc()
+					} else {
+						// STRICT: zero raw-key delivery for frontable
+						// providers — the same fail-closed posture as the
+						// whole-handoff-absent mute, per-provider. The
+						// slug is marked seen BEFORE continuing so a
+						// duplicate binding row for the same decrypted
+						// slug does not re-audit (parity with the
+						// migration path's pd-slug dedup).
+						s.audit(ctx, ownerUserID, "credential_skipped_relay_not_ready", nil, &workspaceID,
+							map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind, "reason": "frontable provider absent from present handoff"})
+						if !stageableMuted {
+							relayDegradedBatches.WithLabelValues(workspaceID, DegradeRelayStagingNotReady).Inc()
+							stageableMuted = true
+						}
+						seen[b.Slug] = true
+						seen[pd.Slug] = true
+						continue
+					}
+				} else {
+					// Mixed-fleet raw path (US-72.3 D5) — but AUDITED: under
+					// flag-on a raw emission is operator-relevant state (a
+					// frontable provider bound after the last staging pass,
+					// or a torn handoff, would land here too and be
+					// unobservable until the US-72.6 sweep otherwise). The
+					// audit names the slug so the row is actionable; the
+					// builder deliberately does NOT gate on kind (it cannot
+					// distinguish non-frontable-by-design from
+					// not-yet-staged — #1529 review ruling).
+					s.audit(ctx, ownerUserID, "relay_raw_emission", nil, &workspaceID,
+						map[string]string{"credentialID": b.ID, "slug": pd.Slug, "kind": pd.Kind,
+							"reason": "absent from staged handoff"})
+				}
 			}
 		}
 		seen[b.Slug] = true

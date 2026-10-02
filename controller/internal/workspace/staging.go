@@ -431,8 +431,14 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	}
 
 	// Conditions (§4.6): staged carries the revision; stale carries the
-	// classified cause; rejected mirrors router rejection telemetry.
-	stagedMsg := fmt.Sprintf("%d provider(s) staged at revision %s (keyID %s)", len(desired), revision, keyID)
+	// classified cause; rejected mirrors router rejection telemetry. The
+	// staged message counts the handoff's ACTUAL token set — a mint
+	// failure with no cached survivor leaves the handoff short of
+	// desired, and a True condition must not claim the shortfall staged.
+	stagedMsg := fmt.Sprintf("%d provider(s) staged at revision %s (keyID %s)", len(handoff.Providers), revision, keyID)
+	if mintsFailed := len(desired) - len(handoff.Providers); mintsFailed > 0 {
+		stagedMsg += fmt.Sprintf("; %d token mint(s) failed", mintsFailed)
+	}
 	if len(skipped) > 0 {
 		stagedMsg += fmt.Sprintf("; %d skipped (not relay-frontable): %s", len(skipped), joinQuoted(skipped))
 	}
@@ -450,20 +456,23 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 
 // relayDesiredSet splits the resolved providers into stageable (with their
 // effective upstream endpoint) and skipped (kinds the BYO router cannot
-// front, or custom credentials without a BaseURL — worklog D5).
+// front, or custom credentials without a BaseURL — worklog D5). The
+// stageability truth is pkg/secrets.RelayFrontableProvider — the SAME
+// predicate the one builder's per-provider fallback classification uses,
+// so the staged set and the counted set key identically by construction.
 func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesiredProvider, skipped []string) {
 	for _, pd := range providers {
 		if !secrets.ProviderRelayStageable(pd.Kind) {
 			skipped = append(skipped, pd.Slug+" (kind "+pd.Kind+": SDK-shaped auth, not relay-frontable)")
 			continue
 		}
+		if !secrets.RelayFrontableProvider(pd) {
+			skipped = append(skipped, pd.Slug+" (kind "+pd.Kind+": no baseURL and no kind default)")
+			continue
+		}
 		base := pd.BaseURL
 		if base == "" {
 			base = secrets.ProviderDefaultBaseURL(pd.Kind)
-		}
-		if base == "" {
-			skipped = append(skipped, pd.Slug+" (kind "+pd.Kind+": no baseURL and no kind default)")
-			continue
 		}
 		models := make([]string, 0, len(pd.Models))
 		for _, m := range pd.Models {

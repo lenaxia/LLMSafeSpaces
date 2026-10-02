@@ -976,3 +976,30 @@ func TestStaging_MessageOnlyConditionChangePersists(t *testing.T) {
 	assert.Equal(t, healed.Message, got.Message,
 		"a same-status/same-reason message-only change must persist")
 }
+
+// TestStaging_TokensFailedMessageIsHonest: when a mint fails and no
+// cached token survives, the handoff carries FEWER providers than
+// desired — CredentialsStaged=True's message must count what actually
+// staged and name the shortfall, not claim the desired set staged (the
+// 5-day-outage observation class: a True condition saying "1 provider(s)
+// staged" while the batch delivered raw for that provider).
+func TestStaging_TokensFailedMessageIsHonest(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 6)
+	ws := makeRelayWorkspace("ws-msgfail")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{mintErr: fmt.Errorf("router overloaded")}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	ho := decodeHandoff(t, getSecret(t, r, "default", handoffSecretName("ws-msgfail")).Data[relayHandoffDataKey])
+	assert.Empty(t, ho.Providers, "fixture: the mint failed, nothing staged")
+
+	cond := conditionOf(ws, v1.WorkspaceConditionCredentialsStaged)
+	require.NotNil(t, cond)
+	assert.Equal(t, "True", cond.Status)
+	assert.Contains(t, cond.Message, "0 provider(s) staged",
+		"the message counts the ACTUALLY staged set")
+	assert.Contains(t, cond.Message, "1 token mint(s) failed",
+		"the shortfall is named — a True condition must not claim the desired set staged")
+}

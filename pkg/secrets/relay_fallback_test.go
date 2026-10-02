@@ -204,3 +204,175 @@ func TestRelayFallback_StrictExpiredDeliversToken(t *testing.T) {
 	assert.NotNil(t, llm.Metadata, "token metadata (with the expiry the agentd liveness reads)")
 	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "openai"), "no fallback delivery under strict")
 }
+
+// TestRelayFallback_StageableAbsentFromPresentHandoff_MigrationCounts:
+// design 0061 §4's not-ready is PER-PROVIDER ("the handoff Secret ...
+// carrying a token for a currently-bound llm-provider credential, is
+// absent") — a FRONTABLE provider whose token is missing from an
+// otherwise-present handoff (mint failure, staging lag, torn handoff)
+// is not-ready for THAT credential, and its raw emission must join the
+// COUNTED fallback class. Post-#1611 this is the live residual failure
+// shape: the 5-day outage's mint path has never succeeded in
+// production, and a mint outage leaves exactly this handoff — present,
+// token missing — which the stall detector was blind to (relayNotStaged
+// → relay_raw_emission, uncounted, invisible to the strict-flip
+// criterion). The NON-frontable kind in the same batch stays the
+// uncounted D5 mixed-fleet class (Key Decision 3's bedrock pin,
+// unchanged).
+func TestRelayFallback_StageableAbsentFromPresentHandoff_MigrationCounts(t *testing.T) {
+	resetRelayCounters(t)
+	// Empty-but-present handoff: staging ran, every token is missing
+	// (the all-mints-failed shape; a controller pass writes exactly this).
+	svc, env, _ := installRelayEnv(t, &fakeRelayTokenSource{handoff: testHandoff("rMISS001")})
+	resetAudit(env.secrets)
+	svc.SetRelayDeliveryFallback(true)
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	// Per-provider fallbacks stay counter/audit-only — the expired-arm
+	// pin's class decision (TestRelayFallback_ExpiredTokenFallsBackPerProvider):
+	// no class-level degrade when the handoff is present.
+	assert.Nil(t, degrade, "per-provider fallback is not a class degrade (the M2 ruling's shape)")
+
+	llm, ok := findEntry(batch, SecretTypeLLMProvider, "openai")
+	require.True(t, ok, "migration delivers the raw entry (the availability half)")
+	assert.Contains(t, llm.Value, `"apiKey":"admin-key"`)
+	assert.Nil(t, llm.Metadata, "no relay metadata on a raw fallback entry")
+	assert.Greater(t, fallbackDelta(t, "ws-1", "openai"), 0.0,
+		"the stageable-absent emission COUNTS — the stall detector must see the mint-failure class")
+	assert.Contains(t, auditActions(env.secrets), "relay_fallback_delivery",
+		"the emission audits as a fallback delivery, not as the D5 raw class")
+
+	// The non-frontable kind in the same batch: unchanged D5 raw path —
+	// audited relay_raw_emission, NEVER counted (Key Decision 3).
+	bedrock, ok := findEntry(batch, SecretTypeLLMProvider, "aws-bedrock")
+	require.True(t, ok, "the non-frontable kind keeps the raw mixed-fleet path")
+	assert.Contains(t, bedrock.Value, "bedrock-raw-key")
+	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "aws-bedrock"),
+		"a non-frontable raw emission is NOT a fallback delivery (Key Decision 3, unchanged)")
+	assert.Contains(t, auditActions(env.secrets), "relay_raw_emission")
+}
+
+// TestRelayFallback_StageableAbsentFromPresentHandoff_StrictMutes: under
+// STRICT a frontable provider missing from a present handoff must NOT
+// deliver raw — the fail-open hole in the fail-closed mode (strict's
+// contract: zero raw-key delivery for stageable providers). The mute is
+// audited and counted by relay_degraded_batches_total (the
+// mode-independent detector); the non-frontable kind keeps the D5 raw
+// carve in both modes.
+func TestRelayFallback_StageableAbsentFromPresentHandoff_StrictMutes(t *testing.T) {
+	resetRelayCounters(t)
+	svc, env, _ := installRelayEnv(t, &fakeRelayTokenSource{handoff: testHandoff("rMISS002")})
+	resetAudit(env.secrets)
+	// strict: the zero value — NO SetRelayDeliveryFallback call.
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Nil(t, degrade, "per-provider mute is not a class degrade (handoff present)")
+
+	_, ok := findEntry(batch, SecretTypeLLMProvider, "openai")
+	assert.False(t, ok, "STRICT never emits raw for a frontable provider — the fail-open hole closed")
+	assert.Greater(t, degradedDelta(t, "ws-1", DegradeRelayStagingNotReady), 0.0,
+		"the strict mute is mode-independently detected (relay_degraded_batches_total)")
+	assert.Contains(t, auditActions(env.secrets), "credential_skipped_relay_not_ready",
+		"the muted provider is named in the audit vocabulary")
+	assert.Equal(t, 0.0, fallbackDelta(t, "ws-1", "openai"), "no fallback delivery under strict")
+
+	// D5 strict carve: the non-frontable kind still rides raw.
+	bedrock, ok := findEntry(batch, SecretTypeLLMProvider, "aws-bedrock")
+	require.True(t, ok, "the non-frontable D5 carve survives strict mode")
+	assert.Contains(t, bedrock.Value, "bedrock-raw-key")
+	assert.Nil(t, bedrock.Metadata)
+}
+
+// TestRelayFrontableProvider_Matrix pins the shared predicate the
+// controller's relayDesiredSet and the builder's per-provider fallback
+// classification MUST agree on (one truth in pkg/secrets — the staged
+// set and the counted set key identically by construction).
+func TestRelayFrontableProvider_Matrix(t *testing.T) {
+	assert.True(t, RelayFrontableProvider(LLMProviderData{Kind: "openai"}),
+		"a stageable kind with a table default upstream is frontable")
+	assert.True(t, RelayFrontableProvider(LLMProviderData{Kind: "openai_compatible", BaseURL: "https://up.example.com/v1"}),
+		"a custom endpoint kind with an explicit BaseURL is frontable")
+	assert.False(t, RelayFrontableProvider(LLMProviderData{Kind: "openai_compatible"}),
+		"a custom endpoint kind WITHOUT a BaseURL is not frontable (the controller skips it — worklog D5)")
+	assert.False(t, RelayFrontableProvider(LLMProviderData{Kind: "bedrock", BaseURL: "https://x.example.com"}),
+		"a non-stageable kind is never frontable regardless of BaseURL")
+	assert.False(t, RelayFrontableProvider(LLMProviderData{Kind: ""}), "no kind, no fronting")
+}
+
+// TestRelayFallback_StrictTwoFrontableAbsent_CountsBatchOnce: the strict
+// per-provider mute fires relay_degraded_batches_total ONCE PER BATCH
+// (the counter's unit — the class-level path's shape), no matter how
+// many frontable providers the all-mints-failed handoff is missing.
+// Review r1 finding 1's missing test: the guard was a dead store inside
+// the binding loop (per-ENTRY counting, 2.0 here).
+func TestRelayFallback_StrictTwoFrontableAbsent_CountsBatchOnce(t *testing.T) {
+	resetRelayCounters(t)
+	svc, env, _ := setupBuilder(t)
+	anthropic := CredentialBinding{
+		ID: "cred-anthropic", OwnerType: "admin", OwnerID: "_platform", Kind: "anthropic", Slug: "anthropic-row-slug",
+		Ciphertext: adminCiphertext(t, env.adminKey, LLMProviderData{
+			Kind: "anthropic", Slug: "anthropic", APIKey: "anthropic-raw-key",
+			Models: []LLMModelConfig{{ID: "claude-sonnet-4-5"}},
+		}),
+		Version: 2, SourceType: "auto",
+	}
+	env.creds = &mockCredentialStore{bindings: []CredentialBinding{env.adminCred, anthropic}}
+	svc.store = env.store()
+	svc.SetRelayTokenSource(&fakeRelayTokenSource{handoff: testHandoff("rTWO0001")})
+	resetAudit(env.secrets)
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Nil(t, degrade, "per-provider mute is not a class degrade")
+
+	_, ok := findEntry(batch, SecretTypeLLMProvider, "openai")
+	assert.False(t, ok)
+	_, ok = findEntry(batch, SecretTypeLLMProvider, "anthropic")
+	assert.False(t, ok, "both frontable providers muted under strict")
+	assert.Equal(t, 1.0, degradedDelta(t, "ws-1", DegradeRelayStagingNotReady),
+		"ONE batch-level increment regardless of muted-provider count (the counter's unit)")
+}
+
+// TestRelayFallback_StrictDuplicateRows_SingleMutePerSlug: the same
+// decrypted slug reached via two binding rows (the legacy row-slug-only
+// dedup shape) mutes EXACTLY once — one audit row, one batch counter
+// tick. Review r1 finding 1's dedup bypass: the mute's continue skipped
+// the pd-slug seen mark, double-firing audit and counter per row.
+func TestRelayFallback_StrictDuplicateRows_SingleMutePerSlug(t *testing.T) {
+	resetRelayCounters(t)
+	svc, env, _ := setupBuilder(t)
+	dup := CredentialBinding{
+		ID: "cred-admin-dup", OwnerType: "admin", OwnerID: "_platform", Kind: "openai", Slug: "openai-dup-row",
+		Ciphertext: adminCiphertext(t, env.adminKey, LLMProviderData{Kind: "openai", Slug: "openai", APIKey: "admin-key"}),
+		Version:    3, SourceType: "auto",
+	}
+	env.creds = &mockCredentialStore{bindings: []CredentialBinding{env.adminCred, dup}}
+	svc.store = env.store()
+	svc.SetRelayTokenSource(&fakeRelayTokenSource{handoff: testHandoff("rDUP0001")})
+	resetAudit(env.secrets)
+
+	batch, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, func() int {
+		n := 0
+		for _, e := range batch.Entries {
+			if e.Type == SecretTypeLLMProvider {
+				n++
+			}
+		}
+		return n
+	}(), "no llm-provider entries under the strict mute")
+
+	muteRows := 0
+	env.secrets.mu.Lock()
+	for _, a := range env.secrets.audit {
+		if a.Action == "credential_skipped_relay_not_ready" {
+			muteRows++
+		}
+	}
+	env.secrets.mu.Unlock()
+	assert.Equal(t, 1, muteRows, "exactly ONE mute audit for the duplicate-row slug")
+	assert.Equal(t, 1.0, degradedDelta(t, "ws-1", DegradeRelayStagingNotReady), "one batch-level tick")
+}

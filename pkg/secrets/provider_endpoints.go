@@ -50,3 +50,19 @@ func ProviderRelayStageable(kind string) bool {
 	_, ok := providerDefaultBaseURLs[kind]
 	return ok
 }
+
+// RelayFrontableProvider reports whether a DECRYPTED provider is one the
+// BYO relay can front: a stageable kind with a resolvable upstream
+// endpoint (explicit BaseURL or a kind default). This is the single
+// predicate the controller's staging pass (relayDesiredSet) and the one
+// builder's relay tier share — the staged set and the builder's
+// per-provider fallback classification key identically by construction,
+// so a provider the controller would have staged can never be mistaken
+// for the non-frontable mixed-fleet class (design 0058 worklog D5) at
+// batch time.
+func RelayFrontableProvider(pd LLMProviderData) bool {
+	if !ProviderRelayStageable(pd.Kind) {
+		return false
+	}
+	return pd.BaseURL != "" || ProviderDefaultBaseURL(pd.Kind) != ""
+}
