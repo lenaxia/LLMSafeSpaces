@@ -378,8 +378,8 @@ sys.exit(3)
 " "$1" "$2" 2>/dev/null
 }
 
-PID7_A=$(ctl_f7 status "" | grep '^child_pid=' | cut -d= -f2)
-[[ -n "${PID7_A}" ]] || die "F7 FAIL: status over the control socket returned no child_pid"
+PID7_A=$(ctl_f7 status "" | grep '^child_pid=[0-9]' | cut -d= -f2)
+[[ -n "${PID7_A}" ]] || die "F7 FAIL: status over the control socket returned no numeric child_pid (error responses print child_pid=None — a vacuous pass guard)"
 
 RES7=$(ctl_f7 restart credential_reload)
 echo "${RES7}" | grep -q '^restarted=False' \
@@ -388,16 +388,24 @@ echo "${RES7}" | grep -q '^in_progress=False' \
     || die "F7 FAIL: suppression confused with an in-progress drop ($(echo "${RES7}" | tr '\n' ' '))"
 ok "F7: socket answered {restarted:False, in_progress:False} (suppressed)"
 
-PID7_B=$(ctl_f7 status "" | grep '^child_pid=' | cut -d= -f2)
+PID7_B=$(ctl_f7 status "" | grep '^child_pid=[0-9]' | cut -d= -f2)
 [[ "${PID7_B}" == "${PID7_A}" ]] \
     || die "F7 FAIL: suppressed restart changed the child pid (${PID7_A} -> ${PID7_B})"
 ok "F7: child pid unchanged across the suppressed request (${PID7_A})"
 
 # --- (b) sidecar-initiated restart, counted on the scraped surface ----------
 MPORT=$(( RESYNC_PORT + 210 ))
-kc port-forward "pod/$(pod_of "${WS7}")" "${MPORT}:4098" >/dev/null 2>&1 &
+M7_LOG=$(mktemp)
+kc port-forward "pod/$(pod_of "${WS7}")" "${MPORT}:4098" >"${M7_LOG}" 2>&1 &
 M7_PID=$!
-sleep 2
+M7_WAIT=0
+until grep -q "Forwarding from" "${M7_LOG}" 2>/dev/null; do
+    kill -0 "${M7_PID}" 2>/dev/null || break
+    M7_WAIT=$(( M7_WAIT + 1 ))
+    [[ "${M7_WAIT}" -gt 20 ]] && { kill "${M7_PID}" 2>/dev/null || true; die "F7: admin-metrics port-forward never established"; }
+    sleep 0.5
+done
+rm -f "${M7_LOG}"
 metric_f7() {
     curl -sm 10 "http://127.0.0.1:${MPORT}/metrics" 2>/dev/null \
         | awk -v ws="${WS7}" '$0 ~ "workspace_restarts_total" && $0 ~ "workspace_id=\""ws"\"" && $0 ~ "credential_reload" {s+=$NF} END {print s+0}'
