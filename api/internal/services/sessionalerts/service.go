@@ -25,6 +25,24 @@ import (
 // so a long-lived workspace does not accumulate an unbounded response.
 const AlertRetention = 24 * time.Hour
 
+// UnresolvedStaleAfter bounds how long an unresolved alert can be
+// trusted as live. A genuine hang re-alerts every 30min cooldown
+// (proxy_lifecycle.go busyAlertCooldown), so unresolved rows older
+// than 2x that with no successor mean the sweep's resolution was LOST
+// (API restart spanning recovery, resolve-flush failure) —
+// ListByWorkspace heals them on read, so the very read that would
+// have latched a badge bounds the false badge to this window instead.
+//
+// Two bounded false-latch paths remain within the window (do not
+// claim "never a latch"): (1) an orphan younger than this bound is
+// served unresolved — a client loading in that window latches until
+// reconnect's re-seed or a later read past the bound heals the row;
+// (2) resolveHungs publishes the SSE clear before the persist
+// commits, so a seed fetch landing between the two re-latches until
+// the same bounds. Both self-correct; neither outlives this window
+// for future reads.
+const UnresolvedStaleAfter = time.Hour
+
 type Service struct {
 	db     interfaces.DatabaseService
 	logger *logger.Logger
@@ -38,6 +56,7 @@ type alertEvent struct {
 	sessionID         string
 	alert             string
 	oldestBusySeconds int
+	resolve           bool // set: resolve the workspace's live alerts instead of appending one
 }
 
 // New creates a SessionAlertsService.
@@ -89,9 +108,43 @@ func (s *Service) RecordAlert(workspaceID, sessionID, alert string, oldestBusySe
 	}
 }
 
+// ResolveWorkspace is non-blocking like RecordAlert: queues a
+// resolution for the workspace's live alerts (the D6 sweep observed
+// the hang end). A full queue drops the oldest queued event — the SSE
+// alert_resolved event is the primary surface; the persisted flag is
+// best-effort durability, same contract as RecordAlert.
+func (s *Service) ResolveWorkspace(workspaceID string) {
+	select {
+	case s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}:
+	default:
+		if s.logger != nil {
+			s.logger.Warn("session_alerts: channel full, dropping oldest event (resolve)",
+				"workspaceID", workspaceID, "queueSize", len(s.queue))
+		}
+		select {
+		case <-s.queue:
+		default:
+		}
+		s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}
+	}
+}
+
 // ListByWorkspace returns persisted alerts newest-first, filtered to
-// the retention window.
+// the retention window. Unresolved rows older than UnresolvedStaleAfter
+// are healed (resolved) first: the read is the last point every latch
+// path funnels through, so it is where lost resolution authority is
+// restored. Best-effort — a heal failure serves the read unhealed (the
+// sweep's own resolution and the SSE clears remain the primary paths).
 func (s *Service) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
+	if n, err := s.db.ResolveStaleSessionAlerts(ctx, workspaceID, time.Now().Add(-UnresolvedStaleAfter)); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("session_alerts: stale heal failed (serving read unhealed)",
+				"workspaceID", workspaceID, "error", err.Error())
+		}
+	} else if n > 0 && s.logger != nil {
+		s.logger.Info("session_alerts: healed stale unresolved alerts on read",
+			"workspaceID", workspaceID, "count", n)
+	}
 	alerts, err := s.db.ListSessionAlerts(ctx, workspaceID, limit)
 	if err != nil {
 		return nil, err
@@ -124,6 +177,22 @@ func (s *Service) drain() {
 func (s *Service) flush(ev alertEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if ev.resolve {
+		n, err := s.db.ResolveSessionAlerts(ctx, ev.workspaceID)
+		if s.logger != nil {
+			if err != nil {
+				// The read-side heal in ListByWorkspace is the
+				// re-arm path: the orphan ages past
+				// UnresolvedStaleAfter and heals on next read.
+				s.logger.Error("session_alerts: resolve failed (read-side heal will re-arm)",
+					err, "workspaceID", ev.workspaceID)
+			} else if n == 0 {
+				s.logger.Info("session_alerts: resolve matched no rows (possible orphan already healed)",
+					"workspaceID", ev.workspaceID)
+			}
+		}
+		return
+	}
 	if err := s.db.InsertSessionAlert(ctx, ev.workspaceID, ev.sessionID, ev.alert, ev.oldestBusySeconds); err != nil {
 		if s.logger != nil {
 			s.logger.Error("session_alerts: insert failed", err,

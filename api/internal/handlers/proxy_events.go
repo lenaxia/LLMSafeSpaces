@@ -23,6 +23,20 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 	prior, hadPrior := h.state().GetPriorPhase(context.Background(), workspace.Name)
 	h.state().SetPriorPhase(context.Background(), workspace.Name, string(phase))
 
+	// D6 resolution on leaving Active: the sweep only watches Active
+	// workspaces (the reconciler pre-filters), so this watch event is
+	// the moment its resolution authority is lost. The hang cannot
+	// outlive the pod (a resumed workspace has fresh agent state).
+	// Honest bounds: a post-RESTART leave-Active still orphans to the
+	// read-side heal (in-memory busyAlerts came back empty), and a
+	// deleted-CR / watch-410 gap fires no callback at all (busyAlerts
+	// entry leaks for process lifetime — bounded, one entry per
+	// workspace). Seed calls (no prior) are no-ops — a restart
+	// re-seeds Active phases only.
+	if phase != phaseActive && hadPrior && string(prior) != string(phase) && h.busyAlerted(workspace.Name) {
+		h.resolveHungs(workspace.Name)
+	}
+
 	if h.userBroker != nil && workspace.Spec.Owner.UserID != "" {
 		h.userBroker.RecordWorkspaceOwner(workspace.Name, workspace.Spec.Owner.UserID)
 		h.userBroker.PublishToUser(workspace.Spec.Owner.UserID, apitypes.WorkspaceSSEEvent{

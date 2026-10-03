@@ -198,6 +198,16 @@ func (m *MockDatabaseService) ListSessionAlerts(ctx context.Context, workspaceID
 	return args.Get(0).([]types.SessionAlert), args.Error(1)
 }
 
+func (m *MockDatabaseService) ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error) {
+	args := m.Called(ctx, workspaceID)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockDatabaseService) ResolveStaleSessionAlerts(ctx context.Context, workspaceID string, before time.Time) (int64, error) {
+	args := m.Called(ctx, workspaceID, before)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 func (m *MockDatabaseService) DeleteSessionIndex(ctx context.Context, workspaceID string) error {
 	return m.Called(ctx, workspaceID).Error(0)
 }

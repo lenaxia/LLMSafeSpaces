@@ -184,9 +184,23 @@ def jwt_login(cfg: "Config") -> str:
     use the JWT token returned here as ``api_key`` for subsequent calls.
 
     Raises ``RuntimeError`` if login fails.
+
+    A 429 is retried once after the server-advertised ``retryAfter``
+    (bounded): the S-RATE-LIMIT scenario deliberately trips the login
+    limiter, and without the retry the NEXT scenario's jwt_login
+    inherits the 429 and the canary run flakes (observed twice on
+    PR CI: 2026-10-03).
     """
     body = json.dumps({"email": cfg.email, "password": cfg.password}).encode()
     status, content = raw_do("POST", f"{cfg.api_url}/api/v1/auth/login", body=body)
+    if status == 429:
+        retry_after = 60.0
+        try:
+            retry_after = min(float(json.loads(content).get("retryAfter", 60)), 60.0)
+        except (ValueError, AttributeError):
+            pass
+        time.sleep(retry_after + 1.0)
+        status, content = raw_do("POST", f"{cfg.api_url}/api/v1/auth/login", body=body)
     if status != 200:
         raise RuntimeError(f"jwt login failed: status={status} body={content[:200]!r}")
     obj = json.loads(content)
