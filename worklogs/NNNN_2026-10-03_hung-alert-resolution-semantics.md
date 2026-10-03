@@ -62,7 +62,13 @@ The bounded-window claim was happy-path-only; three validated paths lose the res
 ### Review round 4 (#1620) — documentation accuracy (blocking under repo rules)
 
 - Canary fix commit's trigger claim corrected: the per-route-limiter inheritance mechanism is impossible in the CI topology; the global limiter is the plausible source; docstring and worklog now say so.
-- `ResolveWorkspace`/`ResolveSessionAlerts` doc comments name both callers (sweep + leave-Active watch hook); the provider's `alert_resolved` handler comment is writer-accurate.
+- `ResolveWorkspace`/`ResolveSessionAlerts` doc comments name both callers (sweep + leave-Active watch hook); the provider's `alert_resolved` handler comment is writer-accurate. (Round 6 note: this round's pass caught the interface/database copies but missed the concrete `sessionalerts.Service.ResolveWorkspace` method doc and five sibling copies of the duplicated commentary — fixed in round 6; the claim here was overstated at the time.)
+
+### Review round 6 (#1620) — the duplicated-commentary sweep
+
+Six remaining sweep-only attributions fixed in one pass (WorkflowsPage gate comment, e2e header, alerts-test header, the concrete `Service.ResolveWorkspace` method doc, the 000034 migration comment + helm mirror), plus this worklog's own round-4 completeness claim corrected. Round 5 fixed one copy of the duplicated commentary and missed its siblings — this pass greps the tree for the pattern instead of fixing named sites.
+
+CI note: `TestSSETracker_PreservesMapAcrossReconnect` flaked once this round (passed in every other run of this PR, including the race-detector suite) — pre-existing intermittent, re-run.
 
 ---
 

@@ -7,10 +7,12 @@
 // alerts endpoint — an alert missed while disconnected must still
 // surface the banner/badge — but ONLY for UNRESOLVED alerts
 // (resolvedAt): the feed is append-only 24h history, and resolution is
-// server-side truth (the D6 sweep sets resolved_at and emits
-// workspace.alert_resolved when it observes the hang end). A session
-// that hung and recovered keeps its alerts forever; the resolved flag
-// — not client-side busy reconstruction — decides liveness.
+// server-side truth (resolved_at is written when the hang ends — D6
+// sweep observation or leave-Active watch event, both of which also
+// emit workspace.alert_resolved, or the read-side heal aging a lost
+// resolution). A session that hung and recovered keeps its alerts
+// forever; the resolved flag — not client-side busy reconstruction —
+// decides liveness.
 
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";

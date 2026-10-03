@@ -109,8 +109,9 @@ func (s *Service) RecordAlert(workspaceID, sessionID, alert string, oldestBusySe
 }
 
 // ResolveWorkspace is non-blocking like RecordAlert: queues a
-// resolution for the workspace's live alerts (the D6 sweep observed
-// the hang end). A full queue drops the oldest queued event — the SSE
+// resolution for the workspace's live alerts (the hang ended — D6
+// sweep observation or leave-Active watch event). A full queue drops
+// the oldest queued event — the SSE
 // alert_resolved event is the primary surface; the persisted flag is
 // best-effort durability, same contract as RecordAlert.
 func (s *Service) ResolveWorkspace(workspaceID string) {

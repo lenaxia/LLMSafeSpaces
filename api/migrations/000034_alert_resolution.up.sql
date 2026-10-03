@@ -6,8 +6,9 @@
 -- condition ("is a session hung now?") previously reconstructed it
 -- client-side from busy snapshots — a race-prone reconstruction (the
 -- hung-badge latch bug family). resolved_at makes the condition
--- first-party: NULL while the hang is live, set when the D6 sweep
--- observes the session leave busy. Consumers read
+-- first-party: NULL while the hang is live, set when the hang ends
+-- (D6 sweep observation, the leave-Active watch event, or the
+-- read-side heal aging a lost resolution). Consumers read
 -- alert = 'session_hung' AND resolved_at IS NULL.
 
 ALTER TABLE public.session_alerts

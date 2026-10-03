@@ -1,9 +1,9 @@
 /**
  * E2E: D6 (#998) hung badge seeding from persisted alerts — the resolved-
  * history regression and the live-alert direction. Resolution is
- * server-side truth (resolvedAt, set by the D6 sweep when it observes
- * the hang end): RESOLVED history never badges; an UNRESOLVED alert
- * does. The badge renders on COLLAPSED workspace rows, while the
+ * server-side truth (resolvedAt, written when the hang ends — D6 sweep
+ * observation, leave-Active watch event, or the read-side heal):
+ * RESOLVED history never badges; an UNRESOLVED alert does. The badge renders on COLLAPSED workspace rows, while the
  * sessions query (whose cache drives the seed) populates when the
  * workspace is expanded — so both tests navigate in (expanded), then
  * collapse and assert the badge.

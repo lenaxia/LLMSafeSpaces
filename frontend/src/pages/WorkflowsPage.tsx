@@ -37,8 +37,9 @@ export function WorkflowsPage() {
   // an unattended hung session is visible from the workflows view, not
   // only from the live SSE banner (which a workflow never sees). The
   // feed is append-only 24h history; a workspace counts as hung only
-  // while it has an UNRESOLVED session_hung alert (resolvedAt — the
-  // D6 sweep's server-side resolution flag), not from mere history.
+  // while it has an UNRESOLVED session_hung alert (resolvedAt —
+  // server-side resolution: D6 sweep observation, leave-Active watch
+  // event, or the read-side heal), not from mere history.
   const runWorkspaceIds = Array.from(
     new Set((runs ?? []).map((r) => r.workspaceId).filter((id): id is string => !!id)),
   );
