@@ -1,0 +1,62 @@
+# Worklog: Hung badge latched forever by stale persisted alerts (#998 follow-up)
+
+**Date:** 2026-10-03
+**Session:** User reported a phantom "active worker session" indicator on chat/dda717cb…/ses_f10ab3208ffe… despite no visible activity. Diagnosed live, fixed frontend-side.
+**Status:** Complete
+
+---
+
+## Objective
+
+Explain and fix the stuck busy/hung indicator on the orchestrator session page after the busy-truth cluster work.
+
+---
+
+## Work Completed
+
+### Live diagnosis (workspace dda717cb, worker ses_f000ed167)
+
+- agentd statusz (authoritative): ALL sessions idle, including the worker `ses_f000ed167` ("goKore Worker: album injection seam"). opencode 5.4% CPU — not wedged. API sessions list: idle.
+- Persisted `session_hung` alerts for the worker existed from 03:45–04:59 (worker genuinely hung 04:06→~05:15; pod recreated 05:15 → everything idle server-side with no browser attached).
+- Frontend `SessionActivityProvider.seedBusy` (D6 #998 history surface) seeded `hungWorkspaces` from the mere EXISTENCE of persisted alerts. The alerts feed is append-only 24h history (no resolution state; `sessionalerts` service has no clear path). The only badge clear path is a live `session.status idle` SSE event — which never fires for a session already idle at page load. Result: every page load after recovery latches the badge permanently. The shipped test literally pinned this ("idle session + alert → hung").
+
+### Fix
+
+- `seedBusy` now builds the workspace's currently-busy session-id set (already iterating that list) and seeds hung ONLY for alerts whose `sessionId` is currently busy. Stale history (recovered/idle/deleted session) no longer badges; genuine recovery-on-reconnect still works (a really-hung session is still busy in REST, and the live SSE path re-alerts each cooldown cycle anyway).
+- Tests: flipped the buggy pin into the stale-history regression (two stale alerts + idle session → healthy), added true-recovery (busy session + alert → hung) and deleted-session cases; kept empty/fetch-failure cases.
+
+---
+
+## Key Decisions
+
+1. Frontend gate, not backend resolution state. The persisted feed is deliberately history (24h retention, append-only). Teaching it resolution (clear-on-idle writes or a resolvedAt column) is a bigger surface; the client already holds the truth it needs (current busy set) in the same function. Aligns with the busy-truth cluster's direction: SSE is the authority, REST seeds must not contradict live state.
+2. No loss of real signal: the live SSE `workspace.alert` path still sets the badge immediately while the stream is attached, and re-fires per cooldown for still-hung sessions; a reconnect mid-hung recovers via the gated seed (session still busy).
+3. Left alone: `SessionAuthority.test.tsx` (untracked, someone's in-flight WIP, 7 failing tests in the working tree, absent on main) and the pre-existing `fold.ts` typecheck errors + 19 broken test files — all reproduced on clean main, out of scope.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+- `npx vitest run src/providers/SessionActivityProvider.alerts.test.tsx src/providers/SessionActivityProvider.test.tsx` — 99/99 pass (incl. 5 alerts cases: true-recovery, stale-history, deleted-session, empty, fetch-failure).
+- Full `npx vitest run`: my delta green; the 7 remaining failures are the untracked WIP `SessionAuthority.test.tsx`; 19 other broken files + `fold.ts` typecheck errors reproduce identically on clean main (verified in a worktree).
+- Live-cluster verification of the diagnosis: statusz all-idle + stale alerts in the persisted feed at 06:03.
+
+---
+
+## Next Steps
+
+- PR → review → merge → release train.
+- Consider (follow-up, backend): `sessionalerts` could expose `resolvedAt`/active filtering if the history surface grows other consumers; not needed for this fix.
+
+---
+
+## Files Modified
+
+- frontend/src/providers/SessionActivityProvider.tsx — gated hung-history seed on current busy set
+- frontend/src/providers/SessionActivityProvider.alerts.test.tsx — flipped pin + new cases
