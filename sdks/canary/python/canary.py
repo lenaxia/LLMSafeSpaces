@@ -188,8 +188,10 @@ def jwt_login(cfg: "Config") -> str:
     A 429 is retried once after the server-advertised ``retryAfter``
     (capped at 60s). The per-route login limiter tripped by the
     S-RATE-LIMIT scenario cannot reach a later ``jwt_login`` in the CI
-    orderings (quota scenarios use the static API key and every job
-    transition carries a 65s bucket-refill sleep) — the plausible
+    orderings (quota scenarios use the static API key, and every
+    login-bearing job transition carries a 65s bucket-refill sleep;
+    the sleep-less MCP transition performs no /auth/login) — the
+    plausible
     source of the observed twice-on-PR-CI 429s (2026-10-03) is the
     GLOBAL limiter (advertised retryAfter ~1s), which can trip any
     request under bursty runs. The retry covers that case.

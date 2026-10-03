@@ -255,9 +255,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // alerts once per workspace so a reconnecting client recovers
         // alerts missed while no SSE stream was attached — but ONLY
         // for UNRESOLVED session_hung alerts (resolvedAt is the
-        // server-side resolution flag: the D6 sweep sets it when it
-        // observes the hang end, and emits workspace.alert_resolved
-        // for live streams). The feed is append-only 24h history, so
+        // server-side resolution flag, written when the hang ends:
+        // D6 sweep observation, leave-Active watch event, or the
+        // read-side heal aging a lost resolution; the SSE-emitting
+        // writers also emit workspace.alert_resolved). The feed is
+        // append-only 24h history, so
         // resolution — not client-side busy reconstruction — decides
         // liveness: a session that hung and recovered while no browser
         // watched must not badge on reload, and the poller's next-tick
