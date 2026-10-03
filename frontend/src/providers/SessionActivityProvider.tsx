@@ -90,7 +90,7 @@ const NON_ACTIVE_PHASES = new Set(["Suspending", "Suspended", "Terminating", "Te
 const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
   "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
-  "resync", "workspace.alert_resolved",
+  "resync", "workspace.alert", "workspace.alert_resolved",
 ]);
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself

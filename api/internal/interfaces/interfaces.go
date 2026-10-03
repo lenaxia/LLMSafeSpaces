@@ -91,6 +91,9 @@ type DatabaseService interface {
 	// ResolveSessionAlerts sets resolved_at on every unresolved alert
 	// for the workspace and returns the number resolved.
 	ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error)
+	// ResolveStaleSessionAlerts resolves unresolved alerts older than
+	// the cutoff (read-side heal for lost resolution authority).
+	ResolveStaleSessionAlerts(ctx context.Context, workspaceID string, before time.Time) (int64, error)
 	DeleteSessionIndex(ctx context.Context, workspaceID string) error
 	DeleteSessionTree(ctx context.Context, workspaceID, sessionID string) error
 	UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error

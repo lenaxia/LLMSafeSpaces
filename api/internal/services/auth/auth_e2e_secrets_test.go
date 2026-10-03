@@ -281,6 +281,9 @@ func (m *fullMockDB) ListSessionAlerts(context.Context, string, int) ([]types.Se
 func (m *fullMockDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
 	return 0, nil
 }
+func (m *fullMockDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {
+	return 0, nil
+}
 func (m *fullMockDB) DeleteSessionIndex(context.Context, string) error        { return nil }
 func (m *fullMockDB) DeleteSessionTree(context.Context, string, string) error { return nil }
 func (m *fullMockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {

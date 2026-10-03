@@ -25,6 +25,16 @@ import (
 // so a long-lived workspace does not accumulate an unbounded response.
 const AlertRetention = 24 * time.Hour
 
+// UnresolvedStaleAfter bounds how long an unresolved alert can be
+// trusted as live. A genuine hang re-alerts every 30min cooldown
+// (proxy_lifecycle.go busyAlertCooldown), so unresolved rows older
+// than 2x that with no successor mean the sweep's resolution was LOST
+// (API restart spanning recovery, workspace leaving Active, resolve
+// flush failure) — ListByWorkspace heals them on read, so the very
+// read that would have latched a badge bounds the false badge to this
+// window instead. Failure direction is a missing badge, never a latch.
+const UnresolvedStaleAfter = time.Hour
+
 type Service struct {
 	db     interfaces.DatabaseService
 	logger *logger.Logger
@@ -112,8 +122,21 @@ func (s *Service) ResolveWorkspace(workspaceID string) {
 }
 
 // ListByWorkspace returns persisted alerts newest-first, filtered to
-// the retention window.
+// the retention window. Unresolved rows older than UnresolvedStaleAfter
+// are healed (resolved) first: the read is the last point every latch
+// path funnels through, so it is where lost resolution authority is
+// restored. Best-effort — a heal failure serves the read unhealed (the
+// sweep's own resolution and the SSE clears remain the primary paths).
 func (s *Service) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
+	if n, err := s.db.ResolveStaleSessionAlerts(ctx, workspaceID, time.Now().Add(-UnresolvedStaleAfter)); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("session_alerts: stale heal failed (serving read unhealed)",
+				"workspaceID", workspaceID, "error", err.Error())
+		}
+	} else if n > 0 && s.logger != nil {
+		s.logger.Info("session_alerts: healed stale unresolved alerts on read",
+			"workspaceID", workspaceID, "count", n)
+	}
 	alerts, err := s.db.ListSessionAlerts(ctx, workspaceID, limit)
 	if err != nil {
 		return nil, err
@@ -147,9 +170,16 @@ func (s *Service) flush(ev alertEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if ev.resolve {
-		if _, err := s.db.ResolveSessionAlerts(ctx, ev.workspaceID); err != nil {
-			if s.logger != nil {
-				s.logger.Error("session_alerts: resolve failed", err,
+		n, err := s.db.ResolveSessionAlerts(ctx, ev.workspaceID)
+		if s.logger != nil {
+			if err != nil {
+				// The read-side heal in ListByWorkspace is the
+				// re-arm path: the orphan ages past
+				// UnresolvedStaleAfter and heals on next read.
+				s.logger.Error("session_alerts: resolve failed (read-side heal will re-arm)",
+					err, "workspaceID", ev.workspaceID)
+			} else if n == 0 {
+				s.logger.Info("session_alerts: resolve matched no rows (possible orphan already healed)",
 					"workspaceID", ev.workspaceID)
 			}
 		}

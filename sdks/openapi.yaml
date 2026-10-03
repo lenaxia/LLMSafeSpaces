@@ -8677,6 +8677,14 @@ components:
         createdAt:
           type: string
           format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null while the alert's condition is live; set when the
+            D6 sweep observes the hang end (or the read-side heal ages a lost
+            resolution past its trust window). Consumers read "hung now" as
+            alert === "session_hung" && !resolvedAt.
     ActiveSessionsResponse:
       type: object
       properties:

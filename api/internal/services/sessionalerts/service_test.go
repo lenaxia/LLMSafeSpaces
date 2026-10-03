@@ -63,6 +63,8 @@ func TestListByWorkspace_FiltersRetention(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	fresh := time.Now().UTC().Add(-time.Hour)
 	stale := time.Now().UTC().Add(-2 * AlertRetention)
+	db.On("ResolveStaleSessionAlerts", mock.Anything, "ws-1", mock.AnythingOfType("time.Time")).
+		Return(int64(0), nil).Once()
 	db.On("ListSessionAlerts", mock.Anything, "ws-1", 50).
 		Return([]types.SessionAlert{
 			{ID: "1", WorkspaceID: "ws-1", SessionID: "ses-x", CreatedAt: fresh},
@@ -112,5 +114,43 @@ func TestResolveWorkspace_ResolveFailureLoggedNotFatal(t *testing.T) {
 	// The drainer must survive the failure (best-effort durability).
 	svc.RecordAlert("ws-1", "ses-x", "session_hung", 960)
 	require.Eventually(t, inserted.Load, 2*time.Second, 10*time.Millisecond)
+	db.AssertExpectations(t)
+}
+
+// TestListByWorkspace_HealsStaleUnresolvedOnRead pins the restart-orphan
+// path: the sweep's resolution authority can be lost (API restart
+// spanning recovery, workspace leaving Active, resolve-flush failure).
+// The read is where every latch funnels, so the read heals.
+func TestListByWorkspace_HealsStaleUnresolvedOnRead(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	healedAt := time.Now().Add(-UnresolvedStaleAfter)
+	db.On("ResolveStaleSessionAlerts", mock.Anything, "ws-1", mock.AnythingOfType("time.Time")).
+		Run(func(args mock.Arguments) {
+			before := args.Get(2).(time.Time)
+			assert.WithinDuration(t, healedAt, before, time.Minute,
+				"the heal cutoff must track UnresolvedStaleAfter")
+		}).
+		Return(int64(2), nil).Once()
+	db.On("ListSessionAlerts", mock.Anything, "ws-1", 50).
+		Return([]types.SessionAlert{}, nil).Once()
+	svc := New(db, nil)
+
+	_, err := svc.ListByWorkspace(context.Background(), "ws-1", 50)
+	require.NoError(t, err)
+	db.AssertExpectations(t)
+}
+
+// TestListByWorkspace_HealFailureServesReadUnhealed: the heal is
+// best-effort — a failure must not take the alerts read down with it.
+func TestListByWorkspace_HealFailureServesReadUnhealed(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("ResolveStaleSessionAlerts", mock.Anything, "ws-1", mock.AnythingOfType("time.Time")).
+		Return(int64(0), errors.New("db blip")).Once()
+	db.On("ListSessionAlerts", mock.Anything, "ws-1", 50).
+		Return([]types.SessionAlert{}, nil).Once()
+	svc := New(db, nil)
+
+	_, err := svc.ListByWorkspace(context.Background(), "ws-1", 50)
+	require.NoError(t, err, "the read must survive a failed heal")
 	db.AssertExpectations(t)
 }

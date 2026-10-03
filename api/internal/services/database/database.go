@@ -1050,12 +1050,39 @@ func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, lim
 	alerts := make([]types.SessionAlert, 0, limit)
 	for rows.Next() {
 		var a types.SessionAlert
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt, &a.ResolvedAt); err != nil {
+		var resolvedAt sql.NullTime
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt, &resolvedAt); err != nil {
 			return nil, err
+		}
+		if resolvedAt.Valid {
+			t := resolvedAt.Time
+			a.ResolvedAt = &t
 		}
 		alerts = append(alerts, a)
 	}
 	return alerts, rows.Err()
+}
+
+// ResolveStaleSessionAlerts resolves the workspace's unresolved alerts
+// older than the cutoff — the read-side heal for the orphan paths
+// where the sweep's resolution authority is lost (API restart spanning
+// recovery, workspace leaving Active, resolve-flush failure). A live
+// hang re-alerts every cooldown, so an unresolved row older than the
+// cutoff with no successor means the hang ended; healing here bounds
+// any false badge to the cutoff, in the read that would have latched.
+func (s *Service) ResolveStaleSessionAlerts(ctx context.Context, workspaceID string, before time.Time) (int64, error) {
+	tag, err := s.DB.ExecContext(ctx,
+		`UPDATE session_alerts SET resolved_at = now()
+		 WHERE workspace_id = $1 AND resolved_at IS NULL AND created_at < $2`,
+		workspaceID, before)
+	if err != nil {
+		return 0, err
+	}
+	n, err := tag.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ResolveSessionAlerts sets resolved_at on every unresolved alert for

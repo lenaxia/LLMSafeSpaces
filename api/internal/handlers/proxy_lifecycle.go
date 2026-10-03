@@ -491,10 +491,11 @@ var (
 // full cooldown window.
 func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 	for _, wid := range workspaceIDs {
+		// Cooling implies an entry in busyAlerts implies alerted, so
+		// there is no "cooling but not alerted" case to skip here:
+		// every workspace is fetched; alerted ones resolve-or-re-alert,
+		// the rest alert when first hung.
 		alerted := h.busyAlerted(wid)
-		if !alerted && h.busyAlertCooling(wid) {
-			continue
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		podIP := h.statuszPodIP(ctx, wid)
 		if podIP == "" {

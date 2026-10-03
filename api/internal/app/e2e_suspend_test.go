@@ -232,6 +232,9 @@ func (d *recordingDB) ListSessionAlerts(context.Context, string, int) ([]types.S
 func (d *recordingDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
 	return 0, nil
 }
+func (d *recordingDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {
+	return 0, nil
+}
 func (d *recordingDB) DeleteSessionIndex(context.Context, string) error { return nil }
 func (d *recordingDB) DeleteSessionTree(context.Context, string, string) error {
 	return nil

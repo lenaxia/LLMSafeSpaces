@@ -28,6 +28,16 @@ Make "is a session hung NOW" first-party server state instead of a client-side r
 3. The between-recovery-and-sweep window (alert unresolved, session already idle): the seed badges it (correct — the server has not resolved it) and `workspace.alert_resolved` clears it at the next tick. Bounded by one sweep interval, closed by the same authority.
 4. #1616's client-side hardening stays: SSE terminal clears are instant where the sweep is tick-lagged, and they protect against a missed alert_resolved event. Belt and suspenders, each layer now simple.
 
+### Review round 1 — the orphaned-resolution paths (read-side heal)
+
+The bounded-window claim was happy-path-only; three validated paths lose the resolution authority and re-introduce the latch as a regression vs the busy-gate: (a) API restart spanning recovery (in-memory busyAlerts lost; post-restart sweep sees idle + not-alerted → never resolves), (b) workspace leaving Active after alerting (sweep stops covering it; the feed serves unresolved rows unfiltered), (c) resolve-flush failure after the SSE event (clearBusyAlerted already ran; no re-arm). Fix — one mechanism covering all three:
+
+- **Read-side heal**: `ListByWorkspace` resolves unresolved rows older than `UnresolvedStaleAfter` (1h = 2× the 30-min re-alert cooldown) before serving. Every latch path funnels through this read, so the read that would have latched is itself the reconciler; a genuine hang re-alerts every cooldown, so an old unresolved row with no successor means resolution was lost. Failure direction: a missing badge, never a latch. Best-effort — heal failure serves the read unhealed (sweep + SSE remain primary).
+- `ResolveStaleSessionAlerts` DB method; integration tests pin the resolve UPDATE semantics, the resolved_at scan (NULL and set — the scan-drift class from the bases_null_scan incident), and the stale-heal cutoff; service tests pin the heal-on-read + failure-serves-read behavior.
+- Resolve flush now logs the resolved count (0 rows = surfaced orphan signal).
+- Registered the missing `workspace.alert` in KNOWN_EVENT_TYPES; dropped the unreachable `!alerted && busyAlertCooling` branch; `ListSessionAlerts` scans via `sql.NullTime` (convention); openapi `SessionAlert.resolvedAt` added.
+- Queue-full asymmetry (a dropped resolve is worse than a dropped alert) and the wedged-pod-blocks-resolution note: both bounded by the read-side heal — a dropped/failed resolve heals on the next read past the trust window.
+
 ---
 
 ## Blockers
@@ -56,7 +66,9 @@ None.
 - api/migrations/000034_alert_resolution.{up,down}.sql (new) + helm mirror
 - pkg/types/session.go — SessionAlert.ResolvedAt
 - api/internal/interfaces/interfaces.go — ResolveWorkspace / ResolveSessionAlerts
-- api/internal/services/database/database.go — resolve + list resolved_at
+- api/internal/services/database/database.go — resolve + stale-heal + list resolved_at (NullTime)
+- api/internal/services/database/session_alerts_integration_test.go (new)
+- sdks/openapi.yaml — SessionAlert.resolvedAt
 - api/internal/mocks/database.go — mock method
 - api/internal/services/sessionalerts/service.go + service_test.go — resolve queue path
 - api/internal/handlers/proxy_lifecycle.go — sweep restructure + resolveHungs
