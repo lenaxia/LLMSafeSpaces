@@ -88,7 +88,15 @@ type Service struct {
 	policyChecker     PolicyChecker
 	imageFactoryStore LaunchableConfigResolver
 	userSettings      UserDefaultReader
+	devPreviewPusher  DevPreviewStatePusher
 	config            *Config
+}
+
+// DevPreviewStatePusher delivers the absolute dev-preview state to a
+// running workspace pod (agentpush.Service implements it). Optional —
+// nil keeps the toggle CRD-only (#1617).
+type DevPreviewStatePusher interface {
+	PushDevPreviewState(ctx context.Context, userID, workspaceID string, enabled bool) error
 }
 
 type OrgMembershipChecker interface {
@@ -150,6 +158,12 @@ func (s *Service) SetImageFactoryStore(store LaunchableConfigResolver) {
 // hierarchy (user → org → platform). Optional — nil skips the user tier.
 func (s *Service) SetUserSettings(r UserDefaultReader) {
 	s.userSettings = r
+}
+
+// SetDevPreviewPusher installs the live dev-preview state pusher (#1617).
+// Optional — nil keeps the toggle CRD-only (tests, unwired deployments).
+func (s *Service) SetDevPreviewPusher(p DevPreviewStatePusher) {
+	s.devPreviewPusher = p
 }
 
 // SetPolicyChecker installs the org policy checker for workspace quota enforcement.
@@ -1902,7 +1916,10 @@ func (s *Service) RenameWorkspace(ctx context.Context, userID, workspaceID, name
 
 // SetDevPreview toggles spec.networkAccess.devPreview on the workspace CRD
 // (Epic 66). The opt-in flag is read by the dev-preview handler on every
-// request; no pod restart is needed.
+// request, and the new state is pushed live to the running pod's agentd
+// (#1617) so the in-pod tools (feature_status, dev_preview_url) report it
+// without a pod recreate. The push is latency-only: the CRD is the source
+// of truth, and a pod (re)build re-projects the env from it.
 func (s *Service) SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error {
 	if err := s.verifyOwner(ctx, userID, workspaceID); err != nil {
 		return err
@@ -1924,6 +1941,14 @@ func (s *Service) SetDevPreview(ctx context.Context, userID, workspaceID string,
 			return apierrors.NewConflictError("workspace", workspaceID, err)
 		}
 		return apierrors.NewInternalError("workspace_update_failed", err)
+	}
+	if s.devPreviewPusher != nil {
+		if err := s.devPreviewPusher.PushDevPreviewState(ctx, userID, workspaceID, enabled); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("dev preview live push failed; CRD updated, in-pod tools converge on next pod build",
+					"workspaceID", workspaceID, "error", err.Error())
+			}
+		}
 	}
 	return nil
 }

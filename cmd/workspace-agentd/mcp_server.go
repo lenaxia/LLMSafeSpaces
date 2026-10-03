@@ -589,16 +589,16 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		model, _ := args["model"].(string)
 		return mcpCompact(ctx, password, sessionID, model)
 	case "dev_preview_url":
-		// #1580: the space's dev-preview state is projected by the
-		// controller as WORKSPACE_DEV_PREVIEW_ENABLED (spec.
-		// networkAccess.devPreview). Explicit false = the feature is
-		// DISABLED for this space: fail LOUD with the recovery hint —
-		// the caller must distinguish disabled from broken, not learn
-		// it as a late 503 from the minted URL. Absent = an older
-		// controller (one pod-generation of upgrade skew): keep
-		// minting, with the unreported state called out — never
-		// hard-fail a transition.
-		if os.Getenv("WORKSPACE_DEV_PREVIEW_ENABLED") == "false" {
+		// #1580/#1617: the space's dev-preview state — the API's live
+		// push first, the controller's boot-env projection
+		// (WORKSPACE_DEV_PREVIEW_ENABLED) second. Explicit false = the
+		// feature is DISABLED for this space: fail LOUD with the
+		// recovery hint — the caller must distinguish disabled from
+		// broken, not learn it as a late 503 from the minted URL.
+		// Unreported (no push, no env — an older controller during
+		// upgrade skew): keep minting, with the unreported state called
+		// out — never hard-fail a transition.
+		if active, reported, _ := devPreviewState(); reported && !active {
 			return "", fmt.Errorf("dev preview is DISABLED for this space — no URL is minted. Enable it in Workspace Settings → Dev Preview (the space's networkAccess.devPreview); until then nothing at this port can be previewed. This is a configuration state, not a failure: nothing is broken")
 		}
 		// Port is optional: default 5173 (the Vite default, the common
@@ -658,11 +658,11 @@ func mcpDevPreviewURL(port int, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// #1580: the controller-skew case — the env is absent under an
-	// older controller. Mint, but say the state is unreported so the
-	// caller can tell skew from silence.
+	// #1580: the controller-skew case — no live push and no boot-env
+	// projection under an older controller. Mint, but say the state is
+	// unreported so the caller can tell skew from silence.
 	skewNote := ""
-	if os.Getenv("WORKSPACE_DEV_PREVIEW_ENABLED") == "" {
+	if _, reported, _ := devPreviewState(); !reported {
 		skewNote = "\nNOTE: the controller did not report this space's dev-preview state (upgrade skew?) — verify Workspace Settings → Dev Preview."
 	}
 

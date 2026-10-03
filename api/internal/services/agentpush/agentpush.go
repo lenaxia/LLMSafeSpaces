@@ -447,3 +447,48 @@ func (s *Service) PushUserTimezone(ctx context.Context, userID, workspaceID, tim
 	}
 	return nil
 }
+
+// PushDevPreviewState delivers the workspace's absolute dev-preview
+// state to the running pod's agentd (POST /v1/dev-preview-state) so
+// feature_status / dev_preview_url report the live toggle instead of
+// the boot-time env snapshot (#1617). Fire-and-forget by design: the
+// CRD remains the source of truth, a failed push costs only in-pod
+// report latency, and the next pod build re-projects the env correctly.
+func (s *Service) PushDevPreviewState(ctx context.Context, userID, workspaceID string, enabled bool) error {
+	if s.podResolver == nil {
+		return ErrNoPodIPResolver
+	}
+	podIP, err := s.podResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
+	if err != nil || podIP == "" {
+		return ErrNoRunningPod
+	}
+	if s.passwords == nil {
+		return ErrNoPasswordProvider
+	}
+	password, err := s.passwords.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("resolve workspace password: %w", err)
+	}
+
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://%s:%d/v1/dev-preview-state", podIP, agentd.AgentdPort), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("push dev preview state: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("push dev preview state: pod returned %d", resp.StatusCode)
+	}
+	return nil
+}

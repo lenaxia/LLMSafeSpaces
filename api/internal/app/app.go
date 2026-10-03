@@ -720,6 +720,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		agentPusherSvc = agentPusher
 		secretsHandler.SetAgentPusher(agentPusher)
 
+		// #1617: the dev-preview toggle pushes the new state to the
+		// running pod so the in-pod tools report it live (the boot env
+		// is a pod-creation snapshot). Failures are latency-only.
+		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+			wsSvc.SetDevPreviewPusher(agentPusher)
+		}
+
 		// US-70.3 flip: live delivery is notify → re-pull. The closure
 		// shape (returning only error) matches the MCP and env handlers'
 		// pusher seams.
