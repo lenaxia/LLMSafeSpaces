@@ -128,7 +128,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // least as fresh as any SSE event whose React commit flushed before
   // the resolution — a resolution landing in the narrow window between
   // an SSE handler and its passive-effect commit reads one event stale
-  // (bounded: the next idle/reconnect clears).
+  // (the victim session just went idle, so no further idle can clear
+  // it; the actual bounds are reconnect, resync, or a phase change).
   const busySessionsRef = useRef(busySessions);
   useEffect(() => {
     busySessionsRef.current = busySessions;

@@ -33,6 +33,30 @@ Explain and fix the stuck busy/hung indicator on the orchestrator session page a
 2. No loss of real signal: the live SSE `workspace.alert` path still sets the badge immediately while the stream is attached, and re-fires per cooldown for still-hung sessions; a reconnect mid-hung recovers via the gated seed (session still busy).
 3. Left alone: `SessionAuthority.test.tsx` (untracked, someone's in-flight WIP, 7 failing tests in the working tree, absent on main) and the pre-existing `fold.ts` typecheck errors + 19 broken test files — all reproduced on clean main, out of scope.
 
+### Review round 1 (probe-confirmed latch paths — commit 3)
+
+- Late-resolving alerts fetch re-latched after an idle SSE clear → the gate now reads the LIVE busy set (`busySessionsRef`, SSE-truthed) instead of the seed-time snapshot.
+- Reconnect kept a recovered session's badge → `onReconnect` clears hung state; the gated re-seed re-adds only genuinely-busy sessions.
+- `workspace.phase` non-active now clears the workspace's hung entry.
+- Gate asserts `alert === "session_hung"`.
+- `WorkflowsPage` amber dot: same still-busy gate (was mere-existence).
+- New e2e (`hung-badge.spec.ts`): stale-history absent / true-recovery present (REST-only; the seed path needs no SSE transport).
+
+### Review round 3 (sibling terminal paths — commit 4)
+
+- `session.status` aborted/deleted, `agent_died`, and `resync` now clear the badge (a stopped/deleted/dead session can never emit the idle clear; resync may have dropped it) — via a shared `dropHungWorkspace` helper also used by the idle and phase clears.
+- The vacuous reconnect re-seed test became genuine (delayed resolution + post-reconnect cache update); the WorkflowsPage stale test settles its queries before the negative.
+- New clear-path tests: aborted/deleted (`it.each`), agent_died, phase, resync.
+
+### Review round 4 (polish — commit 5)
+
+- Fixed the twice-flagged dangling `%s` in the belt assertion (pass `scanTime`).
+- `busySessionsRef` bound comment corrected: the race's victim just went idle, so no further idle clears it — the actual bounds are reconnect/resync/phase-change.
+- Worklog/PR body brought up to date with the full series (this entry).
+- Robustness notes accepted as follow-ups: workspace-granularity idle clear can drop a badge while a sibling session is still hung (self-heals ≤ cooldown); resync/reconnect clears can unbadge a still-hung workspace ≤ cooldown. Both are missing-badge-bounded, never latches. The stacked #1618 (server-side `resolved_at`) addresses the class.
+
+**Tests at this head:** alerts file 13/13, provider 94, WorkflowsPage 10, e2e both directions; full suite 178 files green; `go vet`, lint 0 issues.
+
 ---
 
 ## Blockers
@@ -58,5 +82,8 @@ None.
 
 ## Files Modified
 
-- frontend/src/providers/SessionActivityProvider.tsx — gated hung-history seed on current busy set
-- frontend/src/providers/SessionActivityProvider.alerts.test.tsx — flipped pin + new cases
+- frontend/src/providers/SessionActivityProvider.tsx — gated hung-history seed, live-ref gate, terminal-event clears, alert-type assert
+- frontend/src/providers/SessionActivityProvider.alerts.test.tsx — 13 cases: resolved/stale/deleted/empty/failure, late-fetch race, reconnect drop + re-seed, aborted/deleted, agent_died, phase, resync
+- frontend/src/pages/WorkflowsPage.tsx + WorkflowsPage.test.tsx — still-busy gate + genuine stale test
+- frontend/tests/e2e/hung-badge.spec.ts — both directions (REST-only)
+- pkg/utilities/json_duplicate_keys_test.go — belt 1.5s→4s (repeat CI/release flake) + %s fix
