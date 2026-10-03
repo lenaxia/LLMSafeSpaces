@@ -44,23 +44,25 @@ type featureFlag struct {
 func mcpFeatureStatus() (string, error) {
 	flags := []featureFlag{}
 
-	// The one SPACE-set flag: spec.networkAccess.devPreview, projected
-	// by the controller as WORKSPACE_DEV_PREVIEW_ENABLED. Absent =
-	// controller skew (an older controller): report active=false with
-	// the skew in the detail — never guess "enabled".
+	// The one SPACE-set flag: spec.networkAccess.devPreview. The API
+	// pushes every toggle to the running pod (#1617); the boot env
+	// (WORKSPACE_DEV_PREVIEW_ENABLED, projected at pod creation) is the
+	// fallback. Neither present = controller skew (an older controller):
+	// report active=false with the skew in the detail — never guess
+	// "enabled".
 	devPreview := featureFlag{
-		Feature:      "dev_preview",
-		Source:       "space",
-		SourceDetail: "workspace CRD spec.networkAccess.devPreview (projected by the controller as WORKSPACE_DEV_PREVIEW_ENABLED)",
+		Feature: "dev_preview",
+		Source:  "space",
 	}
-	switch os.Getenv("WORKSPACE_DEV_PREVIEW_ENABLED") {
-	case "true":
-		devPreview.Active = true
-	case "false":
-		devPreview.Active = false
+	active, reported, live := devPreviewState()
+	devPreview.Active = active
+	switch {
+	case live:
+		devPreview.SourceDetail = "workspace CRD spec.networkAccess.devPreview (live push from the API toggle; boot-env fallback: WORKSPACE_DEV_PREVIEW_ENABLED)"
+	case reported:
+		devPreview.SourceDetail = "workspace CRD spec.networkAccess.devPreview (projected by the controller as WORKSPACE_DEV_PREVIEW_ENABLED)"
 	default:
-		devPreview.Active = false
-		devPreview.SourceDetail += " — UNREPORTED (controller skew: an older controller did not project the state)"
+		devPreview.SourceDetail = "workspace CRD spec.networkAccess.devPreview (projected by the controller as WORKSPACE_DEV_PREVIEW_ENABLED) — UNREPORTED (controller skew: an older controller did not project the state)"
 	}
 	flags = append(flags, devPreview)
 

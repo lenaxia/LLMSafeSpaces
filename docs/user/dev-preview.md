@@ -40,6 +40,8 @@ kubectl patch workspace <name> --type=merge \
   -p '{"spec":{"networkAccess":{"devPreview":true}}}'
 ```
 
+Toggles are **live**: enabling or disabling Dev Preview through Workspace Settings (or `PUT /api/v1/workspaces/<id>/dev-preview`) pushes the new state to the running workspace immediately — the `feature_status` and `dev_preview_url` agent tools reflect it without restarting the workspace. A direct `kubectl patch` of the CRD skips that push; the in-session tools pick the change up the next time the workspace pod is (re)created (e.g. after suspend/resume), while the tunnel itself follows the CRD live either way.
+
 ## Opening the preview
 
 With Dev Preview enabled and your workspace **Active**:

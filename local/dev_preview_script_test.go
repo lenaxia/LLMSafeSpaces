@@ -64,6 +64,11 @@ func TestDevPreviewScript_AssertionRows(t *testing.T) {
 		{`agentd container restart`, "0062-D: the restart arm must assert state survival loudly"},
 		{`== "[]"`, "0062-E: the pod-death arm must assert the wiped state lists empty"},
 		{`starts header-clean`, "0062-E: the wipe arm's design citation must stay (memory-backed class)"},
+		// #1617 live arms — the API toggle pushes the absolute state to
+		// the running pod; the tool flips without any pod recreate.
+		{`#1617: live disable must refuse without a pod recreate`, "#1617: disable-via-API must refuse on the same pod"},
+		{`#1617: live re-enable must mint on the same pod`, "#1617: re-enable-via-API must mint on the same pod"},
+		{`#1617: the live arm must not recreate the pod`, "#1617: the same-pod assertion is the arm's point"},
 	}
 	for _, r := range rows {
 		if !strings.Contains(s, r.fragment) {

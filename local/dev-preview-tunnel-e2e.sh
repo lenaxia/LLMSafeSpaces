@@ -375,6 +375,36 @@ url="$(tool_url "${out}")"
 [[ "${out}" != *".svc"* ]] || die "svc origin leaked into tool output: ${out:0:300}"
 ok "origin mode emits the bootstrap URL on the public origin"
 
+# --- #1617: the LIVE arms — the API toggle pushes the absolute state to
+# the RUNNING pod; the tool flips WITHOUT any pod recreate (the boot env
+# is a pod-creation snapshot and stays stale — the push is the fix).
+log "#1617: live arm — API PUT dev-preview false, NO recreate, expect the loud refusal"
+OLD_UID="$(pod_uid)"
+code=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X PUT "${AUTH[@]}" \
+  "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/dev-preview" \
+  -H "Content-Type: application/json" -d '{"enabled":false}')
+[[ "${code}" == "204" ]] || die "#1617: API dev-preview toggle failed: ${code}"
+sleep 1
+out="$(mcp_call "${WS_DEVPORT}")" || true
+[[ "${out}" == *"DISABLED"* ]] \
+  || die "#1617: live disable must refuse without a pod recreate, got: ${out:0:300}"
+[[ "${out}" != *LSP_DEV_PREVIEW_V1* ]] \
+  || die "#1617: no URL may be minted after a live disable: ${out:0:300}"
+[[ "$(pod_uid)" == "${OLD_UID}" ]] \
+  || die "#1617: the live arm must not recreate the pod"
+ok "live disable: the tool refuses on the SAME pod"
+
+log "#1617: live arm — API PUT dev-preview true, NO recreate, tool mints again"
+code=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X PUT "${AUTH[@]}" \
+  "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/dev-preview" \
+  -H "Content-Type: application/json" -d '{"enabled":true}')
+[[ "${code}" == "204" ]] || die "#1617: API dev-preview re-enable failed: ${code}"
+sleep 1
+out="$(mcp_call "${WS_DEVPORT}")" || true
+[[ "${out}" == *LSP_DEV_PREVIEW_V1* ]] \
+  || die "#1617: live re-enable must mint on the same pod: ${out:0:300}"
+ok "live re-enable: the tool mints on the SAME pod"
+
 # --- #1580: the DISABLED arm (r1's missing unhappy path) — the space
 # turns dev preview OFF; the projected flag flips via a pod recreate;
 # the tool must refuse LOUD (no marker, no URL) instead of minting.

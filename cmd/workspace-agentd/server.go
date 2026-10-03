@@ -505,6 +505,10 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// Same §D1 carve-out credential pair as every API-driven route.
 	userMux.HandleFunc("/v1/user-timezone", userTimezoneHandler(deps.password, deps.controlPlanePassword))
 
+	// Live dev-preview state (#1617): the API pushes every toggle here;
+	// feature_status / dev_preview_url read it over the boot env.
+	userMux.HandleFunc("/v1/dev-preview-state", devPreviewStateHandler(deps.password, deps.controlPlanePassword))
+
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
 	// user mux, symmetric with the control-plane routes (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
