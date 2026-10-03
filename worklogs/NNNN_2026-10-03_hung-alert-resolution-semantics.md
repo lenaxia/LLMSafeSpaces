@@ -51,6 +51,14 @@ The bounded-window claim was happy-path-only; three validated paths lose the res
 - **Straddle ordering pinned** (`alerts.test.tsx`): alert_resolved SSE before persist-commit + late unresolved fetch → re-latch, cleared at reconnect; the row heals read-side for future loads — the documented bound, now executable documentation.
 - Minor: stale busySessionsRef comment removed; `alerted` reused in the no-pod branch.
 
+### Review round 3 (#1620)
+
+- **Sweep no-pod branch re-covered**: `TestEscalateHungs_NoPodResolveOnPhaseSourceLag` (phaseSource watch-lag + live CRD Suspended → sweep resolves) — the round-2 rewrite had accidentally removed the only sweep-side no-pod test; the false "sweep never sees a Suspended workspace" comment corrected (it polls via live Get and CAN, during lag).
+- **Active-with-empty-IP is now an error** (transient/UNKNOWN), matching the doc — the sweep stays silent on it (`TestEscalateHungs_ActiveEmptyPodIPIsTransient`), closing the doc-vs-code mismatch where a pod-creating CRD could have resolved a live hang.
+- **E2E resolution workflow**: `workspace.alert_resolved` clearing a badge seeded from a live alert, through the real user-SSE handler (deferred route.fulfill, the test-40 pattern).
+- **Doc unification**: resolvedAt descriptions name all three writers (sweep, leave-Active watch event, read-side heal) across Go/TS/openapi; duplicate statuszPodIP doc paragraph removed; proxy_events comment now states the honest bounds (post-restart leave-Active still orphans to the heal; deleted-CR/410 gap leaks the busyAlerts entry, bounded).
+- CI note: one SDK-canary run failed on a login rate-limit interaction between scenarios (S-RATE-LIMIT trips the limiter, the next scenario's jwt_login inherits the 429) — re-run green; pre-existing flake, unrelated.
+
 ---
 
 ## Blockers

@@ -91,15 +91,13 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 	}
 }
 
-// statuszPodIP resolves the pod IP for statusz polls (phase-guarded —
-// the retired tracker's resolver, kept for the D6 sweep and the
-// reconcile pass).
 // statuszPodIP resolves the pod to poll. The second return distinguishes
 // "confirmed no pod" (workspace fetched, phase not Active — resolution
-// authority gone) from transient failures (client construction, Get
-// error/timeout) which must be treated as UNKNOWN, never as no-pod: a
-// transient blip resolving a still-hung workspace would rewrite live
-// history. Active-with-empty-IP (pod creating) is likewise transient.
+// authority gone) from UNKNOWN states (client construction failure, Get
+// error/timeout, Active-with-empty-IP while the pod is creating) which
+// are errors: a transient blip resolving a still-hung workspace would
+// rewrite live history, so callers must treat errors as
+// try-again-later, never as no-pod.
 func (h *ProxyHandler) statuszPodIP(ctx context.Context, workspaceID string) (string, error) {
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
@@ -111,6 +109,10 @@ func (h *ProxyHandler) statuszPodIP(ctx context.Context, workspaceID string) (st
 	}
 	if workspace.Status.Phase != phaseActive {
 		return "", nil
+	}
+	if workspace.Status.PodIP == "" {
+		// Active with no pod IP yet (pod creating) — transient.
+		return "", fmt.Errorf("active workspace %s has empty pod IP", workspaceID)
 	}
 	return workspace.Status.PodIP, nil
 }

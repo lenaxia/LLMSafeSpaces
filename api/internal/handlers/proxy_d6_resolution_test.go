@@ -200,11 +200,11 @@ func TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive(t *testing.T) {
 	}
 	require.Len(t, alerts.recorded, 1)
 
-	// The workspace leaves Active via the WATCH event — the production
-	// path (the reconciler pre-filters watched to phaseSource-Active,
-	// so the sweep itself would never see a Suspended workspace). The
-	// prior Active phase is established first, as the watcher does
-	// before any alert could have fired.
+	// The workspace leaves Active via the WATCH event — the dominant
+	// production path (the reconciler pre-filters watched to
+	// phaseSource-Active, so the sweep rarely sees a non-Active
+	// workspace itself). The prior Active phase is established first,
+	// as the watcher does before any alert could have fired.
 	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", backendHost(t, env), "Active", ""))
 	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", "", "Suspended", ""))
 	select {
@@ -260,6 +260,100 @@ func TestEscalateHungs_TransientPodIPErrorDoesNotResolve(t *testing.T) {
 	select {
 	case evt := <-sub.Ch:
 		t.Fatalf("transient pod-IP errors must resolve nothing: got %+v", evt)
+	default:
+	}
+	assert.Len(t, alerts.recorded, 1)
+}
+
+// TestEscalateHungs_NoPodResolveOnPhaseSourceLag: the sweep CAN see a
+// non-Active workspace — it polls via a live CRD Get while phaseSource
+// is watch-delivery-lagged — and must resolve an alerted one there
+// (the reconciler pre-filters on phaseSource, so this branch is the
+// sweep's own coverage for the lag window).
+func TestEscalateHungs_NoPodResolveOnPhaseSourceLag(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	var alerts fakeSessionAlerts
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + 5*time.Minute).Seconds())))
+	env.handler.sessionAlerts = &alerts
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	// Sweep 1 (Active): alert.
+	env.handler.escalateHungs([]string{"ws-1"})
+	select {
+	case <-sub.Ch:
+	default:
+		t.Fatal("hung workspace must alert")
+	}
+	require.Len(t, alerts.recorded, 1)
+
+	// Sweep 2: phaseSource still says Active (watch lag), the live CRD
+	// says Suspended — statuszPodIP's confirmed-no-pod signal.
+	kept := env.wsMock.ExpectedCalls[:0]
+	for _, c := range env.wsMock.ExpectedCalls {
+		if c.Method == "Get" {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	env.wsMock.ExpectedCalls = kept
+	env.setupWorkspacePodWithT(t, "ws-1", "", "Suspended", "")
+	env.handler.escalateHungs([]string{"ws-1"})
+
+	select {
+	case evt := <-sub.Ch:
+		require.Equal(t, "workspace.alert_resolved", evt.Type, "the lag window resolves via the sweep")
+	default:
+		t.Fatal("confirmed no-pod must resolve an alerted workspace")
+	}
+	require.Len(t, alerts.recorded, 2)
+	assert.Equal(t, "resolve:ws-1", alerts.recorded[1])
+}
+
+// TestEscalateHungs_ActiveEmptyPodIPIsTransient: Active-with-empty-IP
+// (pod creating) is an UNKNOWN error, not no-pod — the sweep must stay
+// silent rather than resolve a possibly-live hang.
+func TestEscalateHungs_ActiveEmptyPodIPIsTransient(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	var alerts fakeSessionAlerts
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + 5*time.Minute).Seconds())))
+	env.handler.sessionAlerts = &alerts
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	env.handler.escalateHungs([]string{"ws-1"})
+	select {
+	case <-sub.Ch:
+	default:
+		t.Fatal("hung workspace must alert")
+	}
+	require.Len(t, alerts.recorded, 1)
+
+	// Replace the pod with an Active-but-creating (empty IP) CRD.
+	kept := env.wsMock.ExpectedCalls[:0]
+	for _, c := range env.wsMock.ExpectedCalls {
+		if c.Method == "Get" {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	env.wsMock.ExpectedCalls = kept
+	env.setupWorkspacePodWithT(t, "ws-1", "", "Active", "")
+	env.handler.escalateHungs([]string{"ws-1"})
+
+	select {
+	case evt := <-sub.Ch:
+		t.Fatalf("Active-with-empty-IP is transient and must resolve nothing: got %+v", evt)
 	default:
 	}
 	assert.Len(t, alerts.recorded, 1)

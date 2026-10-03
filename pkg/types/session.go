@@ -88,8 +88,10 @@ type SessionAlert struct {
 	Alert             string    `json:"alert"`
 	OldestBusySeconds int       `json:"oldestBusySeconds"`
 	CreatedAt         time.Time `json:"createdAt"`
-	// ResolvedAt is null while the alert's condition is still live and
-	// set when the D6 sweep observes the hang end (session left busy).
+	// ResolvedAt is null while the alert's condition is still live.
+	// Writers (all server-side): the D6 sweep observing the hang end,
+	// the Active→non-Active watch event for an alerted workspace, and
+	// the read-side heal aging a lost resolution past its trust window.
 	// The feed stays append-only history; consumers read CURRENT
 	// condition as "session_hung with ResolvedAt == nil" instead of
 	// reconstructing it from busy snapshots client-side.

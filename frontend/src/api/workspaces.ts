@@ -29,10 +29,11 @@ export interface SessionAlert {
   alert: string;
   oldestBusySeconds: number;
   createdAt: string;
-  /** Null/absent while the alert's condition is live; set when the D6
-   *  sweep observed the hang end (server-side resolution semantics —
-   *  consumers read "hung now" as alert==="session_hung" &&
-   *  !resolvedAt instead of reconstructing it from busy snapshots). */
+  /** Null/absent while the alert's condition is live; set server-side
+   *  when the hang ends (D6 sweep observation, leave-Active watch
+   *  event, or the read-side heal aging a lost resolution past its
+   *  trust window). Consumers read "hung now" as
+   *  alert==="session_hung" && !resolvedAt. */
   resolvedAt?: string | null;
 }
 
