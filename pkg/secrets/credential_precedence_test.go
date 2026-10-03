@@ -516,6 +516,80 @@ func TestCredentialPrecedence_AllowlistMixedValidAndInvalid(t *testing.T) {
 	assert.ElementsMatch(t, []string{"glm-5.1", "gpt-4o"}, ids)
 }
 
+// TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry pins #1575: a
+// provider model literally named "default" is a CATALOG entry (routers and
+// aliases commonly serve one — production case: TheKaoCloud's /v1/models),
+// not the platform's default-model SELECTOR (workspace-config.json's
+// defaultModel, resolved by resolveModelWithProvider in the agentd path —
+// a separate mechanism that never flows through ModelAllowlist). The
+// allowlist filters the catalog: "default" in the live-fetched pd.Models
+// AND in the allowlist must be delivered; "default" absent from the
+// allowlist must be filtered out like any other unlisted ID.
+func TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry(t *testing.T) {
+	buildCase := func(t *testing.T, allowlist []string) LLMProviderData {
+		keyStore := newMockKeyStore()
+		dekCache := newTestDEKCache()
+		keyService := NewKeyService(keyStore, dekCache)
+		secretStore := newMockSecretStore()
+
+		adminKEK := make([]byte, 32)
+		for i := range adminKEK {
+			adminKEK[i] = byte(i + 1)
+		}
+
+		adminPlaintext, _ := json.Marshal(LLMProviderData{
+			Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-test",
+			Models: []LLMModelConfig{
+				{ID: "default", Label: "Default"},
+				{ID: "glm-5.1", Label: "GLM 5.1"},
+				{ID: "bge-m3", Label: "BGE M3"},
+			},
+		})
+		adminCipher, err := EncryptSecret(adminKEK, adminPlaintext)
+		require.NoError(t, err)
+
+		mockCredStore := &mockCredentialStore{
+			bindings: []CredentialBinding{{
+				ID: "cred-live-default", OwnerType: "admin", OwnerID: "_platform",
+				Kind: "openai_compatible", Slug: "thekaocloud", Ciphertext: adminCipher,
+				SourceType: "auto", ModelAllowlist: allowlist,
+			}},
+		}
+
+		combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
+		svc := NewSecretService(keyService, combinedStore)
+		svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
+		svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
+
+		result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
+		require.NoError(t, err)
+
+		var injected []InjectedSecret
+		require.NoError(t, json.Unmarshal(result, &injected))
+		llm := filterByType(injected, SecretTypeLLMProvider)
+		require.Len(t, llm, 1)
+
+		var pd LLMProviderData
+		require.NoError(t, json.Unmarshal([]byte(llm[0].Plaintext), &pd))
+		return pd
+	}
+
+	t.Run("live catalog model named default is allowed and delivered", func(t *testing.T) {
+		pd := buildCase(t, []string{"default", "glm-5.1"})
+		require.Len(t, pd.Models, 2, "default + glm-5.1 survive; bge-m3 is filtered")
+		ids := []string{pd.Models[0].ID, pd.Models[1].ID}
+		assert.ElementsMatch(t, []string{"default", "glm-5.1"}, ids,
+			"a provider model literally named default is a catalog entry, not the platform's default-model selector")
+	})
+
+	t.Run("live catalog model named default filtered out when unlisted", func(t *testing.T) {
+		pd := buildCase(t, []string{"glm-5.1"})
+		require.Len(t, pd.Models, 1)
+		assert.Equal(t, "glm-5.1", pd.Models[0].ID,
+			"default gains no special pass — the allowlist stays a strict catalog filter")
+	})
+}
+
 type asyncAuditTestLogger struct{}
 
 func (l *asyncAuditTestLogger) Info(_ string, _ ...interface{})           {}

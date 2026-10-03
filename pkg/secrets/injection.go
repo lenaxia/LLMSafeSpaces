@@ -687,13 +687,14 @@ func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBin
 	}
 	allowed := make(map[string]bool, len(b.ModelAllowlist))
 	for _, id := range b.ModelAllowlist {
-		// Skip obviously invalid model IDs. The allowlist is stored as
-		// a DB array and can accumulate stale entries (e.g. the literal
-		// "default" from a mis-formed create request). An invalid ID
-		// passed to FormatOpenCodeConfig produces a provider entry
-		// with no valid models, causing opencode to treat the provider
-		// as unconfigured and return 0 providers.
-		if id == "" || id == "default" {
+		// #1575: an empty ID is never a real catalog entry. The literal
+		// "default" IS a legitimate one (routers/aliases commonly serve a
+		// model named default — e.g. TheKaoCloud); the platform's default
+		// model SELECTOR is a separate mechanism (workspace-config's
+		// defaultModel, resolved by resolveModelWithProvider) that never
+		// flows through ModelAllowlist. The stale-entry concern is
+		// handled below, where no live list vouches for the id.
+		if id == "" {
 			continue
 		}
 		allowed[id] = true
@@ -716,13 +717,23 @@ func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBin
 	if len(filtered) == 0 && len(allowed) > 0 {
 		filtered = make([]LLMModelConfig, 0, len(allowed))
 		for _, id := range b.ModelAllowlist {
-			if allowed[id] {
-				filtered = append(filtered, LLMModelConfig{
-					ID:           id,
-					ContextLimit: b.ModelContextLimits[id],
-					OutputLimit:  b.ModelOutputLimits[id],
-				})
+			// No live-fetched list vouches for synthesized IDs, so the
+			// mis-formed-artifact skip stays HERE (#1575): an allowlist
+			// "default" with nothing backing it is the stale selector
+			// literal from a mis-formed create request — synthesizing it
+			// produced "models":{"default":{}} blocks opencode read as
+			// an unconfigured provider (0 models delivered). With a live
+			// catalog present, the intersection above already filtered
+			// stale entries, so "default" survives only when the
+			// provider actually serves it.
+			if id == "" || id == "default" {
+				continue
 			}
+			filtered = append(filtered, LLMModelConfig{
+				ID:           id,
+				ContextLimit: b.ModelContextLimits[id],
+				OutputLimit:  b.ModelOutputLimits[id],
+			})
 		}
 	}
 	pd.Models = filtered
