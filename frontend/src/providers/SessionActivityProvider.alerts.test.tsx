@@ -52,7 +52,7 @@ function HungProbe({ workspaceId }: { workspaceId: string }) {
 function renderProvider(sessions: SessionListItem[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(["sessions", "ws-1"], sessions);
-  return render(
+  const result = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <SessionActivityProvider>
@@ -61,6 +61,7 @@ function renderProvider(sessions: SessionListItem[]) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { qc, ...result };
 }
 
 describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
@@ -202,22 +203,85 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
   });
 
   it("reconnect re-seeds the badge when the session is still genuinely busy", async () => {
-    mockGetAlerts.mockResolvedValue([
-      {
-        id: "1", workspaceId: "ws-1", sessionId: "ses-x",
-        alert: "session_hung", oldestBusySeconds: 960,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    sessionsFixtures["ws-1"] = [{ id: "ses-x", title: "t", status: "busy" } as SessionListItem];
-    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+    // Resolve on a macrotask like a real network response: the busy
+    // re-seed (triggered by the same seedBusy pass) must have committed
+    // to busySessionsRef before the gate reads it — the documented
+    // ordering the ref-sync comment relies on.
+    mockGetAlerts.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve([
+                {
+                  id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+                  alert: "session_hung", oldestBusySeconds: 960,
+                  createdAt: new Date().toISOString(),
+                },
+              ]),
+            50,
+          ),
+        ),
+    );
+    const { qc } = renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
 
     fireHungAlertSse();
     expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
 
     capturedOnReconnect?.();
-    // Re-seed runs (seededRef cleared) and the still-busy session
-    // re-latches the badge from the persisted history.
+    // The clear must commit before the re-seed could run.
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
+
+    // In production the re-seed fires when the sessions cache updates
+    // after reconnect (seededRef was cleared) — drive exactly that.
+    qc.setQueryData(["sessions", "ws-1"], [{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
     expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+  });
+
+  it.each(["aborted", "deleted"] as const)(
+    "session.status=%s clears a live-latched badge (terminal events end the hang)",
+    async (status) => {
+      mockGetAlerts.mockResolvedValue([]);
+      renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+      fireHungAlertSse();
+      expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+      capturedOnEvent?.({ type: "session.status", status, workspace_id: "ws-1", session_id: "ses-x" });
+      await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
+    },
+  );
+
+  it("agent_died clears a live-latched badge", async () => {
+    mockGetAlerts.mockResolvedValue([]);
+    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+    capturedOnEvent?.({ type: "agent_died", workspace_id: "ws-1" });
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
+  });
+
+  it("workspace.phase non-active clears a live-latched badge", async () => {
+    mockGetAlerts.mockResolvedValue([]);
+    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+    capturedOnEvent?.({ type: "workspace.phase", workspace_id: "ws-1", phase: "Suspended" });
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
+  });
+
+  it("resync clears hung state (dropped events include the idle clear)", async () => {
+    mockGetAlerts.mockResolvedValue([]);
+    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+    capturedOnEvent?.({ type: "resync" });
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
   });
 });

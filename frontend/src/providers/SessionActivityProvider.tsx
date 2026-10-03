@@ -124,9 +124,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // LIVE (SSE-truthed) busy set, not the seed-time REST snapshot — an
   // idle SSE may clear a session while the fetch is in flight. A
   // fetch resolution is a separate macrotask, so this ref (synced in
-  // a passive effect after every busy-state commit) always observes
-  // state that is at least as fresh as any SSE event delivered before
-  // the resolution.
+  // a passive effect after every busy-state commit) observes state at
+  // least as fresh as any SSE event whose React commit flushed before
+  // the resolution — a resolution landing in the narrow window between
+  // an SSE handler and its passive-effect commit reads one event stale
+  // (bounded: the next idle/reconnect clears).
   const busySessionsRef = useRef(busySessions);
   useEffect(() => {
     busySessionsRef.current = busySessions;
@@ -136,6 +138,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // session.status=idle (the hang resolved) — the map is workspace-keyed
   // so the sidebar badge survives session switches.
   const [hungWorkspaces, setHungWorkspaces] = useState<Set<string>>(new Set());
+  // Terminal events (idle, aborted, deleted, agent_died, non-active
+  // phase) end any hang for the workspace — no later SSE will clear it.
+  const dropHungWorkspace = useCallback((wsId: string) => {
+    setHungWorkspaces((prev) => {
+      if (!prev.has(wsId)) return prev;
+      const next = new Set(prev);
+      next.delete(wsId);
+      return next;
+    });
+  }, []);
   const [pendingUnread, setPendingUnread] = useState<Map<string, string>>(new Map());
   // #786: force-stopped sessions — the interrupted indicator's source.
   const [abortedSessions, setAbortedSessions] = useState<Set<string>>(new Set());
@@ -405,13 +417,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
       }
       if (evt.type === "session.status" && evt.status === "idle" && evt.workspace_id) {
-        const wsId = evt.workspace_id;
-        setHungWorkspaces((prev) => {
-          if (!prev.has(wsId)) return prev;
-          const next = new Set(prev);
-          next.delete(wsId);
-          return next;
-        });
+        dropHungWorkspace(evt.workspace_id);
       }
 
       if (evt.type === "agent.question" || evt.type === "agent.permission") {
@@ -663,6 +669,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // neither carries a response, so neither marks unread.
           const sid = evt.session_id!;
           const wsId = evt.workspace_id!;
+          // A stopped/deleted session can never emit the idle clear —
+          // the hang is over by definition (and deleting a stuck
+          // session is precisely what a user does with a hung one).
+          dropHungWorkspace(wsId);
           clearedRef.current.delete(sid);
           // Collect the session's own ask ids BEFORE clearing the
           // indicator — the fold-sync reconcile (snapshot_complete)
@@ -803,6 +813,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           }
           return next;
         });
+        // The hang is definitionally over when the agent dies.
+        dropHungWorkspace(wsId);
         clearWorkspacePendingActions(wsId);
       }
 
@@ -818,6 +830,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         flightsRef.current.clear();
         legacyStagingRef.current.clear();
         setInputSnapshots(new Map());
+        // Events were dropped for this subscriber — possibly including
+        // the idle that would have cleared a hung badge. Full clear,
+        // like reconnect; the gated seed re-adds genuine hangs.
+        setHungWorkspaces(new Set());
         return;
       }
 
@@ -835,12 +851,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // No further SSE can arrive for a non-active workspace, so
           // the hung badge's only clear path would never fire — drop
           // it with the rest of the per-workspace state.
-          setHungWorkspaces((prev) => {
-            if (!prev.has(wsId)) return prev;
-            const next = new Set(prev);
-            next.delete(wsId);
-            return next;
-          });
+          dropHungWorkspace(wsId);
           setPendingUnread((prev) => {
             const next = new Map<string, string>();
             for (const [sid, wid] of prev) {

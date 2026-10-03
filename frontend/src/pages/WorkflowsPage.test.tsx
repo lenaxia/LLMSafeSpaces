@@ -168,6 +168,12 @@ describe("WorkflowsPage — D6 hung-alert badge (#998)", () => {
     mockGetSessions.mockResolvedValue([{ id: "ses-x", title: "t", status: "idle" }]);
     await openHistory();
     await screen.findByText("run-1234");
+    // The badge decision is async (alerts + sessions queries) — settle
+    // both before asserting the negative, or the assertion runs before
+    // a mere-existence page could commit the dot (vacuous pass).
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledWith("ws-hung"));
+    await waitFor(() => expect(mockGetSessions).toHaveBeenCalledWith("ws-hung"));
+    await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId("workflow-hung-alert")).not.toBeInTheDocument();
   });
 
