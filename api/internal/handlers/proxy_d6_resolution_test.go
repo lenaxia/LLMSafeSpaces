@@ -156,3 +156,68 @@ func TestEscalateHungs_NeverAlertedNeverResolves(t *testing.T) {
 	assert.Empty(t, alerts.recorded)
 	assert.False(t, strings.Contains(strings.Join(alerts.recorded, ","), "resolve"))
 }
+
+// TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive: the resolution
+// authority is the statusz poll; a workspace with no pod (suspended/
+// terminated) cannot be polled, and the hang cannot outlive the pod —
+// an alerted workspace resolves at the no-pod branch instead of
+// orphaning its rows to the read-side heal.
+func TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	hung := true
+	var alerts fakeSessionAlerts
+	env, broker := newD6Env(t, func(w http.ResponseWriter, _ *http.Request) {
+		seconds := 10
+		if hung {
+			seconds = int((busyAlertOlderThan + 5*time.Minute).Seconds())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
+			Healthy:           true,
+			OldestBusySeconds: seconds,
+			BusyAges:          map[string]int{"ses-x": seconds},
+		})
+	})
+	env.handler.sessionAlerts = &alerts
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	// Sweep 1: hung and Active — alert.
+	env.handler.escalateHungs([]string{"ws-1"})
+	select {
+	case evt := <-sub.Ch:
+		require.Equal(t, "workspace.alert", evt.Type)
+	default:
+		t.Fatal("hung workspace must alert")
+	}
+	require.Len(t, alerts.recorded, 1)
+
+	// The workspace suspends: the CRD phase guard yields no pod IP.
+	// (Replace the env's Active-phase Get expectation — .Maybe() mocks
+	// never exhaust, so the first-registered match would keep winning.)
+	kept := env.wsMock.ExpectedCalls[:0]
+	for _, c := range env.wsMock.ExpectedCalls {
+		if c.Method == "Get" {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	env.wsMock.ExpectedCalls = kept
+	env.setupWorkspacePodWithT(t, "ws-1", "", "Suspended", "")
+	env.handler.phaseSource = fakePhaseSourceD6{"ws-1": "Suspended"}
+	env.handler.escalateHungs([]string{"ws-1"})
+	select {
+	case evt := <-sub.Ch:
+		require.Equal(t, "workspace.alert_resolved", evt.Type,
+			"an alerted workspace with no pod resolves instead of orphaning")
+	default:
+		t.Fatal("no-pod branch must resolve an alerted workspace")
+	}
+	require.Len(t, alerts.recorded, 2)
+	assert.Equal(t, "resolve:ws-1", alerts.recorded[1])
+}

@@ -38,6 +38,12 @@ The bounded-window claim was happy-path-only; three validated paths lose the res
 - Registered the missing `workspace.alert` in KNOWN_EVENT_TYPES; dropped the unreachable `!alerted && busyAlertCooling` branch; `ListSessionAlerts` scans via `sql.NullTime` (convention); openapi `SessionAlert.resolvedAt` added.
 - Queue-full asymmetry (a dropped resolve is worse than a dropped alert) and the wedged-pod-blocks-resolution note: both bounded by the read-side heal — a dropped/failed resolve heals on the next read past the trust window.
 
+### Review round 1 on the recreated PR (#1620; #1618 was closed and recreated as one clean commit after GitHub Actions stopped firing runs on its branch — no platform outage)
+
+- **Belt-test regression**: the branch recreation carried the pre-round-4 `json_duplicate_keys_test.go` (the old branch predated #1616's round-4 `%s` fix); restored main's version.
+- **Non-Active resolution**: an alerted workspace with no pod (suspended/terminated) now RESOLVES at the no-pod branch of the sweep (the hang cannot outlive the pod; a resumed workspace has fresh agent state) instead of orphaning rows to the read-side heal. Also drains the busyAlerts entry at process level. Test: `TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive`.
+- **Claim corrected**: `UnresolvedStaleAfter` doc no longer claims "never a latch" — two bounded false-latch paths remain inside the window (orphan younger than the bound served unresolved; resolveHungs publishing the SSE clear before the persist commits), both self-correcting via the 1h heal for future reads and the reconnect re-seed for a latched tab.
+
 ---
 
 ## Blockers

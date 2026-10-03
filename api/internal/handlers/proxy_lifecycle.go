@@ -500,6 +500,14 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		podIP := h.statuszPodIP(ctx, wid)
 		if podIP == "" {
 			cancel()
+			// No pod (non-Active): the resolution authority is gone and
+			// the hang cannot outlive the pod — a suspended-while-hung
+			// workspace resumes with fresh agent state. Resolve alerted
+			// workspaces here so the rows never orphan to the read-side
+			// heal; unalerted ones just skip.
+			if h.busyAlerted(wid) {
+				h.resolveHungs(wid)
+			}
 			continue
 		}
 		sz, err := h.fetchStatusz(ctx, wid, podIP)

@@ -29,10 +29,18 @@ const AlertRetention = 24 * time.Hour
 // trusted as live. A genuine hang re-alerts every 30min cooldown
 // (proxy_lifecycle.go busyAlertCooldown), so unresolved rows older
 // than 2x that with no successor mean the sweep's resolution was LOST
-// (API restart spanning recovery, workspace leaving Active, resolve
-// flush failure) — ListByWorkspace heals them on read, so the very
-// read that would have latched a badge bounds the false badge to this
-// window instead. Failure direction is a missing badge, never a latch.
+// (API restart spanning recovery, resolve-flush failure) —
+// ListByWorkspace heals them on read, so the very read that would
+// have latched a badge bounds the false badge to this window instead.
+//
+// Two bounded false-latch paths remain within the window (do not
+// claim "never a latch"): (1) an orphan younger than this bound is
+// served unresolved — a client loading in that window latches until
+// reconnect's re-seed or a later read past the bound heals the row;
+// (2) resolveHungs publishes the SSE clear before the persist
+// commits, so a seed fetch landing between the two re-latches until
+// the same bounds. Both self-correct; neither outlives this window
+// for future reads.
 const UnresolvedStaleAfter = time.Hour
 
 type Service struct {

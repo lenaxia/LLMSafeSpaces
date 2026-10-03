@@ -179,7 +179,7 @@ func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
 	// runs reached 2.05s, and the eager build sits at 8.3s (red by 2x
 	// against the belt; far redder against the ratio).
 	assert.Less(t, scanTime, 4000*time.Millisecond,
-		"scan (%s) exceeded the belt")
+		"scan (%s) exceeded the belt", scanTime)
 }
 
 // The DUPLICATE-bearing complexity pin (r3's measured finding): the
