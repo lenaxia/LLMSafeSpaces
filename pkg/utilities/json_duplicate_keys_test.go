@@ -169,8 +169,17 @@ func TestFindDuplicateKeys_NoQuadraticBlowup(t *testing.T) {
 	assert.LessOrEqual(t, scanTime, 20*decodeTime,
 		"scan (%s) must stay within 20x the stdlib decode (%s) — the eager quadratic path build sits far outside",
 		scanTime, decodeTime)
-	assert.Less(t, scanTime, 1500*time.Millisecond,
-		"absolute belt on top of the ratio (lazy scans this shape in ~100ms class; the restored eager build measured multi-second in the r2 mutation run)")
+	// Absolute belt on top of the ratio (the restored eager build
+	// measured multi-second in the r2 mutation run). The RATIO is the
+	// load-relative discriminator — both measurements scale with host
+	// load — while this belt only caps the pathological case where
+	// decodeTime itself balloons under load and loosens the ratio
+	// bound. Headroom on both sides: the lazy scan class is ~150ms
+	// (26x below the belt even before load), observed loaded-runner
+	// runs reached 2.05s, and the eager build sits at 8.3s (red by 2x
+	// against the belt; far redder against the ratio).
+	assert.Less(t, scanTime, 4000*time.Millisecond,
+		"scan (%s) exceeded the belt", scanTime)
 }
 
 // The DUPLICATE-bearing complexity pin (r3's measured finding): the

@@ -30,10 +30,12 @@ vi.mock("../api/workflows", () => ({
 
 const mockListRuns = vi.fn();
 const mockGetAlerts = vi.fn();
+const mockGetSessions = vi.fn();
 
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
     getAlerts: (id: string) => mockGetAlerts(id),
+    getSessions: (id: string) => mockGetSessions(id),
   },
 }));
 
@@ -144,19 +146,41 @@ describe("WorkflowsPage — D6 hung-alert badge (#998)", () => {
     fireEvent.click(toggle);
   }
 
-  it("flags runs whose workspace has a persisted hung alert", async () => {
+  it("flags runs whose workspace has a persisted hung alert for a STILL-BUSY session", async () => {
     mockListRuns.mockResolvedValue([runFixture("ws-hung")]);
     mockGetAlerts.mockResolvedValue([
       { id: "1", workspaceId: "ws-hung", sessionId: "ses-x", alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString() },
     ]);
+    mockGetSessions.mockResolvedValue([{ id: "ses-x", title: "t", status: "busy" }]);
     await openHistory();
     expect(await screen.findByTestId("workflow-hung-alert")).toBeInTheDocument();
     expect(mockGetAlerts).toHaveBeenCalledWith("ws-hung");
   });
 
+  it("shows no badge for stale history when the alerted session recovered (idle)", async () => {
+    // The feed is append-only 24h history: an alert for a session that
+    // has since gone idle must not badge the run (the shipped
+    // mere-existence bug, mirrored from SessionActivityProvider).
+    mockListRuns.mockResolvedValue([runFixture("ws-hung")]);
+    mockGetAlerts.mockResolvedValue([
+      { id: "1", workspaceId: "ws-hung", sessionId: "ses-x", alert: "session_hung", oldestBusySeconds: 3154, createdAt: "2026-10-03T04:59:06Z" },
+    ]);
+    mockGetSessions.mockResolvedValue([{ id: "ses-x", title: "t", status: "idle" }]);
+    await openHistory();
+    await screen.findByText("run-1234");
+    // The badge decision is async (alerts + sessions queries) — settle
+    // both before asserting the negative, or the assertion runs before
+    // a mere-existence page could commit the dot (vacuous pass).
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledWith("ws-hung"));
+    await waitFor(() => expect(mockGetSessions).toHaveBeenCalledWith("ws-hung"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("workflow-hung-alert")).not.toBeInTheDocument();
+  });
+
   it("shows no badge when the run's workspace is alert-free", async () => {
     mockListRuns.mockResolvedValue([runFixture("ws-ok")]);
     mockGetAlerts.mockResolvedValue([]);
+    mockGetSessions.mockResolvedValue([]);
     await openHistory();
     await screen.findByText("run-1234");
     expect(screen.queryByTestId("workflow-hung-alert")).not.toBeInTheDocument();

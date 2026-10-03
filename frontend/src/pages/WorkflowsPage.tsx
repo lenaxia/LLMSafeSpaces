@@ -35,7 +35,11 @@ export function WorkflowsPage() {
   // D6 (#998): persisted hung-session alerts for the workspaces behind
   // the visible runs — workflow surfaces consume the alerts endpoint so
   // an unattended hung session is visible from the workflows view, not
-  // only from the live SSE banner (which a workflow never sees).
+  // only from the live SSE banner (which a workflow never sees). The
+  // persisted feed is append-only 24h history with no resolution state,
+  // so a workspace counts as hung ONLY while one of its alerted
+  // sessions is still busy (same gate as SessionActivityProvider's
+  // seed; the sessions ride the shared ["sessions", wsId] cache).
   const runWorkspaceIds = Array.from(
     new Set((runs ?? []).map((r) => r.workspaceId).filter((id): id is string => !!id)),
   );
@@ -43,9 +47,27 @@ export function WorkflowsPage() {
     queryKey: ["workspace-alerts", runWorkspaceIds],
     queryFn: async () => {
       const entries = await Promise.all(
-        runWorkspaceIds.map(async (wsId) => [wsId, await workspacesApi.getAlerts(wsId)] as const),
+        runWorkspaceIds.map(async (wsId) => {
+          const [alerts, sessions] = await Promise.all([
+            workspacesApi.getAlerts(wsId),
+            queryClient
+              .ensureQueryData({
+                queryKey: ["sessions", wsId],
+                queryFn: () => workspacesApi.getSessions(wsId),
+                staleTime: 30_000,
+              })
+              .catch(() => undefined),
+          ]);
+          const hungIds = new Set(
+            alerts.filter((a) => a.alert === "session_hung" && a.sessionId).map((a) => a.sessionId),
+          );
+          const stillHung = !!sessions?.some(
+            (s) => hungIds.has(s.id) && (s.status === "busy" || s.status === "active"),
+          );
+          return [wsId, stillHung] as const;
+        }),
       );
-      return new Map(entries.filter(([, alerts]) => alerts.length > 0));
+      return new Map(entries.filter(([, stillHung]) => stillHung));
     },
     enabled: runWorkspaceIds.length > 0,
     staleTime: 60_000,
