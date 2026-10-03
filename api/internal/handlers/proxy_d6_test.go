@@ -200,6 +200,10 @@ func (m *mockSessionAlerts) RecordAlert(workspaceID, sessionID, alert string, ol
 	m.Called(workspaceID, sessionID, alert, oldestBusySeconds)
 }
 
+func (m *mockSessionAlerts) ResolveWorkspace(workspaceID string) {
+	m.Called(workspaceID)
+}
+
 func (m *mockSessionAlerts) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
 	args := m.Called(ctx, workspaceID, limit)
 	if args.Get(0) == nil {

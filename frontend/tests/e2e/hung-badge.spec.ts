@@ -1,9 +1,12 @@
 /**
- * E2E: D6 (#998) hung badge seeding from persisted alerts — the stale-
- * history regression and the true-recovery direction. The badge renders
- * on COLLAPSED workspace rows, while the sessions query (whose cache
- * drives the seed) populates when the workspace is expanded — so both
- * tests navigate in (expanded), then collapse and assert the badge.
+ * E2E: D6 (#998) hung badge seeding from persisted alerts — the resolved-
+ * history regression and the live-alert direction. Resolution is
+ * server-side truth (resolvedAt, set by the D6 sweep when it observes
+ * the hang end): RESOLVED history never badges; an UNRESOLVED alert
+ * does. The badge renders on COLLAPSED workspace rows, while the
+ * sessions query (whose cache drives the seed) populates when the
+ * workspace is expanded — so both tests navigate in (expanded), then
+ * collapse and assert the badge.
  *
  * No SSE transport is needed in either direction: the page-load seed
  * path under test is REST-only (/sessions + /alerts). The user SSE
@@ -64,8 +67,8 @@ test.describe("D6 (#998): hung badge seeded from persisted alerts", () => {
     await setupBase(page, {
       sessAStatus: "idle",
       alerts: [
-        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 3154, createdAt: "2026-10-03T04:59:06Z" },
-        { id: "2", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 997, createdAt: "2026-10-03T04:23:09Z" },
+        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 3154, createdAt: "2026-10-03T04:59:06Z", resolvedAt: "2026-10-03T05:15:30Z" },
+        { id: "2", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 997, createdAt: "2026-10-03T04:23:09Z", resolvedAt: "2026-10-03T05:15:30Z" },
       ],
     });
 
@@ -82,7 +85,7 @@ test.describe("D6 (#998): hung badge seeded from persisted alerts", () => {
     await setupBase(page, {
       sessAStatus: "active",
       alerts: [
-        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString() },
+        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString(), resolvedAt: null },
       ],
     });
 

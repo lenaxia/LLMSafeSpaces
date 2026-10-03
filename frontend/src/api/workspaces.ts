@@ -29,6 +29,11 @@ export interface SessionAlert {
   alert: string;
   oldestBusySeconds: number;
   createdAt: string;
+  /** Null/absent while the alert's condition is live; set when the D6
+   *  sweep observed the hang end (server-side resolution semantics —
+   *  consumers read "hung now" as alert==="session_hung" &&
+   *  !resolvedAt instead of reconstructing it from busy snapshots). */
+  resolvedAt?: string | null;
 }
 
 export interface ModelInfo {
