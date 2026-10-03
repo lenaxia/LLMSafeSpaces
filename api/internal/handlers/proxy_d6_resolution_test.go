@@ -58,7 +58,7 @@ func TestEscalateHungs_ResolvesWhenRecovered(t *testing.T) {
 			seconds = int((busyAlertOlderThan + 5*time.Minute).Seconds())
 		}
 		w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
+		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:           true,
 			OldestBusySeconds: seconds,
 			BusyAges:          map[string]int{"ses-x": seconds},
@@ -117,7 +117,7 @@ func TestEscalateHungs_StillHungInsideCooldownNeitherAlertsNorResolves(t *testin
 	t.Cleanup(func() { busyAlertCooldown = origCooldown })
 
 	var alerts fakeSessionAlerts
-	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan+5*time.Minute).Seconds())))
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + 5*time.Minute).Seconds())))
 	env.handler.sessionAlerts = &alerts
 
 	sub, err := broker.SubscribeWorkspace("ws-1")

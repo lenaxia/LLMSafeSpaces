@@ -45,9 +45,9 @@ func TestIntegration_SessionAlerts_ResolveSemantics(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM session_alerts WHERE workspace_id IN ($1, $2)", wsA, wsB)
 
 	now := time.Now().UTC()
-	seedAlert(t, h, wsA, "ses-live", now.Add(-20*time.Minute), time.Time{})   // unresolved, fresh
+	seedAlert(t, h, wsA, "ses-live", now.Add(-20*time.Minute), time.Time{})     // unresolved, fresh
 	seedAlert(t, h, wsA, "ses-old", now.Add(-2*time.Hour), now.Add(-time.Hour)) // already resolved
-	seedAlert(t, h, wsB, "ses-other", now.Add(-20*time.Minute), time.Time{})  // other workspace: must not move
+	seedAlert(t, h, wsB, "ses-other", now.Add(-20*time.Minute), time.Time{})    // other workspace: must not move
 
 	n, err := svc.ResolveSessionAlerts(ctx, wsA)
 	require.NoError(t, err)
