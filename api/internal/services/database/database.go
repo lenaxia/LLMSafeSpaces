@@ -1086,8 +1086,9 @@ func (s *Service) ResolveStaleSessionAlerts(ctx context.Context, workspaceID str
 }
 
 // ResolveSessionAlerts sets resolved_at on every unresolved alert for
-// the workspace (the D6 sweep observed the hang end) and returns the
-// number of rows resolved. Zero rows = nothing was live.
+// the workspace (the D6 sweep observed the hang end, or the workspace
+// left Active while alerted) and returns the number of rows resolved.
+// Zero rows = nothing was live.
 func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error) {
 	tag, err := s.DB.ExecContext(ctx,
 		`UPDATE session_alerts SET resolved_at = now()

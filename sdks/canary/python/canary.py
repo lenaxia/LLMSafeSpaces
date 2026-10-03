@@ -186,10 +186,13 @@ def jwt_login(cfg: "Config") -> str:
     Raises ``RuntimeError`` if login fails.
 
     A 429 is retried once after the server-advertised ``retryAfter``
-    (bounded): the S-RATE-LIMIT scenario deliberately trips the login
-    limiter, and without the retry the NEXT scenario's jwt_login
-    inherits the 429 and the canary run flakes (observed twice on
-    PR CI: 2026-10-03).
+    (capped at 60s). The per-route login limiter tripped by the
+    S-RATE-LIMIT scenario cannot reach a later ``jwt_login`` in the CI
+    orderings (quota scenarios use the static API key and every job
+    transition carries a 65s bucket-refill sleep) — the plausible
+    source of the observed twice-on-PR-CI 429s (2026-10-03) is the
+    GLOBAL limiter (advertised retryAfter ~1s), which can trip any
+    request under bursty runs. The retry covers that case.
     """
     body = json.dumps({"email": cfg.email, "password": cfg.password}).encode()
     status, content = raw_do("POST", f"{cfg.api_url}/api/v1/auth/login", body=body)

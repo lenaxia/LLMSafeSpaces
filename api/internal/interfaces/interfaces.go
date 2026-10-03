@@ -192,8 +192,9 @@ type SessionIndexService interface {
 type SessionAlertsService interface {
 	RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int)
 	// ResolveWorkspace marks all of a workspace's unresolved alerts
-	// resolved (the D6 sweep observed the hang end). Non-blocking like
-	// RecordAlert (bounded queue + drainer).
+	// resolved (the D6 sweep observed the hang end, or the workspace
+	// left Active while alerted — proxy_events.go's watch hook).
+	// Non-blocking like RecordAlert (bounded queue + drainer).
 	ResolveWorkspace(workspaceID string)
 	ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	Start() error

@@ -57,7 +57,12 @@ The bounded-window claim was happy-path-only; three validated paths lose the res
 - **Active-with-empty-IP is now an error** (transient/UNKNOWN), matching the doc — the sweep stays silent on it (`TestEscalateHungs_ActiveEmptyPodIPIsTransient`), closing the doc-vs-code mismatch where a pod-creating CRD could have resolved a live hang.
 - **E2E resolution workflow**: `workspace.alert_resolved` clearing a badge seeded from a live alert, through the real user-SSE handler (deferred route.fulfill, the test-40 pattern).
 - **Doc unification**: resolvedAt descriptions name all three writers (sweep, leave-Active watch event, read-side heal) across Go/TS/openapi; duplicate statuszPodIP doc paragraph removed; proxy_events comment now states the honest bounds (post-restart leave-Active still orphans to the heal; deleted-CR/410 gap leaks the busyAlerts entry, bounded).
-- CI note: one SDK-canary run failed on a login rate-limit interaction between scenarios (S-RATE-LIMIT trips the limiter, the next scenario's jwt_login inherits the 429) — re-run green; pre-existing flake, unrelated.
+- CI note: SDK-canary 429 flakes (twice on this PR's CI). Initial attribution ("the next scenario's jwt_login inherits the per-route limiter from S-RATE-LIMIT") was WRONG — the CI orderings cannot produce it (quota scenarios use the static key; 65s refill sleeps between jobs). The plausible mechanism is the GLOBAL limiter (retryAfter ~1s) tripping under bursty runs; `jwt_login` now retries once on 429 after the advertised retryAfter (capped 60s), which covers it. Doc-accuracy fix from review round 4.
+
+### Review round 4 (#1620) — documentation accuracy (blocking under repo rules)
+
+- Canary fix commit's trigger claim corrected: the per-route-limiter inheritance mechanism is impossible in the CI topology; the global limiter is the plausible source; docstring and worklog now say so.
+- `ResolveWorkspace`/`ResolveSessionAlerts` doc comments name both callers (sweep + leave-Active watch hook); the provider's `alert_resolved` handler comment is writer-accurate.
 
 ---
 

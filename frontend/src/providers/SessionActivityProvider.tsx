@@ -395,8 +395,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         dropHungWorkspace(evt.workspace_id);
       }
 
-      // The D6 sweep observed the hang end: the persisted flag and the
-      // badge drop together (authoritative resolution, server-side).
+      // The server observed the hang end (D6 sweep, or the workspace
+      // left Active while alerted): the persisted flag and the badge
+      // drop together (authoritative resolution, server-side).
       if (evt.type === "workspace.alert_resolved" && evt.workspace_id) {
         dropHungWorkspace(evt.workspace_id);
       }
