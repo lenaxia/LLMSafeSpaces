@@ -450,7 +450,8 @@ func TestProxy_StatuszPodIP_RunningReturnsIP(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP(context.Background(), "ws-1")
+	ip, err := handler.statuszPodIP(context.Background(), "ws-1")
+	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1", ip)
 }
 
@@ -468,7 +469,8 @@ func TestProxy_StatuszPodIP_SuspendedReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP(context.Background(), "ws-1")
+	ip, err := handler.statuszPodIP(context.Background(), "ws-1")
+	require.NoError(t, err, "confirmed non-Active is not an error — it is the no-pod signal")
 	assert.Equal(t, "", ip)
 }
 
@@ -485,8 +487,9 @@ func TestProxy_StatuszPodIP_NotFoundReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP(context.Background(), "sb-missing")
-	assert.Equal(t, "", ip)
+	ip, err := handler.statuszPodIP(context.Background(), "sb-missing")
+	assert.Empty(t, ip)
+	require.Error(t, err, "transient Get failures are errors (UNKNOWN), never the no-pod signal")
 }
 
 // US-69.11: the OnPhaseChange tracker-lifecycle tests (SuspendingStops,

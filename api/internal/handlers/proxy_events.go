@@ -23,6 +23,17 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 	prior, hadPrior := h.state().GetPriorPhase(context.Background(), workspace.Name)
 	h.state().SetPriorPhase(context.Background(), workspace.Name, string(phase))
 
+	// D6 resolution on leaving Active: the sweep only watches Active
+	// workspaces (the reconciler pre-filters), so this watch event is
+	// the moment its resolution authority is lost. The hang cannot
+	// outlive the pod (a resumed workspace has fresh agent state), so
+	// an alerted workspace resolves here rather than orphaning its
+	// rows to the read-side heal. Seed calls (no prior) are no-ops for
+	// this — a restart re-seeds Active phases only.
+	if phase != phaseActive && hadPrior && string(prior) != string(phase) && h.busyAlerted(workspace.Name) {
+		h.resolveHungs(workspace.Name)
+	}
+
 	if h.userBroker != nil && workspace.Spec.Owner.UserID != "" {
 		h.userBroker.RecordWorkspaceOwner(workspace.Name, workspace.Spec.Owner.UserID)
 		h.userBroker.PublishToUser(workspace.Spec.Owner.UserID, apitypes.WorkspaceSSEEvent{

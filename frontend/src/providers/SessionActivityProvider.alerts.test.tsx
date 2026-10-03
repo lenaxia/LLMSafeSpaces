@@ -185,10 +185,8 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
   });
 
   it("reconnect re-seeds the badge when the session is still genuinely busy", async () => {
-    // Resolve on a macrotask like a real network response: the busy
-    // re-seed (triggered by the same seedBusy pass) must have committed
-    // to busySessionsRef before the gate reads it — the documented
-    // ordering the ref-sync comment relies on.
+    // Resolve on a macrotask like a real network response, matching
+    // production fetch latency.
     mockGetAlerts.mockImplementation(
       () =>
         new Promise((resolve) =>
@@ -267,4 +265,47 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
     capturedOnEvent?.({ type: "resync" });
     await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
   });
+});
+
+// The straddle ordering (documented bounded false-latch in the
+// UnresolvedStaleAfter doc): resolveHungs publishes the SSE clear
+// BEFORE the persist commits, so a seed fetch landing in that window
+// re-latches the badge from still-unresolved rows. This pins the
+// behavior AND its bound: reconnect's gated re-seed clears it (the
+// row heals read-side for future loads).
+it("straddle: a late unresolved fetch after an alert_resolved clear re-latches until reconnect", async () => {
+  let resolveAlerts!: (alerts: unknown[]) => void;
+  mockGetAlerts.mockReturnValue(
+    new Promise((resolve) => {
+      resolveAlerts = resolve;
+    }),
+  );
+  renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
+
+  // The sweep's resolution event arrives BEFORE the queued persist
+  // commits; the in-flight alerts fetch resolves after — with rows the
+  // persist has not touched yet.
+  capturedOnEvent?.({ type: "workspace.alert_resolved", workspace_id: "ws-1" });
+  resolveAlerts([
+    {
+      id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+      alert: "session_hung", oldestBusySeconds: 960,
+      createdAt: new Date().toISOString(),
+      resolvedAt: null,
+    },
+  ]);
+  expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+  // The bound: reconnect full-clears; the gated re-seed (alerts now
+  // healed server-side on the next read) does not re-add.
+  mockGetAlerts.mockResolvedValue([
+    {
+      id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+      alert: "session_hung", oldestBusySeconds: 960,
+      createdAt: new Date().toISOString(),
+      resolvedAt: new Date().toISOString(),
+    },
+  ]);
+  capturedOnReconnect?.();
+  await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
 });

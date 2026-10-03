@@ -44,6 +44,13 @@ The bounded-window claim was happy-path-only; three validated paths lose the res
 - **Non-Active resolution**: an alerted workspace with no pod (suspended/terminated) now RESOLVES at the no-pod branch of the sweep (the hang cannot outlive the pod; a resumed workspace has fresh agent state) instead of orphaning rows to the read-side heal. Also drains the busyAlerts entry at process level. Test: `TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive`.
 - **Claim corrected**: `UnresolvedStaleAfter` doc no longer claims "never a latch" — two bounded false-latch paths remain inside the window (orphan younger than the bound served unresolved; resolveHungs publishing the SSE clear before the persist commits), both self-correcting via the 1h heal for future reads and the reconnect re-seed for a latched tab.
 
+### Review round 2 (#1620)
+
+- **Leave-Active resolution moved to the right layer**: the reconciler pre-filters watched to phaseSource-Active, so the sweep's no-pod branch only covers the phaseSource-lag window. The production hook is the WATCH event: `onPhaseChange` resolves alerted workspaces on the Active→non-Active transition (prior-phase guarded against seed calls). Test drives the real `onPhaseChange` path; `service.go`'s lost-resolution doc stays accurate (restart, flush failure, transient blips).
+- **Transient ≠ no-pod**: `statuszPodIP` now returns (ip, error) — confirmed non-Active is the no-pod signal; client/Get/timeout blips are UNKNOWN and resolve nothing (a blip must never rewrite live-hang history; the dropped-cooldown re-alert bound remains). Tests: Get-error sweep silent; the two StatuszPodIP unit tests assert the distinction.
+- **Straddle ordering pinned** (`alerts.test.tsx`): alert_resolved SSE before persist-commit + late unresolved fetch → re-latch, cleared at reconnect; the row heals read-side for future loads — the documented bound, now executable documentation.
+- Minor: stale busySessionsRef comment removed; `alerted` reused in the no-pod branch.
+
 ---
 
 ## Blockers

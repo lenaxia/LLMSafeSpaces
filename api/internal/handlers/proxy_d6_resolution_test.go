@@ -6,13 +6,16 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -197,20 +200,13 @@ func TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive(t *testing.T) {
 	}
 	require.Len(t, alerts.recorded, 1)
 
-	// The workspace suspends: the CRD phase guard yields no pod IP.
-	// (Replace the env's Active-phase Get expectation — .Maybe() mocks
-	// never exhaust, so the first-registered match would keep winning.)
-	kept := env.wsMock.ExpectedCalls[:0]
-	for _, c := range env.wsMock.ExpectedCalls {
-		if c.Method == "Get" {
-			continue
-		}
-		kept = append(kept, c)
-	}
-	env.wsMock.ExpectedCalls = kept
-	env.setupWorkspacePodWithT(t, "ws-1", "", "Suspended", "")
-	env.handler.phaseSource = fakePhaseSourceD6{"ws-1": "Suspended"}
-	env.handler.escalateHungs([]string{"ws-1"})
+	// The workspace leaves Active via the WATCH event — the production
+	// path (the reconciler pre-filters watched to phaseSource-Active,
+	// so the sweep itself would never see a Suspended workspace). The
+	// prior Active phase is established first, as the watcher does
+	// before any alert could have fired.
+	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", backendHost(t, env), "Active", ""))
+	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", "", "Suspended", ""))
 	select {
 	case evt := <-sub.Ch:
 		require.Equal(t, "workspace.alert_resolved", evt.Type,
@@ -220,4 +216,51 @@ func TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive(t *testing.T) {
 	}
 	require.Len(t, alerts.recorded, 2)
 	assert.Equal(t, "resolve:ws-1", alerts.recorded[1])
+}
+
+// TestEscalateHungs_TransientPodIPErrorDoesNotResolve: a client/Get
+// blip is UNKNOWN, not no-pod — a transient error must never resolve a
+// still-hung workspace (that would rewrite live history).
+func TestEscalateHungs_TransientPodIPErrorDoesNotResolve(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	var alerts fakeSessionAlerts
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + 5*time.Minute).Seconds())))
+	env.handler.sessionAlerts = &alerts
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	// Sweep 1: alert.
+	env.handler.escalateHungs([]string{"ws-1"})
+	select {
+	case <-sub.Ch:
+	default:
+		t.Fatal("hung workspace must alert")
+	}
+	require.Len(t, alerts.recorded, 1)
+
+	// Sweep 2: the CRD Get fails (timeout/informer blip) — must be
+	// silent: no resolution, no re-alert (inside cooldown).
+	kept := env.wsMock.ExpectedCalls[:0]
+	for _, c := range env.wsMock.ExpectedCalls {
+		if c.Method == "Get" {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	env.wsMock.ExpectedCalls = kept
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(nil, errors.New("informer blip")).Maybe()
+	env.handler.escalateHungs([]string{"ws-1"})
+
+	select {
+	case evt := <-sub.Ch:
+		t.Fatalf("transient pod-IP errors must resolve nothing: got %+v", evt)
+	default:
+	}
+	assert.Len(t, alerts.recorded, 1)
 }

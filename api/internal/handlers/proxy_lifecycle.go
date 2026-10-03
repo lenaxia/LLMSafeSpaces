@@ -497,15 +497,19 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		// the rest alert when first hung.
 		alerted := h.busyAlerted(wid)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		podIP := h.statuszPodIP(ctx, wid)
+		podIP, podErr := h.statuszPodIP(ctx, wid)
+		if podErr != nil {
+			// Transient (client/Get/timeout): UNKNOWN, not no-pod —
+			// a blip must not resolve a live hang. The still-hung
+			// cooldown check below stays silent either way.
+			cancel()
+			continue
+		}
 		if podIP == "" {
 			cancel()
-			// No pod (non-Active): the resolution authority is gone and
-			// the hang cannot outlive the pod — a suspended-while-hung
-			// workspace resumes with fresh agent state. Resolve alerted
-			// workspaces here so the rows never orphan to the read-side
-			// heal; unalerted ones just skip.
-			if h.busyAlerted(wid) {
+			// Confirmed non-Active (phaseSource lag): resolve here;
+			// the onPhaseChange hook covers the normal path.
+			if alerted {
 				h.resolveHungs(wid)
 			}
 			continue

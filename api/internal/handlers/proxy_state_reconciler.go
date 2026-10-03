@@ -65,8 +65,8 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 					}
 				}()
 				for _, id := range watched {
-					podIP := h.statuszPodIP(context.Background(), id)
-					if podIP == "" {
+					podIP, podErr := h.statuszPodIP(context.Background(), id)
+					if podErr != nil || podIP == "" {
 						continue
 					}
 					pw, err := h.getPassword(context.Background(), id)
@@ -94,26 +94,35 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 // statuszPodIP resolves the pod IP for statusz polls (phase-guarded —
 // the retired tracker's resolver, kept for the D6 sweep and the
 // reconcile pass).
-func (h *ProxyHandler) statuszPodIP(ctx context.Context, workspaceID string) string {
+// statuszPodIP resolves the pod to poll. The second return distinguishes
+// "confirmed no pod" (workspace fetched, phase not Active — resolution
+// authority gone) from transient failures (client construction, Get
+// error/timeout) which must be treated as UNKNOWN, never as no-pod: a
+// transient blip resolving a still-hung workspace would rewrite live
+// history. Active-with-empty-IP (pod creating) is likewise transient.
+func (h *ProxyHandler) statuszPodIP(ctx context.Context, workspaceID string) (string, error) {
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("k8s client: %w", err)
 	}
 	workspace, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("workspace get: %w", err)
 	}
 	if workspace.Status.Phase != phaseActive {
-		return ""
+		return "", nil
 	}
-	return workspace.Status.PodIP
+	return workspace.Status.PodIP, nil
 }
 
 // FetchStatuszPublic resolves the workspace pod and fetches statusz
 // (admin-facing; phase-guarded). The authority flip's drain signal reads
 // the ledger_in_flight field off it.
 func (h *ProxyHandler) FetchStatuszPublic(ctx context.Context, workspaceID string) (*agentd.StatuszResponse, error) {
-	podIP := h.statuszPodIP(ctx, workspaceID)
+	podIP, err := h.statuszPodIP(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("no pod IP for %s: %w", workspaceID, err)
+	}
 	if podIP == "" {
 		return nil, fmt.Errorf("no pod IP for %s (not Active)", workspaceID)
 	}
