@@ -90,7 +90,7 @@ const NON_ACTIVE_PHASES = new Set(["Suspending", "Suspended", "Terminating", "Te
 const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
   "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
-  "resync",
+  "resync", "workspace.alert_resolved",
 ]);
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
@@ -119,20 +119,6 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
-  // Derived mirror of busySessions for promise continuations: the
-  // hung-history seed's late-resolving alerts fetch must gate on the
-  // LIVE (SSE-truthed) busy set, not the seed-time REST snapshot — an
-  // idle SSE may clear a session while the fetch is in flight. A
-  // fetch resolution is a separate macrotask, so this ref (synced in
-  // a passive effect after every busy-state commit) observes state at
-  // least as fresh as any SSE event whose React commit flushed before
-  // the resolution — a resolution landing in the narrow window between
-  // an SSE handler and its passive-effect commit reads one event stale
-  // (bounded: the next idle/reconnect clears).
-  const busySessionsRef = useRef(busySessions);
-  useEffect(() => {
-    busySessionsRef.current = busySessions;
-  }, [busySessions]);
   // D6 (#998): workspaces with an active hung-session alert. Set on
   // workspace.alert/session_hung; cleared on that workspace's next
   // session.status=idle (the hang resolved) — the map is workspace-keyed
@@ -268,33 +254,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // D6 (#998) history surface: seed hung state from persisted
         // alerts once per workspace so a reconnecting client recovers
         // alerts missed while no SSE stream was attached — but ONLY
-        // for session_hung alerts whose session is STILL busy. The
-        // persisted feed is append-only 24h history (no resolution
-        // state), and the sole SSE clear path (session.status idle)
-        // never fires for a session that was already idle when the
-        // page loaded — so a session that hung and later recovered
-        // (pod restart, user stop) would otherwise latch the badge
-        // permanently on every page load. The busy check reads the
-        // LIVE busy set (busySessionsRef — SSE-truthed), not the
-        // seed-time REST snapshot: an idle SSE may have cleared the
-        // session while this fetch was in flight, and a
-        // late-resolving fetch must not re-latch the badge. A
-        // genuinely hung session stays busy (and the live SSE path
-        // re-alerts on the next cooldown cycle anyway), so nothing
-        // that is real is lost. Best-effort — a failed fetch leaves
-        // the in-memory state untouched.
+        // for UNRESOLVED session_hung alerts (resolvedAt is the
+        // server-side resolution flag: the D6 sweep sets it when it
+        // observes the hang end, and emits workspace.alert_resolved
+        // for live streams). The feed is append-only 24h history, so
+        // resolution — not client-side busy reconstruction — decides
+        // liveness: a session that hung and recovered while no browser
+        // watched must not badge on reload, and the poller's next-tick
+        // resolution closes the between-recovery-and-sweep window for
+        // connected clients via the alert_resolved event. Best-effort
+        // — a failed fetch leaves the in-memory state untouched.
         workspacesApi
           .getAlerts(wsId)
           .then((alerts) => {
             if (!alerts || alerts.length === 0) return;
-            const hungSessionIds = new Set(
-              alerts.filter((a) => a.alert === "session_hung" && a.sessionId).map((a) => a.sessionId),
-            );
-            if (hungSessionIds.size === 0) return;
-            const stillBusy = [...hungSessionIds].some(
-              (sid) => busySessionsRef.current.get(sid) === wsId,
-            );
-            if (!stillBusy) return;
+            const hasLiveHung = alerts.some((a) => a.alert === "session_hung" && !a.resolvedAt);
+            if (!hasLiveHung) return;
             setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
           })
           .catch(() => {});
@@ -417,6 +392,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
       }
       if (evt.type === "session.status" && evt.status === "idle" && evt.workspace_id) {
+        dropHungWorkspace(evt.workspace_id);
+      }
+
+      // The D6 sweep observed the hang end: the persisted flag and the
+      // badge drop together (authoritative resolution, server-side).
+      if (evt.type === "workspace.alert_resolved" && evt.workspace_id) {
         dropHungWorkspace(evt.workspace_id);
       }
 

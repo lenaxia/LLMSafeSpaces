@@ -82,12 +82,18 @@ type ActiveSessionsResponse struct {
 // workspace.alert (session_hung) is published, so alerts survive SSE
 // disconnects and remain readable by workflow surfaces after the fact.
 type SessionAlert struct {
-	ID                string    `json:"id"`
-	WorkspaceID       string    `json:"workspaceId"`
-	SessionID         string    `json:"sessionId"`
-	Alert             string    `json:"alert"`
-	OldestBusySeconds int       `json:"oldestBusySeconds"`
-	CreatedAt         time.Time `json:"createdAt"`
+	ID                string     `json:"id"`
+	WorkspaceID       string     `json:"workspaceId"`
+	SessionID         string     `json:"sessionId"`
+	Alert             string     `json:"alert"`
+	OldestBusySeconds int        `json:"oldestBusySeconds"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	// ResolvedAt is null while the alert's condition is still live and
+	// set when the D6 sweep observes the hang end (session left busy).
+	// The feed stays append-only history; consumers read CURRENT
+	// condition as "session_hung with ResolvedAt == nil" instead of
+	// reconstructing it from busy snapshots client-side.
+	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // EnsureSessionResponse is returned by POST /workspaces/:id/sessions/new.

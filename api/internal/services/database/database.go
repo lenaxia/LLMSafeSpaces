@@ -1040,7 +1040,7 @@ func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, lim
 		limit = 50
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id::text, workspace_id, session_id, alert, oldest_busy_seconds, created_at
+		`SELECT id::text, workspace_id, session_id, alert, oldest_busy_seconds, created_at, resolved_at
 		 FROM session_alerts WHERE workspace_id = $1
 		 ORDER BY created_at DESC LIMIT $2`, workspaceID, limit)
 	if err != nil {
@@ -1050,12 +1050,29 @@ func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, lim
 	alerts := make([]types.SessionAlert, 0, limit)
 	for rows.Next() {
 		var a types.SessionAlert
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt, &a.ResolvedAt); err != nil {
 			return nil, err
 		}
 		alerts = append(alerts, a)
 	}
 	return alerts, rows.Err()
+}
+
+// ResolveSessionAlerts sets resolved_at on every unresolved alert for
+// the workspace (the D6 sweep observed the hang end) and returns the
+// number of rows resolved. Zero rows = nothing was live.
+func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error) {
+	tag, err := s.DB.ExecContext(ctx,
+		`UPDATE session_alerts SET resolved_at = now()
+		 WHERE workspace_id = $1 AND resolved_at IS NULL`, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := tag.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {

@@ -38,6 +38,7 @@ type alertEvent struct {
 	sessionID         string
 	alert             string
 	oldestBusySeconds int
+	resolve           bool // set: resolve the workspace's live alerts instead of appending one
 }
 
 // New creates a SessionAlertsService.
@@ -89,6 +90,27 @@ func (s *Service) RecordAlert(workspaceID, sessionID, alert string, oldestBusySe
 	}
 }
 
+// ResolveWorkspace is non-blocking like RecordAlert: queues a
+// resolution for the workspace's live alerts (the D6 sweep observed
+// the hang end). A full queue drops the oldest queued event — the SSE
+// alert_resolved event is the primary surface; the persisted flag is
+// best-effort durability, same contract as RecordAlert.
+func (s *Service) ResolveWorkspace(workspaceID string) {
+	select {
+	case s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}:
+	default:
+		if s.logger != nil {
+			s.logger.Warn("session_alerts: channel full, dropping oldest event (resolve)",
+				"workspaceID", workspaceID, "queueSize", len(s.queue))
+		}
+		select {
+		case <-s.queue:
+		default:
+		}
+		s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}
+	}
+}
+
 // ListByWorkspace returns persisted alerts newest-first, filtered to
 // the retention window.
 func (s *Service) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
@@ -124,6 +146,15 @@ func (s *Service) drain() {
 func (s *Service) flush(ev alertEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if ev.resolve {
+		if _, err := s.db.ResolveSessionAlerts(ctx, ev.workspaceID); err != nil {
+			if s.logger != nil {
+				s.logger.Error("session_alerts: resolve failed", err,
+					"workspaceID", ev.workspaceID)
+			}
+		}
+		return
+	}
 	if err := s.db.InsertSessionAlert(ctx, ev.workspaceID, ev.sessionID, ev.alert, ev.oldestBusySeconds); err != nil {
 		if s.logger != nil {
 			s.logger.Error("session_alerts: insert failed", err,

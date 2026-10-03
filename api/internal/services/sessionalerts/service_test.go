@@ -5,6 +5,7 @@ package sessionalerts
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,5 +74,43 @@ func TestListByWorkspace_FiltersRetention(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, alerts, 1, "alerts older than retention are hidden")
 	assert.Equal(t, "ses-x", alerts[0].SessionID)
+	db.AssertExpectations(t)
+}
+
+func TestResolveWorkspace_DrainsToResolve(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	var resolved atomic.Bool
+	db.On("ResolveSessionAlerts", mock.Anything, "ws-1").
+		Run(func(mock.Arguments) { resolved.Store(true) }).
+		Return(int64(2), nil).Once()
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	svc.ResolveWorkspace("ws-1")
+
+	require.Eventually(t, resolved.Load, 2*time.Second, 10*time.Millisecond)
+	db.AssertExpectations(t)
+}
+
+func TestResolveWorkspace_ResolveFailureLoggedNotFatal(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	var resolved, inserted atomic.Bool
+	db.On("ResolveSessionAlerts", mock.Anything, "ws-1").
+		Run(func(mock.Arguments) { resolved.Store(true) }).
+		Return(int64(0), errors.New("db down")).Once()
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", 960).
+		Run(func(mock.Arguments) { inserted.Store(true) }).
+		Return(nil).Once()
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	svc.ResolveWorkspace("ws-1")
+	require.Eventually(t, resolved.Load, 2*time.Second, 10*time.Millisecond)
+
+	// The drainer must survive the failure (best-effort durability).
+	svc.RecordAlert("ws-1", "ses-x", "session_hung", 960)
+	require.Eventually(t, inserted.Load, 2*time.Second, 10*time.Millisecond)
 	db.AssertExpectations(t)
 }

@@ -88,6 +88,9 @@ type DatabaseService interface {
 	ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error)
 	InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error
 	ListSessionAlerts(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
+	// ResolveSessionAlerts sets resolved_at on every unresolved alert
+	// for the workspace and returns the number resolved.
+	ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error)
 	DeleteSessionIndex(ctx context.Context, workspaceID string) error
 	DeleteSessionTree(ctx context.Context, workspaceID, sessionID string) error
 	UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error
@@ -185,6 +188,10 @@ type SessionIndexService interface {
 // surfaces (GET /workspaces/:id/alerts).
 type SessionAlertsService interface {
 	RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int)
+	// ResolveWorkspace marks all of a workspace's unresolved alerts
+	// resolved (the D6 sweep observed the hang end). Non-blocking like
+	// RecordAlert (bounded queue + drainer).
+	ResolveWorkspace(workspaceID string)
 	ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	Start() error
 	Stop() error

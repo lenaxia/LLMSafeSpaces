@@ -36,10 +36,9 @@ export function WorkflowsPage() {
   // the visible runs — workflow surfaces consume the alerts endpoint so
   // an unattended hung session is visible from the workflows view, not
   // only from the live SSE banner (which a workflow never sees). The
-  // persisted feed is append-only 24h history with no resolution state,
-  // so a workspace counts as hung ONLY while one of its alerted
-  // sessions is still busy (same gate as SessionActivityProvider's
-  // seed; the sessions ride the shared ["sessions", wsId] cache).
+  // feed is append-only 24h history; a workspace counts as hung only
+  // while it has an UNRESOLVED session_hung alert (resolvedAt — the
+  // D6 sweep's server-side resolution flag), not from mere history.
   const runWorkspaceIds = Array.from(
     new Set((runs ?? []).map((r) => r.workspaceId).filter((id): id is string => !!id)),
   );
@@ -48,22 +47,8 @@ export function WorkflowsPage() {
     queryFn: async () => {
       const entries = await Promise.all(
         runWorkspaceIds.map(async (wsId) => {
-          const [alerts, sessions] = await Promise.all([
-            workspacesApi.getAlerts(wsId),
-            queryClient
-              .ensureQueryData({
-                queryKey: ["sessions", wsId],
-                queryFn: () => workspacesApi.getSessions(wsId),
-                staleTime: 30_000,
-              })
-              .catch(() => undefined),
-          ]);
-          const hungIds = new Set(
-            alerts.filter((a) => a.alert === "session_hung" && a.sessionId).map((a) => a.sessionId),
-          );
-          const stillHung = !!sessions?.some(
-            (s) => hungIds.has(s.id) && (s.status === "busy" || s.status === "active"),
-          );
+          const alerts = await workspacesApi.getAlerts(wsId);
+          const stillHung = alerts.some((a) => a.alert === "session_hung" && !a.resolvedAt);
           return [wsId, stillHung] as const;
         }),
       );
