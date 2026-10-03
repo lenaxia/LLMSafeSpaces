@@ -119,6 +119,18 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
+  // Derived mirror of busySessions for promise continuations: the
+  // hung-history seed's late-resolving alerts fetch must gate on the
+  // LIVE (SSE-truthed) busy set, not the seed-time REST snapshot — an
+  // idle SSE may clear a session while the fetch is in flight. A
+  // fetch resolution is a separate macrotask, so this ref (synced in
+  // a passive effect after every busy-state commit) always observes
+  // state that is at least as fresh as any SSE event delivered before
+  // the resolution.
+  const busySessionsRef = useRef(busySessions);
+  useEffect(() => {
+    busySessionsRef.current = busySessions;
+  }, [busySessions]);
   // D6 (#998): workspaces with an active hung-session alert. Set on
   // workspace.alert/session_hung; cleared on that workspace's next
   // session.status=idle (the hang resolved) — the map is workspace-keyed
@@ -227,16 +239,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
         seeded.add(wsId);
 
-        // Currently-busy session ids for this workspace — used both to
-        // seed busy state and to gate the hung-history seed below.
-        const busyIds = new Set<string>();
+        // Currently-busy session ids for this workspace — seeds busy
+        // state below (the hung gate re-reads LIVE cache in its .then;
+        // see the comment there).
         for (const session of data as Array<{ id: string; status?: string }>) {
           // Backend session.Status enum is {unknown, idle, busy, error,
           // compacting, archived} (pkg/session/session.go). "active" is not
           // a real status — accept both for backward compat with older API
           // responses and any cache entries written by the SSE handler.
           if (session.status === "busy" || session.status === "active") {
-            busyIds.add(session.id);
             if (!busyDelta) busyDelta = new Map();
             busyDelta.set(session.id, wsId);
           }
@@ -245,22 +256,33 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // D6 (#998) history surface: seed hung state from persisted
         // alerts once per workspace so a reconnecting client recovers
         // alerts missed while no SSE stream was attached — but ONLY
-        // for alerts whose session is STILL busy. The persisted feed
-        // is append-only 24h history (no resolution state), and the
-        // sole SSE clear path (session.status idle) never fires for a
-        // session that was already idle when the page loaded — so a
-        // session that hung and later recovered (pod restart, user
-        // stop) would otherwise latch the badge permanently on every
-        // page load. A genuinely hung session is still busy in the
-        // REST list, and the live SSE path re-alerts on the next
-        // cooldown cycle anyway, so nothing that is real is lost.
-        // Best-effort — a failed fetch leaves the in-memory state
-        // untouched.
+        // for session_hung alerts whose session is STILL busy. The
+        // persisted feed is append-only 24h history (no resolution
+        // state), and the sole SSE clear path (session.status idle)
+        // never fires for a session that was already idle when the
+        // page loaded — so a session that hung and later recovered
+        // (pod restart, user stop) would otherwise latch the badge
+        // permanently on every page load. The busy check reads the
+        // LIVE busy set (busySessionsRef — SSE-truthed), not the
+        // seed-time REST snapshot: an idle SSE may have cleared the
+        // session while this fetch was in flight, and a
+        // late-resolving fetch must not re-latch the badge. A
+        // genuinely hung session stays busy (and the live SSE path
+        // re-alerts on the next cooldown cycle anyway), so nothing
+        // that is real is lost. Best-effort — a failed fetch leaves
+        // the in-memory state untouched.
         workspacesApi
           .getAlerts(wsId)
           .then((alerts) => {
             if (!alerts || alerts.length === 0) return;
-            if (!alerts.some((a) => a.sessionId && busyIds.has(a.sessionId))) return;
+            const hungSessionIds = new Set(
+              alerts.filter((a) => a.alert === "session_hung" && a.sessionId).map((a) => a.sessionId),
+            );
+            if (hungSessionIds.size === 0) return;
+            const stillBusy = [...hungSessionIds].some(
+              (sid) => busySessionsRef.current.get(sid) === wsId,
+            );
+            if (!stillBusy) return;
             setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
           })
           .catch(() => {});
@@ -352,6 +374,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     onReconnect: () => {
       seededRef.current.clear();
       setBusySessions(new Map());
+      // A badge latched by live SSE survives a disconnect only as
+      // memory: if the session recovered while the tab was offline,
+      // no idle SSE will ever clear it (Last-Event-ID replay is
+      // best-effort). Drop it and let the gated re-seed re-add it
+      // when — and only when — the session is still genuinely busy.
+      setHungWorkspaces(new Set());
       // D9: do NOT wipe pendingActions — rebuild is async via per-workspace
       // snapshot markers. A global wipe would blank all ?s until the slowest
       // pod fetch completes (visible flicker).
@@ -802,6 +830,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
             for (const [sid, wid] of prev) {
               if (wid !== wsId) next.set(sid, wid);
             }
+            return next;
+          });
+          // No further SSE can arrive for a non-active workspace, so
+          // the hung badge's only clear path would never fire — drop
+          // it with the rest of the per-workspace state.
+          setHungWorkspaces((prev) => {
+            if (!prev.has(wsId)) return prev;
+            const next = new Set(prev);
+            next.delete(wsId);
             return next;
           });
           setPendingUnread((prev) => {

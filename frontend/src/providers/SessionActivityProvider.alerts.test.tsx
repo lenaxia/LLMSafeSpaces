@@ -27,12 +27,21 @@ const mockGetAlerts = vi.fn();
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
     getAlerts: (id: string) => mockGetAlerts(id),
+    getSessions: (id: string) => Promise.resolve(sessionsFixtures[id] ?? []),
   },
 }));
 
-// No live SSE in this test: events are the other (tested) path in.
+let sessionsFixtures: Record<string, SessionListItem[]> = {};
+
+// SSE handlers are captured so the race/reconnect paths (the two
+// residual permanent-latch windows) can be driven deterministically.
+let capturedOnEvent: ((data: unknown) => void) | undefined;
+let capturedOnReconnect: (() => void) | undefined;
 vi.mock("../hooks/useUserEventStream", () => ({
-  useUserEventStream: () => {},
+  useUserEventStream: (options?: { onEvent?: (data: unknown) => void; onReconnect?: () => void }) => {
+    capturedOnEvent = options?.onEvent;
+    capturedOnReconnect = options?.onReconnect;
+  },
 }));
 
 function HungProbe({ workspaceId }: { workspaceId: string }) {
@@ -57,7 +66,19 @@ function renderProvider(sessions: SessionListItem[]) {
 describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionsFixtures = {};
+    capturedOnEvent = undefined;
+    capturedOnReconnect = undefined;
   });
+
+  const fireHungAlertSse = () =>
+    capturedOnEvent?.({
+      type: "workspace.alert",
+      workspace_id: "ws-1",
+      data: { alert: "session_hung" },
+    });
+  const fireIdleSse = (sessionId: string) =>
+    capturedOnEvent?.({ type: "session.status", status: "idle", workspace_id: "ws-1", session_id: sessionId });
 
   it("seeds hung state when the alerted session is currently busy (true recovery)", async () => {
     mockGetAlerts.mockResolvedValue([
@@ -127,5 +148,76 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
 
     await waitFor(() => expect(mockGetAlerts).toHaveBeenCalled());
     expect(screen.getByText("healthy")).toBeInTheDocument();
+  });
+
+  it("a late-resolving alerts fetch does not re-latch the badge after an idle SSE clear", async () => {
+    // Review round-1 finding: seed runs while REST says busy, the
+    // fetch is in flight, an idle SSE clears the (live-latched) badge,
+    // and the fetch then resolves — against the seed-time snapshot it
+    // would re-latch permanently (no future idle fires). The gate
+    // must re-validate against live busy state.
+    let resolveAlerts!: (alerts: unknown[]) => void;
+    mockGetAlerts.mockReturnValue(
+      new Promise((resolve) => {
+        resolveAlerts = resolve;
+      }),
+    );
+    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+    // Badge latched live while the fetch is in flight...
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+    // ...the session recovers (idle SSE clears badge AND busy state)...
+    fireIdleSse("ses-x");
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
+    // ...and THEN the alerts response lands with the stale history.
+    resolveAlerts([
+      {
+        id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+        alert: "session_hung", oldestBusySeconds: 960,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByText("healthy")).toBeInTheDocument();
+  });
+
+  it("reconnect drops a live-latched badge for a session that recovered while disconnected", async () => {
+    // Review round-1 finding: onReconnect cleared busy seeding but
+    // not hungWorkspaces — a session that recovered while the tab was
+    // offline kept the badge (the gated re-seed correctly declines to
+    // re-add it, but nothing cleared the stale entry).
+    mockGetAlerts.mockResolvedValue([]);
+    renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
+
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+    capturedOnReconnect?.();
+    // The gated re-seed re-adds the badge only when the session is
+    // still busy — here REST says idle, so it stays cleared.
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByText("healthy")).toBeInTheDocument();
+  });
+
+  it("reconnect re-seeds the badge when the session is still genuinely busy", async () => {
+    mockGetAlerts.mockResolvedValue([
+      {
+        id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+        alert: "session_hung", oldestBusySeconds: 960,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    sessionsFixtures["ws-1"] = [{ id: "ses-x", title: "t", status: "busy" } as SessionListItem];
+    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+
+    fireHungAlertSse();
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+    capturedOnReconnect?.();
+    // Re-seed runs (seededRef cleared) and the still-busy session
+    // re-latches the badge from the persisted history.
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
   });
 });
