@@ -2138,6 +2138,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>kubectl<span class="w"> </span>patch<span class="w"> </span>workspace<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--type<span class="o">=</span>merge<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>-p<span class="w"> </span><span class="s1">'{"spec":{"networkAccess":{"devPreview":true}}}'</span>
 </span></code></pre></div>
+<p>Toggles are <strong>live</strong>: enabling or disabling Dev Preview through Workspace Settings (or <code>PUT /api/v1/workspaces/&lt;id&gt;/dev-preview</code>) pushes the new state to the running workspace immediately — the <code>feature_status</code> and <code>dev_preview_url</code> agent tools reflect it without restarting the workspace. A direct <code>kubectl patch</code> of the CRD skips that push; the in-session tools pick the change up the next time the workspace pod is (re)created (e.g. after suspend/resume), while the tunnel itself follows the CRD live either way.</p>
 <h2 id="opening-the-preview">Opening the preview<a class="headerlink" href="#opening-the-preview" title="Permanent link">&para;</a></h2>
 <p>With Dev Preview enabled and your workspace <strong>Active</strong>:</p>
 <ol>
@@ -2311,7 +2312,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 16, 2026 05:37:00 UTC"><span class="timeago" datetime="2026-09-16T05:37:00+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 16, 2026 05:37:00 UTC">2026-09-16</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 3, 2026 19:00:57 UTC"><span class="timeago" datetime="2026-10-03T19:00:57+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 3, 2026 19:00:57 UTC">2026-10-03</span>
   </span>
 
     
