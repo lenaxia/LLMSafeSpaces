@@ -23,6 +23,7 @@ on:
       - 'helm/crds/**'
       - 'controller/internal/webhooks/**'
       - 'controller/internal/workspace/**'
+      - 'controller/internal/controller/**'
       - '.github/workflows/envtest.yml'
   schedule:
     # Nightly at 04:00 UTC — catches upstream envtest binary regressions.
