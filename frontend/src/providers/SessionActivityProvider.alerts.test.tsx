@@ -5,12 +5,14 @@
 // workspace's sessions first appear in the query cache (page load /
 // reconnect), the provider seeds hungWorkspaces from the persisted
 // alerts endpoint — an alert missed while disconnected must still
-// surface the banner/badge — BUT only for alerts whose session is
-// STILL busy. The persisted feed is append-only 24h history: a session
-// that hung and later went idle (or whose pod restarted) keeps its
-// alerts forever, and the only SSE clear path (session.status idle)
-// never fires for a session that was already idle when the page
-// loaded. Seeding from stale history latched the badge permanently.
+// surface the banner/badge — but ONLY for UNRESOLVED alerts
+// (resolvedAt): the feed is append-only 24h history, and resolution is
+// server-side truth (resolved_at is written when the hang ends — D6
+// sweep observation or leave-Active watch event, both of which also
+// emit workspace.alert_resolved, or the read-side heal aging a lost
+// resolution). A session that hung and recovered keeps its alerts
+// forever; the resolved flag — not client-side busy reconstruction —
+// decides liveness.
 
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -78,15 +80,14 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
       workspace_id: "ws-1",
       data: { alert: "session_hung" },
     });
-  const fireIdleSse = (sessionId: string) =>
-    capturedOnEvent?.({ type: "session.status", status: "idle", workspace_id: "ws-1", session_id: sessionId });
 
-  it("seeds hung state when the alerted session is currently busy (true recovery)", async () => {
+  it("seeds hung state from an UNRESOLVED alert (true recovery)", async () => {
     mockGetAlerts.mockResolvedValue([
       {
         id: "1", workspaceId: "ws-1", sessionId: "ses-x",
         alert: "session_hung", oldestBusySeconds: 960,
         createdAt: new Date().toISOString(),
+        resolvedAt: null,
       },
     ]);
     renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
@@ -95,21 +96,24 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
     expect(mockGetAlerts).toHaveBeenCalledWith("ws-1");
   });
 
-  it("does NOT seed hung from stale history when the alerted session is idle", async () => {
-    // The shipped bug: session hung (alert persisted), pod restarted,
-    // session went idle with no browser attached — on next page load
-    // the idle session's stale alert latched the hung badge forever
-    // (no idle SSE transition ever fires for an already-idle session).
+  it("does NOT seed hung from RESOLVED history (the shipped latch)", async () => {
+    // The shipped bug: a session that hung and recovered kept its
+    // alerts forever in the append-only feed, and the badge seeded from
+    // mere existence — latching on every page load. Resolution is now
+    // server-side: resolvedAt set = history, not state.
+    const resolved = new Date().toISOString();
     mockGetAlerts.mockResolvedValue([
       {
         id: "1", workspaceId: "ws-1", sessionId: "ses-x",
         alert: "session_hung", oldestBusySeconds: 3154,
         createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+        resolvedAt: resolved,
       },
       {
         id: "2", workspaceId: "ws-1", sessionId: "ses-x",
         alert: "session_hung", oldestBusySeconds: 997,
         createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+        resolvedAt: resolved,
       },
     ]);
     renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
@@ -120,19 +124,31 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
     expect(screen.getByText("healthy")).toBeInTheDocument();
   });
 
-  it("does not seed hung when the alerted session no longer exists", async () => {
-    mockGetAlerts.mockResolvedValue([
+  it("a late-resolving unresolved seed latches, then workspace.alert_resolved clears it", async () => {
+    // Between recovery and the sweep's next tick, an alert can still be
+    // unresolved while REST says idle — the seed badges it (correct:
+    // the server has not resolved it), and the sweep's
+    // workspace.alert_resolved event is what clears it authoritatively.
+    let resolveAlerts!: (alerts: unknown[]) => void;
+    mockGetAlerts.mockReturnValue(
+      new Promise((resolve) => {
+        resolveAlerts = resolve;
+      }),
+    );
+    renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
+
+    resolveAlerts([
       {
-        id: "1", workspaceId: "ws-1", sessionId: "ses-gone",
+        id: "1", workspaceId: "ws-1", sessionId: "ses-x",
         alert: "session_hung", oldestBusySeconds: 960,
         createdAt: new Date().toISOString(),
+        resolvedAt: null,
       },
     ]);
-    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
+    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
 
-    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledWith("ws-1"));
-    await new Promise((r) => setTimeout(r, 50));
-    expect(screen.getByText("healthy")).toBeInTheDocument();
+    capturedOnEvent?.({ type: "workspace.alert_resolved", workspace_id: "ws-1" });
+    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
   });
 
   it("stays healthy when no persisted alerts exist", async () => {
@@ -148,38 +164,6 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
     renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
 
     await waitFor(() => expect(mockGetAlerts).toHaveBeenCalled());
-    expect(screen.getByText("healthy")).toBeInTheDocument();
-  });
-
-  it("a late-resolving alerts fetch does not re-latch the badge after an idle SSE clear", async () => {
-    // Review round-1 finding: seed runs while REST says busy, the
-    // fetch is in flight, an idle SSE clears the (live-latched) badge,
-    // and the fetch then resolves — against the seed-time snapshot it
-    // would re-latch permanently (no future idle fires). The gate
-    // must re-validate against live busy state.
-    let resolveAlerts!: (alerts: unknown[]) => void;
-    mockGetAlerts.mockReturnValue(
-      new Promise((resolve) => {
-        resolveAlerts = resolve;
-      }),
-    );
-    renderProvider([{ id: "ses-x", title: "t", status: "busy" } as SessionListItem]);
-
-    // Badge latched live while the fetch is in flight...
-    fireHungAlertSse();
-    expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
-    // ...the session recovers (idle SSE clears badge AND busy state)...
-    fireIdleSse("ses-x");
-    await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
-    // ...and THEN the alerts response lands with the stale history.
-    resolveAlerts([
-      {
-        id: "1", workspaceId: "ws-1", sessionId: "ses-x",
-        alert: "session_hung", oldestBusySeconds: 960,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByText("healthy")).toBeInTheDocument();
   });
 
@@ -203,10 +187,8 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
   });
 
   it("reconnect re-seeds the badge when the session is still genuinely busy", async () => {
-    // Resolve on a macrotask like a real network response: the busy
-    // re-seed (triggered by the same seedBusy pass) must have committed
-    // to busySessionsRef before the gate reads it — the documented
-    // ordering the ref-sync comment relies on.
+    // Resolve on a macrotask like a real network response, matching
+    // production fetch latency.
     mockGetAlerts.mockImplementation(
       () =>
         new Promise((resolve) =>
@@ -217,6 +199,7 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
                   id: "1", workspaceId: "ws-1", sessionId: "ses-x",
                   alert: "session_hung", oldestBusySeconds: 960,
                   createdAt: new Date().toISOString(),
+                  resolvedAt: null,
                 },
               ]),
             50,
@@ -284,4 +267,47 @@ describe("SessionActivityProvider — persisted-alert recovery (#998)", () => {
     capturedOnEvent?.({ type: "resync" });
     await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
   });
+});
+
+// The straddle ordering (documented bounded false-latch in the
+// UnresolvedStaleAfter doc): resolveHungs publishes the SSE clear
+// BEFORE the persist commits, so a seed fetch landing in that window
+// re-latches the badge from still-unresolved rows. This pins the
+// behavior AND its bound: reconnect's gated re-seed clears it (the
+// row heals read-side for future loads).
+it("straddle: a late unresolved fetch after an alert_resolved clear re-latches until reconnect", async () => {
+  let resolveAlerts!: (alerts: unknown[]) => void;
+  mockGetAlerts.mockReturnValue(
+    new Promise((resolve) => {
+      resolveAlerts = resolve;
+    }),
+  );
+  renderProvider([{ id: "ses-x", title: "t", status: "idle" } as SessionListItem]);
+
+  // The sweep's resolution event arrives BEFORE the queued persist
+  // commits; the in-flight alerts fetch resolves after — with rows the
+  // persist has not touched yet.
+  capturedOnEvent?.({ type: "workspace.alert_resolved", workspace_id: "ws-1" });
+  resolveAlerts([
+    {
+      id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+      alert: "session_hung", oldestBusySeconds: 960,
+      createdAt: new Date().toISOString(),
+      resolvedAt: null,
+    },
+  ]);
+  expect(await screen.findByText("hung", {}, { timeout: 2000 })).toBeInTheDocument();
+
+  // The bound: reconnect full-clears; the gated re-seed (alerts now
+  // healed server-side on the next read) does not re-add.
+  mockGetAlerts.mockResolvedValue([
+    {
+      id: "1", workspaceId: "ws-1", sessionId: "ses-x",
+      alert: "session_hung", oldestBusySeconds: 960,
+      createdAt: new Date().toISOString(),
+      resolvedAt: new Date().toISOString(),
+    },
+  ]);
+  capturedOnReconnect?.();
+  await waitFor(() => expect(screen.getByText("healthy")).toBeInTheDocument());
 });

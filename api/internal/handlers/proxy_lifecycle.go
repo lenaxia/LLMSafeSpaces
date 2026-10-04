@@ -480,15 +480,38 @@ var (
 // are surfaced to the owner instead of executed). Statusz fetch failure
 // is silent-to-log: the alert path must not add load when the pod is
 // merely slow (the tracker/alerting stack covers hard failures).
+//
+// Resolution (the D6 follow-up): when a workspace that HAS alerted is
+// observed no longer hung, the sweep resolves its persisted alerts
+// (resolved_at) and emits workspace.alert_resolved so connected clients
+// drop the badge and reloading clients never re-latch it from history.
+// Workspaces that have alerted keep being polled through the alert
+// cooldown — recovery detection cannot ride the cooldown or a hang
+// that ends one minute after an alert stays "live" in the feed for the
+// full cooldown window.
 func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 	for _, wid := range workspaceIDs {
-		if h.busyAlertCooling(wid) {
+		// Cooling implies an entry in busyAlerts implies alerted, so
+		// there is no "cooling but not alerted" case to skip here:
+		// every workspace is fetched; alerted ones resolve-or-re-alert,
+		// the rest alert when first hung.
+		alerted := h.busyAlerted(wid)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		podIP, podErr := h.statuszPodIP(ctx, wid)
+		if podErr != nil {
+			// Transient (client/Get/timeout): UNKNOWN, not no-pod —
+			// a blip must not resolve a live hang. The still-hung
+			// cooldown check below stays silent either way.
+			cancel()
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		podIP := h.statuszPodIP(ctx, wid)
 		if podIP == "" {
 			cancel()
+			// Confirmed non-Active (phaseSource lag): resolve here;
+			// the onPhaseChange hook covers the normal path.
+			if alerted {
+				h.resolveHungs(wid)
+			}
 			continue
 		}
 		sz, err := h.fetchStatusz(ctx, wid, podIP)
@@ -497,6 +520,14 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 			continue
 		}
 		if sz.OldestBusySeconds < int(busyAlertOlderThan.Seconds()) {
+			if alerted {
+				h.resolveHungs(wid)
+			}
+			continue
+		}
+		if h.busyAlertCooling(wid) {
+			// Still hung, inside the re-alert cooldown: no new alert,
+			// no resolution — the hang persists.
 			continue
 		}
 		h.publishWorkspaceAndUserEvent(wid, apitypes.WorkspaceSSEEvent{
@@ -521,6 +552,27 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		h.logger.Warn("D6 escalation: session hung (notify-only)",
 			"workspaceID", wid, "oldestBusySeconds", sz.OldestBusySeconds)
 	}
+}
+
+// resolveHungs closes out a workspace's live hung condition: persisted
+// alerts get resolved_at, subscribers get workspace.alert_resolved, and
+// the cooldown entry is dropped (a fresh hang re-alerts immediately,
+// not after the stale cooldown).
+func (h *ProxyHandler) resolveHungs(workspaceID string) {
+	h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		Type:   "workspace.alert_resolved",
+		Status: "session_hung",
+		Data: map[string]any{
+			"alert":  "session_hung",
+			"policy": "notify_only",
+		},
+	})
+	if h.sessionAlerts != nil {
+		h.sessionAlerts.ResolveWorkspace(workspaceID)
+	}
+	h.clearBusyAlerted(workspaceID)
+	h.logger.Info("D6 escalation: session recovered (hang resolved)",
+		"workspaceID", workspaceID)
 }
 
 // fetchStatusz GETs /v1/statusz from the agentd admin port using the
@@ -556,6 +608,23 @@ func (h *ProxyHandler) busyAlertCooling(workspaceID string) bool {
 	defer h.busyAlertsMu.Unlock()
 	last, ok := h.busyAlerts[workspaceID]
 	return ok && time.Since(last) < busyAlertCooldown
+}
+
+// busyAlerted reports whether the workspace has an alert on record that
+// has not been observed resolved (entry present in the cooldown map).
+func (h *ProxyHandler) busyAlerted(workspaceID string) bool {
+	h.busyAlertsMu.Lock()
+	defer h.busyAlertsMu.Unlock()
+	_, ok := h.busyAlerts[workspaceID]
+	return ok
+}
+
+// clearBusyAlerted drops the cooldown entry at resolution: a subsequent
+// hang alerts immediately instead of waiting out a stale cooldown.
+func (h *ProxyHandler) clearBusyAlerted(workspaceID string) {
+	h.busyAlertsMu.Lock()
+	delete(h.busyAlerts, workspaceID)
+	h.busyAlertsMu.Unlock()
 }
 
 func (h *ProxyHandler) markBusyAlerted(workspaceID string) {

@@ -184,9 +184,28 @@ def jwt_login(cfg: "Config") -> str:
     use the JWT token returned here as ``api_key`` for subsequent calls.
 
     Raises ``RuntimeError`` if login fails.
+
+    A 429 is retried once after the server-advertised ``retryAfter``
+    (capped at 60s). The per-route login limiter tripped by the
+    S-RATE-LIMIT scenario cannot reach a later ``jwt_login`` in the CI
+    orderings (quota scenarios use the static API key, and every
+    login-bearing job transition carries a 65s bucket-refill sleep;
+    the sleep-less MCP transition performs no /auth/login) — the
+    plausible
+    source of the observed twice-on-PR-CI 429s (2026-10-03) is the
+    GLOBAL limiter (advertised retryAfter ~1s), which can trip any
+    request under bursty runs. The retry covers that case.
     """
     body = json.dumps({"email": cfg.email, "password": cfg.password}).encode()
     status, content = raw_do("POST", f"{cfg.api_url}/api/v1/auth/login", body=body)
+    if status == 429:
+        retry_after = 60.0
+        try:
+            retry_after = min(float(json.loads(content).get("retryAfter", 60)), 60.0)
+        except (ValueError, AttributeError):
+            pass
+        time.sleep(retry_after + 1.0)
+        status, content = raw_do("POST", f"{cfg.api_url}/api/v1/auth/login", body=body)
     if status != 200:
         raise RuntimeError(f"jwt login failed: status={status} body={content[:200]!r}")
     obj = json.loads(content)

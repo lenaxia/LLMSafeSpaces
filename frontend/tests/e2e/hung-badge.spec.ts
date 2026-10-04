@@ -1,13 +1,16 @@
 /**
- * E2E: D6 (#998) hung badge seeding from persisted alerts — the stale-
- * history regression and the true-recovery direction. The badge renders
- * on COLLAPSED workspace rows, while the sessions query (whose cache
- * drives the seed) populates when the workspace is expanded — so both
- * tests navigate in (expanded), then collapse and assert the badge.
+ * E2E: D6 (#998) hung badge seeding from persisted alerts — the resolved-
+ * history regression and the live-alert direction. Resolution is
+ * server-side truth (resolvedAt, written when the hang ends — D6 sweep
+ * observation, leave-Active watch event, or the read-side heal):
+ * RESOLVED history never badges; an UNRESOLVED alert does. The badge renders on COLLAPSED workspace rows, while the
+ * sessions query (whose cache drives the seed) populates when the
+ * workspace is expanded — so both tests navigate in (expanded), then
+ * collapse and assert the badge.
  *
- * No SSE transport is needed in either direction: the page-load seed
- * path under test is REST-only (/sessions + /alerts). The user SSE
- * endpoint is fulfilled empty (the tests-43/44 pattern).
+ * The first two tests are REST-only (the page-load seed path); the
+ * resolution test injects one real user-SSE event via the deferred
+ * route.fulfill pattern from session-activity.spec.ts test 40.
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { mockIdleContractStream } from "./helpers/contractStream";
@@ -64,8 +67,8 @@ test.describe("D6 (#998): hung badge seeded from persisted alerts", () => {
     await setupBase(page, {
       sessAStatus: "idle",
       alerts: [
-        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 3154, createdAt: "2026-10-03T04:59:06Z" },
-        { id: "2", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 997, createdAt: "2026-10-03T04:23:09Z" },
+        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 3154, createdAt: "2026-10-03T04:59:06Z", resolvedAt: "2026-10-03T05:15:30Z" },
+        { id: "2", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 997, createdAt: "2026-10-03T04:23:09Z", resolvedAt: "2026-10-03T05:15:30Z" },
       ],
     });
 
@@ -82,7 +85,7 @@ test.describe("D6 (#998): hung badge seeded from persisted alerts", () => {
     await setupBase(page, {
       sessAStatus: "active",
       alerts: [
-        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString() },
+        { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString(), resolvedAt: null },
       ],
     });
 
@@ -92,4 +95,42 @@ test.describe("D6 (#998): hung badge seeded from persisted alerts", () => {
     await collapseWorkspace(page);
     await expect(page.getByTestId("hung-badge")).toBeVisible({ timeout: 5_000 });
   });
+});
+
+// Resolution workflow e2e: a badge seeded from a live (unresolved)
+// alert clears when the D6 sweep's workspace.alert_resolved event
+// arrives on the user stream — the live-clear half of the resolution
+// semantics, exercised through the real transport handler.
+test("workspace.alert_resolved clears a badge seeded from a live alert", async ({ page }) => {
+  await setupBase(page, {
+    sessAStatus: "active",
+    alerts: [
+      { id: "1", workspaceId: WS_A, sessionId: SESS_A1, alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString(), resolvedAt: null },
+    ],
+  });
+
+  // Deferred user-SSE fulfill (test-40 pattern): hold the route until
+  // we emit the resolution event, then complete the stream with it.
+  let fireUserSSE!: (body: string) => void;
+  await page.route(`${API}/events`, async (r: Route) => {
+    await new Promise<void>((resolve) => {
+      fireUserSSE = (body: string) => {
+        r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+        resolve();
+      };
+    });
+  });
+
+  await page.goto(`/chat/${WS_A}/${SESS_A1}`);
+  await expect(page.getByText("Task Alpha")).toBeVisible({ timeout: 10_000 });
+
+  // Seed the badge from the live alert, collapse to see it.
+  await collapseWorkspace(page);
+  await expect(page.getByTestId("hung-badge")).toBeVisible({ timeout: 5_000 });
+
+  // The sweep resolves: the event clears the badge.
+  fireUserSSE(
+    `data: ${JSON.stringify({ type: "workspace.alert_resolved", workspace_id: WS_A, status: "session_hung" })}\n\n`,
+  );
+  await expect(page.getByTestId("hung-badge")).not.toBeVisible({ timeout: 5_000 });
 });
