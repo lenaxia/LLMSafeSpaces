@@ -48,6 +48,13 @@ type workflowExecuteRequest struct {
 	RunID      string `json:"runId,omitempty"`
 }
 
+// maxWorkflowExecBodyBytes bounds a /v1/workflow/node/execute request
+// body (the #1561/#1564 bounded-read convention, #1565): script
+// handlers and webhook-derived node input ride this wire — 16 MiB is
+// the historical bound, now enforced loudly (413) instead of by
+// silent io.LimitReader truncation.
+const maxWorkflowExecBodyBytes = 16 << 20
+
 type workflowExecuteResponse struct {
 	Output json.RawMessage `json:"output,omitempty"`
 	Branch string          `json:"branch,omitempty"`
