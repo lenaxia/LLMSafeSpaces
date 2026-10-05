@@ -56,6 +56,12 @@ The list_models registration pushed `mcpHandler` to 358 lines (>350). The tools/
 - **Style-1 (fixed)**: `quotedList` now dedups, matching its doc comment.
 - Reviewer's mutation verification noted: the OR-merge rows and the declared-attachment e2e test fail on pre-PR code and pass at HEAD.
 
+
+### r3 — reviewer round 2 (head 9acc54e1)
+- **Tests for r2's own branches (fixed)**: `TestMCPCallWithModel_CaseTypoQualifiedRef_Suggests` pins BOTH suggestion branches (`P/text` provider-typo, `p/Text` model-typo) AND that the gate still refuses (case-sensitivity is load-bearing); direct tables for `caseInsensitiveMatches` (match/no-match/multi/no-prefix) and `quotedList` dedup.
+- **Live-shape guard (fixed, recorded-fixture route)**: pinned-opencode responses RECORDED 2026-10-05 (throwaway serve, probe provider with attachment:true/false/undeclared; apiKey redacted post-capture) into `pkg/agent/opencode/testdata/opencode-{provider,config-providers}-recorded.json`. Contract tests run the seam resolver (`TestModelInfo_RecordedConfigProviders_*`, happy + unhappy) and `AvailableModels` against the real shapes; the API side gets `TestOpencodeProviderParser_RecordedProbeProvider` (verbatim fragment). The r2 review explicitly accepted recorded fixtures as closing the fake-only gap without a cluster.
+- **Overclaiming comments (fixed)**: `supportsVision` doc now states AGREES-on-capability-block + documents the deliberate divergence (top-level attachment/modalities are API-side extras, safe direction); the flipped test row's comment notes its shape resolves unknown-at-the-seam.
+
 ## Evidence
 
 - `TestModelInfo_ImageSignalVariants` — 8-row signal table incl. the classifier case (attachment:true + synthesized image:false → vision-capable).

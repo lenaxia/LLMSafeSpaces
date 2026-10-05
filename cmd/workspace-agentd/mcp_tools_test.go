@@ -621,6 +621,40 @@ func TestMCPCallWithModel_UnknownProvider(t *testing.T) {
 	assert.Empty(t, f.titles)
 }
 
+func TestMCPCallWithModel_CaseTypoQualifiedRef_Suggests(t *testing.T) {
+	// The GATE is case-sensitive (opencode keys are exact); the SUGGESTION
+	// is case-insensitive — a case-typo'd ref gets the same one-hop
+	// self-correction a bare name gets, while still being refused (review
+	// r3 missing-test-1: gate case-sensitivity is load-bearing and pinned
+	// only here).
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "P/text", nil)
+	require.Error(t, err, "case-typo'd provider must still be REFUSED")
+	assert.Contains(t, err.Error(), `provider "P" is not in this workspace's model catalog`)
+	assert.Contains(t, err.Error(), "did you mean 'p'?")
+	assert.Empty(t, f.titles)
+
+	_, err = mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/Text", nil)
+	require.Error(t, err, "case-typo'd model must still be REFUSED")
+	assert.Contains(t, err.Error(), `model "Text" is not offered by provider "p"`)
+	assert.Contains(t, err.Error(), "did you mean 'text'?")
+	assert.Empty(t, f.titles)
+}
+
+func TestCaseInsensitiveMatches(t *testing.T) {
+	got := caseInsensitiveMatches("Text", []string{"text", "vision", "TEXT2", "text"})
+	assert.Equal(t, []string{"text", "text"}, got, "exact-modulo-case matches only; order preserved")
+	assert.Empty(t, caseInsensitiveMatches("nope", []string{"text", "vision"}))
+	assert.Empty(t, caseInsensitiveMatches("tex", []string{"text"}), "prefix matches are NOT suggestions")
+}
+
+func TestQuotedList_Dedup(t *testing.T) {
+	assert.Equal(t, "'a', 'b'", quotedList([]string{"b", "a", "a", "b"}), "duplicates collapse after sort")
+	assert.Equal(t, "'p/one', 'q/one'", quotedList([]string{"q/one", "p/one"}), "distinct qualified refs survive")
+}
+
 func TestMCPCallWithModel_CatalogUnreachable_FailOpen(t *testing.T) {
 	// The pre-check is advisory, never a gate: a catalog that cannot
 	// be read must leave the call's fate to the wire itself.

@@ -91,14 +91,24 @@ type modelVisionMeta struct {
 	} `json:"modalities"`
 }
 
-// supportsVision resolves the tri-state capability. OR-merge semantics —
-// identical to the seam's ModelInfo resolver (pkg/agent/opencode
-// loopback.go, PR #1624 r2): any PRESENT signal that is true makes the
-// model vision-capable (a declared attachment overrides the synthesized
-// image:false of custom-endpoint models); only every-present-signal-false
-// resolves to false; NO signal present resolves to nil — unknown, never a
-// silent false (the #1307 fail-safe direction: a false "text-only" would
-// strip user images from vision models).
+// supportsVision resolves the tri-state capability. OR-merge over the
+// capability block — AGREES with the seam's ModelInfo resolver
+// (pkg/agent/opencode loopback.go, PR #1624 r2) on every capability-block
+// shape: any PRESENT signal that is true makes the model vision-capable
+// (a declared attachment overrides the synthesized image:false of
+// custom-endpoint models); only every-present-signal-false resolves to
+// false; NO signal present resolves to nil — unknown, never a silent
+// false (the #1307 fail-safe direction: a false "text-only" would strip
+// user images from vision models).
+//
+// DELIBERATE divergence beyond the capability block (review r3
+// correctness-2): this resolver ALSO consumes the top-level
+// models.dev `attachment` flag and the `modalities` registry list —
+// endpoint-mediated extras the seam never parses (the seam's gates must
+// not strip on seam-unknown, and this endpoint can see richer shapes).
+// Residual divergences are all in the safe direction: the picker may
+// state vision where the seam is unknown; a seam-true resolution always
+// comes from a capabilities boolean this resolver also reads.
 func (m modelVisionMeta) supportsVision() *bool {
 	var present []bool
 	if m.Capabilities != nil {
