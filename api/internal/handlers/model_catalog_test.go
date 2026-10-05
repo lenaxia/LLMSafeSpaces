@@ -132,9 +132,29 @@ func TestOpencodeProviderParser_ParseVisionCapability(t *testing.T) {
 			want: map[string]*bool{"m": nil},
 		},
 		{
-			name: "capabilities wins over conflicting attachment",
+			// PR #1624 r2: OR-merge — a declared attachment (top-level
+			// models.dev form) overrides the synthesized image:false.
+			// Seam resolver (ModelInfo) and this resolver must agree.
+			name: "declared attachment overrides synthesized image false",
 			raw: `{"connected":["p"],"all":[{"id":"p","models":{
 				"m":{"id":"m","attachment":true,"capabilities":{"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(true)},
+		},
+		{
+			// The config-declared attachment lands at
+			// capabilities.attachment in GET /provider (probe-verified
+			// 2026-10-05) — the classifier case.
+			name: "capabilities attachment overrides synthesized image false",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","capabilities":{"attachment":true,"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(true)},
+		},
+		{
+			name: "all signals false resolves false",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","attachment":false,"capabilities":{"attachment":false,"input":{"image":false}}}
 			}}]}`,
 			want: map[string]*bool{"m": ptrBool(false)},
 		},

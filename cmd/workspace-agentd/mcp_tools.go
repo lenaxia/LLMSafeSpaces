@@ -316,12 +316,16 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 const modelCatalogHint = `use the list_models tool to see the workspace's valid model names`
 
 // quotedList renders did-you-mean candidates: 'a', 'b' or 'c' (sorted,
-// deduped — several providers may offer the same bare model ID).
+// deduped — several providers may offer the same bare model ID, and the
+// same name can surface twice across signal sources).
 func quotedList(items []string) string {
 	sorted := append([]string(nil), items...)
 	sort.Strings(sorted)
 	quoted := make([]string, 0, len(sorted))
 	for _, it := range sorted {
+		if len(quoted) > 0 && quoted[len(quoted)-1] == "'"+it+"'" {
+			continue
+		}
 		quoted = append(quoted, "'"+it+"'")
 	}
 	return strings.Join(quoted, ", ")
@@ -379,6 +383,10 @@ func verifyModelInCatalog(ctx context.Context, client *opencode.Client, provider
 		for p := range providers {
 			names = append(names, p)
 		}
+		if near := caseInsensitiveMatches(providerID, names); len(near) > 0 {
+			return fmt.Errorf("provider %q is not in this workspace's model catalog (connected providers: %s; did you mean %s?) — %s",
+				providerID, quotedList(names), quotedList(near), modelCatalogHint)
+		}
 		return fmt.Errorf("provider %q is not in this workspace's model catalog (connected providers: %s) — %s",
 			providerID, quotedList(names), modelCatalogHint)
 	}
@@ -389,8 +397,28 @@ func verifyModelInCatalog(ctx context.Context, client *opencode.Client, provider
 		}
 	}
 	sort.Strings(ids)
+	// The GATE stays case-sensitive (opencode keys are exact); only the
+	// suggestion is fuzzy — a case-typo'd ref gets the same one-hop
+	// self-correction a bare name gets (review r2 robustness-1).
+	if near := caseInsensitiveMatches(modelID, ids); len(near) > 0 {
+		return fmt.Errorf("model %q is not offered by provider %q in this workspace's catalog (available: %s; did you mean %s?) — %s",
+			modelID, providerID, quotedList(ids), quotedList(near), modelCatalogHint)
+	}
 	return fmt.Errorf("model %q is not offered by provider %q in this workspace's catalog (available: %s) — %s",
 		modelID, providerID, quotedList(ids), modelCatalogHint)
+}
+
+// caseInsensitiveMatches returns the subset of candidates equal to want
+// modulo case — the typo class a suggestion can fix with certainty
+// (no fuzzy/prefix matching: a wrong-but-similar name is not a typo).
+func caseInsensitiveMatches(want string, candidates []string) []string {
+	var out []string
+	for _, c := range candidates {
+		if strings.EqualFold(c, want) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // --- list_models ----------------------------------------------------------

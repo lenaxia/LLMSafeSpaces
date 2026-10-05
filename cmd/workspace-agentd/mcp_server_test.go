@@ -131,6 +131,40 @@ func TestMCPHandler_ToolsCall_SessionRead_MissingSessionID(t *testing.T) {
 	assert.True(t, result["isError"].(bool))
 }
 
+// TestMCPHandler_ToolsCall_ListModels_RoundTrip pins the FULL HTTP path
+// for list_models — the tools/call dispatch case string AND the handler —
+// against a typo in either (review r2 missing-test-2: a dispatch typo
+// would 32601 at the wire while the unit tests still pass).
+func TestMCPHandler_ToolsCall_ListModels_RoundTrip(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "list_models",
+		"arguments": map[string]any{},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 7, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	assert.Equal(t, 200, w.Code)
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.Nil(t, result["isError"])
+	content := result["content"].([]any)[0].(map[string]any)
+	assert.Equal(t, "text", content["type"])
+
+	var payload struct {
+		Count int `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(content["text"].(string)), &payload))
+	assert.Equal(t, 3, payload.Count)
+}
+
 // The plugin half of the platform config injection (#1465): the
 // origin-injection plugin rides agent-config.json, preserving
 // user-staged plugins and never duplicating itself across rebuilds.

@@ -40,6 +40,22 @@ Three gaps found while debugging a live `call_with_model` failure ("classifier",
 - **Fail-open on the unknown-model pre-check but loud when it fires:** the pre-check turns send-time 500s into named-alternatives errors only when the catalog is positively known; any catalog problem defers to the wire.
 - **Relay models (`RelayModel`) do NOT carry attachment yet:** free-models.json has no capability field; extending the controller wire format is out of this lane's scope.
 
+
+## Review rounds
+
+### r1 — CI funlen (commit 1dc8a696)
+The list_models registration pushed `mcpHandler` to 358 lines (>350). The tools/list registry moved to `mcpToolCatalog()` (programmatic extraction; the reviewer later verified byte-equivalence across all tools). One unrelated-churn fix rode along: a blanket `goimports -local` sweep touched 20 files outside the lane — reverted to keep the diff minimal.
+
+### r2 — automated reviewer CHANGES_REQUESTED (head 1dc8a696)
+- **MAJOR correctness-1 (fixed)**: the API-side resolver (`api/internal/handlers/model_catalog.go`) kept strict precedence and could not see `capabilities.attachment` — after following this PR's own remediation, the agent gate accepted images while `GET /workspaces/:id/models` still reported `supportsVision:false` and the picker rendered text-only. Fixed: `modelVisionMeta` parses `capabilities.attachment`; `supportsVision` now implements the SAME OR-merge as the seam (any present signal true → vision; all-false → false; none → nil). The table row pinning the OPPOSITE ("capabilities wins over conflicting attachment") flipped to the new contract, plus rows for capabilities.attachment and all-false.
+- **Missing tests (added)**: (1) `TestFormatOpenCodeConfig_AttachmentDeclaration` now validates its output against the pinned opencode config schema (a SchemaError rejects the ENTIRE config); (2) `TestMCPHandler_ToolsCall_ListModels_RoundTrip` pins the HTTP dispatch path; (3) the API-side table rows above.
+- **Robustness-1 (fixed)**: qualified refs with a case typo now get the same one-hop suggestion bare names get — `caseInsensitiveMatches` feeds did-you-mean clauses in both `verifyModelInCatalog` failure branches (the GATE stays case-sensitive; only the suggestion is fuzzy, exact-match only — no prefix/Levenshtein guessing).
+- **Robustness-2 (accepted, documented)**: `parseProviderCatalogForContract` skips empty-id entries the send path would key-accept — fail-closed for a shape not observed live; left as-is rather than widening the pre-check's trust.
+- **Alignment-1 (fixed)**: README-LLM.md entry 6 now records the synthesized-false discovery and the declaration channel.
+- **Alignment-2 (fixed)**: the `agent.LLMModelConfig` interface mirror carries `Attachment`, and `OpenCodeAgent.FormatProviderConfig` passes it through (latent drop, no production caller today).
+- **Style-1 (fixed)**: `quotedList` now dedups, matching its doc comment.
+- Reviewer's mutation verification noted: the OR-merge rows and the declared-attachment e2e test fail on pre-PR code and pass at HEAD.
+
 ## Evidence
 
 - `TestModelInfo_ImageSignalVariants` — 8-row signal table incl. the classifier case (attachment:true + synthesized image:false → vision-capable).

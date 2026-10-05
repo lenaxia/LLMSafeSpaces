@@ -308,6 +308,16 @@ func TestFormatOpenCodeConfig_AttachmentDeclaration(t *testing.T) {
 	assert.Equal(t, false, models["text"].(map[string]interface{})["attachment"])
 	_, has := models["undeclared"].(map[string]interface{})["attachment"]
 	assert.False(t, has, "undeclared attachment must be omitted, not defaulted")
+
+	// The strongest CI-verifiable guard for the new emission (review
+	// r2 missing-test-1): the output must validate against the PINNED
+	// opencode config schema — a schema violation makes opencode reject
+	// the ENTIRE config with SchemaError (provider unconfigured), so a
+	// drift here is a workspace-breaking regression, not a cosmetic one.
+	var doc interface{}
+	require.NoError(t, json.Unmarshal(out, &doc))
+	require.NoError(t, loadOpencodeSchema(t).Validate(doc),
+		"attachment-bearing FormatOpenCodeConfig output must satisfy opencode's pinned config schema")
 }
 
 func TestFormatOpenCodeConfig_Deterministic(t *testing.T) {
