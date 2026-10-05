@@ -865,6 +865,25 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The model InputSchema description carries the catalog
+		// pointer (schema text is agent-visible contract).
+		require.Contains(t, schemaDescs, "call_with_model/model")
+		assert.Contains(t, schemaDescs["call_with_model/model"], "list_models")
+	})
+
+	t.Run("list_models guidance", func(t *testing.T) {
+		d, ok := descs["list_models"]
+		require.True(t, ok, "list_models in tools/list")
+		for _, want := range []string{
+			"provider/model references ready for call_with_model", // what the output IS
+			"bare model names",                  // the canonical misuse
+			"BEFORE call_with_model",            // preflight trigger
+			"AFTER any call_with_model failure", // failure-recovery trigger
+			"no LLM call is made",               // cost framing — this is a catalog read
+			"Not for:",                          // negative scope
+		} {
+			assert.Contains(t, d, want)
+		}
 	})
 
 	t.Run("create_session guidance", func(t *testing.T) {

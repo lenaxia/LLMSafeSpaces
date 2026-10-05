@@ -36,9 +36,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 func TestFormatOpenCodeConfig_SingleProvider_Minimal(t *testing.T) {
@@ -279,6 +280,34 @@ func TestFormatOpenCodeConfig_ModelsWithAndWithoutLabels(t *testing.T) {
 	mini := models["gpt-4o-mini"].(map[string]interface{})
 	_, hasName := mini["name"]
 	require.False(t, hasName)
+}
+
+func TestFormatOpenCodeConfig_AttachmentDeclaration(t *testing.T) {
+	yes, no := true, false
+	providers := []secrets.LLMProviderData{
+		{
+			Kind: "openai_compatible", Slug: "custom", APIKey: "k", BaseURL: "https://gw.example/v1",
+			Models: []secrets.LLMModelConfig{
+				{ID: "vision", Attachment: &yes},
+				{ID: "text", Attachment: &no},
+				{ID: "undeclared"},
+			},
+		},
+	}
+
+	out, err := FormatOpenCodeConfig(providers)
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	models := parsed["provider"].(map[string]interface{})["custom"].(map[string]interface{})["models"].(map[string]interface{})
+
+	// Declared truth passes through verbatim; undeclared stays omitted
+	// (tri-state: nil = opencode's own catalog decides).
+	assert.Equal(t, true, models["vision"].(map[string]interface{})["attachment"])
+	assert.Equal(t, false, models["text"].(map[string]interface{})["attachment"])
+	_, has := models["undeclared"].(map[string]interface{})["attachment"]
+	assert.False(t, has, "undeclared attachment must be omitted, not defaulted")
 }
 
 func TestFormatOpenCodeConfig_Deterministic(t *testing.T) {

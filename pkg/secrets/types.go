@@ -223,11 +223,25 @@ type AuditQuery struct {
 // this for compaction sizing. Like ContextLimit it cannot be auto-discovered
 // from a provider's /v1/models endpoint and must be configured explicitly
 // by the workspace/credential owner.
+//
+// Attachment is the credential owner's declaration that the model accepts
+// image (attachment) input. Tri-state: nil = undeclared (opencode's own
+// catalog decides), true/false = declared truth that overrides the catalog.
+// This is the ONLY way a custom-endpoint model can be marked vision-capable:
+// opencode synthesizes an all-text-only capabilities block for models absent
+// from its bundled models.dev catalog (probe-verified 2026-10-05 against
+// pinned opencode 1.18.x: config `attachment` lands in the catalog's
+// capabilities.attachment; config cannot reach capabilities.input.image).
+// The vision gates (call_with_model's pre-check, the transcript repair)
+// refuse images for models the catalog marks text-only — a synthesized
+// false is indistinguishable from a declared one, so a custom vision model
+// MUST declare attachment:true or image calls on it are refused.
 type LLMModelConfig struct {
 	ID           string `json:"id"`
 	Label        string `json:"label,omitempty"`
 	ContextLimit int    `json:"contextLimit,omitempty"`
 	OutputLimit  int    `json:"outputLimit,omitempty"`
+	Attachment   *bool  `json:"attachment,omitempty"`
 }
 
 // LLMProviderData holds structured credentials for one LLM provider.

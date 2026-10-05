@@ -20,6 +20,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 // Client communicates with a running opencode instance's HTTP API.
@@ -359,6 +360,20 @@ func (c *Client) ListModels(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("GET /provider returned %d: %s", resp.StatusCode, string(errBody))
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, providerCatalogReadLimit))
+}
+
+// AvailableModels returns the parsed model catalog — GET /provider,
+// connected providers only — as the platform's session.ModelInfo
+// shape. This is the seam-level entry point for callers outside the
+// package (the workspace MCP tools): raw bytes stay here, parsed
+// models cross the boundary. An unparseable body is an error; an
+// EMPTY catalog is a valid answer (no connected providers).
+func (c *Client) AvailableModels(ctx context.Context) ([]session.ModelInfo, error) {
+	raw, err := c.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return parseProviderCatalogForContract(raw)
 }
 
 // PatchConfig calls PATCH /global/config on opencode with the given config

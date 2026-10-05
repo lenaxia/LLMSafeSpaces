@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -251,7 +252,7 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 	}
 	providerID, modelID, err := opencode.SplitModelRef(model)
 	if err != nil {
-		return "", err
+		return "", bareModelRefError(ctx, password, model)
 	}
 	imgs, err := loadImages(images)
 	if err != nil {
@@ -259,6 +260,18 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 	}
 
 	client := seamClientWithPassword(password)
+
+	// Catalog pre-check: a parsed provider/model pair that the
+	// workspace's own catalog doesn't offer would otherwise surface as
+	// an opaque seam 500 at send time (the model override is accepted
+	// shape-wise and rejected deep in generation). Refuse loud and
+	// self-correctingly BEFORE the carrier exists. Fail-open by
+	// design: an unreachable/unparseable/empty catalog must not block
+	// calls the wire would accept (#1307's fail-safe direction —
+	// absent data is unknown, not invalid).
+	if err := verifyModelInCatalog(ctx, client, providerID, modelID); err != nil {
+		return "", err
+	}
 
 	// Vision pre-check: when images ride the call, refuse early (and
 	// helpfully) when the target model's catalog entry is KNOWN to lack
@@ -268,7 +281,7 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 	if len(imgs) > 0 {
 		info, err := client.ModelInfo(ctx, providerID, modelID)
 		if err == nil && info.ImageInputKnown && !info.ImageInput {
-			return "", fmt.Errorf("model %s does not accept image input per the workspace catalog — pick a vision-capable model", model)
+			return "", fmt.Errorf("model %s does not accept image input per the workspace catalog — pick a vision-capable model, or, when this is a custom-endpoint model that really does accept images, ask the user to declare attachment:true on the credential's model entry (custom models absent from opencode's catalog are marked text-only by default until declared)", model)
 		}
 		// Catalog lookup failure / unknown capability is not fatal: the
 		// send itself will surface any real incompatibility.
@@ -296,6 +309,122 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 		"text":  res.Text,
 	})
 	return string(out), nil
+}
+
+// modelCatalogHint is appended to every model-selection failure so the
+// caller can self-correct in one hop instead of guessing names.
+const modelCatalogHint = `use the list_models tool to see the workspace's valid model names`
+
+// quotedList renders did-you-mean candidates: 'a', 'b' or 'c' (sorted,
+// deduped — several providers may offer the same bare model ID).
+func quotedList(items []string) string {
+	sorted := append([]string(nil), items...)
+	sort.Strings(sorted)
+	quoted := make([]string, 0, len(sorted))
+	for _, it := range sorted {
+		quoted = append(quoted, "'"+it+"'")
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// bareModelRefError builds the failure for a model reference with no
+// provider prefix ("classifier", not "thekaocloud/classifier" —
+// SplitModelRef already rejected it). When the catalog is reachable it
+// looks for connected models whose ID matches the bare name and
+// surfaces them as did-you-mean candidates; a catalog that cannot be
+// read degrades to the plain guidance (the lookup is advisory, never
+// a gate).
+func bareModelRefError(ctx context.Context, password, model string) error {
+	bare := strings.ToLower(strings.Trim(strings.TrimSpace(model), "/"))
+	msg := fmt.Sprintf("provider must be included: pass the model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\"), got %q", model)
+	if models, err := seamClientWithPassword(password).AvailableModels(ctx); err == nil {
+		var candidates []string
+		for _, m := range models {
+			if strings.ToLower(m.ID) == bare && bare != "" {
+				candidates = append(candidates, m.Provider+"/"+m.ID)
+			}
+		}
+		if len(candidates) > 0 {
+			msg = fmt.Sprintf("provider must be included, found matching model name: did you mean %s? (%q has no provider prefix)", quotedList(candidates), model)
+		}
+	}
+	return fmt.Errorf("%s — %s", msg, modelCatalogHint)
+}
+
+// verifyModelInCatalog fails LOUD when a parsed provider/model pair is
+// absent from a REACHABLE, non-empty catalog, naming what IS available
+// so the failure is self-correcting. Nil return = proceed, including
+// on every catalog problem (fail-open; see mcpCallWithModel).
+func verifyModelInCatalog(ctx context.Context, client *opencode.Client, providerID, modelID string) error {
+	models, err := client.AvailableModels(ctx)
+	if err != nil || len(models) == 0 {
+		return nil
+	}
+	providerSeen := false
+	for _, m := range models {
+		if m.Provider != providerID {
+			continue
+		}
+		providerSeen = true
+		if m.ID == modelID {
+			return nil
+		}
+	}
+	if !providerSeen {
+		providers := map[string]bool{}
+		for _, m := range models {
+			providers[m.Provider] = true
+		}
+		names := make([]string, 0, len(providers))
+		for p := range providers {
+			names = append(names, p)
+		}
+		return fmt.Errorf("provider %q is not in this workspace's model catalog (connected providers: %s) — %s",
+			providerID, quotedList(names), modelCatalogHint)
+	}
+	var ids []string
+	for _, m := range models {
+		if m.Provider == providerID {
+			ids = append(ids, m.ID)
+		}
+	}
+	sort.Strings(ids)
+	return fmt.Errorf("model %q is not offered by provider %q in this workspace's catalog (available: %s) — %s",
+		modelID, providerID, quotedList(ids), modelCatalogHint)
+}
+
+// --- list_models ----------------------------------------------------------
+
+// mcpListModels returns the workspace's usable model catalog — one
+// entry per model of every CONNECTED provider, as provider/model
+// references ready for call_with_model's model argument. Read-only
+// catalog query through the seam; no LLM call is made.
+func mcpListModels(ctx context.Context, password string) (string, error) {
+	models, err := seamClientWithPassword(password).AvailableModels(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read the model catalog: %w", err)
+	}
+	type entry struct {
+		Model         string `json:"model"`
+		Name          string `json:"name,omitempty"`
+		ContextWindow int64  `json:"contextWindow,omitempty"`
+		MaxOutput     int64  `json:"maxOutput,omitempty"`
+	}
+	out := make([]entry, 0, len(models))
+	for _, m := range models {
+		out = append(out, entry{
+			Model:         m.Provider + "/" + m.ID,
+			Name:          m.DisplayName,
+			ContextWindow: m.ContextWindow,
+			MaxOutput:     m.MaxOutput,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	payload, _ := json.Marshal(map[string]any{
+		"count":  len(out),
+		"models": out,
+	})
+	return string(payload), nil
 }
 
 // --- create_session -------------------------------------------------------

@@ -275,13 +275,22 @@ func mcpHandler(password string) http.HandlerFunc {
 						},
 					},
 					{
+						Name:        "list_models",
+						Description: "List the models usable in this workspace — one entry per model of every CONNECTED provider, as provider/model references ready for call_with_model's model argument (bare model names like \"classifier\" are NOT valid; the qualified form like \"thekaocloud/classifier\" is). Use it BEFORE call_with_model when the valid names are unknown, and AFTER any call_with_model failure naming an unknown provider or model — the failures quote this tool by name. Read-only catalog query (the workspace's provider list); no LLM call is made. Not for: switching the session's own model (the user does that), or capability questions beyond context/output limits.",
+						InputSchema: map[string]any{
+							"type":       "object",
+							"properties": map[string]any{},
+							"required":   []string{},
+						},
+					},
+					{
 						Name:        "call_with_model",
 						Description: "Make ONE single-shot LLM call with a different model than the session's, returning its text response — the exchange lands in THIS conversation as the tool call + result (like every tool), in line with your turn. A clean carrier session runs the call and is deleted afterward, leaving history clean; the carrier is required, not a quirk: a session running a turn (yours, by definition, while a tool executes) BLOCKS incoming messages, so the call must run on an idle session. Use when a capability would serve one sub-task better than switching the whole session's model: a VISION model to interpret images (pass their workspace paths in images — bytes ride the call as attachments), a long-context model to digest a huge file, a fast/cheap model to draft or classify, a second opinion. The model does not inherit your conversation — only your prompt (and images) crosses over — though it does receive the workspace agent's standard setup, so include every bit of context the call needs explicitly. Prefer switching the session model (or asking the user to) when the capability is needed for the ongoing conversation rather than one call.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
 								"prompt": map[string]any{"type": "string", "description": "The complete prompt for the one-shot call — the target model has no tools and no conversation context"},
-								"model":  map[string]any{"type": "string", "description": "Target model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\"). Must be a provider configured in this workspace"},
+								"model":  map[string]any{"type": "string", "description": "Target model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\") — see list_models for this workspace's valid names; a bare name is rejected with a did-you-mean hint"},
 								"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional workspace file paths of images to show the model (png/jpg/jpeg/gif/webp, 5 MiB each, 8 MiB combined). Vision-incapable models are refused up front"},
 							},
 							"required": []string{"prompt", "model"},
@@ -530,6 +539,8 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// arguments (mirrors secrets_resync's no-identity-input rule).
 		name, _ := args["name"].(string)
 		return mcpRenameWorkspace(ctx, name)
+	case "list_models":
+		return mcpListModels(ctx, password)
 	case "call_with_model":
 		prompt, _ := args["prompt"].(string)
 		model, _ := args["model"].(string)
