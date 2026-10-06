@@ -878,3 +878,85 @@ func TestWorkflowExecute_ScriptInterpreterMissingLoudFailure(t *testing.T) {
 		t.Fatalf("detail must name the interpreter and the known cause, got %q", resp.Detail)
 	}
 }
+
+// --- #1565: the /v1/workflow/node/execute parse boundary is strict ---
+// (the #1561/#1564 convention, applied per the tracking issue: exactly
+// one JSON document, loud diagnostics, bounded reads. The wire's one
+// legit client is this repo's own HTTPAgentExecutor, which POSTs a
+// single json.Marshal document.)
+
+// Trailing data after the first JSON value was silently skipped
+// (Decode's one-value semantics) — a corrupted dispatch executed its
+// first half without the boundary ever noticing. One JSON document per
+// request; trailing bytes are malformed transport.
+func TestWorkflowExecute_TrailingDataRejected(t *testing.T) {
+	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[]},"input":{}}` + ` {"junk":true}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing data, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp workflowExecuteError
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "invalid_request" {
+		t.Errorf("expected invalid_request, got %s", resp.ErrorCode)
+	}
+	if !strings.Contains(resp.Detail, "trailing data after offset 74") {
+		t.Errorf("the diagnostic must say what and where, got %q", resp.Detail)
+	}
+}
+
+// The accepted side of the boundary, pinned: a whitespace-only
+// remainder stays accepted (every curl caller appends a newline).
+func TestWorkflowExecute_TrailingNewlineAccepted(t *testing.T) {
+	body := "{\"nodeId\":\"c1\",\"nodeType\":\"condition\",\"spec\":{\"conditions\":[]},\"input\":{}}\n"
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a trailing newline, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Oversize rides 413 with the cap named (#1564's classification).
+// Pre-#1565 the bound was an io.LimitReader — an over-cap body was
+// silently TRUNCATED and surfaced as a confusing parse-error 400.
+func TestWorkflowExecute_BodyCap413(t *testing.T) {
+	big := strings.Repeat("x", maxWorkflowExecBodyBytes+16)
+	body := `{"nodeId":"n1","nodeType":"condition","spec":{"conditions":[{"id":"a","expression":"true"}]},"input":{"pad":"` + big + `"}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 over the cap, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp workflowExecuteError
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(resp.Detail, "byte cap") {
+		t.Errorf("the cap must be named, got %q", resp.Detail)
+	}
+}
+
+// Additive request-object keys stay tolerated, pinned as a decision:
+// the wire's client is same-repo but version-skewed (pods rotate on
+// their own schedule — the request struct's own comments document
+// older-API-server windows), so additive keys are forward-compat
+// surface, not misplacement (the #1564 request-object ruling).
+func TestWorkflowExecute_RequestAdditiveKeysTolerated(t *testing.T) {
+	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[]},"input":{},"future_rev_key":{"a":1}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with an additive key, got %d: %s", w.Code, w.Body.String())
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,6 +48,13 @@ type workflowExecuteRequest struct {
 	WorkflowID string `json:"workflowId,omitempty"`
 	RunID      string `json:"runId,omitempty"`
 }
+
+// maxWorkflowExecBodyBytes bounds a /v1/workflow/node/execute request
+// body (the #1561/#1564 bounded-read convention, #1565): script
+// handlers and webhook-derived node input ride this wire — 16 MiB is
+// the historical bound, now enforced loudly (413) instead of by
+// silent io.LimitReader truncation.
+const maxWorkflowExecBodyBytes = 16 << 20
 
 type workflowExecuteResponse struct {
 	Output json.RawMessage `json:"output,omitempty"`
@@ -110,7 +118,21 @@ func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.
 			return
 		}
 		var req workflowExecuteRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
+		// #1565 (the #1561/#1564 convention): exactly one JSON
+		// document, loud diagnostics, bounded reads. The wire's one
+		// legit client is this repo's HTTPAgentExecutor, which POSTs a
+		// single json.Marshal document — trailing data is malformed
+		// transport, and oversize rides 413 with the cap named (the
+		// old io.LimitReader silently TRUNCATED over-cap bodies into a
+		// confusing parse-error 400).
+		r.Body = http.MaxBytesReader(w, r.Body, maxWorkflowExecBodyBytes)
+		if err := decodeOneDocument(r.Body, &req); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeWorkflowError(w, http.StatusRequestEntityTooLarge, "invalid_request",
+					fmt.Sprintf("request body exceeds the %d-byte cap", maxWorkflowExecBodyBytes))
+				return
+			}
 			writeWorkflowError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("cannot decode request: %v", err))
 			return
 		}
