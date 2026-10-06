@@ -1094,3 +1094,74 @@ func TestCredentialPrecedence_SameKind_DifferentSlugs_BothMaterialize(t *testing
 	require.True(t, slugs["litellm-prod"], "litellm-prod must be present")
 	require.True(t, slugs["litellm-staging"], "litellm-staging must be present")
 }
+
+// TestCredentialPrecedence_CustomEndpointStoredCatalogIsIntersected pins
+// the r3 review's latent shape: a blob carrying Models AND BaseURL AND
+// an allowlist. A non-empty delivered Models list SUPPRESSES the
+// pod-side fetch — if the server passed the stored list through
+// unfiltered, nothing downstream would ever apply the allowlist. The
+// stored list vouches for its IDs ("default" included), so it is
+// intersected server-side AND the allowlist rides the entry for any
+// path that fetches regardless.
+func TestCredentialPrecedence_CustomEndpointStoredCatalogIsIntersected(t *testing.T) {
+	keyStore := newMockKeyStore()
+	dekCache := newTestDEKCache()
+	keyService := NewKeyService(keyStore, dekCache)
+	secretStore := newMockSecretStore()
+
+	adminKEK := make([]byte, 32)
+	for i := range adminKEK {
+		adminKEK[i] = byte(i + 1)
+	}
+
+	adminPlaintext, _ := json.Marshal(LLMProviderData{
+		Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-test",
+		BaseURL: "https://api.thekao.cloud/v1",
+		Models: []LLMModelConfig{
+			{ID: "default", Label: "Default"},
+			{ID: "glm-5.1", Label: "GLM 5.1"},
+			{ID: "bge-m3", Label: "BGE M3"},
+		},
+	})
+	adminCipher, err := EncryptSecret(adminKEK, adminPlaintext)
+	require.NoError(t, err)
+
+	mockCredStore := &mockCredentialStore{
+		bindings: []CredentialBinding{{
+			ID: "cred-stored-custom", OwnerType: "admin", OwnerID: "_platform",
+			Kind: "openai_compatible", Slug: "thekaocloud", Ciphertext: adminCipher,
+			SourceType:         "auto",
+			ModelAllowlist:     []string{"default", "glm-5.1"},
+			ModelContextLimits: map[string]int{"default": 200000},
+			ModelOutputLimits:  map[string]int{"default": 8192},
+		}},
+	}
+
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
+	svc := NewSecretService(keyService, combinedStore)
+	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
+	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
+
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+
+	var injected []InjectedSecret
+	require.NoError(t, json.Unmarshal(result, &injected))
+	llm := filterByType(injected, SecretTypeLLMProvider)
+	require.Len(t, llm, 1)
+
+	var pd LLMProviderData
+	require.NoError(t, json.Unmarshal([]byte(llm[0].Plaintext), &pd))
+	require.Len(t, pd.Models, 2, "the stored catalog is intersected: default + glm-5.1, bge-m3 out")
+	ids := []string{pd.Models[0].ID, pd.Models[1].ID}
+	assert.ElementsMatch(t, []string{"default", "glm-5.1"}, ids,
+		"the unfiltered Models+BaseURL+allowlist combination must not exist — a stored list suppresses the pod-side fetch")
+	for _, m := range pd.Models {
+		if m.ID == "default" {
+			assert.Equal(t, 200000, m.ContextLimit)
+			assert.Equal(t, 8192, m.OutputLimit)
+		}
+	}
+	assert.Equal(t, []string{"default", "glm-5.1"}, pd.ModelAllowlist,
+		"the allowlist still rides the entry for fetch-then-filter paths")
+}

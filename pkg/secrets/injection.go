@@ -681,41 +681,40 @@ func (s *SecretService) decryptBindingWithDEK(ctx context.Context, b CredentialB
 // applyModelAllowlist points each credential's model allowlist at the
 // catalog that can actually vouch for its IDs (#1575).
 //
+// A STORED catalog in the blob (defensive shape — no production writer
+// stores Models) vouches for its IDs: it is intersected with the
+// allowlist exactly, "default" included.
+//
 // Custom endpoints (BaseURL set): the live catalog is fetched POD-SIDE
-// by the model enricher after delivery — filtering here would run
-// before any list exists, and the pre-#1575 synthesis hard-dropped
-// "default" unconditionally. The allowlist and per-model limits ride
-// the delivered entry (delivery-only fields on LLMProviderData); the
-// enricher intersects them with the fetched list, so a model literally
-// named "default" is delivered iff the provider serves it, and a
-// default-only allowlist can no longer fall through to the FULL
-// unfiltered catalog (the adjacent bug: empty synthesis used to make
-// the fetch fire with nothing to filter it).
+// by the model enricher after delivery — the allowlist and per-model
+// limits ride the delivered entry (delivery-only fields on
+// LLMProviderData) and the enricher intersects them with the fetched
+// list, so a model literally named "default" is delivered iff the
+// provider serves it, and a default-only allowlist can no longer fall
+// through to the FULL unfiltered catalog (the adjacent bug: empty
+// synthesis used to make the fetch fire with nothing to filter it).
+// A stored list would SUPPRESS the pod-side fetch, so it is delivered
+// already intersected — the unfiltered Models+BaseURL+allowlist
+// combination must not exist (the r3 review's latent shape).
 //
 // First-party keys (no BaseURL): no pod-side fetch exists — opencode
 // merges its built-in catalog config-side — so synthesis stays the
-// only mechanism, with the mis-form-artifact skip (""/"default" with
-// nothing vouching for them).
+// only mechanism when the intersection is empty, with the
+// mis-form-artifact skip (""/"default" with nothing vouching for them).
 func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBinding) {
 	if len(b.ModelAllowlist) == 0 {
-		return
-	}
-	if pd.BaseURL != "" {
-		pd.ModelAllowlist = b.ModelAllowlist
-		pd.ModelContextLimits = b.ModelContextLimits
-		pd.ModelOutputLimits = b.ModelOutputLimits
 		return
 	}
 	allowed := make(map[string]bool, len(b.ModelAllowlist))
 	for _, id := range b.ModelAllowlist {
 		// An empty ID is never a real catalog entry. The literal
 		// "default" IS a legitimate one (routers/aliases commonly serve
-		// a model named default): the intersection below only delivers
-		// IDs a stored catalog vouches for, so it stays allowed here —
-		// the skip lives in the synthesis branch where nothing vouches.
-		// The platform's default-model SELECTOR is a separate mechanism
-		// (workspace config's defaultModel, resolved by
-		// resolveModelWithProvider) that never flows through
+		// a model named default): both the stored-catalog intersection
+		// and the pod-side fetched-catalog filter have a list vouching
+		// for IDs, so it stays allowed — the skip lives in the synthesis
+		// branch alone. The platform's default-model SELECTOR is a
+		// separate mechanism (workspace config's defaultModel, resolved
+		// by resolveModelWithProvider) that never flows through
 		// ModelAllowlist.
 		if id == "" {
 			continue
@@ -734,14 +733,20 @@ func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBin
 			filtered = append(filtered, m)
 		}
 	}
-	// If pd.Models is empty (credentials don't carry a model list) but
-	// the allowlist has valid IDs, synthesize LLMModelConfig entries so
-	// the provider is rendered with an explicit model allowlist.
+	if pd.BaseURL != "" {
+		pd.Models = filtered
+		pd.ModelAllowlist = b.ModelAllowlist
+		pd.ModelContextLimits = b.ModelContextLimits
+		pd.ModelOutputLimits = b.ModelOutputLimits
+		return
+	}
+	// First-party with an empty intersection: synthesize from the
+	// allowlist so the provider is rendered with an explicit model list.
 	if len(filtered) == 0 && len(allowed) > 0 {
 		filtered = make([]LLMModelConfig, 0, len(allowed))
 		for _, id := range b.ModelAllowlist {
 			// No live-fetched list vouches for synthesized IDs, so the
-			// mis-formed-artifact skip stays HERE: an allowlist
+			// mis-form-artifact skip lives HERE: an allowlist
 			// "default" with nothing backing it is the stale selector
 			// literal from a mis-formed create request — synthesizing it
 			// produced "models":{"default":{}} blocks opencode read as
