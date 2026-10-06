@@ -47,6 +47,8 @@ Unit pins (`controller/internal/workspace/runtime_reader_test.go`):
 
 Envtest wiring pin (`controller/internal/controller/setup_wiring_envtest_test.go`, `-tags envtest`): real apiserver + real manager through `SetupControllers` (the only production wiring path); named runtime `python` + WFFC StorageClass drive Pending→Creating without a provisioner; asserts the pod appears with the RTE image — the pod's existence proves BOTH cluster-scoped direct reads completed through the wired reader. Envtest workflow path trigger extended to `controller/internal/controller/**`.
 
+**Review r1 correction (the reviewer's blocking finding, verified true):** the path trigger alone left the pin UNEXECUTED in CI — envtest.yml runs per-suite `-run` steps and none targeted `./controller/internal/controller/`, making the "wired into envtest.yml" claim false and M2 invisible to CI (the #820 drift class the workflow's own comments document). Fixed: explicit `Run envtest setup wiring tests` step (`go test -timeout 300s -race -tags envtest ./controller/internal/controller/ -run TestEnvtestSetupWiring -v`); exact command verified locally (8.8s, minus `-race` which rides CI per the shared-pod directive). The reviewer independently re-executed mutations M1/M3 and the scope/RBAC claims — confirmed.
+
 Mutation verification (scratch worktrees at the commit — never `git checkout` of live edits; all reverts restored by deleting the worktrees):
 
 | Mutation | Pins gone red | Evidence |
@@ -111,4 +113,4 @@ None. (Historical note for this lane: the 2026-09-27 `/fix` bot run claimed this
 - `controller/internal/workspace/controller_test.go` (reconcilerFor wires APIReader)
 - `controller/internal/controller/controller.go` (SetupControllers wiring)
 - `controller/internal/controller/setup_wiring_envtest_test.go` (new)
-- `.github/workflows/envtest.yml` (path trigger)
+- `.github/workflows/envtest.yml` (path trigger + the explicit setup-wiring step, review r1)
