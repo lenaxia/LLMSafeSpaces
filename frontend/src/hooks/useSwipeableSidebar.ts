@@ -7,6 +7,7 @@ interface UseSwipeableSidebarOptions {
   containerRef: RefObject<HTMLDivElement | null>;
   sidebarRef: RefObject<HTMLDivElement | null>;
   overlayRef: RefObject<HTMLDivElement | null>;
+  handleRef: RefObject<HTMLDivElement | null>;
   isOpen: boolean;
   setIsOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   enabled: boolean;
