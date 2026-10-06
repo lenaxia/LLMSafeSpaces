@@ -44,10 +44,11 @@ export function SidebarDrawer({
       {isMobile && !open && (
         // #1623: the inset drag-handle affordance — swipe-to-open engages
         // from this strip (28px wide, starting 16px in from the safe-area
-        // inset), deliberately INSIDE the OS back-gesture zone's curve so
-        // the OS never races for its touches. touch-action:none: the strip
-        // is a gesture affordance, not a scroll surface. Rendered only
-        // when closed — swipe-to-close lives on the drawer surface.
+        // inset), offset CLEAR of the OS back-gesture zone so the OS never
+        // races for its touches. touch-action:none: the strip is a gesture
+        // affordance, not a scroll surface (a visible 28px dead column —
+        // the honest tradeoff vs the old invisible 30px edge block).
+        // Rendered only when closed — swipe-to-close lives on the drawer.
         <div
           ref={handleRef}
           aria-hidden="true"

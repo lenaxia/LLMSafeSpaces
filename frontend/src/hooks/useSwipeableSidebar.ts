@@ -7,8 +7,9 @@ import { useEffect, useRef, type RefObject } from "react";
 // blocked vertical scrolling in the leftmost 30px. Swipe-to-open now
 // engages from the INSET drag-handle strip (see SidebarDrawer): a touch
 // starts the open-gesture iff it begins inside the handle's rect, and
-// ONLY that zone is claimed — it starts inside the OS back-gesture
-// curve, so the OS never races for it. The absolute edge belongs to
+// ONLY that zone is claimed — the strip sits CLEAR of the OS
+// back-gesture zone (offset inward past it, safe-area aware), so the OS
+// never races for its touches. The absolute edge belongs to
 // back-navigation; the hamburger stays the always-works open path.
 const MIN_DRAG_PX = 30;
 const SETTLE_RATIO = 1 / 3;
