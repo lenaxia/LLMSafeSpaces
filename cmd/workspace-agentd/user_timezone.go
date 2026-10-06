@@ -8,7 +8,8 @@ package main
 
 import (
 	"encoding/json"
-	"io"
+	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,12 @@ func validateTimezone(name string) (string, bool) {
 	return name, true
 }
 
+// maxUserTimezoneBodyBytes bounds a /v1/user-timezone request body (the
+// #1561/#1564 bounded-read convention, #1565): a timezone name is
+// IANA-scale — 256 bytes is the historical bound, now enforced loudly
+// (413) instead of by silent io.LimitReader truncation.
+const maxUserTimezoneBodyBytes = 256
+
 // userTimezoneHandler serves POST /v1/user-timezone — the API's live
 // push when a browser session (re)connects. Control-plane gated: the
 // §D1 carve-out pair (control-plane OR workspace password), identical
@@ -65,8 +72,19 @@ func userTimezoneHandler(workspacePassword, agentdPassword string) http.HandlerF
 		var body struct {
 			Timezone string `json:"timezone"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 256)).Decode(&body); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+		// #1565 (the #1561/#1564 convention): exactly one JSON
+		// document (the wire's one client is this repo's
+		// agentpush.PushUserTimezone — a single json.Marshal body),
+		// loud diagnostics, bounded reads. The old LimitReader hid
+		// bytes past the cap entirely: a corrupted push was silently
+		// half-honored (first document stored, remainder unseen).
+		if err := decodeOneDocument(http.MaxBytesReader(w, r.Body, maxUserTimezoneBodyBytes), &body); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				http.Error(w, fmt.Sprintf("request body exceeds the %d-byte cap", maxUserTimezoneBodyBytes), http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
 		canonical, ok := validateTimezone(body.Timezone)

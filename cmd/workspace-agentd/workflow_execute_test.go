@@ -905,7 +905,7 @@ func TestWorkflowExecute_TrailingDataRejected(t *testing.T) {
 	if resp.ErrorCode != "invalid_request" {
 		t.Errorf("expected invalid_request, got %s", resp.ErrorCode)
 	}
-	if !strings.Contains(resp.Detail, "trailing data after offset 71") {
+	if !strings.Contains(resp.Detail, "trailing data after offset 74") {
 		t.Errorf("the diagnostic must say what and where, got %q", resp.Detail)
 	}
 }

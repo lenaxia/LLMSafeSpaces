@@ -74,7 +74,9 @@ const maxMCPBodyBytes = 1 << 20
 // semantics silently skipped it) naming the offset AFTER the first
 // document — the scan's start, exact for every shape. The trailing
 // error wraps its underlying cause (%w) so a cap trip in the scan
-// (http.MaxBytesError) still classifies as 413 at the handler. The
+// (http.MaxBytesError) still classifies as 413 at the handler. It is
+// the shared inbound-JSON boundary for agentd's HTTP wires (#1565:
+// /v1/mcp, /v1/workflow/node/execute, /v1/user-timezone). The
 // outbound twin (client.go's decodeStrict) keeps its own error
 // contract.
 func decodeOneDocument(r io.Reader, v any) error {

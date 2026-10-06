@@ -57,7 +57,7 @@ func TestUserTimezone_TrailingDataRejected(t *testing.T) {
 	w := tzRound(t, `{"timezone":"UTC"} {"junk":true}`)
 
 	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
-	assert.Contains(t, w.Body.String(), "trailing data after offset 16",
+	assert.Contains(t, w.Body.String(), "trailing data after offset 18",
 		"the diagnostic must say what and where")
 	assert.Equal(t, "", userTimezone(),
 		"a rejected push must not store the first half of a corrupted body")
@@ -78,7 +78,7 @@ func TestUserTimezone_InvalidJSONDiagnostic(t *testing.T) {
 	w := tzRound(t, `{"timezone":"U`)
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "unexpected end of JSON input",
+	assert.Contains(t, w.Body.String(), "unexpected EOF",
 		"the decoder's detail must ride the error, not a bare 'bad request'")
 }
 
