@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.17] - 2026-10-06
+
+### Features — list_models tool, self-correcting call_with_model failures, credential-declared vision metadata (#1624)
+
+- **The `list_models` MCP tool**: the workspace's usable model catalog
+  (every model of every connected provider, as provider/model references
+  ready for call_with_model's model argument). The seam-level
+  `Client.AvailableModels` (GET /provider, raw bytes stay behind the
+  Rule-12 seam) replaces the adapter's duplicated parse.
+- **call_with_model failures that self-correct**: bare model names get a
+  live-catalog did-you-mean ("provider must be included, found matching
+  model name: did you mean 'p/text'?"); unknown qualified refs are
+  pre-checked against the catalog BEFORE the carrier session exists
+  (unknown provider → connected providers named; known provider → its
+  model IDs named; case-typo'd refs → case-insensitive suggestions while
+  the gate stays case-sensitive); every variant points at list_models.
+  The pre-check is fail-open (#1307 direction): a catalog problem never
+  blocks a call the wire would accept.
+- **Credential-declared vision metadata**: opencode synthesizes an
+  all-text-only capabilities block for models absent from its bundled
+  models.dev catalog — multimodal custom-endpoint models included
+  (probe-verified: config `attachment` lands at
+  `capabilities.attachment` in both /config/providers and /provider;
+  config cannot reach `input.image`). The credential's per-model
+  `attachment: true` declaration is now the truth channel:
+  `LLMModelConfig.Attachment` (tri-state) flows FormatOpenCodeConfig →
+  catalog, and BOTH resolvers — the seam's ModelInfo (the agent-side
+  gates: call_with_model pre-check, transcript repair) and the API's
+  `supportsVision` (the picker) — OR-merge it over the synthesized
+  false. The refusal message names the declaration path. Resolvers
+  agree on every capability-block shape; documented divergence beyond
+  it is always in the overstating direction. Recorded-fixture contract
+  tests pin the pinned-opencode shapes (both endpoints, happy and
+  unhappy); schema-validated config emission; HTTP tools/call
+  round-trip pin. Four automated-review rounds (funlen; cross-surface
+  semantics split — both resolvers aligned; suggestion-branch coverage;
+  comment sharpening).
+
 ## [0.34.16] - 2026-10-02
 
 ### Features — dev-preview header configuration (design 0062, #1600/#1583)
