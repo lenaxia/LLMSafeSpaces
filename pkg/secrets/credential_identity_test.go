@@ -200,3 +200,35 @@ func TestValidKinds_MatchesDBCheckEnum(t *testing.T) {
 	assert.Empty(t, missingFromDB,
 		"Go ValidKinds slice has kinds the DB CHECK enum does not — DB migration must be updated")
 }
+
+// TestValidateModelAllowlist (#1575 ask 2): ids that can never reference
+// a real catalog model are rejected at the boundary so operators get a
+// real error instead of a silent delivery-time strip. The literal
+// "default" is NOT invalid — providers serve models named default.
+func TestValidateModelAllowlist(t *testing.T) {
+	tests := []struct {
+		name    string
+		ids     []string
+		wantErr bool
+	}{
+		{"nil allowlist", nil, false},
+		{"empty allowlist", []string{}, false},
+		{"ordinary ids", []string{"glm-5.1", "gpt-4o"}, false},
+		{"default is a real catalog id", []string{"default", "glm-5.1"}, false},
+		{"empty string id", []string{"glm-5.1", ""}, true},
+		{"whitespace-only id", []string{" "}, true},
+		{"leading whitespace", []string{" glm-5.1"}, true},
+		{"trailing whitespace", []string{"glm-5.1 "}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateModelAllowlist(tt.ids)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateModelAllowlist(%v) error = %v, wantErr %v", tt.ids, err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "model_allowlist") {
+				t.Errorf("error must name the field, got %q", err.Error())
+			}
+		})
+	}
+}

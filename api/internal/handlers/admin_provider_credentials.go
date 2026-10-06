@@ -167,6 +167,13 @@ func (h *AdminProviderCredentialsHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "slug"})
 		return
 	}
+	// #1575 ask 2: ids that can never reference a real catalog model
+	// (empty/whitespace) reject at the boundary instead of being
+	// silently stripped at delivery. "default" is NOT rejected.
+	if err := secrets.ValidateModelAllowlist(req.ModelAllowlist); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "modelAllowlist"})
+		return
+	}
 
 	if h.provider == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "master secret not configured"})
@@ -307,6 +314,11 @@ func (h *AdminProviderCredentialsHandler) Update(c *gin.Context) {
 		existing.Slug = *req.Slug
 	}
 	if req.ModelAllowlist != nil {
+		// #1575 ask 2: same boundary validation as create.
+		if err := secrets.ValidateModelAllowlist(req.ModelAllowlist); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "modelAllowlist"})
+			return
+		}
 		existing.ModelAllowlist = req.ModelAllowlist
 	}
 	if req.ModelContextLimits != nil {

@@ -49,7 +49,10 @@ type modelListResponse struct {
 // enrichProviderModels returns an EnrichProviders transform function that,
 // for each staged provider with a non-empty BaseURL and empty Models list,
 // fetches the model list from the provider's /models endpoint and populates
-// the Models field. Results are cached under cacheDir.
+// the Models field. Results are cached under cacheDir. When the provider
+// carries a delivered model allowlist (#1575 delivery fields), the FETCHED
+// list is filtered against it — the fetch is the voucher that decides
+// whether a model literally named "default" (or any allowlist ID) is real.
 func enrichProviderModels(ctx context.Context, cacheDir string, client *http.Client) func([]sec.LLMProviderData) []sec.LLMProviderData {
 	return func(providers []sec.LLMProviderData) []sec.LLMProviderData {
 		out := make([]sec.LLMProviderData, len(providers))
@@ -70,14 +73,55 @@ func enrichProviderModels(ctx context.Context, cacheDir string, client *http.Cli
 					zap.Error(err))
 				continue
 			}
-			out[i].Models = models
+			// #1575: filter AFTER the fetch (and after any cache read —
+			// the cache stores the raw list, so an allowlist change
+			// re-filters without a refetch). No synthesis here: a live
+			// catalog that matches nothing allowed is correctly empty;
+			// a fetch failure keeps the degrade above.
+			filtered := applyDeliveredAllowlist(models, p.ModelAllowlist, p.ModelContextLimits, p.ModelOutputLimits)
+			if len(filtered) < len(models) {
+				log.Info("model enricher: applied delivered model allowlist",
+					zap.String("slug", p.Slug),
+					zap.Int("fetched", len(models)),
+					zap.Int("allowed", len(filtered)))
+			}
+			out[i].Models = filtered
 			log.Info("model enricher: populated model list",
 				zap.String("slug", p.Slug),
 				zap.String("kind", p.Kind),
-				zap.Int("count", len(models)))
+				zap.Int("count", len(filtered)))
 		}
 		return out
 	}
+}
+
+// applyDeliveredAllowlist intersects a fetched catalog with the
+// credential's delivered allowlist and merges the per-model limit
+// overrides (fetched entries carry none; an explicit entry value would
+// win, matching the server-side precedence). An empty allowlist leaves
+// the fetched list untouched.
+func applyDeliveredAllowlist(models []sec.LLMModelConfig, allowlist []string, contextLimits, outputLimits map[string]int) []sec.LLMModelConfig {
+	if len(allowlist) == 0 {
+		return models
+	}
+	allowed := make(map[string]bool, len(allowlist))
+	for _, id := range allowlist {
+		allowed[id] = true
+	}
+	filtered := make([]sec.LLMModelConfig, 0, len(models))
+	for _, m := range models {
+		if !allowed[m.ID] {
+			continue
+		}
+		if m.ContextLimit == 0 {
+			m.ContextLimit = contextLimits[m.ID]
+		}
+		if m.OutputLimit == 0 {
+			m.OutputLimit = outputLimits[m.ID]
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
 }
 
 // fetchOrCacheModels returns the model list for the given provider, reading

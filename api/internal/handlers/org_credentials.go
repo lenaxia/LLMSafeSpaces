@@ -85,6 +85,11 @@ func (h *OrgCredentialsHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "slug"})
 		return
 	}
+	// #1575 ask 2: same boundary validation as the admin surface.
+	if err := secrets.ValidateModelAllowlist(req.ModelAllowlist); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "modelAllowlist"})
+		return
+	}
 
 	if h.provider == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server key not configured"})
@@ -205,6 +210,13 @@ func (h *OrgCredentialsHandler) Update(c *gin.Context) {
 	if req.Slug != nil {
 		if err := secrets.ValidateSlug(*req.Slug); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "slug"})
+			return
+		}
+	}
+	if req.ModelAllowlist != nil {
+		// #1575 ask 2: same boundary validation as create.
+		if err := secrets.ValidateModelAllowlist(req.ModelAllowlist); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "modelAllowlist"})
 			return
 		}
 	}

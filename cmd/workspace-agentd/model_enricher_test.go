@@ -422,3 +422,103 @@ func TestEnrichProviderModels_FetchedModels_HaveZeroContextLimit(t *testing.T) {
 				"Users must configure ContextLimit explicitly in their credential secret to fix the 'Unknown' denominator.")
 	}
 }
+
+// --- #1575: the delivered allowlist filters the FETCHED catalog ---
+
+// The production delivery shape for custom endpoints: the batch carries
+// the allowlist (delivery fields), the enricher fetches the live catalog
+// and must intersect — "default" is delivered iff the provider actually
+// serves it, with the per-model limits merged (fetched entries carry
+// none).
+func TestEnrichProviderModels_AppliesDeliveredAllowlistPostFetch(t *testing.T) {
+	srv := fakeModelsServer(t, []string{"default", "glm-5.1", "bge-m3"})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	providers := []sec.LLMProviderData{{
+		Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "test-key", BaseURL: srv.URL,
+		ModelAllowlist:     []string{"default", "glm-5.1"},
+		ModelContextLimits: map[string]int{"default": 200000},
+		ModelOutputLimits:  map[string]int{"default": 8192},
+	}}
+
+	out := enrichProviderModels(context.Background(), dir, srv.Client())(providers)
+
+	require.Len(t, out[0].Models, 2, "fetched [default glm-5.1 bge-m3] filtered to the allowlist")
+	ids := []string{out[0].Models[0].ID, out[0].Models[1].ID}
+	assert.ElementsMatch(t, []string{"default", "glm-5.1"}, ids,
+		"a live-served model named default must survive the filter — it is a real catalog entry")
+	for _, m := range out[0].Models {
+		if m.ID == "default" {
+			assert.Equal(t, 200000, m.ContextLimit, "per-model context limit merged from the delivered map")
+			assert.Equal(t, 8192, m.OutputLimit, "per-model output limit merged from the delivered map")
+		}
+	}
+}
+
+// The adjacent bug (#1575 review): a default-only allowlist previously
+// synthesized an empty model list server-side, the empty list let the
+// fetch fire, and NOTHING filtered the result — the full unfiltered
+// catalog bypassed the allowlist. Post-fetch filtering restricts the
+// fetched list to exactly the allowlist.
+func TestEnrichProviderModels_AllowlistRestrictsFetchedCatalog(t *testing.T) {
+	srv := fakeModelsServer(t, []string{"default", "glm-5.1", "bge-m3"})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	providers := []sec.LLMProviderData{{
+		Kind: "openai_compatible", Slug: "router", APIKey: "test-key", BaseURL: srv.URL,
+		ModelAllowlist: []string{"default"},
+	}}
+
+	out := enrichProviderModels(context.Background(), dir, srv.Client())(providers)
+
+	require.Len(t, out[0].Models, 1, "the fetched catalog must be restricted to the allowlist")
+	assert.Equal(t, "default", out[0].Models[0].ID)
+}
+
+// An allowlist naming models the provider does not serve yields an empty
+// list against a live catalog (correct: stale ids must not be
+// synthesized — that was the original 0-providers bug).
+func TestEnrichProviderModels_AllowlistWithStaleIDsFetchedListWins(t *testing.T) {
+	srv := fakeModelsServer(t, []string{"glm-5.1"})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	providers := []sec.LLMProviderData{{
+		Kind: "openai_compatible", Slug: "router", APIKey: "test-key", BaseURL: srv.URL,
+		ModelAllowlist: []string{"gone-model", "also-gone"},
+	}}
+
+	out := enrichProviderModels(context.Background(), dir, srv.Client())(providers)
+
+	assert.Empty(t, out[0].Models,
+		"no pod-side synthesis: a live catalog that matches nothing allowed is correctly empty")
+}
+
+// The cache stores the RAW fetched list; the filter applies after the
+// cache read — an allowlist change between calls re-filters without a
+// refetch.
+func TestEnrichProviderModels_CacheServesRawFilterAppliesAfter(t *testing.T) {
+	srv := fakeModelsServer(t, []string{"default", "glm-5.1", "bge-m3"})
+	defer srv.Close()
+
+	dir := t.TempDir()
+	first := []sec.LLMProviderData{{
+		Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "test-key", BaseURL: srv.URL,
+		ModelAllowlist: []string{"default"},
+	}}
+	out1 := enrichProviderModels(context.Background(), dir, srv.Client())(first)
+	require.Len(t, out1[0].Models, 1)
+
+	// Same provider (cache hit), a different allowlist.
+	second := []sec.LLMProviderData{{
+		Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "test-key", BaseURL: srv.URL,
+		ModelAllowlist: []string{"glm-5.1", "bge-m3"},
+	}}
+	out2 := enrichProviderModels(context.Background(), dir, srv.Client())(second)
+	require.Len(t, out2[0].Models, 2)
+	ids := []string{out2[0].Models[0].ID, out2[0].Models[1].ID}
+	assert.ElementsMatch(t, []string{"glm-5.1", "bge-m3"}, ids,
+		"the cached raw list must re-filter under the new allowlist without a refetch")
+}

@@ -963,3 +963,29 @@ func TestUserProviderCredentials_Create_InvalidSlug_400(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "slug", resp["field"])
 }
+
+// --- #1575 ask 2: allowlist boundary validation on the user surface ---
+
+func TestUserProviderCredentials_Create_EmptyAllowlistIDRejected(t *testing.T) {
+	store := newFakeUserCredStore()
+	dek := make([]byte, 32)
+	dekCache := &testDEKCacheForHandler{}
+	dekCache.cache = map[string][]byte{"sess-1": dek}
+	keyService := secrets.NewKeyService(&fakeKeyStore{version: 1}, dekCache)
+	h := &UserProviderCredentialsHandler{
+		store:    store,
+		bindings: store,
+		keys:     keyService,
+		keyStore: &fakeKeyStore{version: 1},
+	}
+	router := setupUserCredRouter(h)
+
+	body := `{"name":"my-openai","kind":"openai","slug":"openai","apiKey":"sk-test","modelAllowlist":[""]}`
+	req, _ := http.NewRequest("POST", "/api/v1/provider-credentials", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "modelAllowlist")
+}

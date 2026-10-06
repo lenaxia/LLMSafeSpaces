@@ -784,3 +784,69 @@ func TestAdminProviderCredentials_AutoApply_RealCredential_Created(t *testing.T)
 	require.Equal(t, 201, rec.Code, rec.Body.String())
 	assert.True(t, aa.reached)
 }
+
+// --- #1575 ask 2: allowlist boundary validation (shared validator) ---
+
+// Empty or whitespace-only allowlist ids can never reference a real
+// catalog model; they must be rejected at the boundary with a field
+// error, not silently stripped at delivery (or stored as stale junk).
+func TestAdminProviderCredentials_Create_EmptyAllowlistIDRejected(t *testing.T) {
+	store := newFakeAdminCredStore()
+	h := NewAdminProviderCredentialsHandler(store, mustStaticProv(make([]byte, 32)))
+	router := setupAdminCredRouter(h)
+
+	body := `{"name":"bad","kind":"openai","slug":"openai","apiKey":"sk-test","modelAllowlist":["glm-5.1",""]}`
+	req, _ := http.NewRequest("POST", "/api/v1/admin/provider-credentials", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "modelAllowlist")
+}
+
+// The literal "default" is a legitimate catalog id (providers serve
+// models named default — #1575's production case): acceptance must not
+// disagree with delivery.
+func TestAdminProviderCredentials_Create_DefaultModelIDAccepted(t *testing.T) {
+	store := newFakeAdminCredStore()
+	h := NewAdminProviderCredentialsHandler(store, mustStaticProv(make([]byte, 32)))
+	router := setupAdminCredRouter(h)
+
+	body := `{"name":"tkc","kind":"openai_compatible","slug":"thekaocloud","apiKey":"sk-test","modelAllowlist":["default","glm-5.1"]}`
+	req, _ := http.NewRequest("POST", "/api/v1/admin/provider-credentials", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code, "body=%s", w.Body.String())
+	var resp CredentialResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, []string{"default", "glm-5.1"}, resp.ModelAllowlist)
+}
+
+func TestAdminProviderCredentials_Update_EmptyAllowlistIDRejected(t *testing.T) {
+	store := newFakeAdminCredStore()
+	kek := make([]byte, 32)
+	prov := mustStaticProv(kek)
+	h := NewAdminProviderCredentialsHandler(store, prov)
+	router := setupAdminCredRouter(h)
+
+	createBody := `{"name":"c1","kind":"openai","slug":"openai","apiKey":"sk-orig"}`
+	req, _ := http.NewRequest("POST", "/api/v1/admin/provider-credentials", bytes.NewBufferString(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusCreated, w.Code, "body=%s", w.Body.String())
+	var created CredentialResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+
+	body := `{"modelAllowlist":["  "]}`
+	putReq, _ := http.NewRequest("PUT", "/api/v1/admin/provider-credentials/"+created.ID, bytes.NewBufferString(body))
+	putReq.Header.Set("Content-Type", "application/json")
+	putW := httptest.NewRecorder()
+	router.ServeHTTP(putW, putReq)
+
+	require.Equal(t, http.StatusBadRequest, putW.Code, "body=%s", putW.Body.String())
+	assert.Contains(t, putW.Body.String(), "modelAllowlist")
+}

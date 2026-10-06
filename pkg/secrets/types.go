@@ -270,6 +270,15 @@ type LLMProviderData struct {
 	Models     []LLMModelConfig `json:"models,omitempty"`
 	Default    string           `json:"default,omitempty"`
 	SmallModel string           `json:"smallModel,omitempty"`
+	// Delivery-only fields (#1575), never stored in the encrypted blob:
+	// for custom-endpoint providers the live catalog is fetched POD-SIDE
+	// by the model enricher after delivery, so the batch builder attaches
+	// the credential's model allowlist and per-model limits here and the
+	// enricher filters the FETCHED list against them. Older pods ignore
+	// the keys (additive JSON).
+	ModelAllowlist     []string       `json:"modelAllowlist,omitempty"`
+	ModelContextLimits map[string]int `json:"modelContextLimits,omitempty"`
+	ModelOutputLimits  map[string]int `json:"modelOutputLimits,omitempty"`
 }
 
 // Validate checks that required fields are set in LLMProviderData.

@@ -108,6 +108,11 @@ func (h *UserProviderCredentialsHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "slug"})
 		return
 	}
+	// #1575 ask 2: same boundary validation as the admin surface.
+	if err := secrets.ValidateModelAllowlist(req.ModelAllowlist); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "field": "modelAllowlist"})
+		return
+	}
 
 	dek, err := h.keys.GetDEK(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
 	if err != nil {
