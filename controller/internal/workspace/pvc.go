@@ -41,7 +41,7 @@ func (r *WorkspaceReconciler) pvcUsesWaitForFirstConsumer(ctx context.Context, p
 		return false
 	}
 	sc := &storagev1.StorageClass{}
-	if err := r.Get(ctx, types.NamespacedName{Name: scName}, sc); err != nil {
+	if err := r.directReader().Get(ctx, types.NamespacedName{Name: scName}, sc); err != nil {
 		return false
 	}
 	if sc.VolumeBindingMode == nil {

@@ -44,7 +44,9 @@ func reconcilerFor(t *testing.T, objs ...runtime.Object) *WorkspaceReconciler {
 		WithRuntimeObjects(objs...).
 		WithStatusSubresource(&v1.Workspace{}).
 		Build()
-	r := &WorkspaceReconciler{Client: fakeClient, Scheme: scheme}
+	// #1587: the direct reader serves cluster-scoped lookups; tests model
+	// a working direct path by pointing it at the same fake.
+	r := &WorkspaceReconciler{Client: fakeClient, Scheme: scheme, APIReader: fakeClient}
 	// Design 0053 §4.5: overlay pins are mandatory — the default test
 	// reconciler is a fully-pinned production reconciler. Tests that need
 	// the missing-pin failure path nil the fields explicitly.

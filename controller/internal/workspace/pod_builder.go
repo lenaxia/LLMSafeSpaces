@@ -21,7 +21,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	uid := string(workspace.UID)
 	name := podName(workspace.Name, uid)
 
-	runtimeImage, runtimeEnvName, err := resolveRuntimeImage(ctx, r.Client, workspace.Spec.Runtime)
+	runtimeImage, runtimeEnvName, err := resolveRuntimeImage(ctx, r.directReader(), workspace.Spec.Runtime)
 	if err != nil {
 		return nil, fmt.Errorf("resolving runtime image: %w", err)
 	}

@@ -24,6 +24,17 @@ import (
 type WorkspaceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// APIReader is the manager's DIRECT (non-cached) reader for
+	// cluster-scoped lookups on the reconcile path (#1587): RuntimeEnvironment
+	// resolution (pod_builder.go) and StorageClass WFFC detection (pvc.go).
+	// A cached Get of these unwatched cluster-scoped types lazily starts an
+	// informer that blocks forever when RBAC withholds the list/watch (#1551)
+	// — wedging workers silently; direct reads fail fast and requeue.
+	// Wired to mgr.GetAPIReader() in SetupControllers; SetupWithManager
+	// refuses nil. DirectReader() serves lookups; never use r.Client for them.
+	APIReader client.Reader
+
 	// HostResolver is used by the per-workspace NetworkPolicy generator
 	// (network_policy.go) to resolve declared FQDNs to /32 ipBlocks at
 	// reconcile time. Tests inject a stub; production uses
@@ -222,6 +233,9 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		return errClusterReaderUnwired
+	}
 	bld := ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Workspace{}).
 		Owns(&corev1.Pod{}).

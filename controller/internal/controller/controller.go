@@ -64,8 +64,13 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 	}
 
 	if err := (&workspace.WorkspaceReconciler{
-		Client:                    mgr.GetClient(),
-		Scheme:                    mgr.GetScheme(),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// #1587: cluster-scoped reconcile reads (RuntimeEnvironment,
+		// StorageClass) ride the DIRECT reader — a cached Get of an
+		// unwatched cluster-scoped type blocks forever on a never-syncing
+		// informer (#1551). SetupWithManager refuses nil.
+		APIReader:                 mgr.GetAPIReader(),
 		InferenceRelayURL:         inferenceRelayURL,
 		OrgStatusClient:           orgStatusClient,
 		DefaultRuntimeClass:       defaultRuntimeClass,

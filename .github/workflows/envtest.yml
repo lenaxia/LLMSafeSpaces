@@ -23,6 +23,7 @@ on:
       - 'helm/crds/**'
       - 'controller/internal/webhooks/**'
       - 'controller/internal/workspace/**'
+      - 'controller/internal/controller/**'
       - '.github/workflows/envtest.yml'
   schedule:
     # Nightly at 04:00 UTC — catches upstream envtest binary regressions.
@@ -100,3 +101,14 @@ jobs:
       # must not ride on a controller matrix CI has never executed.
       - name: Run envtest relay staging conditions matrix
         run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestRelayStaging -v
+
+      # #1587: the direct-reader WIRING pin — real apiserver + real
+      # manager through SetupControllers (the only production wiring
+      # path). The unit never-syncing pins prove buildPod uses
+      # directReader(); only this execution proves the reader is WIRED:
+      # a forgotten `APIReader: mgr.GetAPIReader()` line makes
+      # SetupWithManager refuse (boot-loud) and this step go red. The
+      # #820 drift class — a test file that exists but no workflow
+      # executes — is why the step is explicit, not a path trigger.
+      - name: Run envtest setup wiring tests
+        run: go test -timeout 300s -race -tags envtest ./controller/internal/controller/ -run TestEnvtestSetupWiring -v
