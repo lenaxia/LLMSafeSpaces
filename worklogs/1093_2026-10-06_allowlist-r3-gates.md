@@ -72,4 +72,4 @@ None.
 - pkg/secrets/credential_precedence_test.go (CustomEndpointStoredCatalogIsIntersected)
 - cmd/workspace-agentd/model_enricher_e2e_test.go (two e2e legs)
 - api/internal/handlers/org_credentials_test.go (update 400 pin)
-- worklogs/NNNN_2026-10-06_allowlist-r3-gates.md (this worklog)
+- worklogs/1093_2026-10-06_allowlist-r3-gates.md (this worklog)

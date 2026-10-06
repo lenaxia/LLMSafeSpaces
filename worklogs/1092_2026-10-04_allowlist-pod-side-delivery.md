@@ -83,4 +83,4 @@ None. (Two turn-deaths mid-`go test` during verification — runs repeated green
 - cmd/workspace-agentd/model_enricher.go, model_enricher_test.go
 - api/internal/handlers/admin_provider_credentials.go(+test), user_provider_credentials.go(+test), org_credentials.go(+test)
 - controller/internal/workspace/staging.go, staging_test.go
-- worklogs/NNNN_2026-10-04_allowlist-pod-side-delivery.md (this worklog)
+- worklogs/1092_2026-10-04_allowlist-pod-side-delivery.md (this worklog)

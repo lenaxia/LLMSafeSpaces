@@ -79,4 +79,4 @@ None.
 
 - `pkg/secrets/injection.go` — `applyModelAllowlist`: allowed-set skip narrowed to `""`; `"default"` skip gated to the synthesis branch.
 - `pkg/secrets/credential_precedence_test.go` — new `TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry` (two poles).
-- `worklogs/NNNN_2026-10-03_allowlist-default-model-id.md` — this worklog.
+- `worklogs/1091_2026-10-03_allowlist-default-model-id.md` — this worklog.
