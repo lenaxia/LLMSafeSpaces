@@ -6,7 +6,9 @@ import { SidebarDrawer } from "./SidebarDrawer";
 import type { CollapsibleSidebarState } from "../../hooks/useCollapsibleSidebar";
 
 function overlayEl(container: HTMLElement): HTMLElement {
-  const el = container.querySelector('div[aria-hidden="true"]');
+  // inset-0 (full-screen scrim) distinguishes the overlay from the
+  // #1623 drag-handle strip (inset-y-0), which is also aria-hidden.
+  const el = container.querySelector("div.inset-0");
   if (!el) throw new Error("overlay not rendered");
   return el as HTMLElement;
 }
@@ -34,6 +36,7 @@ function makeState(overrides: Partial<CollapsibleSidebarState> = {}): Collapsibl
     containerRef: { current: null },
     sidebarRef: { current: null },
     overlayRef: { current: null },
+    handleRef: { current: null },
     sidebarWidth: 256,
   };
   return { ...base, ...overrides };
@@ -42,6 +45,49 @@ function makeState(overrides: Partial<CollapsibleSidebarState> = {}): Collapsibl
 describe("SidebarDrawer", () => {
   beforeEach(() => {
     setMobileMatchMedia(true);
+  });
+
+  // ── #1623: the inset drag-handle affordance ──────────────────────────
+
+  it("renders the drag-handle strip when mobile and closed", () => {
+    const { container } = render(
+      <SidebarDrawer state={makeState({ isMobile: true, open: false })}>
+        <nav>nav</nav>
+      </SidebarDrawer>,
+    );
+    const handle = container.querySelector("div.touch-none");
+    expect(handle).not.toBeNull();
+    expect(handle?.className).toContain("w-7");
+  });
+
+  it("positions the handle inside the safe-area inset (never at the absolute edge)", () => {
+    const { container } = render(
+      <SidebarDrawer state={makeState({ isMobile: true, open: false })}>
+        <nav>nav</nav>
+      </SidebarDrawer>,
+    );
+    const handle = container.querySelector("div.touch-none") as HTMLElement;
+    // The positioning rides a Tailwind arbitrary-value class (jsdom's
+    // CSSOM silently drops env() from inline styles).
+    expect(handle.className).toContain("left-[calc(env(safe-area-inset-left,0px)+16px)]");
+  });
+
+  it("does not render the drag-handle when the sidebar is open (swipe-to-close lives on the drawer)", () => {
+    const { container } = render(
+      <SidebarDrawer state={makeState({ isMobile: true, open: true })}>
+        <nav>nav</nav>
+      </SidebarDrawer>,
+    );
+    expect(container.querySelector("div.touch-none")).toBeNull();
+  });
+
+  it("does not render the drag-handle on desktop", () => {
+    const { container } = render(
+      <SidebarDrawer state={makeState({ isMobile: false, open: false })}>
+        <nav>nav</nav>
+      </SidebarDrawer>,
+    );
+    expect(container.querySelector("div.touch-none")).toBeNull();
   });
 
   afterEach(() => {

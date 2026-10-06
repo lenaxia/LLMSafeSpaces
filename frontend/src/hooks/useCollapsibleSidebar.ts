@@ -18,6 +18,7 @@ export interface CollapsibleSidebarState {
   containerRef: RefObject<HTMLDivElement | null>;
   sidebarRef: RefObject<HTMLDivElement | null>;
   overlayRef: RefObject<HTMLDivElement | null>;
+  handleRef: RefObject<HTMLDivElement | null>;
   sidebarWidth: number;
 }
 
@@ -30,6 +31,7 @@ export function useCollapsibleSidebar(
   const containerRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const isInitialMount = useRef(true);
 
@@ -37,6 +39,7 @@ export function useCollapsibleSidebar(
     containerRef,
     sidebarRef,
     overlayRef,
+    handleRef,
     isOpen: open,
     setIsOpen: setOpen,
     enabled: isMobile,
@@ -61,6 +64,7 @@ export function useCollapsibleSidebar(
     containerRef,
     sidebarRef,
     overlayRef,
+    handleRef,
     sidebarWidth,
   };
 }
