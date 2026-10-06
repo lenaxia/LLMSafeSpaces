@@ -101,14 +101,18 @@ type modelVisionMeta struct {
 // false (the #1307 fail-safe direction: a false "text-only" would strip
 // user images from vision models).
 //
-// DELIBERATE divergence beyond the capability block (review r3
+// DELIBERATE divergence beyond the capability block (review r2
 // correctness-2): this resolver ALSO consumes the top-level
 // models.dev `attachment` flag and the `modalities` registry list —
 // endpoint-mediated extras the seam never parses (the seam's gates must
 // not strip on seam-unknown, and this endpoint can see richer shapes).
-// Residual divergences are all in the safe direction: the picker may
-// state vision where the seam is unknown; a seam-true resolution always
-// comes from a capabilities boolean this resolver also reads.
+// The divergences include picker-TRUE vs seam-KNOWN-FALSE (a model
+// whose /provider entry carries top-level attachment:true but whose
+// /config/providers capability block says input.image:false) — always
+// in the OVERSTATING direction: the picker may claim vision the gates
+// refuse, so a user-visible claim never strips images or blocks a send
+// the seam would allow; seam-TRUE always comes from a capabilities
+// boolean this resolver also reads.
 func (m modelVisionMeta) supportsVision() *bool {
 	var present []bool
 	if m.Capabilities != nil {

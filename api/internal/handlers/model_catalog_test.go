@@ -134,9 +134,11 @@ func TestOpencodeProviderParser_ParseVisionCapability(t *testing.T) {
 		{
 			// PR #1624 r2: OR-merge — a declared attachment (top-level
 			// models.dev form) overrides the synthesized image:false.
-			// NOTE: this row's shape resolves TRUE here and UNKNOWN at
-			// the seam (the seam parses only the capability block) —
-			// the safe direction; see the supportsVision doc comment.
+			// NOTE: this row's shape resolves TRUE here and KNOWN-FALSE
+			// at the seam (the seam parses only the capability block,
+			// where input.image:false is present data) — an
+			// endpoint-mediated divergence in the overstating direction;
+			// see the supportsVision doc comment.
 			name: "declared attachment overrides synthesized image false",
 			raw: `{"connected":["p"],"all":[{"id":"p","models":{
 				"m":{"id":"m","attachment":true,"capabilities":{"input":{"image":false}}}
