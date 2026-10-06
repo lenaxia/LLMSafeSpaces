@@ -474,9 +474,21 @@ func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesire
 		if base == "" {
 			base = secrets.ProviderDefaultBaseURL(pd.Kind)
 		}
+		// #1575 delivery shape: custom-endpoint providers arrive with
+		// Models EMPTY (the pod-side enricher filters against the live
+		// catalog) and the credential's allowlist riding the attached
+		// ModelAllowlist field. Token scope comes from the attached
+		// allowlist when present — deriving from Models would mint an
+		// UNRESTRICTED token for exactly the credentials whose allowlist
+		// the platform is enforcing. First-party keeps deriving from the
+		// synthesized Models list.
 		models := make([]string, 0, len(pd.Models))
-		for _, m := range pd.Models {
-			models = append(models, m.ID)
+		if len(pd.ModelAllowlist) > 0 {
+			models = append(models, pd.ModelAllowlist...)
+		} else {
+			for _, m := range pd.Models {
+				models = append(models, m.ID)
+			}
 		}
 		desired = append(desired, relayDesiredProvider{pd: pd, baseURL: base, models: models})
 	}

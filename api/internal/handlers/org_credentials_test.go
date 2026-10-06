@@ -1206,3 +1206,24 @@ func TestOrgCredentials_Update_InvalidKind_400(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+// --- #1575 ask 2: allowlist boundary validation on the org surface ---
+
+func TestOrgCredentials_Create_EmptyAllowlistIDRejected(t *testing.T) {
+	store := newFakeOrgCredStore()
+	kek := make([]byte, 32)
+	for i := range kek {
+		kek[i] = byte(i + 1)
+	}
+	h := NewOrgCredentialsHandler(store, store, mustStaticProv(kek), &mockOrgAuthService{userID: "admin-1"})
+	router := setupOrgCredRouter(h)
+
+	body := `{"name":"team-openai","kind":"openai","slug":"openai","apiKey":"sk-test","modelAllowlist":["default",""]}`
+	req, _ := http.NewRequest("POST", "/api/v1/orgs/org-1/credentials", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body=%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "modelAllowlist")
+}

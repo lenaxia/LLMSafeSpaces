@@ -6,6 +6,7 @@ package secrets
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // Epic 55 identity validation. The constants below are the single source
@@ -90,6 +91,25 @@ func ValidateSlug(slug string) error {
 	}
 	if !slugMatcher.MatchString(slug) {
 		return fmt.Errorf("slug must match %s (lowercase alphanumeric and hyphens, no leading/trailing hyphen)", SlugRegex)
+	}
+	return nil
+}
+
+// ValidateModelAllowlist rejects model_allowlist entries that can never
+// reference a real catalog model: empty or whitespace-affected ids
+// (#1575 ask 2 — mis-form protection moved from a silent delivery-time
+// strip to a real create/update error). The literal "default" is NOT
+// rejected: providers legitimately serve models named "default"
+// (routers/aliases commonly do), and delivery decides it against the
+// live catalog.
+func ValidateModelAllowlist(ids []string) error {
+	for _, id := range ids {
+		if id == "" {
+			return fmt.Errorf("model_allowlist ids must be non-empty (got \"\")")
+		}
+		if trimmed := strings.TrimSpace(id); trimmed != id {
+			return fmt.Errorf("model_allowlist ids must carry no leading/trailing whitespace (got %q)", id)
+		}
 	}
 	return nil
 }

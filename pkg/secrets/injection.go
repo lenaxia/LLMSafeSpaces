@@ -678,22 +678,45 @@ func (s *SecretService) decryptBindingWithDEK(ctx context.Context, b CredentialB
 	return pd, nil
 }
 
-// applyModelAllowlist filters pd.Models against the credential's
-// per-binding allowlist. Extracted verbatim from the original loop (no
-// behavior change) so credential entries keep Epic-55/30 semantics.
+// applyModelAllowlist points each credential's model allowlist at the
+// catalog that can actually vouch for its IDs (#1575).
+//
+// Custom endpoints (BaseURL set): the live catalog is fetched POD-SIDE
+// by the model enricher after delivery — filtering here would run
+// before any list exists, and the pre-#1575 synthesis hard-dropped
+// "default" unconditionally. The allowlist and per-model limits ride
+// the delivered entry (delivery-only fields on LLMProviderData); the
+// enricher intersects them with the fetched list, so a model literally
+// named "default" is delivered iff the provider serves it, and a
+// default-only allowlist can no longer fall through to the FULL
+// unfiltered catalog (the adjacent bug: empty synthesis used to make
+// the fetch fire with nothing to filter it).
+//
+// First-party keys (no BaseURL): no pod-side fetch exists — opencode
+// merges its built-in catalog config-side — so synthesis stays the
+// only mechanism, with the mis-form-artifact skip (""/"default" with
+// nothing vouching for them).
 func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBinding) {
 	if len(b.ModelAllowlist) == 0 {
 		return
 	}
+	if pd.BaseURL != "" {
+		pd.ModelAllowlist = b.ModelAllowlist
+		pd.ModelContextLimits = b.ModelContextLimits
+		pd.ModelOutputLimits = b.ModelOutputLimits
+		return
+	}
 	allowed := make(map[string]bool, len(b.ModelAllowlist))
 	for _, id := range b.ModelAllowlist {
-		// #1575: an empty ID is never a real catalog entry. The literal
-		// "default" IS a legitimate one (routers/aliases commonly serve a
-		// model named default — e.g. TheKaoCloud); the platform's default
-		// model SELECTOR is a separate mechanism (workspace-config's
-		// defaultModel, resolved by resolveModelWithProvider) that never
-		// flows through ModelAllowlist. The stale-entry concern is
-		// handled below, where no live list vouches for the id.
+		// An empty ID is never a real catalog entry. The literal
+		// "default" IS a legitimate one (routers/aliases commonly serve
+		// a model named default): the intersection below only delivers
+		// IDs a stored catalog vouches for, so it stays allowed here —
+		// the skip lives in the synthesis branch where nothing vouches.
+		// The platform's default-model SELECTOR is a separate mechanism
+		// (workspace config's defaultModel, resolved by
+		// resolveModelWithProvider) that never flows through
+		// ModelAllowlist.
 		if id == "" {
 			continue
 		}
@@ -718,14 +741,11 @@ func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBin
 		filtered = make([]LLMModelConfig, 0, len(allowed))
 		for _, id := range b.ModelAllowlist {
 			// No live-fetched list vouches for synthesized IDs, so the
-			// mis-formed-artifact skip stays HERE (#1575): an allowlist
+			// mis-formed-artifact skip stays HERE: an allowlist
 			// "default" with nothing backing it is the stale selector
 			// literal from a mis-formed create request — synthesizing it
 			// produced "models":{"default":{}} blocks opencode read as
-			// an unconfigured provider (0 models delivered). With a live
-			// catalog present, the intersection above already filtered
-			// stale entries, so "default" survives only when the
-			// provider actually serves it.
+			// an unconfigured provider (0 models delivered).
 			if id == "" || id == "default" {
 				continue
 			}

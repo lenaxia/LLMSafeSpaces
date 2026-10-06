@@ -1003,3 +1003,35 @@ func TestStaging_TokensFailedMessageIsHonest(t *testing.T) {
 	assert.Contains(t, cond.Message, "1 token mint(s) failed",
 		"the shortfall is named — a True condition must not claim the desired set staged")
 }
+
+// TestRelayDesiredSet_PrefersAttachedAllowlist pins #1575's delivery
+// shape on the relay-staging consumer: custom-endpoint providers now
+// arrive from ResolveLLMProviders with Models EMPTY (the pod-side
+// enricher filters against the live catalog) and the credential's
+// allowlist riding the attached ModelAllowlist field. The mint's token
+// scope must come from the attached allowlist — deriving from Models
+// would mint an UNRESTRICTED token for exactly the credentials whose
+// allowlist the platform is trying to enforce.
+func TestRelayDesiredSet_PrefersAttachedAllowlist(t *testing.T) {
+	desired, skipped := relayDesiredSet([]secrets.LLMProviderData{
+		{
+			Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "k",
+			BaseURL:        "https://api.thekao.cloud/v1",
+			ModelAllowlist: []string{"default", "glm-5.1"},
+			// Production shape: Models empty — filtering is pod-side.
+		},
+		// First-party shape unchanged: synthesized Models carry the
+		// allowlist ids (no attached field).
+		{
+			Kind: "openai", Slug: "openai", APIKey: "k",
+			Models: []secrets.LLMModelConfig{{ID: "gpt-4o"}},
+		},
+	})
+
+	require.Empty(t, skipped)
+	require.Len(t, desired, 2)
+	assert.Equal(t, []string{"default", "glm-5.1"}, desired[0].models,
+		"custom endpoint: token scope from the attached allowlist, not the empty Models list")
+	assert.Equal(t, []string{"gpt-4o"}, desired[1].models,
+		"first-party: derived from Models as before")
+}

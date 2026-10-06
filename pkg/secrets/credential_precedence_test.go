@@ -516,16 +516,134 @@ func TestCredentialPrecedence_AllowlistMixedValidAndInvalid(t *testing.T) {
 	assert.ElementsMatch(t, []string{"glm-5.1", "gpt-4o"}, ids)
 }
 
-// TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry pins #1575: a
-// provider model literally named "default" is a CATALOG entry (routers and
-// aliases commonly serve one — production case: TheKaoCloud's /v1/models),
-// not the platform's default-model SELECTOR (workspace-config.json's
-// defaultModel, resolved by resolveModelWithProvider in the agentd path —
-// a separate mechanism that never flows through ModelAllowlist). The
-// allowlist filters the catalog: "default" in the live-fetched pd.Models
-// AND in the allowlist must be delivered; "default" absent from the
-// allowlist must be filtered out like any other unlisted ID.
-func TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry(t *testing.T) {
+// TestCredentialPrecedence_CustomEndpointAllowlistDeliveredNotFiltered is
+// the #1575 production repro at the PRODUCTION BLOB SHAPE. Every credential
+// write path stores blobs WITHOUT Models (encryptCredentialData marshals
+// kind/slug/apiKey/baseURL only) — the live catalog is fetched POD-SIDE by
+// the model enricher AFTER delivery. So for a custom endpoint (BaseURL
+// set, e.g. TheKaoCloud), the batch must deliver the allowlist itself for
+// pod-side filtering against the live list: filtering here would run
+// before ANY list vouches for the IDs, and a model literally named
+// "default" would be unconditionally stripped (the pre-#1575 synthesis
+// dropped it; the r1 fix never reached this shape).
+func TestCredentialPrecedence_CustomEndpointAllowlistDeliveredNotFiltered(t *testing.T) {
+	keyStore := newMockKeyStore()
+	dekCache := newTestDEKCache()
+	keyService := NewKeyService(keyStore, dekCache)
+	secretStore := newMockSecretStore()
+
+	adminKEK := make([]byte, 32)
+	for i := range adminKEK {
+		adminKEK[i] = byte(i + 1)
+	}
+
+	adminPlaintext, _ := json.Marshal(LLMProviderData{
+		Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-test",
+		BaseURL: "https://api.thekao.cloud/v1",
+	})
+	adminCipher, err := EncryptSecret(adminKEK, adminPlaintext)
+	require.NoError(t, err)
+
+	mockCredStore := &mockCredentialStore{
+		bindings: []CredentialBinding{{
+			ID: "cred-custom", OwnerType: "admin", OwnerID: "_platform",
+			Kind: "openai_compatible", Slug: "thekaocloud", Ciphertext: adminCipher,
+			SourceType:         "auto",
+			ModelAllowlist:     []string{"default", "glm-5.1"},
+			ModelContextLimits: map[string]int{"default": 200000},
+			ModelOutputLimits:  map[string]int{"default": 8192},
+		}},
+	}
+
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
+	svc := NewSecretService(keyService, combinedStore)
+	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
+	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
+
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+
+	var injected []InjectedSecret
+	require.NoError(t, json.Unmarshal(result, &injected))
+	llm := filterByType(injected, SecretTypeLLMProvider)
+	require.Len(t, llm, 1)
+
+	var pd LLMProviderData
+	require.NoError(t, json.Unmarshal([]byte(llm[0].Plaintext), &pd))
+	// Models must stay EMPTY so the pod-side enricher fetches the live
+	// catalog (a synthesized list here would suppress the fetch AND
+	// pre-decide the filter before anything vouches for the IDs).
+	assert.Empty(t, pd.Models,
+		"custom endpoint: the live catalog is fetched pod-side; delivering synthesized models suppresses the fetch")
+	// The allowlist rides the entry for post-enrichment filtering.
+	assert.Equal(t, []string{"default", "glm-5.1"}, pd.ModelAllowlist,
+		"the allowlist must be delivered verbatim — \"default\" is a real catalog entry the pod-side filter decides against the live list")
+	assert.Equal(t, map[string]int{"default": 200000}, pd.ModelContextLimits)
+	assert.Equal(t, map[string]int{"default": 8192}, pd.ModelOutputLimits)
+}
+
+// TestCredentialPrecedence_CustomEndpointDefaultOnlyAllowlistAttached pins
+// the adjacent-bug input (#1575 review): an allowlist of ONLY "default"
+// used to synthesize an EMPTY model list, and the empty list made the
+// pod-side enricher fetch the FULL unfiltered catalog — silently bypassing
+// the allowlist entirely. The allowlist must ride the entry verbatim so
+// the pod-side filter restricts the fetched list to exactly "default".
+func TestCredentialPrecedence_CustomEndpointDefaultOnlyAllowlistAttached(t *testing.T) {
+	keyStore := newMockKeyStore()
+	dekCache := newTestDEKCache()
+	keyService := NewKeyService(keyStore, dekCache)
+	secretStore := newMockSecretStore()
+
+	adminKEK := make([]byte, 32)
+	for i := range adminKEK {
+		adminKEK[i] = byte(i + 1)
+	}
+
+	adminPlaintext, _ := json.Marshal(LLMProviderData{
+		Kind: "openai_compatible", Slug: "router", APIKey: "sk-test",
+		BaseURL: "https://router.example.com/v1",
+	})
+	adminCipher, err := EncryptSecret(adminKEK, adminPlaintext)
+	require.NoError(t, err)
+
+	mockCredStore := &mockCredentialStore{
+		bindings: []CredentialBinding{{
+			ID: "cred-default-only", OwnerType: "admin", OwnerID: "_platform",
+			Kind: "openai_compatible", Slug: "router", Ciphertext: adminCipher,
+			SourceType:     "auto",
+			ModelAllowlist: []string{"default"},
+		}},
+	}
+
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
+	svc := NewSecretService(keyService, combinedStore)
+	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
+	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
+
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+
+	var injected []InjectedSecret
+	require.NoError(t, json.Unmarshal(result, &injected))
+	llm := filterByType(injected, SecretTypeLLMProvider)
+	require.Len(t, llm, 1)
+
+	var pd LLMProviderData
+	require.NoError(t, json.Unmarshal([]byte(llm[0].Plaintext), &pd))
+	assert.Empty(t, pd.Models, "no synthesis: the enricher fetches and filters pod-side")
+	assert.Equal(t, []string{"default"}, pd.ModelAllowlist,
+		"a default-only allowlist must reach the pod so the fetched catalog is filtered to exactly default")
+}
+
+// TestCredentialPrecedence_AllowlistIntersectionIsCatalogExact pins the
+// intersection semantic for a blob-stored catalog (defensive shape — no
+// production writer stores Models today; if one ever does, the allowlist
+// filters it exactly): "default" in the stored catalog AND in the
+// allowlist is delivered; unlisted IDs are filtered out. The platform's
+// default-model SELECTOR (workspace-config defaultModel →
+// resolveModelWithProvider) is a separate mechanism that never flows
+// through ModelAllowlist.
+func TestCredentialPrecedence_AllowlistIntersectionIsCatalogExact(t *testing.T) {
 	buildCase := func(t *testing.T, allowlist []string) LLMProviderData {
 		keyStore := newMockKeyStore()
 		dekCache := newTestDEKCache()
@@ -550,7 +668,7 @@ func TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry(t *testing.T) {
 
 		mockCredStore := &mockCredentialStore{
 			bindings: []CredentialBinding{{
-				ID: "cred-live-default", OwnerType: "admin", OwnerID: "_platform",
+				ID: "cred-stored-catalog", OwnerType: "admin", OwnerID: "_platform",
 				Kind: "openai_compatible", Slug: "thekaocloud", Ciphertext: adminCipher,
 				SourceType: "auto", ModelAllowlist: allowlist,
 			}},
@@ -574,15 +692,15 @@ func TestCredentialPrecedence_AllowlistDefaultIDIsCatalogEntry(t *testing.T) {
 		return pd
 	}
 
-	t.Run("live catalog model named default is allowed and delivered", func(t *testing.T) {
+	t.Run("catalog model named default is allowed and delivered", func(t *testing.T) {
 		pd := buildCase(t, []string{"default", "glm-5.1"})
 		require.Len(t, pd.Models, 2, "default + glm-5.1 survive; bge-m3 is filtered")
 		ids := []string{pd.Models[0].ID, pd.Models[1].ID}
 		assert.ElementsMatch(t, []string{"default", "glm-5.1"}, ids,
-			"a provider model literally named default is a catalog entry, not the platform's default-model selector")
+			"a catalog model literally named default is a real model, not the platform's default-model selector")
 	})
 
-	t.Run("live catalog model named default filtered out when unlisted", func(t *testing.T) {
+	t.Run("catalog model named default filtered out when unlisted", func(t *testing.T) {
 		pd := buildCase(t, []string{"glm-5.1"})
 		require.Len(t, pd.Models, 1)
 		assert.Equal(t, "glm-5.1", pd.Models[0].ID,
@@ -656,26 +774,18 @@ func TestCredentialPrecedence_ModelContextLimits_InjectedIntoLLMModelConfig(t *t
 
 	var pd LLMProviderData
 	require.NoError(t, json.Unmarshal([]byte(llm[0].Plaintext), &pd))
-	require.Len(t, pd.Models, 3, "all three allowlisted models must be present")
-
-	byID := map[string]LLMModelConfig{}
-	for _, m := range pd.Models {
-		byID[m.ID] = m
-	}
-
-	assert.Equal(t, 200000, byID["glm-5.1"].ContextLimit,
-		"glm-5.1 context limit must be 200000 from ModelContextLimits")
-	assert.Equal(t, 1000000, byID["glm-5.2"].ContextLimit,
-		"glm-5.2 context limit must be 1000000 from ModelContextLimits")
-	assert.Equal(t, 0, byID["classifier"].ContextLimit,
-		"classifier has no configured context limit — must remain 0")
-
-	assert.Equal(t, 8192, byID["glm-5.1"].OutputLimit,
-		"glm-5.1 output limit must be 8192 from ModelOutputLimits")
-	assert.Equal(t, 16384, byID["glm-5.2"].OutputLimit,
-		"glm-5.2 output limit must be 16384 from ModelOutputLimits")
-	assert.Equal(t, 0, byID["classifier"].OutputLimit,
-		"classifier has no configured output limit — must remain 0")
+	// #1575 r2: this credential has a BaseURL, so the catalog is fetched
+	// pod-side — the limits ride the delivery fields and the model
+	// enricher merges them into the fetched entries (pinned in
+	// cmd/workspace-agentd/model_enricher_test.go,
+	// TestEnrichProviderModels_AppliesDeliveredAllowlistPostFetch — the
+	// 0272 flow ContextLimit → LLMModelConfig → agent-config.json is
+	// unchanged, one hop later). Server-side synthesis here would
+	// suppress the fetch and pre-decide the filter.
+	assert.Empty(t, pd.Models, "custom endpoint: no server-side synthesis")
+	assert.Equal(t, []string{"glm-5.1", "glm-5.2", "classifier"}, pd.ModelAllowlist)
+	assert.Equal(t, map[string]int{"glm-5.1": 200000, "glm-5.2": 1000000}, pd.ModelContextLimits)
+	assert.Equal(t, map[string]int{"glm-5.1": 8192, "glm-5.2": 16384}, pd.ModelOutputLimits)
 }
 
 // TestCredentialPrecedence_ModelContextLimits_DoesNotOverrideExisting verifies
