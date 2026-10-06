@@ -132,9 +132,33 @@ func TestOpencodeProviderParser_ParseVisionCapability(t *testing.T) {
 			want: map[string]*bool{"m": nil},
 		},
 		{
-			name: "capabilities wins over conflicting attachment",
+			// PR #1624 r2: OR-merge — a declared attachment (top-level
+			// models.dev form) overrides the synthesized image:false.
+			// NOTE: this row's shape resolves TRUE here and KNOWN-FALSE
+			// at the seam (the seam parses only the capability block,
+			// where input.image:false is present data) — an
+			// endpoint-mediated divergence in the overstating direction;
+			// see the supportsVision doc comment.
+			name: "declared attachment overrides synthesized image false",
 			raw: `{"connected":["p"],"all":[{"id":"p","models":{
 				"m":{"id":"m","attachment":true,"capabilities":{"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(true)},
+		},
+		{
+			// The config-declared attachment lands at
+			// capabilities.attachment in GET /provider (probe-verified
+			// 2026-10-05) — the classifier case.
+			name: "capabilities attachment overrides synthesized image false",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","capabilities":{"attachment":true,"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(true)},
+		},
+		{
+			name: "all signals false resolves false",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","attachment":false,"capabilities":{"attachment":false,"input":{"image":false}}}
 			}}]}`,
 			want: map[string]*bool{"m": ptrBool(false)},
 		},
@@ -161,6 +185,42 @@ func TestOpencodeProviderParser_ParseVisionCapability(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestOpencodeProviderParser_RecordedProbeProvider runs the parser over
+// the RECORDED /provider shape from the pinned opencode (review r3
+// missing-test-3: the OR-merge was pinned only against hand-written
+// shapes). Verbatim recording 2026-10-05 — probe provider declaring
+// attachment:true (vision-declared) vs nothing (undeclared); irrelevant
+// fields trimmed, apiKey redacted; the full recording lives at
+// pkg/agent/opencode/testdata/opencode-provider-recorded.json with the
+// probe protocol in client_modelinfo_contract_test.go. The load-bearing
+// facts: the declaration lands at capabilities.attachment, and
+// input.image is the synthesized false for BOTH models.
+func TestOpencodeProviderParser_RecordedProbeProvider(t *testing.T) {
+	raw := `{"connected":["probeprov"],"all":[{"id":"probeprov","models":{
+		"vision-declared":{"id":"vision-declared","capabilities":{
+			"attachment":true,
+			"input":{"text":true,"audio":false,"image":false,"video":false,"pdf":false}}},
+		"undeclared":{"id":"undeclared","capabilities":{
+			"attachment":false,
+			"input":{"text":true,"audio":false,"image":false,"video":false,"pdf":false}}}
+	}}]}`
+
+	got, err := NewOpencodeProviderParser().Parse([]byte(raw))
+	require.NoError(t, err)
+	require.Len(t, got.Providers, 1)
+	models := got.Providers[0].Models
+
+	v, ok := models["vision-declared"]
+	require.True(t, ok)
+	require.NotNil(t, v.SupportsVision, "declared attachment must resolve KNOWN against the recorded shape")
+	assert.True(t, *v.SupportsVision, "capabilities.attachment=true overrides the recorded synthesized input.image=false")
+
+	u, ok := models["undeclared"]
+	require.True(t, ok)
+	require.NotNil(t, u.SupportsVision)
+	assert.False(t, *u.SupportsVision, "the recorded synthesized all-false block resolves text-only — the honest refusal basis")
+}
 
 func TestCatalog_ModelExists(t *testing.T) {
 	cat := &Catalog{

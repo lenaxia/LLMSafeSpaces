@@ -1206,11 +1206,7 @@ func (a *Adapter) ListAvailableModels(ctx context.Context, userID, workspaceID s
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.ListModels(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return parseProviderCatalogForContract(raw)
+	return c.AvailableModels(ctx)
 }
 
 func (a *Adapter) SetModel(ctx context.Context, userID, workspaceID, sessionID string, model session.ModelRef) error {

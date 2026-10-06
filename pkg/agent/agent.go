@@ -104,11 +104,17 @@ type LLMProviderData struct {
 // (https://opencode.ai/config.json) requires both `context` and `output` when
 // the `limit` object is present. See pkg/secrets/types.go LLMModelConfig for
 // the authoritative documentation.
+//
+// Attachment is the credential-declared image-input capability (tri-state:
+// nil = undeclared). Mirrored from secrets.LLMModelConfig so the exported
+// agent.AgentRuntime path cannot silently drop declarations (review r2
+// alignment-2).
 type LLMModelConfig struct {
 	ID           string `json:"id"`
 	Label        string `json:"label,omitempty"`
 	ContextLimit int    `json:"contextLimit,omitempty"`
 	OutputLimit  int    `json:"outputLimit,omitempty"`
+	Attachment   *bool  `json:"attachment,omitempty"`
 }
 
 var (

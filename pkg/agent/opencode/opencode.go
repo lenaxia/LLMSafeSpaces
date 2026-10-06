@@ -54,6 +54,7 @@ func (a *OpenCodeAgent) FormatProviderConfig(providers []agent.LLMProviderData) 
 				Label:        m.Label,
 				ContextLimit: m.ContextLimit,
 				OutputLimit:  m.OutputLimit,
+				Attachment:   m.Attachment,
 			}
 		}
 		secProviders[i] = secrets.LLMProviderData{

@@ -67,15 +67,22 @@ func NewOpencodeProviderParser() ModelCatalogParser {
 }
 
 // modelVisionMeta is the optional per-model metadata the provider catalog
-// may carry about image input (issue #1307). All three shapes are optional
-// and independently evidenced: capabilities.input.image is the resolved
-// /config/providers shape (live-validated 2026-09-13), attachment is the
-// models.dev/config-schema flag (testdata/opencode-config.schema.json),
-// modalities.input is the registry list the #1307 incident quoted.
+// may carry about image input (issue #1307). All shapes are optional and
+// independently evidenced: capabilities.input.image is the resolved
+// /config/providers shape (live-validated 2026-09-13), capabilities.attachment
+// is where a config-declared attachment surfaces in GET /provider
+// (probe-verified 2026-10-05 — the ONLY signal a custom-endpoint model's
+// credential can set; its input.image is a synthesized false), top-level
+// attachment is the models.dev flag, modalities.input is the registry list
+// the #1307 incident quoted.
 type modelVisionMeta struct {
 	Attachment   *bool `json:"attachment"`
 	Capabilities *struct {
-		Input *struct {
+		// Attachment mirrors models.dev's flag inside the resolved
+		// capabilities block; carries the credential declaration for
+		// custom-endpoint models.
+		Attachment *bool `json:"attachment"`
+		Input      *struct {
 			Image *bool `json:"image"`
 		} `json:"input"`
 	} `json:"capabilities"`
@@ -84,17 +91,50 @@ type modelVisionMeta struct {
 	} `json:"modalities"`
 }
 
-// supportsVision resolves the tri-state capability. Precedence: explicit
-// resolved capabilities, then the attachment flag, then the modalities
-// list. nil when no shape is present — unknown, never a silent false (the
-// #1307 fail-safe direction: a false "text-only" would strip user images
-// from vision models).
+// supportsVision resolves the tri-state capability. OR-merge over the
+// capability block — AGREES with the seam's ModelInfo resolver
+// (pkg/agent/opencode loopback.go, PR #1624 r2) on every capability-block
+// shape: any PRESENT signal that is true makes the model vision-capable
+// (a declared attachment overrides the synthesized image:false of
+// custom-endpoint models); only every-present-signal-false resolves to
+// false; NO signal present resolves to nil — unknown, never a silent
+// false (the #1307 fail-safe direction: a false "text-only" would strip
+// user images from vision models).
+//
+// DELIBERATE divergence beyond the capability block (review r2
+// correctness-2): this resolver ALSO consumes the top-level
+// models.dev `attachment` flag and the `modalities` registry list —
+// endpoint-mediated extras the seam never parses (the seam's gates must
+// not strip on seam-unknown, and this endpoint can see richer shapes).
+// The divergences include picker-TRUE vs seam-KNOWN-FALSE (a model
+// whose /provider entry carries top-level attachment:true but whose
+// /config/providers capability block says input.image:false) — always
+// in the OVERSTATING direction: the picker may claim vision the gates
+// refuse, so a user-visible claim never strips images or blocks a send
+// the seam would allow; seam-TRUE always comes from a capabilities
+// boolean this resolver also reads.
 func (m modelVisionMeta) supportsVision() *bool {
-	if m.Capabilities != nil && m.Capabilities.Input != nil && m.Capabilities.Input.Image != nil {
-		return m.Capabilities.Input.Image
+	var present []bool
+	if m.Capabilities != nil {
+		if m.Capabilities.Attachment != nil {
+			present = append(present, *m.Capabilities.Attachment)
+		}
+		if m.Capabilities.Input != nil && m.Capabilities.Input.Image != nil {
+			present = append(present, *m.Capabilities.Input.Image)
+		}
 	}
 	if m.Attachment != nil {
-		return m.Attachment
+		present = append(present, *m.Attachment)
+	}
+	if len(present) > 0 {
+		v := false
+		for _, p := range present {
+			if p {
+				v = true
+				break
+			}
+		}
+		return &v
 	}
 	if m.Modalities != nil {
 		v := false

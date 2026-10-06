@@ -90,6 +90,15 @@ func FormatOpenCodeConfig(providers []secrets.LLMProviderData) ([]byte, error) {
 				if m.Label != "" {
 					om.Name = m.Label
 				}
+				// Credential-declared attachment capability (probe-
+				// verified 2026-10-05): opencode's schema accepts a
+				// per-model `attachment` boolean and surfaces it in
+				// /config/providers capabilities.attachment. nil stays
+				// omitted — undeclared is a valid state (opencode's
+				// own catalog decides for models it knows).
+				if m.Attachment != nil {
+					om.Attachment = m.Attachment
+				}
 				// opencode's published JSON Schema requires BOTH context and
 				// output when `limit` is present (required: ["context", "output"],
 				// additionalProperties: false). Emitting a partial block makes
@@ -156,6 +165,9 @@ type opencodeOptions struct {
 type opencodeModel struct {
 	Name  string              `json:"name,omitempty"`
 	Limit *opencodeModelLimit `json:"limit,omitempty"`
+	// Attachment is the credential-declared image-input capability.
+	// Pointer/omitempty: absent = undeclared. See FormatOpenCodeConfig.
+	Attachment *bool `json:"attachment,omitempty"`
 }
 
 // opencodeModelLimit mirrors opencode's published JSON Schema for the model

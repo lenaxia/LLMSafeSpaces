@@ -216,10 +216,20 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodGet && strings.Contains(path, "/context"):
 			_, _ = w.Write([]byte(`{"data":[{"id":"m1"},{"id":"m2"},{"id":"m3"}]}`))
+		case r.Method == http.MethodGet && path == "/provider":
+			// The model catalog (opencode /provider shape): connected
+			// provider "p" offering vision + text. Bare-name
+			// did-you-mean and the catalog pre-check read this.
+			_, _ = w.Write([]byte(`{"connected":["p"],"all":[{"id":"p","models":{
+				"vision":{"id":"vision","name":"Vision Model","limit":{"context":1000,"output":512}},
+				"text":{"id":"text","name":"Text Model","limit":{"context":2000,"output":256}},
+				"declared":{"id":"declared","name":"Declared Vision Model","limit":{"context":3000,"output":128}}
+			}}]}`))
 		case r.Method == http.MethodGet && strings.Contains(path, "/config/providers"):
 			_, _ = w.Write([]byte(`{"providers":[{"id":"p","models":{
 				"vision":{"id":"vision","limit":{"context":1000},"capabilities":{"input":{"image":true}}},
-				"text":{"id":"text","limit":{"context":2000},"capabilities":{"input":{"image":false}}}
+				"text":{"id":"text","limit":{"context":2000},"capabilities":{"input":{"image":false}}},
+				"declared":{"id":"declared","limit":{"context":3000},"capabilities":{"attachment":true,"input":{"image":false}}}
 			}}]}`))
 		case r.Method == http.MethodGet && strings.Contains(path, "/message"):
 			_, _ = w.Write([]byte(`[{"info":{"role":"assistant","tokens":{"input":84,"cache":{"read":916,"write":0}}}}]`))
@@ -497,8 +507,34 @@ func TestMCPCallWithModel_VisionIncapableModelRefused(t *testing.T) {
 	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "look", "p/text", []string{png})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "image input")
+	// The refusal must name the declaration path — custom-endpoint
+	// models are marked text-only by default until the credential
+	// declares attachment:true (the classifier lesson).
+	assert.Contains(t, err.Error(), "attachment:true")
 	assert.Empty(t, f.sentBodies, "no send may happen for a refused model")
 	assert.Empty(t, f.deleted, "no carrier was created")
+}
+
+func TestMCPCallWithModel_DeclaredAttachment_OverridesSynthesizedTextOnly(t *testing.T) {
+	// The classifier case end-to-end: a custom-endpoint model whose
+	// catalog input.image is the synthesized false but whose
+	// credential declares attachment:true — the image must ride.
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	dir := t.TempDir()
+	png := filepath.Join(dir, "shot.png")
+	require.NoError(t, os.WriteFile(png, []byte("img"), 0o600))
+
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "look", "p/declared", []string{png})
+	require.NoError(t, err)
+
+	var carrierID string
+	for id := range f.titles {
+		carrierID = id
+	}
+	parts := f.sentFor(carrierID)[0]["parts"].([]any)
+	require.Len(t, parts, 2)
+	assert.Equal(t, "file", parts[1].(map[string]any)["type"])
 }
 
 func TestMCPCallWithModel_BadImageInputs(t *testing.T) {
@@ -548,7 +584,132 @@ func TestMCPCallWithModel_BareModelRejected(t *testing.T) {
 	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "flatmodel", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provider/model")
+	assert.Contains(t, err.Error(), "list_models", "the failure must point at the catalog tool")
 	assert.Empty(t, f.titles)
+}
+
+func TestMCPCallWithModel_BareModelDidYouMean(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	// Case-insensitive match on the bare name; multiple providers
+	// offering the same ID would each surface (sorted, quoted).
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "TEXT", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did you mean 'p/text'?")
+	assert.Contains(t, err.Error(), "list_models")
+	assert.Empty(t, f.titles, "no carrier may be created for a refused model ref")
+}
+
+func TestMCPCallWithModel_UnknownQualifiedModel(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/nope", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `model "nope" is not offered by provider "p"`)
+	assert.Contains(t, err.Error(), "'text', 'vision'", "the failure names what IS available")
+	assert.Contains(t, err.Error(), "list_models")
+	assert.Empty(t, f.titles, "the catalog pre-check runs before the carrier exists")
+}
+
+func TestMCPCallWithModel_UnknownProvider(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "q/whatever", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `provider "q" is not in this workspace's model catalog`)
+	assert.Contains(t, err.Error(), "'p'", "connected providers are named")
+	assert.Empty(t, f.titles)
+}
+
+func TestMCPCallWithModel_CaseTypoQualifiedRef_Suggests(t *testing.T) {
+	// The GATE is case-sensitive (opencode keys are exact); the SUGGESTION
+	// is case-insensitive — a case-typo'd ref gets the same one-hop
+	// self-correction a bare name gets, while still being refused (review
+	// r3 missing-test-1: gate case-sensitivity is load-bearing and pinned
+	// only here).
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "P/text", nil)
+	require.Error(t, err, "case-typo'd provider must still be REFUSED")
+	assert.Contains(t, err.Error(), `provider "P" is not in this workspace's model catalog`)
+	assert.Contains(t, err.Error(), "did you mean 'p'?")
+	assert.Empty(t, f.titles)
+
+	_, err = mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/Text", nil)
+	require.Error(t, err, "case-typo'd model must still be REFUSED")
+	assert.Contains(t, err.Error(), `model "Text" is not offered by provider "p"`)
+	assert.Contains(t, err.Error(), "did you mean 'text'?")
+	assert.Empty(t, f.titles)
+}
+
+func TestCaseInsensitiveMatches(t *testing.T) {
+	got := caseInsensitiveMatches("Text", []string{"text", "vision", "TEXT2", "text"})
+	assert.Equal(t, []string{"text", "text"}, got, "exact-modulo-case matches only; order preserved")
+	assert.Empty(t, caseInsensitiveMatches("nope", []string{"text", "vision"}))
+	assert.Empty(t, caseInsensitiveMatches("tex", []string{"text"}), "prefix matches are NOT suggestions")
+}
+
+func TestQuotedList_Dedup(t *testing.T) {
+	assert.Equal(t, "'a', 'b'", quotedList([]string{"b", "a", "a", "b"}), "duplicates collapse after sort")
+	assert.Equal(t, "'p/one', 'q/one'", quotedList([]string{"q/one", "p/one"}), "distinct qualified refs survive")
+}
+
+func TestMCPCallWithModel_CatalogUnreachable_FailOpen(t *testing.T) {
+	// The pre-check is advisory, never a gate: a catalog that cannot
+	// be read must leave the call's fate to the wire itself.
+	f := newFakeAgent()
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/provider" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		f.handler(t)(w, r)
+	})
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", nil)
+	require.NoError(t, err, "fail-open: an unreachable catalog must not block the call")
+}
+
+func TestMCPListModels(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	out, err := mcpListModels(context.Background(), mcpTestPassword)
+	require.NoError(t, err)
+
+	var res struct {
+		Count  int `json:"count"`
+		Models []struct {
+			Model         string `json:"model"`
+			Name          string `json:"name"`
+			ContextWindow int64  `json:"contextWindow"`
+			MaxOutput     int64  `json:"maxOutput"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, 3, res.Count)
+	require.Len(t, res.Models, 3)
+	assert.Equal(t, "p/declared", res.Models[0].Model, "sorted by qualified name")
+	assert.Equal(t, "Declared Vision Model", res.Models[0].Name)
+	assert.Equal(t, int64(3000), res.Models[0].ContextWindow)
+	assert.Equal(t, int64(128), res.Models[0].MaxOutput)
+	assert.Equal(t, "p/text", res.Models[1].Model)
+	assert.Equal(t, "Text Model", res.Models[1].Name)
+	assert.Equal(t, int64(2000), res.Models[1].ContextWindow)
+	assert.Equal(t, int64(256), res.Models[1].MaxOutput)
+	assert.Equal(t, "p/vision", res.Models[2].Model)
+}
+
+func TestMCPListModels_CatalogError(t *testing.T) {
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/provider" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	})
+	_, err := mcpListModels(context.Background(), mcpTestPassword)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model catalog")
 }
 
 func TestMCPCallWithModel_EmptyPromptRejected(t *testing.T) {

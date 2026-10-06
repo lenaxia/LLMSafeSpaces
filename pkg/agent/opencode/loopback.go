@@ -104,10 +104,15 @@ type SendResult struct {
 
 // ModelInfo is the catalog view of one model (GET /config/providers).
 // ImageInput is only meaningful when ImageInputKnown is true — the
-// catalog entry carried no capabilities block when it is false, and
+// catalog entry carried no capabilities signal when it is false, and
 // callers must treat that as UNKNOWN, never as text-only (#1307
 // fail-safe direction: a false "text-only" strips user images from
 // vision-capable models).
+//
+// ImageInput OR-merges two signals: capabilities.input.image (opencode's
+// models.dev catalog merge) and capabilities.attachment (the
+// credential-declared capability — the only truthful signal for
+// custom-endpoint models, where input.image is a synthesized false).
 type ModelInfo struct {
 	ContextLimit    int64
 	ImageInput      bool
@@ -596,7 +601,13 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 					Context int64 `json:"context"`
 				} `json:"limit"`
 				Capabilities *struct {
-					Input *struct {
+					// Attachment is the models.dev/config-declared
+					// attachment capability — the ONLY signal a
+					// credential can set for a custom-endpoint model
+					// (probe-verified 2026-10-05: config `attachment`
+					// lands here; it cannot reach Input.Image).
+					Attachment *bool `json:"attachment"`
+					Input      *struct {
 						Image *bool `json:"image"`
 					} `json:"input"`
 				} `json:"capabilities"`
@@ -617,9 +628,24 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 			// "input":{"text":true} never flatten into known-false (#1307
 			// review r1 finding 1 — the value struct made the repair
 			// strip images from possibly-vision models).
-			if m.Capabilities != nil && m.Capabilities.Input != nil && m.Capabilities.Input.Image != nil {
-				info.ImageInput = *m.Capabilities.Input.Image
+			//
+			// Two independent signals, OR-merged: Input.Image (opencode's
+			// models.dev catalog merge — real for known models) and
+			// Attachment (the credential-declared capability — the only
+			// truthful signal for custom-endpoint models, whose models.dev
+			// entry doesn't exist and whose Input.Image is a synthesized
+			// false). Either signal present makes the capability KNOWN;
+			// either true makes it vision-capable.
+			var image, attachment *bool
+			if m.Capabilities != nil {
+				attachment = m.Capabilities.Attachment
+				if m.Capabilities.Input != nil {
+					image = m.Capabilities.Input.Image
+				}
+			}
+			if image != nil || attachment != nil {
 				info.ImageInputKnown = true
+				info.ImageInput = (image != nil && *image) || (attachment != nil && *attachment)
 			}
 			return info, nil
 		}
