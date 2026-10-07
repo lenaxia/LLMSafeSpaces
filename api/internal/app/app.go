@@ -1465,6 +1465,17 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		podAutomationHandler.SetLogger(log)
 	}
 
+	// Pod-identity session archive/delete (agentd #1627 MCP tools).
+	// Needs the concrete workspace service (the archive write path) and
+	// the proxy (the hard-delete flow + SSE announcements).
+	var podSessionArchiveHandler *handlers.PodSessionArchiveHandler
+	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+		podSessionArchiveHandler = handlers.NewPodSessionArchiveHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, wsSvc, proxyHandler, sessionIndexSvc, cfg.Kubernetes.Namespace,
+		)
+		podSessionArchiveHandler.SetLogger(log)
+	}
+
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
@@ -1513,6 +1524,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PodBootstrapHandler:             podBootstrapHandler,
 		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
 		PodAutomationHandler:            podAutomationHandler,
+		PodSessionArchiveHandler:        podSessionArchiveHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,

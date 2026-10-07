@@ -756,35 +756,59 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	// Delegate the write (Act in the authority regime, #1372 S1; the
 	// adapter flag-off), then run the post-delete side effects
 	// (tombstone, session index cleanup, SSE tombstone publish).
-	var err error
-	delLog := "DeleteSession: adapter failed"
-	if h.agentdTerminus {
-		delLog = "DeleteSession: Act failed"
-		err = h.actDeleteSession(c.Request.Context(), workspaceID, sid)
-	} else {
-		err = h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid)
-	}
-	if err != nil {
+	if err := h.HardDeleteSession(c.Request.Context(), workspaceID, sid); err != nil {
 		// #817: same observability gap — log the underlying error.
-		h.logger.Error(delLog, err,
+		h.logger.Error("DeleteSession: hard delete failed", err,
 			"workspaceID", workspaceID, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// HardDeleteSession is the single authoritative hard-delete flow for
+// one session (#1627: the REST DELETE and the pod-identity internal
+// delete ride the same path). BOTH sides die: the agent-side session
+// (adapter delete, or Act in the authority regime) and the platform
+// session-index row, plus the tombstone and the SSE deleted event on
+// both streams. Callers own workspace resolution/authorization and
+// error mapping.
+func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessionID string) error {
+	var err error
+	if h.agentdTerminus {
+		err = h.actDeleteSession(ctx, workspaceID, sessionID)
+	} else {
+		err = h.adapter.DeleteSession(ctx, "", workspaceID, sessionID)
+	}
+	if err != nil {
+		return err
+	}
 	h.recordActivityIfTracked(workspaceID)
 
 	// Post-delete side effects run after a successful adapter delete.
-	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // tombstone must survive client disconnect
+	//nolint:contextcheck // tombstone must survive client disconnect
+	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 
 	if h.sessionIndex != nil {
-		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sid); err != nil { //nolint:contextcheck
-			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sid)
+		//nolint:contextcheck // index cleanup must survive client disconnect
+		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
+			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
 		}
 	}
 
+	h.removeActiveSessionEvents(ctx, workspaceID, sessionID)
+	return nil
+}
+
+// removeActiveSessionEvents is the post-delete UI bookkeeping tail —
+// detached from the request path (the same goroutine shape the REST
+// handler used pre-extraction: the response must not wait on state
+// store I/O, and the bookkeeping must survive the client disconnect).
+func (h *ProxyHandler) removeActiveSessionEvents(parent context.Context, workspaceID, sessionID string) {
 	go func() {
-		h.removeActiveSession(context.Background(), workspaceID, sid)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
+		defer cancel()
+		h.removeActiveSession(ctx, workspaceID, sessionID)
 		if h.sessionParents != nil {
 			h.sessionParents.invalidate(workspaceID)
 		}
@@ -794,7 +818,7 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 			// alone left every other tab rendering a live session.
 			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 				Type:      "session.status",
-				SessionID: sid,
+				SessionID: sessionID,
 				Status:    "deleted",
 			})
 		}
