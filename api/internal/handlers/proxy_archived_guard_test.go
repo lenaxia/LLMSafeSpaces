@@ -11,12 +11,16 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -197,4 +201,151 @@ func TestOutboxDeliver_ArchivedSession_TerminalRefusal(t *testing.T) {
 	require.ErrorAs(t, err, &terminal, "archived refusal must be terminal (never retried): %v", err)
 	assert.Contains(t, err.Error(), "session_archived")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&hits), "no bytes may reach the pod for an archived session")
+}
+
+// --- review round 1+2 findings: the remaining write surfaces ---
+
+// Finding 1: the terminus regime gates EVERY entry — prior-attempt
+// entries must refuse BEFORE the ledger path re-POSTs (outbox_terminus
+// re-admits when the prior row is failed/not-found).
+func TestOutboxDeliver_TerminusMode_PriorAttemptArchived_Refused(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.SetAgentdTerminus(true)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+
+	err := h.outboxDeliver(context.Background(), "ws-1", "ses_1", outbox.Entry{
+		Text:     "prior attempt existed",
+		Attempts: 1,
+	})
+	require.Error(t, err)
+	var terminal *outbox.TerminalDeliveryError
+	require.ErrorAs(t, err, &terminal, "the terminus regime must refuse archived sessions for prior-attempt entries too: %v", err)
+}
+
+func TestOutboxDeliver_TerminusMode_FreshEntryArchived_Refused(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.SetAgentdTerminus(true)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+
+	err := h.outboxDeliver(context.Background(), "ws-1", "ses_1", outbox.Entry{Text: "fresh"})
+	var terminal *outbox.TerminalDeliveryError
+	require.ErrorAs(t, err, &terminal)
+}
+
+// Finding 4: retry-while-archived must 409, not re-arm a dead letter.
+func TestRetryQueueMessage_ArchivedSession_Rejected409(t *testing.T) {
+	env := newOutboxTestEnv(t)
+	env.router.POST("/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId/retry", env.handler.RetryQueueMessage)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.sessionIndex = si
+
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/msg-1/retry", nil)
+	requireArchivedBody(t, w)
+}
+
+// Finding 2: the reply surfaces are chat writes — live question replies
+// into an archived session must 409.
+func TestQuestionReply_LiveAsk_ArchivedSession_Rejected409(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.sessionIndex = si
+	answered := false
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{ID: "que_live", SessionID: "ses_1"}}, nil
+		},
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error {
+			answered = true
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/question/que_live/reply",
+		strings.NewReader(`{"answers":[["yes"]]}`))
+	requireArchivedBody(t, w)
+	assert.False(t, answered, "no reply may reach the agent for an archived session")
+}
+
+// Finding 2: the late-answer path must refuse BEFORE accepting and
+// BEFORE resolving the inbox record — the user learns the truth, the
+// ask stays pending, and unarchive-then-retry works.
+func TestInbox_LateAnswer_ArchivedSession_RejectedAndRecordKept(t *testing.T) {
+	h, in, ob, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil // ask is dead — late-answer path
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_dead", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Deploy?", Options: []inbox.Option{{Label: "Yes"}}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "que_dead"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"answers":[["Yes"]]}`))
+	h.QuestionReply(c)
+
+	require.Equal(t, http.StatusConflict, w.Code, "the late answer must 409, not 202")
+	var body struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "session_archived", body.Code)
+
+	entries, err := ob.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Empty(t, entries, "nothing may be accepted into the outbox")
+	pending, err := in.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Len(t, pending, 1, "the ask must stay pending — the record is NOT resolved on refusal")
+}
+
+// Review round 1 finding 3: the USER-stream leg of the archive
+// announcement — the #786 cross-tab copy — pinned with the workspace
+// owner recorded so PublishToUser actually fires.
+func TestPublishSessionArchived_UserStreamCarriesWorkspaceID(t *testing.T) {
+	env := newTestEnv(t)
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-7")
+
+	wsub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", wsub)
+	usub, err := env.handler.userBroker.SubscribeUser("user-7")
+	require.NoError(t, err)
+	defer env.handler.userBroker.UnsubscribeUser("user-7", usub)
+
+	env.handler.PublishSessionArchived("ws-1", "s1", true)
+
+	select {
+	case evt := <-wsub.Ch:
+		assert.Equal(t, "session.status", evt.Type)
+		assert.Equal(t, "archived", evt.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("workspace-stream copy missing")
+	}
+	select {
+	case evt := <-usub.Ch:
+		assert.Equal(t, "session.status", evt.Type)
+		assert.Equal(t, "archived", evt.Status)
+		assert.Equal(t, "ws-1", evt.WorkspaceID, "the user-stream copy carries WorkspaceID for routing (#786)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("user-stream copy missing — every other tab depends on it")
+	}
 }

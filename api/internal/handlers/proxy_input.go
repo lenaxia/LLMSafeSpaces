@@ -77,6 +77,11 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		return
 	}
 	defer h.releaseConnection(wid)
+	// #1627: a reply is a chat write into the session's turn — the
+	// archived read-only gate applies (review round 1 finding 2).
+	if h.rejectIfRequestArchived(c, wid, requestID) {
+		return
+	}
 	// Validate BEFORE the quota gate (SendMessage's order): the gate is a
 	// permanent reservation — a malformed 400 must not burn an
 	// llm_request slot (r3).
@@ -227,6 +232,10 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		return
 	}
 	defer h.releaseConnection(wid)
+	// #1627: the archived read-only gate (review round 1 finding 2).
+	if h.rejectIfRequestArchived(c, wid, requestID) {
+		return
+	}
 	// Validate BEFORE the quota gate (r3): a malformed 400 must not burn
 	// a permanent llm_request reservation.
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))

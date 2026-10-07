@@ -277,21 +277,29 @@ func (h *ProxyHandler) SetAgentdPortForTest(port int) {
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
-	// #1627 ruling (b): an entry that has not yet driven ANY attempt
-	// must not start one for an archived session — refuse terminally
-	// (parks as error, never retried; unarchive + a new send is the
-	// recovery). Entries WITH a prior attempt keep the #987
-	// reconciliation below: text that landed completes; text that
-	// never landed is gated before its re-send.
+	// #1627 ruling (b), review round 1 finding 1: the terminus regime
+	// gates EVERY entry — fresh AND prior-attempt — BEFORE the ledger
+	// path. The terminus deliverer re-POSTs when a prior ledger row is
+	// failed/not-found (outbox_terminus.go:127-137), so a prior-attempt
+	// entry gated only after the terminus return would re-deliver into
+	// an archived session; airtight read-only beats delivery semantics
+	// (a landed message's ledger row stays findable by the sweeper
+	// paths — this worker never re-drives it).
+	if h.agentdTerminus {
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
+		}
+		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
+	}
+	// Non-terminus: a fresh entry (no attempt driven) is gated before
+	// any delivery; entries WITH a prior attempt keep the #987
+	// reconciliation: text that landed completes; text that never
+	// landed is gated before its re-send.
 	if e.Attempts == 0 && e.VerifyAttempts == 0 {
 		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
 			return err
 		}
-	}
-	if h.agentdTerminus {
-		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
-	}
-	if e.Attempts > 0 || e.VerifyAttempts > 0 {
+	} else {
 		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
 			return nil // prior attempt confirmed in the transcript — complete without re-sending
 		}

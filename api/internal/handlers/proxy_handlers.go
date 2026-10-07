@@ -1151,6 +1151,13 @@ func (h *ProxyHandler) RetryQueueMessage(c *gin.Context) {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "queue retry requires the outbox"})
 		return
 	}
+	// #1627 (review round 1 finding 4): retrying into an archived
+	// session would re-arm an entry the delivery pass terminally
+	// refuses — the client must learn the send cannot succeed, not a
+	// 2xx for a dead letter.
+	if h.rejectIfArchived(c, wid, sid) {
+		return
+	}
 	switch h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {
 	case outbox.RetryUpdated:
 		c.Status(http.StatusNoContent)

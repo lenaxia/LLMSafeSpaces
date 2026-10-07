@@ -44,6 +44,20 @@ func (h *ProxyHandler) autoApprovePermission(workspaceID, requestID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// #1627 (review round 2): an archived session is read-only — the
+	// automation bridge must not write into it. Skip (non-authoritative,
+	// same posture as an unresolvable ask): the ask stays pending and
+	// surfaces again when the session is unarchived.
+	if h.sessionIndex != nil {
+		if sessionID, resolvable, _ := h.inputRequestSession(ctx, workspaceID, requestID); resolvable && sessionID != "" {
+			if archived, err := h.sessionIndex.IsArchived(ctx, workspaceID, sessionID); err == nil && archived {
+				h.logger.Warn("Auto-approve skipped: session is archived (read-only)",
+					"workspaceID", workspaceID, "requestID", requestID, "sessionID", sessionID)
+				return
+			}
+		}
+	}
+
 	if h.agentdTerminus {
 		sessionID, resolvable, _ := h.inputRequestSession(ctx, workspaceID, requestID)
 		if !resolvable {

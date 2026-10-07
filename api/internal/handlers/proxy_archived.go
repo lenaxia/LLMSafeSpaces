@@ -52,6 +52,23 @@ func (h *ProxyHandler) rejectIfArchived(c *gin.Context, workspaceID, sessionID s
 	return true
 }
 
+// rejectIfRequestArchived resolves the session behind a pending
+// question/permission request and applies the archived gate to it
+// (#1627 review round 1 finding 2: reply surfaces are chat writes —
+// user text delivered into a live turn — and must not bypass the
+// read-only contract). An unresolvable request is NOT rejected here;
+// the caller's own live-path flow owns its 404/503 semantics.
+func (h *ProxyHandler) rejectIfRequestArchived(c *gin.Context, workspaceID, requestID string) bool {
+	if h.sessionIndex == nil {
+		return false
+	}
+	sessionID, resolvable, _ := h.inputRequestSession(c.Request.Context(), workspaceID, requestID)
+	if !resolvable || sessionID == "" {
+		return false
+	}
+	return h.rejectIfArchived(c, workspaceID, sessionID)
+}
+
 // archivedDeliveryRefusal is the outbox-worker arm of the #1627
 // read-only contract: delivery for an archived session returns a
 // TERMINAL outbox error — the entry parks as error on the first pass,
