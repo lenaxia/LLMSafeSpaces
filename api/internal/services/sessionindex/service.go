@@ -158,6 +158,18 @@ func (s *Service) UpdateLastSeen(ctx context.Context, workspaceID, sessionID str
 	return s.db.UpdateSessionLastSeen(ctx, workspaceID, sessionID)
 }
 
+// SetArchived flips the platform-level archived marker (#1627). The
+// marker is llmsafespaces-only: nothing inside the agent changes.
+func (s *Service) SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	return s.db.SetSessionArchivedStatus(ctx, workspaceID, sessionID, archived)
+}
+
+// IsArchived reports the platform-level archived marker. Absent index
+// rows read as not-archived (see the DB layer).
+func (s *Service) IsArchived(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	return s.db.IsSessionArchived(ctx, workspaceID, sessionID)
+}
+
 // PlanReconciliation is the #1340 convergence decision (S5b): given the
 // index's session IDs, a harness-list provider, and the previous
 // consecutive-miss counters, it returns which rows to DELETE now and the

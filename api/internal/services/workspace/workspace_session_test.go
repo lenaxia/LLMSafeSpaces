@@ -52,6 +52,13 @@ func (m *mockSessionIndex) RebuildMessageCount(ctx context.Context, workspaceID,
 func (m *mockSessionIndex) UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error {
 	return m.Called(ctx, workspaceID, sessionID).Error(0)
 }
+func (m *mockSessionIndex) SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	return m.Called(ctx, workspaceID, sessionID, archived).Error(0)
+}
+func (m *mockSessionIndex) IsArchived(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	args := m.Called(ctx, workspaceID, sessionID)
+	return args.Bool(0), args.Error(1)
+}
 func (m *mockSessionIndex) UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	return m.Called(ctx, workspaceID, sessionID, contextUsed).Error(0)
 }

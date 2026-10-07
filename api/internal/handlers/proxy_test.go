@@ -923,6 +923,12 @@ func (r *recordingDeleteSessionIndex) RebuildMessageCount(_ context.Context, _, 
 func (r *recordingDeleteSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
 }
+func (r *recordingDeleteSessionIndex) SetArchived(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (r *recordingDeleteSessionIndex) IsArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
 func (r *recordingDeleteSessionIndex) UpsertTitle(_ context.Context, _, _, _ string) error {
 	return nil
 }
@@ -951,6 +957,12 @@ func (f *failingDeleteSessionIndex) RebuildMessageCount(_ context.Context, _, _ 
 
 func (f *failingDeleteSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
+}
+func (f *failingDeleteSessionIndex) SetArchived(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (f *failingDeleteSessionIndex) IsArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
 }
 func (f *failingDeleteSessionIndex) UpsertTitle(_ context.Context, _, _, _ string) error  { return nil }
 func (f *failingDeleteSessionIndex) UpsertParent(_ context.Context, _, _, _ string) error { return nil }
@@ -1214,6 +1226,12 @@ func (r *recordingActivitySessionIndex) RebuildMessageCount(_ context.Context, _
 
 func (r *recordingActivitySessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
+}
+func (r *recordingActivitySessionIndex) SetArchived(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (r *recordingActivitySessionIndex) IsArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
 }
 func (r *recordingActivitySessionIndex) UpsertTitle(_ context.Context, workspaceID, sessionID, title string) error {
 	r.mu.Lock()

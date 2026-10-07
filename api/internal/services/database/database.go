@@ -6,6 +6,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -1109,7 +1110,8 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		        last_seen_at,
 		        (last_message_at IS NOT NULL
 		         AND (last_seen_at IS NULL OR last_message_at > last_seen_at)) AS has_unread,
-		        context_used
+		        context_used,
+		        archived
 		 FROM session_index WHERE workspace_id = $1
 		 ORDER BY last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
 	if err != nil {
@@ -1125,7 +1127,7 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		var lastMsg sql.NullTime
 		var lastSeen sql.NullTime
 		var contextUsed sql.NullInt64
-		if err := rows.Scan(&item.ID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed); err != nil {
+		if err := rows.Scan(&item.ID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived); err != nil {
 			return nil, err
 		}
 		if title.Valid {
@@ -1250,6 +1252,44 @@ func (s *Service) UpdateSessionLastSeen(ctx context.Context, workspaceID, sessio
 		   last_seen_at = NOW(),
 		   updated_at = NOW()`, workspaceID, sessionID)
 	return err
+}
+
+// SetSessionArchivedStatus sets the platform-level archived marker on
+// one indexed session (#1627). Update-only by design: the row must
+// already exist — archiving an unindexed session ID is a caller error
+// (404), never a phantom row the #1340 reconcile pass would later reap.
+func (s *Service) SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	tag, err := s.DB.ExecContext(ctx,
+		`UPDATE session_index SET archived = $3, updated_at = NOW()
+		 WHERE workspace_id = $1 AND session_id = $2`, workspaceID, sessionID, archived)
+	if err != nil {
+		return err
+	}
+	n, err := tag.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apierrors.NewNotFoundError("session", sessionID, nil)
+	}
+	return nil
+}
+
+// IsSessionArchived reports the platform-level archived marker. An
+// absent row reads as NOT archived: the index is event-fed and can lag
+// (#1452), so an unindexed session must never be locked out of chat.
+func (s *Service) IsSessionArchived(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	var archived bool
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT archived FROM session_index WHERE workspace_id = $1 AND session_id = $2`,
+		workspaceID, sessionID).Scan(&archived)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return archived, nil
 }
 
 // BeginTx starts a new database transaction. Used by handlers that need

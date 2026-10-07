@@ -104,8 +104,14 @@ func (m *mockSessionIndex) UpsertContextUsed(_ context.Context, workspaceID, ses
 	return nil
 }
 func (m *mockSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
-func (m *mockSessionIndex) Start() error                                        { return nil }
-func (m *mockSessionIndex) Stop() error                                         { return nil }
+func (m *mockSessionIndex) SetArchived(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (m *mockSessionIndex) IsArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockSessionIndex) Start() error { return nil }
+func (m *mockSessionIndex) Stop() error  { return nil }
 
 var _ interfaces.SessionIndexService = (*mockSessionIndex)(nil)
 
