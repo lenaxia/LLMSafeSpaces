@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.19] - 2026-10-07
+
+### Fixed — the sidebar swipe/back-gesture conflict (#1623/#1626)
+
+- **The inward-offset gesture zone**: swipe-to-open now engages from a
+  drag-handle strip set inside the OS back-gesture zone (safe-area
+  aware), with the gesture claimed only at the qualifying horizontal
+  move — the absolute screen edge is left entirely to the OS, so
+  edge-swipe back-navigation and sidebar-open no longer race (the
+  ~50% back-nav regression). The strip is input-transparent: taps pass
+  through to the hamburger beneath, and vertical scrolling is
+  edge-to-edge including over the strip (the old 30px dead column is
+  gone). viewport-fit=cover enabled with real safe-area consumers
+  (mobile/portal/drawer headers, composer). Note: merged on owner
+  override of the device-QA gate (reviewer pre-committed approval;
+  on-device verification rides the production rollout with revert as
+  the escape hatch).
+
 ## [0.34.18] - 2026-10-07
 
 ### Fixed — the queued hardening set
