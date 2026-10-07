@@ -6,11 +6,15 @@ import { useEffect, useRef, type RefObject } from "react";
 // (~50% observed in production), and the claim's documented tradeoff
 // blocked vertical scrolling in the leftmost 30px. Swipe-to-open now
 // engages from the INSET drag-handle strip (see SidebarDrawer): a touch
-// starts the open-gesture iff it begins inside the handle's rect, and
-// ONLY that zone is claimed — the strip sits CLEAR of the OS
-// back-gesture zone (offset inward past it, safe-area aware), so the OS
-// never races for its touches. The absolute edge belongs to
-// back-navigation; the hamburger stays the always-works open path.
+// starts the open-gesture iff it begins inside the handle's rect. The
+// strip sits CLEAR of the OS back-gesture zone (offset inward past it,
+// safe-area aware), so no touchstart claim is needed to beat the OS
+// there — and none is made (r2 review: claiming at touchstart
+// suppressed synthetic clicks, breaking the hamburger tap-through under
+// the strip). The gesture is claimed only once a qualifying horizontal
+// MOVE is detected (onMove's preventDefault, already required to block
+// scroll during the drag). The absolute edge belongs to back-nav; the
+// hamburger stays the always-works open path.
 const MIN_DRAG_PX = 30;
 const SETTLE_RATIO = 1 / 3;
 
@@ -59,14 +63,12 @@ export function useSwipeableSidebar({
       touchStartX.current = t.clientX;
       touchStartY.current = t.clientY;
       isHandleSwipe.current = startedInHandle(handleRef.current, t.clientX, t.clientY);
-      // Claim the gesture at touchstart ONLY for handle-zone touches: the
-      // handle strip is inset from the absolute edge (outside the OS
-      // back-gesture zone), so claiming here cannot race the OS — and a
-      // deliberate affordance may own its touches outright (the strip is
-      // not a scroll surface). The absolute edge is left to the OS.
-      if (isHandleSwipe.current) {
-        e.preventDefault();
-      }
+      // No touchstart claim (r2 review): preventDefault here suppresses
+      // synthetic clicks, which broke the hamburger tap-through for taps
+      // landing inside the strip zone. Recognition only — the claim moves
+      // to onMove, where a qualifying horizontal drag is preventDefaulted
+      // (required anyway to block scroll mid-gesture; see touchmove
+      // prevention tests).
     };
 
     const onMove = (e: TouchEvent) => {

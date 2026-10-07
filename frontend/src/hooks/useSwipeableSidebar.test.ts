@@ -272,26 +272,29 @@ describe("useSwipeableSidebar", () => {
     });
   });
 
-  // ── Gesture-zone claim (#1623: stop fighting the OS) ─────────────────
+  // ── Gesture claim (#1623: recognition at start, claim at move) ──────
   //
   // The a56430b7/#590 absolute-edge claim (preventDefault on every
   // touchstart with clientX < 30) is REMOVED by the owner ruling: the OS
   // captures its back-gesture before page JavaScript often enough that no
   // page technique wins reliably (~50% observed), and the claim's
   // documented tradeoff blocked vertical scrolling in the leftmost 30px.
-  // The app now claims ONLY the INSET handle zone — starting inside the
-  // OS back-gesture zone's curve, so the OS never races for it — and the
-  // absolute edge belongs to back-navigation again.
+  // The handle strip is inset CLEAR of the OS back-gesture zone, so it
+  // needs no touchstart claim to beat the OS — and making none preserves
+  // tap-through: a touchstart preventDefault suppresses synthetic
+  // clicks, which broke the hamburger button under the strip (the r2
+  // review's empirical finding). The gesture is claimed only at the
+  // horizontal-move stage (pinned in the touchmove-prevention describe).
 
-  describe("gesture-zone claim (touchstart preventDefault)", () => {
-    it("prevents default on touchstart in the handle zone to claim the gesture", () => {
+  describe("gesture claim (touchstart stays unclaimed; the move carries it)", () => {
+    it("does not prevent default on touchstart in the handle zone (tap-through: synthetic clicks must survive)", () => {
       const { dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
         { clientX: 30, clientY: 200 },
       ]);
 
-      expect(startEvent.defaultPrevented).toBe(true);
+      expect(startEvent.defaultPrevented).toBe(false);
     });
 
     it("does not prevent default on touchstart at the absolute edge (the OS back-gesture zone)", () => {

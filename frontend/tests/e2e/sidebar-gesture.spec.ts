@@ -79,13 +79,34 @@ test.describe("sidebar gesture zone (#1623)", () => {
 
     // The handle strip: 28px wide, 16px in (safe-area inset is 0 on the
     // desktop browser, so the live rect is exactly 16..44).
-    const handle = page.locator("div.touch-none");
+    const handle = page.locator("[data-sidebar-handle]");
     await expect(handle).toBeAttached();
     const box = await handle.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(16);
 
     await dispatchSwipe(page, 30, 160, 300);
+    await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
+  });
+
+  test("hamburger tap-through: a tap at the button center (inside the handle strip zone) opens the drawer", async ({ page }) => {
+    await mockAuthenticated(page);
+    await page.goto("/chat/ws-1/sess-1");
+    const toggle = page.getByRole("button", { name: "Open menu" });
+    await expect(toggle).toBeVisible();
+
+    // The strip must be input-transparent — real hit-testing (the r2
+    // review's empirical occlusion repro: the full-height strip sat over
+    // the button and swallowed the tap).
+    const handle = page.locator("[data-sidebar-handle]");
+    await expect(handle).toHaveCSS("pointer-events", "none");
+
+    // Tap the button's own center — Playwright clicks honor hit-testing,
+    // so this fails if anything above the button captures the pointer.
+    const box = await toggle.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeLessThan(44 + 16);
+    await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
   });
 

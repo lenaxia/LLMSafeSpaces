@@ -157,7 +157,7 @@ describe("AppShell gesture integration (#1623)", () => {
     renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
     expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
 
-    const handle = document.querySelector("div.touch-none");
+    const handle = document.querySelector("[data-sidebar-handle]");
     if (!handle) throw new Error("the drag-handle strip must render when mobile and closed");
     // jsdom has no layout: pin the strip's rect at the shipped geometry
     // (28px wide, 16px in from the safe-area inset).
@@ -178,7 +178,7 @@ describe("AppShell gesture integration (#1623)", () => {
     renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
     expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
 
-    const handle = document.querySelector("div.touch-none") as HTMLElement;
+    const handle = document.querySelector("[data-sidebar-handle]") as HTMLElement;
     vi.spyOn(handle, "getBoundingClientRect").mockReturnValue({
       left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
     } as DOMRect);

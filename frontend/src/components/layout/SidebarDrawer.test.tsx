@@ -49,15 +49,16 @@ describe("SidebarDrawer", () => {
 
   // ── #1623: the inset drag-handle affordance ──────────────────────────
 
-  it("renders the drag-handle strip when mobile and closed", () => {
+  it("renders the drag-handle strip when mobile and closed (input-transparent)", () => {
     const { container } = render(
       <SidebarDrawer state={makeState({ isMobile: true, open: false })}>
         <nav>nav</nav>
       </SidebarDrawer>,
     );
-    const handle = container.querySelector("div.touch-none");
+    const handle = container.querySelector("[data-sidebar-handle]");
     expect(handle).not.toBeNull();
     expect(handle?.className).toContain("w-7");
+    expect(handle?.className).toContain("pointer-events-none");
   });
 
   it("positions the handle inside the safe-area inset (never at the absolute edge)", () => {
@@ -66,7 +67,7 @@ describe("SidebarDrawer", () => {
         <nav>nav</nav>
       </SidebarDrawer>,
     );
-    const handle = container.querySelector("div.touch-none") as HTMLElement;
+    const handle = container.querySelector("[data-sidebar-handle]") as HTMLElement;
     // The positioning rides a Tailwind arbitrary-value class (jsdom's
     // CSSOM silently drops env() from inline styles).
     expect(handle.className).toContain("left-[calc(env(safe-area-inset-left,0px)+16px)]");
@@ -78,7 +79,7 @@ describe("SidebarDrawer", () => {
         <nav>nav</nav>
       </SidebarDrawer>,
     );
-    expect(container.querySelector("div.touch-none")).toBeNull();
+    expect(container.querySelector("[data-sidebar-handle]")).toBeNull();
   });
 
   it("does not render the drag-handle on desktop", () => {
@@ -87,7 +88,7 @@ describe("SidebarDrawer", () => {
         <nav>nav</nav>
       </SidebarDrawer>,
     );
-    expect(container.querySelector("div.touch-none")).toBeNull();
+    expect(container.querySelector("[data-sidebar-handle]")).toBeNull();
   });
 
   afterEach(() => {
