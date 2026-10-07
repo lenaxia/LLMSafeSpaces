@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.18] - 2026-10-07
+
+### Fixed — the queued hardening set
+
+- **applyModelAllowlist delivers provider models named "default"** (#1575,
+  #1621): the allowlist check moved pod-side (riding the existing model
+  enricher + 24h cache) — a model literally named "default" is delivered
+  iff the provider serves it; a default-only allowlist restricts the
+  fetched catalog (was: silent fall-through to the FULL unfiltered list);
+  relay token scope prefers the attached allowlist (Models-derived scope
+  would have minted unrestricted tokens); ValidateModelAllowlist on all
+  five credential write paths.
+- **Strict decode on the remaining agentd surfaces** (#1565, #1625):
+  workflow_execute + user_timezone now carry the #1561/#1564 boundary —
+  bounded reads, exactly-one-document, loud diagnostics, 400/413 classes.
+- **Cluster-scoped reconcile reads through the direct reader** (#1587,
+  #1622): RuntimeEnvironment resolution + StorageClass WFFC detection
+  bypass the cache — an RBAC gap 403s immediately and requeues instead
+  of silently wedging a worker on a never-syncing informer (#1551's
+  defect-1 structural close).
+
 ## [0.34.17] - 2026-10-06
 
 ### Features — list_models tool, self-correcting call_with_model failures, credential-declared vision metadata (#1624)
