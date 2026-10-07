@@ -277,12 +277,28 @@ func (h *ProxyHandler) SetAgentdPortForTest(port int) {
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	// #1627 ruling (b): an entry that has not yet driven ANY attempt
+	// must not start one for an archived session — refuse terminally
+	// (parks as error, never retried; unarchive + a new send is the
+	// recovery). Entries WITH a prior attempt keep the #987
+	// reconciliation below: text that landed completes; text that
+	// never landed is gated before its re-send.
+	if e.Attempts == 0 && e.VerifyAttempts == 0 {
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
+		}
+	}
 	if h.agentdTerminus {
 		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
 	}
 	if e.Attempts > 0 || e.VerifyAttempts > 0 {
 		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
 			return nil // prior attempt confirmed in the transcript — complete without re-sending
+		}
+		// The prior attempt never landed; a re-send into an archived
+		// session is still a post-archive delivery — refuse it.
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
 		}
 	}
 	var model *session.ModelRef

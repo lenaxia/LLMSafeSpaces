@@ -231,6 +231,29 @@ func Transient(err error) error {
 	return &TransientDeliveryError{Err: err}
 }
 
+// TerminalDeliveryError marks a failure that must NEVER be retried
+// (#1627: the session was archived after accept — read-only is
+// airtight, and the recovery path is unarchive + a new send). Like a
+// transient failure, no attempt was driven at the pod; unlike either
+// retry class, the entry parks as error on the FIRST pass. The #1316
+// park guard does not apply: the guard exists to keep entries the
+// agentd ledger still holds findable, and a terminal refusal happens
+// before anything is admitted.
+type TerminalDeliveryError struct{ Err error }
+
+func (t *TerminalDeliveryError) Error() string {
+	return "terminal delivery failure: " + t.Err.Error()
+}
+func (t *TerminalDeliveryError) Unwrap() error { return t.Err }
+
+// Terminal wraps err as a never-retry delivery failure.
+func Terminal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TerminalDeliveryError{Err: err}
+}
+
 // Verdict is a verifier's decision about an ambiguous delivery attempt.
 type Verdict int
 
@@ -774,6 +797,17 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		// against a row the sweeper could never find).
 		e.Status = StatusDelivering
 		e.NextAttemptAt = time.Now().UTC().Add(ownsAdmissionRePollBackoff)
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		return true
+	}
+	var terminal *TerminalDeliveryError
+	if errors.As(derr, &terminal) {
+		// #1627 never-retry class (e.g. session archived after
+		// accept): park immediately. No attempt is minted (nothing
+		// reached the pod) and the #1316 ledger park guard is
+		// deliberately skipped — no admission happened for it to hold.
+		e.Status = StatusError
+		e.LastError = derr.Error()
 		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
 		return true
 	}
