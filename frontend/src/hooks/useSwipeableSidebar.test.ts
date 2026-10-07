@@ -32,10 +32,7 @@ function createDOM() {
   const overlay = document.createElement("div");
   container.appendChild(overlay);
 
-  const handle = document.createElement("div");
-  container.appendChild(handle);
-
-  return { container, sidebar, overlay, handle };
+  return { container, sidebar, overlay };
 }
 
 function dispatchTouch(
@@ -65,16 +62,11 @@ function setupHook(initialOpen = false) {
   const setIsOpen = vi.fn();
   const isOpenRef = { current: initialOpen };
 
-  vi.spyOn(dom.handle, "getBoundingClientRect").mockReturnValue({
-    left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
-  } as DOMRect);
-
   const { result } = renderHook(
     ({ isOpen }) => {
       const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
       const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
       const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
-      const handleRef = useRef<HTMLDivElement>(dom.handle as HTMLDivElement);
       const [open, setOpen] = useState(isOpen);
       isOpenRef.current = open;
 
@@ -89,7 +81,6 @@ function setupHook(initialOpen = false) {
         containerRef,
         sidebarRef,
         overlayRef,
-        handleRef,
         isOpen: open,
         setIsOpen: wrappedSetOpen,
         enabled: true,
@@ -116,19 +107,22 @@ describe("useSwipeableSidebar", () => {
     vi.restoreAllMocks();
   });
 
-  // ── Handle-zone swipe to open (#1623) ─────────────────────────────────
+  // ── Full-edge swipe to open (#1629) ──────────────────────────────────
   //
-  // The OS owns the absolute left edge (its back-gesture zone — no page
-  // technique reliably suppresses it on iOS). The app's swipe-to-open
-  // affordance is the INSET drag-handle strip: the gesture engages only
-  // for touches that start inside the handle's rect. A swipe at the
-  // absolute edge belongs to the OS and must do nothing here.
+  // `overscroll-behavior-x: none` on html/body (the stylesheet pin lives
+  // in styles/index.test.ts) removes the browser's horizontal swipe-back
+  // navigation at the CSS level — the mechanism the #1626 ruling missed.
+  // With no OS race left to lose, the FULL left edge is the app's again:
+  // the original a56430b7/#590 EDGE_ZONE contract is restored — a touch
+  // starting in the leftmost 30px is claimed at touchstart (preventDefault)
+  // and a rightward drag opens the drawer. The hamburger stays the
+  // always-works path; swipe-to-close is unchanged.
 
-  describe("handle-zone swipe to open", () => {
-    it("opens sidebar on rightward swipe from the handle zone", () => {
+  describe("full-edge swipe to open", () => {
+    it("opens sidebar on rightward swipe from the left edge", () => {
       const { setIsOpen, dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [
         { clientX: 130, clientY: 200 }],
       );
@@ -137,17 +131,27 @@ describe("useSwipeableSidebar", () => {
       expect(setIsOpen).toHaveBeenCalledWith(true);
     });
 
-    it("does not open on swipe starting at the absolute left edge (OS back-gesture zone)", () => {
+    it("opens at the inner boundary of the edge zone (29px)", () => {
       const { setIsOpen, dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 29, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 130, clientY: 200 }]);
+
+      expect(setIsOpen).toHaveBeenCalledWith(true);
+    });
+
+    it("does not open on swipe starting at 30px (outside the edge zone)", () => {
+      const { setIsOpen, dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchmove", [{ clientX: 150, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchend", [], [{ clientX: 150, clientY: 200 }]);
 
       expect(setIsOpen).not.toHaveBeenCalled();
     });
 
-    it("does not open on swipe starting outside the handle zone", () => {
+    it("does not open on swipe starting outside the edge zone", () => {
       const { setIsOpen, dom } = setupHook(false);
 
       dispatchTouch(dom.container, "touchstart", [{ clientX: 50, clientY: 200 }]);
@@ -160,7 +164,7 @@ describe("useSwipeableSidebar", () => {
     it("does not open on very short swipe below settle threshold", () => {
       const { setIsOpen, dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 40, clientY: 200 }]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 40, clientY: 200 }]);
 
@@ -191,35 +195,41 @@ describe("useSwipeableSidebar", () => {
   });
 
   describe("vertical scroll passthrough", () => {
-    it("does not intercept vertical gestures at the absolute edge (edge-to-edge scrolling)", () => {
+    it("does not intercept primarily vertical gestures outside the edge zone", () => {
       const { setIsOpen, dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
-        { clientX: 10, clientY: 100 },
+        { clientX: 50, clientY: 100 },
       ]);
-      dispatchTouch(dom.container, "touchmove", [{ clientX: 15, clientY: 300 }]);
-      dispatchTouch(dom.container, "touchend", [], [{ clientX: 15, clientY: 300 }]);
-
-      expect(setIsOpen).not.toHaveBeenCalled();
-      expect(startEvent.defaultPrevented).toBe(false);
-    });
-
-    it("does not intercept primarily vertical gestures outside the handle zone", () => {
-      const { setIsOpen, dom } = setupHook(false);
-
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 50, clientY: 100 }]);
-      dispatchTouch(dom.container, "touchmove", [{ clientX: 55, clientY: 300 }]);
+      const moveEvent = dispatchTouch(dom.container, "touchmove", [
+        { clientX: 55, clientY: 300 },
+      ]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 55, clientY: 300 }]);
 
       expect(setIsOpen).not.toHaveBeenCalled();
+      expect(startEvent.defaultPrevented).toBe(false);
+      expect(moveEvent.defaultPrevented).toBe(false);
+    });
+
+    it("never claims the MOVE of a primarily vertical drag, even from the edge", () => {
+      const { setIsOpen, dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 100 }]);
+      const moveEvent = dispatchTouch(dom.container, "touchmove", [
+        { clientX: 15, clientY: 300 },
+      ]);
+      dispatchTouch(dom.container, "touchend", [], [{ clientX: 15, clientY: 300 }]);
+
+      expect(setIsOpen).not.toHaveBeenCalled();
+      expect(moveEvent.defaultPrevented).toBe(false);
     });
   });
 
   describe("visual tracking during swipe", () => {
-    it("moves sidebar transform during handle-zone swipe", () => {
+    it("moves sidebar transform during edge swipe", () => {
       const { dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
 
       const transform = dom.sidebar.style.transform;
@@ -239,7 +249,7 @@ describe("useSwipeableSidebar", () => {
     it("clears inline styles after transition completes", () => {
       const { dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 130, clientY: 200 }]);
 
@@ -249,12 +259,23 @@ describe("useSwipeableSidebar", () => {
   });
 
   describe("touchmove prevention", () => {
-    it("prevents default on horizontal swipe from the handle zone", () => {
+    it("prevents default on horizontal swipe from the edge", () => {
       const { dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       const moveEvent = dispatchTouch(dom.container, "touchmove", [
         { clientX: 130, clientY: 200 },
+      ]);
+
+      expect(moveEvent.defaultPrevented).toBe(true);
+    });
+
+    it("prevents default on horizontal swipe outside the edge zone too (blanket horizontal claim — no scoping)", () => {
+      const { dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 100, clientY: 200 }]);
+      const moveEvent = dispatchTouch(dom.container, "touchmove", [
+        { clientX: 200, clientY: 200 },
       ]);
 
       expect(moveEvent.defaultPrevented).toBe(true);
@@ -270,50 +291,48 @@ describe("useSwipeableSidebar", () => {
 
       expect(moveEvent.defaultPrevented).toBe(false);
     });
+  });
 
-    it("does not prevent default on a vertical gesture starting IN the handle band (the strip is input-transparent)", () => {
-      const { dom } = setupHook(false);
+  // ── Gesture claim (#1629: recognition AND claim at touchstart) ──────
+  //
+  // The #1626 handle design claimed only at the horizontal-move stage
+  // because it ceded the absolute edge to the OS. The CSS mechanism
+  // (overscroll-behavior-x: none) removes that race at the platform
+  // level, so the a56430b7/#590 touchstart claim is restored: an edge
+  // touchstart is preventDefaulted (non-passive listener) at the
+  // earliest moment. The leftmost 30px of a plain surface is the
+  // gesture zone, not a tap surface — EXCEPT interactive controls: the
+  // hamburger button's left half lives inside the band (header px-3),
+  // and the #1626 r2 review proved empirically that a touchstart
+  // preventDefault over a tappable control suppresses its synthetic
+  // click. The claim therefore skips touches that land on interactive
+  // elements — "the hamburger stays the always-works path" is part of
+  // the #1629 ruling. Their swipes are not gesture origins either
+  // (isEdgeSwipe stays false), which matches the original behavior for
+  // every non-edge start.
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 100 }]);
-      const moveEvent = dispatchTouch(dom.container, "touchmove", [
-        { clientX: 33, clientY: 400 },
-      ]);
-
-      expect(moveEvent.defaultPrevented).toBe(false);
-    });
-
-    it("never claims a horizontal drag that starts at the absolute edge (outside the handle rect, at any stage)", () => {
+  describe("gesture claim (touchstart preventDefault at the edge)", () => {
+    it("prevents default on touchstart at the left edge (claims the gesture early)", () => {
       const { dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
         { clientX: 10, clientY: 200 },
       ]);
-      const moveEvent = dispatchTouch(dom.container, "touchmove", [
-        { clientX: 150, clientY: 200 },
-      ]);
-      dispatchTouch(dom.container, "touchend", [], [{ clientX: 150, clientY: 200 }]);
 
-      expect(startEvent.defaultPrevented).toBe(false);
-      expect(moveEvent.defaultPrevented).toBe(false);
+      expect(startEvent.defaultPrevented).toBe(true);
     });
-  });
 
-  // ── Gesture claim (#1623: recognition at start, claim at move) ──────
-  //
-  // The a56430b7/#590 absolute-edge claim (preventDefault on every
-  // touchstart with clientX < 30) is REMOVED by the owner ruling: the OS
-  // captures its back-gesture before page JavaScript often enough that no
-  // page technique wins reliably (~50% observed), and the claim's
-  // documented tradeoff blocked vertical scrolling in the leftmost 30px.
-  // The handle strip is inset CLEAR of the OS back-gesture zone, so it
-  // needs no touchstart claim to beat the OS — and making none preserves
-  // tap-through: a touchstart preventDefault suppresses synthetic
-  // clicks, which broke the hamburger button under the strip (the r2
-  // review's empirical finding). The gesture is claimed only at the
-  // horizontal-move stage (pinned in the touchmove-prevention describe).
+    it("claims at the inner boundary of the edge zone (29px)", () => {
+      const { dom } = setupHook(false);
 
-  describe("gesture claim (touchstart stays unclaimed; the move carries it)", () => {
-    it("does not prevent default on touchstart in the handle zone (tap-through: synthetic clicks must survive)", () => {
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 29, clientY: 200 },
+      ]);
+
+      expect(startEvent.defaultPrevented).toBe(true);
+    });
+
+    it("does not prevent default on touchstart at 30px (outside the edge zone)", () => {
       const { dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
@@ -323,17 +342,7 @@ describe("useSwipeableSidebar", () => {
       expect(startEvent.defaultPrevented).toBe(false);
     });
 
-    it("does not prevent default on touchstart at the absolute edge (the OS back-gesture zone)", () => {
-      const { dom } = setupHook(false);
-
-      const startEvent = dispatchTouch(dom.container, "touchstart", [
-        { clientX: 10, clientY: 200 },
-      ]);
-
-      expect(startEvent.defaultPrevented).toBe(false);
-    });
-
-    it("does not prevent default on touchstart outside the handle zone", () => {
+    it("does not prevent default on touchstart outside the edge zone", () => {
       const { dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
@@ -343,25 +352,87 @@ describe("useSwipeableSidebar", () => {
       expect(startEvent.defaultPrevented).toBe(false);
     });
 
-    it("does not prevent default on touchstart when sidebar is open (the drawer surface is inset; close-swipes never race the OS)", () => {
+    it("prevents default on touchstart at the edge while the sidebar is open (no back-nav over the drawer)", () => {
       const { dom } = setupHook(true);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
         { clientX: 10, clientY: 200 },
       ]);
 
-      expect(startEvent.defaultPrevented).toBe(false);
+      expect(startEvent.defaultPrevented).toBe(true);
     });
 
     it("does not prevent default on multi-touch touchstart", () => {
       const { dom } = setupHook(false);
 
       const startEvent = dispatchTouch(dom.container, "touchstart", [
-        { clientX: 30, clientY: 100 },
+        { clientX: 10, clientY: 100 },
         { clientX: 200, clientY: 100 },
       ]);
 
       expect(startEvent.defaultPrevented).toBe(false);
+    });
+
+    it("does not claim a touchstart that lands on a button inside the edge band (the hamburger's left half)", () => {
+      const dom = createDOM();
+      const button = document.createElement("button");
+      dom.container.appendChild(button);
+      const setIsOpen = vi.fn();
+
+      renderHook(() => {
+        const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
+        const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
+        const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
+        useSwipeableSidebar({
+          containerRef, sidebarRef, overlayRef,
+          isOpen: false, setIsOpen, enabled: true, sidebarWidth: 256,
+        });
+      });
+
+      const startEvent = dispatchTouch(button, "touchstart", [{ clientX: 15, clientY: 200 }]);
+      expect(startEvent.defaultPrevented).toBe(false);
+    });
+
+    it("does not claim a touchstart that lands on a link inside the edge band", () => {
+      const dom = createDOM();
+      const link = document.createElement("a");
+      dom.container.appendChild(link);
+      const setIsOpen = vi.fn();
+
+      renderHook(() => {
+        const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
+        const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
+        const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
+        useSwipeableSidebar({
+          containerRef, sidebarRef, overlayRef,
+          isOpen: false, setIsOpen, enabled: true, sidebarWidth: 256,
+        });
+      });
+
+      const startEvent = dispatchTouch(link, "touchstart", [{ clientX: 15, clientY: 200 }]);
+      expect(startEvent.defaultPrevented).toBe(false);
+    });
+
+    it("a swipe starting on an interactive element never becomes an open-gesture (buttons are taps, not swipe origins)", () => {
+      const dom = createDOM();
+      const button = document.createElement("button");
+      dom.container.appendChild(button);
+      const setIsOpen = vi.fn();
+
+      renderHook(() => {
+        const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
+        const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
+        const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
+        useSwipeableSidebar({
+          containerRef, sidebarRef, overlayRef,
+          isOpen: false, setIsOpen, enabled: true, sidebarWidth: 256,
+        });
+      });
+
+      dispatchTouch(button, "touchstart", [{ clientX: 15, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchmove", [{ clientX: 140, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchend", [], [{ clientX: 140, clientY: 200 }]);
+      expect(setIsOpen).not.toHaveBeenCalled();
     });
   });
 
@@ -373,13 +444,11 @@ describe("useSwipeableSidebar", () => {
         const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
         const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
         const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
-        const handleRef = useRef<HTMLDivElement>(dom.handle as HTMLDivElement);
 
         useSwipeableSidebar({
           containerRef,
           sidebarRef,
           overlayRef,
-          handleRef,
           isOpen: false,
           setIsOpen,
           enabled: false,
@@ -403,13 +472,11 @@ describe("useSwipeableSidebar", () => {
         const containerRef = useRef<HTMLDivElement>(dom.container as HTMLDivElement);
         const sidebarRef = useRef<HTMLDivElement>(dom.sidebar as HTMLDivElement);
         const overlayRef = useRef<HTMLDivElement>(dom.overlay as HTMLDivElement);
-        const handleRef = useRef<HTMLDivElement>(dom.handle as HTMLDivElement);
 
         useSwipeableSidebar({
           containerRef,
           sidebarRef,
           overlayRef,
-          handleRef,
           isOpen: false,
           setIsOpen,
           enabled: true,
@@ -429,12 +496,12 @@ describe("useSwipeableSidebar", () => {
     it("listeners persist after first swipe — gesture works more than once", () => {
       const { setIsOpen, dom } = setupHook(false);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 130, clientY: 200 }]);
       expect(setIsOpen).toHaveBeenCalledWith(true);
 
-      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 200 }]);
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
       dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 130, clientY: 200 }]);
       expect(setIsOpen).toHaveBeenCalledTimes(2);

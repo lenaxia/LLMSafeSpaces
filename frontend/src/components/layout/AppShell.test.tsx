@@ -116,13 +116,14 @@ describe("AppShell mobile drawer auto-open", () => {
   });
 });
 
-// ── #1623 gesture integration: layouts → hook → drawer ────────────────
+// ── #1629 gesture integration: layouts → hook → drawer ────────────────
 //
-// The load-bearing seam (r1 review finding 1: deleting ref={handleRef}
-// left every unit test green). These drive REAL touch events through the
-// full AppShell tree — the container listeners, the rendered handle
-// strip, and the drawer's open state — so unwiring the ref, moving the
-// strip, or breaking the recognition logic all fail HERE.
+// The load-bearing seam (the #1626 r1 lesson: unwiring a ref left every
+// unit test green). These drive REAL touch events through the full
+// AppShell tree — the container listeners (attached via
+// sidebar.containerRef on the h-screen root div) and the drawer's open
+// state — so removing the ref wiring, the EDGE_ZONE recognition, or the
+// touchstart claim all fail HERE.
 
 function setMobileMatchMedia() {
   return vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
@@ -130,9 +131,8 @@ function setMobileMatchMedia() {
     media: query,
     onchange: null,
     addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
     removeListener: () => {},
+    removeEventListener: () => {},
     dispatchEvent: () => false,
   } as unknown as MediaQueryList));
 }
@@ -140,14 +140,14 @@ function setMobileMatchMedia() {
 function dispatchTouchOn(target: Element, type: string, touches: { clientX: number; clientY: number }[], changed?: typeof touches) {
   const mk = (list: typeof touches) =>
     list.map((t) => new Touch({ identifier: 0, target, clientX: t.clientX, clientY: t.clientY }));
-  target.dispatchEvent(
-    new TouchEvent(type, {
-      touches: mk(touches),
-      changedTouches: mk(changed ?? touches),
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
+  const event = new TouchEvent(type, {
+    touches: mk(touches),
+    changedTouches: mk(changed ?? touches),
+    bubbles: true,
+    cancelable: true,
+  });
+  target.dispatchEvent(event);
+  return event;
 }
 
 describe("AppShell safe-area padding composition (#1623 r4)", () => {
@@ -166,46 +166,72 @@ describe("AppShell safe-area padding composition (#1623 r4)", () => {
   });
 });
 
-describe("AppShell gesture integration (#1623)", () => {
-  it("opens the drawer on a handle-zone swipe through the full tree", async () => {
+describe("AppShell gesture integration (#1629)", () => {
+  function gestureContainer(): HTMLElement {
+    const el = document.querySelector(".h-screen.overscroll-none");
+    if (!el) throw new Error("gesture container (h-screen root div) not rendered");
+    return el as HTMLElement;
+  }
+
+  it("opens the drawer on a full-edge swipe through the full tree", async () => {
     const spy = setMobileMatchMedia();
     // A session in the URL keeps the drawer closed at mount.
     renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
     expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
 
-    const handle = document.querySelector("[data-sidebar-handle]");
-    if (!handle) throw new Error("the drag-handle strip must render when mobile and closed");
-    // jsdom has no layout: pin the strip's rect at the shipped geometry
-    // (28px wide, 16px in from the safe-area inset).
-    vi.spyOn(handle as HTMLElement, "getBoundingClientRect").mockReturnValue({
-      left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
-    } as DOMRect);
+    const container = gestureContainer();
+    const startEvent = dispatchTouchOn(container, "touchstart", [{ clientX: 10, clientY: 300 }]);
+    dispatchTouchOn(container, "touchmove", [{ clientX: 140, clientY: 300 }]);
+    dispatchTouchOn(container, "touchend", [], [{ clientX: 140, clientY: 300 }]);
 
-    dispatchTouchOn(handle, "touchstart", [{ clientX: 30, clientY: 300 }]);
-    dispatchTouchOn(handle, "touchmove", [{ clientX: 140, clientY: 300 }]);
-    dispatchTouchOn(handle, "touchend", [], [{ clientX: 140, clientY: 300 }]);
-
+    expect(startEvent.defaultPrevented).toBe(true);
     expect(await screen.findByRole("button", { name: "Close menu" })).toBeInTheDocument();
     spy.mockRestore();
   });
 
-  it("does not open on an absolute-edge swipe through the full tree (the OS back-gesture zone)", async () => {
+  it("does not open on a swipe starting outside the edge zone, and never claims its touchstart", async () => {
     const spy = setMobileMatchMedia();
     renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
     expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
 
-    const handle = document.querySelector("[data-sidebar-handle]") as HTMLElement;
-    vi.spyOn(handle, "getBoundingClientRect").mockReturnValue({
-      left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
-    } as DOMRect);
+    const container = gestureContainer();
+    const startEvent = dispatchTouchOn(container, "touchstart", [{ clientX: 60, clientY: 300 }]);
+    dispatchTouchOn(container, "touchmove", [{ clientX: 160, clientY: 300 }]);
+    dispatchTouchOn(container, "touchend", [], [{ clientX: 160, clientY: 300 }]);
 
-    // The touch target is the container surface at the absolute edge.
-    const container = handle.closest("div")?.parentElement ?? document.body;
-    dispatchTouchOn(container, "touchstart", [{ clientX: 10, clientY: 300 }]);
-    dispatchTouchOn(container, "touchmove", [{ clientX: 140, clientY: 300 }]);
-    dispatchTouchOn(container, "touchend", [], [{ clientX: 140, clientY: 300 }]);
-
+    expect(startEvent.defaultPrevented).toBe(false);
     expect(screen.getByRole("button", { name: "Open menu" })).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("never claims a touchstart that lands on the hamburger inside the edge band (click suppression guard, the #1626 r2 lesson)", async () => {
+    const spy = setMobileMatchMedia();
+    renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
+    const toggle = await screen.findByRole("button", { name: "Open menu" });
+
+    // The button's left half is inside the 30px edge band.
+    const startEvent = dispatchTouchOn(toggle, "touchstart", [{ clientX: 15, clientY: 300 }]);
+    dispatchTouchOn(toggle, "touchmove", [{ clientX: 140, clientY: 300 }]);
+    dispatchTouchOn(toggle, "touchend", [], [{ clientX: 140, clientY: 300 }]);
+
+    expect(startEvent.defaultPrevented).toBe(false);
+    expect(screen.getByRole("button", { name: "Open menu" })).toBeInTheDocument();
+    spy.mockRestore();
+  });
+});
+
+describe("AppShell root gesture surface (#1629)", () => {
+  // The CSS half of the fix: overscroll-behavior-x: none on the root
+  // scroller (html/body — pinned in styles/index.test.ts) removes the
+  // browser's swipe-back at the platform level; the container-level
+  // overscroll-none + pan-y (shipped since 77850fc9/#117) is the inner
+  // defense-in-depth layer. Pinned so it can't silently regress.
+  it("keeps the container's overscroll containment and pan-y touch-action", () => {
+    const spy = setMobileMatchMedia();
+    renderWithDataRouter("/chat", <div>Chat</div>);
+    const container = document.querySelector(".h-screen.overscroll-none") as HTMLElement;
+    expect(container).not.toBeNull();
+    expect(container.style.touchAction).toBe("pan-y");
     spy.mockRestore();
   });
 });
