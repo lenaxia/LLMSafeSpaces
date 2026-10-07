@@ -253,6 +253,12 @@ func (d *recordingDB) UpsertSessionContextUsed(_ context.Context, _, _ string, _
 	return nil
 }
 func (d *recordingDB) UpdateSessionLastSeen(context.Context, string, string) error { return nil }
+func (d *recordingDB) SetSessionArchivedStatus(context.Context, string, string, bool) error {
+	return nil
+}
+func (d *recordingDB) IsSessionArchived(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (d *recordingDB) ListAllWorkspaceOwners(context.Context) (map[string]string, error) {
 	return nil, nil
 }
