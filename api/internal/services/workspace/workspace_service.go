@@ -1906,6 +1906,23 @@ func (s *Service) MarkSessionSeen(ctx context.Context, userID, workspaceID, sess
 	return s.sessionIndex.UpdateLastSeen(ctx, workspaceID, sessionID)
 }
 
+// SetSessionArchived flips the platform-level archived marker (#1627):
+// archived sessions are read-only at the API proxy layer (chat sends
+// rejected, history viewable) and unarchiving restores chat instantly.
+// The agent itself is untouched. Unlike the seen/rename no-ops, a nil
+// session index is an ERROR here — the caller relies on the state
+// transition for enforcement, and a silent no-op would report success
+// while sends keep flowing.
+func (s *Service) SetSessionArchived(ctx context.Context, userID, workspaceID, sessionID string, archived bool) error {
+	if err := s.verifyOwner(ctx, userID, workspaceID); err != nil {
+		return err
+	}
+	if s.sessionIndex == nil {
+		return apierrors.NewInternalError("session index unavailable", nil)
+	}
+	return s.sessionIndex.SetArchived(ctx, workspaceID, sessionID, archived)
+}
+
 // RenameWorkspace updates the name of a workspace.
 func (s *Service) RenameWorkspace(ctx context.Context, userID, workspaceID, name string) error {
 	if err := s.verifyOwner(ctx, userID, workspaceID); err != nil {
