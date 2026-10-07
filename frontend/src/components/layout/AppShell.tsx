@@ -47,7 +47,10 @@ export function AppShell() {
 
         <div className="flex flex-1 flex-col overflow-hidden">
           {sidebar.isMobile && (
-            <div className="flex items-center border-b border-border px-3 py-2">
+            // The top padding COMPOSES the base with the safe-area inset
+            // (calc, not replace): viewport-fit=cover extends the page
+            // under the notch; this header is the topmost content row.
+            <div className="flex items-center border-b border-border px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top,0px))]">
               <SidebarToggleButton open={sidebar.open} onClick={() => sidebar.setOpen(!sidebar.open)} />
               <span className="ml-2 text-sm font-semibold">Safe Space</span>
             </div>

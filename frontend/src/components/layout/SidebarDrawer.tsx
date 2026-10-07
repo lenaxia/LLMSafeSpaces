@@ -14,7 +14,7 @@ export function SidebarDrawer({
   ariaLabel = "Navigation",
   desktopClassName = "relative",
 }: SidebarDrawerProps) {
-  const { isMobile, open, setOpen, overlayRef, sidebarRef, sidebarWidth } = state;
+  const { isMobile, open, setOpen, overlayRef, sidebarRef, handleRef, sidebarWidth } = state;
   return (
     <>
       {isMobile && (
@@ -41,6 +41,26 @@ export function SidebarDrawer({
       >
         {children}
       </div>
+      {isMobile && !open && (
+        // #1623: the inset drag-handle affordance — swipe-to-open engages
+        // for touches starting inside this strip's rect (28px wide, 16px
+        // in from the safe-area inset), offset CLEAR of the OS
+        // back-gesture zone. The strip is pointer-events:none — purely
+        // VISUAL plus the coordinate region the hook checks — so taps
+        // under it pass through to the real targets (the r2 review's
+        // occlusion fix: the hamburger must keep working), vertical
+        // scrolls over it reach the content beneath, and the gesture is
+        // claimed only at the horizontal-move stage. Rendered only when
+        // closed; swipe-to-close lives on the drawer surface.
+        <div
+          ref={handleRef}
+          data-sidebar-handle=""
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-y-0 z-40 w-7 left-[calc(env(safe-area-inset-left,0px)+16px)]"
+        >
+          <div className="absolute left-1/2 top-1/2 h-12 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground/25" />
+        </div>
+      )}
     </>
   );
 }

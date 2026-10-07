@@ -115,3 +115,97 @@ describe("AppShell mobile drawer auto-open", () => {
     spy.mockRestore();
   });
 });
+
+// ── #1623 gesture integration: layouts → hook → drawer ────────────────
+//
+// The load-bearing seam (r1 review finding 1: deleting ref={handleRef}
+// left every unit test green). These drive REAL touch events through the
+// full AppShell tree — the container listeners, the rendered handle
+// strip, and the drawer's open state — so unwiring the ref, moving the
+// strip, or breaking the recognition logic all fail HERE.
+
+function setMobileMatchMedia() {
+  return vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: !query.includes("min-width"),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  } as unknown as MediaQueryList));
+}
+
+function dispatchTouchOn(target: Element, type: string, touches: { clientX: number; clientY: number }[], changed?: typeof touches) {
+  const mk = (list: typeof touches) =>
+    list.map((t) => new Touch({ identifier: 0, target, clientX: t.clientX, clientY: t.clientY }));
+  target.dispatchEvent(
+    new TouchEvent(type, {
+      touches: mk(touches),
+      changedTouches: mk(changed ?? touches),
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+describe("AppShell safe-area padding composition (#1623 r4)", () => {
+  it("mobile header keeps its base padding and composes the safe-area inset additively", async () => {
+    const spy = setMobileMatchMedia();
+    renderWithDataRouter("/chat", <div>Chat</div>);
+    const header = await screen.findByRole("banner", { hidden: true }).catch(() => null);
+    const headerEl =
+      header ?? document.querySelector(".border-b.px-3");
+    expect(headerEl).not.toBeNull();
+    const cls = (headerEl as HTMLElement).className;
+    expect(cls).toContain("pb-2");
+    expect(cls).toMatch(/pt-\[calc\(0\.5rem\+env\(safe-area-inset-top,0px\)\)\]/);
+    expect(cls).not.toMatch(/(?<!calc\(0\.5rem\+)env\(safe-area-inset-top/);
+    spy.mockRestore();
+  });
+});
+
+describe("AppShell gesture integration (#1623)", () => {
+  it("opens the drawer on a handle-zone swipe through the full tree", async () => {
+    const spy = setMobileMatchMedia();
+    // A session in the URL keeps the drawer closed at mount.
+    renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
+    expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
+
+    const handle = document.querySelector("[data-sidebar-handle]");
+    if (!handle) throw new Error("the drag-handle strip must render when mobile and closed");
+    // jsdom has no layout: pin the strip's rect at the shipped geometry
+    // (28px wide, 16px in from the safe-area inset).
+    vi.spyOn(handle as HTMLElement, "getBoundingClientRect").mockReturnValue({
+      left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
+    } as DOMRect);
+
+    dispatchTouchOn(handle, "touchstart", [{ clientX: 30, clientY: 300 }]);
+    dispatchTouchOn(handle, "touchmove", [{ clientX: 140, clientY: 300 }]);
+    dispatchTouchOn(handle, "touchend", [], [{ clientX: 140, clientY: 300 }]);
+
+    expect(await screen.findByRole("button", { name: "Close menu" })).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("does not open on an absolute-edge swipe through the full tree (the OS back-gesture zone)", async () => {
+    const spy = setMobileMatchMedia();
+    renderWithDataRouter("/chat/ws-1/sess-1", <div>Chat</div>);
+    expect(await screen.findByRole("button", { name: "Open menu" })).toBeInTheDocument();
+
+    const handle = document.querySelector("[data-sidebar-handle]") as HTMLElement;
+    vi.spyOn(handle, "getBoundingClientRect").mockReturnValue({
+      left: 16, top: 0, width: 28, height: 800, right: 44, bottom: 800, x: 16, y: 0,
+    } as DOMRect);
+
+    // The touch target is the container surface at the absolute edge.
+    const container = handle.closest("div")?.parentElement ?? document.body;
+    dispatchTouchOn(container, "touchstart", [{ clientX: 10, clientY: 300 }]);
+    dispatchTouchOn(container, "touchmove", [{ clientX: 140, clientY: 300 }]);
+    dispatchTouchOn(container, "touchend", [], [{ clientX: 140, clientY: 300 }]);
+
+    expect(screen.getByRole("button", { name: "Open menu" })).toBeInTheDocument();
+    spy.mockRestore();
+  });
+});

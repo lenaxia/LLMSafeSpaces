@@ -168,7 +168,7 @@ export function Sidebar({ onNavigate }: Props) {
 
   return (
     <aside className="flex h-full flex-col border-r border-border bg-card resize-x overflow-auto min-w-48 max-w-96" style={{ width: "16rem" }} aria-label="Navigation">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))]">
         <h1 className="text-sm font-semibold">Safe Space</h1>
         <NewWorkspaceSplitButton
           onCreated={(wsId) => {

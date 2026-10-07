@@ -525,7 +525,10 @@ export function Composer({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t border-border p-4">
+    // Bottom padding composes the base with the safe-area inset:
+    // viewport-fit=cover extends under the home indicator and the
+    // composer is the bottommost row (#1623).
+    <form onSubmit={handleSubmit} className="border-t border-border px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
       {workspaceId && drawerOpen && (
         <div
           id="composer-options-drawer"
