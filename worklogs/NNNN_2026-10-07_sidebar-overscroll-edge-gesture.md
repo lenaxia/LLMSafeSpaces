@@ -38,11 +38,11 @@ Kept from #1626 (independent, real fixes): `viewport-fit=cover`, calc-composed s
 
 ### 4. Test coverage (TDD: red → green)
 
-- Hook suite rewritten to the full-edge contract: 28 tests — edge-start opens (incl. 29px inner-boundary pin), 30px/non-edge never open, touchstart claim poles (edge/29px/open-state/multi-touch), interactive-target claim-skip ×3, close-swipe family, vertical passthrough poles, visual tracking, blanket-move-claim pins, disabled/cleanup/persist.
+- Hook suite rewritten to the full-edge contract: 27 tests — edge-start opens (incl. 29px inner-boundary pin), 30px/non-edge never open, touchstart claim poles (edge/29px/30px/outside/open-state/multi-touch), interactive-target claim-skip ×3, close-swipe family, vertical passthrough poles, visual tracking, blanket-move-claim pins, disabled/cleanup/persist.
 - `SidebarDrawer.test.tsx`: strip-gone pin (selector null + exactly overlay+drawer children).
 - `AppShell.test.tsx`: full-tree edge swipe opens (claim asserted), non-edge never opens/never claims, hamburger-in-band claim-skip through the real tree, container `overscroll-none`/`pan-y` surface pin.
 - NEW `src/styles/index.test.ts`: reads the stylesheet source (vitest stubs CSS imports — `?raw` returns empty under `css:false`; node `fs` read instead, cwd-resolved) and pins x+y longhands on html/body + no shorthand regression.
-- e2e `sidebar-gesture.spec.ts` rewritten (6 tests): runtime computed `overscrollBehaviorX === "none"` on documentElement+body, full-edge swipe opens through the real stack, non-edge doesn't, hamburger opens from BOTH halves of the button (left half inside the band — the r2 regression class, real touchscreen taps), viewport-fit pin.
+- e2e `sidebar-gesture.spec.ts` rewritten (5 tests): runtime computed `overscrollBehaviorX === "none"` on documentElement+body, full-edge swipe opens through the real stack, non-edge doesn't, hamburger opens from BOTH halves of the button (left half inside the band — the r2 regression class, real touchscreen taps), viewport-fit pin.
 
 ### 5. Mutation verification (the r1 seam lesson)
 
@@ -69,12 +69,14 @@ None. Device QA (iOS Safari / Android Chrome OS back-gesture lane) remains pendi
 
 ## Tests Run
 
-- RED (pre-implementation): 17 failed / 33 passed across the four targeted files (interface + behavioral red); second cycle: 4 failed / 34 (interactive-guard red).
+- RED (pre-implementation): on the committed red tree (beeb84db) the four targeted files run **16 failed / 38 passed** (54 total; counted by the r1 reviewer in a scratch worktree and accepted as the artifact number). My in-session console at first-red read "17 failed | 33 passed (50)" + 21 uncaught errors — the shipped hook's `handleRef` access threw uncaught errors that vitest tallies separately from failures, and the interactive-guard tests were added after that first run; the committed-tree count is the correct record. Second cycle (interactive-guard, against the interim claim-everything hook): **4 failed / 34 passed** — reproduced by the reviewer as the interactive-guard mutation (4 RED).
 - Targeted GREEN: hook+drawer+AppShell+styles+useCollapsibleSidebar → 64/64.
-- Full suite: vitest 1997/1997 (179 files).
+- Full suite (re-run on the committed tree for r1, counted not estimated): vitest **2001/2001** (179 files). The originally recorded 1997/1997 predated the four interactive-guard tests (3 hook + 1 AppShell) — 1997+4=2001.
 - `tsc --noEmit`: 0 errors. `eslint`: 0 errors (6 pre-existing warnings).
-- Playwright `sidebar-gesture` + `sidebar-hierarchy`: 9/9 local (real Chromium, hasTouch).
-- 4 mutations each verified caught (above).
+- Playwright `sidebar-gesture` (rewritten, **5** tests) + `sidebar-hierarchy` (4): **9/9** local (real Chromium, hasTouch). The originally recorded "6" was a miscount of the 5-block spec.
+- 5 mutations each verified caught on the final tree (r1 reviewer reproduced all five): touchstart-claim deletion → 3 RED; recognition kill → 8 RED; shorthand revert → 4 RED (styles suite, counted on the final tree — my in-session mutation run read 2 RED against the then-current test file); interactive-guard removal → 4 RED; strip re-add → 1 RED.
+
+> **Correction note (2026-10-07, r1 review):** three count records in this worklog's original text (6→5 e2e tests, 1997→2001 vitest, 17/33+errors→16/38 first-red) misstated the committed tree — the repo's counted-not-estimated rule (#1489 r3–r7 class). Corrected above with provenance; the runs themselves were real, the numbers were estimated instead of counted.
 
 ---
 
