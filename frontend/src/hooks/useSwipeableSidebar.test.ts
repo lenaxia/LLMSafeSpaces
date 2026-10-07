@@ -270,6 +270,32 @@ describe("useSwipeableSidebar", () => {
 
       expect(moveEvent.defaultPrevented).toBe(false);
     });
+
+    it("does not prevent default on a vertical gesture starting IN the handle band (the strip is input-transparent)", () => {
+      const { dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 30, clientY: 100 }]);
+      const moveEvent = dispatchTouch(dom.container, "touchmove", [
+        { clientX: 33, clientY: 400 },
+      ]);
+
+      expect(moveEvent.defaultPrevented).toBe(false);
+    });
+
+    it("never claims a horizontal drag that starts at the absolute edge (outside the handle rect, at any stage)", () => {
+      const { dom } = setupHook(false);
+
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 10, clientY: 200 },
+      ]);
+      const moveEvent = dispatchTouch(dom.container, "touchmove", [
+        { clientX: 150, clientY: 200 },
+      ]);
+      dispatchTouch(dom.container, "touchend", [], [{ clientX: 150, clientY: 200 }]);
+
+      expect(startEvent.defaultPrevented).toBe(false);
+      expect(moveEvent.defaultPrevented).toBe(false);
+    });
   });
 
   // ── Gesture claim (#1623: recognition at start, claim at move) ──────

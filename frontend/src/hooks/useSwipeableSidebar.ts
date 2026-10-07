@@ -13,8 +13,11 @@ import { useEffect, useRef, type RefObject } from "react";
 // suppressed synthetic clicks, breaking the hamburger tap-through under
 // the strip). The gesture is claimed only once a qualifying horizontal
 // MOVE is detected (onMove's preventDefault, already required to block
-// scroll during the drag). The absolute edge belongs to back-nav; the
-// hamburger stays the always-works open path.
+// scroll during the drag). App code claims no touchstart anywhere; a
+// horizontal drag that starts OUTSIDE the handle rect — the absolute
+// edge included — is never claimed at any stage and resolves to the OS
+// (back-nav) or the content beneath. The hamburger stays the
+// always-works open path.
 const MIN_DRAG_PX = 30;
 const SETTLE_RATIO = 1 / 3;
 
@@ -79,11 +82,18 @@ export function useSwipeableSidebar({
 
       if (dy > Math.abs(dx)) return;
 
-      e.preventDefault();
-
       const side = sidebarRef.current;
       const over = overlayRef.current;
       const open = isOpenRef.current;
+
+      // Claim (preventDefault) only OUR gestures: a handle-start rightward
+      // drag (open) or a leftward drag while open (close). Every other
+      // horizontal drag — the absolute edge included — is left unclaimed at
+      // every stage and resolves to the OS or the content beneath (r3: the
+      // old blanket preventDefault re-fought the OS the ruling retired).
+      const ours = (isHandleSwipe.current && dx > 0 && !open) || (open && dx < 0);
+      if (!ours) return;
+      e.preventDefault();
 
       if (isHandleSwipe.current && dx > 0 && !open) {
         isSwiping.current = true;

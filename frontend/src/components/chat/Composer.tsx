@@ -525,7 +525,9 @@ export function Composer({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t border-border p-4">
+    // pb safe-area: viewport-fit=cover extends under the home indicator —
+    // the composer is the bottommost row (#1623 r3).
+    <form onSubmit={handleSubmit} className="border-t border-border p-4 pb-[env(safe-area-inset-bottom,0px)]">
       {workspaceId && drawerOpen && (
         <div
           id="composer-options-drawer"
