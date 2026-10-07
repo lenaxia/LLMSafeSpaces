@@ -447,6 +447,17 @@ class SessionsAPI {
   markSeen(workspaceId: string, sessionId: string) {
     return this.client.request<void>("PUT", `/workspaces/${workspaceId}/sessions/${sessionId}/seen`);
   }
+  /**
+   * Archive or unarchive a session. Archived sessions are read-only:
+   * chat sends are rejected with 409 session_archived, history stays
+   * viewable, and unarchiving restores chat instantly. The agent-side
+   * session is untouched.
+   */
+  setArchived(workspaceId: string, sessionId: string, archived: boolean) {
+    return this.client.request<void>("PUT", `/workspaces/${workspaceId}/sessions/${sessionId}/archived`, {
+      archived,
+    });
+  }
 }
 
 class AuthAPI {

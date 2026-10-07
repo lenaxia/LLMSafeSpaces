@@ -99,6 +99,13 @@ export interface SessionListItem {
   lastMessageAt?: string;
   messageCount: number;
   status: string;
+  /**
+   * Present and true when the session is archived (read-only: chat
+   * sends are rejected with 409 session_archived; history stays
+   * viewable; unarchiving restores chat instantly). ABSENT means not
+   * archived.
+   */
+  archived?: boolean;
 }
 
 /**

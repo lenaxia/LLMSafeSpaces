@@ -294,6 +294,15 @@ func (s *SessionsService) MarkSeen(ctx context.Context, workspaceID, sessionID s
 	return s.c.do(ctx, "PUT", fmt.Sprintf("/workspaces/%s/sessions/%s/seen", workspaceID, sessionID), nil, nil)
 }
 
+// SetArchived archives (true) or unarchives (false) a session (#1627).
+// Archived sessions are read-only: chat sends are rejected with 409
+// session_archived, history stays viewable, and unarchiving restores
+// chat instantly. The agent-side session is untouched.
+func (s *SessionsService) SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	return s.c.do(ctx, "PUT", fmt.Sprintf("/workspaces/%s/sessions/%s/archived", workspaceID, sessionID),
+		map[string]bool{"archived": archived}, nil)
+}
+
 // AuthService handles authentication operations.
 type AuthService struct{ c *Client }
 
