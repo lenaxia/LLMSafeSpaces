@@ -183,6 +183,32 @@ func (h *ProxyHandler) publishWorkspaceAndUserEvent(workspaceID string, evt apit
 	}
 }
 
+// session.status status values for the #1627 archive lifecycle. The
+// frontend's SessionActivityProvider keys on these to move sessions
+// into/out of the Archived group in every open tab.
+const (
+	sessionStatusArchived   = "archived"
+	sessionStatusUnarchived = "unarchived"
+)
+
+// PublishSessionArchived announces an archive/unarchive transition on
+// the workspace + user streams (#1627) — the #786 pattern: without the
+// user-stream copy, every other tab keeps rendering the session as
+// live. Called by the router after the session-index write commits;
+// publishing after persistence means subscribers never see a state the
+// DB does not hold.
+func (h *ProxyHandler) PublishSessionArchived(workspaceID, sessionID string, archived bool) {
+	status := sessionStatusArchived
+	if !archived {
+		status = sessionStatusUnarchived
+	}
+	h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		Type:      "session.status",
+		SessionID: sessionID,
+		Status:    status,
+	})
+}
+
 func (h *ProxyHandler) GetAllKnownPhases() map[string]string {
 	if h.watcher == nil {
 		return nil

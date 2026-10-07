@@ -165,6 +165,7 @@ type WorkspaceService interface {
 	ListWorkspaceSessions(ctx context.Context, userID, workspaceID string) ([]types.SessionListItem, error)
 	RenameSession(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error
+	SetSessionArchived(ctx context.Context, userID, workspaceID, sessionID string, archived bool) error
 	RenameWorkspace(ctx context.Context, userID, workspaceID, name string) error
 	SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error
 	Start() error

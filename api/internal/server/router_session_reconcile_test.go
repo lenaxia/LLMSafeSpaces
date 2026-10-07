@@ -105,9 +105,11 @@ func (r *recordingIndex) RebuildMessageCount(_ context.Context, _, _ string, _ i
 	return nil
 }
 
-func (r *recordingIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
-func (r *recordingIndex) Start() error                                        { return nil }
-func (r *recordingIndex) Stop() error                                         { return nil }
+func (r *recordingIndex) UpdateLastSeen(_ context.Context, _, _ string) error      { return nil }
+func (r *recordingIndex) SetArchived(_ context.Context, _, _ string, _ bool) error { return nil }
+func (r *recordingIndex) IsArchived(_ context.Context, _, _ string) (bool, error)  { return false, nil }
+func (r *recordingIndex) Start() error                                             { return nil }
+func (r *recordingIndex) Stop() error                                              { return nil }
 
 func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
