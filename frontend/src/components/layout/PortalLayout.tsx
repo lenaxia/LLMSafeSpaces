@@ -40,8 +40,8 @@ export function PortalLayout({
       className="flex h-screen flex-col bg-background overflow-hidden overscroll-none"
       style={{ touchAction: "pan-y" }}
     >
-      {/* pt safe-area: viewport-fit=cover extends under the notch — the header is the topmost row (#1623 r3). */}
-      <header className="flex items-center justify-between border-b border-border px-6 py-3 pt-[env(safe-area-inset-top,0px)]">
+      {/* Top padding composes the base with the safe-area inset: viewport-fit=cover extends under the notch — the header is the topmost row (#1623). */}
+      <header className="flex items-center justify-between border-b border-border px-6 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))]">
         <div className="flex items-center gap-3">
           {sidebar.isMobile && (
             <SidebarToggleButton open={sidebar.open} onClick={() => sidebar.setOpen(!sidebar.open)} />

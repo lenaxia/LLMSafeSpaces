@@ -150,6 +150,22 @@ function dispatchTouchOn(target: Element, type: string, touches: { clientX: numb
   );
 }
 
+describe("AppShell safe-area padding composition (#1623 r4)", () => {
+  it("mobile header keeps its base padding and composes the safe-area inset additively", async () => {
+    const spy = setMobileMatchMedia();
+    renderWithDataRouter("/chat", <div>Chat</div>);
+    const header = await screen.findByRole("banner", { hidden: true }).catch(() => null);
+    const headerEl =
+      header ?? document.querySelector(".border-b.px-3");
+    expect(headerEl).not.toBeNull();
+    const cls = (headerEl as HTMLElement).className;
+    expect(cls).toContain("pb-2");
+    expect(cls).toMatch(/pt-\[calc\(0\.5rem\+env\(safe-area-inset-top,0px\)\)\]/);
+    expect(cls).not.toMatch(/(?<!calc\(0\.5rem\+)env\(safe-area-inset-top/);
+    spy.mockRestore();
+  });
+});
+
 describe("AppShell gesture integration (#1623)", () => {
   it("opens the drawer on a handle-zone swipe through the full tree", async () => {
     const spy = setMobileMatchMedia();

@@ -572,3 +572,16 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("ni");
   });
 });
+
+
+describe("Composer safe-area padding composition (#1623 r4)", () => {
+  it("form keeps its base padding and composes the home-indicator inset additively", () => {
+    render(<Composer onSend={vi.fn()} />);
+    const form = document.querySelector("form");
+    expect(form).not.toBeNull();
+    const cls = (form as HTMLElement).className;
+    expect(cls).toContain("px-4");
+    expect(cls).toContain("pt-4");
+    expect(cls).toMatch(/pb-\[calc\(1rem\+env\(safe-area-inset-bottom,0px\)\)\]/);
+  });
+});
