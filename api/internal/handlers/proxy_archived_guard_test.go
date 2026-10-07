@@ -349,3 +349,197 @@ func TestPublishSessionArchived_UserStreamCarriesWorkspaceID(t *testing.T) {
 		t.Fatal("user-stream copy missing — every other tab depends on it")
 	}
 }
+
+// --- review r-next: the four missing pins + disposition tests ---
+
+// Missing test 1: PermissionReply's gate (changed line, zero coverage).
+func TestPermissionReply_LiveAsk_ArchivedSession_Rejected409(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.sessionIndex = si
+	replied := false
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{ID: "per_live", SessionID: "ses_1"}}, nil
+		},
+		replyPermissionFn: func(_ context.Context, _, _, _, _, _ string) error {
+			replied = true
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/permission/per_live/reply",
+		strings.NewReader(`{"reply":"once"}`))
+	requireArchivedBody(t, w)
+	assert.False(t, replied)
+}
+
+// Missing test 2: autoApprovePermission skips archived sessions; the
+// fail-open leg (IsArchived error) lets the bridge proceed.
+func TestAutoApprovePermission_ArchivedSkips_FailOpenProceeds(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+
+	approved := func() *mockAdapter {
+		return &mockAdapter{
+			listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+				return []session.InputRequest{{ID: "per_1", SessionID: "ses_1"}}, nil
+			},
+			replyPermissionFn: func(_ context.Context, _, _, _, _, _ string) error { return nil },
+		}
+	}
+
+	t.Run("archived skips the write", func(t *testing.T) {
+		called := false
+		env.handler.sessionIndex = func() *mockSessionIndex {
+			si := newMockSessionIndex()
+			require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+			return si
+		}()
+		adapter := approved()
+		adapter.replyPermissionFn = func(_ context.Context, _, _, _, _, _ string) error {
+			called = true
+			return nil
+		}
+		env.handler.adapter = adapter
+		env.handler.autoApprovePermission("ws-1", "per_1")
+		assert.False(t, called, "the bridge must not write into an archived session")
+	})
+
+	t.Run("check error fails open", func(t *testing.T) {
+		si := newMockSessionIndex()
+		si.failArchived = true
+		env.handler.sessionIndex = si
+		called := false
+		adapter := approved()
+		adapter.replyPermissionFn = func(_ context.Context, _, _, _, _, _ string) error {
+			called = true
+			return nil
+		}
+		env.handler.adapter = adapter
+		env.handler.autoApprovePermission("ws-1", "per_1")
+		assert.True(t, called, "an infra failure must not wedge the bridge (fail-open, same posture as the gates)")
+	})
+}
+
+// Missing test 3: the non-terminus prior-attempt refusal — the branch
+// the reviewer proved unpinned by mutation. The sendFn must never fire.
+func TestOutboxDeliver_NonTerminus_PriorAttemptArchived_Refused(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+	sendCalled := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			sendCalled = true
+			return &session.Message{ID: "m"}, nil
+		},
+	}
+
+	err := h.outboxDeliver(context.Background(), "ws-1", "ses_1", outbox.Entry{
+		Text:     "prior attempt existed",
+		Attempts: 1,
+	})
+	require.Error(t, err)
+	var terminal *outbox.TerminalDeliveryError
+	require.ErrorAs(t, err, &terminal, "not-delivered prior attempts must terminally refuse, not re-send: %v", err)
+	assert.False(t, sendCalled)
+}
+
+// Missing test 4 (finding A disposition): reject/dismiss are GATED on
+// the live arm like their PermissionReply sibling.
+func TestQuestionReject_LiveAsk_ArchivedSession_Rejected409(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.sessionIndex = si
+	rejected := false
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{ID: "que_live", SessionID: "ses_1"}}, nil
+		},
+		rejectInputFn: func(_ context.Context, _, _, _ string) error {
+			rejected = true
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/question/que_live/reject", nil)
+	requireArchivedBody(t, w)
+	assert.False(t, rejected, "the live reject must not reach the agent for an archived session")
+}
+
+// Finding B disposition pins: abort + rename stay OPEN on archived
+// sessions (lifecycle/content-neutral carve-out, documented in
+// proxy_archived.go) — pinned so the carve-out is contract, not drift.
+func TestLifecycleCarveOuts_ArchivedSession_AbortAndRenameStayOpen(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.sessionIndex = si
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error { return nil },
+		renameSessionFn: func(_ context.Context, _, _, _, _ string) error {
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
+	require.Equal(t, http.StatusNoContent, w.Code, "abort is the documented lifecycle carve-out (peer turns may run): %s", w.Body.String())
+
+	err := env.handler.RenameSessionInAgent(context.Background(), "ws-1", "ses_1", "new title")
+	require.NoError(t, err, "rename is cosmetic metadata — the documented carve-out")
+}
+
+func TestDismissInboxRecord_LiveAsk_ArchivedSession_Rejected409(t *testing.T) {
+	h, in, _, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+	rejected := false
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			// The ask is LIVE — the dismiss would drive the harness reject.
+			return []session.InputRequest{{ID: "que_live", SessionID: "ses_1"}}, nil
+		},
+		rejectInputFn: func(_ context.Context, _, _, _ string) error {
+			rejected = true
+			return nil
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_live", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Deploy?", Options: []inbox.Option{{Label: "Yes"}}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+		{Key: "requestID", Value: "que_live"},
+	}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+	h.DismissInboxRecord(c)
+
+	requireArchivedBody(t, w)
+	assert.False(t, rejected)
+	pending, err := in.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Len(t, pending, 1, "the record must stay pending — the dismiss did not terminalize it")
+}

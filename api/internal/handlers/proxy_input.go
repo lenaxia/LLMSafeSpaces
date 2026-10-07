@@ -153,6 +153,13 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		return
 	}
 	defer h.releaseConnection(wid)
+	// #1627 review r-next finding A: reject is the same mutating Act
+	// vocabulary PermissionReply's "reject" uses — the archived gate
+	// applies. Dismissing a dead ask's record stays open (pure inbox
+	// cleanup); rejecting the LIVE turn of an archived session does not.
+	if h.rejectIfRequestArchived(c, wid, requestID) {
+		return
+	}
 	if !h.checkAdapterQuota(c, workspace) {
 		return
 	}

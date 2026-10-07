@@ -26,6 +26,20 @@ const sessionArchivedMessage = "This session is archived and read-only. Unarchiv
 // typed 409 BEFORE any adapter call, slot reservation, or outbox
 // accept. Reads are never guarded (history stays viewable).
 //
+// Enforced surfaces: /message, /prompt, /queue (+ sync fallback), the
+// outbox delivery worker (both regimes), queue retry, question and
+// permission replies (live + late-answer), question reject, inbox
+// dismiss's live-reject arm, and the auto-approve bridge (skipped).
+//
+// Documented carve-outs (r-next findings A/B disposition):
+//   - askDead inbox dismissal — terminalizes the record only; no
+//     harness write (pure cleanup).
+//   - AbortSession — lifecycle stop, content-neutral (issue §2:
+//     history/files stay as-is); an archived session may still be
+//     running a PEER-initiated in-pod turn (unblocked by the owner's
+//     ruling) and stopping a stuck one is legitimate cleanup.
+//   - RenameSessionInAgent — title metadata, cosmetic, content-neutral.
+//
 // Posture on a failed archive check: FAIL OPEN with a loud log. The
 // marker is a platform UX guard, not a security boundary — the in-pod
 // peer path (agentd send_message) bypasses the proxy by the owner's

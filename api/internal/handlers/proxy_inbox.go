@@ -368,6 +368,12 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "harness pending set unknown — retry dismiss"})
 		return
 	case askLive:
+		// #1627 review r-next finding A: the live reject writes into the
+		// session's turn — the archived gate applies (the askDead arm
+		// below only terminalizes the record: pure cleanup, stays open).
+		if h.rejectIfArchived(c, workspaceID, sessionID) {
+			return
+		}
 		// 4a r1: the live reject goes through Act too (S1 — the API
 		// makes zero mutating harness calls in the authority regime);
 		// D1's reply="reject" is exactly the dismiss vocabulary. The
