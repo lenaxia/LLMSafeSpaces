@@ -1,32 +1,30 @@
 import { useEffect, useRef, type RefObject } from "react";
 
-// #1623: the absolute-edge claim (EDGE_ZONE + touchstart preventDefault,
-// a56430b7/#590) is RETIRED — the OS captures its back-gesture before
-// page JavaScript often enough that no page technique wins reliably
-// (~50% observed in production), and the claim's documented tradeoff
-// blocked vertical scrolling in the leftmost 30px. Swipe-to-open now
-// engages from the INSET drag-handle strip (see SidebarDrawer): a touch
-// starts the open-gesture iff it begins inside the handle's rect. The
-// strip sits CLEAR of the OS back-gesture zone (offset inward past it,
-// safe-area aware), so no touchstart claim is needed to beat the OS
-// there — and none is made (r2 review: claiming at touchstart
-// suppressed synthetic clicks, breaking the hamburger tap-through under
-// the strip). The gesture is claimed only once a qualifying horizontal
-// MOVE is detected (onMove's preventDefault, already required to block
-// scroll during the drag). App code claims no touchstart anywhere; a
-// horizontal drag that starts OUTSIDE the handle rect — the absolute
-// edge included — is never claimed at any stage and resolves to the OS
-// (back-nav) or the content beneath. The hamburger stays the
-// always-works open path.
-const MIN_DRAG_PX = 30;
+// #1629: the full-edge gesture. `overscroll-behavior-x: none` on
+// html/body (frontend/src/styles/index.css) disables the browser's
+// horizontal swipe-back navigation at the CSS level — the standard PWA
+// mechanism the #1626 diagnosis missed (MDN: contain/none "disables
+// native browser navigation, including ... horizontal swipe navigation";
+// Chrome 63+, Safari 16+, Firefox 59+). With no OS race left to lose, the
+// original a56430b7/#590 EDGE_ZONE contract is restored: a touch in the
+// leftmost 30px is CLAIMED at touchstart (preventDefault on a
+// non-passive listener) and a rightward drag opens the drawer. Two
+// documented tradeoffs: vertical scrolling from the leftmost 30px is
+// blocked (that band is the gesture zone, not a scroll surface), and
+// touches that land on interactive controls are never claimed — the
+// hamburger's left half sits inside the band, and the #1626 r2 review
+// proved a touchstart preventDefault over a tappable control suppresses
+// its synthetic click. The hamburger stays the always-works path. The
+// #1626 inset drag-handle strip and its claim-at-move scoping are
+// deleted. Swipe-to-close is unchanged.
+const EDGE_ZONE = 30;
 const SETTLE_RATIO = 1 / 3;
+const INTERACTIVE_SELECTOR = "button, a, input, textarea, select, [role='button'], [role='tab'], [role='option'], [role='switch']";
 
 interface UseSwipeableSidebarOptions {
   containerRef: RefObject<HTMLDivElement | null>;
   sidebarRef: RefObject<HTMLDivElement | null>;
   overlayRef: RefObject<HTMLDivElement | null>;
-  /** The inset drag-handle strip; the open-gesture starts only inside its rect. */
-  handleRef: RefObject<HTMLDivElement | null>;
   isOpen: boolean;
   setIsOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
   enabled: boolean;
@@ -37,7 +35,6 @@ export function useSwipeableSidebar({
   containerRef,
   sidebarRef,
   overlayRef,
-  handleRef,
   isOpen,
   setIsOpen,
   enabled,
@@ -45,7 +42,7 @@ export function useSwipeableSidebar({
 }: UseSwipeableSidebarOptions) {
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
-  const isHandleSwipe = useRef(false);
+  const isEdgeSwipe = useRef(false);
   const isSwiping = useRef(false);
   const swipeOffset = useRef(0);
   const isOpenRef = useRef(isOpen);
@@ -65,13 +62,20 @@ export function useSwipeableSidebar({
       const t = e.touches[0]!;
       touchStartX.current = t.clientX;
       touchStartY.current = t.clientY;
-      isHandleSwipe.current = startedInHandle(handleRef.current, t.clientX, t.clientY);
-      // No touchstart claim (r2 review): preventDefault here suppresses
-      // synthetic clicks, which broke the hamburger tap-through for taps
-      // landing inside the strip zone. Recognition only — the claim moves
-      // to onMove, where a qualifying horizontal drag is preventDefaulted
-      // (required anyway to block scroll mid-gesture; see touchmove
-      // prevention tests).
+      // Skip interactive controls (the hamburger's left half lives inside
+      // the band): a preventDefault here would suppress the control's
+      // synthetic click — the #1626 r2 empirical finding — and controls
+      // are tap targets, not swipe origins.
+      const onInteractiveControl = t.target instanceof Element && t.target.closest(INTERACTIVE_SELECTOR) !== null;
+      isEdgeSwipe.current = t.clientX < EDGE_ZONE && !onInteractiveControl;
+      // Claim edge touches at the earliest moment. overscroll-behavior-x
+      // already tells the browser the horizontal overscroll belongs to
+      // the page (no back-nav gesture engages); preventDefault here keeps
+      // the touch ours — no scroll, no history navigation, no synthetic
+      // click from inside the gesture band.
+      if (isEdgeSwipe.current) {
+        e.preventDefault();
+      }
     };
 
     const onMove = (e: TouchEvent) => {
@@ -82,20 +86,13 @@ export function useSwipeableSidebar({
 
       if (dy > Math.abs(dx)) return;
 
+      e.preventDefault();
+
       const side = sidebarRef.current;
       const over = overlayRef.current;
       const open = isOpenRef.current;
 
-      // Claim (preventDefault) only OUR gestures: a handle-start rightward
-      // drag (open) or a leftward drag while open (close). Every other
-      // horizontal drag — the absolute edge included — is left unclaimed at
-      // every stage and resolves to the OS or the content beneath (r3: the
-      // old blanket preventDefault re-fought the OS the ruling retired).
-      const ours = (isHandleSwipe.current && dx > 0 && !open) || (open && dx < 0);
-      if (!ours) return;
-      e.preventDefault();
-
-      if (isHandleSwipe.current && dx > 0 && !open) {
+      if (isEdgeSwipe.current && dx > 0 && !open) {
         isSwiping.current = true;
         const offset = Math.min(dx, sidebarWidth);
         swipeOffset.current = offset;
@@ -155,14 +152,14 @@ export function useSwipeableSidebar({
         const dy = Math.abs(t.clientY - touchStartY.current);
         if (dy > Math.abs(dx)) return;
 
-        if (isHandleSwipe.current && dx > MIN_DRAG_PX) {
+        if (isEdgeSwipe.current && dx > EDGE_ZONE) {
           setIsOpen(true);
-        } else if (isOpenRef.current && dx < -MIN_DRAG_PX) {
+        } else if (isOpenRef.current && dx < -EDGE_ZONE) {
           setIsOpen(false);
         }
       }
 
-      isHandleSwipe.current = false;
+      isEdgeSwipe.current = false;
     };
 
     el.addEventListener("touchstart", onStart, { passive: false });
@@ -174,15 +171,5 @@ export function useSwipeableSidebar({
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
     };
-  }, [enabled, sidebarWidth, sidebarRef, overlayRef, handleRef, setIsOpen, containerRef]);
-}
-
-// startedInHandle reports whether a touch began inside the drag-handle
-// strip's rect. The handle is positioned via CSS (safe-area-inset aware),
-// so its live rect is the source of truth — a null handle (unmounted, e.g.
-// the sidebar is open) starts no open-gesture.
-function startedInHandle(handle: HTMLDivElement | null, clientX: number, clientY: number): boolean {
-  if (!handle) return false;
-  const rect = handle.getBoundingClientRect();
-  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }, [enabled, sidebarWidth, sidebarRef, overlayRef, setIsOpen, containerRef]);
 }

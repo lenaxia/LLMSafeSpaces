@@ -58,7 +58,12 @@
 body {
   @apply bg-background text-foreground antialiased;
   font-family: system-ui, -apple-system, sans-serif;
-  overscroll-behavior: none;
+  /* #1629: explicit x/y longhands (not the shorthand) — the x longhand
+   * is the load-bearing declaration that disables the browser's
+   * horizontal swipe-back navigation at the CSS level, which is what
+   * lets the app own the full left edge for the sidebar gesture. */
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
   touch-action: pan-y;
 }
 
@@ -72,7 +77,10 @@ body {
 }
 
 html {
-  overscroll-behavior: none;
+  /* Root scroller — see the body rule (#1629): the root is where the
+   * viewport-level swipe-navigation gesture is actually suppressed. */
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: none;
   touch-action: pan-y;
 }
 
