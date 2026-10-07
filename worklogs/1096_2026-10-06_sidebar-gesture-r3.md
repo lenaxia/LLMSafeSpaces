@@ -68,4 +68,4 @@ None in-repo.
 - frontend/src/components/layout/SidebarDrawer.tsx (+test — selector/pointer-events pins)
 - frontend/src/components/layout/AppShell.tsx (+test) — header safe-area consumer
 - frontend/tests/e2e/sidebar-gesture.spec.ts — tap-through + transparency pins
-- worklogs/NNNN_2026-10-06_sidebar-gesture-r3.md (this worklog)
+- worklogs/1096_2026-10-06_sidebar-gesture-r3.md (this worklog)

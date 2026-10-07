@@ -57,4 +57,4 @@ None.
 
 - frontend/src/components/layout/AppShell.tsx, PortalLayout.tsx, Sidebar.tsx, chat/Composer.tsx (composed insets)
 - frontend/src/components/layout/AppShell.test.tsx, chat/Composer.test.tsx (composition pins)
-- worklogs/NNNN_2026-10-07_sidebar-gesture-r5.md (this worklog)
+- worklogs/1099_2026-10-07_sidebar-gesture-r5.md (this worklog)

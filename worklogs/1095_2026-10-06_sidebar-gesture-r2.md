@@ -75,4 +75,4 @@ None in-repo. Device QA (above) is owner-side and does not block the code review
 - frontend/src/components/layout/AppShell.test.tsx (integration leg)
 - frontend/src/test/setup.ts (shared Touch polyfill)
 - frontend/tests/e2e/sidebar-gesture.spec.ts (e2e leg)
-- worklogs/NNNN_2026-10-06_sidebar-gesture-r2.md (this worklog)
+- worklogs/1095_2026-10-06_sidebar-gesture-r2.md (this worklog)

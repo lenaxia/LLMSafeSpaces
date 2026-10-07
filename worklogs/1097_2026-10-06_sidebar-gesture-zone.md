@@ -72,4 +72,4 @@ None.
 - frontend/src/hooks/useSwipeableSidebar.ts (+test)
 - frontend/src/hooks/useCollapsibleSidebar.ts
 - frontend/src/components/layout/SidebarDrawer.tsx (+test)
-- worklogs/NNNN_2026-10-06_sidebar-gesture-zone.md (this worklog)
+- worklogs/1097_2026-10-06_sidebar-gesture-zone.md (this worklog)

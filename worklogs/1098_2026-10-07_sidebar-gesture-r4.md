@@ -67,4 +67,4 @@ None in-repo.
 - frontend/src/hooks/useSwipeableSidebar.ts (claim scoped to owned gestures; comment aligned) + test (2 pins)
 - frontend/src/components/layout/PortalLayout.tsx, layout/Sidebar.tsx, chat/Composer.tsx (safe-area consumers)
 - PR body rewrite
-- worklogs/NNNN_2026-10-07_sidebar-gesture-r4.md (this worklog)
+- worklogs/1098_2026-10-07_sidebar-gesture-r4.md (this worklog)
