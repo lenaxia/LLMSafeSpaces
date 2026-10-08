@@ -17,9 +17,11 @@ package main
 //      go test -tags=integration -run TestOriginE2E1627 ./cmd/workspace-agentd/ -timeout 600s
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -141,7 +143,7 @@ func bootOriginE2E1627(t *testing.T) (*opencode.Client, *[]string, *e2e1627Provi
 	mcpListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", mcpPort))
 	require.NoError(t, err)
 	mcpSrv := &httptest.Server{Listener: mcpListener, Config: &http.Server{
-		Handler: realAgentdMCCHandler(t, toolResults),
+		Handler: realAgentdMCCatalogHandler(t, toolResults),
 	}}
 	mcpSrv.Start()
 	t.Cleanup(mcpSrv.Close)
@@ -191,6 +193,40 @@ func bootOriginE2E1627(t *testing.T) (*opencode.Client, *[]string, *e2e1627Provi
 	t.Cleanup(func() { agentAddrAtomic.Store(old) })
 
 	return opencode.NewLoopbackClient(baseURL, e2eMCPPassword), toolResults, provider
+}
+
+// realAgentdMCCatalogHandler is realAgentdMCCHandler with the ONE
+// difference the #1627 legs need: tools/list serves the REAL
+// mcpToolCatalog (serialized to the wire shape) instead of the
+// send_message-only stub — opencode will not emit calls for tools the
+// MCP server has not advertised, so the harness must advertise the
+// production surface for session_metadata/delete_session/
+// session_archive to be callable.
+func realAgentdMCCatalogHandler(t *testing.T, toolResults *[]string) http.Handler {
+	inner := realAgentdMCCHandler(t, toolResults)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if err := json.Unmarshal(body, &probe); err == nil && probe.Method == "tools/list" {
+			w.Header().Set("Content-Type", "application/json")
+			writeMCPResult(w, probe.ID, map[string]any{"tools": mcpToolCatalog()})
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 // The #1627 default, end to end: the model calls session_metadata with
