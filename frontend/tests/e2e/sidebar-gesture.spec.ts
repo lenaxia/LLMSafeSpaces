@@ -1,16 +1,17 @@
 import { test, expect } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
 
-// #1623 — the sidebar gesture zone, end to end in a real browser: the
-// full stack (index.html viewport meta → app boot → AppShell wiring →
-// hook recognition → drawer state) against real layout (the handle's
-// live rect, not a mocked one).
+// #1629 — the full-edge sidebar gesture, end to end in a real browser:
+// the full stack (index.css root overscroll policy → app boot → AppShell
+// wiring → hook recognition → drawer state) against real layout and the
+// real CSS cascade.
 //
 // Scope honesty: Playwright cannot emulate the OS back-gesture itself
 // (that lane is device QA on iOS Safari / Android Chrome — tracked on
-// the issue). What this spec proves is the app-level contract: the
-// deliberate gesture opens the drawer 100% here, and the absolute-edge
-// gesture is left untouched by app code.
+// the issue). What this spec proves is the app-level contract: the CSS
+// mechanism is actually applied at runtime (computed style on the root
+// scroller), the deliberate full-edge gesture opens the drawer 100%
+// here, and non-edge swipes stay unclaimed.
 
 const API = "**/api/v1";
 
@@ -64,7 +65,7 @@ async function dispatchSwipe(page: Page, fromX: number, toX: number, y: number) 
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-test.describe("sidebar gesture zone (#1623)", () => {
+test.describe("sidebar full-edge gesture (#1629)", () => {
   test("viewport meta carries viewport-fit=cover so safe-area insets engage", async ({ page }) => {
     await mockAuthenticated(page);
     await page.goto("/chat/ws-1/sess-1");
@@ -72,52 +73,66 @@ test.describe("sidebar gesture zone (#1623)", () => {
     await expect(meta).toHaveAttribute("content", /viewport-fit=cover/);
   });
 
-  test("handle-zone swipe opens the drawer through the full stack", async ({ page }) => {
+  test("overscroll-behavior-x: none is applied at runtime on the root scroller (html and body)", async ({ page }) => {
     await mockAuthenticated(page);
     await page.goto("/chat/ws-1/sess-1");
     await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
 
-    // The handle strip: 28px wide, 16px in (safe-area inset is 0 on the
-    // desktop browser, so the live rect is exactly 16..44).
-    const handle = page.locator("[data-sidebar-handle]");
-    await expect(handle).toBeAttached();
-    const box = await handle.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.x).toBeGreaterThanOrEqual(16);
+    const computed = await page.evaluate(() => ({
+      html: getComputedStyle(document.documentElement).overscrollBehaviorX,
+      body: getComputedStyle(document.body).overscrollBehaviorX,
+    }));
+    // The CSS half of the fix: this is what removes the browser's
+    // horizontal swipe-back navigation at the platform level.
+    expect(computed.html).toBe("none");
+    expect(computed.body).toBe("none");
+  });
 
-    await dispatchSwipe(page, 30, 160, 300);
+  test("full-edge swipe opens the drawer through the full stack", async ({ page }) => {
+    await mockAuthenticated(page);
+    await page.goto("/chat/ws-1/sess-1");
+    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
+
+    // The absolute left edge — the #1626 strip is gone; with
+    // overscroll-behavior-x owning the gesture, the edge is the app's.
+    await dispatchSwipe(page, 8, 160, 300);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
   });
 
-  test("hamburger tap-through: a tap at the button center (inside the handle strip zone) opens the drawer", async ({ page }) => {
+  test("non-edge swipe does not open the drawer (content drags stay unopened)", async ({ page }) => {
+    await mockAuthenticated(page);
+    await page.goto("/chat/ws-1/sess-1");
+    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
+
+    await dispatchSwipe(page, 60, 200, 300);
+    // Give any mis-recognition a moment to (wrongly) settle.
+    await page.waitForTimeout(300);
+    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
+  });
+
+  test("hamburger opens the drawer from both halves of the button (the always-works path)", async ({ page }) => {
     await mockAuthenticated(page);
     await page.goto("/chat/ws-1/sess-1");
     const toggle = page.getByRole("button", { name: "Open menu" });
     await expect(toggle).toBeVisible();
 
-    // The strip must be input-transparent — real hit-testing (the r2
-    // review's empirical occlusion repro: the full-height strip sat over
-    // the button and swallowed the tap).
-    const handle = page.locator("[data-sidebar-handle]");
-    await expect(handle).toHaveCSS("pointer-events", "none");
-
-    // Tap the button's own center — Playwright clicks honor hit-testing,
-    // so this fails if anything above the button captures the pointer.
+    // The button's left half sits inside the 30px edge band (header
+    // px-3 + 36px button). The #1626 r2 review proved a touchstart
+    // preventDefault over a tappable control suppresses its synthetic
+    // click — so the #1629 claim must skip interactive targets. Tap the
+    // LEFT edge of the button first (the r2 regression class), then the
+    // center.
     const box = await toggle.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.x).toBeLessThan(44 + 16);
+    await page.touchscreen.tap(box!.x + 6, box!.y + box!.height / 2);
+    await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
+
+    // Close (tap the close button) and re-open from the center.
+    const close = page.getByRole("button", { name: "Close menu" });
+    const closeBox = await close.boundingBox();
+    await page.touchscreen.tap(closeBox!.x + closeBox!.width / 2, closeBox!.y + closeBox!.height / 2);
+    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible({ timeout: 5000 });
     await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
-  });
-
-  test("absolute-edge swipe does not open the drawer (the OS back-gesture zone stays untouched)", async ({ page }) => {
-    await mockAuthenticated(page);
-    await page.goto("/chat/ws-1/sess-1");
-    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
-
-    await dispatchSwipe(page, 8, 160, 300);
-    // Give any mis-recognition a moment to (wrongly) settle.
-    await page.waitForTimeout(300);
-    await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible();
   });
 });

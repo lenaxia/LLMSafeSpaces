@@ -6,8 +6,8 @@ import { SidebarDrawer } from "./SidebarDrawer";
 import type { CollapsibleSidebarState } from "../../hooks/useCollapsibleSidebar";
 
 function overlayEl(container: HTMLElement): HTMLElement {
-  // inset-0 (full-screen scrim) distinguishes the overlay from the
-  // #1623 drag-handle strip (inset-y-0), which is also aria-hidden.
+  // The overlay is the full-screen scrim (inset-0) — the only aria-hidden
+  // div rendered alongside the drawer.
   const el = container.querySelector("div.inset-0");
   if (!el) throw new Error("overlay not rendered");
   return el as HTMLElement;
@@ -36,7 +36,6 @@ function makeState(overrides: Partial<CollapsibleSidebarState> = {}): Collapsibl
     containerRef: { current: null },
     sidebarRef: { current: null },
     overlayRef: { current: null },
-    handleRef: { current: null },
     sidebarWidth: 256,
   };
   return { ...base, ...overrides };
@@ -47,48 +46,24 @@ describe("SidebarDrawer", () => {
     setMobileMatchMedia(true);
   });
 
-  // ── #1623: the inset drag-handle affordance ──────────────────────────
+  // ── #1629: the inset drag-handle affordance is DELETED ───────────────
+  //
+  // overscroll-behavior-x: none on html/body removes the browser's
+  // swipe-back navigation at the CSS level, so the full edge belongs to
+  // the app again (the a56430b7 EDGE_ZONE gesture, restored in
+  // useSwipeableSidebar). No visual affordance is rendered for it — the
+  // left edge IS the affordance, exactly like every native-feeling PWA
+  // drawer; the hamburger stays the always-works, accessible path.
 
-  it("renders the drag-handle strip when mobile and closed (input-transparent)", () => {
+  it("renders no drag-handle strip (the #1626 inset affordance is deleted)", () => {
     const { container } = render(
       <SidebarDrawer state={makeState({ isMobile: true, open: false })}>
         <nav>nav</nav>
       </SidebarDrawer>,
     );
-    const handle = container.querySelector("[data-sidebar-handle]");
-    expect(handle).not.toBeNull();
-    expect(handle?.className).toContain("w-7");
-    expect(handle?.className).toContain("pointer-events-none");
-  });
-
-  it("positions the handle inside the safe-area inset (never at the absolute edge)", () => {
-    const { container } = render(
-      <SidebarDrawer state={makeState({ isMobile: true, open: false })}>
-        <nav>nav</nav>
-      </SidebarDrawer>,
-    );
-    const handle = container.querySelector("[data-sidebar-handle]") as HTMLElement;
-    // The positioning rides a Tailwind arbitrary-value class (jsdom's
-    // CSSOM silently drops env() from inline styles).
-    expect(handle.className).toContain("left-[calc(env(safe-area-inset-left,0px)+16px)]");
-  });
-
-  it("does not render the drag-handle when the sidebar is open (swipe-to-close lives on the drawer)", () => {
-    const { container } = render(
-      <SidebarDrawer state={makeState({ isMobile: true, open: true })}>
-        <nav>nav</nav>
-      </SidebarDrawer>,
-    );
     expect(container.querySelector("[data-sidebar-handle]")).toBeNull();
-  });
-
-  it("does not render the drag-handle on desktop", () => {
-    const { container } = render(
-      <SidebarDrawer state={makeState({ isMobile: false, open: false })}>
-        <nav>nav</nav>
-      </SidebarDrawer>,
-    );
-    expect(container.querySelector("[data-sidebar-handle]")).toBeNull();
+    // No orphaned strip markup either — only the overlay + the drawer.
+    expect(container.childElementCount).toBe(2);
   });
 
   afterEach(() => {
