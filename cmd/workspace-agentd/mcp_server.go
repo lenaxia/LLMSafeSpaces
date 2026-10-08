@@ -102,7 +102,7 @@ func mcpToolCatalog() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "session_list",
-			Description: "List past agent sessions (conversations) from this workspace. This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session.",
+			Description: "List past agent sessions (conversations) from this workspace. This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session. Archive status is NOT included here — use session_metadata (its entries carry archived) when you need to know which sessions are archived.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -355,7 +355,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "delete_session",
-			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The session_id comes from session_list / session_metadata.",
+			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (identified by the platform's injection, or — on pods without the plugin — as the single busy session; its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The session_id comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -632,15 +632,21 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpSessionMetadata(ctx, password, sessionID, injected, allSessions)
 	case "session_archive":
 		sessionID, _ := args["session_id"].(string)
-		archived := true
-		if raw, ok := args["archived"].(bool); ok {
-			archived = raw
+		// The schema says "REQUIRED DIRECTION … no default — pass it
+		// explicitly"; the dispatcher is the enforcement (the hand-rolled
+		// JSON-RPC layer has no schema validator). An omitted or non-bool
+		// `archived` REFUSES rather than guessing archive — a silent
+		// default here would archive on a malformed call (review r1
+		// finding 1).
+		archived, ok := args["archived"].(bool)
+		if !ok {
+			return "", fmt.Errorf("archived (boolean) is required: true = archive, false = unarchive — no default")
 		}
 		return mcpSessionArchive(ctx, sessionID, archived)
 	case "delete_session":
 		sessionID, _ := args["session_id"].(string)
 		injected, _ := args["lsp_injected_session"].(string)
-		return mcpDeleteSession(ctx, sessionID, injected)
+		return mcpDeleteSession(ctx, password, sessionID, injected)
 	case "feature_status":
 		return mcpFeatureStatus()
 	case "dev_preview_headers":

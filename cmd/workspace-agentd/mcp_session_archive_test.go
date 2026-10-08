@@ -114,7 +114,7 @@ func TestMCPDeleteSession_HappyPath(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	out, err := mcpDeleteSession(context.Background(), "ses-1", "ses-other")
+	out, err := mcpDeleteSession(context.Background(), mcpTestPassword, "ses-1", "ses-other")
 	require.NoError(t, err)
 	assert.Equal(t, "/internal/v1/session-delete", gotPath)
 	assert.Contains(t, gotBody, `"sessionID":"ses-1"`)
@@ -130,7 +130,7 @@ func TestMCPDeleteSession_RefusesOwnCurrentSession(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	_, err := mcpDeleteSession(context.Background(), "ses-me", "ses-me")
+	_, err := mcpDeleteSession(context.Background(), mcpTestPassword, "ses-me", "ses-me")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "your own current session")
 }
@@ -285,4 +285,72 @@ func TestMCPSessionMetadata_PlatformUnreachableDegradesSilently(t *testing.T) {
 	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
 	require.NoError(t, err, "a platform fetch failure must never fail the metadata tool")
 	assert.NotContains(t, out, "127.0.0.1", "fetch failure must not leak the origin either")
+}
+
+// Review r1 finding 1: an omitted or non-bool `archived` must REFUSE —
+// the tool's contract says "no default"; a silent default would
+// archive on a malformed call.
+func TestMCPSessionArchive_MissingOrNonBoolArchived_Refuses(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the platform must not be called without an explicit boolean")
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	_, err := callMCPTool(context.Background(), mcpTestPassword, "session_archive", map[string]any{"session_id": "ses-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "archived (boolean) is required")
+
+	_, err = callMCPTool(context.Background(), mcpTestPassword, "session_archive", map[string]any{"session_id": "ses-1", "archived": "true"})
+	require.Error(t, err, "a string \"true\" must not be accepted")
+}
+
+// Review r1 finding 4: on a degraded pod (no injection) the self-delete
+// guard falls back to the single busy session — the caller.
+func TestMCPDeleteSession_NoInjection_SingleBusyTarget_Refused(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the platform must not be asked to delete the caller's own session")
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpDeleteSession(context.Background(), mcpTestPassword, s1, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "your own current session")
+}
+
+func TestMCPDeleteSession_NoInjection_OtherTarget_Proceeds(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	f.newSession("two")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpDeleteSession(context.Background(), mcpTestPassword, "ses-two", "")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"status":"deleted"`)
+}
+
+// Review r1 missing-test 3: the plugin's injection-target Set is
+// cross-checked against the tools the dispatcher actually reads
+// lsp_injected_session for — a typo on either side fails here (the
+// silent guard-disabling class).
+func TestOriginPlugin_InjectionTargetsMatchDispatcher(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "runtimes", "opencode", "plugins", "llmsafespaces-origin.js"))
+	require.NoError(t, err)
+	for _, tool := range []string{"llmsafespaces_send_message", "llmsafespaces_session_metadata", "llmsafespaces_delete_session"} {
+		assert.Contains(t, string(src), `"`+tool+`"`,
+			"the plugin must stamp %s — a typo here silently disables injection (and with it the metadata default + self-delete guard)", tool)
+	}
 }

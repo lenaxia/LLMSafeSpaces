@@ -204,3 +204,20 @@ func TestPodSessionArchivedSet_RequiresWorkspaceID(t *testing.T) {
 	w := doPodSessionCall(t, r, http.MethodGet, "/internal/v1/session-archived", "tok", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+// Review r1 finding 2: model-supplied session IDs are validated with
+// the same charset/length/traversal guard the REST surfaces enforce.
+func TestPodSessionArchive_TraversalSessionID_400(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:" + testRenameNamespace + ":workspace-ws-1"}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-1", UserID: "user-7"}}
+	r := newPodSessionArchiveRouter(t, reviewer, lookup, &fakePodArchiver{}, &fakePodSessionProxy{}, &mockSessionIndexForPod{})
+
+	for _, bad := range []string{"../ws-other/ses", "ses with spaces", strings.Repeat("a", 129)} {
+		w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-archive", "tok",
+			fmt.Sprintf(`{"workspaceID":"ws-1","sessionID":%q,"archived":true}`, bad))
+		assert.Equal(t, http.StatusBadRequest, w.Code, "sessionID %q must be rejected: %s", bad, w.Body.String())
+	}
+	w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-delete", "tok",
+		`{"workspaceID":"ws-1","sessionID":"../../etc"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}

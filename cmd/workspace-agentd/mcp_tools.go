@@ -600,12 +600,33 @@ func mcpSessionArchive(ctx context.Context, sessionID string, archived bool) (st
 // one). Refuses to delete the caller's OWN current session: that turn
 // is still running, and the tool result would have nowhere to land
 // (the abort_session convention).
-func mcpDeleteSession(ctx context.Context, sessionID, injectedSession string) (string, error) {
+func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
-	if injectedSession != "" && sessionID == injectedSession {
+	// Self-delete guard: the plugin-injected current session first; on
+	// a degraded pod (no working plugin) the single busy session IS the
+	// caller — the same fallback the metadata default uses (review r1
+	// finding 4: without it the guard is inert exactly where the
+	// plugin is missing). Ambiguity (0 or multiple busy) allows the
+	// delete: the target is an explicitly named ID, not a guess.
+	self := strings.TrimSpace(injectedSession)
+	if self == "" {
+		client := seamClientWithPassword(password)
+		if busy, err := client.GetSessionStatuses(ctx); err == nil {
+			var busyIDs []string
+			for id, st := range busy {
+				if st == "busy" || st == "retry" {
+					busyIDs = append(busyIDs, id)
+				}
+			}
+			if len(busyIDs) == 1 {
+				self = busyIDs[0]
+			}
+		}
+	}
+	if self != "" && sessionID == self {
 		return "", fmt.Errorf("refusing to delete your own current session — its turn (this tool call) is still running; finish your turn and let the user or a peer session delete it, or ask the user")
 	}
 	client, saToken, workspaceID, err := podPlatformClient()

@@ -139,6 +139,13 @@ func (h *PodSessionArchiveHandler) Archive(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspaceID, sessionID, and archived (boolean) are required"})
 		return
 	}
+	// The session ID is model-supplied and flows into URL paths on the
+	// agent side — the same charset/length/traversal guard the REST
+	// surfaces enforce (review r1 finding 2).
+	if err := validateSessionID(req.SessionID); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid sessionID: " + err.Error()})
+		return
+	}
 	ownerID, ok := h.resolve(c, req.WorkspaceID)
 	if !ok {
 		return
@@ -171,6 +178,12 @@ func (h *PodSessionArchiveHandler) Delete(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.WorkspaceID == "" || req.SessionID == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspaceID and sessionID are required"})
+		return
+	}
+	// Same guard as the archive write — the delete path is the stronger
+	// mutation and gets the same input discipline.
+	if err := validateSessionID(req.SessionID); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid sessionID: " + err.Error()})
 		return
 	}
 	if _, ok := h.resolve(c, req.WorkspaceID); !ok {

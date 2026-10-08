@@ -1467,13 +1467,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 	// Pod-identity session archive/delete (agentd #1627 MCP tools).
 	// Needs the concrete workspace service (the archive write path) and
-	// the proxy (the hard-delete flow + SSE announcements).
+	// the proxy (the hard-delete flow + SSE announcements). The
+	// type-assertion failure logs LOUD — a silently nil handler drops
+	// the routes and the agentd tools 404 (the rename wiring's named
+	// failure class, app.go's own comment above).
 	var podSessionArchiveHandler *handlers.PodSessionArchiveHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		podSessionArchiveHandler = handlers.NewPodSessionArchiveHandlerFromClientset(
 			k8sClient.Clientset(), dbSvc, wsSvc, proxyHandler, sessionIndexSvc, cfg.Kubernetes.Namespace,
 		)
 		podSessionArchiveHandler.SetLogger(log)
+	} else {
+		log.Error("session-archive wiring: workspace service is not the concrete type; the pod session routes are NOT installed",
+			errors.New("svc.Workspace type assertion failed"))
 	}
 
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
