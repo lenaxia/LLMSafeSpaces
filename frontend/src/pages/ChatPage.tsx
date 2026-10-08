@@ -306,6 +306,11 @@ export function ChatPage() {
   // workspace's max-active-sessions limit. See ChatView.viewOnly.
   const isSubtask = !!activeSessionData?.parentId;
 
+  // #1627: archived sessions are read-only at the API (sends 409
+  // session_archived) — the composer is replaced with the recovery
+  // banner. History stays fully viewable.
+  const isArchivedSession = !!activeSessionData?.archived;
+
   // Current model for prompt injection — subscribes to the same cache key that
   // ModelSelector populates. enabled:!!workspaceId (not gated on isReady) so
   // it fires at the same time as ModelSelector's query and shares the cache.
@@ -1250,7 +1255,12 @@ export function ChatPage() {
             models={modelsData?.models}
             lastSeenAt={lastSeenAt}
             userMessageHistory={userMessageHistory}
-            viewOnly={isSubtask}
+            viewOnly={isSubtask || isArchivedSession}
+            viewOnlyMessage={
+              isArchivedSession
+                ? "This session is archived and read-only. Unarchive it (sidebar → session ⋮ menu → Unarchive) to continue the conversation — the history stays viewable either way."
+                : undefined
+            }
             workspaceId={workspaceId}
             orgId={activeWorkspaceData?.orgId}
             attachments={composerAttachments.chips}

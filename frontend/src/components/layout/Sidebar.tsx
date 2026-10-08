@@ -32,10 +32,11 @@ import {
   Shield,
   Workflow,
   Zap,
+  Archive,
 } from "lucide-react";
 import { Spinner } from "../ui/Spinner";
 import { BusyIndicator } from "../ui/BusyIndicator";
-import type { WorkspaceListItem } from "../../api/types";
+import type { SessionListItem, WorkspaceListItem } from "../../api/types";
 import { sessionDisplayTitle } from "../../lib/names";
 import { formatRelativeTime } from "../../lib/time";
 import { useNow } from "../../hooks/useNow";
@@ -147,6 +148,22 @@ export function Sidebar({ onNavigate }: Props) {
     },
   });
 
+  // #1627: archive/unarchive. The listing refetch moves the session
+  // into/out of the Archived group; the SSE archived/unarchived event
+  // converges every other tab's cache.
+  const archiveSessionMutation = useMutation({
+    mutationFn: ({ wsId, sessionId, archived }: { wsId: string; sessionId: string; archived: boolean }) =>
+      workspacesApi.setSessionArchived(wsId, sessionId, archived),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
+    },
+    // Same feedback contract as the adjacent kebab siblings (force stop,
+    // delete): a failed call alerts instead of closing the menu silently.
+    onError: () => {
+      try { window.alert("Failed to change archive state."); } catch { /* blocked */ }
+    },
+  });
+
   const handleWorkspaceClick = (ws: WorkspaceListItem) => {
     const isExpanded = expandedWs.has(ws.id);
 
@@ -236,6 +253,9 @@ export function Sidebar({ onNavigate }: Props) {
               onResume={() => activateMutation.mutate(ws.id)}
               onRefreshCompute={() => refreshComputeMutation.mutate(ws.id)}
               refreshingCompute={refreshComputeMutation.isPending && refreshComputeMutation.variables === ws.id}
+              onArchiveSession={(sessionId, archived) =>
+                archiveSessionMutation.mutate({ wsId: ws.id, sessionId, archived })
+              }
               onRenameSession={(sessionId, title) => setRenamingSession({ wsId: ws.id, sessionId, title })}
               onAbortSession={(sid) => {
                 workspacesApi.abortSession(ws.id, sid)
@@ -330,6 +350,7 @@ interface WorkspaceGroupProps {
   onRefreshCompute: () => void;
   refreshingCompute: boolean;
   onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onAbortSession: (sessionId: string) => void;
   renamingSession: { wsId: string; sessionId: string; title: string } | null;
@@ -357,6 +378,7 @@ function WorkspaceGroup({
   onRefreshCompute,
   refreshingCompute,
   onRenameSession,
+  onArchiveSession,
   onDeleteSession,
   onAbortSession,
   renamingSession,
@@ -485,6 +507,7 @@ function WorkspaceGroup({
           creatingSession={creatingSession}
           isSuspended={isSuspended || isResuming}
           onRenameSession={onRenameSession}
+          onArchiveSession={onArchiveSession}
           onDeleteSession={onDeleteSession}
           onAbortSession={onAbortSession}
           renamingSession={renamingSession}
@@ -521,6 +544,7 @@ interface SessionListProps {
   creatingSession: boolean;
   isSuspended: boolean;
   onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onAbortSession: (sessionId: string) => void;
   renamingSession: { wsId: string; sessionId: string; title: string } | null;
@@ -536,6 +560,7 @@ function WorkspaceSessionList({
   creatingSession: _creatingSession,
   isSuspended,
   onRenameSession,
+  onArchiveSession,
   onDeleteSession,
   onAbortSession,
   renamingSession,
@@ -575,9 +600,20 @@ function WorkspaceSessionList({
     return m;
   }, [sessions]);
 
+  // #1627: archived sessions never render in the live tree — they
+  // live in the collapsed-by-default Archived group below it.
+  const archivedSessions = useMemo(
+    () => (sessions ?? []).filter((s) => s.archived),
+    [sessions],
+  );
+  const liveSessions = useMemo(
+    () => (sessions ?? []).filter((s) => !s.archived),
+    [sessions],
+  );
+
   // Tree shape: roots + orphans, where roots/orphans contain children of
   // arbitrary depth. Recomputed only when the session list changes.
-  const tree = useMemo(() => buildSessionTree(sessions ?? []), [sessions]);
+  const tree = useMemo(() => buildSessionTree(liveSessions), [liveSessions]);
 
   const pendingActionIds = useSessionPendingActions();
 
@@ -682,6 +718,11 @@ function WorkspaceSessionList({
   // collision with a real ses_orphans-like ID.
   const [orphansExpanded, setOrphansExpanded] = useState(false);
 
+  // #1627 ruling 3: the Archived group is ALWAYS collapsed by default —
+  // deliberate friction. Expanding requires a human click; nothing
+  // auto-expands it (not even selecting an archived session).
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+
   const toggleExpanded = (sessionId: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -725,6 +766,7 @@ function WorkspaceSessionList({
               onToggleExpand={toggleExpanded}
               onSelectSession={onSelectSession}
               onRenameSession={onRenameSession}
+              onArchiveSession={onArchiveSession}
               onDeleteSession={onDeleteSession}
               onAbortSession={onAbortSession}
               renamingSession={renamingSession}
@@ -746,6 +788,7 @@ function WorkspaceSessionList({
               onChildToggleExpand={toggleExpanded}
               onSelectSession={onSelectSession}
               onRenameSession={onRenameSession}
+              onArchiveSession={onArchiveSession}
               onDeleteSession={onDeleteSession}
               onAbortSession={onAbortSession}
               renamingSession={renamingSession}
@@ -753,6 +796,25 @@ function WorkspaceSessionList({
               onRenameSessionConfirm={onRenameSessionConfirm}
               contextBySessionId={contextBySessionId}
               pendingIndicatorIds={pendingIndicatorIds}
+            />
+          )}
+
+          {archivedSessions.length > 0 && (
+            <ArchivedGroup
+              sessions={archivedSessions}
+              expanded={archivedExpanded}
+              onToggleExpand={() => setArchivedExpanded((v) => !v)}
+              workspaceId={workspaceId}
+              selectedSessionId={selectedSessionId}
+              onSelectSession={onSelectSession}
+              onRenameSession={onRenameSession}
+              onArchiveSession={onArchiveSession}
+              onDeleteSession={onDeleteSession}
+              onAbortSession={onAbortSession}
+              renamingSession={renamingSession}
+              onRenameSessionCancel={onRenameSessionCancel}
+              onRenameSessionConfirm={onRenameSessionConfirm}
+              contextBySessionId={contextBySessionId}
             />
           )}
         </div>
@@ -770,6 +832,7 @@ interface SessionTreeRowProps {
   onToggleExpand: (sessionId: string) => void;
   onSelectSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onAbortSession: (sessionId: string) => void;
   renamingSession: { wsId: string; sessionId: string; title: string } | null;
@@ -792,6 +855,7 @@ function SessionTreeRow({
   onToggleExpand,
   onSelectSession,
   onRenameSession,
+  onArchiveSession,
   onDeleteSession,
   onAbortSession,
   renamingSession,
@@ -839,6 +903,12 @@ function SessionTreeRow({
     {
       label: "Rename",
       onClick: () => onRenameSession(s.id, s.title ?? ""),
+    },
+    // #1627: the reversible retirement action sits above the
+    // destructive one; the label names the direction.
+    {
+      label: s.archived ? "Unarchive" : "Archive",
+      onClick: () => onArchiveSession(s.id, !s.archived),
     },
     {
       label: "Force Stop",
@@ -902,7 +972,16 @@ function SessionTreeRow({
           ) : (
             <MessageSquare className="h-3.5 w-3.5 flex-shrink-0" />
           )}
-          <span className={cn("flex-1 truncate", (showPulse || rowStatus === "pending_input") && "animate-unread-pulse")}>{title}</span>
+          <span
+            className={cn(
+              "flex-1 truncate",
+              (showPulse || rowStatus === "pending_input") && "animate-unread-pulse",
+              s.archived && "italic text-muted-foreground/70",
+            )}
+            data-testid={s.archived ? "archived-session-title" : undefined}
+          >
+            {title}
+          </span>
           {s.origin && s.origin !== "manual" && (
             <span
               className="flex-shrink-0 rounded px-1 text-[9px] font-medium uppercase"
@@ -943,6 +1022,7 @@ function SessionTreeRow({
             onToggleExpand={onToggleExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
+            onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onAbortSession={onAbortSession}
             renamingSession={renamingSession}
@@ -966,6 +1046,7 @@ interface OrphansGroupProps {
   onChildToggleExpand: (sessionId: string) => void;
   onSelectSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
   onDeleteSession: (sessionId: string) => void;
   onAbortSession: (sessionId: string) => void;
   renamingSession: { wsId: string; sessionId: string; title: string } | null;
@@ -991,6 +1072,7 @@ function OrphansGroup({
   onChildToggleExpand,
   onSelectSession,
   onRenameSession,
+  onArchiveSession,
   onDeleteSession,
   onAbortSession,
   renamingSession,
@@ -1029,6 +1111,7 @@ function OrphansGroup({
             onToggleExpand={onChildToggleExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
+            onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onAbortSession={onAbortSession}
             renamingSession={renamingSession}
@@ -1036,6 +1119,94 @@ function OrphansGroup({
             onRenameSessionConfirm={onRenameSessionConfirm}
             contextBySessionId={contextBySessionId}
             pendingIndicatorIds={pendingIndicatorIds}
+          />
+        ))}
+    </>
+  );
+}
+
+interface ArchivedGroupProps {
+  sessions: SessionListItem[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+  workspaceId: string;
+  selectedSessionId?: string;
+  onSelectSession: (sessionId: string) => void;
+  onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onAbortSession: (sessionId: string) => void;
+  renamingSession: { wsId: string; sessionId: string; title: string } | null;
+  onRenameSessionCancel: () => void;
+  onRenameSessionConfirm: (sessionId: string, title: string) => void;
+  /** Per-session context token count from workspace status (S36.5). */
+  contextBySessionId: Map<string, number>;
+}
+
+/**
+ * #1627: the Archived group — every archived session of this workspace,
+ * rendered as a top-level entry INSIDE the workspace's session list.
+ * Rendered only when at least one session is archived, and ALWAYS
+ * collapsed by default: expanding requires a deliberate human click
+ * (the owner's deliberate-friction ruling — nothing auto-expands it,
+ * and selection never opens it). Rows stay fully usable when expanded:
+ * open (history is viewable), unarchive, rename, delete.
+ */
+function ArchivedGroup({
+  sessions,
+  expanded,
+  onToggleExpand,
+  workspaceId,
+  selectedSessionId,
+  onSelectSession,
+  onRenameSession,
+  onArchiveSession,
+  onDeleteSession,
+  onAbortSession,
+  renamingSession,
+  onRenameSessionCancel,
+  onRenameSessionConfirm,
+  contextBySessionId,
+}: ArchivedGroupProps) {
+  return (
+    <>
+      <div className="group flex items-center rounded-md transition-colors hover:bg-accent/50" data-testid="archived-group">
+        <button
+          onClick={onToggleExpand}
+          className="flex flex-1 items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground"
+          aria-label={expanded ? "Collapse archived sessions" : "Expand archived sessions"}
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 flex-shrink-0" />
+          )}
+          <Archive className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+          <span className="flex-1 truncate text-muted-foreground/80">Archived</span>
+          <span className="flex-shrink-0 text-xs text-muted-foreground/60">{sessions.length}</span>
+        </button>
+      </div>
+      {expanded &&
+        sessions.map((session) => (
+          <SessionTreeRow
+            key={session.id}
+            node={{ session, children: [] }}
+            depth={1}
+            workspaceId={workspaceId}
+            selectedSessionId={selectedSessionId}
+            expanded={new Set()}
+            onToggleExpand={() => {}}
+            onSelectSession={onSelectSession}
+            onRenameSession={onRenameSession}
+            onArchiveSession={onArchiveSession}
+            onDeleteSession={onDeleteSession}
+            onAbortSession={onAbortSession}
+            renamingSession={renamingSession}
+            onRenameSessionCancel={onRenameSessionCancel}
+            onRenameSessionConfirm={onRenameSessionConfirm}
+            contextBySessionId={contextBySessionId}
+            pendingIndicatorIds={new Set()}
           />
         ))}
     </>

@@ -786,6 +786,30 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
             }
           }
         }
+
+        // #1627: archive/unarchive transitions arrive on the same event
+        // type — flip the cached flag in place so every open tab moves
+        // the session into/out of the Archived group without a refetch.
+        if (evt.status === "archived" || evt.status === "unarchived") {
+          const sessionsKey = ["sessions", evt.workspace_id];
+          const archived = evt.status === "archived";
+          const existing = queryClient.getQueryData(sessionsKey);
+          if (existing) {
+            queryClient.setQueryData(sessionsKey, (old: unknown) => {
+              if (!Array.isArray(old)) return old;
+              return old.map((s: Record<string, unknown>) => {
+                if (s.id !== evt.session_id) return s;
+                if (archived) return { ...s, archived: true };
+                // Unarchive restores the ABSENT-means-not-archived wire
+                // contract — delete the key rather than parking an
+                // explicit undefined on the cached row.
+                const next = { ...s };
+                delete next.archived;
+                return next;
+              });
+            });
+          }
+        }
       }
 
       if (evt.type === "agent_died" && evt.workspace_id) {
