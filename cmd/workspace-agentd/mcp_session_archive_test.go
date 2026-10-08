@@ -354,3 +354,58 @@ func TestOriginPlugin_InjectionTargetsMatchDispatcher(t *testing.T) {
 			"the plugin must stamp %s — a typo here silently disables injection (and with it the metadata default + self-delete guard)", tool)
 	}
 }
+
+// Review r2 missing-test 2: dispatcher-level pins that callMCPTool
+// actually READS args["lsp_injected_session"] for session_metadata and
+// delete_session — a dispatcher-side typo would silently disable the
+// current-session default and the injection half of the self-delete
+// guard while every existing test stays green.
+func TestCallMCPTool_SessionMetadata_DispatcherReadsInjection(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	f.newSession("two")
+	withAgentServer(t, f.handler(t))
+	setupMetadataEnv(t, nil)
+
+	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{
+		"lsp_injected_session": s1,
+	})
+	require.NoError(t, err)
+	var res struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+		} `json:"sessions"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Sessions, 1, "the injected session is the default scope — exactly one entry")
+	assert.Equal(t, s1, res.Sessions[0].SessionID)
+}
+
+func TestCallMCPTool_DeleteSession_DispatcherReadsInjection(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the platform must not be called when the refusal fires")
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	_, err := callMCPTool(context.Background(), mcpTestPassword, "delete_session", map[string]any{
+		"session_id":           "ses-me",
+		"lsp_injected_session": "ses-me",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "your own current session", "the dispatcher must feed the injection into the self-guard")
+}
+
+// The default-refusal direction through the real dispatch wire (the
+// orchestrator's adjudication ask: the breaking change pinned BOTH
+// ways — current-session default above, bare-args refusal here).
+func TestCallMCPTool_SessionMetadata_BareArgsRefused(t *testing.T) {
+	f := newFakeAgent()
+	f.newSession("one") // idle — no busy fallback resolves
+	withAgentServer(t, f.handler(t))
+	setupMetadataEnv(t, nil)
+
+	_, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all_sessions:true")
+}

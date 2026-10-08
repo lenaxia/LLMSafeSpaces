@@ -35,3 +35,23 @@ func TestPodAutomationHandler_LoggerWired(t *testing.T) {
 		t.Fatalf("SetLogger must populate the handler's logger so 5xx errors include the underlying cause")
 	}
 }
+
+// TestPodSessionArchiveHandler_LoggerWired mirrors the same #407 guard
+// for the #1627 pod session surface: app.go constructs the handler via
+// NewPodSessionArchiveHandlerFromClientset and must SetLogger in the
+// same breath, or the surface's 5xx responses degrade to generic errors.
+func TestPodSessionArchiveHandler_LoggerWired(t *testing.T) {
+	fakeClientset := k8sfake.NewSimpleClientset()
+
+	// Construction + wiring pair only — deps are nil (no request runs).
+	h := handlers.NewPodSessionArchiveHandlerFromClientset(
+		fakeClientset, nil, nil, nil, nil, "test-namespace",
+	)
+	if h.HasLogger() {
+		t.Fatalf("freshly-constructed PodSessionArchiveHandler must not have a logger before SetLogger is called")
+	}
+	h.SetLogger(lmocks.NewMockLogger())
+	if !h.HasLogger() {
+		t.Fatalf("SetLogger must populate the handler's logger so 5xx errors include the underlying cause")
+	}
+}
