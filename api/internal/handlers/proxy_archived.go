@@ -29,7 +29,8 @@ const sessionArchivedMessage = "This session is archived and read-only. Unarchiv
 // Enforced surfaces: /message, /prompt, /queue (+ sync fallback), the
 // outbox delivery worker (both regimes), queue retry, question and
 // permission replies (live + late-answer), question reject, inbox
-// dismiss's live-reject arm, and the auto-approve bridge (skipped).
+// dismiss's live-reject arm, typed session actions (the
+// answerQuestion/reject union), and the auto-approve bridge (skipped).
 //
 // Documented carve-outs (r-next findings A/B disposition):
 //   - askDead inbox dismissal — terminalizes the record only; no
@@ -39,6 +40,12 @@ const sessionArchivedMessage = "This session is archived and read-only. Unarchiv
 //     running a PEER-initiated in-pod turn (unblocked by the owner's
 //     ruling) and stopping a stuck one is legitimate cleanup.
 //   - RenameSessionInAgent — title metadata, cosmetic, content-neutral.
+//   - DeleteSession — explicit destructive lifecycle action; nothing
+//     is written INTO the conversation, and gating it would trap
+//     archived sessions (user-confirmed intent guards it, same as for
+//     live sessions).
+//   - DeleteQueueMessage — platform-outbox dismissal only; no harness
+//     write, not a read-only surface.
 //
 // Posture on a failed archive check: FAIL OPEN with a loud log. The
 // marker is a platform UX guard, not a security boundary — the in-pod

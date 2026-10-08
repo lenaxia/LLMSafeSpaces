@@ -543,3 +543,46 @@ func TestDismissInboxRecord_LiveAsk_ArchivedSession_Rejected409(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, pending, 1, "the record must stay pending — the dismiss did not terminalize it")
 }
+
+// --- review round 4: SessionAction gate + DeleteSession disposition ---
+
+// Finding 1: the typed-action union carries the same mutating
+// answer/reject vocabulary the REST reply surfaces gate — archived
+// sessions must not take actions.
+func TestSessionAction_ArchivedSession_Rejected409_NoActCall(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.SetAgentdTerminus(true)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	h.sessionIndex = si
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"answerQuestion":{"inputId":"que_1","reply":"Yes"}}`))
+
+	h.SessionAction(c)
+	// requireArchivedBody distinguishes the gate's typed body from the
+	// unresolved-endpoint 409 (which carries a nested error object, no
+	// top-level code) — the pin stays mutation-honest.
+	requireArchivedBody(t, w)
+}
+
+// Finding 2 disposition: delete is the documented lifecycle carve-out
+// (explicit destruction, nothing written INTO the conversation) —
+// pinned so the carve-out is contract, not drift.
+func TestDeleteSession_ArchivedSession_CarveOutStillDeletes(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	si := newMockSessionIndex()
+	require.NoError(t, si.SetArchived(context.Background(), "ws-1", "ses_1", true))
+	env.handler.SetSessionIndex(si)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+
+	w := env.doRequestWithT(t, http.MethodDelete, "/api/v1/workspaces/ws-1/sessions/ses_1", nil)
+	require.Equal(t, http.StatusNoContent, w.Code, "delete is the documented carve-out (explicit destruction, no conversation write): %s", w.Body.String())
+}

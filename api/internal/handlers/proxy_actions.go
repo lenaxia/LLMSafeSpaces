@@ -35,6 +35,13 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 	workspaceID := c.Param("id")
 	sessionID := c.Param("sessionId")
 
+	// #1627 review round 4 finding 1: the action union carries the same
+	// mutating answer/reject vocabulary the REST reply surfaces gate —
+	// an archived session's turn must not take actions either.
+	if h.rejectIfArchived(c, workspaceID, sessionID) {
+		return
+	}
+
 	if !h.agentdTerminus {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": gin.H{
 			"code":       "not_supported",
