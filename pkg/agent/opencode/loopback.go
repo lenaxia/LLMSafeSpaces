@@ -796,6 +796,54 @@ func (c *Client) TriggerDelete(ctx context.Context, saToken, workspaceID, id str
 		fmt.Sprintf("/internal/v1/automation/triggers/%s?workspaceID=%s", id, workspaceID), saToken, nil)
 }
 
+// SessionArchive sets the platform-level archived marker on one session
+// of this pod's workspace (#1627) via the pod-identity internal API.
+func (c *Client) SessionArchive(ctx context.Context, saToken, workspaceID, sessionID string, archived bool) error {
+	body, err := json.Marshal(map[string]any{
+		"workspaceID": workspaceID,
+		"sessionID":   sessionID,
+		"archived":    archived,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.automationCall(ctx, http.MethodPost, "/internal/v1/session-archive", saToken, body)
+	return err
+}
+
+// PlatformSessionDelete hard-deletes one session of this pod's
+// workspace on BOTH sides (agent store + platform index) via the
+// pod-identity internal API — the same flow the REST DELETE rides.
+// (Client.SessionDelete is the LOCAL agent-side seam delete.)
+func (c *Client) PlatformSessionDelete(ctx context.Context, saToken, workspaceID, sessionID string) error {
+	body, err := json.Marshal(map[string]string{
+		"workspaceID": workspaceID,
+		"sessionID":   sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.automationCall(ctx, http.MethodPost, "/internal/v1/session-delete", saToken, body)
+	return err
+}
+
+// SessionArchivedSet returns the archived session IDs of this pod's
+// workspace (#1627) — the session_metadata annotation source.
+func (c *Client) SessionArchivedSet(ctx context.Context, saToken, workspaceID string) ([]string, error) {
+	res, err := c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/session-archived?workspaceID=%s", workspaceID), saToken, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Archived []string `json:"archived"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &out); err != nil {
+		return nil, err
+	}
+	return out.Archived, nil
+}
+
 // TriggerFires lists a trigger's fire audit rows — the debugging gold:
 // per-fire status, error payloads, and the consecutive-failure trail.
 func (c *Client) TriggerFires(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {

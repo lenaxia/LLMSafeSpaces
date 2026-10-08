@@ -310,7 +310,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "abort_session",
-			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; sessions are never deleted through these tools).",
+			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; deleting is delete_session's job — abort never removes anything).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -331,13 +331,37 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_metadata",
-			Description: "Read-only vitals for this workspace's sessions: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag — plus the workspace ID and agent version. Omit session_id for all sessions, or pass one to zoom in. Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Output is aggregate metadata only — read message CONTENT with session_read.",
+			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session; with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY session's metadata (the old default behavior). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. Output is aggregate metadata only — read message CONTENT with session_read.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "Optional: one session's metadata (from session_list); omitted = every session"},
+					"session_id":   map[string]any{"type": "string", "description": "One session's metadata (from session_list). Omitted = your current session only (the default); use all_sessions:true for every session"},
+					"all_sessions": map[string]any{"type": "boolean", "description": "true = metadata for EVERY session in the workspace (the pre-change default). Default false = current session only"},
 				},
 				"required": []string{},
+			},
+		},
+		{
+			Name:        "session_archive",
+			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{"type": "string", "description": "The session to archive or unarchive (from session_list / session_metadata)"},
+					"archived":   map[string]any{"type": "boolean", "description": "REQUIRED DIRECTION: true = ARCHIVE (make read-only, move to the Archived group); false = UNARCHIVE (restore chat). There is no default — pass it explicitly."},
+				},
+				"required": []string{"session_id", "archived"},
+			},
+		},
+		{
+			Name:        "delete_session",
+			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The session_id comes from session_list / session_metadata.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{"type": "string", "description": "The session to hard-delete (from session_list / session_metadata) — its history is destroyed on both sides"},
+				},
+				"required": []string{"session_id"},
 			},
 		},
 		{
@@ -595,7 +619,28 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpGetDatetime(timezoneArg)
 	case "session_metadata":
 		sessionID, _ := args["session_id"].(string)
-		return mcpSessionMetadata(ctx, password, sessionID)
+		// lsp_injected_session is the platform plugin's harness-attested
+		// current-session stamp (the send_message pattern): schema-
+		// invisible, unconditional overwrite at the plugin, and the
+		// DEFAULT scope source (#1627 ruling 5). all_sessions is the
+		// explicit opt-in to the OLD every-session behavior.
+		injected, _ := args["lsp_injected_session"].(string)
+		allSessions := false
+		if raw, ok := args["all_sessions"].(bool); ok {
+			allSessions = raw
+		}
+		return mcpSessionMetadata(ctx, password, sessionID, injected, allSessions)
+	case "session_archive":
+		sessionID, _ := args["session_id"].(string)
+		archived := true
+		if raw, ok := args["archived"].(bool); ok {
+			archived = raw
+		}
+		return mcpSessionArchive(ctx, sessionID, archived)
+	case "delete_session":
+		sessionID, _ := args["session_id"].(string)
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpDeleteSession(ctx, sessionID, injected)
 	case "feature_status":
 		return mcpFeatureStatus()
 	case "dev_preview_headers":
