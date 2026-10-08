@@ -2173,7 +2173,7 @@ The complete REST surface is documented in `sdks/openapi.yaml` — the canonical
 - **Auth** (19 routes): register, login, logout, me, API key CRUD, lookup, password reset, email verify, unlock-dek, SSO (PKCE start/callback/domains)
 - **Passkeys** (11 routes, Epic 59): register/login/recover ceremonies, account passkey management, recovery codes, enroll
 - **Workspaces** (16 routes): CRUD + suspend, activate, restart, refresh-compute, status, agent reload, dev-preview, prompt/agent-role, models, terminal
-- **Session management** (5 routes): list, ensure, rename, mark-seen, active
+- **Session management** (6 routes): list, ensure, rename, mark-seen, archived (archive/unarchive — read-only enforced at the proxy: sends 409 `session_archived`, history viewable, #1627), active
 - **Session proxy** (8 routes): message, prompt, history (cursor-paginated), get, abort, delete, queue (+retry), SSE events — `/session-events` is platform-events-only; session state streams via `/contract-events` (the agentd authority's stamped-snapshot stream, design 0055)
 - **Questions & Permissions** (5 routes): list/reply/reject agent questions and permission requests
 - **Events** (2 routes): user-scoped SSE stream, bulk agent reload (NDJSON)

@@ -1526,8 +1526,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 		contextUsed := int64(42000)
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used",
-		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived",
+		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed, false)
 
 		mock.ExpectQuery(`SELECT session_id`).
 			WithArgs("ws-1").
@@ -1546,8 +1546,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used",
-		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived",
+		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil, false)
 
 		mock.ExpectQuery(`SELECT session_id`).
 			WithArgs("ws-1").
@@ -1565,8 +1565,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used",
-		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0))
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived",
+		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0), false)
 
 		mock.ExpectQuery(`SELECT session_id`).
 			WithArgs("ws-1").

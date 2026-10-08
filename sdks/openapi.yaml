@@ -635,6 +635,39 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/{sessionId}/archived:
+    put:
+      tags: [sessions]
+      summary: Archive or unarchive a session
+      description: >
+        Sets the platform-level archived marker. Archived sessions are
+        read-only: chat sends (message/prompt/queue) are rejected with
+        409 session_archived, history remains viewable, and unarchiving
+        restores chat instantly. The agent-side session is untouched.
+      operationId: setSessionArchived
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [archived]
+              properties:
+                archived:
+                  type: boolean
+                  description: true = archive (read-only), false = unarchive
+      responses:
+        "204":
+          description: Archive state set
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/alerts:
     get:
       tags: [sessions]
@@ -8659,6 +8692,14 @@ components:
         status:
           type: string
           enum: [active, idle]
+        archived:
+          type: boolean
+          description: >
+            Present and true when the session is archived (read-only:
+            chat sends are rejected with 409 session_archived; history
+            stays viewable; unarchiving restores chat instantly).
+            ABSENT means not archived — the field is omitempty on the
+            wire for backward compatibility.
     SessionAlert:
       type: object
       required: [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]

@@ -98,6 +98,31 @@ public class SessionsService {
                 "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/seen", null);
     }
 
+    /**
+     * Archives (true) or unarchives (false) a session. Archived sessions
+     * are read-only: chat sends are rejected with 409 session_archived,
+     * history stays viewable, and unarchiving restores chat instantly.
+     * The agent-side session is untouched.
+     */
+    public void setArchived(String workspaceId, String sessionId, boolean archived) {
+        c.requestVoid("PUT",
+                "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/archived",
+                new ArchivedRequest(archived));
+    }
+
+    /** Request body for {@link #setArchived}. */
+    public static class ArchivedRequest {
+        private final boolean archived;
+
+        public ArchivedRequest(boolean archived) {
+            this.archived = archived;
+        }
+
+        public boolean isArchived() {
+            return archived;
+        }
+    }
+
     /** Gets one session in contract shape (pkg/session Session). */
     public Session get(String workspaceId, String sessionId) {
         return c.request("GET",

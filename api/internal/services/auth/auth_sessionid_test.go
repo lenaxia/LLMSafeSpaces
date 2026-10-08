@@ -181,10 +181,12 @@ func (m *mockDB) UpsertSessionParent(context.Context, string, string, string) er
 func (m *mockDB) UpsertSessionContextUsed(_ context.Context, _, _ string, _ int64) error {
 	return nil
 }
-func (m *mockDB) UpdateSessionLastSeen(_ context.Context, _, _ string) error { return nil }
-func (m *mockDB) Ping(context.Context) error                                 { return nil }
-func (m *mockDB) Start() error                                               { return nil }
-func (m *mockDB) Stop() error                                                { return nil }
+func (m *mockDB) UpdateSessionLastSeen(_ context.Context, _, _ string) error            { return nil }
+func (m *mockDB) SetSessionArchivedStatus(_ context.Context, _, _ string, _ bool) error { return nil }
+func (m *mockDB) IsSessionArchived(_ context.Context, _, _ string) (bool, error)        { return false, nil }
+func (m *mockDB) Ping(context.Context) error                                            { return nil }
+func (m *mockDB) Start() error                                                          { return nil }
+func (m *mockDB) Stop() error                                                           { return nil }
 func (m *mockDB) ListAllWorkspaceOwners(context.Context) (map[string]string, error) {
 	return nil, nil
 }

@@ -102,6 +102,8 @@ type DatabaseService interface {
 	UpsertSessionParent(ctx context.Context, workspaceID, sessionID, parentID string) error
 	UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error
 	UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error
+	SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error
+	IsSessionArchived(ctx context.Context, workspaceID, sessionID string) (bool, error)
 	ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error)
 	Ping(ctx context.Context) error
 	Start() error
@@ -163,6 +165,7 @@ type WorkspaceService interface {
 	ListWorkspaceSessions(ctx context.Context, userID, workspaceID string) ([]types.SessionListItem, error)
 	RenameSession(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error
+	SetSessionArchived(ctx context.Context, userID, workspaceID, sessionID string, archived bool) error
 	RenameWorkspace(ctx context.Context, userID, workspaceID, name string) error
 	SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error
 	Start() error
@@ -182,6 +185,8 @@ type SessionIndexService interface {
 	UpsertParent(ctx context.Context, workspaceID, sessionID, parentID string) error
 	UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error
 	UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error
+	SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error
+	IsArchived(ctx context.Context, workspaceID, sessionID string) (bool, error)
 	Start() error
 	Stop() error
 }

@@ -1551,6 +1551,37 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		c.Status(http.StatusNoContent)
 	})
 
+	// #1627: archive/unarchive. Platform-level marker only — the agent
+	// is untouched; archived sessions are read-only at the proxy layer.
+	// The SSE announcement lets every open tab move the session into/out
+	// of the Archived group without a refetch.
+	idGroup.PUT("/sessions/:sessionId/archived", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			// Pointer so `false` passes the required check — unarchive
+			// is a first-class call, not a missing field.
+			Archived *bool `json:"archived" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || body.Archived == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "archived (boolean) is required"})
+			return
+		}
+		wsID := c.Param("id")
+		sID := c.Param("sessionId")
+		if err := wsSvc.SetSessionArchived(c.Request.Context(), userID, wsID, sID, *body.Archived); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		if proxyHandler != nil {
+			proxyHandler.PublishSessionArchived(wsID, sID, *body.Archived)
+		}
+		c.Status(http.StatusNoContent)
+	})
+
 	// Agent customization: workspace-level prompt + role selection.
 	// Registered on idGroup so WorkspaceAccessMiddleware runs first.
 	if cfg.PromptHandler != nil {

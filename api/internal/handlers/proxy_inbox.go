@@ -240,6 +240,15 @@ func composeQA(rec inbox.Record, answer string) string {
 // ask: a second click hits the dedupe marker and maps to the original
 // entry; the resolve and the publish are idempotent.
 func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, rec inbox.Record, answer string) {
+	// #1627 (review round 1 finding 2): the late answer is an outbox
+	// accept into the ask's session — gate BEFORE accepting and BEFORE
+	// resolving the record. Refusing up front keeps the record pending
+	// and tells the caller the truth (the old flow accepted, marked the
+	// ask answered, returned a 202, and the entry silently parked as
+	// error behind the Attempts==0 delivery refusal).
+	if h.rejectIfArchived(c, workspaceID, rec.SessionID) {
+		return
+	}
 	cmid := "inbox-" + rec.ID + "-answer"
 	entry, err := h.outbox.Accept(c.Request.Context(), workspaceID, rec.SessionID, "", cmid, composeQA(rec, answer), nil)
 	if err != nil {
@@ -359,6 +368,12 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "harness pending set unknown — retry dismiss"})
 		return
 	case askLive:
+		// #1627 review r-next finding A: the live reject writes into the
+		// session's turn — the archived gate applies (the askDead arm
+		// below only terminalizes the record: pure cleanup, stays open).
+		if h.rejectIfArchived(c, workspaceID, sessionID) {
+			return
+		}
 		// 4a r1: the live reject goes through Act too (S1 — the API
 		// makes zero mutating harness calls in the authority regime);
 		// D1's reply="reject" is exactly the dismiss vocabulary. The

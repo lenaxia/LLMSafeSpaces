@@ -37,6 +37,8 @@ type mockSessionIndex struct {
 	failList      bool              // ListByWorkspace returns an error when set
 	rebuiltCounts map[string]int    // key: "workspaceID/sessionID" (#1481 count rebuilds)
 	rows          map[string][]types.SessionListItem
+	archived      map[string]bool // key: "workspaceID/sessionID" (#1627)
+	failArchived  bool            // IsArchived returns an error when set (#1627 fail-open pin)
 }
 
 func newMockSessionIndex() *mockSessionIndex {
@@ -104,8 +106,25 @@ func (m *mockSessionIndex) UpsertContextUsed(_ context.Context, workspaceID, ses
 	return nil
 }
 func (m *mockSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
-func (m *mockSessionIndex) Start() error                                        { return nil }
-func (m *mockSessionIndex) Stop() error                                         { return nil }
+func (m *mockSessionIndex) SetArchived(_ context.Context, workspaceID, sessionID string, archived bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.archived == nil {
+		m.archived = make(map[string]bool)
+	}
+	m.archived[workspaceID+"/"+sessionID] = archived
+	return nil
+}
+func (m *mockSessionIndex) IsArchived(_ context.Context, workspaceID, sessionID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failArchived {
+		return false, assert.AnError
+	}
+	return m.archived[workspaceID+"/"+sessionID], nil
+}
+func (m *mockSessionIndex) Start() error { return nil }
+func (m *mockSessionIndex) Stop() error  { return nil }
 
 var _ interfaces.SessionIndexService = (*mockSessionIndex)(nil)
 

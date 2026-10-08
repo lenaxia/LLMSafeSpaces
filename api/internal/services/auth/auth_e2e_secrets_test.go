@@ -300,9 +300,15 @@ func (m *fullMockDB) UpsertSessionContextUsed(_ context.Context, _, _ string, _ 
 	return nil
 }
 func (m *fullMockDB) UpdateSessionLastSeen(_ context.Context, _, _ string) error { return nil }
-func (m *fullMockDB) Ping(context.Context) error                                 { return nil }
-func (m *fullMockDB) Start() error                                               { return nil }
-func (m *fullMockDB) Stop() error                                                { return nil }
+func (m *fullMockDB) SetSessionArchivedStatus(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (m *fullMockDB) IsSessionArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+func (m *fullMockDB) Ping(context.Context) error { return nil }
+func (m *fullMockDB) Start() error               { return nil }
+func (m *fullMockDB) Stop() error                { return nil }
 func (m *fullMockDB) ListAllWorkspaceOwners(context.Context) (map[string]string, error) {
 	return nil, nil
 }

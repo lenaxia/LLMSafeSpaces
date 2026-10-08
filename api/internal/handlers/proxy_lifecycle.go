@@ -183,6 +183,32 @@ func (h *ProxyHandler) publishWorkspaceAndUserEvent(workspaceID string, evt apit
 	}
 }
 
+// session.status status values for the #1627 archive lifecycle. The
+// frontend's SessionActivityProvider keys on these to move sessions
+// into/out of the Archived group in every open tab.
+const (
+	sessionStatusArchived   = "archived"
+	sessionStatusUnarchived = "unarchived"
+)
+
+// PublishSessionArchived announces an archive/unarchive transition on
+// the workspace + user streams (#1627) — the #786 pattern: without the
+// user-stream copy, every other tab keeps rendering the session as
+// live. Called by the router after the session-index write commits;
+// publishing after persistence means subscribers never see a state the
+// DB does not hold.
+func (h *ProxyHandler) PublishSessionArchived(workspaceID, sessionID string, archived bool) {
+	status := sessionStatusArchived
+	if !archived {
+		status = sessionStatusUnarchived
+	}
+	h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		Type:      "session.status",
+		SessionID: sessionID,
+		Status:    status,
+	})
+}
+
 func (h *ProxyHandler) GetAllKnownPhases() map[string]string {
 	if h.watcher == nil {
 		return nil
@@ -251,12 +277,36 @@ func (h *ProxyHandler) SetAgentdPortForTest(port int) {
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	// #1627 ruling (b), review round 1 finding 1: the terminus regime
+	// gates EVERY entry — fresh AND prior-attempt — BEFORE the ledger
+	// path. The terminus deliverer re-POSTs when a prior ledger row is
+	// failed/not-found (outbox_terminus.go:127-137), so a prior-attempt
+	// entry gated only after the terminus return would re-deliver into
+	// an archived session; airtight read-only beats delivery semantics
+	// (a landed message's ledger row stays findable by the sweeper
+	// paths — this worker never re-drives it).
 	if h.agentdTerminus {
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
+		}
 		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
 	}
-	if e.Attempts > 0 || e.VerifyAttempts > 0 {
+	// Non-terminus: a fresh entry (no attempt driven) is gated before
+	// any delivery; entries WITH a prior attempt keep the #987
+	// reconciliation: text that landed completes; text that never
+	// landed is gated before its re-send.
+	if e.Attempts == 0 && e.VerifyAttempts == 0 {
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
+		}
+	} else {
 		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
 			return nil // prior attempt confirmed in the transcript — complete without re-sending
+		}
+		// The prior attempt never landed; a re-send into an archived
+		// session is still a post-archive delivery — refuse it.
+		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
+			return err
 		}
 	}
 	var model *session.ModelRef

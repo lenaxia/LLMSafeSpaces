@@ -110,6 +110,10 @@ func (m *MockWorkspaceService) MarkSessionSeen(ctx context.Context, userID, work
 	return m.Called(ctx, userID, workspaceID, sessionID).Error(0)
 }
 
+func (m *MockWorkspaceService) SetSessionArchived(ctx context.Context, userID, workspaceID, sessionID string, archived bool) error {
+	return m.Called(ctx, userID, workspaceID, sessionID, archived).Error(0)
+}
+
 func (m *MockWorkspaceService) RenameWorkspace(ctx context.Context, userID, workspaceID, name string) error {
 	return m.Called(ctx, userID, workspaceID, name).Error(0)
 }

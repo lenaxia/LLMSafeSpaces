@@ -241,6 +241,15 @@ func (m *MockDatabaseService) UpdateSessionLastSeen(ctx context.Context, workspa
 	return m.Called(ctx, workspaceID, sessionID).Error(0)
 }
 
+func (m *MockDatabaseService) SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	return m.Called(ctx, workspaceID, sessionID, archived).Error(0)
+}
+
+func (m *MockDatabaseService) IsSessionArchived(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	args := m.Called(ctx, workspaceID, sessionID)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockDatabaseService) ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error) {
 	args := m.Called(ctx)
 	if args.Get(0) == nil {

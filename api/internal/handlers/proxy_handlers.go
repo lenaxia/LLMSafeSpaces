@@ -122,6 +122,11 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	}
 	defer h.releaseConnection(wid)
 
+	// #1627: read-only gate BEFORE the slot reservation — an archived
+	// session must not consume a session-limit slot on its way to a 409.
+	if h.rejectIfArchived(c, wid, sid) {
+		return
+	}
 	if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
 		return
 	}
@@ -247,6 +252,12 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		}
 		defer h.releaseConnection(wid)
 
+		// #1627: the outbox must not become the archive bypass —
+		// refuse BEFORE accept (nothing is enqueued for an archived
+		// session).
+		if h.rejectIfArchived(c, wid, sid) {
+			return
+		}
 		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
 			return
 		}
@@ -910,6 +921,11 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 			return
 		}
 		defer h.releaseConnection(wid)
+		// #1627: same read-only gate as /prompt — the two accepts are
+		// one path (D3), one enforcement.
+		if h.rejectIfArchived(c, wid, sid) {
+			return
+		}
 		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
 			return
 		}
@@ -955,6 +971,10 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 	}
 	defer h.releaseConnection(wid)
 
+	// #1627: the no-outbox fallback enforces the same read-only gate.
+	if h.rejectIfArchived(c, wid, sid) {
+		return
+	}
 	if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
 		return
 	}
@@ -1129,6 +1149,13 @@ func (h *ProxyHandler) RetryQueueMessage(c *gin.Context) {
 	}
 	if h.outbox == nil {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "queue retry requires the outbox"})
+		return
+	}
+	// #1627 (review round 1 finding 4): retrying into an archived
+	// session would re-arm an entry the delivery pass terminally
+	// refuses — the client must learn the send cannot succeed, not a
+	// 2xx for a dead letter.
+	if h.rejectIfArchived(c, wid, sid) {
 		return
 	}
 	switch h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {

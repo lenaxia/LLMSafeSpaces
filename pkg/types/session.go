@@ -69,6 +69,10 @@ type SessionListItem struct {
 	HasUnread     bool       `json:"hasUnread"`
 	ContextUsed   *int64     `json:"contextUsed,omitempty"`
 	Origin        string     `json:"origin,omitempty"` // manual | routine | workflow | api
+	// Archived is the platform-level read-only marker (#1627). ABSENT
+	// means NOT archived — the flag is omitempty for backward
+	// compatibility with every existing client.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // ActiveSessionsResponse is returned by GET /workspaces/:id/sessions/active.

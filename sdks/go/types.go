@@ -289,6 +289,10 @@ type SessionListItem struct {
 	LastMessageAt *time.Time `json:"lastMessageAt,omitempty"`
 	MessageCount  int        `json:"messageCount"`
 	Status        string     `json:"status"`
+	// Archived is present (true) only for archived sessions — ABSENT
+	// means not archived (#1627). Archived sessions are read-only at
+	// the proxy (sends 409 session_archived); history stays viewable.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // Session is the platform-owned view of one agent session (pkg/session

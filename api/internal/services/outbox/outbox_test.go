@@ -786,3 +786,35 @@ func TestDeliverOnce_OnStagedFiresBeforeDelivererReturns(t *testing.T) {
 		t.Fatal("onStaged did not fire while the deliverer was still running")
 	}
 }
+
+// #1627: a terminal delivery failure (the session was archived after
+// accept) parks IMMEDIATELY as error — no attempts, no backoff. The
+// recovery path is unarchive + a new send, never retry.
+func TestDeliverOnce_TerminalError_ParksImmediately(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-1", "m1", nil)
+	require.NoError(t, err)
+
+	delivererCalls := 0
+	ok := s.DeliverOnce(ctx, "ws-a", "ses-1", func(ctx context.Context, ws, ses string, e Entry) error {
+		delivererCalls++
+		return Terminal(errors.New("session archived (409 session_archived)"))
+	})
+	require.True(t, ok)
+
+	entries, err := s.List(ctx, "ws-a", "ses-1")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusError, entries[0].Status, "terminal failures park on the first pass")
+	assert.Equal(t, 0, entries[0].Attempts, "no attempt may be minted — nothing reached the pod")
+	assert.Contains(t, entries[0].LastError, "session archived")
+
+	// A second sweep must NOT re-pick the parked entry.
+	ok = s.DeliverOnce(ctx, "ws-a", "ses-1", func(ctx context.Context, ws, ses string, e Entry) error {
+		delivererCalls++
+		return nil
+	})
+	assert.False(t, ok, "parked terminal entries are not retried")
+	assert.Equal(t, 1, delivererCalls)
+}

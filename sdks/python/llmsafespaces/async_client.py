@@ -438,6 +438,20 @@ class _AsyncSessionsAPI:
             f"/workspaces/{workspace_id}/sessions/{session_id}/seen",
         )
 
+    async def set_archived(self, workspace_id: str, session_id: str, archived: bool) -> None:
+        """Archive (True) or unarchive (False) a session.
+
+        Archived sessions are read-only: chat sends are rejected with
+        409 ``session_archived``, history stays viewable, and
+        unarchiving restores chat instantly. The agent-side session is
+        untouched.
+        """
+        await self._c._request(
+            "PUT",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/archived",
+            json={"archived": archived},
+        )
+
 
 class _AsyncAuthAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):

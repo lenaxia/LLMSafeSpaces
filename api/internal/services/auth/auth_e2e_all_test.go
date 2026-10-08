@@ -239,6 +239,12 @@ func (m *apiKeyAwareDB) GetUserByEmail(_ context.Context, email string) (*types.
 	}
 	return nil, nil
 }
+func (m *apiKeyAwareDB) SetSessionArchivedStatus(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (m *apiKeyAwareDB) IsSessionArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
 func (m *apiKeyAwareDB) CreateUser(_ context.Context, u *types.User) error {
 	cp := *u
 	m.users[u.ID] = &cp

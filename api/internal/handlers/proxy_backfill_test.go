@@ -56,6 +56,12 @@ func (r *recordingSessionIndex) RebuildMessageCount(_ context.Context, _, _ stri
 }
 
 func (r *recordingSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
+func (r *recordingSessionIndex) SetArchived(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (r *recordingSessionIndex) IsArchived(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
 func (r *recordingSessionIndex) UpsertContextUsed(_ context.Context, _, _ string, _ int64) error {
 	return nil
 }

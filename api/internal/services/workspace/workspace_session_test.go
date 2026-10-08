@@ -13,6 +13,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -51,6 +52,13 @@ func (m *mockSessionIndex) RebuildMessageCount(ctx context.Context, workspaceID,
 
 func (m *mockSessionIndex) UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error {
 	return m.Called(ctx, workspaceID, sessionID).Error(0)
+}
+func (m *mockSessionIndex) SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error {
+	return m.Called(ctx, workspaceID, sessionID, archived).Error(0)
+}
+func (m *mockSessionIndex) IsArchived(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	args := m.Called(ctx, workspaceID, sessionID)
+	return args.Bool(0), args.Error(1)
 }
 func (m *mockSessionIndex) UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	return m.Called(ctx, workspaceID, sessionID, contextUsed).Error(0)
@@ -197,4 +205,67 @@ func TestMarkSessionSeen_NilSessionIndex_NoError(t *testing.T) {
 
 	err := f.svc.MarkSessionSeen(context.Background(), "user-1", "ws-1", "s1")
 	assert.NoError(t, err)
+}
+
+func TestSetSessionArchived_DelegatesToSessionIndex(t *testing.T) {
+	f := newFixture(t)
+	si := &mockSessionIndex{}
+	f.svc.SetSessionIndex(si)
+
+	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{
+		ID: "ws-1", UserID: "user-1",
+	}, nil)
+	si.On("SetArchived", mock.Anything, "ws-1", "s1", true).Return(nil)
+	si.On("SetArchived", mock.Anything, "ws-1", "s1", false).Return(nil)
+
+	assert.NoError(t, f.svc.SetSessionArchived(context.Background(), "user-1", "ws-1", "s1", true))
+	si.AssertCalled(t, "SetArchived", mock.Anything, "ws-1", "s1", true)
+
+	assert.NoError(t, f.svc.SetSessionArchived(context.Background(), "user-1", "ws-1", "s1", false))
+	si.AssertCalled(t, "SetArchived", mock.Anything, "ws-1", "s1", false)
+}
+
+func TestSetSessionArchived_WrongOwner_Forbidden(t *testing.T) {
+	f := newFixture(t)
+
+	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{
+		ID: "ws-1", UserID: "other-user",
+	}, nil)
+
+	err := f.svc.SetSessionArchived(context.Background(), "user-1", "ws-1", "s1", true)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not have access to workspace")
+}
+
+func TestSetSessionArchived_NilSessionIndex_ReturnsError(t *testing.T) {
+	f := newFixture(t)
+
+	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{
+		ID: "ws-1", UserID: "user-1",
+	}, nil)
+
+	// Divergence from the seen/rename no-op precedent: archive is a
+	// state TRANSITION the caller will rely on (read-only enforcement).
+	// A silent no-op would report success while sends keep flowing.
+	err := f.svc.SetSessionArchived(context.Background(), "user-1", "ws-1", "s1", true)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "session index unavailable")
+}
+
+func TestSetSessionArchived_NotIndexed_NotFoundPropagates(t *testing.T) {
+	f := newFixture(t)
+	si := &mockSessionIndex{}
+	f.svc.SetSessionIndex(si)
+
+	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{
+		ID: "ws-1", UserID: "user-1",
+	}, nil)
+	si.On("SetArchived", mock.Anything, "ws-1", "s1", true).
+		Return(apierrors.NewNotFoundError("session", "s1", nil))
+
+	err := f.svc.SetSessionArchived(context.Background(), "user-1", "ws-1", "s1", true)
+	assert.Error(t, err)
+	var apiErr *apierrors.APIError
+	assert.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, 404, apiErr.StatusCode())
 }
