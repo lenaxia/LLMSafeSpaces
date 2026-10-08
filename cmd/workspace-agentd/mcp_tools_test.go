@@ -1081,9 +1081,7 @@ func TestCallMCPTool_SessionMetadata(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	t.Setenv("WORKSPACE_ID", "ws-dispatch")
 
-	// all_sessions:true — the dispatch-plumbing pin stays scope-stable
-	// under the #1627 default (bare args would error by design).
-	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{"all_sessions": true})
+	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{})
 	require.NoError(t, err)
 	assert.Contains(t, out, "ws-dispatch")
 }
