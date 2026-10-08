@@ -171,11 +171,12 @@ describe("Sidebar — archived sessions group (#1627)", () => {
 // Review r1: a rejected archive call must leave the cache untouched —
 // no invalidation, no refetch, the row stays live (cache changes only
 // on server confirm or SSE).
-it("kebab Archive on API failure: no refetch, row unchanged", async () => {
+it("kebab Archive on API failure: no refetch, row unchanged, alert fired", async () => {
   (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
     session("ses-live", "Live work"),
   ]);
   (workspacesApi.setSessionArchived as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network down"));
+  const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
   renderSidebar("/chat/ws-1/ses-live");
   await waitFor(() => expect(screen.getByText("Live work")).toBeTruthy());
   const fetchCount = (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -192,5 +193,7 @@ it("kebab Archive on API failure: no refetch, row unchanged", async () => {
   expect((workspacesApi.getSessions as ReturnType<typeof vi.fn>).mock.calls.length).toBe(fetchCount);
   expect(screen.getByText("Live work")).toBeTruthy();
   expect(screen.queryByTestId("archived-group")).toBeNull();
+  // The failure must not be silent — the siblings' feedback contract.
+  expect(alertSpy).toHaveBeenCalledWith("Failed to change archive state.");
 });
 });

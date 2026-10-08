@@ -52,10 +52,11 @@ None.
 
 ## Tests Run
 
-- `npx vitest run src/components/layout/Sidebar.archived.test.tsx` — 6 tests (no-group-when-empty, collapsed+count+hidden-from-tree, expand-on-click, stays-collapsed-when-selected, kebab Archive→(ws,sid,true), kebab Unarchive→(ws,sid,false))
-- `npx vitest run src/providers/SessionActivityProvider.test.tsx` — 95 (94 existing + the archived/unarchived cache-flip pin)
+- `npx vitest run src/components/layout/Sidebar.archived.test.tsx` — 7 tests (no-group-when-empty, collapsed+count+hidden-from-tree, expand-on-click, stays-collapsed-when-selected, kebab Archive→(ws,sid,true), kebab Unarchive→(ws,sid,false), API-failure→no-refetch+alert-fired)
+- `npx vitest run src/providers/SessionActivityProvider.test.tsx` — 97 (flip both directions with in-based ABSENT assertion, unknown-id no-op)
 - `npx vitest run src/pages/ChatPage.archived.test.tsx` — 2 (banner+no-composer on archived; composer on live)
-- Full sweep `npx vitest run src/pages/ src/components/ src/providers/ src/api/` — 1565 passed
+- `npx playwright test tests/e2e/archive.spec.ts` — 4/4 (review r1 tier: archive→group, read-only view, unarchive→composer, 500→stable)
+- Full sweep `npx vitest run src/pages/ src/components/ src/providers/ src/api/` — 1567 passed
 - `tsc --noEmit` — clean; `npm run lint` — 0 errors (6 pre-existing warnings in generated protobuf files, untouched)
 
 ---

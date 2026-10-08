@@ -797,13 +797,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           if (existing) {
             queryClient.setQueryData(sessionsKey, (old: unknown) => {
               if (!Array.isArray(old)) return old;
-              return old.map((s: Record<string, unknown>) =>
-                s.id === evt.session_id
-                  ? archived
-                    ? { ...s, archived: true }
-                    : { ...s, archived: undefined }
-                  : s
-              );
+              return old.map((s: Record<string, unknown>) => {
+                if (s.id !== evt.session_id) return s;
+                if (archived) return { ...s, archived: true };
+                // Unarchive restores the ABSENT-means-not-archived wire
+                // contract — delete the key rather than parking an
+                // explicit undefined on the cached row.
+                const next = { ...s };
+                delete next.archived;
+                return next;
+              });
             });
           }
         }

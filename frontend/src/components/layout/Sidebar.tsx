@@ -507,7 +507,6 @@ function WorkspaceGroup({
           creatingSession={creatingSession}
           isSuspended={isSuspended || isResuming}
           onRenameSession={onRenameSession}
-
           onArchiveSession={onArchiveSession}
           onDeleteSession={onDeleteSession}
           onAbortSession={onAbortSession}
@@ -767,7 +766,6 @@ function WorkspaceSessionList({
               onToggleExpand={toggleExpanded}
               onSelectSession={onSelectSession}
               onRenameSession={onRenameSession}
-
               onArchiveSession={onArchiveSession}
               onDeleteSession={onDeleteSession}
               onAbortSession={onAbortSession}
@@ -790,7 +788,6 @@ function WorkspaceSessionList({
               onChildToggleExpand={toggleExpanded}
               onSelectSession={onSelectSession}
               onRenameSession={onRenameSession}
-
               onArchiveSession={onArchiveSession}
               onDeleteSession={onDeleteSession}
               onAbortSession={onAbortSession}
@@ -1025,7 +1022,6 @@ function SessionTreeRow({
             onToggleExpand={onToggleExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
-
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onAbortSession={onAbortSession}
@@ -1115,7 +1111,6 @@ function OrphansGroup({
             onToggleExpand={onChildToggleExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
-
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onAbortSession={onAbortSession}

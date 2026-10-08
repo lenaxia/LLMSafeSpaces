@@ -2948,8 +2948,8 @@ describe("SessionActivityProvider — archived transitions (#1627)", () => {
     );
 
     const cacheSnapshot = () =>
-      (qc.getQueryData(["sessions", "ws-1"]) as { id: string; archived?: boolean }[])
-        .map((s) => s.id + ":" + (s.archived ? "archived" : "live"))
+      (qc.getQueryData(["sessions", "ws-1"]) as Record<string, unknown>[])
+        .map((s) => s.id + ":" + ("archived" in s ? "archived" : "live"))
         .join(",");
 
     act(() => {
