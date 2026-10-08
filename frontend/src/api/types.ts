@@ -79,6 +79,13 @@ export interface SessionListItem {
   contextUsed?: number;
   /** Session origin: manual | routine | workflow | api (from session_origins enrichment). */
   origin?: string;
+  /**
+   * Present and true when the session is archived (read-only: chat
+   * sends are rejected with 409 session_archived; history stays
+   * viewable; unarchiving restores chat instantly). ABSENT = not
+   * archived.
+   */
+  archived?: boolean;
 }
 
 /**

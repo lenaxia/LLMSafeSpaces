@@ -2921,3 +2921,45 @@ describe("useWhileAwayStalenessSweep (#1365, timer-driven)", () => {
     });
     expect(screen.getByTestId("pills").textContent).toBe("0");
   });
+
+// #1627: archive/unarchive transitions flip the sessions-list cache in
+// place so every open tab moves the session into/out of the Archived
+// group without a refetch.
+describe("SessionActivityProvider — archived transitions (#1627)", () => {
+  it("flips archived=true on the cached session and clears it on unarchive", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(["sessions", "ws-1"], [
+      { id: "sess-1", title: "One", messageCount: 1, status: "idle", hasUnread: false },
+      { id: "sess-2", title: "Two", messageCount: 1, status: "idle", hasUnread: false },
+    ]);
+
+    function Probe() {
+      return <SessionActivityProvider><div /></SessionActivityProvider>;
+    }
+
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
+          <Routes>
+            <Route path="/chat/:workspaceId/:sessionId" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const cacheSnapshot = () =>
+      (qc.getQueryData(["sessions", "ws-1"]) as { id: string; archived?: boolean }[])
+        .map((s) => s.id + ":" + (s.archived ? "archived" : "live"))
+        .join(",");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-2", status: "archived" });
+    });
+    expect(cacheSnapshot()).toBe("sess-1:live,sess-2:archived");
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "sess-2", status: "unarchived" });
+    });
+    expect(cacheSnapshot()).toBe("sess-1:live,sess-2:live");
+  });
+});

@@ -100,6 +100,10 @@ export const workspacesApi = {
     api.post<Record<string, unknown>>(`/workspaces/${workspaceId}/sessions/${sessionId}/actions`, action),
   markSessionSeen: (workspaceId: string, sessionId: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/seen`),
+  // #1627: archive (true) / unarchive (false). Archived sessions are
+  // read-only (sends 409 session_archived); history stays viewable.
+  setSessionArchived: (workspaceId: string, sessionId: string, archived: boolean) =>
+    api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/archived`, { archived }),
   renameWorkspace: (workspaceId: string, name: string) =>
     api.put<void>(`/workspaces/${workspaceId}`, { name }),
   deleteWorkspace: (workspaceId: string) =>
