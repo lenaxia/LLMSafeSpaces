@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.20] - 2026-10-08
+
+### Added — session archiving (#1627)
+
+- **Archive/unarchive across the stack** (three-PR feature): the
+  sessions API gains a reversible archived marker (migration + PUT
+  endpoint + SDKs) (#1628); archived sessions are read-only end-to-end
+  (the proxy 409s sends with session_archived) while history stays
+  viewable. agentd carries `session_archive` (REQUIRED direction
+  boolean — no default; a malformed call refuses rather than guessing)
+  and `delete_session` (HARD delete, both platform index and agent
+  store; refuses to delete the caller's own running session — injected
+  origin first, single-busy fallback for degraded pods) (#1631);
+  `session_metadata` now defaults to the CURRENT session only
+  (all_sessions:true preserves the old behavior — a BREAKING default
+  change), listings annotate archived state via a 15s stale-tolerant
+  cache, and the freeze-pin e2e legs serve the real tool catalog on
+  tools/list so origin dispatch is exercised end-to-end. The frontend
+  sidebar adds an always-collapsed Archived group with count, kebab
+  archive/unarchive actions (alert on failure, no refetch on reject),
+  unarchive restores the ABSENT-means-not-archived wire contract on
+  the cached row, archived views render a read-only banner with the
+  composer hidden, and SSE archived/unarchived events converge every
+  tab's cache (#1633). Adversarially reviewed (multiple rounds per PR)
+  and merge-gated on mutation-verified pins.
+
+### Fixed — the sidebar edge gesture, done right (#1629, #1630)
+
+- **overscroll-behavior-x: none replaces the 0.34.19 interim
+  inward-offset handle**: the CSS-native surrender (Chrome 63+,
+  Safari 16+) hands the absolute screen edge to the OS back-gesture
+  while the full edge still opens the sidebar — no JS coordinate
+  arithmetic, no dead strips, no safe-area coupling. The 0.34.19
+  drag-handle strip (owner-reported "horrible experience") is
+  superseded; this is the platform-blessed mechanism the original
+  implementation should have found.
+
 ## [0.34.19] - 2026-10-07
 
 ### Fixed — the sidebar swipe/back-gesture conflict (#1623/#1626)
