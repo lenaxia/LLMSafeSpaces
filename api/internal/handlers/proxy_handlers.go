@@ -757,8 +757,16 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	// adapter flag-off), then run the post-delete side effects
 	// (tombstone, session index cleanup, SSE tombstone publish).
 	if err := h.HardDeleteSession(c.Request.Context(), workspaceID, sid); err != nil {
-		// #817: same observability gap — log the underlying error.
-		h.logger.Error("DeleteSession: hard delete failed", err,
+		// #817: same observability gap — log the underlying error. The
+		// messages stay byte-identical to the pre-extraction handler:
+		// they are the #817 contract (pinned by
+		// TestDeleteSession_AdapterErrorLogged) and ops tooling keys on
+		// the regime discriminator.
+		delLog := "DeleteSession: adapter failed"
+		if h.agentdTerminus {
+			delLog = "DeleteSession: Act failed"
+		}
+		h.logger.Error(delLog, err,
 			"workspaceID", workspaceID, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
 		return
