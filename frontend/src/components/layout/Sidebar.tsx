@@ -157,6 +157,11 @@ export function Sidebar({ onNavigate }: Props) {
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
     },
+    // Same feedback contract as the adjacent kebab siblings (force stop,
+    // delete): a failed call alerts instead of closing the menu silently.
+    onError: () => {
+      try { window.alert("Failed to change archive state."); } catch { /* blocked */ }
+    },
   });
 
   const handleWorkspaceClick = (ws: WorkspaceListItem) => {

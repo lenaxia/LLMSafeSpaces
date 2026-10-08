@@ -167,4 +167,30 @@ describe("Sidebar — archived sessions group (#1627)", () => {
       expect(workspacesApi.setSessionArchived).toHaveBeenCalledWith("ws-1", "ses-old", false),
     );
   });
+
+// Review r1: a rejected archive call must leave the cache untouched —
+// no invalidation, no refetch, the row stays live (cache changes only
+// on server confirm or SSE).
+it("kebab Archive on API failure: no refetch, row unchanged", async () => {
+  (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+    session("ses-live", "Live work"),
+  ]);
+  (workspacesApi.setSessionArchived as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network down"));
+  renderSidebar("/chat/ws-1/ses-live");
+  await waitFor(() => expect(screen.getByText("Live work")).toBeTruthy());
+  const fetchCount = (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mock.calls.length;
+
+  const buttons = screen.getAllByLabelText("Actions");
+  fireEvent.click(buttons[buttons.length - 1]!);
+  fireEvent.click(await screen.findByText("Archive"));
+
+  await waitFor(() =>
+    expect(workspacesApi.setSessionArchived).toHaveBeenCalledWith("ws-1", "ses-live", true),
+  );
+  // Give any (wrong) invalidation a chance to fire, then assert none did.
+  await new Promise((r) => setTimeout(r, 50));
+  expect((workspacesApi.getSessions as ReturnType<typeof vi.fn>).mock.calls.length).toBe(fetchCount);
+  expect(screen.getByText("Live work")).toBeTruthy();
+  expect(screen.queryByTestId("archived-group")).toBeNull();
+});
 });

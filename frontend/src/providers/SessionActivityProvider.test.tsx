@@ -2963,3 +2963,34 @@ describe("SessionActivityProvider — archived transitions (#1627)", () => {
     expect(cacheSnapshot()).toBe("sess-1:live,sess-2:live");
   });
 });
+
+// #1627 edge: an archived/unarchived event naming a session absent
+// from the cached list is a no-op — no crash, no cache mutation.
+describe("SessionActivityProvider — archived edge (#1627)", () => {
+  it("event for an unknown session id is a no-op", () => {
+    const qc = new QueryClient();
+    const before = [
+      { id: "sess-1", title: "One", messageCount: 1, status: "idle", hasUnread: false },
+    ];
+    qc.setQueryData(["sessions", "ws-1"], before);
+
+    function Probe() {
+      return <SessionActivityProvider><div /></SessionActivityProvider>;
+    }
+
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
+          <Routes>
+            <Route path="/chat/:workspaceId/:sessionId" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      capturedOnEvent!({ type: "session.status", workspace_id: "ws-1", session_id: "ses-unknown", status: "archived" });
+    });
+    expect(qc.getQueryData(["sessions", "ws-1"])).toEqual(before);
+  });
+});
