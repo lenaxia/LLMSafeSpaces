@@ -857,7 +857,7 @@ func TestMCPSessionMetadata_AllSessions(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	t.Setenv("WORKSPACE_ID", "ws-meta")
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "")
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -892,7 +892,7 @@ func TestMCPSessionMetadata_SingleSession(t *testing.T) {
 	f.newSession("two")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, s1)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, s1, "", false)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -902,7 +902,7 @@ func TestMCPSessionMetadata_SingleSession(t *testing.T) {
 func TestMCPSessionMetadata_UnknownSession(t *testing.T) {
 	f := newFakeAgent()
 	withAgentServer(t, f.handler(t))
-	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "ses_absent")
+	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "ses_absent", "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -917,7 +917,7 @@ func TestMCPSessionMetadata_Secrecy(t *testing.T) {
 	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
 	t.Setenv("AGENTD_ADMIN_TOKEN", "super-secret-admin-token")
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "")
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
 	require.NoError(t, err)
 	for _, forbidden := range []string{
 		mcpTestPassword,
@@ -1081,7 +1081,9 @@ func TestCallMCPTool_SessionMetadata(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	t.Setenv("WORKSPACE_ID", "ws-dispatch")
 
-	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{})
+	// all_sessions:true — the dispatch-plumbing pin stays scope-stable
+	// under the #1627 default (bare args would error by design).
+	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_metadata", map[string]any{"all_sessions": true})
 	require.NoError(t, err)
 	assert.Contains(t, out, "ws-dispatch")
 }

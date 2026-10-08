@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -549,19 +550,190 @@ type getDatetimeResult struct {
 	Source    string `json:"source"`
 }
 
+// --- session archive / delete (#1627) --------------------------------------
+
+// podPlatformClient resolves the pod-identity deps and returns a client
+// pointed at the platform's internal API (the automation transport).
+func podPlatformClient() (*opencode.Client, string, string, error) {
+	saToken, apiURL, workspaceID, err := automationDeps()
+	if err != nil {
+		return nil, "", "", err
+	}
+	return opencode.NewLoopbackClient(apiURL, ""), saToken, workspaceID, nil
+}
+
+// mcpSessionArchive archives (true) or unarchives (false) a session of
+// THIS workspace via the platform. Archiving is a PLATFORM-level
+// read-only marker: the agent-side history is untouched, the user's
+// chat sends to that session are rejected with 409 session_archived,
+// history stays viewable, and unarchiving restores chat instantly.
+// In-pod peer sends are NOT blocked (enforcement is proxy-side by the
+// owner's ruling) — the marker is for the USER's session list.
+func mcpSessionArchive(ctx context.Context, sessionID string, archived bool) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	client, saToken, workspaceID, err := podPlatformClient()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := client.SessionArchive(ctx, saToken, workspaceID, sessionID, archived); err != nil {
+		return "", fmt.Errorf("failed to archive session: %w", err)
+	}
+	status := "archived"
+	if !archived {
+		status = "unarchived"
+	}
+	out, _ := json.Marshal(map[string]string{
+		"status":     status,
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}
+
+// mcpDeleteSession HARD-deletes a session — both sides: the platform's
+// index entry AND the agent-side session in this workspace's store.
+// There is no undo; archived is not deleted (archive is the reversible
+// one). Refuses to delete the caller's OWN current session: that turn
+// is still running, and the tool result would have nowhere to land
+// (the abort_session convention).
+func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	// Self-delete guard: the plugin-injected current session first; on
+	// a degraded pod (no working plugin) the single busy session IS the
+	// caller — the same fallback the metadata default uses (review r1
+	// finding 4: without it the guard is inert exactly where the
+	// plugin is missing). Ambiguity (0 or multiple busy) allows the
+	// delete: the target is an explicitly named ID, not a guess.
+	self := strings.TrimSpace(injectedSession)
+	if self == "" {
+		client := seamClientWithPassword(password)
+		if busy, err := client.GetSessionStatuses(ctx); err == nil {
+			var busyIDs []string
+			for id, st := range busy {
+				if st == "busy" || st == "retry" {
+					busyIDs = append(busyIDs, id)
+				}
+			}
+			if len(busyIDs) == 1 {
+				self = busyIDs[0]
+			}
+		}
+	}
+	if self != "" && sessionID == self {
+		return "", fmt.Errorf("refusing to delete your own current session — its turn (this tool call) is still running; finish your turn and let the user or a peer session delete it, or ask the user")
+	}
+	client, saToken, workspaceID, err := podPlatformClient()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := client.PlatformSessionDelete(ctx, saToken, workspaceID, sessionID); err != nil {
+		return "", fmt.Errorf("failed to delete session: %w", err)
+	}
+	out, _ := json.Marshal(map[string]string{
+		"status":     "deleted",
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}
+
 // --- session_metadata -----------------------------------------------------
+
+// archivedSetCache serves the platform's archived-session set for the
+// metadata annotation (#1627 §4: MCP listings carry archive status).
+// One workspace per pod; ~15s TTL (the readyz providerCache
+// convention). On fetch failure the last known set is served stale —
+// the annotation is advisory and must never fail the tool.
+var (
+	archivedSetCacheMu  sync.Mutex
+	archivedSetCacheVal map[string]bool
+	archivedSetCacheAt  time.Time
+)
+
+const archivedSetCacheTTL = 15 * time.Second
+
+func archivedSessionSet(ctx context.Context) map[string]bool {
+	archivedSetCacheMu.Lock()
+	if !archivedSetCacheAt.IsZero() && time.Since(archivedSetCacheAt) < archivedSetCacheTTL {
+		cached := archivedSetCacheVal
+		archivedSetCacheMu.Unlock()
+		return cached
+	}
+	archivedSetCacheMu.Unlock()
+
+	fetched := fetchArchivedSessionSet(ctx)
+	archivedSetCacheMu.Lock()
+	archivedSetCacheAt = time.Now()
+	if fetched != nil {
+		archivedSetCacheVal = fetched
+	}
+	archivedSetCacheMu.Unlock()
+	return archivedSetCacheVal
+}
+
+// fetchArchivedSessionSet pulls the archived IDs from the platform's
+// pod-identity endpoint. Nil on ANY failure (degrade silently — an
+// unreachable platform must not break metadata, and fetch errors must
+// not leak origins into tool output).
+func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
+	client, saToken, workspaceID, err := podPlatformClient()
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ids, err := client.SessionArchivedSet(ctx, saToken, workspaceID)
+	if err != nil {
+		return nil
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
 
 // mcpSessionMetadata aggregates read-only workspace + session vitals:
 // per-session title/model/age/tokens/message-count/context fill, busy
 // flags, and the workspace's own identity.
 //
+// Scope resolution (#1627 ruling 5, BREAKING): an explicit session_id
+// wins; otherwise the DEFAULT is the CURRENT session only — the
+// plugin-injected lsp_injected_session when present, else the single
+// busy session (the calling session — the compact fallback for pods
+// without a working plugin). all_sessions=true preserves the OLD
+// every-session behavior explicitly.
+//
 // Security posture: every field is either already exposed by
 // session_list/session_read (strictly more sensitive surfaces behind
 // the same Basic gate) or is public pod identity (WORKSPACE_ID). No
 // env values, credentials, tokens, or platform internals are included.
-func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string, error) {
+func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSession string, allSessions bool) (string, error) {
 	client := seamClientWithPassword(password)
 	sessionID = strings.TrimSpace(sessionID)
+	injectedSession = strings.TrimSpace(injectedSession)
+
+	scope := sessionID
+	if scope == "" && !allSessions {
+		switch {
+		case injectedSession != "":
+			scope = injectedSession
+		default:
+			resolved, err := resolveSingleBusySession(ctx, client)
+			if err != nil {
+				return "", fmt.Errorf("no explicit session_id and no injectable current session — pass session_id explicitly, or all_sessions:true for every session: %v", err)
+			}
+			scope = resolved
+		}
+	}
 
 	sessions, err := client.SessionList(ctx)
 	if err != nil {
@@ -571,9 +743,10 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 	if err != nil {
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
 	}
+	archivedSet := archivedSessionSet(ctx)
 
 	match := func(s opencode.SessionSummary) bool {
-		return sessionID == "" || s.ID == sessionID
+		return scope == "" || s.ID == scope
 	}
 	type sessionMeta struct {
 		ID            string  `json:"session_id"`
@@ -581,6 +754,7 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 		Agent         string  `json:"agent,omitempty"`
 		Model         string  `json:"model,omitempty"`
 		Busy          bool    `json:"busy"`
+		Archived      bool    `json:"archived,omitempty"`
 		CreatedAt     string  `json:"created_at,omitempty"`
 		UpdatedAt     string  `json:"updated_at,omitempty"`
 		Age           string  `json:"age,omitempty"`
@@ -597,10 +771,11 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 			continue
 		}
 		m := sessionMeta{
-			ID:    s.ID,
-			Title: s.Title,
-			Agent: s.Agent,
-			Busy:  busy[s.ID] == "busy" || busy[s.ID] == "retry",
+			ID:       s.ID,
+			Title:    s.Title,
+			Agent:    s.Agent,
+			Busy:     busy[s.ID] == "busy" || busy[s.ID] == "retry",
+			Archived: archivedSet[s.ID],
 		}
 		if s.Time.Created > 0 {
 			created := time.UnixMilli(s.Time.Created)
@@ -631,8 +806,8 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 		}
 		metas = append(metas, m)
 	}
-	if sessionID != "" && len(metas) == 0 {
-		return "", fmt.Errorf("session %s not found", sessionID)
+	if scope != "" && len(metas) == 0 {
+		return "", fmt.Errorf("session %s not found", scope)
 	}
 
 	version := ""

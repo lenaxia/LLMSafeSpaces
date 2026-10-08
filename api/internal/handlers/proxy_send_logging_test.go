@@ -195,3 +195,25 @@ func TestBulkReloadOne_MalformedPodIP_NDJSONErrorRow(t *testing.T) {
 	assert.NotEmpty(t, errStr)
 	assert.Equal(t, "agent_reload_url_invalid", row["code"])
 }
+
+// The terminus-regime leg of the restored #817 contract (review r2
+// advisory): the log discriminates the Act regime.
+func TestDeleteSession_ActErrorLogged(t *testing.T) {
+	log, logs := logger.NewObserved()
+
+	env := newTestEnvWithBackendAndLogger(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"act exploded"}`, http.StatusBadGateway)
+	}, log)
+	env.handler.SetAgentdTerminus(true)
+	env.setupWorkspacePodWithT(t, "ws-log4", "10.0.0.1", "Active", "ws-log4")
+	env.setupPasswordWithT(t, "ws-log4", "test-password")
+	env.setupWorkspaceWithT(t, "ws-log4", 5)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces/ws-log4/sessions/ses_1", nil)
+	env.router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	errLogs := logs.FilterMessage("DeleteSession: Act failed")
+	require.NotEmpty(t, errLogs.All(), "the Act regime's delete failure must log under its own discriminator")
+}

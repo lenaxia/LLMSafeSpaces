@@ -850,6 +850,58 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		}
 	})
 
+	// #1627: the owner's clear-instructions ruling — the archive and
+	// delete tools' descriptions are contract; every load-bearing
+	// element (what it does, what it does NOT do, direction of the
+	// boolean, destructiveness, undo-ability) is pinned.
+	t.Run("session_archive guidance", func(t *testing.T) {
+		d, ok := descs["session_archive"]
+		require.True(t, ok, "session_archive in tools/list")
+		for _, want := range []string{
+			"reversible, never destructive",          // the safety contrast with delete
+			"READ-ONLY for the user",                 // what archiving means
+			"history stays fully viewable",           // read-only ≠ hidden
+			"NOT blocked",                            // in-pod peer traffic keeps flowing
+			"delete_session is the destructive tool", // the decision rule
+			"restores chat instantly",                // unarchive semantics
+			"NOT for deleting",                       // negative scope
+		} {
+			assert.Contains(t, d, want)
+		}
+		sd, ok := schemaDescs["session_archive/archived"]
+		require.True(t, ok, "session_archive/archived schema description present")
+		assert.Contains(t, sd, "REQUIRED DIRECTION", "the boolean's effect must be unmissable (owner ruling)")
+		assert.Contains(t, sd, "true = ARCHIVE")
+		assert.Contains(t, sd, "false = UNARCHIVE")
+	})
+
+	t.Run("delete_session guidance", func(t *testing.T) {
+		d, ok := descs["delete_session"]
+		require.True(t, ok, "delete_session in tools/list")
+		for _, want := range []string{
+			"HARD DELETE, no undo",      // destructiveness named up front
+			"BOTH",                      // both sides die (platform + agent store)
+			"not archive",               // the archive/delete distinction
+			"deletion cannot be undone", // the decision rule
+			"Refuses to delete YOUR OWN current session", // self-delete guard stated
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("session_metadata scope-change guidance", func(t *testing.T) {
+		d, ok := descs["session_metadata"]
+		require.True(t, ok, "session_metadata in tools/list")
+		for _, want := range []string{
+			"breaking change",                          // the default flip is named as such
+			"YOUR CURRENT SESSION ONLY",                // the new default
+			"all_sessions:true",                        // the old behavior's explicit path
+			"archived:true are read-only for the user", // archive-status semantics in listings
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("session_read guidance", func(t *testing.T) {
 		d, ok := descs["session_read"]
 		require.True(t, ok, "session_read in tools/list")

@@ -206,7 +206,7 @@ type RouterConfig struct {
 	// init container has no user identity); auth is the TokenReview itself.
 	PodBootstrapHandler *handlers.PodBootstrapHandler
 
-	// PodWorkspaceRenameHandler, when non-nil, registers POST
+	// PodWorkspaceRenameHandler, when non-nil, registers
 	// /internal/v1/workspace-rename — the pod-identity path the agentd
 	// rename_workspace MCP tool calls. Same TokenReview auth contract as
 	// PodBootstrapHandler: the SA must be workspace-<id> in the expected
@@ -218,6 +218,11 @@ type RouterConfig struct {
 	// call — TokenReview-gated like the rename endpoint, delegating to
 	// the existing user handlers under the pod's resolved owner.
 	PodAutomationHandler *handlers.PodAutomationHandler
+
+	// PodSessionArchiveHandler, when non-nil, registers the pod-identity
+	// session archive/delete surface the agentd #1627 MCP tools call —
+	// TokenReview-gated like the rename endpoint.
+	PodSessionArchiveHandler *handlers.PodSessionArchiveHandler
 
 	// MCPServersHandler handles external MCP server CRUD for all three
 	// scopes (platform/org/user). Optional — when nil, no MCP routes are
@@ -1169,6 +1174,13 @@ func registerInternalPodRoutes(router *gin.Engine, cfg RouterConfig) {
 	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
 	if cfg.PodWorkspaceRenameHandler != nil {
 		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
+	}
+
+	// Pod-identity session archive/delete (agentd #1627 MCP tools).
+	if cfg.PodSessionArchiveHandler != nil {
+		router.POST("/internal/v1/session-archive", cfg.PodSessionArchiveHandler.Archive)
+		router.POST("/internal/v1/session-delete", cfg.PodSessionArchiveHandler.Delete)
+		router.GET("/internal/v1/session-archived", cfg.PodSessionArchiveHandler.ArchivedSet)
 	}
 
 	// Pod-identity automation CRUD (agentd trigger_/workflow_ MCP tools).
