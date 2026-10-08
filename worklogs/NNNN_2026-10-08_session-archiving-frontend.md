@@ -53,7 +53,7 @@ None.
 ## Tests Run
 
 - `npx vitest run src/components/layout/Sidebar.archived.test.tsx` — 7 tests (no-group-when-empty, collapsed+count+hidden-from-tree, expand-on-click, stays-collapsed-when-selected, kebab Archive→(ws,sid,true), kebab Unarchive→(ws,sid,false), API-failure→no-refetch+alert-fired)
-- `npx vitest run src/providers/SessionActivityProvider.test.tsx` — 96 (95 existing + the archived/unarchived flip with in-based ABSENT assertion; +1 describe-scoped unknown-id no-op leg — measured, not estimated)
+- `npx vitest run src/providers/SessionActivityProvider.test.tsx` — 96 (94 existing + the archived/unarchived flip with in-based ABSENT assertion + the unknown-id no-op leg; verified by run count)
 - `npx vitest run src/pages/ChatPage.archived.test.tsx` — 2 (banner+no-composer on archived; composer on live)
 - `npx playwright test tests/e2e/archive.spec.ts` — 4/4 (review r1 tier: archive→group, read-only view, unarchive→composer, 500→stable)
 - Full sweep `npx vitest run src/pages/ src/components/ src/providers/ src/api/` — 1567 passed
