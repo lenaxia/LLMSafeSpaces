@@ -462,7 +462,7 @@ paths:
       description: |
         #1601 out-of-band disk lever: sweeps the workspace pod's allowlisted
         build/package caches (go build+module, npm, pip, pnpm, cargo downloads,
-        mise downloads, stale /tmp/go-build residue) — never user data, logs,
+        mise downloads, mise cache, stale /tmp/go-build residue) — never user data, logs,
         or anything unrecoverable. Free-ENOUGH semantics: stops once the
         volume drops below the target ratio (~0.85), largest class first;
         idempotent. Pass dryRun=true for report-before-free (no mutation).
