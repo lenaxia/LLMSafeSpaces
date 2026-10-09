@@ -279,30 +279,6 @@ func buildStatuszHandler(
 	})
 }
 
-// buildReadyzHandler returns the /v1/readyz HTTP handler.
-//
-// Readiness semantics (design 0050 D4, #892): agentd up AND opencode's
-// port accepting TCP connections — NOT opencode responsiveness. Under
-// CPU starvation (incident 2026-08-15/16) an HTTP round-trip to
-// /global/health times out while opencode is alive and progressing;
-// readiness flapping on that signal dropped slow-but-alive pods for no
-// benefit, and the startup probe built on it killed containers mid-boot
-// (kubelet Killing events, restart churn). A TCP connect is answered by
-// the kernel for a listening socket regardless of the application's
-// event-loop health: refused = booting or dead, accepted = can take
-// traffic. It costs microseconds and involves no event-loop work, so it
-// is starvation-immune by construction.
-//
-// readyChecker, when non-nil, supplies that kernel-level answer. nil
-// (tests, partial wiring) preserves legacy semantics.
-//
-// Providers are reported from the provider cache's last-known values —
-// readiness never triggers a synchronous opencode fetch (the previous
-// cachedState call could block for seconds under load; see the statusz
-// comment below for that hazard).
-//
-// S18.10: providers_connected and readyz_first_200 startup gates are
-// recorded here on first observation.
 // buildAgentzHandler is the agent-health-derived LIVENESS endpoint
 // (#1632 fix #3): it fails (503) only when an unhealthy EPISODE has
 // persisted for at least agentUnhealthyEpisodeSustain.
@@ -384,6 +360,30 @@ func buildAgentzHandler(deps serverDeps) http.Handler {
 	})
 }
 
+// buildReadyzHandler returns the /v1/readyz HTTP handler.
+//
+// Readiness semantics (design 0050 D4, #892): agentd up AND opencode's
+// port accepting TCP connections — NOT opencode responsiveness. Under
+// CPU starvation (incident 2026-08-15/16) an HTTP round-trip to
+// /global/health times out while opencode is alive and progressing;
+// readiness flapping on that signal dropped slow-but-alive pods for no
+// benefit, and the startup probe built on it killed containers mid-boot
+// (kubelet Killing events, restart churn). A TCP connect is answered by
+// the kernel for a listening socket regardless of the application's
+// event-loop health: refused = booting or dead, accepted = can take
+// traffic. It costs microseconds and involves no event-loop work, so it
+// is starvation-immune by construction.
+//
+// readyChecker, when non-nil, supplies that kernel-level answer. nil
+// (tests, partial wiring) preserves legacy semantics.
+//
+// Providers are reported from the provider cache's last-known values —
+// readiness never triggers a synchronous opencode fetch (the previous
+// cachedState call could block for seconds under load; see the statusz
+// comment below for that hazard).
+//
+// S18.10: providers_connected and readyz_first_200 startup gates are
+// recorded here on first observation.
 func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

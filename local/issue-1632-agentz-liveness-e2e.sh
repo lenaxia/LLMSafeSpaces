@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
-# issue-1632-agentz-liveness-e2e.sh — #1632 fix #3 happy-path e2e:
-# the agentz liveness wiring on a LIVE sidecar-mode workspace.
+# issue-1632-agentz-liveness-e2e.sh — #1632 fix #3 e2e: the agentz
+# liveness wiring on a LIVE sidecar-mode workspace.
 #
-# Rows covered (the feasible-today set the review asked for):
-#   1. The workspace container's kubelet livenessProbe is HTTPGet
-#      /v1/agentz on the admin port WITH the bearer header, and the
-#      kernel-accept-blind tcpSocket probe is gone (spec-level).
-#   2. /v1/agentz on the live pod answers 401 WITHOUT the bearer and
-#      200 + ok:true WITH it (the F1.4.2 failure class — a mis-wired
-#      probe 401s/404s forever and restart-loops the container).
-#   3. A healthy workspace carries ZERO workspace-container restarts
-#      over the observation window (the probe is not firing blind).
+# STATUS: pending first harness-lane execution (authored r4; every path,
+# name, and label below verified against source — router mounts
+# /api/v1/workspaces (api/internal/server/router.go:484), lifecycle
+# delete is DELETE /:id (:1345), the controller Secret is workspace-pw-*
+# (constants.go passwordSecretName), the pod label domain is
+# llmsafespaces.dev/workspace (constants.go LabelWorkspace), and the
+# harness runtime contract is a seeded RuntimeEnvironment named
+# python-3.11 (local/test.sh Test 3)).
 #
-# NOT covered here (needs an env-tunable sustain bound or a nightly
-# home — 10m sustained-unhealthy episodes are not kind-lane material):
-#   - the full wedge→episode→container-restart loop. Unit/integration
-#     pins for that path live in cmd/workspace-agentd/agentz_test.go.
+# Rows:
+#   R0  workspace reaches Active (sidecar-mode pod).
+#   R1  the workspace container's kubelet livenessProbe is HTTPGet
+#       /v1/agentz on the admin port WITH the bearer header, and the
+#       kernel-accept-blind tcpSocket probe is gone (spec-level).
+#   R2  /v1/agentz on the live pod answers 401 WITHOUT the bearer and
+#       200 + ok:true WITH it (the F1.4.2 failure class: a mis-wired
+#       probe 401s/404s forever and restart-loops the container).
+#   R3  a healthy workspace carries ZERO workspace-container restarts
+#       (the probe is not firing blind).
+#   R4  (unhappy loop, opt-in via AGENTZ_SUSTAIN_SECONDS + WEDGE=1):
+#       with the env knob clamped low by the agentd floor, wedge the
+#       agent's event loop (a busy synchronous child), let the episode
+#       age past the sustain, and observe a workspace-container restart
+#       followed by recovery. Skipped unless WEDGE=1 — the happy rows
+#       are the always-on contract.
 set -euo pipefail
 
 CTX="${CTX:-kind-llmsafespaces}"
@@ -23,26 +34,42 @@ NS="${NS:-llmsafespaces}"
 WS="${WS:-agentz-e2e-$$}"
 API="${API:-http://localhost:8080}"
 API_KEY="${API_KEY:?API_KEY must be set (harness lane contract)}"
+RUNTIME="${RUNTIME:-python-3.11}"
+RUNTIME_IMAGE_REF="${RUNTIME_IMAGE_REF:-llmsafespaces/runtime-base:dev}"
 POLL="${POLL:-5}"
 TIMEOUT="${TIMEOUT:-300}"
+WEDGE="${WEDGE:-0}"
 
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 
 cleanup() {
-  curl -sfm 10 -X POST -H "Authorization: Bearer ${API_KEY}" \
-    "${API}/workspaces/${WS}/terminate" >/dev/null 2>&1 || true
+  curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
+    "${API}/api/v1/workspaces/${WS}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-echo "== R0: create sidecar-mode workspace ${WS}"
+echo "== R0: create sidecar-mode workspace ${WS} (runtime ${RUNTIME})"
+cat <<EOF | kc apply -f - >/dev/null
+apiVersion: llmsafespaces.dev/v1
+kind: RuntimeEnvironment
+metadata:
+  name: ${RUNTIME}
+spec:
+  image: ${RUNTIME_IMAGE_REF}
+  language: python
+  version: "3.11"
+EOF
 curl -sfm 240 -X POST -H "Authorization: Bearer ${API_KEY}" -H 'Content-Type: application/json' \
-  -d '{"name":"'"${WS}"'","runtime":"standard"}' "${API}/workspaces" >/dev/null
+  -d '{"name":"'"${WS}"'","runtime":"'"${RUNTIME}"'"}' \
+  "${API}/api/v1/workspaces" >/dev/null
 
-deadline=$((SECONDS + TIMEOUT))
-POD=""
-while [ $((SECONDS < deadline)) ]; do
-  POD="$(kc get pods -l "llmsafespaces.io/workspace=${WS}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  [ -n "${POD}" ] && kc get pod "${POD}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null | grep -q true && break
+deadline=$((SECONDS + TIMEOUT)); POD=""
+while [ ${SECONDS} -lt ${deadline} ]; do
+  POD="$(kc get pods -l "llmsafespaces.dev/workspace=${WS}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "${POD}" ]; then
+    ready="$(kc get pod "${POD}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)"
+    [ "${ready}" = "true" ] && break
+  fi
   sleep "${POLL}"
 done
 [ -n "${POD}" ] || { echo "FAIL: pod never became ready"; exit 1; }
@@ -60,7 +87,7 @@ hdr_count="$(kc get pod "${POD}" -o jsonpath='{range .spec.containers[0].livenes
 echo "R1 ok: HTTPGet /v1/agentz:4098 + bearer, tcpSocket absent"
 
 echo "== R2: agentz auth on the live pod (shared netns via workspace container)"
-TOKEN="$(kc get secret "workspace-${WS}" -o jsonpath='{.data.admin-token}' | base64 -d)"
+TOKEN="$(kc get secret "workspace-pw-${WS}" -o jsonpath='{.data.admin-token}' | base64 -d)"
 noauth="$(kc exec "${POD}" -c workspace -- curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:4098/v1/agentz)"
 [ "${noauth}" = "401" ] || { echo "FAIL: agentz without bearer returned ${noauth}, want 401"; exit 1; }
 body="$(kc exec "${POD}" -c workspace -- curl -s -m 5 -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:4098/v1/agentz)"
@@ -72,4 +99,28 @@ restarts="$(kc get pod "${POD}" -o jsonpath='{.status.containerStatuses[0].resta
 [ "${restarts}" = "0" ] || { echo "FAIL: workspace container restarted ${restarts}x on a healthy pod"; exit 1; }
 echo "R3 ok: restartCount=0"
 
-echo "PASS: agentz liveness wiring verified end to end"
+if [ "${WEDGE}" != "1" ]; then
+  echo "PASS: agentz liveness wiring verified (happy rows; set WEDGE=1 for the sustain loop)"
+  exit 0
+fi
+
+echo "== R4 (WEDGE=1): sustain-episode → workspace-container restart loop"
+echo "(requires AGENTZ_SUSTAIN_SECONDS set low — the agentd-side floor clamp"
+echo " bounds how low; the pod spec must carry the env to the sidecar)"
+# Deterministic agent wedge: SIGSTOP the opencode process — alive, TCP
+# listener still kernel-answered, /global/health times out (the incident's
+# wedged-but-listening shape, without depending on timing). The episode
+# ages past the clamped sustain, agentz 503s, kubelet restarts the
+# workspace container (which clears the stopped process — recovery).
+before="$(kc get pod "${POD}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+kc exec "${POD}" -c workspace -- pkill -STOP -x opencode \
+  || kc exec "${POD}" -c workspace -- pkill -STOP -f 'opencode serve'
+deadline=$((SECONDS + TIMEOUT)); after=""
+while [ ${SECONDS} -lt ${deadline} ]; do
+  after="$(kc get pod "${POD}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+  [ -n "${after}" ] && [ "${after}" -gt "${before}" ] && break
+  sleep "${POLL}"
+done
+[ -n "${after}" ] && [ "${after}" -gt "${before}" ] || { echo "FAIL: no workspace-container restart observed within ${TIMEOUT}s"; exit 1; }
+echo "R4 ok: restartCount ${before} → ${after} (wedge → episode → restart)"
+echo "PASS: agentz liveness wiring verified end to end (happy + sustain loop)"

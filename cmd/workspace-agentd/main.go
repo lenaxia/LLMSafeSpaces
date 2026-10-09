@@ -231,7 +231,10 @@ func main() {
 
 	// Hoisted before the supervisor: the generation hook (every child
 	// start) re-arms the health cache's unhealthy-episode clock (#1632
-	// r1) — the cache must be the SAME instance deps serves.
+	// r1) — the cache must be the SAME instance deps serves. The env
+	// knob (#1639 r4) is resolved once here (floor-clamped; see
+	// agentzSustainFromEnv).
+	agentUnhealthyEpisodeSustain = agentzSustainFromEnv(os.Getenv)
 	servingHealthCache := newHealthzCache()
 	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority, servingHealthCache)
 	if stateAuthority != nil {

@@ -354,3 +354,31 @@ func TestEpisodeClock_AnsweredUnhealthy_ImmediateStart(t *testing.T) {
 	require.False(t, s.UnhealthyEpisodeStartedAt.IsZero(),
 		"an answered-unhealthy poll flips Healthy immediately; the episode starts with it")
 }
+
+// TestAgentzSustainFromEnv (#1639 r4 / orchestrator ruling): the env
+// knob shortens the sustain for test lanes only — unset/malformed/
+// non-positive keep the default, and values below the floor clamp to
+// the floor (never an unsafe prod value).
+func TestAgentzSustainFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	cases := []struct {
+		name string
+		m    map[string]string
+		want time.Duration
+	}{
+		{"unset keeps default", map[string]string{}, 10 * time.Minute},
+		{"garbage keeps default", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "ten"}, 10 * time.Minute},
+		{"zero keeps default", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "0"}, 10 * time.Minute},
+		{"negative keeps default", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "-5"}, 10 * time.Minute},
+		{"below floor clamps up", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "30"}, agentzSustainFloor},
+		{"at floor is honored", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "120"}, agentzSustainFloor},
+		{"above floor is honored", map[string]string{"AGENTZ_AGENTZ_SUSTAIN_SECONDS": "300"}, 300 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, agentzSustainFromEnv(env(tc.m)))
+		})
+	}
+}

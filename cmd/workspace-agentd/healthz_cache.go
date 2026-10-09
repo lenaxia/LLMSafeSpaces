@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -67,16 +68,50 @@ const (
 	// not a blip.
 	healthyEpisodeResetPolls = 3
 
-	// agentUnhealthyEpisodeSustain (#1632 fix #3): how long an unhealthy
-	// episode must persist before /v1/agentz (the sidecar-mode workspace
-	// container's liveness target) starts failing. Generously beyond
-	// the #892 starvation bursts (2026-08-15: ~3 consecutive failures,
-	// then real recovery — duty cycle far below a sustained episode) and
-	// beyond legitimate long-turn /global/health blackouts; far below
-	// the incident's 30+ minute stall loop. kubelet adds its own
-	// failureThreshold margin on top (8×10s).
-	agentUnhealthyEpisodeSustain = 10 * time.Minute
+	// agentzSustainFloor (#1639 r4 / orchestrator ruling): the lowest
+	// value the env knob may shorten the sustain to. Sized above every
+	// healthy-but-bursty duty cycle the #892 incident documented
+	// (~3 failing polls ≈ 12-20s) plus the 3-poll healthy-reset window
+	// (15s), with an order of margin — a sustain below this could trip
+	// on a starved-but-healthy agent, the exact kill class #892 banned.
+	agentzSustainFloor = 2 * time.Minute
 )
+
+// agentUnhealthyEpisodeSustain (#1632 fix #3) is how long an unhealthy
+// episode must persist before /v1/agentz (the sidecar-mode workspace
+// container's liveness target) starts failing. Var (not const): test
+// lanes shorten it via AGENTZ_AGENTZ_SUSTAIN_SECONDS — resolved once at
+// boot through agentzSustainFromEnv, floor-clamped, never below
+// agentzSustainFloor. Default generously beyond the #892 starvation
+// bursts (2026-08-15: ~3 consecutive failures, then real recovery —
+// duty cycle far below a sustained episode) and beyond legitimate
+// long-turn /global/health blackouts; far below the incident's 30+
+// minute stall loop. The workspace container's kubelet margin adds on
+// top (failureThreshold 12 × 10s = 120s in agentd_sidecar.go;
+// 8×10s=80s is the SIDECAR's own liveness horizon, which the main
+// threshold deliberately exceeds).
+var agentUnhealthyEpisodeSustain = 10 * time.Minute
+
+// agentzSustainFromEnv resolves the agentz sustain bound from
+// AGENTZ_AGENTZ_SUSTAIN_SECONDS (test lanes shorten the full-loop e2e;
+// production leaves it unset). Unset, malformed, or non-positive values
+// keep the default; values below agentzSustainFloor clamp to the floor
+// — the knob can never produce an unsafe prod value.
+func agentzSustainFromEnv(getenv func(string) string) time.Duration {
+	raw := getenv("AGENTZ_AGENTZ_SUSTAIN_SECONDS")
+	if raw == "" {
+		return agentUnhealthyEpisodeSustain
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return agentUnhealthyEpisodeSustain
+	}
+	d := time.Duration(secs) * time.Second
+	if d < agentzSustainFloor {
+		return agentzSustainFloor
+	}
+	return d
+}
 
 // healthzCacheSnapshot is an immutable point-in-time view of the readiness
 // cache. Reads are lock-free via atomic.Pointer; writes are by the single

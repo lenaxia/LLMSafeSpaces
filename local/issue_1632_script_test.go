@@ -62,10 +62,13 @@ func TestIssue1632Script_PinsProbeShape(t *testing.T) {
 // The live-pod row must exercise BOTH auth outcomes against the real
 // admin mux — 401 without the bearer, ok:true with it — fetched via
 // the shared netns from inside the pod (kubectl exec), with the token
-// read from the workspace Secret.
+// read from the workspace Secret (workspace-pw-<name>, the controller's
+// passwordSecretName — r4 found the first draft used the ServiceAccount
+// name).
 func TestIssue1632Script_LiveAuthRows(t *testing.T) {
 	src := mustRead1632(t)
 	for _, marker := range []string{
+		`workspace-pw-${WS}`,
 		`data.admin-token`,
 		`4098/v1/agentz`,
 		`401`,
@@ -74,6 +77,35 @@ func TestIssue1632Script_LiveAuthRows(t *testing.T) {
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("script must contain %q (live auth row)", marker)
+		}
+	}
+}
+
+// r4 defects stay fixed: the API paths carry the /api/v1 prefix, the
+// cleanup uses the real DELETE lifecycle route, the pod label uses the
+// production domain, and the create body names a seeded runtime.
+func TestIssue1632Script_APIPathsAndNames(t *testing.T) {
+	src := mustRead1632(t)
+	for _, marker := range []string{
+		`${API}/api/v1/workspaces`,
+		`-X DELETE`,
+		`llmsafespaces.dev/workspace=${WS}`,
+		`RuntimeEnvironment`,
+		`python-3.11`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Errorf("script must contain %q (r4 source-verified fact)", marker)
+		}
+	}
+	for _, banned := range []string{
+		`${API}/workspaces`,          // missing /api/v1 (r4 defect 1)
+		`/terminate`,                 // nonexistent route (r4 defect 2)
+		`workspace-${WS}"`,           // SA name, not the Secret (r4 defect 3)
+		`llmsafespaces.io/workspace`, // wrong label domain (r4 defect 4)
+		`"runtime":"standard"`,       // unseeded runtime (r4 defect 5)
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("script must NOT contain %q (verified-defective marker)", banned)
 		}
 	}
 }

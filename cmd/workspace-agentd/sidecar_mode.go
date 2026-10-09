@@ -298,6 +298,9 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 			time.Sleep(2 * time.Second)
 		}
 	}()
+	// #1639 r4: resolve the agentz sustain env knob once (floor-clamped)
+	// before any consumer reads it.
+	agentUnhealthyEpisodeSustain = agentzSustainFromEnv(os.Getenv)
 	deps := serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,
