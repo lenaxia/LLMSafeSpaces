@@ -143,6 +143,9 @@ type RouterConfig struct {
 
 	// AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload (optional)
 	AgentReloadHandler *handlers.AgentReloadHandler
+	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
+	// (#1601 mechanical disk recovery; optional wiring like reload).
+	DiskRecoverHandler *handlers.DiskRecoverHandler
 
 	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
 	BulkReloadHandler *handlers.BulkReloadHandler
@@ -1427,6 +1430,13 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 	// Epic 27a: explicit agent reload (disposes opencode without pod restart).
 	if cfg.AgentReloadHandler != nil {
 		idGroup.POST("/agent/reload", cfg.AgentReloadHandler.Reload)
+	}
+
+	// #1601: mechanical disk recovery (owner-only via idGroup's
+	// AuthMiddleware + WorkspaceAccessMiddleware; dryRun=true renders
+	// the report-before-free).
+	if cfg.DiskRecoverHandler != nil {
+		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
 	}
 
 	idGroup.GET("/status", func(c *gin.Context) {

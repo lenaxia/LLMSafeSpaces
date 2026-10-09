@@ -455,6 +455,43 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/disk-recover:
+    post:
+      tags: [workspaces]
+      summary: Reclaim known-reproducible build caches (mechanical disk recovery)
+      description: |
+        #1601 out-of-band disk lever: sweeps the workspace pod's allowlisted
+        build/package caches (go build+module, npm, pip, pnpm, cargo downloads,
+        mise downloads, stale /tmp/go-build residue) — never user data, logs,
+        or anything unrecoverable. Free-ENOUGH semantics: stops once the
+        volume drops below the target ratio (~0.85), largest class first;
+        idempotent. Pass dryRun=true for report-before-free (no mutation).
+        Authz: workspace owner. Executed by agentd (write-free rescue path —
+        works at 100% full).
+      operationId: recoverWorkspaceDisk
+      x-feature-gated: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: dryRun
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Report what would be freed without deleting anything.
+      responses:
+        "200":
+          description: Recovery report (dry-run or executed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskRecoveryReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Workspace not Active, or a recovery is already in progress
   /workspaces/{id}/models:
     get:
       tags: [workspaces]
@@ -8593,6 +8630,66 @@ components:
         diskTotalBytes:
           type: integer
           format: int64
+    DiskRecoveryReport:
+      type: object
+      description: |
+        #1601 report of a mechanical disk-recovery pass (dry-run or
+        executed). Response-only — never persisted to the workspace
+        volume (the rescue path writes nothing).
+      properties:
+        dryRun:
+          type: boolean
+        alreadyBelowTarget:
+          type: boolean
+        beforeUsedBytes:
+          type: integer
+          format: int64
+        beforeTotalBytes:
+          type: integer
+          format: int64
+        afterUsedBytes:
+          type: integer
+          format: int64
+        afterTotalBytes:
+          type: integer
+          format: int64
+        targetRatio:
+          type: number
+        beforeRatio:
+          type: number
+        afterRatio:
+          type: number
+        bytesFreed:
+          type: integer
+          format: int64
+        stoppedEarly:
+          type: boolean
+        runtimeBase:
+          type: string
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiskRecoveryClassReport"
+    DiskRecoveryClassReport:
+      type: object
+      properties:
+        class:
+          type: string
+        path:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        bytesFreed:
+          type: integer
+          format: int64
+        entries:
+          type: integer
+        status:
+          type: string
+          enum: [freed, would_free, not_present, refused, error, skipped_target_met]
+        reason:
+          type: string
     WorkspaceConditionResult:
       type: object
       properties:

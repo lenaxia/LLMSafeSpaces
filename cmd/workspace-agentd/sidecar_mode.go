@@ -307,6 +307,16 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		pendingApply:         newPendingApplyTracker(),
 	}
 
+	// #1601: the sidecar's /workspace mount is READ-ONLY and /home/sandbox
+	// is not mounted at all — recovery executes in the uid-1000
+	// supervisor over the control socket (same topology finding as the
+	// legacy-key scrub). Typed-nil guard: a nil *controlClient must
+	// leave the engine unwired (503), not panic per request.
+	if cc != nil {
+		client := cc
+		deps.diskRecover = socketDiskRecover{client: client}
+	}
+
 	// Design 0060: the sidecar upload leg — budgeted staging admission
 	// on the shared tmpfs + the control-socket upload_apply seam. The
 	// boot scrub reclaims any previous incarnation's staging (its

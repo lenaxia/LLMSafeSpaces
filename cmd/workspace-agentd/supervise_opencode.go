@@ -204,6 +204,16 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter, upload
 	}
 	srv.metricsSource = newWorkspaceCgroupReader().read
 	srv.uploadApply = uploadEngine
+	// #1601: the supervisor (uid 1000, RW PVC view) is the disk-recovery
+	// executor in sidecar mode — the sidecar forwards disk_recover over
+	// this socket. A bad compiled-in manifest fails the supervisor boot
+	// (fail-loud doctrine), mirroring main.go's single-container wiring.
+	diskRecover, derr := newDiskRecoverEngine()
+	if derr != nil {
+		_ = srv.close()
+		return nil, derr
+	}
+	srv.diskRecover = diskRecover
 	srv.legacyScrubSnapshot = func() *agentd.LegacyScrubHealth {
 		if tr := supervisorLegacyScrub.Load(); tr != nil {
 			return tr.snapshot()

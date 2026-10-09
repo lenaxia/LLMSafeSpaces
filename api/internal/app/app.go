@@ -1186,6 +1186,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// Epic 27a: Agent reload handler.
 	var agentReloadHandler *handlers.AgentReloadHandler
 	var bulkReloadHandler *handlers.BulkReloadHandler
+	var diskRecoverHandler *handlers.DiskRecoverHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		agentReloadHandler = handlers.NewAgentReloadHandler(
 			wsSvc,
@@ -1210,6 +1211,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			&http.Client{Timeout: 15 * time.Second},
 			log,
 		)
+		// #1601: mechanical disk-recovery facade (own client — the
+		// bounded sweep needs far more than reload's 15s).
+		diskRecoverHandler = handlers.NewDiskRecoverHandler(
+			wsSvc,
+			newSecretsPodIPResolver(
+				&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+				dbSvc,
+				log,
+			),
+			nil, // handler installs its own diskRecoverClientTimeout client
+			log,
+		)
 	}
 
 	// Epic 27b: Drain mode SSETracker wiring is deferred to Run() — the tracker
@@ -1219,6 +1232,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pwGetter := proxyHandler.GetPasswordGetter()
 		agentReloadHandler.SetPasswordGetter(pwGetter)
 		bulkReloadHandler.SetPasswordGetter(pwGetter)
+		if diskRecoverHandler != nil {
+			diskRecoverHandler.SetPasswordGetter(pwGetter)
+		}
 		// US-65.6: wire the status checker factory so agent_reload.go
 		// doesn't import pkg/agent/opencode.
 		agentReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {
@@ -1509,6 +1525,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		DevPreviewHandler:               devPreviewHandler,
 		PreviewOriginHandler:            previewOriginHandler,
 		AgentReloadHandler:              agentReloadHandler,
+		DiskRecoverHandler:              diskRecoverHandler,
 		BulkReloadHandler:               bulkReloadHandler,
 		UsageHandler:                    usageHandler,
 		WebhookHandler:                  webhookHandler,

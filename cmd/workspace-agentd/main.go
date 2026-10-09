@@ -262,6 +262,16 @@ func main() {
 		interrupter:        newSessionInterrupter(password),
 	}
 
+	// #1601: in-process disk recovery — this process (PID 1 of the
+	// workspace container, uid 1000) holds the full RW PVC view. A bad
+	// compiled-in manifest is a boot failure, never a per-request
+	// refusal (fail-loud doctrine).
+	diskRecover, err := newDiskRecoverEngine()
+	if err != nil {
+		log.Fatal("disk recovery engine boot failed", zap.Error(err))
+	}
+	deps.diskRecover = diskRecover
+
 	// US-72.4 (design 0058 §4.5/§4.8): relay-only liveness over the
 	// batch's token-emitted providers. The monitor scans the durable
 	// batch file (relayed entries carry relay metadata), honors token

@@ -115,6 +115,12 @@ type serverDeps struct {
 	// session-aware restart force path (#1342 S12). Built from the
 	// opencode actor seam; nil only in tests.
 	interrupter sessionInterrupter
+
+	// diskRecover (#1601) executes mechanical cache recovery where the
+	// filesystem view is: in-process engine in single-container mode,
+	// control-socket forwarder in sidecar mode. Nil in tests → the
+	// user-mux route answers 503 (never a silent no-op).
+	diskRecover diskRecoverEngine
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -528,6 +534,11 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
+
+	// #1601: mechanical disk recovery. §D1 carve-out pair gate, same as
+	// every API-driven route; response-only report (owner ruling — the
+	// path must work at 100% full, so it writes nothing).
+	userMux.HandleFunc("/v1/disk-recover", diskRecoverHandler(deps.password, deps.controlPlanePassword, deps.diskRecover))
 
 	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev
 	// servers. The API server proxies to this endpoint, which forwards to
