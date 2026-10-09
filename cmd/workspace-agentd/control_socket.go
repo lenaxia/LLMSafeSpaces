@@ -127,6 +127,11 @@ type controlSocketServer struct {
 	// supervisor's server construction; nil answers internal (a wiring
 	// bug, never a silent no-op).
 	uploadApply *uploadApplyEngine
+
+	// diskRecover (+#1601) runs the mechanical disk-recovery engine in
+	// the supervisor (the only agentd process with the RW PVC view in
+	// sidecar mode). Nil answers internal — never a silent no-op.
+	diskRecover diskRecoverEngine
 }
 
 func newControlSocketServer(addr string, proc supervisedProcIface) (*controlSocketServer, error) {
@@ -232,6 +237,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.vitals(req.ID))
 	case "upload_apply":
 		writeJSON(conn, s.uploadApplyControlMethod(connCtx, conn, req))
+	case "disk_recover":
+		writeJSON(conn, s.diskRecoverControlMethod(connCtx, conn, req))
 	default:
 		writeJSON(conn, s.errResp(req.ID, "method_unknown",
 			fmt.Sprintf("method %q is not part of control protocol v1", req.Method)))

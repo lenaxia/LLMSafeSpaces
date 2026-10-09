@@ -143,6 +143,9 @@ type RouterConfig struct {
 
 	// AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload (optional)
 	AgentReloadHandler *handlers.AgentReloadHandler
+	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
+	// (#1601 mechanical disk recovery; optional wiring like reload).
+	DiskRecoverHandler *handlers.DiskRecoverHandler
 
 	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
 	BulkReloadHandler *handlers.BulkReloadHandler
@@ -1424,10 +1427,12 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		c.JSON(http.StatusAccepted, resp)
 	})
 
-	// Epic 27a: explicit agent reload (disposes opencode without pod restart).
-	if cfg.AgentReloadHandler != nil {
-		idGroup.POST("/agent/reload", cfg.AgentReloadHandler.Reload)
-	}
+	// Epic 27a + #1601: the workspace maintenance actions — explicit
+	// agent reload (disposes opencode without pod restart) and
+	// mechanical disk recovery. Extracted from registerWorkspaceRoutes:
+	// that function rides the gocyclo 65 ceiling and each new
+	// conditional route tips it.
+	registerWorkspaceMaintenanceRoutes(idGroup, cfg)
 
 	idGroup.GET("/status", func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
@@ -2028,5 +2033,19 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 	// Webhook receiver — public route, no JWT (signature IS the credential).
 	if cfg.WebhookReceiverHandler != nil {
 		router.POST("/api/v1/hooks/:webhookId", cfg.WebhookReceiverHandler.HandleWebhook)
+	}
+}
+
+// registerWorkspaceMaintenanceRoutes wires the workspace-scoped
+// maintenance actions: agent reload (Epic 27a) and mechanical disk
+// recovery (#1601 — owner-only via idGroup's AuthMiddleware +
+// WorkspaceAccessMiddleware; dryRun=true renders report-before-free).
+// Both are optional wirings: absent handlers simply do not register.
+func registerWorkspaceMaintenanceRoutes(idGroup *gin.RouterGroup, cfg RouterConfig) {
+	if cfg.AgentReloadHandler != nil {
+		idGroup.POST("/agent/reload", cfg.AgentReloadHandler.Reload)
+	}
+	if cfg.DiskRecoverHandler != nil {
+		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
 	}
 }

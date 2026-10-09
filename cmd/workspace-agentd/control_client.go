@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/diskrecovery"
 )
 
 // ControlSocketAddr is the fixed v1 supervisor address (A.0).
@@ -399,4 +400,46 @@ func mustMarshal(v any) []byte {
 		return []byte("{}")
 	}
 	return data
+}
+
+// DiskRecover invokes the #1601 disk_recover method: the supervisor
+// sweeps allowlisted caches with the RW PVC view. The engine's sentinel
+// errors (ErrBusy / ErrNoUsage) ride the closed error-code enum back as
+// typed errors so the sidecar's HTTP handler maps them to 409/503
+// exactly as the in-process path does. The caller's ctx deadline (the
+// handler's diskRecoverTimeout arm) is the bound — the 2s default does
+// not apply to this long-held call (upload_apply discipline).
+func (c *controlClient) DiskRecover(ctx context.Context, req diskrecovery.Request) (diskrecovery.Report, error) {
+	timeout := c.timeout
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = time.Until(dl)
+	}
+	res, err, _ := c.callDeadline(ctx, "disk_recover", map[string]any{
+		"dry_run":      req.DryRun,
+		"target_ratio": req.TargetRatio,
+	}, timeout)
+	if err != nil {
+		var ce *controlClientError
+		if errors.As(err, &ce) {
+			switch ce.ctl.Code {
+			case "busy":
+				return diskrecovery.Report{}, diskrecovery.ErrBusy
+			case "no_usage":
+				return diskrecovery.Report{}, diskrecovery.ErrNoUsage
+			case "timeout":
+				// Review r1 F5: the supervisor's ctx-deadline class must
+				// surface as 504 through the sidecar, not a generic 500.
+				return diskrecovery.Report{}, fmt.Errorf("disk recovery timed out on the supervisor: %w", context.DeadlineExceeded)
+			}
+		}
+		if ctx.Err() != nil {
+			return diskrecovery.Report{}, ctx.Err()
+		}
+		return diskrecovery.Report{}, err
+	}
+	out := diskrecovery.Report{}
+	if uerr := json.Unmarshal(mustMarshal(res), &out); uerr != nil {
+		return diskrecovery.Report{}, uerr
+	}
+	return out, nil
 }

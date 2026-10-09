@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — mechanical disk-space recovery (#1601)
+
+- **Out-of-band "free up disk space" lever across the stack**: workspaces
+  hitting 91-99% disk killed the agent (the previous remedy — the agent
+  running `go clean` — required exactly the healthy-agent-with-room
+  condition that full disk destroys). agentd now serves
+  `POST /v1/disk-recover`: a deny-by-default sweep of
+  KNOWN-REPRODUCIBLE caches only (compiled-in per-runtime-base manifest:
+  go build+module, npm, pip, pnpm, cargo downloads, mise downloads, and
+  stale `/tmp/go-build*` corpses >120s), never user data, logs, or
+  anything unrecoverable. Every entry passes an execution-time boundary
+  validator (inside a declared cache root; never equal to or an ancestor
+  of a protected path — the PVC roots, `$HOME`, package homes;
+  symlink-resolved inside the same root); refusals are loud per-class.
+  Free-ENOUGH semantics: largest-first, stops below the 0.85 target
+  (clamped [0.50, 0.90]), idempotent, dry-run mode mutates nothing.
+  Per the owner ruling the rescue path is WRITE-FREE (deletion is a
+  metadata op — works at 100% full; no temp files, no report
+  persistence, response-only). Sidecar topology honored: the sidecar's
+  `/workspace` mount is read-only, so execution forwards over the
+  control socket (`disk_recover`) to the uid-1000 supervisor; the API
+  facade `POST /workspaces/:id/disk-recover?dryRun=true` adds
+  owner-only authz with a typed report relay. The frontend surfaces a
+  banner automatically at ≥95% (the disk-pressure nudge's critical
+  tier) with dry-run-first render (report-before-free), an execute
+  step, and a subtle on-demand action below the threshold.
+
 ## [0.34.20] - 2026-10-08
 
 ### Added — session archiving (#1627)
