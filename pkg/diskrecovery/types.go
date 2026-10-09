@@ -76,7 +76,9 @@ type ClassReport struct {
 	// BytesFreed is what this class actually contributed. Zero in
 	// dry-run and for every non-freed status.
 	BytesFreed int64 `json:"bytesFreed"`
-	// Entries counts measured files (age-matched for stale classes).
+	// Entries counts reclaimable deletion-candidate paths (one per
+	// stale child for prefix classes; the tree for dir/symlink
+	// classes) — file-level counts roll up into Bytes.
 	Entries int         `json:"entries"`
 	Status  ClassStatus `json:"status"`
 	// Reason carries the refusal/error detail (empty for healthy

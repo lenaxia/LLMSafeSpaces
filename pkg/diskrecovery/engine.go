@@ -289,12 +289,14 @@ func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
 }
 
 // delete removes one class's measured paths and returns the measured
-// share that was actually still present (per path — any position in
-// the set): a path absent at delete time (aliasing, external removal
-// between measure and delete) contributes zero, so bytesFreed can
-// never claim bytes that were not unlinked by THIS sweep. firstErr
-// carries any unlink failure; the volume-level before/after statfs
-// pair in the Report remains the accounting truth.
+// share whose paths were still present at Lstat time (per path — any
+// position in the set): a path absent at delete time (aliasing,
+// external removal between measure and delete) contributes zero, so
+// bytesFreed claims only shares present when THIS sweep unlinked them.
+// (A microsecond window remains between the Lstat and the RemoveAll —
+// inherent to the approach; the volume-level before/after statfs pair
+// in the Report is the accounting truth.) firstErr carries any unlink
+// failure.
 func (e *Engine) delete(paths []pathSize) (freed int64, firstErr error) {
 	for _, p := range paths {
 		if _, serr := os.Lstat(p.path); serr != nil {
