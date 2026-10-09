@@ -189,3 +189,33 @@ describe("DiskRecoveryStrip — production wire shapes (review r1 F2)", () => {
     expect(screen.queryByTestId("disk-recover-free-now")).not.toBeInTheDocument();
   });
 });
+
+describe("DiskRecoveryStrip — partial-sweep honesty (review r5)", () => {
+  it("renders bytesFreed (not measured bytes) and the partial reason for a partially-freed class", async () => {
+    const user = userEvent.setup();
+    mocked.mockResolvedValueOnce(
+      report({
+        dryRun: false,
+        classes: [
+          {
+            class: "go-build-cache",
+            path: "/home/sandbox/.cache/go-build",
+            bytes: 5000,
+            bytesFreed: 3000, // partial: externally removed mid-sweep
+            entries: 7,
+            status: "freed",
+            reason: "partial: 3000 of 5000 measured bytes were still present at delete time",
+          },
+        ],
+      })
+    );
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+
+    // The Freed column must show the HONEST figure (3000 B → "3 KB"),
+    // never the measured 5000 ("5 KB"), and the partial reason rides along.
+    expect(await screen.findByText(/freed \(partial/)).toBeInTheDocument();
+    expect(screen.queryByText("5 KB")).not.toBeInTheDocument();
+    expect(screen.getByText("3 KB")).toBeInTheDocument();
+  });
+});

@@ -51,8 +51,11 @@ const (
 	ClassFreed ClassStatus = "freed"
 	// ClassWouldFree: dry-run — bytes are reclaimable, nothing touched.
 	ClassWouldFree ClassStatus = "would_free"
-	// ClassNotPresent: the allowlisted path does not exist (nothing to
-	// do — normal on fresh pods).
+	// ClassNotPresent: nothing was reclaimable — the allowlisted path
+	// does not exist (normal on fresh pods), OR exists with nothing
+	// reclaimable (empty cache dir, no stale children), OR existed at
+	// measure time but was aliased/externally removed before the sweep
+	// reached it (carries a reason string).
 	ClassNotPresent ClassStatus = "not_present"
 	// ClassRefused: the entry FAILED the boundary validator. The class
 	// is reported with the refusal reason; other classes proceed. A

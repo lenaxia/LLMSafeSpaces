@@ -165,10 +165,13 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
               {reportClasses.map((c) => (
                 <tr key={c.class} className="align-top">
                   <td className="pr-2">{classLabel(c.class)}</td>
-                  <td className="pr-2">{formatBytes(c.bytes)}</td>
+                  {/* Freed rows show bytesFreed (the honest figure — a
+                      partial sweep credits less than measured); every
+                      other status shows the measured figure. */}
+                  <td className="pr-2">{formatBytes(c.status === "freed" ? c.bytesFreed : c.bytes)}</td>
                   <td className="text-muted-foreground">
                     {c.status === "would_free" && "reclaimable"}
-                    {c.status === "freed" && "freed"}
+                    {c.status === "freed" && (c.bytesFreed < c.bytes ? `freed (${c.reason ?? "partial"})` : "freed")}
                     {c.status === "not_present" && "not present"}
                     {c.status === "skipped_target_met" && "skipped — target met"}
                     {c.status === "refused" && <span className="text-red-500">refused ({c.reason})</span>}
