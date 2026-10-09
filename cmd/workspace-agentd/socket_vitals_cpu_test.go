@@ -139,6 +139,51 @@ func TestSocketVitals_VitalsUnavailableOnFake_FallsBackToUnknown(t *testing.T) {
 	require.Equal(t, verdictUnknown, verdict)
 }
 
+// errAfterFirstVitals stages one good sample then errors every later
+// call — the t2-error window (first sample fine, second lost). Embeds
+// the fake for the base iface; the ChildVitals override shadows the
+// promoted method.
+type errAfterFirstVitals struct {
+	*fakeRestartProc
+	calls int
+}
+
+func (e *errAfterFirstVitals) ChildVitals() (int, float64, float64, error) {
+	e.calls++
+	if e.calls == 1 {
+		return e.fakeRestartProc.ChildVitals()
+	}
+	return 0, 0, 0, context.DeadlineExceeded
+}
+
+// TestSocketVitals_SecondSampleError_NoCPUEvidence: t1 succeeds (pid
+// agrees with status), t2 errors → no delta, cpuKnown=false. With the
+// port OPEN this degrades to UNKNOWN (suppressed). Review round 1 note:
+// with a refused dial this shape still lands HUNG on status evidence
+// alone — pre-existing semantics, unchanged by the vitals path (the
+// status snapshot carries the pid/boot evidence the lethal verdict
+// rests on).
+func TestSocketVitals_SecondSampleError_NoCPUEvidence(t *testing.T) {
+	inner := &fakeRestartProc{}
+	inner.overrideState.Store(&procStateOverride{
+		pid: 123, state: "running",
+		lastRestartAt: time.Now().Add(-10 * time.Minute),
+	})
+	inner.stageVitals(fakeVitalsSample{pid: 123, cpuTicks: 100})
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", &errAfterFirstVitals{fakeRestartProc: inner})
+	go srv.serve()
+
+	ln := newAgentPortListener(t)
+	g := newSocketVitalsGatherer(ln.Addr().String(), newControlClient(srv.addr()))
+	g.sampleWindow = 5 * time.Millisecond
+
+	v := g.gather(context.Background())
+	require.False(t, v.cpuKnown, "a lost second sample must not produce a delta")
+	require.Contains(t, v.cpuErr, "socket vitals unavailable")
+	verdict, _ := v.classify()
+	require.Equal(t, verdictUnknown, verdict)
+}
+
 // legacyNoVitalsProc delegates to fakeRestartProc but does NOT
 // implement vitalsProvider — the mixed-fleet older-supervisor shape.
 type legacyNoVitalsProc struct {

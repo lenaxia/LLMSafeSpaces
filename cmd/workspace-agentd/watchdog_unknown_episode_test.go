@@ -175,6 +175,11 @@ func (a *alternatingVitals) gather(context.Context) vitalSigns {
 func TestWatchdog_UnknownEpisode_ResetClearsClock(t *testing.T) {
 	setWatchdogTiming(t, 40*time.Millisecond, 25*time.Millisecond, 3)
 	setUnknownEpisodeBound(t, 400*time.Millisecond)
+	// Escalation writes a marker — keep it off the default /workspace
+	// path (review round 1: dev-machine MkdirAll pollution / CI
+	// marker-write-failure noise).
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH",
+		filepath.Join(t.TempDir(), "restart-reason.json"))
 
 	var hang atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
