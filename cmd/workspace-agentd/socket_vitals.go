@@ -7,21 +7,26 @@ package main
 // corroboration over the control socket.
 //
 // Post-#892 the kill set is DEAD-LISTENER ONLY: HUNG requires
-// tcpRefused + supervised pid alive + past boot grace. The sidecar can
-// still gather ALL three without /proc: the TCP dial works over the
-// shared netns, and pid/boot evidence comes from the supervisor's
-// `status` (child_pid, last_restart_at — the supervisor's clock stamps
-// child starts, and pod-shared clock makes the age comparison valid).
+// tcpRefused + supervised pid alive + past boot grace. The sidecar gets
+// all three without /proc: the TCP dial works over the shared netns,
+// and pid/boot evidence comes from the supervisor's `status`
+// (child_pid, last_restart_at — the supervisor's clock stamps child
+// starts, and pod-shared clock makes the age comparison valid).
 //
-// CPU-delta evidence is honestly unavailable cross-container (/proc of
-// another container's processes is not readable) and maps to
-// cpuKnown=false — which only degrades suppression LABELS, never the
-// lethal verdict (see watchdog_vitals.go's classify precedence: with the
-// port open, !cpuKnown → UNKNOWN → suppress, which is the #892 policy).
+// CPU-delta evidence (#1632 fix #1): the supervisor's `vitals` method
+// reads /proc/<child>/stat + cgroup cpu.stat in ITS pidns and reports
+// the counters; this gatherer samples twice across the window and
+// derives the delta, making cpuKnown=true (FLAT/STARVED distinguishable)
+// in sidecar mode. An older supervisor (or a degraded socket) answers
+// method_unknown/vitals_unavailable — degraded to cpuKnown=false, the
+// pre-#1631 honest-UNKNOWN path. The lethal refused+alive+past-boot
+// shape never needed CPU evidence, so the kill set is unchanged by
+// construction.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"syscall"
 	"time"
@@ -33,6 +38,10 @@ type socketVitalsGatherer struct {
 	cc            *controlClient
 	dialTimeout   time.Duration
 	statusTimeout time.Duration
+	// sampleWindow is the CPU-counter observation window (mirrors
+	// procVitalsGatherer.sampleWindow; default vitalsSampleWindow, var
+	// for tests).
+	sampleWindow time.Duration
 }
 
 func newSocketVitalsGatherer(agentAddr string, cc *controlClient) *socketVitalsGatherer {
@@ -41,6 +50,7 @@ func newSocketVitalsGatherer(agentAddr string, cc *controlClient) *socketVitalsG
 		cc:            cc,
 		dialTimeout:   vitalsDialTimeout,
 		statusTimeout: 2 * time.Second,
+		sampleWindow:  vitalsSampleWindow,
 	}
 }
 
@@ -78,10 +88,49 @@ func (g *socketVitalsGatherer) gather(ctx context.Context) vitalSigns {
 		v.booting = true
 	}
 
-	// Cross-container: no CPU counter access. cpuKnown stays false —
-	// classify() routes open-port shapes to UNKNOWN (suppress), and the
-	// lethal refused+alive+past-boot shape does not need CPU evidence.
-	v.cpuErr = "cpu evidence unavailable cross-container (sidecar mode)"
+	// CPU evidence (#1632 fix #1): two vitals samples, window apart.
+	// Any pid disagreement (vs status, or between samples) is a restart
+	// in flight — the delta would be garbage across two processes, and
+	// crash recovery owns the lifecycle: pidGone routes refused shapes
+	// to RESPAWN and open shapes to UNKNOWN. Cancellation means agentd
+	// is shutting down: no evidence, no future in which acting on this
+	// sample helps (same ruling as procVitalsGatherer).
+	t1, err1 := g.vitals(ctx)
+	if err1 != nil {
+		v.cpuErr = "socket vitals unavailable: " + err1.Error()
+		return v
+	}
+	if t1.ChildPID != st.ChildPID {
+		v.pidGone = true
+		v.cpuErr = fmt.Sprintf("agent pid changed between status and vitals (%d → %d): restart in flight", st.ChildPID, t1.ChildPID)
+		return v
+	}
+	throttleBefore := t1.ThrottledUS
+
+	timer := time.NewTimer(g.sampleWindow)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		v.pidGone = true
+		v.cpuErr = "context canceled during sample"
+		return v
+	case <-timer.C:
+	}
+
+	t2, err2 := g.vitals(ctx)
+	if err2 != nil {
+		v.cpuErr = "socket vitals unavailable: " + err2.Error()
+		return v
+	}
+	if t2.ChildPID != t1.ChildPID {
+		v.pidGone = true
+		v.cpuErr = fmt.Sprintf("agent pid changed during sample (%d → %d): restart in flight", t1.ChildPID, t2.ChildPID)
+		return v
+	}
+
+	v.cpuDeltaTicks = t2.CPUTicks - t1.CPUTicks
+	v.cpuKnown = true
+	v.throttleDeltaUS = t2.ThrottledUS - throttleBefore
 	return v
 }
 
@@ -89,6 +138,14 @@ func (g *socketVitalsGatherer) status(ctx context.Context) (*controlStatus, erro
 	sctx, cancel := context.WithTimeout(ctx, g.statusTimeout)
 	defer cancel()
 	return g.cc.Status(sctx)
+}
+
+// vitals fetches one instant sample with its own short deadline (the
+// window between samples is where the time belongs, not in the fetch).
+func (g *socketVitalsGatherer) vitals(ctx context.Context) (*controlVitals, error) {
+	vctx, cancel := context.WithTimeout(ctx, g.statusTimeout)
+	defer cancel()
+	return g.cc.Vitals(vctx)
 }
 
 func (g *socketVitalsGatherer) probeTCP(ctx context.Context) (open, refused bool) {

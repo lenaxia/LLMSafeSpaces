@@ -103,6 +103,14 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// #1632: run the orphan-zombie reaper LOOP. becomeSubreaper() above
+	// only reparents orphaned descendants to this process; without the
+	// loop they still accumulate as <defunct> forever — the 2026-10-08
+	// incident's [python]/[esbuild] zombies under `supervise-opencode`
+	// PID 1. Same #904 machinery the mux-serving agentd modes run
+	// (server.go); the supervisor owns these reaps in sidecar topology.
+	go pkgOrphanReaper.run(rootCtx)
+
 	proc, adapter := newSupervisorProcess(rootCtx)
 	proc.start()
 
@@ -326,6 +334,26 @@ func (a *managedProcAdapter) State() (pid int, state string, restarts int, lastR
 	lastRestartAt = a.p.lastRestartAt
 	a.p.mu.Unlock()
 	return p, state, restarts, lastRestartAt
+}
+
+// ChildVitals implements the control socket's optional vitalsProvider
+// capability (#1632 fix #1): one instant /proc + cgroup read of the
+// supervised child, taken in THIS process's pidns — the workspace
+// container's. The sidecar's watchdog samples it twice across its
+// window to derive CPU-delta evidence that cross-container /proc made
+// structurally unavailable (the 2026-10-08 incident's cpuKnown=false →
+// verdictUnknown → suppress-36-times wedge). Kernel-level reads: they
+// succeed even while the child's event loop is wedged.
+func (a *managedProcAdapter) ChildVitals() (pid int, cpuTicks float64, throttledUS float64, err error) {
+	pid = a.p.pid()
+	if pid <= 0 {
+		return 0, 0, 0, errors.New("no supervised child")
+	}
+	cpuTicks, err = readProcCPUTicks(pid)
+	if err != nil {
+		return pid, 0, 0, err
+	}
+	return pid, cpuTicks, readCgroupThrottledUS(), nil
 }
 
 // SetSpawnEnv stores a pushed secrets delta (the legacy US-0.2(a)/US-4a

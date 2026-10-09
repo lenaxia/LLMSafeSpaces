@@ -54,6 +54,17 @@ const (
 	// RestartReasonHealthWatchdog is recorded when the health-watchdog
 	// detects opencode is hung and triggers a restart.
 	RestartReasonHealthWatchdog = "health_watchdog"
+
+	// RestartReasonHealthWatchdogUnknownEpisode (#1632 fix #2) is
+	// recorded when a CONTINUOUS UNKNOWN-episode crosses
+	// watchdogUnknownEpisodeBound and the watchdog escalates to a
+	// bounded soft restart — the evidence channel itself was unavailable
+	// (sidecar /proc topology, dead control socket), so suppressing
+	// forever would mean hanging forever. Distinct from
+	// health_watchdog so operators can tell corroboration-less
+	// escalation from a corroborated dead-listener kill in metrics and
+	// boot-time marker reads.
+	RestartReasonHealthWatchdogUnknownEpisode = "health_watchdog_unknown_episode"
 )
 
 // restartReason is the on-disk JSON shape of the restart-reason marker.
