@@ -290,9 +290,10 @@ func sidecarReadinessProbe(adminToken string) *corev1.Probe {
 
 // applyAgentdSidecar mutates the pod for sidecar mode: appends the
 // native sidecar as the last init container and switches the main
-// container to supervisor mode (entrypoint branch env + kernel-level
-// TCP liveness). adminToken is buildPod's resolved admin-mux bearer
-// (empty for legacy Secrets) — the sidecar's readiness probe needs it.
+// container to supervisor mode (entrypoint branch env + agentz HTTP
+// liveness, #1632 fix #3). adminToken is buildPod's resolved admin-mux
+// bearer (empty for legacy Secrets) — the sidecar's readiness probe and
+// the main container's agentz liveness probe need it.
 // No-op when disabled.
 func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.Workspace, adminToken string) {
 	if !r.AgentdSidecarEnabled {
@@ -360,19 +361,46 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{
 		Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath, ReadOnly: true,
 	})
-	// Liveness in sidecar mode: HTTP healthz is served by the SIDECAR
-	// (shared netns) — pointing the WORKSPACE container's liveness at it
-	// would restart opencode+supervisor whenever the sidecar wedges,
-	// which is precisely backwards. TCP on opencode's own port is the
-	// kernel-level answer for "is the supervised child alive": refused
-	// beyond the startup budget = restart the workspace container.
+	// Liveness in sidecar mode (#1632 fix #3): the sidecar-served
+	// /v1/agentz on the shared-netns admin port. Pre-#1632 this was
+	// tcpSocket on opencode's port — kernel-accept blind to a
+	// wedged-but-listening event loop (the 2026-10-08 incident: three
+	// wedge episodes, zero restarts). agentz fails only on a SUSTAINED
+	// unhealthy episode (10m default, health-cache episode clock —
+	// brief recoveries do not reset it), so the #892 starved-healthy
+	// burst profile never trips it. Blast radius: kubelet restarts the
+	// WORKSPACE container (opencode+supervisor); the sidecar cannot
+	// cascade an opencode kill — its own process-only healthz liveness
+	// restarts the SIDECAR at 80s and a restarted sidecar's cache is
+	// uninitialized (agentz healthy), so the sustain window restarts.
+	// The old "backwards restart" objection (sidecar wedge restarting
+	// opencode) is dissolved by that asymmetry.
 	main.LivenessProbe = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{
-				Port: intstr.FromInt(agentd.AgentPort),
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/v1/agentz",
+				Port: intstr.FromInt(agentd.AgentdAdminPort),
+				// Bearer-gated like readyz (F1.4.2); the probe header
+				// carries the same admin token the readyz probe does.
+				HTTPHeaders: func() []corev1.HTTPHeader {
+					if adminToken == "" {
+						return nil
+					}
+					return []corev1.HTTPHeader{
+						{Name: "Authorization", Value: "Bearer " + adminToken},
+					}
+				}(),
 			},
 		},
-		InitialDelaySeconds: 15, PeriodSeconds: 10, TimeoutSeconds: 10, FailureThreshold: 8,
+		// Sustain (10m) + kubelet margin: failureThreshold 12 × 10s = 120s
+		// — deliberately ABOVE the sidecar's own liveness-restart horizon
+		// (8×10s = 80s): a hung sidecar mux can refuse agentz for up to
+		// ~80s before the SIDECAR's own probe recovers it; sizing this
+		// threshold above that prevents the same window from also draining
+		// the main container's budget (worst case there is ONE bounded dual
+		// restart, not a loop — a recovered sidecar serves 200 and both
+		// streaks reset). Total wedge→restart ≈ 10m + 120s.
+		InitialDelaySeconds: 15, PeriodSeconds: 10, TimeoutSeconds: 10, FailureThreshold: 12,
 	}
 
 	// US-4b: the credential-setup init writes the bootstrap pair and the

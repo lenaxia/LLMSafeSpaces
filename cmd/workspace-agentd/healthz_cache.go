@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -57,7 +58,60 @@ const (
 	// will not kill the pod on its own).
 	watchdogMaxRestarts   = 3
 	watchdogRestartWindow = 10 * time.Minute
+
+	// healthyEpisodeResetPolls (#1632 fix #3): how many CONSECUTIVE
+	// healthy polls end an unhealthy episode for liveness purposes. The
+	// 2026-10-08 incident's wedge CYCLED — stall ~10min, one brief
+	// healthy poll, stall again — so a single healthy poll must not
+	// reset the clock (a continuous-failure bound would never fire).
+	// Three consecutive polls (15s at the 5s cadence) is responsiveness,
+	// not a blip.
+	healthyEpisodeResetPolls = 3
+
+	// agentzSustainFloor (#1639 r4 / orchestrator ruling): the lowest
+	// value the env knob may shorten the sustain to. Sized above every
+	// healthy-but-bursty duty cycle the #892 incident documented
+	// (~3 failing polls ≈ 12-20s) plus the 3-poll healthy-reset window
+	// (15s), with an order of margin — a sustain below this could trip
+	// on a starved-but-healthy agent, the exact kill class #892 banned.
+	agentzSustainFloor = 2 * time.Minute
 )
+
+// agentUnhealthyEpisodeSustain (#1632 fix #3) is how long an unhealthy
+// episode must persist before /v1/agentz (the sidecar-mode workspace
+// container's liveness target) starts failing. Var (not const): test
+// lanes shorten it via AGENTZ_AGENTZ_SUSTAIN_SECONDS — resolved once at
+// boot through agentzSustainFromEnv, floor-clamped, never below
+// agentzSustainFloor. Default generously beyond the #892 starvation
+// bursts (2026-08-15: ~3 consecutive failures, then real recovery —
+// duty cycle far below a sustained episode) and beyond legitimate
+// long-turn /global/health blackouts; far below the incident's 30+
+// minute stall loop. The workspace container's kubelet margin adds on
+// top (failureThreshold 12 × 10s = 120s in agentd_sidecar.go;
+// 8×10s=80s is the SIDECAR's own liveness horizon, which the main
+// threshold deliberately exceeds).
+var agentUnhealthyEpisodeSustain = 10 * time.Minute
+
+// agentzSustainFromEnv resolves the agentz sustain bound from
+// AGENTZ_AGENTZ_SUSTAIN_SECONDS (test lanes shorten the full-loop e2e;
+// production leaves it unset). Unset, malformed, or non-positive values
+// keep the default; values below agentzSustainFloor clamp to the floor
+// — the knob can never produce an unsafe prod value.
+func agentzSustainFromEnv(getenv func(string) string) time.Duration {
+	raw := getenv("AGENTZ_AGENTZ_SUSTAIN_SECONDS")
+	if raw == "" {
+		return agentUnhealthyEpisodeSustain
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return agentUnhealthyEpisodeSustain
+	}
+	d := time.Duration(secs) * time.Second
+	if d < agentzSustainFloor {
+		return agentzSustainFloor
+	}
+	return d
+}
 
 // healthzCacheSnapshot is an immutable point-in-time view of the readiness
 // cache. Reads are lock-free via atomic.Pointer; writes are by the single
@@ -69,6 +123,30 @@ type healthzCacheSnapshot struct {
 	ConsecutiveFailures int
 	LastError           string
 	Initialized         bool
+
+	// UnhealthyEpisodeStartedAt (#1632 fix #3): when the current
+	// unhealthy EPISODE began (first unhealthy poll after the last
+	// sustained recovery). Zero when not in an episode. "Sustained
+	// recovery" = healthyEpisodeResetPolls consecutive healthy polls —
+	// brief single-poll recoveries (the incident's stall/recover
+	// cycling) deliberately do NOT reset it. /v1/agentz (liveness)
+	// fails only once time.Since(this) ≥ agentUnhealthyEpisodeSustain.
+	UnhealthyEpisodeStartedAt time.Time
+
+	// ConsecutiveHealthy drives the episode reset (see above).
+	ConsecutiveHealthy int
+
+	// Generation (#1632 r3) is the agent-generation epoch: every
+	// noteAgentGeneration boundary bumps it and clears the episode.
+	// refreshOnce is a read-modify-write spanning seconds of I/O; the
+	// epoch lets its final Store detect that a boundary landed
+	// mid-poll and preserve the boundary's episode-clear instead of
+	// reinstating the stale pre-poll clock (the lost-update race the
+	// r3 reviewer demonstrated empirically — a wedged agent times out
+	// every poll, so boundaries land inside refresh windows with high
+	// probability, and the reinstated ≥10m episode would 503 the
+	// booting replacement into a kill loop).
+	Generation uint64
 }
 
 // healthzCache holds the latest readiness observation from opencode's
@@ -87,6 +165,50 @@ func newHealthzCache() *healthzCache {
 // Snapshot returns the current cache state. Lock-free atomic load.
 func (c *healthzCache) Snapshot() healthzCacheSnapshot {
 	return *c.snapshot.Load()
+}
+
+// noteAgentGeneration re-arms the unhealthy-episode clock at an agent
+// generation boundary (#1632 r1 review): a NEW child (operator restart,
+// crash recovery, kubelet container restart) must not inherit the dead
+// generation's old episode — otherwise /v1/agentz keeps failing the
+// liveness probe through the replacement's boot and kubelet kills it
+// mid-start (a boot-kill loop). Implemented as a generation-epoch bump
+// (#1632 r3): the bump is what refreshOnce's Store detects and
+// preserves — a plain episode-clear here could be clobbered by an
+// in-flight refresh whose pre-poll snapshot still carried the old
+// clock. Everything else in the snapshot rides through untouched. CAS
+// loop against the refresher's own CAS Store.
+func (c *healthzCache) noteAgentGeneration() {
+	for {
+		p := c.snapshot.Load()
+		n := *p
+		n.Generation = p.Generation + 1
+		n.UnhealthyEpisodeStartedAt = time.Time{}
+		if c.snapshot.CompareAndSwap(p, &n) {
+			return
+		}
+	}
+}
+
+// storeResolved CAS-stores a completed refresh's result, resolving a
+// generation bump that landed mid-poll: if the current snapshot's
+// epoch no longer matches the one the poll started from, the boundary's
+// episode-clear is newer truth than next's stale pre-poll derivation —
+// next adopts the current epoch and episode fields (the boundary owns
+// episode state across its bump; the poll owns health/version/failure
+// fields). Retries on concurrent swaps (noteAgentGeneration).
+func (c *healthzCache) storeResolved(prev *healthzCacheSnapshot, next *healthzCacheSnapshot) {
+	for {
+		cur := c.snapshot.Load()
+		next.Generation = cur.Generation
+		if cur.Generation != prev.Generation {
+			next.UnhealthyEpisodeStartedAt = cur.UnhealthyEpisodeStartedAt
+			next.ConsecutiveHealthy = cur.ConsecutiveHealthy
+		}
+		if c.snapshot.CompareAndSwap(cur, next) {
+			return
+		}
+	}
 }
 
 // healthWatchdogRestarter is the narrow interface the health-watchdog
@@ -486,11 +608,18 @@ func refreshOnce(ctx context.Context, client *OpenCodeClient, cache *healthzCach
 				Healthy:             prev.Healthy,
 				ConsecutiveFailures: prev.ConsecutiveFailures + 1,
 				LastError:           "panic in refresh",
+				// Episode state rides through a panic (a panic is an
+				// unhealthy poll; the clock logic above is not re-run).
+				UnhealthyEpisodeStartedAt: prev.UnhealthyEpisodeStartedAt,
+				ConsecutiveHealthy:        0,
 			}
 			if next.ConsecutiveFailures >= readinessFailureThreshold {
 				next.Healthy = false
 			}
-			cache.snapshot.Store(&next)
+			if !next.Healthy && next.UnhealthyEpisodeStartedAt.IsZero() {
+				next.UnhealthyEpisodeStartedAt = time.Now()
+			}
+			cache.storeResolved(&prev, &next)
 		}
 	}()
 
@@ -523,11 +652,39 @@ func refreshOnce(ctx context.Context, client *OpenCodeClient, cache *healthzCach
 		next.Version = version
 		next.ConsecutiveFailures = 0
 		next.LastError = ""
-		// Record opencode_up gate on first successful health check.
-		if healthy && gr != nil {
-			gr.MaybeRecord(gateOpencodeUp)
+		if healthy {
+			next.ConsecutiveHealthy = prev.ConsecutiveHealthy + 1
+			// Record opencode_up gate on first successful health check.
+			if gr != nil {
+				gr.MaybeRecord(gateOpencodeUp)
+			}
 		}
 	}
 
-	cache.snapshot.Store(&next)
+	// Unhealthy-episode tracking (#1632 fix #3), keyed off the resolved
+	// Healthy flag so the erred-poll and unhealthy-answer paths share
+	// one clock: the episode starts when Healthy first drops (threshold
+	// crossing for erred polls; immediate for an answered-unhealthy
+	// body) and ends only after healthyEpisodeResetPolls CONSECUTIVE
+	// healthy polls — a brief single-poll recovery (the incident's
+	// stall/recover cycling) does not reset it. No boot gating: a
+	// from-boot-wedged agent that binds its port but never answers
+	// health is exactly what /v1/agentz exists to catch.
+	if !next.Healthy {
+		next.ConsecutiveHealthy = 0
+		if prev.UnhealthyEpisodeStartedAt.IsZero() {
+			next.UnhealthyEpisodeStartedAt = time.Now()
+		} else {
+			next.UnhealthyEpisodeStartedAt = prev.UnhealthyEpisodeStartedAt
+		}
+	} else if next.ConsecutiveHealthy >= healthyEpisodeResetPolls {
+		next.UnhealthyEpisodeStartedAt = time.Time{}
+	} else {
+		next.UnhealthyEpisodeStartedAt = prev.UnhealthyEpisodeStartedAt
+	}
+
+	// CAS-resolved store (#1632 r3): preserves a generation bump that
+	// landed during the poll instead of clobbering it with the stale
+	// pre-poll episode derivation.
+	cache.storeResolved(&prev, &next)
 }

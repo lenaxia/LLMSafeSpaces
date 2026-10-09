@@ -32,13 +32,15 @@ func TestOrphanSweepReasonMatchesContractConstant(t *testing.T) {
 // booting after a restart would otherwise leave the S12 orphan-sweep
 // backstop unfired until the NEXT generation. Source pin in the
 // TestOpencodeBootLayersWiring discipline (a one-line regression to the
-// one-shot form would pass every other test).
+// one-shot form would pass every other test). #1639 r1 reshaped the hook
+// (three nil-guarded consumers: tracker reset, authority reseed, #1632
+// episode re-arm) — the pin tracks the reseed line in its new shape.
 func TestGenerationChangeReseedWiredToRetryingDriver(t *testing.T) {
 	body, err := os.ReadFile("main.go")
 	require.NoError(t, err)
 	src := string(body)
-	require.Contains(t, src, "go startStateAuthorityReseed(bgCtx, a, sessionstate.ReseedReasonGenerationChange)",
+	require.Contains(t, src, "go startStateAuthorityReseed(bgCtx, authority, sessionstate.ReseedReasonGenerationChange)",
 		"the child-started hook must ride the retrying reseed driver — a one-shot Reseed re-opens the unfired-backstop window")
-	assert.NotContains(t, src, "a.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange)",
+	assert.NotContains(t, src, "authority.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange)",
 		"the pre-#1342 one-shot generation reseed must not return")
 }
