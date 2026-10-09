@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09
 **Worker:** w15, branch `fix/1598-callwithmodel` (from main @ 4615c2b3, v0.34.20)
-**Status:** In progress — audit complete, implementation starting.
+**Status:** Complete — implementation + probes + mutation evidence recorded (entries 2-3); PR #1634 in review loop (r1 CHANGES_REQUESTED on the worklog-record finding alone; fix-up pushed).
 
 ---
 
@@ -207,3 +207,71 @@ the drift is visible live here too (issue reported 78 relay-served).
 - Full cmd/workspace-agentd suite: running (worklog 1089 documents pre-existing
   watchdog/managed-process timing flakes under full-suite load — result appended in
   entry 3; targeted lanes all green).
+
+---
+
+## Entry 3 — Full-suite outcomes, review loop, closure record
+
+### cmd/workspace-agentd full-suite outcome (the entry-2 promise, fulfilled)
+
+The full-package suite could NOT complete in this lane's sandbox — every long-running
+invocation (foreground or setsid-detached) was killed by external session interruptions
+before verdict; one background attempt additionally raced a concurrent build into GOCACHE
+corruption (cleaned; `TestBootGate_MissingPassword_G46FiresFirst` failing in that window
+was the corruption's artifact — the family cleanly SKIPs on this pod, /sandbox-cfg
+read-only, and it passed on CI). The authoritative full-suite evidence is therefore CI's
+plus the reviewer's, not a local run:
+
+- CI **Test (full suite, race detector): PASS** on c089e289 (13m36s) — the same test
+  set including the upload-concurrency and watchdog families, green under -race.
+- CI **Test (-short, coverage)** failed twice on two DIFFERENT tests: first
+  `TestMCPHandler_ToolsCall_ListModels_RoundTrip` (MINE — stale count-3 assertion after
+  the nocaps model joined the fake catalog; fixed in c089e289), then
+  `TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares` (NOT in this diff's
+  blast radius; passes in the same push's -race full-suite leg — load flake under
+  coverage instrumentation, the documented rotating family).
+- Reviewer r1 independently reproduced the full-suite sandbox timeout **identically on
+  the base commit 4615c2b3** (different watchdog/managed-process test each run;
+  isolation passes in 7s) — pre-existing environment flake per worklog 1089, not a
+  regression from this PR.
+- Local: targeted TestMCP*/guidance/seam sweeps green incl. -race; gofmt/goimports/
+  golangci-lint clean (pre-commit + explicit runs); integration-leg inventory confirmed
+  (L2 real-binary legs for SessionSend/ModelInfo paths continue to cover the changed
+  code; no new leg required — additive fields + guidance text).
+
+### Review loop
+
+- **r1 (head c089e289): CHANGES_REQUESTED — one blocking finding, zero code findings.**
+  Blocking: this worklog shipped self-inconsistent (stale "In progress" status + this
+  dangling entry-3 promise) — fixed by this very entry. The reviewer independently
+  re-ran three of my sabotage mutations (detail-emptied, join-disabled,
+  restart-stripped) and confirmed red-for-the-right-reason; verified all four issue
+  asks closed with file:line evidence; verified #1635 open and the #1577 comment
+  present. Non-blocking observations actioned below.
+- govulncheck GO-2026-6617 (x/net@v0.58.0): dependency vuln, all traces outside this
+  diff; orchestrator ruled a separate bump lane (fix/xnet-go20266617) — not carried
+  here.
+
+### Non-blocking review observations, actioned
+
+- **compact's explicit-model path lacks the catalog pre-flight** (mcpCompact splits the
+  ref but never runs verifyModelInCatalog — the unknown-model 500 class survives on
+  that sibling surface): filed as #1638 rather than scope-creeping this PR.
+- **pkg/mcp/server.go:411,432** (platform-owner credential/model surface) still carry
+  the concrete example — recorded as same-class out-of-lane in entry 1; left for the
+  orchestrator to lane (platform surface, different repro than this issue's).
+
+### Follow-ups filed from this lane
+
+- #1635 — controller free-models catalog lags the live relay (drift adjudicated here;
+  probe evidence in the issue body).
+- #1577 comment (2026-10-09) — upstream PATCH /config non-stick, bare-1.18.15 repro.
+- #1638 — compact pre-flight follow-up (this entry, r1 observation).
+
+### Measures (cumulative)
+
+- 3 commits on the branch at r1-fix time (66185c2b impl, c089e289 test fix, + this
+  worklog fix-up); PR #1634; issues #1635 + #1577-comment filed; 2 worklog entries +
+  this one.
+- Pins: 10 seam + 8 agentd new/extended tests; mutation-verified M1-M4 (mine) + 3
+  independently re-run by the reviewer.
