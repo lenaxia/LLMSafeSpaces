@@ -957,6 +957,26 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, schemaDescs["call_with_model/model"], "list_models")
 	})
 
+	t.Run("no hardcoded provider examples (#1598)", func(t *testing.T) {
+		// Schema text is agent-visible guidance. A concrete provider
+		// example (the shipped "anthropic/claude-sonnet-4-5") steers
+		// agents in workspaces where that provider is not configured
+		// straight into the unknown-provider refusal — the issue's own
+		// reproduction. Illustrate the FORM; list_models carries the
+		// workspace's real names.
+		for key, d := range schemaDescs {
+			if !strings.HasPrefix(key, "call_with_model/") && !strings.HasPrefix(key, "list_models") {
+				continue
+			}
+			for _, banned := range []string{"anthropic/", "openai/", "claude", "gpt-", "thekaocloud/"} {
+				assert.NotContains(t, d, banned, "%s must not name concrete providers", key)
+			}
+		}
+		d, ok := descs["list_models"]
+		require.True(t, ok)
+		assert.NotContains(t, d, "anthropic/", "tool description must not name concrete providers")
+	})
+
 	t.Run("list_models guidance", func(t *testing.T) {
 		d, ok := descs["list_models"]
 		require.True(t, ok, "list_models in tools/list")

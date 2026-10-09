@@ -53,10 +53,16 @@ type fakeAgent struct {
 
 	catalogImage map[string]bool // "prov/model" -> image input
 
-	failCreate   bool
-	failSend     bool
-	sendEmpty    bool // return no text parts
-	summarizeLat time.Duration
+	failCreate    bool
+	failSend      bool
+	sendEmpty     bool // return no text parts
+	sendReasoning bool // return reasoning-only parts (with text) + tool part, no text
+	sendNoParts   bool // return a response with no parts at all
+	summarizeLat  time.Duration
+
+	// configProvidersJSON overrides the served /config/providers body
+	// (the vision-gate per-call resolution pin flips it mid-test).
+	configProvidersJSON string
 }
 
 func newFakeAgent() *fakeAgent {
@@ -166,7 +172,18 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 					}
 				}
 				parts := []map[string]any{{"type": "text", "text": "answer"}}
-				if f.sendEmpty {
+				switch {
+				case f.sendNoParts:
+					parts = []map[string]any{}
+				case f.sendReasoning:
+					// The classifier shape: reasoning parts carry text,
+					// no text part ever arrives (#1598 ask 4).
+					parts = []map[string]any{
+						{"type": "step-start"},
+						{"type": "reasoning", "text": "cls: positive sentiment"},
+						{"type": "tool", "name": "x"},
+					}
+				case f.sendEmpty:
 					parts = []map[string]any{{"type": "tool", "name": "x"}}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
@@ -220,12 +237,19 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 			// The model catalog (opencode /provider shape): connected
 			// provider "p" offering vision + text. Bare-name
 			// did-you-mean and the catalog pre-check read this.
+			// "nocaps" is listed here but carries NO /config/providers
+			// entry — the vision-unknown join case for list_models.
 			_, _ = w.Write([]byte(`{"connected":["p"],"all":[{"id":"p","models":{
 				"vision":{"id":"vision","name":"Vision Model","limit":{"context":1000,"output":512}},
 				"text":{"id":"text","name":"Text Model","limit":{"context":2000,"output":256}},
-				"declared":{"id":"declared","name":"Declared Vision Model","limit":{"context":3000,"output":128}}
+				"declared":{"id":"declared","name":"Declared Vision Model","limit":{"context":3000,"output":128}},
+				"nocaps":{"id":"nocaps","name":"No Caps Model","limit":{"context":4000,"output":64}}
 			}}]}`))
 		case r.Method == http.MethodGet && strings.Contains(path, "/config/providers"):
+			if f.configProvidersJSON != "" {
+				_, _ = w.Write([]byte(f.configProvidersJSON))
+				return
+			}
 			_, _ = w.Write([]byte(`{"providers":[{"id":"p","models":{
 				"vision":{"id":"vision","limit":{"context":1000},"capabilities":{"input":{"image":true}}},
 				"text":{"id":"text","limit":{"context":2000},"capabilities":{"input":{"image":false}}},
@@ -583,7 +607,7 @@ func TestMCPCallWithModel_BareModelRejected(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "flatmodel", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "provider/model")
+	assert.Contains(t, err.Error(), "provider-id/model-id")
 	assert.Contains(t, err.Error(), "list_models", "the failure must point at the catalog tool")
 	assert.Empty(t, f.titles)
 }
@@ -683,20 +707,58 @@ func TestMCPListModels(t *testing.T) {
 			Name          string `json:"name"`
 			ContextWindow int64  `json:"contextWindow"`
 			MaxOutput     int64  `json:"maxOutput"`
+			Vision        *bool  `json:"vision"`
 		} `json:"models"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
-	assert.Equal(t, 3, res.Count)
-	require.Len(t, res.Models, 3)
+	assert.Equal(t, 4, res.Count)
+	require.Len(t, res.Models, 4)
 	assert.Equal(t, "p/declared", res.Models[0].Model, "sorted by qualified name")
 	assert.Equal(t, "Declared Vision Model", res.Models[0].Name)
 	assert.Equal(t, int64(3000), res.Models[0].ContextWindow)
 	assert.Equal(t, int64(128), res.Models[0].MaxOutput)
-	assert.Equal(t, "p/text", res.Models[1].Model)
-	assert.Equal(t, "Text Model", res.Models[1].Name)
-	assert.Equal(t, int64(2000), res.Models[1].ContextWindow)
-	assert.Equal(t, int64(256), res.Models[1].MaxOutput)
-	assert.Equal(t, "p/vision", res.Models[2].Model)
+	assert.Equal(t, "p/nocaps", res.Models[1].Model)
+	assert.Equal(t, "p/text", res.Models[2].Model)
+	assert.Equal(t, "p/vision", res.Models[3].Model)
+
+	// Vision tri-state (#1598 ask 2): the catalog join carries
+	// true/false when known and ABSENT when unknown — an agent told to
+	// "pick a vision-capable model" can finally act on the remedy.
+	require.NotNil(t, res.Models[3].Vision, "p/vision capabilities known")
+	assert.True(t, *res.Models[3].Vision)
+	require.NotNil(t, res.Models[2].Vision, "p/text capabilities known")
+	assert.False(t, *res.Models[2].Vision)
+	require.NotNil(t, res.Models[0].Vision, "p/declared: attachment:true OR-merged")
+	assert.True(t, *res.Models[0].Vision)
+	assert.Nil(t, res.Models[1].Vision, "p/nocaps: no capability signal → field ABSENT (unknown, never guessed)")
+}
+
+// TestMCPListModels_CapabilityCatalogUnreachable_FailOpen pins the
+// join's fail direction: /config/providers failing must degrade
+// list_models to name-only output, never error — the name catalog is
+// still a valid answer.
+func TestMCPListModels_CapabilityCatalogUnreachable_FailOpen(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/config/providers") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		f.handler(t)(w, r)
+	})
+	out, err := mcpListModels(context.Background(), mcpTestPassword)
+	require.NoError(t, err, "fail-open: capability failure must not break the catalog listing")
+	var res struct {
+		Count  int `json:"count"`
+		Models []struct {
+			Vision *bool `json:"vision"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, 4, res.Count)
+	for _, m := range res.Models {
+		assert.Nil(t, m.Vision, "no capability source → vision absent everywhere")
+	}
 }
 
 func TestMCPListModels_CatalogError(t *testing.T) {
@@ -743,7 +805,105 @@ func TestMCPCallWithModel_NoTextParts(t *testing.T) {
 	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no text")
+	// #1598 ask 4: the failure names what the model DID return —
+	// part types with counts — instead of leaving the agent to guess.
+	assert.Contains(t, err.Error(), "response parts: tool×1")
 	assert.Len(t, f.deleted, 1)
+}
+
+// TestMCPCallWithModel_NoTextParts_ReasoningExcerpt pins the classifier
+// shape from the issue: a reasoning-only completion is reported with
+// its part types AND a bounded excerpt of the reasoning text, making
+// the failure diagnosable from the tool error alone.
+func TestMCPCallWithModel_NoTextParts_ReasoningExcerpt(t *testing.T) {
+	f := newFakeAgent()
+	f.sendReasoning = true
+	withAgentServer(t, f.handler(t))
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "classify", "p/vision", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no text parts")
+	assert.Contains(t, err.Error(), "response parts: step-start×1, reasoning×1, tool×1")
+	assert.Contains(t, err.Error(), `first non-text excerpt: "cls: positive sentiment"`)
+}
+
+// TestMCPCallWithModel_EmptyResponse pins the zero-part shape's own
+// message: an empty completion is a different failure than a
+// wrong-shaped one.
+func TestMCPCallWithModel_EmptyResponse(t *testing.T) {
+	f := newFakeAgent()
+	f.sendNoParts = true
+	withAgentServer(t, f.handler(t))
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no text parts")
+	assert.Contains(t, err.Error(), "no parts at all")
+	assert.NotContains(t, err.Error(), "response parts:", "no part histogram exists for an empty response")
+}
+
+// TestMCPCallWithModel_VisionRefusalNamesRestartPath pins #1598 ask 3's
+// honesty requirement: the refusal that tells the user to declare
+// attachment:true must also say the catalog does not hot-reload and a
+// workspace restart is what makes the declaration take effect —
+// otherwise the remedy silently changes nothing.
+func TestMCPCallWithModel_VisionRefusalNamesRestartPath(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	dir := t.TempDir()
+	png := filepath.Join(dir, "a.png")
+	require.NoError(t, os.WriteFile(png, []byte("x"), 0o600))
+
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "look", "p/text", []string{png})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attachment:true")
+	assert.Contains(t, err.Error(), "does not hot-reload")
+	assert.Contains(t, err.Error(), "restart")
+	assert.Contains(t, err.Error(), "list_models", "the remedy must be actionable: name a discoverable vision model")
+}
+
+// TestMCPCallWithModel_VisionGateResolvesPerCall pins #1598 ask 3's
+// resolution semantics at the agentd layer: the vision gate reads the
+// opencode server's catalog LIVE on every call — a catalog change
+// between two calls flips the decision. (What stays frozen is the
+// opencode server's own config — see the restart truth in the refusal.
+// This pin guards against any future agentd-side snapshot caching.)
+func TestMCPCallWithModel_VisionGateResolvesPerCall(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	dir := t.TempDir()
+	png := filepath.Join(dir, "a.png")
+	require.NoError(t, os.WriteFile(png, []byte("x"), 0o600))
+
+	// Catalog v1: p/text is known text-only → refused.
+	f.configProvidersJSON = `{"providers":[{"id":"p","models":{
+		"text":{"id":"text","limit":{"context":2000},"capabilities":{"input":{"image":false}}}
+	}}]}`
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "look", "p/text", []string{png})
+	require.Error(t, err, "v1 catalog: known text-only must refuse images")
+
+	// Catalog v2 (served differently on the NEXT call): same model now
+	// vision-capable → the image must ride. No restart, no cache.
+	f.configProvidersJSON = `{"providers":[{"id":"p","models":{
+		"text":{"id":"text","limit":{"context":2000},"capabilities":{"input":{"image":true}}}
+	}}]}`
+	out, err := mcpCallWithModel(context.Background(), mcpTestPassword, "look", "p/text", []string{png})
+	require.NoError(t, err, "v2 catalog: per-call resolution must see the new capability")
+	assert.Contains(t, out, `"text"`)
+}
+
+// TestMCPCallWithModel_BareRefusal_NoConcreteProviderExample pins
+// #1598 ask 1's guidance rule at the error layer: refusal text
+// illustrates the FORM (provider-id/model-id) and never names a
+// concrete provider — a hardcoded example steers agents into the
+// unknown-provider path in workspaces where that provider is absent.
+func TestMCPCallWithModel_BareRefusal_NoConcreteProviderExample(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "classifier", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider-id/model-id")
+	for _, banned := range []string{"anthropic", "openai", "claude", "gpt", "thekaocloud"} {
+		assert.NotContains(t, err.Error(), banned, "no concrete provider example in refusal guidance")
+	}
 }
 
 // --- create_session -------------------------------------------------------

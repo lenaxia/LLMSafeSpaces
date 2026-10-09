@@ -279,10 +279,18 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 	// image input (#1307 fail-safe direction: absent capability metadata
 	// is unknown, not text-only — refusing on unknown would break image
 	// calls on custom vision gateways that carry no metadata).
+	//
+	// The catalog is resolved from the opencode server LIVE per call
+	// (no agentd-side snapshot — pinned by
+	// TestMCPCallWithModel_VisionGateResolvesPerCall), but the server
+	// itself reads its config only at process start: a capability
+	// declared after boot is invisible until the workspace agent
+	// restarts. The error must say so (#1598 ask 3) — a remedy that
+	// silently changes nothing is worse than no remedy.
 	if len(imgs) > 0 {
 		info, err := client.ModelInfo(ctx, providerID, modelID)
 		if err == nil && info.ImageInputKnown && !info.ImageInput {
-			return "", fmt.Errorf("model %s does not accept image input per the workspace catalog — pick a vision-capable model, or, when this is a custom-endpoint model that really does accept images, ask the user to declare attachment:true on the credential's model entry (custom models absent from opencode's catalog are marked text-only by default until declared)", model)
+			return "", fmt.Errorf("model %s does not accept image input per the workspace catalog — pick a vision-capable model (find one with the list_models tool), or, when this is a custom-endpoint model that really does accept images, ask the user to declare attachment:true on the credential's model entry (custom models absent from opencode's catalog are marked text-only by default until declared). The catalog is frozen at workspace agent startup and does not hot-reload: a newly declared capability takes effect only after the workspace agent restarts (ask the user to restart the workspace) — editing the config or PATCHing /config changes nothing until then", model)
 		}
 		// Catalog lookup failure / unknown capability is not fatal: the
 		// send itself will surface any real incompatibility.
@@ -303,13 +311,43 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 		return "", fmt.Errorf("model call failed: %w", err)
 	}
 	if res.Text == "" {
-		return "", fmt.Errorf("the model returned no text parts")
+		return "", fmt.Errorf("the model returned no text parts%s", noTextPartsDetail(res))
 	}
 	out, _ := json.Marshal(map[string]any{
 		"model": modelID,
 		"text":  res.Text,
 	})
 	return string(out), nil
+}
+
+// noTextPartsDetail renders the #1598 ask-4 diagnostics for a response
+// that carried no text: every part's type (with repeats counted, wire
+// order) plus the bounded excerpt of the first non-text part that
+// carried text. A response with NO parts at all gets its own message —
+// an empty completion is a different failure than a wrong-shaped one.
+func noTextPartsDetail(res *opencode.SendResult) string {
+	if len(res.PartTypes) == 0 {
+		return " (the response carried no parts at all — an empty completion)"
+	}
+	var rendered []string
+	seen := map[string]int{}
+	for _, pt := range res.PartTypes {
+		seen[pt]++
+		if seen[pt] == 1 {
+			rendered = append(rendered, pt)
+		}
+	}
+	// Counts per type, first-occurrence wire order (step-start×1,
+	// reasoning×2, tool×1).
+	withCounts := make([]string, 0, len(rendered))
+	for _, pt := range rendered {
+		withCounts = append(withCounts, fmt.Sprintf("%s×%d", pt, seen[pt]))
+	}
+	detail := fmt.Sprintf(" (response parts: %s)", strings.Join(withCounts, ", "))
+	if res.NonTextExcerpt != "" {
+		detail += fmt.Sprintf("; first non-text excerpt: %q", res.NonTextExcerpt)
+	}
+	return detail
 }
 
 // modelCatalogHint is appended to every model-selection failure so the
@@ -341,7 +379,11 @@ func quotedList(items []string) string {
 // a gate).
 func bareModelRefError(ctx context.Context, password, model string) error {
 	bare := strings.ToLower(strings.Trim(strings.TrimSpace(model), "/"))
-	msg := fmt.Sprintf("provider must be included: pass the model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\"), got %q", model)
+	// No concrete provider example here (#1598 ask 1): workspaces vary
+	// in which providers are configured, and the did-you-mean lookup
+	// below supplies REAL candidates whenever the catalog can be read —
+	// a hardcoded example names providers that 500 in this workspace.
+	msg := fmt.Sprintf("provider must be included: pass the model as provider-id/model-id, got %q", model)
 	if models, err := seamClientWithPassword(password).AvailableModels(ctx); err == nil {
 		var candidates []string
 		for _, m := range models {
@@ -426,27 +468,48 @@ func caseInsensitiveMatches(want string, candidates []string) []string {
 
 // mcpListModels returns the workspace's usable model catalog — one
 // entry per model of every CONNECTED provider, as provider/model
-// references ready for call_with_model's model argument. Read-only
-// catalog query through the seam; no LLM call is made.
+// references ready for call_with_model's model argument. Vision
+// capability (the vision-gate refusal's remedy and the canonical
+// call_with_model use case) rides each entry as a tri-state: true /
+// false when known, ABSENT when the catalog carries no signal (#1307
+// discipline — unknown is never flattened into false). Read-only
+// catalog queries through the seam; no LLM call is made.
 func mcpListModels(ctx context.Context, password string) (string, error) {
-	models, err := seamClientWithPassword(password).AvailableModels(ctx)
+	client := seamClientWithPassword(password)
+	models, err := client.AvailableModels(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read the model catalog: %w", err)
+	}
+	// Capability join (#1598 ask 2): one GET /config/providers for the
+	// whole index. Fail-open on its error — the name catalog alone is
+	// still a valid answer; vision fields simply go absent.
+	caps, capsErr := client.ModelCapabilities(ctx)
+	if capsErr != nil {
+		log.Warn("list_models: capability catalog unreadable; serving names without vision fields",
+			zap.Error(capsErr))
 	}
 	type entry struct {
 		Model         string `json:"model"`
 		Name          string `json:"name,omitempty"`
 		ContextWindow int64  `json:"contextWindow,omitempty"`
 		MaxOutput     int64  `json:"maxOutput,omitempty"`
+		Vision        *bool  `json:"vision,omitempty"`
 	}
 	out := make([]entry, 0, len(models))
 	for _, m := range models {
-		out = append(out, entry{
+		e := entry{
 			Model:         m.Provider + "/" + m.ID,
 			Name:          m.DisplayName,
 			ContextWindow: m.ContextWindow,
 			MaxOutput:     m.MaxOutput,
-		})
+		}
+		if capsErr == nil {
+			if info, ok := caps[m.Provider][m.ID]; ok && info.ImageInputKnown {
+				v := info.ImageInput
+				e.Vision = &v
+			}
+		}
+		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
 	payload, _ := json.Marshal(map[string]any{
