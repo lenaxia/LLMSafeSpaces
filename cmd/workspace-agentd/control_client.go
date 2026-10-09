@@ -401,6 +401,10 @@ func (c *controlClient) DiskRecover(ctx context.Context, req diskrecovery.Reques
 				return diskrecovery.Report{}, diskrecovery.ErrBusy
 			case "no_usage":
 				return diskrecovery.Report{}, diskrecovery.ErrNoUsage
+			case "timeout":
+				// Review r1 F5: the supervisor's ctx-deadline class must
+				// surface as 504 through the sidecar, not a generic 500.
+				return diskrecovery.Report{}, fmt.Errorf("disk recovery timed out on the supervisor: %w", context.DeadlineExceeded)
 			}
 		}
 		if ctx.Err() != nil {

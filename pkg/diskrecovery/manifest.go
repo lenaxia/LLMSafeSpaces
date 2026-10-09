@@ -164,7 +164,15 @@ var manifests = map[string]Manifest{
 }
 
 // ManifestFor resolves the compiled-in manifest for a runtime base.
-// Unknown base → empty Manifest (nothing deletable — fail-safe).
+//
+// Contract (pinned): an unknown base yields an EMPTY manifest —
+// fail-safe, deliberately not an error. The env selects an optional
+// feature; a typo must never kill a workspace pod (the D5.2/D5.3
+// fail-closed doctrine covers UNGATED muxes, not feature narrowing —
+// and an empty manifest can delete nothing). Contrast
+// ValidateProductionManifests/NewDiskRecoverEngine: a KNOWN base whose
+// entries fail boundary validation IS boot-fatal — that is a manifest
+// bug, not an operator typo.
 func ManifestFor(base string) Manifest {
 	m, ok := manifests[strings.ToLower(strings.TrimSpace(base))]
 	if !ok {

@@ -108,3 +108,35 @@ type recoverFunc func(context.Context, diskrecovery.Request) (diskrecovery.Repor
 func (f recoverFunc) Recover(ctx context.Context, req diskrecovery.Request) (diskrecovery.Report, error) {
 	return f(ctx, req)
 }
+
+// PIN (explicit params, review r1 F6): an undecodable params shape is
+// bad_request, never a silently-defaulted sweep.
+func TestControlSocket_DiskRecoverBadParams(t *testing.T) {
+	srv := newControlSocketServerForTest(t, "127.0.0.1:0")
+	go srv.serve()
+	called := false
+	srv.diskRecover = recoverFunc(func(context.Context, diskrecovery.Request) (diskrecovery.Report, error) {
+		called = true
+		return diskrecovery.Report{}, nil
+	})
+	resp := mustDial(t, srv.addr(), `{"v":1,"id":1,"method":"disk_recover","params":{"target_ratio":"not-a-number"}}`)
+	errObj, ok := resp["error"].(map[string]any)
+	require.True(t, ok, "expected error, got %v", resp)
+	require.Equal(t, "bad_request", errObj["code"])
+	require.False(t, called, "engine must not run on bad params")
+}
+
+// PIN (timeout sentinel crosses the socket, review r1 F5): the sidecar
+// client must map the supervisor's timeout class to a DeadlineExceeded
+// error so the handler answers 504, not 500.
+func TestControlClient_DiskRecoverTimeoutMaps(t *testing.T) {
+	srv := newControlSocketServerForTest(t, "127.0.0.1:0")
+	go srv.serve()
+	srv.diskRecover = recoverFunc(func(context.Context, diskrecovery.Request) (diskrecovery.Report, error) {
+		return diskrecovery.Report{}, context.DeadlineExceeded
+	})
+	cc := newControlClient(srv.addr())
+	_, err := cc.DiskRecover(context.Background(), diskrecovery.Request{})
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}

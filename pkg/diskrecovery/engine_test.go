@@ -5,9 +5,11 @@ package diskrecovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -482,5 +484,89 @@ func TestAbsentClassNotPresent(t *testing.T) {
 	}
 	if len(rep.Classes) != 3 {
 		t.Fatalf("expected all three classes enumerated, got %+v", rep.Classes)
+	}
+}
+
+// PIN (wire shape, review r1 F2/F4): every report path marshals
+// "classes":[] — never null. A nil slice would crash null-naive
+// consumers (the below-target fast path and the empty unknown-base
+// manifest both hit this).
+func TestReportClassesNeverNilOnWire(t *testing.T) {
+	m, _, _ := testManifest(t)
+	usage := &fakeUsage{total: 10000, used: 5000}
+	e := NewEngine(m, usage.get)
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"classes":null`) {
+		t.Fatalf("below-target report must marshal classes:[], got %s", raw)
+	}
+	// Unknown-base manifest: empty entries, above target → still [].
+	empty := NewEngine(Manifest{Base: "unknown"}, func() (int64, int64, error) { return 9600, 10000, nil })
+	rep2, err := empty.Recover(context.Background(), Request{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.Classes == nil || len(rep2.Classes) != 0 {
+		t.Fatalf("unknown-base report must have empty NON-nil classes, got %#v", rep2.Classes)
+	}
+	raw2, _ := json.Marshal(rep2)
+	if strings.Contains(string(raw2), `"classes":null`) {
+		t.Fatalf("unknown-base report must marshal classes:[], got %s", raw2)
+	}
+}
+
+// PIN (measure/delete agreement, review r1 F3): an in-root symlinked
+// cache must free its TARGET tree — RemoveAll on the literal link
+// alone would report the target's bytes as freed while the bytes stay
+// on disk (fabricated bytesFreed).
+func TestSymlinkedCacheDeletesMeasuredTarget(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(cacheRoot, "go-build.real")
+	wantBytes := seedTree(t, target, 3, 1000)
+	link := filepath.Join(cacheRoot, "go-build")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "go-build-cache", Path: link, Kind: EntryDir},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cr ClassReport
+	for _, c := range rep.Classes {
+		if c.Class == "go-build-cache" {
+			cr = c
+		}
+	}
+	if cr.Status != ClassFreed {
+		t.Fatalf("symlinked in-root cache must free, got %+v", cr)
+	}
+	if cr.Bytes != wantBytes || cr.BytesFreed != wantBytes {
+		t.Fatalf("bytes must be the measured target bytes %d, got %+v", wantBytes, cr)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("the symlink TARGET tree must be deleted (measure/delete agreement): %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("the stale link itself must be removed too: %v", err)
 	}
 }

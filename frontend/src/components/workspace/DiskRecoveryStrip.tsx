@@ -96,7 +96,12 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   }
 
   const report = phase.kind === "report" ? phase.report : null;
-  const reclaimable = report?.classes
+  // `?? []` is belt to the engine's braces (review r1 F2): the engine
+  // initializes classes on every path, but a null on the wire (older
+  // agentd, a regression) must degrade to an empty report — never a
+  // TypeError that unmounts the whole chat header.
+  const reportClasses = report?.classes ?? [];
+  const reclaimable = reportClasses
     .filter((c) => c.status === "would_free" || c.status === "freed")
     .reduce((sum, c) => sum + c.bytes, 0) ?? 0;
 
@@ -146,7 +151,7 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
         </div>
       )}
 
-      {report && !report.alreadyBelowTarget && report.classes.length > 0 && (
+      {report && !report.alreadyBelowTarget && reportClasses.length > 0 && (
         <div className="flex flex-col gap-1">
           <table className="w-full max-w-2xl text-left tabular-nums">
             <thead>
@@ -157,7 +162,7 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
               </tr>
             </thead>
             <tbody>
-              {report.classes.map((c) => (
+              {reportClasses.map((c) => (
                 <tr key={c.class} className="align-top">
                   <td className="pr-2">{classLabel(c.class)}</td>
                   <td className="pr-2">{formatBytes(c.bytes)}</td>

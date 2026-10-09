@@ -165,3 +165,32 @@ func TestDiskRecover_PodUnreachable(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, rec.Code)
 	assert.Contains(t, rec.Body.String(), "not reachable")
 }
+
+// PIN (real agentd error shapes, review r1 F1): agentd's non-200
+// paths emit PLAIN TEXT via http.Error — the facade must map the
+// status class without decoding the body. (Pre-fix, the decode-first
+// order turned every real 409/503/504 into 500 decode_failed; the
+// existing mapping test used JSON bodies and masked it.)
+func TestDiskRecover_AgentdPlainTextErrorsMapByStatus(t *testing.T) {
+	cases := []struct {
+		agentdCode int
+		agentdBody string
+		want       int
+	}{
+		{http.StatusConflict, "disk recovery already in progress\n", http.StatusConflict},
+		{http.StatusServiceUnavailable, "disk usage unavailable\n", http.StatusServiceUnavailable},
+		{http.StatusGatewayTimeout, "disk recovery timed out\n", http.StatusGatewayTimeout},
+	}
+	for _, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, c.agentdBody, c.agentdCode)
+		}))
+		h := activeHandler(&mockWsSvc{ws: typesWorkspace("Active")}, &mockPodIPResolver{ip: "127.0.0.1"}, "pw", srv.Listener.Addr().(*net.TCPAddr).Port, srv.Client())
+		router := newDiskRecoverRouter(h)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/disk-recover", nil))
+		assert.Equal(t, c.want, rec.Code, "agentd %d plain-text: got %d body=%s", c.agentdCode, rec.Code, rec.Body.String())
+		assert.NotContains(t, rec.Body.String(), "decode", "plain-text bodies must never surface as decode failures")
+		srv.Close()
+	}
+}

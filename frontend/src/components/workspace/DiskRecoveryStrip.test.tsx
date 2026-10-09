@@ -151,3 +151,37 @@ describe("DiskRecoveryStrip — error path", () => {
     expect(screen.getByText("retry")).toBeInTheDocument();
   });
 });
+
+describe("DiskRecoveryStrip — production wire shapes (review r1 F2)", () => {
+  // The engine initializes classes on every path, but the strip must
+  // survive a literal "classes":null on the wire (both former crash
+  // sites: the reclaimable filter and the length check).
+  it("renders the no-op message for a below-target report with classes:null", async () => {
+    const user = userEvent.setup();
+    const nullClasses = {
+      ...report(),
+      alreadyBelowTarget: true,
+      classes: null as unknown as DiskRecoveryReport["classes"],
+    };
+    mocked.mockResolvedValueOnce(nullClasses);
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    expect(await screen.findByText(/already below the 85% target/)).toBeInTheDocument();
+  });
+
+  it("renders an above-target report with classes:null without crashing", async () => {
+    const user = userEvent.setup();
+    const nullClasses = {
+      ...report(),
+      alreadyBelowTarget: false,
+      classes: null as unknown as DiskRecoveryReport["classes"],
+    };
+    mocked.mockResolvedValueOnce(nullClasses);
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    // No crash, no class table, no execute button — a degraded but
+    // alive header.
+    await waitFor(() => expect(screen.queryByText("Go build cache")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("disk-recover-free-now")).not.toBeInTheDocument();
+  });
+});

@@ -85,7 +85,10 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 		BeforeRatio:      ratio(used, total),
 		AfterRatio:       ratio(used, total),
 		RuntimeBase:      e.manifest.Base,
-		Classes:          nil,
+		// Non-nil by construction on every path (review r1 F2/F4): a
+		// nil slice marshals to JSON null and crashes JSON-shape-naive
+		// consumers; "classes":[] is the wire contract.
+		Classes: []ClassReport{},
 	}
 
 	// Idempotent fast path: already at/below target — nothing to do,
@@ -221,15 +224,18 @@ func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count i
 		return 0, 0, nil, err
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
-		// validateEntry already passed the resolved view; the literal
-		// leaf being a symlink means the cache itself moved — measure
-		// the resolved target, delete the symlink is NOT attempted.
+		// In-root symlinked cache (validateEntry already proved the
+		// resolved target stays inside the same root). Measure AND
+		// delete must agree (review r1 F3): the bytes come from the
+		// TARGET tree, so the deletion set is [link, target] —
+		// RemoveAll on the literal alone would unlink just the link
+		// inode and report the target's bytes as freed.
 		resolved, rerr := filepath.EvalSymlinks(entry.Path)
 		if rerr != nil {
 			return 0, 0, nil, nil
 		}
 		b, n := walkSum(ctx, resolved)
-		return b, n, []string{entry.Path}, nil
+		return b, n, []string{entry.Path, resolved}, nil
 	}
 	b, n := walkSum(ctx, entry.Path)
 	return b, n, []string{entry.Path}, nil

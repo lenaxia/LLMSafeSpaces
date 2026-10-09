@@ -164,8 +164,14 @@ func (s *controlSocketServer) diskRecoverControlMethod(ctx context.Context, conn
 		DryRun      bool    `json:"dry_run"`
 		TargetRatio float64 `json:"target_ratio"`
 	}
-	if b, err := json.Marshal(req.Params); err == nil {
-		_ = json.Unmarshal(b, &params)
+	// Explicit-over-implicit (review r1 F6): a params shape we cannot
+	// decode is a bad_request, never a silently-defaulted sweep.
+	if req.Params != nil {
+		if b, err := json.Marshal(req.Params); err != nil {
+			return s.errResp(req.ID, "bad_request", "params not marshalable")
+		} else if err := json.Unmarshal(b, &params); err != nil {
+			return s.errResp(req.ID, "bad_request", "params must be {dry_run bool, target_ratio number}: "+err.Error())
+		}
 	}
 	methodCtx, cancel := context.WithTimeout(ctx, diskRecoverTimeout)
 	defer cancel()

@@ -148,17 +148,24 @@ func (h *DiskRecoverHandler) Recover(c *gin.Context) {
 	}
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck
 
-	// Relay typed: decode the report and re-encode — a raw byte
+	// Relay typed on the 200 path (decode → re-encode — a raw byte
 	// passthrough would forward whatever a compromised agentd chose to
-	// send (response splitting, bogus fields) into the owner's browser.
-	var report diskrecovery.Report
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&report); err != nil {
-		respondWithAPIError(c, apierrors.NewInternalError("disk_recover_decode_failed",
-			fmt.Errorf("agentd returned %d: %w", resp.StatusCode, err)))
-		return
-	}
+	// send into the owner's browser); map the non-200 classes without
+	// touching their plain-text bodies (F1: they are http.Error text,
+	// not JSON).
 	switch resp.StatusCode {
 	case http.StatusOK:
+		var report diskrecovery.Report
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&report); err != nil {
+			respondWithAPIError(c, apierrors.NewInternalError("disk_recover_decode_failed", err))
+			return
+		}
+		if report.Classes == nil {
+			// Wire-shape hardening: the engine initializes Classes on
+			// every path; a future regression to nil would crash
+			// null-naive consumers.
+			report.Classes = []diskrecovery.ClassReport{}
+		}
 		c.JSON(http.StatusOK, report)
 	case http.StatusConflict:
 		c.JSON(http.StatusConflict, gin.H{"error": "disk recovery already in progress"})
