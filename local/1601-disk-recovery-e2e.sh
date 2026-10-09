@@ -12,8 +12,10 @@
 #        neutral file SURVIVES untouched.
 #   R2 — THE UNHAPPY PATHS: anonymous call → 401; a workspace the
 #        caller does not own (random UUID) → 404; and agentd-side
-#        serialization — two concurrent executes → exactly one 200 and
-#        one 409 busy.
+#        serialization — three concurrent executes must each complete
+#        or answer 409 busy (overlap is timing-dependent on a fast
+#        sweep: a zero-409 outcome is a documented warn, zero replies
+#        at all is a hard die).
 #
 # Environment: same conventions as local/issue-1505-refresh-busy-e2e.sh
 # (local/lib/us70-common.sh; kind cluster with the API service).
@@ -117,8 +119,10 @@ if [[ -n "${WS_PW}" ]]; then
     kc port-forward pod/"${W1_POD}" "${AGENTD_PORT_FWD}:4097" >/dev/null 2>&1 &
     PF2_PID=$!
     # Chain the harness EXIT trap (us70-common.sh) — a bare trap would
-    # clobber it and leak PF_PID (review r2).
-    PRIOR_TRAP=$(trap -p EXIT | sed "s/^trap -- '\''\(.*\)\'' EXIT$/\1/")
+    # clobber it and leak PF_PID (review r2; r3: the r2 sed quoting never
+    # matched and silently re-registered instead of calling cleanup —
+    # awk field-split on the single-quote is quoting-proof).
+    PRIOR_TRAP=$(trap -p EXIT | awk -F"'" '/^trap --/{print $2}')
     trap "kill ${PF2_PID} 2>/dev/null || true; ${PRIOR_TRAP:-true}" EXIT
     sleep 2
     AUTH_HDR="Authorization: Basic $(printf 'opencode:%s' "${WS_PW}" | base64)"
@@ -131,9 +135,13 @@ if [[ -n "${WS_PW}" ]]; then
         CURL_PIDS="${CURL_PIDS} $!"
     done
     # Wait on the curl PIDs ONLY (review r2): a bare `wait` blocks
-    # forever on the never-exiting port-forward.
+    # forever on the never-exiting port-forward. Guarded (review r3):
+    # under set -e an awaited curl's failure status (exit 7 conn-refused
+    # racing the young port-forward, exit 28 -m 100) would silently
+    # abort the script here — the TOTAL_REPLIES die below is the
+    # adjudicator for transport failure, not the wait.
     # shellcheck disable=SC2086
-    wait ${CURL_PIDS}
+    wait ${CURL_PIDS} || true
     kill ${PF2_PID} 2>/dev/null || true
     # Compact-JSON greps with `|| true` INSIDE the substitutions
     # (review r2): Go's encoding/json emits no spaces, and a non-match

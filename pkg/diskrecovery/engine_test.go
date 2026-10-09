@@ -284,8 +284,10 @@ func TestPrefixStaleAgeFilter(t *testing.T) {
 	if len(rep.Classes) != 1 || rep.Classes[0].Status != ClassFreed {
 		t.Fatalf("expected the stale residue freed, got %+v", rep.Classes)
 	}
-	if rep.Classes[0].Bytes != 200 || rep.Classes[0].Entries != 2 {
-		t.Fatalf("stale class must count only stale files, got %+v", rep.Classes[0])
+	// Entries counts deletion-candidate PATHS (the stale child dir);
+	// Bytes counts the files inside it.
+	if rep.Classes[0].Bytes != 200 || rep.Classes[0].Entries != 1 {
+		t.Fatalf("stale class must measure only the stale child, got %+v", rep.Classes[0])
 	}
 	if _, err := os.Stat(live); err != nil {
 		t.Fatalf("live build dir must survive the age filter: %v", err)
@@ -625,5 +627,67 @@ func TestAliasedClassesDoNotDoubleCount(t *testing.T) {
 	}
 	if rep.BytesFreed != 1000 {
 		t.Fatalf("total freed must be the tree size once (1000), got %d", rep.BytesFreed)
+	}
+}
+
+// PIN (prefix-shape honesty, review r3 B1): a stale child removed
+// between measure and delete (injected via the usage seam, which the
+// engine calls between the two) must not have its bytes claimed — the
+// per-path guard covers EVERY position in a multi-path class, not
+// just the last.
+func TestPrefixClassPartialVanishHonestBytes(t *testing.T) {
+	dir := t.TempDir()
+	tmpRoot := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	childA := filepath.Join(tmpRoot, "go-build-aaa")
+	childB := filepath.Join(tmpRoot, "go-build-bbb")
+	seedTree(t, childA, 2, 100) // 200 bytes — will vanish mid-sweep
+	seedTree(t, childB, 3, 100) // 300 bytes — stays
+	old := time.Now().Add(-10 * time.Minute)
+	for _, c := range []string{childA, childB} {
+		if err := os.Chtimes(c, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: filepath.Join(tmpRoot, "go-build"), Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "tmp-build-residue", Path: filepath.Join(tmpRoot, "go-build"), Kind: EntryPrefixStale, MinAgeSecs: 120},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, func() (int64, int64, error) {
+		// Usage call #1 is the initial read (pre-measure); call #2 is
+		// the sweep loop's pre-delete check — the window AFTER measure
+		// and BEFORE delete. Remove the first-listed child exactly
+		// there.
+		_, tot, _ := usage.get()
+		if usage.calls == 2 {
+			_ = os.RemoveAll(childA)
+		}
+		return 9600, tot, nil
+	})
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassFreed {
+		t.Fatalf("class should partially free, got %+v", cr)
+	}
+	if cr.BytesFreed != 300 {
+		t.Fatalf("only the SURVIVING child's bytes may be claimed (want 300), got %+v", cr)
+	}
+	if cr.Bytes != 500 {
+		t.Fatalf("measured figure stays the pre-sweep 500, got %+v", cr)
+	}
+	if cr.Reason == "" {
+		t.Fatalf("partial outcome must carry the honesty reason, got %+v", cr)
+	}
+	if _, err := os.Stat(childB); !os.IsNotExist(err) {
+		t.Fatalf("surviving child must be deleted: %v", err)
 	}
 }

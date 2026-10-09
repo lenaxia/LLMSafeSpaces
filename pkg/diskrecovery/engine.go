@@ -33,6 +33,13 @@ var ErrNoUsage = errors.New("workspace disk usage unavailable")
 // numbers agentd's statusz disk gauge reports).
 type UsageFunc func() (usedBytes, totalBytes int64, err error)
 
+// pathSize pairs one deletion-candidate path with the measured share
+// of the class's bytes it carries — the unit of bytesFreed honesty.
+type pathSize struct {
+	path  string
+	bytes int64
+}
+
 // Engine executes allowlisted cache recovery. Zero filesystem writes
 // outside the validated unlinks themselves (owner ruling on #1601: the
 // rescue path must work at 100% full — no temp files, no report
@@ -102,7 +109,7 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 	type candidate struct {
 		entry  Entry
 		report ClassReport
-		paths  []string // prefix classes: the stale children to remove
+		paths  []pathSize // prefix: one per stale child; symlink: [link 0, target n]; dir: [dir n]
 	}
 	var candidates []candidate
 	for _, entry := range e.manifest.Entries {
@@ -113,16 +120,30 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 			report.Classes = append(report.Classes, cr)
 			continue
 		}
-		bytes, count, paths, err := e.measure(ctx, entry)
-		cr.Bytes, cr.Entries = bytes, count
+		sizes, err := e.measure(ctx, entry)
+		var bytes int64
+		for _, ps := range sizes {
+			bytes += ps.bytes
+		}
+		// The deletion set keeps EVERY measured path (zero-byte link
+		// inodes ride along for cleanup); candidacy — and Bytes/Entries
+		// — counts only reclaimable data, keeping not_present meaning
+		// "nothing to free" (the pre-refactor count==0 contract).
+		reclaimable := 0
+		for _, ps := range sizes {
+			if ps.bytes > 0 {
+				reclaimable++
+			}
+		}
+		cr.Bytes, cr.Entries = bytes, reclaimable
 		switch {
 		case err != nil:
 			cr.Status = ClassError
 			cr.Reason = err.Error()
-		case count == 0:
+		case reclaimable == 0:
 			cr.Status = ClassNotPresent
 		default:
-			candidates = append(candidates, candidate{entry: entry, report: cr, paths: paths})
+			candidates = append(candidates, candidate{entry: entry, report: cr, paths: sizes})
 			continue
 		}
 		report.Classes = append(report.Classes, cr)
@@ -158,27 +179,32 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 			continue
 		}
 
-		if existed, derr := e.delete(c.paths); derr != nil || !existed {
-			// derr: partial unlink failure. !existed: every path was
-			// already gone — symlink aliasing (two classes resolving to
-			// one tree; the earlier class freed it). Either way the
-			// class must NOT claim its measured bytes as freed (review
-			// r2 robustness: fabricated bytesFreed by double-count).
+		freed, derr := e.delete(c.paths)
+		if derr != nil {
 			c.report.Status = ClassError
-			if derr != nil {
-				c.report.Reason = derr.Error()
-			} else {
-				c.report.Status = ClassNotPresent
-				c.report.Reason = "already removed (aliased with an earlier class)"
-				c.report.Bytes = 0
-				c.report.Entries = 0
-			}
+			c.report.Reason = derr.Error()
+			report.Classes = append(report.Classes, c.report)
+			continue
+		}
+		// Per-path honesty (reviews r2/r3): bytesFreed counts only the
+		// measured shares whose paths were still present at delete
+		// time. Aliased-away or externally-removed paths (any position
+		// in the set — prefix children included) contribute zero, so
+		// no class can claim bytes it did not actually unlink.
+		if freed == 0 {
+			c.report.Status = ClassNotPresent
+			c.report.Reason = "already removed (aliased with an earlier class or externally deleted)"
+			c.report.Bytes = 0
+			c.report.Entries = 0
 			report.Classes = append(report.Classes, c.report)
 			continue
 		}
 		c.report.Status = ClassFreed
-		c.report.BytesFreed = c.report.Bytes
-		report.BytesFreed += c.report.Bytes
+		c.report.BytesFreed = freed
+		if freed < c.report.Bytes {
+			c.report.Reason = fmt.Sprintf("partial: %d of %d measured bytes were still present at delete time", freed, c.report.Bytes)
+		}
+		report.BytesFreed += freed
 		report.Classes = append(report.Classes, c.report)
 	}
 
@@ -193,10 +219,13 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 	return report, nil
 }
 
-// measure computes the reclaimable bytes/files for one entry. For
-// prefix classes only stale children (mtime older than MinAgeSecs)
-// count, and their paths are returned for deletion.
-func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count int, paths []string, err error) {
+// measure computes the per-path reclaimable sizes for one entry. The
+// returned pathSize list is BOTH the measured figure AND the deletion
+// set — bytesFreed honesty (reviews r2/r3) rests on the two never
+// diverging. For prefix classes only stale children (mtime older than
+// MinAgeSecs) count, one pathSize each.
+func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
+	type ps = pathSize
 	if entry.Kind == EntryPrefixStale {
 		cutoff := e.now().Add(-time.Duration(entry.MinAgeSecs) * time.Second)
 		parent := filepath.Dir(entry.Path)
@@ -204,10 +233,11 @@ func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count i
 		dirents, derr := os.ReadDir(parent)
 		if derr != nil {
 			if os.IsNotExist(derr) {
-				return 0, 0, nil, nil
+				return nil, nil
 			}
-			return 0, 0, nil, derr
+			return nil, derr
 		}
+		var out []ps
 		for _, d := range dirents {
 			if !strings.HasPrefix(d.Name(), prefix) {
 				continue
@@ -220,66 +250,65 @@ func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count i
 				continue // live build — never reap
 			}
 			p := filepath.Join(parent, d.Name())
-			b, n := walkSum(ctx, p)
-			bytes += b
-			count += n
-			paths = append(paths, p)
+			b, _ := walkSum(ctx, p)
+			out = append(out, ps{path: p, bytes: b})
 		}
-		return bytes, count, paths, nil
+		return out, nil
 	}
 
 	fi, err := os.Lstat(entry.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, 0, nil, nil
+			return nil, nil
 		}
-		return 0, 0, nil, err
+		return nil, err
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		// In-root symlinked cache (validateEntry already proved the
 		// resolved target stays inside the same root). Measure AND
 		// delete must agree (review r1 F3): the bytes come from the
-		// TARGET tree, so the deletion set is [link, target] —
+		// TARGET tree, so the deletion set is [link 0, target n] —
 		// RemoveAll on the literal alone would unlink just the link
 		// inode and report the target's bytes as freed.
 		resolved, rerr := filepath.EvalSymlinks(entry.Path)
 		if rerr != nil {
-			return 0, 0, nil, nil
+			return nil, nil
 		}
 		// TOCTOU close (review r2 robustness): this FRESH resolution is
 		// what enters the deletion set — re-run the full boundary
 		// validation on it before it does. A retargeted link between
 		// validateEntry and here dies here, loudly.
 		if err := validateEntry(e.manifest, Entry{Class: entry.Class, Path: resolved, Kind: EntryDir}); err != nil {
-			return 0, 0, nil, err
+			return nil, err
 		}
-		b, n := walkSum(ctx, resolved)
-		return b, n, []string{entry.Path, resolved}, nil
+		b, _ := walkSum(ctx, resolved)
+		return []ps{{path: entry.Path}, {path: resolved, bytes: b}}, nil
 	}
-	b, n := walkSum(ctx, entry.Path)
-	return b, n, []string{entry.Path}, nil
+	b, _ := walkSum(ctx, entry.Path)
+	return []ps{{path: entry.Path, bytes: b}}, nil
 }
 
-// delete removes one class's measured paths. existed reports whether
-// the MEASURED path (the last in the set — the resolved target for
-// symlink classes, the entry dir itself otherwise) was present: an
-// already-absent measured path means aliasing (an earlier class freed
-// the same tree) and the caller must not report the measured bytes as
-// freed — even when cleanup paths (stale link inodes) remain.
-// firstErr carries any unlink failure; the volume-level before/after
-// statfs pair in the Report remains the accounting truth.
-func (e *Engine) delete(paths []string) (existed bool, firstErr error) {
-	if len(paths) > 0 {
-		if _, serr := os.Lstat(paths[len(paths)-1]); serr == nil {
-			existed = true
-		}
-	}
+// delete removes one class's measured paths and returns the measured
+// share that was actually still present (per path — any position in
+// the set): a path absent at delete time (aliasing, external removal
+// between measure and delete) contributes zero, so bytesFreed can
+// never claim bytes that were not unlinked by THIS sweep. firstErr
+// carries any unlink failure; the volume-level before/after statfs
+// pair in the Report remains the accounting truth.
+func (e *Engine) delete(paths []pathSize) (freed int64, firstErr error) {
 	for _, p := range paths {
-		if err := os.RemoveAll(p); err != nil && firstErr == nil {
-			firstErr = err
+		if _, serr := os.Lstat(p.path); serr != nil {
+			continue // absent: aliased/externally removed — no credit
 		}
+		if err := os.RemoveAll(p.path); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		freed += p.bytes
 	}
-	return existed, firstErr
+	return freed, firstErr
 }
 
 // walkSum sums file sizes and file count under root (root itself
