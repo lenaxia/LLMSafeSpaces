@@ -29,6 +29,22 @@ var (
 	// on a dead-listener hang, which the vitals evidence rules out). Var
 	// for tests.
 	watchdogMaxDeferrals = 60
+
+	// watchdogUnknownEpisodeBound (#1632 fix #2): how long a CONTINUOUS
+	// UNKNOWN episode may suppress before the suppression itself is
+	// escalated to a bounded soft restart. Rationale: "killing without
+	// evidence is banned" (#892) assumed UNKNOWN means "the probe is
+	// momentarily degraded" — the 2026-10-08 incident proved a topology
+	// where UNKNOWN was PERMANENT by design (sidecar agentd structurally
+	// unable to read the workspace container's /proc): 36+ suppressions,
+	// a wedged-but-listening opencode, zero self-healing for 30+
+	// minutes. After this bound the watchdog fires once per episode
+	// (rate-limited by the existing maybeFire), writes a marker, and
+	// recovers the agent — trading a bounded risk of one restart against
+	// an unbounded hang. Non-UNKNOWN suppressions (FLAT/STARVED/RESPAWN)
+	// are honest evidence of a live process and never escalate. Var for
+	// tests.
+	watchdogUnknownEpisodeBound = 15 * time.Minute
 )
 
 const (
@@ -131,6 +147,12 @@ type healthWatchdog struct {
 	// Warn logs, not from re-arming the kill.
 	suppressedCount int  // consecutive suppressions this episode (any reason)
 	suppressLogged  bool // latches: log the first suppression (then every 12th)
+	// unknownSince (#1632 fix #2): when the current run of CONSECUTIVE
+	// verdictUnknown suppressions began. Zero when the last verdict was
+	// not UNKNOWN (or the episode reset). Ages toward
+	// watchdogUnknownEpisodeBound; any non-UNKNOWN verdict or a healthy
+	// transition re-zeroes it.
+	unknownSince time.Time
 }
 
 func newHealthWatchdog() *healthWatchdog {
@@ -183,6 +205,7 @@ func (wd *healthWatchdog) reset() {
 	wd.deferCount = 0
 	wd.suppressedCount = 0
 	wd.suppressLogged = false
+	wd.unknownSince = time.Time{}
 }
 
 // refreshIsHealthyLoop runs from agentd boot until ctx is canceled.
@@ -322,6 +345,19 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					verdict, why := v.classify()
 					if verdict != verdictHung {
 						wd.suppressedCount++
+						// #1632 fix #2 — age the UNKNOWN run. Only
+						// CONSECUTIVE UNKNOWN verdicts age toward the bound;
+						// any honest evidence verdict (STARVED/FLAT/RESPAWN)
+						// re-zeroes the clock (a live process is producing
+						// evidence; the banned-kill policy stands).
+						now := time.Now()
+						if verdict == verdictUnknown {
+							if wd.unknownSince.IsZero() {
+								wd.unknownSince = now
+							}
+						} else {
+							wd.unknownSince = time.Time{}
+						}
 						if forceDespiteBusy {
 							// Evidence says opencode is alive (or the
 							// respawn owns it): the busy sessions may be
@@ -351,6 +387,49 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 							wd.suppressLogged = true
 						}
 						pkgOpsMetrics.RecordWatchdogSuppression(workspaceIDFromEnv(), v.suppressionReason())
+
+						// #1632 fix #2 — the bound. A continuous UNKNOWN
+						// episode this old, on a past-boot process with
+						// continuous health timeouts, is no longer "the
+						// probe is momentarily degraded": the evidence
+						// channel itself is broken (by deployment design
+						// pre-#1631 sidecar topology, or a dead control
+						// socket), and suppressing forever means hanging
+						// forever. Escalate ONCE per episode to a soft
+						// restart — maybeFire's latch + rate limit bound
+						// the blast radius exactly like a corroborated
+						// dead-listener kill; the fired latch holds until
+						// a healthy poll resets the episode.
+						if verdict == verdictUnknown &&
+							!wd.unknownSince.IsZero() &&
+							now.Sub(wd.unknownSince) >= watchdogUnknownEpisodeBound {
+							if wd.maybeFire(now) {
+								watchdogLogger.Error("health-watchdog UNKNOWN-episode bound exceeded — escalating to bounded soft restart",
+									zap.String("evidence", why),
+									zap.Duration("unknownEpisode", now.Sub(wd.unknownSince).Round(time.Second)),
+									zap.Duration("bound", watchdogUnknownEpisodeBound),
+									zap.Int("suppressions", wd.suppressedCount),
+									zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
+									zap.String("lastError", snap.LastError),
+									zap.Int("totalWatchdogRestarts", wd.totalFired),
+								)
+								if err := writeRestartReasonMarker(markerPathFromEnv(), RestartReasonHealthWatchdogUnknownEpisode, nil); err != nil {
+									watchdogLogger.Error("failed to write UNKNOWN-episode restart-reason marker", zap.Error(err))
+									pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonHealthWatchdogUnknownEpisode)
+								}
+								logRestartReasonAtWrite(RestartReasonHealthWatchdogUnknownEpisode, nil, watchdogLogger.Core())
+								pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonHealthWatchdogUnknownEpisode)
+								if restarter != nil {
+									go restarter.restart()
+								}
+							} else if !wd.giveUpLogged {
+								// Rate-limited out (or latched): say so once.
+								wd.giveUpLogged = true
+								watchdogLogger.Warn("UNKNOWN-episode bound exceeded but watchdog cannot fire (latched/rate-limited) — suppressing until the window allows",
+									zap.Duration("unknownEpisode", now.Sub(wd.unknownSince).Round(time.Second)),
+								)
+							}
+						}
 						continue
 					}
 					watchdogLogger.Info("health-watchdog corroborated dead-listener hang",

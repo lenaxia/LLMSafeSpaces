@@ -4,6 +4,8 @@
 package main
 
 import (
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +34,11 @@ type fakeRestartProc struct {
 	// overrideSpawnEnv, when set, is returned by SpawnEnvState() — lets
 	// tests stage the US-70.1 terminal spawn-env state.
 	overrideSpawnEnv atomic.Pointer[spawnEnvStateReport]
+
+	// vitalsSamples + vitalsMu back the optional vitalsProvider
+	// capability (#1632 fix #1 tests): stageVitals scripts them.
+	vitalsMu      sync.Mutex
+	vitalsSamples []fakeVitalsSample
 }
 
 // procStateOverride is the staged State() answer.
@@ -77,6 +84,42 @@ func (f *fakeRestartProc) SpawnEnvState() spawnEnvStateReport {
 		return *o
 	}
 	return spawnEnvStateReport{}
+}
+
+// fakeVitalsSample is one staged ChildVitals answer (#1632 fix #1
+// tests). err stages a vitals_unavailable answer.
+type fakeVitalsSample struct {
+	pid         int
+	cpuTicks    float64
+	throttledUS float64
+	err         error
+}
+
+// stageVitals arms the fake's vitalsProvider capability with a scripted
+// sample list; each ChildVitals call pops the head, and the LAST entry
+// repeats forever (a two-sample gather with one staged entry sees a
+// zero delta — the FLAT shape).
+func (f *fakeRestartProc) stageVitals(samples ...fakeVitalsSample) {
+	f.vitalsMu.Lock()
+	defer f.vitalsMu.Unlock()
+	f.vitalsSamples = samples
+}
+
+// ChildVitals implements the vitalsProvider capability with staged
+// samples. With nothing staged it answers an error — the server turns
+// that into vitals_unavailable, which the gatherer degrades exactly
+// like method_unknown (evidence unavailable).
+func (f *fakeRestartProc) ChildVitals() (int, float64, float64, error) {
+	f.vitalsMu.Lock()
+	defer f.vitalsMu.Unlock()
+	if len(f.vitalsSamples) == 0 {
+		return 0, 0, 0, fmt.Errorf("no staged vitals sample")
+	}
+	s := f.vitalsSamples[0]
+	if len(f.vitalsSamples) > 1 {
+		f.vitalsSamples = f.vitalsSamples[1:]
+	}
+	return s.pid, s.cpuTicks, s.throttledUS, s.err
 }
 
 // newControlSocketServerForTest builds a server on addr (":0" for

@@ -83,6 +83,22 @@ type supervisedProcIface interface {
 	RefreshFiles() (filesRev string, filesReason string)
 }
 
+// vitalsProvider is the OPTIONAL capability behind the `vitals` method
+// (#1632 fix #1 — sidecar CPU evidence): the supervisor reads
+// /proc/<child>/stat and its cgroup cpu.stat in ITS pidns/cgroupns
+// (kernel-level reads — they work even when the child's event loop is
+// wedged) and reports the counters; the sidecar samples twice across its
+// window to derive a CPU delta. Capability-typed (not on the main iface)
+// so older test fakes and any non-supervising implementer keep compiling
+// and answer method_unknown, which the client degrades to
+// evidence-unavailable — the exact mixed-fleet semantics of an older
+// supervisor binary that predates the method.
+type vitalsProvider interface {
+	// ChildVitals reports the supervised child's pid, utime+stime
+	// (clock ticks), and cgroup throttled_usec at one instant.
+	ChildVitals() (pid int, cpuTicks float64, throttledUS float64, err error)
+}
+
 type controlSocketServer struct {
 	ln   net.Listener
 	proc supervisedProcIface
@@ -212,6 +228,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.refreshFiles(req))
 	case "metrics":
 		writeJSON(conn, s.metrics(req.ID))
+	case "vitals":
+		writeJSON(conn, s.vitals(req.ID))
 	case "upload_apply":
 		writeJSON(conn, s.uploadApplyControlMethod(connCtx, conn, req))
 	default:
@@ -338,6 +356,32 @@ func (s *controlSocketServer) metrics(id *int64) controlResponse {
 			"cpu_usage_usec":       m.CPUUsageUsec,
 			"cpu_throttled_usec":   m.CPUThrottledUsec,
 		}}}
+}
+
+// vitals is the `vitals` method (#1632 fix #1): one instant snapshot of
+// the supervised child's pid, utime+stime ticks, and cgroup throttled
+// usec, read in the supervisor's own pidns/cgroupns. The sidecar's
+// watchdog samples it twice across its window to make cpuKnown=true
+// reachable in sidecar mode. A proc that does not implement the
+// vitalsProvider capability answers method_unknown — identical to an
+// older supervisor binary, so the client-side degradation path is one
+// code path for both mixed-fleet halves.
+func (s *controlSocketServer) vitals(id *int64) controlResponse {
+	vp, ok := s.proc.(vitalsProvider)
+	if !ok {
+		return s.errResp(id, "method_unknown",
+			"method \"vitals\" is not part of control protocol v1")
+	}
+	pid, ticks, throttledUS, err := vp.ChildVitals()
+	if err != nil {
+		return s.errResp(id, "vitals_unavailable", err.Error())
+	}
+	return controlResponse{V: controlProtocolVersion, ID: idOr(id),
+		Result: map[string]any{
+			"child_pid":           pid,
+			"cpu_ticks":           ticks,
+			"cgroup_throttled_us": throttledUS,
+		}}
 }
 
 func (s *controlSocketServer) errResp(id *int64, code, msg string) controlResponse {

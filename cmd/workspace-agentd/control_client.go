@@ -368,6 +368,31 @@ func (c *controlClient) Metrics(ctx context.Context) (*cgroupMetrics, error) {
 	return wrapper.Cgroup, nil
 }
 
+// controlVitals is one instant supervisor-side observation of the
+// supervised child (#1632 fix #1). ChildPID identifies the sample — the
+// caller compares two observations and treats any pid change as a
+// restart-in-flight (delta across two processes is garbage).
+type controlVitals struct {
+	ChildPID    int     `json:"child_pid"`
+	CPUTicks    float64 `json:"cpu_ticks"`
+	ThrottledUS float64 `json:"cgroup_throttled_us"`
+}
+
+// Vitals fetches one instant vitals sample. Errors (method_unknown on
+// an older supervisor, vitals_unavailable, transport) are the caller's
+// "evidence unavailable" signal — never fatal.
+func (c *controlClient) Vitals(ctx context.Context) (*controlVitals, error) {
+	res, err := c.call(ctx, "vitals", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	v := &controlVitals{}
+	if err := json.Unmarshal(mustMarshal(res), v); err != nil {
+		return nil, fmt.Errorf("control socket: vitals decode: %w", err)
+	}
+	return v, nil
+}
+
 func mustMarshal(v any) []byte {
 	data, err := json.Marshal(v)
 	if err != nil {

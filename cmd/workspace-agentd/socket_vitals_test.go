@@ -7,13 +7,14 @@ package main
 // corroboration via the control socket.
 //
 // Post-#892 the kill set is DEAD-LISTENER ONLY: verdict HUNG requires
-// tcpRefused + supervised pid alive + past boot grace. In sidecar mode the
-// pid/boot evidence comes from the supervisor's `status` (child_pid,
-// last_restart_at) instead of /proc — the socket gatherer must preserve
-// the EXACT verdict matrix, or the sidecar either loses the only lethal
-// verdict (hangs unrecoverable) or gains unjustified ones (the 2026-08-15
-// kill-churn incident class). CPU-delta evidence is honestly unavailable
-// cross-container and maps to cpuKnown=false.
+// tcpRefused + supervised pid alive + past boot grace. In sidecar mode
+// the pid/boot evidence comes from the supervisor's `status`
+// (child_pid, last_restart_at) instead of /proc — the socket gatherer
+// must preserve the EXACT verdict matrix, or the sidecar either loses
+// the only lethal verdict (hangs unrecoverable) or gains unjustified
+// ones (the 2026-08-15 kill-churn incident class). CPU-delta evidence
+// arrives via the supervisor's `vitals` method (#1632 fix #1; the
+// CPU-evidence cases live in socket_vitals_cpu_test.go).
 
 import (
 	"context"
