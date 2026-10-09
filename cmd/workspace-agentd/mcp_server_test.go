@@ -162,7 +162,10 @@ func TestMCPHandler_ToolsCall_ListModels_RoundTrip(t *testing.T) {
 		Count int `json:"count"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(content["text"].(string)), &payload))
-	assert.Equal(t, 3, payload.Count)
+	// 4 = the shared fakeAgent catalog (vision, text, declared, nocaps —
+	// nocaps carries no /config/providers entry, the vision-unknown join
+	// case). TestMCPListModels pins the per-entry vision tri-state.
+	assert.Equal(t, 4, payload.Count)
 }
 
 // The plugin half of the platform config injection (#1465): the
