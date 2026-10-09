@@ -142,3 +142,35 @@ re-encode; no raw passthrough). openapi.yaml + contract test.
    npm ci + vitest + build. Then push, poll AI review on cadence.
 
 Status: architecture recon complete, no code yet. Next: step 1 red-first.
+
+## Day 1 progress log
+
+- **Commit 1 `7865b65c`** — pkg/diskrecovery (types/manifest/engine +
+  18 tests). Mutation battery self-run BEFORE commit: M1
+  protected-check reorder → caught; M2 symlink containment neutered →
+  caught; M3 dry-run deletes anyway → caught; M4 age filter dropped →
+  caught; M5 sweep-all (target break removed) → caught; M6 raw target
+  (clamp dropped) → caught; M7 longest-root guard dropped → survived
+  TWICE until the test's root order made specificity load-bearing
+  (documented: first-match==longest-match hides the guard; overlapping
+  inner-PARENT/outer-SELF shape with parent declared LAST is the
+  distinguishing case); M8 below-target fast path removed → caught.
+  One real bug found by the red phase: my first symlink walk SKIPPED
+  resolving a symlink leaf (the exact escape it existed to catch) —
+  rewritten to EvalSymlinks-deepest-existing-ancestor.
+- **In-flight incident (honest disclosure)**: my own workspace hit
+  100% disk building the disk-recovery feature (`write /tmp/go-build…:
+  no space left on device`). Applied the standing permission: `go
+  clean -cache`, stale /tmp/go-build corpses → 81% → 61%. The feature
+  is now literally dogfooding its own motivation.
+- **Commit 2 `f995356e`** — agentd execution surface (user-mux
+  /v1/disk-recover + control-socket disk_recover + supervisor engine
+  wiring + single-container/sidecar mode dispatch) and the API facade
+  (owner authz, phase gate, typed relay, router, openapi, contract
+  test). 14 more tests. Mutations M9-M14 all caught (auth gate,
+  sentinel mapping both socket sides, ownership-lookup skip, typed
+  relay broken, dryRun flag dropped).
+- Frontend in flight: types + recoverDisk client + DiskRecoveryStrip
+  (banner ≥95% / subtle on-demand below, dry-run-first, report table,
+  refused-classes-loud, error+retry) + ChatPage wiring + vitest suite.
+

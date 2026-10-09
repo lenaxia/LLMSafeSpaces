@@ -30,6 +30,7 @@ import { AtCapBanner } from "../components/chat/AtCapBanner";
 import { HealthBanner } from "../components/chat/HealthBanner";
 import { AgentReloadBanner } from "../components/workspace/AgentReloadBanner";
 import { DiskUsageBar } from "../components/workspace/DiskUsageBar";
+import { DiskRecoveryStrip } from "../components/workspace/DiskRecoveryStrip";
 import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
@@ -1170,6 +1171,14 @@ export function ChatPage() {
           memoryTotalBytes={status?.memoryTotalBytes}
           contextUsed={contextUsedForDisplay ?? 0}
           contextTotal={status?.contextTotal ?? 0}
+        />
+      )}
+
+      {isReady && (
+        <DiskRecoveryStrip
+          workspaceId={workspaceId ?? undefined}
+          diskUsedBytes={status?.diskUsedBytes}
+          diskTotalBytes={status?.diskTotalBytes}
         />
       )}
 

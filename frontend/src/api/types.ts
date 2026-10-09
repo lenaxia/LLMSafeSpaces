@@ -114,6 +114,34 @@ export interface AgentSession {
   status: "unknown" | "idle" | "busy" | "error" | "compacting" | "archived";
 }
 
+// #1601: mechanical disk-recovery report (POST /workspaces/:id/disk-recover).
+// Mirrors pkg/diskrecovery.Report — response-only, never persisted.
+export interface DiskRecoveryClassReport {
+  class: string;
+  path: string;
+  bytes: number;
+  bytesFreed: number;
+  entries: number;
+  status: "freed" | "would_free" | "not_present" | "refused" | "error" | "skipped_target_met";
+  reason?: string;
+}
+
+export interface DiskRecoveryReport {
+  dryRun: boolean;
+  alreadyBelowTarget: boolean;
+  beforeUsedBytes: number;
+  beforeTotalBytes: number;
+  afterUsedBytes: number;
+  afterTotalBytes: number;
+  targetRatio: number;
+  beforeRatio: number;
+  afterRatio: number;
+  bytesFreed: number;
+  stoppedEarly: boolean;
+  runtimeBase: string;
+  classes: DiskRecoveryClassReport[];
+}
+
 export interface WorkspaceStatus {
   phase: string;
   podName?: string;

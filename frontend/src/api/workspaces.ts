@@ -1,6 +1,7 @@
 import { api } from "./client";
 import type {
   ActivateWorkspaceResponse,
+  DiskRecoveryReport,
   SessionListItem,
   WorkspaceListResponse,
   WorkspaceStatus,
@@ -112,6 +113,11 @@ export const workspacesApi = {
     api.delete<void>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
   abortSession: (workspaceId: string, sessionId: string) =>
     api.post<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/abort`),
+  // #1601: report-before-free first — dryRun=true mutates nothing.
+  recoverDisk: (workspaceId: string, dryRun: boolean) =>
+    api.post<DiskRecoveryReport>(
+      `/workspaces/${workspaceId}/disk-recover${dryRun ? "?dryRun=true" : ""}`
+    ),
   reloadAgent: (workspaceId: string) =>
     api.post<{ disposed: boolean; lastDisposedAt?: string; warning?: string }>(
       `/workspaces/${workspaceId}/agent/reload`
