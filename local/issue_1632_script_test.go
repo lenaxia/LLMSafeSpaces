@@ -6,9 +6,11 @@ package local
 // Pins for local/issue-1632-agentz-liveness-e2e.sh — the #1632 fix #3
 // happy-path e2e (probe shape + live 401/200 + zero restarts). The
 // script runs on the harness/pool cluster; these pins hold its shape
-// (TestIssue1507Script_BashSyntax precedent; the sustained-episode
-// unhappy loop is unit/integration-pinned in cmd/workspace-agentd
-// pending an env-tunable sustain bound).
+// (TestIssue1507Script_BashSyntax precedent). The sustained-episode
+// unhappy loop is the script's WEDGE=1 row (SIGSTOP wedge +
+// AGENTZ_AGENTZ_SUSTAIN_SECONDS, floor-clamped agentd-side); its
+// semantics are additionally unit/integration-pinned in
+// cmd/workspace-agentd.
 
 import (
 	"os"

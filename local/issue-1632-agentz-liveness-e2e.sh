@@ -21,7 +21,7 @@
 #       probe 401s/404s forever and restart-loops the container).
 #   R3  a healthy workspace carries ZERO workspace-container restarts
 #       (the probe is not firing blind).
-#   R4  (unhappy loop, opt-in via AGENTZ_SUSTAIN_SECONDS + WEDGE=1):
+#   R4  (unhappy loop, opt-in via AGENTZ_AGENTZ_SUSTAIN_SECONDS + WEDGE=1):
 #       with the env knob clamped low by the agentd floor, wedge the
 #       agent's event loop (a busy synchronous child), let the episode
 #       age past the sustain, and observe a workspace-container restart
@@ -105,7 +105,7 @@ if [ "${WEDGE}" != "1" ]; then
 fi
 
 echo "== R4 (WEDGE=1): sustain-episode → workspace-container restart loop"
-echo "(requires AGENTZ_SUSTAIN_SECONDS set low — the agentd-side floor clamp"
+echo "(requires AGENTZ_AGENTZ_SUSTAIN_SECONDS set low — the agentd-side floor clamp"
 echo " bounds how low; the pod spec must carry the env to the sidecar)"
 # Deterministic agent wedge: SIGSTOP the opencode process — alive, TCP
 # listener still kernel-answered, /global/health times out (the incident's
