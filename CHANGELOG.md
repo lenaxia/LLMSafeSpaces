@@ -7,32 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — mechanical disk-space recovery (#1601)
 
-- **Out-of-band "free up disk space" lever across the stack**: workspaces
-  hitting 91-99% disk killed the agent (the previous remedy — the agent
-  running `go clean` — required exactly the healthy-agent-with-room
-  condition that full disk destroys). agentd now serves
-  `POST /v1/disk-recover`: a deny-by-default sweep of
-  KNOWN-REPRODUCIBLE caches only (compiled-in per-runtime-base manifest:
-  go build+module, npm, pip, pnpm, cargo downloads, mise downloads, and
-  stale `/tmp/go-build*` corpses >120s), never user data, logs, or
-  anything unrecoverable. Every entry passes an execution-time boundary
-  validator (inside a declared cache root; never equal to or an ancestor
-  of a protected path — the PVC roots, `$HOME`, package homes;
-  symlink-resolved inside the same root); refusals are loud per-class.
-  Free-ENOUGH semantics: largest-first, stops below the 0.85 target
-  (clamped [0.50, 0.90]), idempotent, dry-run mode mutates nothing.
-  Per the owner ruling the rescue path is WRITE-FREE (deletion is a
-  metadata op — works at 100% full; no temp files, no report
-  persistence, response-only). Sidecar topology honored: the sidecar's
-  `/workspace` mount is read-only, so execution forwards over the
-  control socket (`disk_recover`) to the uid-1000 supervisor; the API
-  facade `POST /workspaces/:id/disk-recover?dryRun=true` adds
-  owner-only authz with a typed report relay. The frontend surfaces a
-  banner automatically at ≥95% (the disk-pressure nudge's critical
-  tier) with dry-run-first render (report-before-free), an execute
-  step, and a subtle on-demand action below the threshold.
+## [0.35.0] - 2026-10-09
+
+### Added — mechanical disk-space recovery (#1601, #1642)
+
+- **An out-of-band rescue lever for full-disk workspaces**: a
+  deny-by-default, compiled-in per-runtime cache manifest (go
+  build/module, npm/pnpm/pip/cargo/mise, stale /tmp go-build
+  corpses); the agentd executor runs via the control socket so it
+  works when opencode itself is wedged — the exact failure mode where
+  the old remedy (the agent running go clean) was impossible. The
+  owner-authz API facade (POST /workspaces/:id/disk-recover,
+  dry-run-first) with free-ENOUGH semantics (reclaim below ~85%, not
+  a maximal sweep), honest per-path bytesFreed (aliased or externally
+  removed paths count zero), symlink-escape and protected-path
+  refusals (PVC roots, $HOME, /tmp, package homes — an ancestor of a
+  protected path is refused too), unknown-runtime-base fail-safe
+  (empty manifest deletes nothing), and a frontend lever surfaced
+  automatically at ≥95% full. Adversarially reviewed through four
+  rounds; boundary, dry-run, and fail-safe legs mutation-verified.
+
+### Added — wedge self-heal + agentz liveness (#1632, #1637, #1639)
+
+- **The 2026-10-08 incident class closed end-to-end**: control-
+  protocol `vitals` method gives the sidecar CPU evidence (supervisor
+  reads /proc + cgroup in its own pidns — FLAT/STARVED distinguishable
+  in production topology for the first time; mixed fleets degrade to
+  the pre-fix behavior); a bounded UNKNOWN-episode soft kill (continuous
+  UNKNOWN > 15m escalates once per episode, rate-limited, marker
+  written; STARVED/FLAT/RESPAWN never escalate); supervisor zombie
+  reaping (the [python]/[esbuild] defunct accumulation); and the
+  bearer-gated `/v1/agentz` sustained-unhealthy-episode HTTP probe
+  replacing the kernel-accept-blind tcpSocket liveness — generation-
+  epoch CAS prevents mid-poll lost updates; AGENTZ_AGENTZ_SUSTAIN_
+  SECONDS env knob floor-clamped at 2m for test lanes.
+
+### Fixed — call_with_model surface (#1598, #1634)
+
+- **Provider validation before dispatch** (unknown/unqualified
+  providers 400 with the valid catalog quoted, not opaque 500s), all
+  hardcoded provider examples removed from guidance (pinned both
+  directions), `list_models` gains a tri-state vision field
+  (fail-open join), the vision gate resolves the catalog live per
+  call with the frozen-config/restart truth stated in the refusal,
+  and no-text-parts errors carry a part-type histogram + bounded
+  excerpt.
+
+### Changed — toolchain
+
+- **Go 1.26.9 + x/net v0.60.0** (GO-2026-6617, both surfaces — the
+  advisory hit x/net/http2 AND stdlib net/http): go.mod directive,
+  all 20 workflow go-version pins, and both digest-pinned golang
+  builder images re-pinned (registry-verified GOLANG_VERSION=1.26.9)
+  so shipped binaries don't embed the vulnerable stdlib (#1636).
+
 
 ## [0.34.20] - 2026-10-08
 
