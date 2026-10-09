@@ -491,9 +491,9 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Workspace not Active, or a recovery is already in progress
+          description: Workspace not Active, workspace pod not reachable, or a recovery is already in progress
         "503":
-          description: Disk usage unavailable on the workspace pod (or the pod/agentd unwired)
+          description: Disk usage unavailable on the workspace pod (or the pod's agentd has the engine unwired)
         "504":
           description: The bounded sweep timed out on the workspace pod
   /workspaces/{id}/models:
