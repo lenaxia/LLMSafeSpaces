@@ -199,3 +199,32 @@ Recommendation: close #1507 as completed by #1510.
 - [ ] #1639 review loop → APPROVED (retarget to main after #1637) → merge
 - [ ] Release-train production verification (AC5 of #1507 + incident-class
       wedge observation)
+
+## PR #1639 round log (durable record)
+
+- r1 (2fb95232): episode-keyed agentz decision, generation re-arm, wiring
+  pins, typed response, threshold 12. Red-first sabotages: sustain
+  unreachable, per-blip reset, probe pin inversion.
+- r2 (188e6699): #1342 retrying-driver source pin reshaped to the new hook.
+- r3 (a2b86c91): Generation-epoch CAS — the reviewer empirically proved
+  the r1 re-arm lost updates to refreshOnce's unconditional Store
+  (read-modify-write across I/O). Fixed + red-first interleaving pin
+  (verified failing 3/3 at pre-fix head by the reviewer, and by me).
+- r4 (5b01466f): e2e script's four source-verified defects fixed
+  (/api/v1, DELETE lifecycle, workspace-pw-, llmsafespaces.dev, seeded
+  python-3.11 runtime, SIGSTOP WEDGE row, pending-first-execution
+  header), env knob + 2m floor clamp + table, banned-marker pins, doc
+  fixes.
+- REBUILD INCIDENT (disclosed): collapsing the stacked branch onto
+  post-#1637 main orphaned the r4 commit — the surgical path checkout
+  sourced from the r3 head, so 38243703 carried r3 content under an r4
+  message. The r5 review caught every claim as false against head
+  (correct). Also: one broad `checkout -- .` had dragged pre-#1634 file
+  versions into the tree (caught by go vet, surgically fixed), and one
+  force-push briefly pointed the remote branch at main (empty PR, ~4min).
+- r5 (74ccf65a): r4 content recovered verbatim from the orphaned
+  commit; verified against the REMOTE tree (origin grep: env knob ×3,
+  script markers ×8, banned pins ×3, clamp test). STANDING PROCESS from
+  here: every push is followed by a remote-tree verification, never a
+  local-state grep. No further branch surgery on this lane without an
+  orchestrator ruling (orchestrator directive, acknowledged).
