@@ -263,6 +263,22 @@ type ReadyzResponse struct {
 	Relay *RelayHealth `json:"relay,omitempty"`
 }
 
+// AgentzResponse is the /v1/agentz payload (#1632 fix #3): the
+// agent-health-derived LIVENESS answer. OK is the probe decision (true =
+// 200, false = 503); State names the branch ("no-evidence" |
+// "healthy-episode-clear" | "unhealthy-episode" |
+// "unhealthy-episode-sustained"); EpisodeSeconds is the current
+// unhealthy-episode age when one is open; SustainSeconds echoes the
+// configured bound for observability.
+type AgentzResponse struct {
+	OK                 bool   `json:"ok"`
+	State              string `json:"state"`
+	EpisodeSeconds     int    `json:"episodeSeconds,omitempty"`
+	SustainSeconds     int    `json:"sustainSeconds,omitempty"`
+	ConsecutiveHealthy int    `json:"consecutiveHealthy,omitempty"`
+	LastError          string `json:"lastError,omitempty"`
+}
+
 // FileUploadResponse is the response for PUT /v1/files (Epic 68 US-68.1).
 // Path is the absolute final location (/workspace/uploads/<uuid>-<name> in
 // production); Name is the sanitized filename; Size the byte count on disk.

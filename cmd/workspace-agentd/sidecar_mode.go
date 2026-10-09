@@ -242,6 +242,14 @@ func runSidecarCommand(_ []string) int {
 			if sidecarAuthority != nil {
 				go startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonGenerationChange)
 			}
+			// #1632 r1: an agent generation boundary re-arms the
+			// unhealthy-episode clock — a restarted child (operator
+			// restart, crash recovery, kubelet container restart) must
+			// not inherit the dead generation's ≥10m-old episode, or
+			// agentz would 503 the booting replacement into a kill loop.
+			if deps.healthCache != nil {
+				deps.healthCache.noteAgentGeneration()
+			}
 		}, supervisorStatusPollInterval)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 

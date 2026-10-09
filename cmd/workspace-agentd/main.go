@@ -229,7 +229,11 @@ func main() {
 		sseTracker.onRawEvent = stateAuthority.Ingest
 	}
 
-	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority)
+	// Hoisted before the supervisor: the generation hook (every child
+	// start) re-arms the health cache's unhealthy-episode clock (#1632
+	// r1) — the cache must be the SAME instance deps serves.
+	servingHealthCache := newHealthzCache()
+	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority, servingHealthCache)
 	if stateAuthority != nil {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
 		// US-69.12 + #1311: the convergence watchdog — store-evidence
@@ -251,7 +255,7 @@ func main() {
 		stateAuthority:     stateAuthority,
 		ledgerInFlight:     ledgerInFlight,
 		pressureMonitor:    newMemoryPressureMonitor(),
-		healthCache:        newHealthzCache(),
+		healthCache:        servingHealthCache,
 		gr:                 newGateRecorder(startedAt, agentdGateDurationSeconds, log),
 		proc:               proc,
 		password:           password,
@@ -432,20 +436,23 @@ func runRedactCommand(args []string) int {
 // restart, and a one-shot reseed would leave the orphan sweep (S12's
 // backstop) unfired until the NEXT generation. Retries are ctx-bounded
 // (bgCtx — canceled at shutdown) and idempotent per attempt.
-func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority) *managedProcess {
+func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority, healthCache *healthzCache) *managedProcess {
 	if !supervise {
 		return nil
 	}
 	proc := &managedProcess{}
-	if sseTracker != nil {
+	// The generation boundary now carries three consumers (tracker D2
+	// reset, authority reseed, and #1632 r1's episode re-arm) — wire it
+	// unconditionally; each consumer is nil-guarded.
+	proc.onChildStarted = func() {
+		if sseTracker != nil {
+			sseTracker.onOpencodeGenerationStart()
+		}
 		if authority != nil {
-			a := authority
-			proc.onChildStarted = func() {
-				sseTracker.onOpencodeGenerationStart()
-				go startStateAuthorityReseed(bgCtx, a, sessionstate.ReseedReasonGenerationChange)
-			}
-		} else {
-			proc.onChildStarted = sseTracker.onOpencodeGenerationStart
+			go startStateAuthorityReseed(bgCtx, authority, sessionstate.ReseedReasonGenerationChange)
+		}
+		if healthCache != nil {
+			healthCache.noteAgentGeneration()
 		}
 	}
 	proc.start()

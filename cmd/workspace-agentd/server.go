@@ -303,6 +303,87 @@ func buildStatuszHandler(
 //
 // S18.10: providers_connected and readyz_first_200 startup gates are
 // recorded here on first observation.
+// buildAgentzHandler is the agent-health-derived LIVENESS endpoint
+// (#1632 fix #3): it fails (503) only when an unhealthy EPISODE has
+// persisted for at least agentUnhealthyEpisodeSustain.
+//
+// The decision keys on the EPISODE CLOCK, never the momentary Healthy
+// flag (#1632 r1 review): during a sustained episode a single
+// answered-healthy poll flips Healthy=true for one refresh (~5s), and a
+// Healthy-gated handler would return 200 through it — resetting kubelet's
+// consecutive-failure streak, so a wedge with recovery windows denser
+// than the probe margin would NEVER be restarted. The episode clock
+// survives those blips by construction (refreshOnce resets it only
+// after healthyEpisodeResetPolls consecutive healthy polls, or a
+// generation boundary — healthzCache.noteAgentGeneration).
+//
+// Episode re-arm across restarts: every agent generation boundary
+// (operator restart, crash recovery, kubelet container restart) clears
+// the episode — sidecar mode via the supervisor-status poller's
+// onGeneration signal, single-container mode via
+// managedProcess.onChildStarted. Without this the replacement child
+// would inherit the dead generation's old episode and be killed
+// mid-boot (a boot-kill loop). Residual, bounded: a generation change
+// observed through an unreachable control socket delays the re-arm
+// until the socket returns (a container restart always brings the
+// supervisor back with it) — at most one extra restart in that compound
+// failure.
+//
+// Blast radius: the SIDECAR serves this on the admin port (shared
+// netns); the workspace container's kubelet liveness probe targets it,
+// so sustained failure restarts the WORKSPACE container (opencode +
+// supervisor) — the pod, PVC, and sidecar survive. A sidecar CRASH
+// cannot cascade into an opencode kill (its own process-only healthz
+// liveness restarts the SIDECAR at 80s; the restarted sidecar's cache
+// is uninitialized → agentz 200, and the sustain window re-arms). A
+// sidecar with a HUNG mux can cost one bounded dual restart: agentz
+// refuses alongside everything else until the sidecar's own liveness
+// recovers it — the main container's probe failureThreshold is sized
+// above that horizon (agentd_sidecar.go).
+//
+// Performance contract: cache-snapshot read + clock compare only. No
+// opencode I/O — never a synchronous fetch (US-22.1 ruling).
+func buildAgentzHandler(deps serverDeps) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		snap := deps.healthCache.Snapshot()
+
+		w.Header().Set("Content-Type", "application/json")
+		if !snap.Initialized || snap.UnhealthyEpisodeStartedAt.IsZero() {
+			// Uninitialized (boot / sidecar restart): no evidence, no
+			// kill. No open episode: healthy, or failures below the
+			// episode threshold — both fine for liveness. Healthy is
+			// deliberately NOT consulted here (see the header).
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(agentd.AgentzResponse{
+				OK:    true,
+				State: "no-evidence",
+			})
+			return
+		}
+
+		episodeFor := time.Since(snap.UnhealthyEpisodeStartedAt)
+		if episodeFor < agentUnhealthyEpisodeSustain {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(agentd.AgentzResponse{
+				OK:             true,
+				State:          "unhealthy-episode",
+				EpisodeSeconds: int(episodeFor.Seconds()),
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(agentd.AgentzResponse{
+			OK:                 false,
+			State:              "unhealthy-episode-sustained",
+			EpisodeSeconds:     int(episodeFor.Seconds()),
+			SustainSeconds:     int(agentUnhealthyEpisodeSustain.Seconds()),
+			ConsecutiveHealthy: snap.ConsecutiveHealthy,
+			LastError:          snap.LastError,
+		})
+	})
+}
+
 func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -563,6 +644,17 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	adminMux.HandleFunc("/v1/healthz", healthzRoute(deps))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
+
+	// #1632 fix #3: agent-health-derived LIVENESS. /v1/healthz is
+	// process-only (US-22.1 — never reflects opencode) and readyz is
+	// deliberately starvation-immune; nothing pre-#1632 failed when the
+	// agent was wedged-but-listening. agentz fails ONLY on a sustained
+	// unhealthy episode (agentUnhealthyEpisodeSustain) — see
+	// buildAgentzHandler. Bearer-gated like readyz: the controller knows
+	// the token and sets it on the workspace container's liveness probe
+	// headers.
+	adminMux.Handle("/v1/agentz", requireBearerToken(adminToken,
+		buildAgentzHandler(deps)))
 
 	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes
 	// multiple synchronous HTTP calls to opencode (IsHealthy,

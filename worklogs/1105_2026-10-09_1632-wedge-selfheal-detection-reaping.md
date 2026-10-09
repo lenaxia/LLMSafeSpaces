@@ -1,4 +1,4 @@
-# Worklog: NNNN — #1632 wedge self-heal (detection + reaping) & #1507 verification
+# Worklog: 1105 — #1632 wedge self-heal (detection + reaping) & #1507 verification
 
 **Date:** 2026-10-09
 **Session:** w14 — issues #1632 (wedged opencode never self-heals) + #1507 (suspend blocks forever on hung busy sessions)
@@ -125,9 +125,77 @@ Disk 44% used. OPENCODE_BINARY=/opencode/usr/local/bin/opencode exists.
 
 - [x] Both issues read in full; recon of all six key files; #1507-already-in-main
       verified via merge-base.
-- [ ] PR1-A reaper wiring + red-first pin
-- [ ] PR1-B control-socket vitals + sidecar CPU evidence
-- [ ] PR1-C bounded UNKNOWN episode
-- [ ] PR1 push → review loop
-- [ ] PR2 agentz liveness
-- [ ] #1507 AC verification report
+- [x] PR1-A reaper wiring + red-first pin (sabotage: loop not started → red,
+      "orphan zombie was never reaped")
+- [x] PR1-B control-socket vitals + sidecar CPU evidence (sabotage: cpuKnown
+      forced false → FLAT/STARVED pins red)
+- [x] PR1-C bounded UNKNOWN episode (sabotage: bound ×1000000 → escalation pin
+      red; disclosure: two earlier sabotage attempts were INVALID — one
+      sed-injected a comment that swallowed the brace (build failure), one
+      accidentally made the condition always-true (wrong direction); both
+      redone properly before counting)
+- [x] PR1 pushed (4bc11b51) → PR #1637 opened
+- [x] PR2 agentz episode clock + handler + probe swap (sabotage: sustain
+      unreachable → 503 pin red; episode pins; controller probe pin inverted
+      from tcpSocket — red on main by construction) → b2b6dbb8 → PR #1639
+      (stacked on #1637's branch)
+- [x] #1507 AC verification (see below)
+
+## #1507 acceptance-criteria verification (against main @ 4615c2b3)
+
+- AC1 no busy gate: `handleSuspending` (phase_suspend.go:80) deletes the pod on
+  first reconcile; the "deferring pod deletion behind busy sessions" string
+  exists only on recycle paths (restart-gen/arch-drift/password-secret) —
+  intended post-#1510 residual, documented in its review notes. ✓
+- AC2 bounded graceful termination: pod terminationGracePeriodSeconds default
+  40s (agentd's 35s serial drain budget + 5s margin), configurable via
+  `--workspace-termination-grace-seconds` (controller/main.go, startup
+  validation rejects < 36) and helm `controller.workspaceTerminationGraceSeconds`
+  (values.yaml + controller-deployment.yaml). ✓
+- AC3 wedged workspace reaches Suspended bounded: suspend is one reconcile —
+  pod delete + status flip; bounded by the 40s grace + reconcile latency. ✓
+  (TestSuspendBounded_FlappingBusySessionsSuspendImmediately pins the incident
+  shape.)
+- AC4 tests: phase_suspend_1507_test.go — flap-suspend-immediate,
+  live-agent-never-consulted, dead-agent-immediate, grace-rides-the-pod,
+  restart-gen-drain-unchanged; PVC retention asserted (fetched after suspend).
+  All green locally this session. ✓
+- AC5 cluster observation: production verification — flagged for the release
+  train; not locally verifiable.
+
+Recommendation: close #1507 as completed by #1510.
+
+## Incidents & disclosures (this session)
+
+1. Premature `git checkout` during a sabotage check reverted my own
+   UNCOMMITTED socket_vitals.go implementation (PR1-B) — re-applied identical
+   content, then adopted commit-before-mutation-check discipline. The same
+   mistake recurred once on server.go during PR2 (re-applied, committed
+   immediately). Net-zero hidden.
+2. Shared-pod disk hit 94% (ENOSPC broke a test build). Cleaned 3GB of stale
+   /tmp/go-build corpses under the standing 120s-untouched rule; sibling
+   wt-1601's active build dir left untouched.
+3. Full-package local `go test ./cmd/workspace-agentd/` was starved by sibling
+   disk contention (D-state processes, 11+ min stalls); my own background runs
+   were killed twice by session interrupts. Verified via targeted chunks
+   instead: 78+ tests green across watchdog/socket/supervisor/restart-reason/
+   managed-process/agentz/episode families; full suite rides CI (disclosed in
+   PR body). CI's agentd suites subsequently ran green on #1637.
+4. govulncheck red on #1637 (and fleet-wide: #1634, others) — GO-2026-6617 in
+   x/net@v0.58.0 + stdlib advisories; PR #1636 is the fleet unblock. Commented
+   on #1637; no dep changes in my PRs by design.
+5. The first `review / review` run on #1637 crashed after 31m56s WITHOUT
+   delivering a verdict (steps after "Run OpenCode" skipped) — re-triggered
+   via `gh run rerun --failed`.
+6. Testing-inside-a-workspace-pod gotcha (found via a red test that should
+   have been green): refreshOnce-based tests that don't point the package
+   agent-addr at their mock will poll THIS pod's real opencode on :4096 and
+   get healthy answers. The new helper sets/restores the addr; documented in
+   the PR body for future test authors.
+
+## Remaining
+
+- [ ] #1637 review loop → APPROVED → orchestrator mutation-check → merge
+- [ ] #1639 review loop → APPROVED (retarget to main after #1637) → merge
+- [ ] Release-train production verification (AC5 of #1507 + incident-class
+      wedge observation)

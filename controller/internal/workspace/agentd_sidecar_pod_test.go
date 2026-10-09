@@ -22,10 +22,15 @@ package workspace
 //     credential-setup), so materialize's base agent-config.json exists
 //     before the sidecar stamps platform blocks onto it.
 //   - Main container in sidecar mode: AGENTD_SIDECAR_MODE=1 and liveness
-//     switches to a kernel-level TCP probe on opencode's port (a dead
-//     PID-1 supervisor means a dead container; an alive-but-wedged one is
-//     an accepted residual — HTTP liveness targeting the sidecar's mux
-//     would restart the WORKSPACE container on a sidecar wedge).
+//     is the sidecar-served /v1/agentz HTTP probe (#1632 fix #3):
+//     agent-health-derived, failing only on a SUSTAINED unhealthy
+//     episode (10m) that survives brief recoveries. The old
+//     kernel-level TCP probe was accept-backlog blind to a
+//     wedged-but-listening event loop. Sidecar-wedge blast radius is
+//     bounded: the sidecar's own healthz liveness restarts the SIDECAR
+//     at 80s, and the main container's threshold (12×10s) sits above
+//     that horizon; a generation boundary re-arms the episode so a
+//     restarted workspace container is never killed mid-boot.
 //   - Validation: enabling the sidecar without agentdDelivery is a
 //     configuration error caught at controller startup.
 
@@ -249,6 +254,45 @@ func TestAgentdSidecar_ReadinessProbeCarriesBearerToken(t *testing.T) {
 	require.Equal(t, "Bearer the-admin-token", rp.HTTPGet.HTTPHeaders[0].Value)
 }
 
+// TestAgentdSidecar_LivenessProbeCarriesBearerToken (#1632 r1): the
+// agentz liveness target is bearer-gated exactly like readyz — a probe
+// without the header 401s forever, which reads as sustained failure and
+// restart-loops the workspace container on a ~12min cadence (the F1.4.2
+// failure class, now on the liveness path).
+func TestAgentdSidecar_LivenessProbeCarriesBearerToken(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      passwordSecretName(ws.Name),
+			Namespace: ws.Namespace,
+		},
+		Data: map[string][]byte{
+			"password":    []byte("pw"),
+			"admin-token": []byte("the-admin-token"),
+		},
+	}
+	require.NoError(t, r.Create(context.Background(), sec))
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	main := &pod.Spec.Containers[0]
+	lv := main.LivenessProbe
+	require.NotNil(t, lv)
+	require.NotNil(t, lv.HTTPGet)
+	require.Equal(t, "/v1/agentz", lv.HTTPGet.Path)
+	require.Len(t, lv.HTTPGet.HTTPHeaders, 1, "agentz liveness probe MUST carry the bearer header")
+	require.Equal(t, "Authorization", lv.HTTPGet.HTTPHeaders[0].Name)
+	require.Equal(t, "Bearer the-admin-token", lv.HTTPGet.HTTPHeaders[0].Value)
+	// The hung-sidecar horizon: the main container's liveness budget
+	// must sit strictly above the sidecar's own 80s restart horizon so
+	// a sidecar mux wedge cannot drain it.
+	require.Greater(t, int(lv.FailureThreshold)*int(lv.PeriodSeconds), 8*10,
+		"main-container liveness budget must exceed the sidecar's restart horizon")
+}
+
 func TestAgentdSidecar_Enabled_OrderingAfterCredentialSetup(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentdSidecar(t)
@@ -294,13 +338,21 @@ func TestAgentdSidecar_Enabled_MainContainerSwitchesToSupervisorMode(t *testing.
 	require.Equal(t, "1", mode.Value,
 		"entrypoint-opencode.sh branches on this to exec `workspace-agentd supervise-opencode`")
 
-	// Liveness: kernel-level TCP on opencode's port. HTTP /v1/healthz would
-	// be served by the SIDECAR in this mode — a wedged sidecar must restart
-	// the SIDECAR, not the workspace container.
+	// Liveness (#1632 fix #3): agent-health-derived /v1/agentz on the
+	// sidecar-served admin port. The old tcpSocket:4096 probe was
+	// kernel-accept blind to a wedged-but-listening event loop (the
+	// 2026-10-08 incident: three wedge episodes, zero restarts). agentz
+	// fails only on a sustained unhealthy episode; the sidecar-wedge
+	// asymmetry (its own healthz liveness restarts the SIDECAR, and a
+	// restarted sidecar's uninitialized cache reads healthy) prevents a
+	// sidecar problem from cascading into an opencode kill.
 	lv := main.LivenessProbe
-	require.NotNil(t, lv.TCPSocket, "sidecar-mode liveness must be a TCP probe")
-	require.Equal(t, int(agentd.AgentPort), lv.TCPSocket.Port.IntValue(),
-		"TCP on opencode's port: refused = opencode gone = restart the workspace container (supervisor included)")
+	require.NotNil(t, lv.HTTPGet, "sidecar-mode liveness must be the agentz HTTP probe")
+	require.Equal(t, "/v1/agentz", lv.HTTPGet.Path)
+	require.Equal(t, int(agentd.AgentdAdminPort), lv.HTTPGet.Port.IntValue(),
+		"agentz is served by the sidecar on the admin port (shared netns)")
+	require.Nil(t, lv.TCPSocket,
+		"the kernel-accept-blind TCP probe must be gone (incident class: listening wedge)")
 
 	// Readiness/startup keep targeting the sidecar-served readyz (shared
 	// netns): they gate traffic and boot on opencode's listener.
