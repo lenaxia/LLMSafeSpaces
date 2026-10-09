@@ -180,7 +180,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "list_models",
-			Description: "List the models usable in this workspace — one entry per model of every CONNECTED provider, as provider/model references ready for call_with_model's model argument (bare model names like \"classifier\" are NOT valid; the qualified form like \"thekaocloud/classifier\" is). Use it BEFORE call_with_model when the valid names are unknown, and AFTER any call_with_model failure naming an unknown provider or model — the failures quote this tool by name. Read-only catalog query (the workspace's provider list); no LLM call is made. Not for: switching the session's own model (the user does that), or capability questions beyond context/output limits.",
+			Description: "List the models usable in this workspace — one entry per model of every CONNECTED provider, as provider/model references ready for call_with_model's model argument (bare model names are NOT valid; the qualified provider/model form is — the entries themselves are the examples). Each entry carries contextWindow/maxOutput and a tri-state vision field: vision:true / vision:false when the catalog knows, ABSENT when unknown (never guess from absence). Use it BEFORE call_with_model when the valid names are unknown, AFTER any call_with_model failure naming an unknown provider or model — the failures quote this tool by name — and to find a vision-capable model for image calls. Read-only catalog query (the workspace's provider list); no LLM call is made. Not for: switching the session's own model (the user does that).",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -194,7 +194,7 @@ func mcpToolCatalog() []mcpTool {
 				"type": "object",
 				"properties": map[string]any{
 					"prompt": map[string]any{"type": "string", "description": "The complete prompt for the one-shot call — the target model has no tools and no conversation context"},
-					"model":  map[string]any{"type": "string", "description": "Target model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\") — see list_models for this workspace's valid names; a bare name is rejected with a did-you-mean hint"},
+					"model":  map[string]any{"type": "string", "description": "Target model as provider/model — see list_models for this workspace's valid names (no example is given here on purpose: providers vary per workspace and a wrong prefix is refused with the valid alternatives); a bare name is rejected with a did-you-mean hint"},
 					"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional workspace file paths of images to show the model (png/jpg/jpeg/gif/webp, 5 MiB each, 8 MiB combined). Vision-incapable models are refused up front"},
 				},
 				"required": []string{"prompt", "model"},

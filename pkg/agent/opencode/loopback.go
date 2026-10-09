@@ -96,11 +96,30 @@ type ImageAttachment struct {
 }
 
 // SendResult is the parsed synchronous V1 message response.
+//
+// PartTypes and NonTextExcerpt exist for the no-text failure path
+// (#1598 ask 4): a response whose parts carry no text must be
+// diagnosable from the tool error alone, so the seam preserves every
+// part's type in wire order plus a bounded excerpt of the first
+// non-text part that carried text (reasoning blocks do). They are
+// diagnostics, never success payload — callers may ignore them on the
+// text-bearing path.
 type SendResult struct {
 	MessageID string
 	ModelID   string
 	Text      string
+	// PartTypes lists every response part's type in wire order,
+	// including text parts.
+	PartTypes []string
+	// NonTextExcerpt is a <=nonTextExcerptMaxRunes excerpt of the first
+	// non-text part that carried text ("" when no such part exists).
+	NonTextExcerpt string
 }
+
+// nonTextExcerptMaxRunes bounds SendResult.NonTextExcerpt: enough to
+// recognize what the model emitted instead of text, never enough to
+// leak a full completion into an error string.
+const nonTextExcerptMaxRunes = 256
 
 // ModelInfo is the catalog view of one model (GET /config/providers).
 // ImageInput is only meaningful when ImageInputKnown is true — the
@@ -265,7 +284,11 @@ func SplitModelRef(model string) (providerID, modelID string, err error) {
 	degenerate := !ok || prov == "" || id == "" ||
 		strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") || strings.Contains(id, "//")
 	if degenerate {
-		return "", "", fmt.Errorf("model must be qualified as provider/model (e.g. \"anthropic/claude-sonnet-4-5\"), got %q", model)
+		// No concrete provider/model example here: this error is served
+		// inside workspaces whose configured providers vary, and a
+		// hardcoded example steers agents into names that 500 (#1598
+		// ask 1). The caller's surface (agentd) points at list_models.
+		return "", "", fmt.Errorf("model must be qualified as provider/model (e.g. \"provider-id/model-id\"), got %q", model)
 	}
 	return prov, id, nil
 }
@@ -332,17 +355,44 @@ func (c *Client) SessionSend(ctx context.Context, sessionID, text, model string,
 		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
 	}
 	var texts []string
+	var partTypes []string
+	excerpt := ""
 	for _, p := range out.Parts {
-		if p.Type == "text" && p.Text != "" {
-			texts = append(texts, p.Text)
+		partTypes = append(partTypes, p.Type)
+		if p.Type == "text" {
+			if p.Text != "" {
+				texts = append(texts, p.Text)
+			}
+			continue
+		}
+		// First non-text part that carried text becomes the bounded
+		// excerpt (reasoning-only completions are the #1598 ask-4
+		// case: the model answered, just not in text parts).
+		if excerpt == "" && p.Text != "" {
+			excerpt = p.Text
 		}
 	}
 	res := &SendResult{
-		MessageID: out.Info.ID,
-		ModelID:   out.Info.ModelID,
-		Text:      strings.Join(texts, "\n"),
+		MessageID:      out.Info.ID,
+		ModelID:        out.Info.ModelID,
+		Text:           strings.Join(texts, "\n"),
+		PartTypes:      partTypes,
+		NonTextExcerpt: clipRunes(excerpt, nonTextExcerptMaxRunes),
 	}
 	return res, nil
+}
+
+// clipRunes returns s truncated to at most max runes (an ellipsis marks
+// the cut), rune-safe for multi-byte content.
+func clipRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 // SessionSummarize compacts a session's history via the working V1 route
@@ -580,6 +630,45 @@ func (c *Client) SessionModelRef(ctx context.Context, sessionID string) (*sessio
 // ModelInfo resolves one model's catalog entry (GET /config/providers):
 // its context-window limit and whether it accepts image input.
 func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*ModelInfo, error) {
+	result, err := c.fetchConfigProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range result.Providers {
+		if providerID != "" && p.ID != providerID {
+			continue
+		}
+		if m, ok := p.Models[modelID]; ok {
+			return modelInfoFromCapabilities(m), nil
+		}
+	}
+	return nil, fmt.Errorf("model %q not found in the workspace catalog (provider %q)", modelID, providerID)
+}
+
+// ModelCapabilities returns the whole capability catalog (GET
+// /config/providers) indexed provider → model → ModelInfo in ONE wire
+// call. list_models joins this with the /provider name catalog so
+// vision capability rides model discovery (#1598 ask 2) without N
+// per-model round-trips.
+func (c *Client) ModelCapabilities(ctx context.Context) (map[string]map[string]ModelInfo, error) {
+	result, err := c.fetchConfigProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[string]ModelInfo, len(result.Providers))
+	for _, p := range result.Providers {
+		models := make(map[string]ModelInfo, len(p.Models))
+		for id, m := range p.Models {
+			models[id] = *modelInfoFromCapabilities(m)
+		}
+		out[p.ID] = models
+	}
+	return out, nil
+}
+
+// fetchConfigProviders performs the GET /config/providers call and
+// decodes the typed shape shared by ModelInfo and ModelCapabilities.
+func (c *Client) fetchConfigProviders(ctx context.Context) (*configProvidersDoc, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/providers", nil)
 	if err != nil {
 		return nil, err
@@ -592,65 +681,71 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 	if resp.StatusCode >= 400 {
 		return nil, c.statusError("GET /config/providers", resp)
 	}
-	var result struct {
-		Providers []struct {
-			ID     string `json:"id"`
-			Models map[string]struct {
-				ID    string `json:"id"`
-				Limit struct {
-					Context int64 `json:"context"`
-				} `json:"limit"`
-				Capabilities *struct {
-					// Attachment is the models.dev/config-declared
-					// attachment capability — the ONLY signal a
-					// credential can set for a custom-endpoint model
-					// (probe-verified 2026-10-05: config `attachment`
-					// lands here; it cannot reach Input.Image).
-					Attachment *bool `json:"attachment"`
-					Input      *struct {
-						Image *bool `json:"image"`
-					} `json:"input"`
-				} `json:"capabilities"`
-			} `json:"models"`
-		} `json:"providers"`
-	}
+	var result configProvidersDoc
 	if err := decodeStrict(io.LimitReader(resp.Body, 32<<20), &result); err != nil {
 		return nil, fmt.Errorf("GET /config/providers: decode: %w", err)
 	}
-	for _, p := range result.Providers {
-		if providerID != "" && p.ID != providerID {
-			continue
-		}
-		if m, ok := p.Models[modelID]; ok {
-			info := &ModelInfo{ContextLimit: m.Limit.Context}
-			// Partial capabilities blocks stay UNKNOWN: pointerized all
-			// the way down so "capabilities":{}, "input":{}, and
-			// "input":{"text":true} never flatten into known-false (#1307
-			// review r1 finding 1 — the value struct made the repair
-			// strip images from possibly-vision models).
-			//
-			// Two independent signals, OR-merged: Input.Image (opencode's
-			// models.dev catalog merge — real for known models) and
-			// Attachment (the credential-declared capability — the only
-			// truthful signal for custom-endpoint models, whose models.dev
-			// entry doesn't exist and whose Input.Image is a synthesized
-			// false). Either signal present makes the capability KNOWN;
-			// either true makes it vision-capable.
-			var image, attachment *bool
-			if m.Capabilities != nil {
-				attachment = m.Capabilities.Attachment
-				if m.Capabilities.Input != nil {
-					image = m.Capabilities.Input.Image
-				}
-			}
-			if image != nil || attachment != nil {
-				info.ImageInputKnown = true
-				info.ImageInput = (image != nil && *image) || (attachment != nil && *attachment)
-			}
-			return info, nil
+	return &result, nil
+}
+
+// configProvidersDoc is the typed GET /config/providers response.
+type configProvidersDoc struct {
+	Providers []configProviderEntry `json:"providers"`
+}
+
+// configProviderEntry is one provider block; catalogModelEntry is its
+// per-model value.
+type configProviderEntry struct {
+	ID     string                       `json:"id"`
+	Models map[string]catalogModelEntry `json:"models"`
+}
+
+type catalogModelEntry struct {
+	ID    string `json:"id"`
+	Limit struct {
+		Context int64 `json:"context"`
+	} `json:"limit"`
+	Capabilities *struct {
+		// Attachment is the models.dev/config-declared attachment
+		// capability — the ONLY signal a credential can set for a
+		// custom-endpoint model (probe-verified 2026-10-05: config
+		// `attachment` lands here; it cannot reach Input.Image).
+		Attachment *bool `json:"attachment"`
+		Input      *struct {
+			Image *bool `json:"image"`
+		} `json:"input"`
+	} `json:"capabilities"`
+}
+
+// modelInfoFromCapabilities builds the tri-state ModelInfo from one
+// catalog model entry.
+//
+// Partial capabilities blocks stay UNKNOWN: pointerized all the way
+// down so "capabilities":{}, "input":{}, and "input":{"text":true}
+// never flatten into known-false (#1307 review r1 finding 1 — the
+// value struct made the repair strip images from possibly-vision
+// models).
+//
+// Two independent signals, OR-merged: Input.Image (opencode's
+// models.dev catalog merge — real for known models) and Attachment
+// (the credential-declared capability — the only truthful signal for
+// custom-endpoint models, whose models.dev entry doesn't exist and
+// whose Input.Image is a synthesized false). Either signal present
+// makes the capability KNOWN; either true makes it vision-capable.
+func modelInfoFromCapabilities(m catalogModelEntry) *ModelInfo {
+	info := &ModelInfo{ContextLimit: m.Limit.Context}
+	var image, attachment *bool
+	if m.Capabilities != nil {
+		attachment = m.Capabilities.Attachment
+		if m.Capabilities.Input != nil {
+			image = m.Capabilities.Input.Image
 		}
 	}
-	return nil, fmt.Errorf("model %q not found in the workspace catalog (provider %q)", modelID, providerID)
+	if image != nil || attachment != nil {
+		info.ImageInputKnown = true
+		info.ImageInput = (image != nil && *image) || (attachment != nil && *attachment)
+	}
+	return info
 }
 
 // do stamps the shared Basic credential and content type on every seam
