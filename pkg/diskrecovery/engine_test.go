@@ -570,3 +570,60 @@ func TestSymlinkedCacheDeletesMeasuredTarget(t *testing.T) {
 		t.Fatalf("the stale link itself must be removed too: %v", err)
 	}
 }
+
+// PIN (aliasing honesty, review r2): two classes resolving to the same
+// tree — the second must report not-present with zero bytes, never
+// double-count the measured figure as freed.
+func TestAliasedClassesDoNotDoubleCount(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(cacheRoot, "go-build.real")
+	seedTree(t, target, 2, 500)
+	if err := os.Symlink(target, filepath.Join(cacheRoot, "go-build")); err != nil {
+		t.Fatal(err)
+	}
+	// Second symlink to the SAME tree under a different class.
+	if err := os.Symlink(target, filepath.Join(cacheRoot, "pip")); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "go-build-cache", Path: filepath.Join(cacheRoot, "go-build"), Kind: EntryDir},
+			{Class: "pip-cache", Path: filepath.Join(cacheRoot, "pip"), Kind: EntryDir},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	freedCount, ghost := 0, false
+	for _, c := range rep.Classes {
+		if c.Status == ClassFreed {
+			freedCount++
+		}
+		if c.Status == ClassNotPresent && c.BytesFreed != 0 {
+			t.Fatalf("aliased class must not claim bytes: %+v", c)
+		}
+		if c.Status == ClassFreed && c.BytesFreed != c.Bytes {
+			t.Fatalf("freed class bytes mismatch: %+v", c)
+		}
+		_ = c
+	}
+	// Exactly one of the two aliased classes may claim the bytes.
+	if freedCount > 1 {
+		ghost = true
+	}
+	if ghost {
+		t.Fatalf("aliasing double-count: %d classes claimed the same tree", freedCount)
+	}
+	if rep.BytesFreed != 1000 {
+		t.Fatalf("total freed must be the tree size once (1000), got %d", rep.BytesFreed)
+	}
+}

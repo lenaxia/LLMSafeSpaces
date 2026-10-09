@@ -107,30 +107,47 @@ CODE=$(curl -sm 15 -o /dev/null -w '%{http_code}' -X POST \
 [[ "${CODE}" == "404" ]] || die "foreign workspace: want 404, got ${CODE}"
 ok "R2 authz: anonymous 401, foreign workspace 404"
 
-# agentd-side serialization: two concurrent executes → exactly one 200.
-# Drives agentd directly (the API facade serializes per-request; the
-# busy contract lives in the engine). Requires the workspace password
-# from the operator secret — the harness namespace default.
+# agentd-side serialization: concurrent executes → each completes or
+# answers 409 busy. Drives agentd directly (the busy contract lives in
+# the engine). Requires the workspace password from the operator secret
+# — the harness namespace default.
 WS_PW=$(kc get secret "workspace-pw-${W1_WS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
 if [[ -n "${WS_PW}" ]]; then
     AGENTD_PORT_FWD=$(( 14097 + RANDOM % 100 ))
     kc port-forward pod/"${W1_POD}" "${AGENTD_PORT_FWD}:4097" >/dev/null 2>&1 &
     PF2_PID=$!
-    trap 'kill ${PF2_PID} 2>/dev/null || true' EXIT
+    # Chain the harness EXIT trap (us70-common.sh) — a bare trap would
+    # clobber it and leak PF_PID (review r2).
+    PRIOR_TRAP=$(trap -p EXIT | sed "s/^trap -- '\''\(.*\)\'' EXIT$/\1/")
+    trap "kill ${PF2_PID} 2>/dev/null || true; ${PRIOR_TRAP:-true}" EXIT
     sleep 2
     AUTH_HDR="Authorization: Basic $(printf 'opencode:%s' "${WS_PW}" | base64)"
+    rm -f /tmp/1601-r2-*.json
+    CURL_PIDS=""
     for i in 1 2 3; do
         curl -sm 100 -X POST -H "${AUTH_HDR}" -H 'Content-Type: application/json' \
             -d '{"targetRatio":0.5}' "http://127.0.0.1:${AGENTD_PORT_FWD}/v1/disk-recover" \
             >"/tmp/1601-r2-${i}.json" 2>/dev/null &
+        CURL_PIDS="${CURL_PIDS} $!"
     done
-    wait
+    # Wait on the curl PIDs ONLY (review r2): a bare `wait` blocks
+    # forever on the never-exiting port-forward.
+    # shellcheck disable=SC2086
+    wait ${CURL_PIDS}
     kill ${PF2_PID} 2>/dev/null || true
-    OKS=$(grep -l '"alreadyBelowTarget":true\|"alreadyBelowTarget": false' /tmp/1601-r2-*.json 2>/dev/null | wc -l)
-    BUSYS=$(grep -c 'already in progress' /tmp/1601-r2-*.json 2>/dev/null | awk -F: '{s+=$2} END{print s}')
+    # Compact-JSON greps with `|| true` INSIDE the substitutions
+    # (review r2): Go's encoding/json emits no spaces, and a non-match
+    # must never abort the script under set -e/pipefail.
+    OKS=$( (grep -l '"dryRun"' /tmp/1601-r2-*.json 2>/dev/null || true) | wc -l )
+    BUSYS=$( (grep -l 'already in progress' /tmp/1601-r2-*.json 2>/dev/null || true) | wc -l )
+    TOTAL_REPLIES=$(( OKS + BUSYS ))
     rm -f /tmp/1601-r2-*.json
-    [[ ${BUSYS:-0} -ge 1 ]] || warn "R2 busy: no 409 observed (below-target fast path may have won the race — OK on an already-clean volume)"
-    ok "R2 agentd concurrency: ${OKS} completed, ${BUSYS:-0} busy-serialized"
+    [[ ${TOTAL_REPLIES} -ge 1 ]] || die "R2 busy: no leg completed at all (transport failure)"
+    if [[ ${BUSYS} -eq 0 ]]; then
+        warn "R2 busy: no 409 observed (legs may have serialized behind the sweep rather than overlapping — retry-prone, not silent)"
+    else
+        ok "R2 agentd concurrency: ${OKS} completed, ${BUSYS} busy-serialized"
+    fi
 else
     warn "R2 busy leg skipped: workspace password secret not found by default name (documented skip, never silent)"
 fi

@@ -179,9 +179,13 @@ describe("DiskRecoveryStrip — production wire shapes (review r1 F2)", () => {
     mocked.mockResolvedValueOnce(nullClasses);
     render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
     await user.click(screen.getByTestId("disk-recover-review"));
-    // No crash, no class table, no execute button — a degraded but
-    // alive header.
-    await waitFor(() => expect(screen.queryByText("Go build cache")).not.toBeInTheDocument());
+    // POSITIVE assertions first (review r2): a crash unmounts the whole
+    // tree, so the strip container and the still-known banner text must
+    // REMAIN — absence-only assertions pass against a crashed render.
+    await waitFor(() => expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument());
+    expect(screen.getByText(/97%/)).toBeInTheDocument();
+    // And the degraded shape: no class table, no execute button.
+    expect(screen.queryByText("Go build cache")).not.toBeInTheDocument();
     expect(screen.queryByTestId("disk-recover-free-now")).not.toBeInTheDocument();
   });
 });

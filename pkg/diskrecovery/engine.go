@@ -158,9 +158,21 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 			continue
 		}
 
-		if _, derr := e.delete(c.paths); derr != nil {
+		if existed, derr := e.delete(c.paths); derr != nil || !existed {
+			// derr: partial unlink failure. !existed: every path was
+			// already gone — symlink aliasing (two classes resolving to
+			// one tree; the earlier class freed it). Either way the
+			// class must NOT claim its measured bytes as freed (review
+			// r2 robustness: fabricated bytesFreed by double-count).
 			c.report.Status = ClassError
-			c.report.Reason = derr.Error()
+			if derr != nil {
+				c.report.Reason = derr.Error()
+			} else {
+				c.report.Status = ClassNotPresent
+				c.report.Reason = "already removed (aliased with an earlier class)"
+				c.report.Bytes = 0
+				c.report.Entries = 0
+			}
 			report.Classes = append(report.Classes, c.report)
 			continue
 		}
@@ -234,6 +246,13 @@ func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count i
 		if rerr != nil {
 			return 0, 0, nil, nil
 		}
+		// TOCTOU close (review r2 robustness): this FRESH resolution is
+		// what enters the deletion set — re-run the full boundary
+		// validation on it before it does. A retargeted link between
+		// validateEntry and here dies here, loudly.
+		if err := validateEntry(e.manifest, Entry{Class: entry.Class, Path: resolved, Kind: EntryDir}); err != nil {
+			return 0, 0, nil, err
+		}
 		b, n := walkSum(ctx, resolved)
 		return b, n, []string{entry.Path, resolved}, nil
 	}
@@ -241,19 +260,26 @@ func (e *Engine) measure(ctx context.Context, entry Entry) (bytes int64, count i
 	return b, n, []string{entry.Path}, nil
 }
 
-// delete removes one class's measured paths. It returns the class's
-// measured byte figure (the volume-level before/after statfs pair in
-// the Report is the accounting truth; per-class precision is the
-// measurement, flagged error on any unlink failure rather than
-// mis-reported).
-func (e *Engine) delete(paths []string) (int64, error) {
-	var firstErr error
+// delete removes one class's measured paths. existed reports whether
+// the MEASURED path (the last in the set — the resolved target for
+// symlink classes, the entry dir itself otherwise) was present: an
+// already-absent measured path means aliasing (an earlier class freed
+// the same tree) and the caller must not report the measured bytes as
+// freed — even when cleanup paths (stale link inodes) remain.
+// firstErr carries any unlink failure; the volume-level before/after
+// statfs pair in the Report remains the accounting truth.
+func (e *Engine) delete(paths []string) (existed bool, firstErr error) {
+	if len(paths) > 0 {
+		if _, serr := os.Lstat(paths[len(paths)-1]); serr == nil {
+			existed = true
+		}
+	}
 	for _, p := range paths {
 		if err := os.RemoveAll(p); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	return 0, firstErr
+	return existed, firstErr
 }
 
 // walkSum sums file sizes and file count under root (root itself
