@@ -94,6 +94,10 @@ func TestIssue1632Script_APIPathsAndNames(t *testing.T) {
 		`llmsafespaces.dev/workspace=${WS}`,
 		`RuntimeEnvironment`,
 		`python-3.11`,
+		// r7 blocking: the WEDGE row must name the REAL env knob — the
+		// r6 defect (dropped AGENTZ_ prefix) landed green because no pin
+		// guarded the identifier; this marker is that guard.
+		`AGENTZ_AGENTZ_SUSTAIN_SECONDS`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("script must contain %q (r4 source-verified fact)", marker)
@@ -105,6 +109,9 @@ func TestIssue1632Script_APIPathsAndNames(t *testing.T) {
 		`workspace-${WS}"`,           // SA name, not the Secret (r4 defect 3)
 		`llmsafespaces.io/workspace`, // wrong label domain (r4 defect 4)
 		`"runtime":"standard"`,       // unseeded runtime (r4 defect 5)
+		// r6 defect: the env identifier without the AGENTZ_ prefix
+		// (space-delimited form so the correct spelling is not matched).
+		` AGENTZ_SUSTAIN_SECONDS`,
 	} {
 		if strings.Contains(src, banned) {
 			t.Errorf("script must NOT contain %q (verified-defective marker)", banned)
