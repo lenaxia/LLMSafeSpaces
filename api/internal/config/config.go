@@ -93,16 +93,20 @@ type Config struct {
 		// on every parse. Default "llmsafespaces". Same deployment-shape
 		// rationale as JWTIssuer. Set via env
 		// LLMSAFESPACES_AUTH_JWTAUDIENCE.
-		JWTAudience         string        `mapstructure:"jwtAudience"`
-		TokenDuration       time.Duration `mapstructure:"tokenDuration"`
-		APIKeyPrefix        string        `mapstructure:"apiKeyPrefix"`
-		CookieName          string        `mapstructure:"cookieName"`
-		RememberMeDuration  time.Duration `mapstructure:"rememberMeDuration"`
-		RegistrationEnabled bool          `mapstructure:"registrationEnabled"`
-		LockoutEnabled      bool          `mapstructure:"lockoutEnabled"`
-		LockoutAttempts     int           `mapstructure:"lockoutAttempts"`
-		LockoutDuration     time.Duration `mapstructure:"lockoutDuration"`
-		APIKeyDEKTTL        time.Duration `mapstructure:"apiKeyDEKTTL"`
+		JWTAudience        string        `mapstructure:"jwtAudience"`
+		TokenDuration      time.Duration `mapstructure:"tokenDuration"`
+		APIKeyPrefix       string        `mapstructure:"apiKeyPrefix"`
+		CookieName         string        `mapstructure:"cookieName"`
+		RememberMeDuration time.Duration `mapstructure:"rememberMeDuration"`
+		// NOTE: the auth.registrationEnabled static config field was removed
+		// (#1650). It was never read anywhere — registration gating lives in
+		// the auth.registrationEnabled INSTANCE setting (runtime,
+		// admin-toggleable, default true), enforced by
+		// server.registrationGateMiddleware and advertised by /auth/config.
+		LockoutEnabled  bool          `mapstructure:"lockoutEnabled"`
+		LockoutAttempts int           `mapstructure:"lockoutAttempts"`
+		LockoutDuration time.Duration `mapstructure:"lockoutDuration"`
+		APIKeyDEKTTL    time.Duration `mapstructure:"apiKeyDEKTTL"`
 	} `mapstructure:"auth"`
 
 	Security struct {
