@@ -61,3 +61,27 @@ behavior; Turnstile vs Cloudflare live API.
 
 - Issues #1649/#1650/#1651/#1652 filed. PRs #1653/#1654 pushed, remote-tree verified (origin greps;
   main still shows the leak, branches show the fixes), AI review in flight — polling to verdict.
+
+---
+
+## Addendum (post-delivery session, r1 remediations + incidents)
+
+1. **PR recreation**: #1653/#1654 (app-authored) closed during the review-plane outage; fleet
+   re-created them as #1659/#1660 (user identity, same branches). #1659 APPROVED @18:38Z.
+2. **#1657 (#1650 enforcement)**: r1 CHANGES_REQUESTED — three remediations delivered
+   (Turnstile×gate wiring pin w/ mutation evidence; session worklog; stacked-commit reword —
+   red-first pin is the service-level test, wire-level is a companion rendering pin; docs
+   fail-open section). See the enforcement worklog for detail.
+3. **#1660 r1 finding accepted**: my r0 PR body claimed the admin `credentials.ts` rotateKey
+   was "a live, different endpoint" — UNVERIFIED and FALSE (whole file dead, zero importers,
+   no server route; live surface is providerCredentials.ts). Full-file deletion delivered.
+   Lesson recorded: I committed the exact verification-shortcut class my own audit flags.
+4. **Identity incident**: all six session commits (18:01–18:53Z) carry wt-1648 authorship —
+   the worktree's config.worktree held the wrong lane's identity until fleet tooling rewrote
+   it at 19:22:03Z (mode B). Reported immediately; orchestrator ruling: LEAVE AS-IS
+   (rewriting would invalidate #1659's approval; squash-merge keeps the error in PR history
+   only; class = charter provisioning fault, fleet-wide, three workers disclosed).
+5. **Re-trigger ruling GRANTED**: one no-op empty commit per PR branch under user
+   credentials (cacaec0c, acc05b8a) — lane-correct authors verified. Review plane still
+   failing at the verify-step assert at 19:30Z (fleet-wide, ai-workflows #49 pending);
+   verdicts await the heal.
