@@ -147,3 +147,12 @@ The earlier section's keyboard claim is RETIRED — see Finding 1. Current truth
   Chromium has no keyboard; state this in any release note.
 - Known flake observed (pre-existing, unrelated): sidebar-gesture.spec.ts "hamburger
   both halves" fails ~1-in-8 under parallel load, passes standalone and on retry.
+
+## Operational note (round-2 push, 2026-10-10 ~19:20Z)
+
+Round-2 head b829b398 pushed at ~19:07Z — before the fleet's interim mode-B credential
+flip, so its review run inherited the app-identity event sender and died at the
+permission assert (no verdict; CI unaffected — all checks re-ran on the new head).
+This append rides the post-flip user identity to fire a healthy review round on the
+same tree. Known pre-existing flake watch: sidebar-gesture hamburger test (~1-in-8
+under load, green standalone/retry — same as round 1).
