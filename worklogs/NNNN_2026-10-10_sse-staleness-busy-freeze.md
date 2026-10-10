@@ -225,6 +225,52 @@ must not re-latch after the wipe. Both red (`expected 'yes' to be
 Post-r3 runs: providers+hooks+sseConnection 356/356 targeted; full
 frontend suite **2036/2036**; tsc + eslint clean.
 
+## Review round 4 (22:19Z on e818df6d) — REQUEST_CHANGES, one blocking finding (two independent reviewer probes)
+
+**Commit time is not birth time**: the r3 wipeAt guard stamps COMMIT
+time, but staleness is determined by REQUEST time. A fetch that STARTS
+before the wipe and commits after it passes the commit-time guard:
+(B) the invalidation REUSES an initial pending fetch when
+state.data===undefined (query-core returns the existing promise —
+reviewer proved reuse with a ws2Calls===1 assertion), and (A) a zombie
+fetch on an UNMOUNTED query runs to completion (getSessions takes no
+AbortSignal, so removeObserver cannot cancel it) — both are the
+incident's racing-GET window, and variant A's latch survives REMOUNT.
+
+Fix: causality tracking in the provider. pendingFetchStart records
+each fetch's start ("fetch" dispatch); dataBirth records when the
+committed data's producing fetch STARTED ("success" inherits
+pendingFetchStart; manual success/setState = write time); an adoption
+walk at subscription registration stamps queries already fetching
+(child effects run before the provider's, so their first "fetch"
+dispatch would be missed). seedBusy refuses data whose BIRTH predates
+the wipe (strict <, same-ms rule as r3) — subsuming the commit-time
+guard, which is kept as a fast pre-filter.
+
+PROCESS DEVIATION disclosed: this round I wrote the fix BEFORE the
+pins (order inverted vs rounds 1-3). Red-first evidence established
+post-hoc by grafting — stashed the provider fix, ran the pin file:
+exactly the 2 new r4 pins fail (`expected 'yes' to be 'no'`), the 6
+prior pins green; restored, 8/8. The reviewer's own probes independently
+demonstrated red at head, so the finding's reality was never in doubt;
+still, the inversion is noted honestly.
+
+Pins: (B) initial-pending reuse — ws2Calls===1 asserted across the
+invalidation (the reuse proven in-pin), stale pre-outage busy released
+post-wipe, floor delivers fresh idle, busy stays cleared at every
+checkpoint (added a post-release intermediate assertion per the r4
+hardening note, plus one in the r3 in-flight pin); (A) zombie on
+unmounted query — collapse mid-fetch (rerender), stale commit lands on
+the inactive query, remount with fresh rows must converge (at head the
+latch suppressed even the remount).
+
+Post-r4 runs: targeted providers/hooks/lib 539/539 (one earlier sweep
+had 1 file fail to complete with 0 failing tests — the known
+pre-existing `reader.cancel` teardown TypeError noise from
+useEventStream.test.ts's cancel-less mock readers; two clean reruns);
+full frontend suite **2038/2038** (two consecutive clean runs); tsc +
+eslint clean.
+
 ## Incidents in-flight (honest log)
 
 1. First vitest run deadlocked (240s timeout): I wrapped

@@ -445,6 +445,10 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     holdWs2Refetch = true;
 
     await vi.advanceTimersByTimeAsync(75_000);
+    // Hardening (r4 review): between ws-1's success and the release,
+    // ws-2's gate must still be UNLATCHED — the wipe left busy cleared,
+    // and nothing may have re-seeded it from ws-2's stale pre-wipe rows.
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
     // ws-1's fresh success has run the (full-pass) seedBusy; ws-2's
     // refetch is still pending. Now release it with fresh idle rows.
     // (Cast on read: the resolver is assigned inside the queryFn
@@ -506,6 +510,183 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(connects).toBe(2);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+  });
+
+  // r4 finding: the wipeAt guard stamps COMMIT time, but staleness is
+  // determined by REQUEST time. Two reproduced shapes carry pre-outage
+  // rows past a commit-time guard: (B) the invalidation REUSES an
+  // initial pending fetch when state.data is undefined (query-core
+  // returns the existing promise — a pre-wipe-started GET commits
+  // post-wipe), and (A) a zombie fetch on an UNMOUNTED query runs to
+  // completion (getSessions takes no AbortSignal, so observer removal
+  // cannot cancel it). Both are the incident's racing-GET window.
+  function Harness({ showWs2 }: { showWs2: boolean }) {
+    return (
+      <>
+        <Ws1Probe />
+        {showWs2 ? <Ws2Probe /> : null}
+      </>
+    );
+  }
+  function Ws1Probe() {
+    useQuery({ queryKey: ["sessions", "ws-1"], queryFn: () => mockGetSessions("ws-1") });
+    const busy2 = useIsSessionBusy("sess-ws2");
+    return <span data-testid="busy-ws2">{busy2 ? "yes" : "no"}</span>;
+  }
+  function Ws2Probe() {
+    useQuery({
+      queryKey: ["sessions", "ws-2"],
+      queryFn: () => mockGetSessions("ws-2"),
+      refetchInterval: 60_000,
+    });
+    return null;
+  }
+
+  it("does not latch a pre-wipe-STARTED initial fetch committing post-wipe (#1646 r4 variant B)", async () => {
+    vi.useFakeTimers();
+
+    let ws2Calls = 0;
+    let releaseStale: ((rows: SessionListItem[]) => void) | null = null;
+    mockGetSessions.mockImplementation((id: string) => {
+      if (id === "ws-1") {
+        return Promise.resolve([{ id: "sess-ws1", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+      }
+      ws2Calls++;
+      if (ws2Calls === 1) {
+        // ws-2's INITIAL GET hangs on the dying pod, then returns the
+        // pre-outage BUSY rows after the wipe (stale content, late commit).
+        return new Promise<SessionListItem[]>((resolve) => {
+          releaseStale = (rows) => resolve(rows);
+        });
+      }
+      return Promise.resolve([{ id: "sess-ws2", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+    });
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <Harness showWs2 />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ws2Calls).toBe(1); // initial GET in flight (hung on the dying pod)
+
+    // Silent death → reconnect wipes + invalidates. The invalidation
+    // must NOT have started a second ws-2 fetch: with state.data
+    // undefined, query-core REUSES the pending pre-wipe promise.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(connects).toBe(2);
+    expect(ws2Calls).toBe(1); // the reuse, proven
+
+    // The dying pod now answers ws-2's initial GET — with PRE-OUTAGE
+    // BUSY rows. The commit lands post-wipe (passes a commit-time
+    // guard) but was born pre-wipe: it must not latch the gate.
+    const release = releaseStale as ((rows: SessionListItem[]) => void) | null;
+    expect(release).not.toBeNull();
+    if (release) {
+      release([{ id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem]);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Hardening: immediately after the stale commit, busy must still be
+    // cleared (nothing latched from the pre-wipe-born rows).
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+
+    // The floor then reaches the healthy pod: fresh idle rows, a
+    // post-wipe-born fetch, free to seed.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ws2Calls).toBe(2);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+  });
+
+  it("does not latch a zombie fetch committing on an unmounted query — sticky through remount (#1646 r4 variant A)", async () => {
+    vi.useFakeTimers();
+
+    let ws2Calls = 0;
+    let releaseStale: ((rows: SessionListItem[]) => void) | null = null;
+    mockGetSessions.mockImplementation((id: string) => {
+      if (id === "ws-1") {
+        return Promise.resolve([{ id: "sess-ws1", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+      }
+      ws2Calls++;
+      if (ws2Calls === 1) {
+        return new Promise<SessionListItem[]>((resolve) => {
+          releaseStale = (rows) => resolve(rows);
+        });
+      }
+      return Promise.resolve([{ id: "sess-ws2", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+    });
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <Harness showWs2 />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ws2Calls).toBe(1); // ws-2's fetch in flight
+
+    // Collapse ws-2's row mid-fetch: the query unmounts, but the fetch
+    // is a zombie (getSessions takes no signal — nothing cancels it).
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <Harness showWs2={false} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Silent death → reconnect wipes + stamps.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(connects).toBe(2);
+
+    // The zombie commits PRE-OUTAGE BUSY rows on the now-inactive
+    // query — post-wipe commit time, pre-wipe birth. Must not latch.
+    const release = releaseStale as ((rows: SessionListItem[]) => void) | null;
+    expect(release).not.toBeNull();
+    if (release) {
+      release([{ id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem]);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+
+    // Remount the workspace: a fresh fetch with fresh idle rows must
+    // converge (at head the latched gate suppresses even this).
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <Harness showWs2 />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(ws2Calls).toBe(2);
     expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
   });
 });

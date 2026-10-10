@@ -157,6 +157,13 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // predate it — see the guard in seedBusy.
   const wipeAtRef = useRef(0);
 
+  // #1646 r4: causality tracking for the seed gate (see seedBusy's
+  // birth guard): pendingFetchStart = when the current/latest fetch
+  // STARTED per workspace; dataBirth = when the committed data's
+  // producing fetch started (or when an authoritative write landed).
+  const pendingFetchStartRef = useRef(new Map<string, number>());
+  const dataBirthRef = useRef(new Map<string, number>());
+
   // Sessions the user explicitly cleared (viewed). Reconcile suppresses
   // re-adding them from a stale REST refetch (markSessionSeen PUT racing the
   // GET) until REST confirms hasUnread:false, or new activity arrives
@@ -256,6 +263,21 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // onReconnect) is a fresh authoritative write, not stale
         // pre-outage data.
         if (query.state.dataUpdatedAt < wipeAtRef.current) continue;
+
+        // #1646 r4: commit time is not birth time. A fetch that STARTED
+        // before the wipe and commits after it carries pre-outage rows
+        // past the commit-time guard above, in two reachable shapes:
+        // the invalidation REUSES an initial pending fetch when
+        // state.data is undefined (query-core returns the existing
+        // promise), and a zombie fetch on an unmounted query runs to
+        // completion (getSessions takes no AbortSignal, so observer
+        // removal cannot cancel it) — the incident's own racing-GET
+        // window. dataBirth records when the data's producing fetch
+        // STARTED (fetch dispatch) or when an authoritative write
+        // landed (setState / manual success); seeding refuses data
+        // BORN before the wipe. Strict `<`, same-ms rule as above.
+        const birth = dataBirthRef.current.get(wsId) ?? 0;
+        if (birth < wipeAtRef.current) continue;
 
         seeded.add(wsId);
 
@@ -365,6 +387,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // Adopt queries already fetching at subscription registration:
+    // their "fetch" dispatch predates this subscription (child effects
+    // run before this provider's), so stamp them conservatively NOW —
+    // any later wipe postdates the stamp and their first commit is
+    // correctly treated as born pre-wipe.
+    for (const query of queryCache.getAll()) {
+      const key = query.queryKey;
+      if (
+        Array.isArray(key) && key[0] === "sessions" && typeof key[1] === "string" &&
+        query.state.fetchStatus === "fetching" &&
+        !pendingFetchStartRef.current.has(key[1])
+      ) {
+        pendingFetchStartRef.current.set(key[1], Date.now());
+      }
+    }
+
     seedBusy();
     reconcileUnread();
 
@@ -372,6 +410,23 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (event.type === "updated" || event.type === "added") {
         const key = event.query.queryKey;
         if (Array.isArray(key) && key[0] === "sessions") {
+          // #1646 r4: record data BIRTH (request-time causality) for
+          // seedBusy's birth guard — fetch starts, authoritative
+          // writes (setState, manual success), and fetch commits
+          // inheriting their start time.
+          if (event.type === "updated" && typeof key[1] === "string") {
+            const wsId = key[1];
+            const action = event.action;
+            if (action.type === "fetch") {
+              pendingFetchStartRef.current.set(wsId, Date.now());
+            } else if (action.type === "success") {
+              const manual = (action as { manual?: boolean }).manual === true;
+              const startedAt = manual ? Date.now() : (pendingFetchStartRef.current.get(wsId) ?? Date.now());
+              dataBirthRef.current.set(wsId, startedAt);
+            } else if (action.type === "setState") {
+              dataBirthRef.current.set(wsId, Date.now());
+            }
+          }
           // #1646 r2/r3: query-core notifies the cache "updated" for
           // EVERY dispatch, and the no-new-data ones PRESERVE stale
           // state.data: "fetch" (fetch-START — by definition predates
