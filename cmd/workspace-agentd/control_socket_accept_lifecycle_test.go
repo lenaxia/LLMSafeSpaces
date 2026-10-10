@@ -63,8 +63,14 @@ func (b *syncBuffer) String() string {
 // captureSlog swaps the default slog for a text handler over a
 // mutex-guarded buffer at debug level (the terminal exit line is debug;
 // the assertion counts only WARN-shape lines). Restored on cleanup.
-// These tests are sequential (no t.Parallel in this suite), so the
-// global swap cannot race another test's logger expectations.
+// These tests are serial, and Go's testing scheduler runs serial
+// top-level tests to completion before any t.Parallel() test resumes
+// (this package DOES have parallel tests — e.g. mcp_server_test.go's
+// TestMCPHandler_ToolDescriptionGuidance — they only execute after all
+// serial top-level tests finish). The swap therefore cannot race
+// another test's logger expectations; the guarantee is the
+// serial-before-parallel scheduling rule, NOT an absence of
+// t.Parallel() in the package.
 func captureSlog(t *testing.T) *syncBuffer {
 	t.Helper()
 	buf := &syncBuffer{}
