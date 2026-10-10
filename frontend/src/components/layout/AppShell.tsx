@@ -4,6 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { SidebarDrawer } from "./SidebarDrawer";
 import { SidebarToggleButton } from "./SidebarToggleButton";
 import { useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
+import { useOskViewportGuard } from "../../hooks/useOskViewportGuard";
 import { SessionActivityProvider } from "../../providers/SessionActivityProvider";
 
 export function AppShell() {
@@ -12,6 +13,7 @@ export function AppShell() {
   const location = useLocation();
   const matches = useMatches();
   const isInitialMount = useRef(true);
+  useOskViewportGuard();
 
   useEffect(() => {
     if (isInitialMount.current) {
@@ -31,7 +33,14 @@ export function AppShell() {
     <SessionActivityProvider>
       <div
         ref={sidebar.containerRef}
-        className="flex h-screen overflow-hidden overscroll-none"
+        // #1648: h-dvh (100dvh) is the DYNAMIC viewport — resizes as browser
+        // chrome collapses/expands. h-screen (100vh, the LARGE viewport) made
+        // this overflow-hidden shell taller than the visible screen with
+        // viewport-fit=cover + safe-area insets (#1626): header OR composer
+        // permanently off-screen on mobile. dvh does NOT cover the on-screen
+        // keyboard — that lane is interactive-widget=resizes-content
+        // (index.html) + the useOskViewportGuard override.
+        className="flex h-dvh overflow-hidden overscroll-none"
         style={{ touchAction: "pan-y" }}
       >
         <a

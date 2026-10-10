@@ -84,6 +84,43 @@ html {
   touch-action: pan-y;
 }
 
+/* #1648 — dvh fallback. The shell roots are h-dvh/min-h-dvh (100dvh =
+ * the dynamic viewport, which resizes as browser chrome collapses or
+ * expands; 100vh is the LARGE viewport and made the shell taller than
+ * the visible screen with viewport-fit=cover + safe-area insets inside
+ * the box, #1626/#1648). Tailwind v4 emits `.h-dvh { height: 100dvh }`
+ * with NO fallback (verified against the built CSS): a browser without
+ * dvh support drops the only declaration at parse time and the shell
+ * collapses to content height. This restores the legacy large-viewport
+ * height there — the pre-#1648 behavior, never worse.
+ *
+ * Load-bearing mechanism: the @supports not(...) guard — inert in every
+ * dvh-capable browser, active exactly where the 100dvh declaration was
+ * dropped. The @layer utilities wrapper is co-location with the utility
+ * it patches, not protection: nothing here competes with a declaration
+ * that applies. */
+@layer utilities {
+  @supports not (height: 100dvh) {
+    .h-dvh {
+      height: 100vh;
+    }
+    .min-h-dvh {
+      min-height: 100vh;
+    }
+  }
+
+  /* #1648 keyboard lane: with a keyboard open, viewport units do NOT
+   * shrink on their own (Chrome's default is resizes-visual; iOS Safari
+   * overlays). index.html opts Android Chrome into resizes-content so
+   * 100dvh shrinks natively; useOskViewportGuard (AppShell/PortalLayout)
+   * sets this var + attribute on <html> for the platforms the meta key
+   * cannot reach (iOS). Higher specificity than .h-dvh, same layer —
+   * only ever active while the keyboard heuristic holds. */
+  [data-osk-open] .h-dvh {
+    height: var(--shell-visual-height, 100dvh);
+  }
+}
+
 /* Minimal scrollbars */
 ::-webkit-scrollbar {
   width: 4px;
