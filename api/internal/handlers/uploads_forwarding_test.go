@@ -261,24 +261,44 @@ func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T)
 		status int
 		err    error
 	}
+	// #1532 de-flake: build the 6 x 4MiB multiparts BEFORE the storm —
+	// the builds are test setup, not the subject; racing them inside
+	// the storm goroutines only adds CPU contention (buffer allocs +
+	// mime writers under -race) to the very window the hang guard
+	// measures. The HTTP-level concurrency (6 in-flight streaming
+	// uploads against the real middleware chain) is unchanged.
+	type prepared struct {
+		body io.Reader
+		ct   string
+	}
+	reqs := make([]prepared, storm)
+	for i := range reqs {
+		body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "storm.bin", content: payload})
+		reqs[i] = prepared{body: body, ct: ct}
+	}
 	results := make(chan result, storm)
+	// 45s per-request budget and a 60s hang guard: these are deadlock
+	// sentinels, not performance assertions — a real deadlock never
+	// resolves, so the larger bound catches it identically while a
+	// loaded runner (the 2 CI hits) can no longer burn the budget on
+	// mere slowness.
+	client := &http.Client{Timeout: 45 * time.Second}
 	for i := 0; i < storm; i++ {
-		go func() {
-			body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "storm.bin", content: payload})
-			req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", body)
+		go func(p prepared) {
+			req, err := http.NewRequest(http.MethodPost, api.URL+"/api/v1/workspaces/ws-1/uploads", p.body)
 			if err != nil {
 				results <- result{err: err}
 				return
 			}
-			req.Header.Set("Content-Type", ct)
-			resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+			req.Header.Set("Content-Type", p.ct)
+			resp, err := client.Do(req)
 			if err != nil {
 				results <- result{err: err}
 				return
 			}
 			defer func() { _ = resp.Body.Close() }()
 			results <- result{status: resp.StatusCode}
-		}()
+		}(reqs[i])
 	}
 
 	for i := 0; i < storm; i++ {
@@ -287,7 +307,7 @@ func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T)
 			require.NoError(t, r.err, "a refused upload must resolve, not stall or die (nightly 36758872210's 000s)")
 			assert.Equal(t, http.StatusInsufficientStorage, r.status,
 				"the early refusal forwards verbatim — never a 502, never a connection death")
-		case <-time.After(25 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("storm request hung: the early-refusal path deadlocks with the bounded body capture streaming")
 		}
 	}

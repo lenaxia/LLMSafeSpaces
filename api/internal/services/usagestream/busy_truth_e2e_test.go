@@ -128,8 +128,12 @@ func newBusyTruthE2E(t *testing.T) (*sessionstate.Authority, *Consumer, *syncBri
 
 	// The gate connects asynchronously and the stream has no replay:
 	// wait until the subscription is registered before feeding events.
+	// #1532: 30s bound — the old 10s was a wall-clock guess that lost
+	// to multi-second runner stalls (the test's 7+ CI hits); the wait
+	// itself is outcome-deterministic, the deadline only bites on real
+	// breakage.
 	require.Eventually(t, func() bool { return auth.Metrics().Subscribers == 1 },
-		10*time.Second, 10*time.Millisecond, "consumer never subscribed to the authority stream")
+		30*time.Second, 10*time.Millisecond, "consumer never subscribed to the authority stream")
 	return auth, c, br
 }
 
@@ -161,6 +165,9 @@ func ingest(t *testing.T, auth *sessionstate.Authority, evt *abiv1.Event) {
 
 func waitForStatuses(t *testing.T, br *syncBridge, want []string) {
 	t.Helper()
+	// #1532: 30s bound (was 10s) — Eventually only waits as long as it
+	// needs; the budget matters solely when the chain is genuinely
+	// broken, and 10s was small enough for a stalled runner to trip.
 	require.Eventually(t, func() bool {
 		got := br.snapshot()
 		if len(got) != len(want) {
@@ -172,7 +179,7 @@ func waitForStatuses(t *testing.T, br *syncBridge, want []string) {
 			}
 		}
 		return true
-	}, 10*time.Second, 25*time.Millisecond, "bridge statuses never reached %v", want)
+	}, 30*time.Second, 25*time.Millisecond, "bridge statuses never reached %v", want)
 }
 
 func runningToolPart(id string) *abiv1.Part {
@@ -301,7 +308,7 @@ func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
 	c := newBusyTruthConsumer(t, ts.URL, br, 100*time.Millisecond)
 	c.Open("ws1")
 	require.Eventually(t, func() bool { return auth.Metrics().Subscribers >= 1 },
-		10*time.Second, 10*time.Millisecond, "consumer never subscribed")
+		30*time.Second, 10*time.Millisecond, "consumer never subscribed")
 
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1", Part: runningToolPart("p1")})
@@ -311,13 +318,27 @@ func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
 	// The harness dies; the store's truth says idle. The reseed is an
 	// IN-STREAM frame — the client redials and resnapshots without the
 	// consumer's run loop ever reconnecting.
+	//
+	// #1532 de-flake note: the old `require.Equal(1, c.Gates())` read
+	// here ("the gate lives through the reseed itself") raced a FAST
+	// reconcile — the idleDrop is only 100ms, so on a quick runner the
+	// gate could legitimately drop before the assert read it, failing
+	// the test in the OPPOSITE direction of the stall flake. The
+	// assert carried no pin value: the bug this row exists for (the
+	// stale-true lease: gate NEVER drops) fails the eventual-zero wait
+	// below, and a gate that drops "during" vs "after" the reseed is
+	// the same correct outcome. The precondition above (polled to 1
+	// before the reseed) plus the eventual zero below is the race-free
+	// encoding of the same contract.
 	store.set(map[string]sessionstate.SessionSeed{
 		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
 	})
 	require.NoError(t, auth.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
 
-	require.Equal(t, 1, c.Gates(), "the gate lives through the reseed itself")
+	// 45s bound: the drop needs one snapshot fold + the 100ms idleDrop
+	// — microseconds of work, but a multi-second runner stall must not
+	// turn into a CI hit (7+ on record, two of them release runs).
 	require.Eventually(t, func() bool { return c.Gates() == 0 },
-		15*time.Second, 50*time.Millisecond,
+		45*time.Second, 50*time.Millisecond,
 		"the in-stream reseed's snapshot must rebuild the derived baseline — the gate must drop")
 }
