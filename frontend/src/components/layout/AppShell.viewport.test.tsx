@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "./AppShell";
@@ -171,6 +171,66 @@ describe("AppShell mobile viewport fit (#1648)", () => {
     // of pinning header+content+composer into one visible column.
     expect(cls).toMatch(/(^|\s)overflow-hidden(\s|$)/);
     expect(cls).not.toMatch(/min-h-/);
+    spy.mockRestore();
+  });
+
+  it("box interior covers the nonzero safe-area insets and still leaves content room", async () => {
+    const spy = setMobileMatchMedia();
+    mockMobileVisualViewport();
+    renderShell();
+
+    // Why NOT "box + insets ≤ innerHeight" (the issue's shorthand): the
+    // #1626 insets are interior paddings — paid FROM the box (header
+    // pt-calc, Composer pb-calc), never added to it. The literal sum
+    // would demand box ≤ innerHeight − insets, i.e. a shell SHORTER than
+    // the screen, which is neither what the fix does nor what "fit the
+    // visible screen" means under viewport-fit=cover (the inset bands are
+    // inside innerHeight). The coherent invariant: the box fits the
+    // visual viewport (previous test) AND the box's interior can absorb
+    // both inset bands while leaving usable content space.
+    const INSET_TOP = 47;    // notch band, nonzero per the regression
+    const INSET_BOTTOM = 34; // home-indicator band
+    const MIN_USABLE_CONTENT = 200;
+    const box = resolveViewportHeight(shellRoot().className)!;
+    expect(box).toBeGreaterThanOrEqual(INSET_TOP + INSET_BOTTOM + MIN_USABLE_CONTENT);
+    // And the insets are genuinely nonzero in the rendered tree — the
+    // header composes the top inset (#1623 pin covers the full contract).
+    const header = document.querySelector(".border-b.px-3") as HTMLElement | null;
+    expect(header?.className).toMatch(/env\(safe-area-inset-top/);
+    spy.mockRestore();
+  });
+});
+
+describe("AppShell keyboard guard wiring (#1648 criterion 4)", () => {
+  it("mounts useOskViewportGuard: a visual-viewport shrink activates the override on <html>", async () => {
+    const spy = setMobileMatchMedia();
+    mockMobileVisualViewport();
+    // jsdom has no visualViewport; install one where the keyboard is open
+    // (visual 400 ≪ layout 660) and pump the resize the hook listens to.
+    const listeners = new Set<() => void>();
+    const state = { height: 660, offsetTop: 0 };
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: {
+        get height() { return state.height; },
+        get offsetTop() { return state.offsetTop; },
+        addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+        removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+      },
+      writable: true,
+    });
+
+    renderShell();
+    act(() => { state.height = 400; listeners.forEach((fn) => fn()); });
+
+    // The [data-osk-open] rule in index.css switches .h-dvh shells to
+    // this tracked height while the keyboard heuristic holds.
+    expect(document.documentElement.dataset.oskOpen).toBe("true");
+    expect(document.documentElement.style.getPropertyValue("--shell-visual-height")).toBe("400px");
+
+    delete (window as { visualViewport?: unknown }).visualViewport;
+    delete document.documentElement.dataset.oskOpen;
+    document.documentElement.style.removeProperty("--shell-visual-height");
     spy.mockRestore();
   });
 });

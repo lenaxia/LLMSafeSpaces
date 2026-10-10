@@ -49,16 +49,18 @@ describe("root overscroll policy (#1629)", () => {
 
 // ── #1648 — dynamic-viewport fallback for the app shells ───────────────
 //
-// The shell roots use h-dvh / min-h-dvh (100dvh tracks the VISUAL
-// viewport; 100vh is the LARGE viewport and made the shell taller than
-// the visible screen — header OR composer permanently clipped, the
+// The shell roots use h-dvh / min-h-dvh (100dvh is the DYNAMIC viewport —
+// resizes with browser chrome, not the on-screen keyboard; 100vh is the
+// LARGE viewport and made the shell taller than the visible screen — the
 // #1626/#1648 regression). Tailwind v4 emits `.h-dvh{height:100dvh}`
 // with NO fallback (verified against the built CSS): in a browser
-// without dvh support the only declaration is dropped and the shell
-// collapses to content height. This @supports block restores the legacy
-// large-viewport height there — same behavior as before #1648, never
-// worse. It must live in @layer utilities so it joins Tailwind's
-// utilities layer (unlayered CSS would outrank the layer wholesale).
+// without dvh support the only declaration is dropped at parse time and
+// the shell collapses to content height. The @supports not(...) guard is
+// the load-bearing mechanism: inert in every dvh-capable browser, active
+// exactly where the dvh declaration was dropped. The @layer utilities
+// wrapper is co-location, not protection — nothing here ever competes
+// with a declaration that applies (pinned: the fallback declarations
+// live INSIDE the guard).
 function supportsBlock(): string {
   const start = stylesheet.indexOf("@supports not (height: 100dvh)");
   if (start === -1) throw new Error("no @supports not (height: 100dvh) fallback block in index.css");
@@ -66,19 +68,34 @@ function supportsBlock(): string {
 }
 
 describe("dynamic viewport fallback (#1648)", () => {
-  it("h-dvh falls back to 100vh in browsers without dvh support", () => {
-    expect(supportsBlock()).toMatch(/\.h-dvh\s*\{\s*height:\s*100vh/);
+  it("h-dvh falls back to 100vh in browsers without dvh support, inside the guard", () => {
+    // Anchored to the guard's opening: inert on modern browsers (the
+    // load-bearing property is being INSIDE @supports not (100dvh)).
+    expect(supportsBlock()).toMatch(
+      /@supports not \(height: 100dvh\)\s*\{\s*\.h-dvh\s*\{\s*height:\s*100vh/,
+    );
   });
 
-  it("min-h-dvh falls back to 100vh in browsers without dvh support", () => {
-    expect(supportsBlock()).toMatch(/\.min-h-dvh\s*\{\s*min-height:\s*100vh/);
+  it("min-h-dvh falls back to 100vh immediately inside the same guard", () => {
+    // Adjacent to the h-dvh fallback rule within the guard block.
+    expect(supportsBlock()).toMatch(
+      /\.h-dvh\s*\{[^}]*\}\s*\.min-h-dvh\s*\{\s*min-height:\s*100vh/,
+    );
   });
 
-  it("fallback sits in the utilities cascade layer (cannot unseat 100dvh in modern browsers)", () => {
-    // If this rule were unlayered, unlayered CSS beats layered CSS in the
-    // cascade and 100vh would override Tailwind's layered 100dvh in
-    // modern browsers too — reintroducing the regression. Pin the layer.
-    const layered = stylesheet.match(/@layer\s+utilities\s*\{[^@]*@supports not \(height: 100dvh\)/s);
-    expect(layered).not.toBeNull();
+  it("guard condition is exactly the absence of dvh support (not a broader query)", () => {
+    expect(supportsBlock().startsWith("@supports not (height: 100dvh)")).toBe(true);
+  });
+});
+
+describe("on-screen keyboard override (#1648 criterion 4)", () => {
+  it("shells adopt the live visual-viewport height while the keyboard is open", () => {
+    // dvh does not shrink for the OSK (Chrome default is resizes-visual;
+    // iOS overlays). The [data-osk-open] rule — set by useOskViewportGuard —
+    // overrides the shell height with the tracked visual viewport span.
+    // Higher specificity than .h-dvh, so it wins only while it applies.
+    expect(stylesheet).toMatch(
+      /\[data-osk-open\]\s+\.h-dvh\s*\{\s*height:\s*var\(--shell-visual-height,\s*100dvh\)/,
+    );
   });
 });
