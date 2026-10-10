@@ -152,6 +152,18 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // lives for the mount lifetime.
   const seededRef = useRef(new Set<string>());
 
+  // #1646 r3: timestamp of the last onReconnect wipe (0 = never wiped).
+  // seedBusy must never latch a workspace's seed gate from rows that
+  // predate it — see the guard in seedBusy.
+  const wipeAtRef = useRef(0);
+
+  // #1646 r4: causality tracking for the seed gate (see seedBusy's
+  // birth guard): pendingFetchStart = when the current/latest fetch
+  // STARTED per workspace; dataBirth = when the committed data's
+  // producing fetch started (or when an authoritative write landed).
+  const pendingFetchStartRef = useRef(new Map<string, number>());
+  const dataBirthRef = useRef(new Map<string, number>());
+
   // Sessions the user explicitly cleared (viewed). Reconcile suppresses
   // re-adding them from a stale REST refetch (markSessionSeen PUT racing the
   // GET) until REST confirms hasUnread:false, or new activity arrives
@@ -234,6 +246,44 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (seeded.has(wsId)) continue;
         const data = query.state.data;
         if (!Array.isArray(data)) continue;
+
+        // #1646 r3: never latch the gate from rows that predate the
+        // last reconnect wipe. seedBusy is a FULL pass — any workspace's
+        // success dispatch re-runs it against every cached sessions
+        // query, including workspaces whose refetch is still in flight
+        // (the fetch dispatch preserves prior rows) or inactive
+        // (collapsed workspace, no refetch at all). Pre-wipe rows are
+        // the stale pre-outage state: seeding from them re-adds stale
+        // busy and suppresses that workspace's own fresh success.
+        // Post-wipe data (dataUpdatedAt > wipeAt) is fresh by
+        // construction; wipeAt=0 (no wipe yet) keeps the mount-time
+        // full pass seeding everything. Strict `<` — a write landing
+        // in the SAME millisecond as the wipe (the existing reconnect
+        // re-seed pin drives setQueryData synchronously after
+        // onReconnect) is a fresh authoritative write, not stale
+        // pre-outage data.
+        if (query.state.dataUpdatedAt < wipeAtRef.current) continue;
+
+        // #1646 r4: commit time is not birth time. A fetch that STARTED
+        // before the wipe and commits after it carries pre-outage rows
+        // past the commit-time guard above, in two reachable shapes:
+        // the invalidation REUSES an initial pending fetch when
+        // state.data is undefined (query-core returns the existing
+        // promise), and a zombie fetch on an unmounted query runs to
+        // completion (getSessions takes no AbortSignal, so observer
+        // removal cannot cancel it) — the incident's own racing-GET
+        // window. dataBirth records when the data's producing fetch
+        // STARTED (fetch dispatch) or when an authoritative write
+        // landed (setState / manual success); seeding refuses data
+        // BORN before the wipe. Strict `<`, same-ms rule as above.
+        // Ordering guarantee (r5): the reconnect path wipes BEFORE
+        // invalidating sessions (useUserEventStream onConnect), so
+        // every invalidation-born fetch start — and therefore every
+        // legitimate post-reconnect re-seed's birth — postdates the
+        // wipe by construction, even when the clock ticks between the
+        // statements.
+        const birth = dataBirthRef.current.get(wsId) ?? 0;
+        if (birth < wipeAtRef.current) continue;
 
         seeded.add(wsId);
 
@@ -343,6 +393,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // Adopt queries already fetching at subscription registration:
+    // their "fetch" dispatch predates this subscription (child effects
+    // run before this provider's), so stamp them conservatively NOW —
+    // any later wipe postdates the stamp and their first commit is
+    // correctly treated as born pre-wipe.
+    for (const query of queryCache.getAll()) {
+      const key = query.queryKey;
+      if (
+        Array.isArray(key) && key[0] === "sessions" && typeof key[1] === "string" &&
+        query.state.fetchStatus === "fetching" &&
+        !pendingFetchStartRef.current.has(key[1])
+      ) {
+        pendingFetchStartRef.current.set(key[1], Date.now());
+      }
+    }
+
     seedBusy();
     reconcileUnread();
 
@@ -350,7 +416,40 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (event.type === "updated" || event.type === "added") {
         const key = event.query.queryKey;
         if (Array.isArray(key) && key[0] === "sessions") {
-          seedBusy();
+          // #1646 r4: record data BIRTH (request-time causality) for
+          // seedBusy's birth guard — fetch starts, authoritative
+          // writes (setState, manual success), and fetch commits
+          // inheriting their start time.
+          if (event.type === "updated" && typeof key[1] === "string") {
+            const wsId = key[1];
+            const action = event.action;
+            if (action.type === "fetch") {
+              pendingFetchStartRef.current.set(wsId, Date.now());
+            } else if (action.type === "success") {
+              const manual = action.manual === true;
+              const startedAt = manual ? Date.now() : (pendingFetchStartRef.current.get(wsId) ?? Date.now());
+              dataBirthRef.current.set(wsId, startedAt);
+            } else if (action.type === "setState") {
+              dataBirthRef.current.set(wsId, Date.now());
+            }
+          }
+          // #1646 r2/r3: query-core notifies the cache "updated" for
+          // EVERY dispatch, and the no-new-data ones PRESERVE stale
+          // state.data: "fetch" (fetch-START — by definition predates
+          // the in-flight result), "failed" (attempt failed, retries
+          // left), "error" (exhausted; production runs retry:1),
+          // "pause"/"continue", "invalidate". Seeding from stale rows
+          // re-latches a wiped-open seed gate and suppresses every
+          // later success (the add-only seed can never clear) — sticky
+          // busy until the next reconnect/phase-change/remount. Seed
+          // ONLY on dispatches that carry data: "success" (a fetch
+          // resolved — fresh rows; setQueryData dispatches this too,
+          // with manual:true) and "setState" (query.setState — explicit
+          // authoritative writes).
+          const actionType = event.type === "updated" ? event.action.type : undefined;
+          if (event.type === "added" || actionType === "success" || actionType === "setState") {
+            seedBusy();
+          }
           reconcileUnread();
         }
       }
@@ -361,6 +460,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   useUserEventStream({
     onReconnect: () => {
+      // #1646 r3: stamp the wipe. Any sessions data predating this
+      // moment is pre-outage state that the full-pass seed must not
+      // re-latch (see the guard in seedBusy).
+      wipeAtRef.current = Date.now();
       seededRef.current.clear();
       setBusySessions(new Map());
       // A badge latched by live SSE survives a disconnect only as

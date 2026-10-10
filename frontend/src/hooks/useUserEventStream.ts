@@ -54,6 +54,24 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
       lastAlive.at = Date.now();
     };
 
+    // r1 (#1646): ANY post-first connect is a reconnect. lastEventIDRef
+    // is NOT a reconnect discriminator — the server writes snapshot/
+    // anti-entropy/resync events with EventID 0 and NO id: line
+    // (stream_user_events.go: "Snapshot event — no id: line"), so a
+    // quiet stream can run (and reconnect) forever without ever setting
+    // it. Gating the reconnect reset on it left a sticky-busy residual:
+    // the provider's wipe + seed-gate clear were skipped, so a
+    // mount-seeded busy could never clear after an event-less gap.
+    // NOTE (r2 review): lastEventIDRef feeds buildHeaders(), which is
+    // captured ONCE at start() and reused verbatim by sseConnection on
+    // every internal reconnect — so the Last-Event-ID replay header is
+    // effectively mount-frozen and does not fire post-mount. Known
+    // follow-up (header-factory, see the #1646 thread); every #1646
+    // convergence path is replay-independent by design (REST
+    // invalidation for busy/list, US-55.3 snapshot anti-entropy for
+    // asks, D6 getAlerts seed for hung, phase invalidations).
+    let hasConnectedOnce = false;
+
     function start() {
       conn = createSSEConnection({
         url: `${apiBaseUrl}/events`,
@@ -89,14 +107,29 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
         onKeepalive: touchAlive,
         onConnect: () => {
           touchAlive();
-          if (lastEventIDRef.current !== null) {
+          if (hasConnectedOnce) {
             wsLog("user_stream.reconnected", "");
+            // r5 (#1646): the wipe (onReconnect) MUST stamp before the
+            // sessions invalidation fires. query-core dispatches "fetch"
+            // synchronously inside invalidateQueries, so invalidating
+            // first stamps fetch starts microseconds before wipeAt — and
+            // on a real clock, a millisecond tick between the two
+            // statements makes every legitimate post-reconnect re-seed's
+            // birth predate the wipe, which the provider's birth guard
+            // then refuses (convergence would degrade to the 60s floor).
+            // Wipe first: re-seed births postdate the wipe by construction.
+            onReconnectRef.current?.();
+            queryClient.invalidateQueries({ queryKey: ["sessions"] });
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
-            onReconnectRef.current?.();
           } else {
             wsLog("user_stream.connected", "");
+            // First connect: no wipe exists (wipeAt stays 0), so the
+            // ordering constraint does not apply — refreshing any
+            // pre-mounted sessions list is all this does.
+            queryClient.invalidateQueries({ queryKey: ["sessions"] });
           }
+          hasConnectedOnce = true;
         },
         logPrefix: "user_stream",
         readTimeoutMs: READ_TIMEOUT_MS,
