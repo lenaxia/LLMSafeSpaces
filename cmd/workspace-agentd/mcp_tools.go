@@ -632,7 +632,7 @@ func podPlatformClient() (*opencode.Client, string, string, error) {
 // history stays viewable, and unarchiving restores chat instantly.
 // In-pod peer sends are NOT blocked (enforcement is proxy-side by the
 // owner's ruling) — the marker is for the USER's session list.
-func mcpSessionArchive(ctx context.Context, sessionID string, archived bool) (string, error) {
+func mcpSessionArchive(ctx context.Context, password, sessionID string, archived bool) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
@@ -644,6 +644,13 @@ func mcpSessionArchive(ctx context.Context, sessionID string, archived bool) (st
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := client.SessionArchive(ctx, saToken, workspaceID, sessionID, archived); err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663: the platform's index lookup 404s the mistyped id;
+			// the pod's live inventory still names the near match. The
+			// archive is refused either way — suggest-only.
+			return "", fmt.Errorf("failed to archive session: %w%s",
+				err, sessionSuggestClause(ctx, seamClientWithPassword(password), sessionID))
+		}
 		return "", fmt.Errorf("failed to archive session: %w", err)
 	}
 	status := "archived"
@@ -699,6 +706,13 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := client.PlatformSessionDelete(ctx, saToken, workspaceID, sessionID); err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663 near-miss clause, same as archive: the delete is
+			// refused either way — destructive verbs never act on a
+			// guess, but the caller learns the live id.
+			return "", fmt.Errorf("failed to delete session: %w%s",
+				err, sessionSuggestClause(ctx, seamClientWithPassword(password), sessionID))
+		}
 		return "", fmt.Errorf("failed to delete session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{
@@ -870,7 +884,14 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		metas = append(metas, m)
 	}
 	if scope != "" && len(metas) == 0 {
-		return "", fmt.Errorf("session %s not found", scope)
+		// The scope id failed to match ANY live session — the #1663
+		// near-miss clause rides along (ids are already in hand; no
+		// extra fetch).
+		ids := make([]string, 0, len(sessions))
+		for _, s := range sessions {
+			ids = append(ids, s.ID)
+		}
+		return "", fmt.Errorf("session %s not found%s", scope, suggestSessionID(scope, ids))
 	}
 
 	version := ""
@@ -1110,14 +1131,18 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 
 	// Validate BOTH ends by ID (unknown IDs fail loudly here rather
 	// than silently in the detached delivery; the by-ID probe is
-	// immune to the #1452 list-visibility gap).
+	// immune to the #1452 list-visibility gap). A not-found id gets a
+	// near-miss did-you-mean clause (#1663: the zombie-session hour —
+	// a single-dropped-char id met a bare "not found"); suggest-only,
+	// never an auto-correct — the caller re-issues with the exact id.
 	for _, id := range []string{sessionID, origin} {
 		exists, err := client.SessionExists(ctx, id)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve session %s: %w", id, err)
 		}
 		if !exists {
-			return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)", id)
+			return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)%s",
+				id, sessionSuggestClause(ctx, client, id))
 		}
 	}
 
@@ -1210,7 +1235,14 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
-	if err := seamClientWithPassword(password).Abort(ctx, sessionID); err != nil {
+	client := seamClientWithPassword(password)
+	if err := client.Abort(ctx, sessionID); err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663: aborting a mistyped id silently no-ops into a
+			// mystery — the clause names the live id instead. Still a
+			// refusal: abort is destructive and never acts on a guess.
+			return "", fmt.Errorf("failed to abort session: %w%s", err, sessionSuggestClause(ctx, client, sessionID))
+		}
 		return "", fmt.Errorf("failed to abort session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{

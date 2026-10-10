@@ -46,7 +46,7 @@ func TestMCPSessionArchive_HappyPath(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	out, err := mcpSessionArchive(context.Background(), "ses-1", true)
+	out, err := mcpSessionArchive(context.Background(), mcpTestPassword, "ses-1", true)
 	require.NoError(t, err)
 	assert.Equal(t, "/internal/v1/session-archive", gotPath)
 	assert.Equal(t, "Bearer sa-token", gotAuth)
@@ -69,7 +69,7 @@ func TestMCPSessionArchive_Unarchive(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	out, err := mcpSessionArchive(context.Background(), "ses-1", false)
+	out, err := mcpSessionArchive(context.Background(), mcpTestPassword, "ses-1", false)
 	require.NoError(t, err)
 	assert.Contains(t, gotBody, `"archived":false`)
 	var res map[string]any
@@ -84,7 +84,7 @@ func TestMCPSessionArchive_RequiresSessionID(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	_, err := mcpSessionArchive(context.Background(), "  ", true)
+	_, err := mcpSessionArchive(context.Background(), mcpTestPassword, "  ", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "session_id")
 }
@@ -97,7 +97,7 @@ func TestMCPSessionArchive_UnindexedSurfaces404(t *testing.T) {
 	defer api.Close()
 	setupPodSessionEnv(t, api)
 
-	_, err := mcpSessionArchive(context.Background(), "ses-ghost", true)
+	_, err := mcpSessionArchive(context.Background(), mcpTestPassword, "ses-ghost", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404", "the tool must surface the not-indexed verdict, not mask it")
 }
