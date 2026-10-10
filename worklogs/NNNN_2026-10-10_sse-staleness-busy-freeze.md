@@ -125,15 +125,67 @@ the Last-Event-ID replay header. Red-first pin added BEFORE the fix:
 id-carrying event" — red at 9e93cb38 (`expected 'yes' to be 'no'`),
 green after. Non-blocking notes: e2e infeasibility accepted (repo's
 Playwright layer can't stream SSE; session-activity e2e block already
-`.fixme` with precedent #1365 `7321a2be`); watchdog-cadence-during-
-outage pin deliberately not added — the attempt count under fake timers
-is jitter-dependent (`jitteredDelay` = base×[0.5,1.5]) so any tight
-bound is flaky; the cadence is floored by the 10s check period by
-construction. Sidebar floor-test act() stderr warnings noted, left
+`.fixme` with precedent #1365 `7321a2be`); watchdog-cadence pin added in 0d4d734 as a FLOOR
+(≥2 reconnect attempts within 3 liveness periods), not a ceiling —
+exact attempt counts are jitter-dependent (`jitteredDelay` =
+base×[0.5,1.5]) so any upper bound would flake; lower bounds cannot
+(orchestrator's floors-don't-flake rule). Sidebar floor-test act() stderr warnings noted, left
 (repo fake-timer pattern is act-free).
 
 Post-r1 runs: sseStaleness+hooks+provider+alerts targeted 121/121;
-full frontend suite **2029/2029**; tsc + eslint clean.
+full frontend suite 2029/2029 at 0d4d734 pre-floor-pin; tsc + eslint clean.
+
+## Review round 2 (20:09Z on 0d4d734d) — REQUEST_CHANGES, one new blocking finding (reviewer-verified by execution)
+
+**The failure-latch**: query-core notifies the cache "updated" for
+EVERY dispatch — including `failed` (attempt failed) and `error`
+(exhausted) — and both preserve stale `state.data` (the reducer spreads
+prior state; production runs retry:1). Post-reconnect (gate open after
+the onReconnect wipe), a failed refetch attempt re-seeded busy from the
+stale pre-outage rows and re-latched the seed gate, suppressing the
+retry's fresh idle rows and every later floor success — sticky busy
+until the next reconnect/phase-change/remount. Reachable exactly in
+the incident's window (rolling restart: SSE reconnects to the new pod
+while the racing REST GET hits the dying one). The reviewer reproduced
+it with a scratch probe at head; I re-derived it and found a SECOND
+vector while writing the pin: the probe's 60s interval refetch
+dispatches `fetch` (fetch-START) in the open-gate window — fetch-start
+carries stale data BY DEFINITION, so the first filter draft
+(skip failed/error only) still latched via the floor's own machinery.
+
+Fix (SessionActivityProvider.tsx subscription): seedBusy runs ONLY on
+dispatches that carry data — `success` (a fetch resolved: fresh rows)
+and `setState` (an explicit authoritative write: the SSE handlers'
+setQueryData, test/manual writes) — plus cache `added` events. All
+no-new-data dispatches (fetch/failed/error/invalidate/cancel) are
+skipped. reconcileUnread unchanged (add-only + cleared-release by
+design, tolerates stale reads).
+
+Red-first (both pins written and verified red at 0d4d734d before the
+fix): (1) single-attempt failure — mount-seeded busy → silent death →
+ONE reconnect (connect#2 held healthy with periodic heartbeats,
+connects===2 enforced — the reviewer's own lesson that scripted
+connections dying on their read timeout self-heal via a second
+reconnect) → refetch attempt 1 rejects (retry:1 parity) → retry
+returns idle → assert busy clears; (2) exhausted variant — both
+attempts fail (error dispatch), floor refetch at +60s reaches the
+healthy pod → assert busy clears. Both red (`expected 'yes' to be
+'no'`), both green after the filter.
+
+Also in this round (reviewer non-blocking items): late-connect guard
+in sseConnection.ts (a fetch resolving after destroy()/reconnect() no
+longer fires onConnect — pinned ×2 in sseConnection.test.ts, verified
+genuinely red by stashing the guard: 2 failed / 19 passed without it);
+corrected the false "Last-Event-ID replay header" comment (headers are
+mount-frozen in buildHeaders/start — known follow-up, all #1646
+convergence paths replay-independent); corrected the pins' causal
+narrative (byte-silent death is detected by the 35s read timeout
+first; the watchdog-only shape is pinned in useEventStream.test.ts);
+worklog sentinel rename 1107_→NNNN_ (the manual next-number pick was
+the exact race the sentinel exists to prevent) + count fixes.
+
+Post-r2 runs: providers+hooks targeted 140/140; sseConnection 21/21;
+full frontend suite **2034/2034**; tsc + eslint clean.
 
 ## Incidents in-flight (honest log)
 
@@ -148,7 +200,19 @@ full frontend suite **2029/2029**; tsc + eslint clean.
    can't pass the reviewer's collaborator assert). Owner closed #1656
    and recreated #1662 under the user identity; review round 1 then
    delivered normally.
-3. CI race-detector flake: TestUpload_ConcurrentStorm… raced
+3. Round-2 push rode the app token once more: the mode-B helper
+   (flipped 19:31) is SHADOWED in this pod's credential chain —
+   /etc/gitconfig + injected GIT_CONFIG_* env both append
+   `credential.helper=store` pointing at the pod's app-token file,
+   which git consults BEFORE the global url-scoped mode-B helper.
+   Verified by PushEvent actor (agentic-actor-coder[bot] at 19:32:15
+   despite mode B + populated user-token cache). Workaround used for
+   every push since: `env -u GIT_CONFIG_* git -c credential.helper= -c
+   credential.helper=/tmp/opencode/bin/git-cred-app push` (helper-list
+   reset; token class verified USER via git credential fill, no secret
+   material printed). Fleet-relevant: mode B does not take effect on
+   pods with this /etc/gitconfig shape.
+4. CI race-detector flake: TestUpload_ConcurrentStorm… raced
    (api/internal/handlers — zero .go files in this PR). Green on the
    recreated PR's own rerun; also green on ≥3 other branches that day.
    Local repro not feasible: multi-GB race build vs 15G PVC at 81%

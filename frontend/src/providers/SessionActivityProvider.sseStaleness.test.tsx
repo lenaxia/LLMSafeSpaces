@@ -7,12 +7,14 @@
 // (no captured-callback mock) against a controllable fake fetch stream.
 // The stream connects live, then dies WITHOUT a close frame — the
 // reader just never resolves again (an API pod restart behind a proxy
-// that holds the connection object). No error fires, so the read
-// timeout never sees it; only the #1365 liveness watchdog can. While
-// the stream is dead, the server flips a session to busy — the event
-// goes to the broker, but the browser's dead connection never delivers
-// it. The UI must converge to busy within the reconciliation window
-// (watchdog silence 60s + a check tick) via: forced reconnect →
+// that holds the connection object). No error fires and no bytes flow,
+// so the 35s READ TIMEOUT is what forces the reconnect here (the
+// watchdog-only shape — bytes flowing but no heartbeats/events — is
+// pinned separately in useEventStream.test.ts; both paths converge on
+// the same onConnect reset). While the stream is dead, the server
+// flips a session to busy — the event goes to the broker, but the
+// browser's dead connection never delivers it. The UI must converge to
+// busy within the reconciliation window via: forced reconnect →
 // onConnect sessions invalidation → REST refetch → busyDelta re-seed.
 //
 // Against the pre-fix code this pin is RED: the watchdog reconnects
@@ -149,8 +151,9 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     // be delivered on this connection — REST is now the only path.
     restBusy = true;
 
-    // 70s of stream silence: past the 60s liveness window plus a
-    // watchdog check tick. The forced reconnect must reseed busy from
+    // 70s past the death: the byte-silent read timeout (35s) forces the
+    // reconnect (the watchdog would too at 60s silence — same reset);
+    // the reconnect reseed must refetch sessions and re-seed busy from
     // REST within this window.
     await vi.advanceTimersByTimeAsync(70_000);
     // Let the refetch → seed microtasks land.
@@ -219,6 +222,151 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(connects).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  // r2 finding: query-core notifies the cache "updated" for EVERY
+  // dispatch — including "failed" (attempt failed, retries left) and
+  // "error" (retries exhausted) — both of which PRESERVE stale
+  // state.data. After a reconnect opened the seed gate (onReconnect
+  // wipe), a failed refetch attempt re-seeded busy from the stale
+  // pre-outage rows and re-latched the gate, suppressing the retry's
+  // fresh idle rows and every later floor success — sticky busy until
+  // the next reconnect/phase-change/remount. Production runs retry:1,
+  // so this is the rolling-restart racing-GET shape (SSE reconnects to
+  // the new pod while the REST GET hits the dying one).
+  //
+  // The reconnected stream is held HEALTHY (heartbeats flow, reads
+  // resolve) so no second reconnect can heal the latch — connects===2
+  // is enforced (the reviewer's own probe lesson: scripted connections
+  // that die on their read timeout accidentally self-heal at ~71s).
+  function ResilientSessionsProbe() {
+    useQuery({
+      queryKey: ["sessions", "ws-1"],
+      queryFn: () => mockGetSessions("ws-1"),
+      refetchInterval: 60_000, // sidebar floor parity: a later success exists
+    });
+    const busy = useIsSessionBusy("sess-1");
+    return <span data-testid="busy">{busy ? "yes" : "no"}</span>;
+  }
+
+  function healthyHeartbeatReader() {
+    const enc = new TextEncoder();
+    return {
+      read: () =>
+        new Promise<{ done: boolean; value: Uint8Array }>((resolve) => {
+          setTimeout(() => resolve({ done: false, value: enc.encode(":\n\n") }), 25_000);
+        }),
+      cancel: () => Promise.resolve(),
+    };
+  }
+
+  it("does not re-latch stale busy when the post-reconnect refetch attempt fails once (#1646 r2)", async () => {
+    vi.useFakeTimers();
+
+    let restBusy = true;
+    let failNextRefetch = false;
+    mockGetSessions.mockImplementation(() => {
+      if (failNextRefetch) {
+        failNextRefetch = false;
+        return Promise.reject(new Error("dying pod: connection reset"));
+      }
+      return Promise.resolve([
+        {
+          id: "sess-1",
+          title: "t",
+          messageCount: 0,
+          status: restBusy ? "busy" : "idle",
+          hasUnread: false,
+        } as SessionListItem,
+      ]);
+    });
+
+    // connect#1: one heartbeat then silent death (no bytes, no error).
+    // connect#2: healthy heartbeats — the reconnect must NOT repeat.
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    // Production parity: retry: 1 (QueryClientProvider.tsx default).
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <ResilientSessionsProbe />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Mount: REST busy → seeded busy.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The session finished while the stream was dead; REST now idle.
+    // The first post-reconnect refetch hits the dying pod (attempt 1
+    // rejects); the retry lands on the new pod with fresh idle rows.
+    restBusy = false;
+    failNextRefetch = true;
+
+    await vi.advanceTimersByTimeAsync(75_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(connects).toBe(2); // reconnected stream held healthy
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("does not re-latch stale busy when both refetch attempts fail (exhausted error, floor heals) (#1646 r2)", async () => {
+    vi.useFakeTimers();
+
+    let restBusy = true;
+    let outage = false;
+    mockGetSessions.mockImplementation(() => {
+      if (outage) return Promise.reject(new Error("pod dying"));
+      return Promise.resolve([
+        {
+          id: "sess-1",
+          title: "t",
+          messageCount: 0,
+          status: restBusy ? "busy" : "idle",
+          hasUnread: false,
+        } as SessionListItem,
+      ]);
+    });
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <ResilientSessionsProbe />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // Session finished; the API pod is mid-rollover — both post-
+    // reconnect attempts fail (retry exhausted → error dispatch), and
+    // only at +60s does the floor refetch reach the healthy new pod.
+    restBusy = false;
+    outage = true;
+    await vi.advanceTimersByTimeAsync(75_000);
+    outage = false;
+    await vi.advanceTimersByTimeAsync(65_000);
+
+    expect(connects).toBe(2);
     expect(screen.getByTestId("busy").textContent).toBe("no");
   });
 });
