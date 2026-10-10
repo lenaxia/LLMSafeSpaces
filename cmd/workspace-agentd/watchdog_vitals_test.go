@@ -377,6 +377,13 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnCorroboratedDeadListener(t *testing
 	require.Eventually(t, func() bool { return fr.callCount() >= 1 },
 		15*time.Second, 20*time.Millisecond,
 		"corroborated dead-listener hang must fire (the fire moment is the first threshold crossing; a stalled runner only delays it)")
+	// Latch exposure (review r1 on #1664): returning from the fire
+	// Eventually ~20ms after fire #1 would read Equal(1) BEFORE the
+	// next would-fire moment (~100ms away) — a broken once-per-episode
+	// latch would pass. Settling to threshold+7 failures first exposes
+	// ~8 more would-fire moments, restoring the regression pin the old
+	// fixed-sleep shape carried implicitly.
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Equal(t, 1, fr.callCount(),
 		"corroborated dead-listener hang must fire exactly once (latch)")
@@ -668,5 +675,10 @@ func TestRefreshIsHealthyLoop_MaxDeferForceFiresOnCorroboratedDeadListener(t *te
 	require.Eventually(t, func() bool { return fr.callCount() >= 1 },
 		15*time.Second, 20*time.Millisecond,
 		"max-defer force with a corroborated dead-listener hang must fire despite busy sessions")
+	// Same latch exposure as the non-defer fire test (review r1 on
+	// #1664): settle past several more would-fire moments, then pin
+	// exactly-one.
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
+	assert.Equal(t, 1, fr.callCount(), "the force path must fire exactly once (latch)")
 }

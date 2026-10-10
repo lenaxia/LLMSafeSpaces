@@ -267,8 +267,11 @@ func TestUpload_ConcurrentStormEarlyRefusalsThroughRealMiddlewares(t *testing.T)
 	// mime writers under -race) to the very window the hang guard
 	// measures. The HTTP-level concurrency (6 in-flight streaming
 	// uploads against the real middleware chain) is unchanged.
+	// *bytes.Buffer (not io.Reader) so http.NewRequest's dynamic-type
+	// switch sets Content-Length exactly as the in-goroutine build did
+	// (review r1 nit on #1664 — make the invariant explicit).
 	type prepared struct {
-		body io.Reader
+		body *bytes.Buffer
 		ct   string
 	}
 	reqs := make([]prepared, storm)

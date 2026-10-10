@@ -108,9 +108,14 @@ func (p *seamProc) restart() { p.restarts.Add(1) }
 // background ticker until the test ends (#1532 de-flake: the script
 // used to be advanced from INSIDE an Eventually condition — a
 // side-effecting poll that raced the decision goroutine's own reads
-// and destroyed an answer per 5ms tick). A slow cadence empties the
-// script to its terminal answer and LEAVES it there, so the decision
-// goroutine cannot miss a state no matter how the runner schedules it.
+// and destroyed an answer per 5ms tick). The slow cadence makes the
+// script's terminal answer LONG-LIVED, so the decision goroutine
+// almost certainly observes it — but not provably always: a ≥interval
+// scheduling gap on the decision goroutine can still skip an
+// intermediate answer (the force entry below is the only skippable
+// one; the terminal idle answer is stable and cannot be missed). This
+// is the same miss geometry as the old shape, an order of magnitude
+// less likely (review r1 on #1664).
 func startScriptAdvancer(t *testing.T, src *fakeDeferSource, interval time.Duration) {
 	t.Helper()
 	stop := make(chan struct{})
@@ -153,10 +158,12 @@ func TestDeferSeam_PolicyIsSwappable(t *testing.T) {
 		StallBound:   time.Hour,
 	})
 	require.False(t, decided, "busy → deferred to the background goroutine (the documented contract: false = deferred)")
-	// >= not ==: the counter is package-global; a leaked deferred
-	// goroutine from an earlier test can legitimately bump it between
-	// the read and this assert — OUR deferral is what must be counted.
-	require.GreaterOrEqual(t, testutil.ToFloat64(restartDeferralsFired), deferralsBefore+1.0,
+	// Exact count is sound here, unlike the stall histogram below:
+	// restartDeferralsFired.Inc() runs SYNCHRONOUSLY inside
+	// makeSessionAwareRestartDecision (secrets.go) before the deferred
+	// goroutine spawns, and tests are sequential — no concurrent bump
+	// exists (review r1 on #1664).
+	require.InDelta(t, deferralsBefore+1.0, testutil.ToFloat64(restartDeferralsFired), 0.001,
 		"each deferral counts — the how-often datum")
 
 	// The deferred goroutine applies when the source turns idle
