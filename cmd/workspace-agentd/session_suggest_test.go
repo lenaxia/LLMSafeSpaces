@@ -133,8 +133,9 @@ func (e *stubErr) Error() string { return e.msg }
 // withIncidentAgent serves a fake opencode holding the incident session
 // (full id only — byte-faithful to the live store) and 404s every
 // by-ID probe for ids not in it: the exact resolution behavior the
-// caller's mistyped sends hit.
-func withIncidentAgent(t *testing.T) *httptest.Server {
+// caller's mistyped sends hit. Registers through withAgentServer (the
+// house pattern — it owns the listener lifecycle via t.Cleanup).
+func withIncidentAgent(t *testing.T) {
 	t.Helper()
 	known := map[string]bool{incidentID: true, otherID: true}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,9 +172,7 @@ func withIncidentAgent(t *testing.T) *httptest.Server {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	srv := httptest.NewServer(handler)
 	withAgentServer(t, handler.ServeHTTP)
-	return srv
 }
 
 // TestSendMessage_MistypedID_SuggestsLiveID is THE incident pin: a
