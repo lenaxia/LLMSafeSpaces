@@ -5,6 +5,7 @@ import { SidebarDrawer } from "./SidebarDrawer";
 import { SidebarToggleButton } from "./SidebarToggleButton";
 import { Spinner } from "../ui/Spinner";
 import { useCollapsibleSidebar } from "../../hooks/useCollapsibleSidebar";
+import { useOskViewportGuard } from "../../hooks/useOskViewportGuard";
 
 export interface NavItem {
   to: string;
@@ -33,11 +34,12 @@ export function PortalLayout({
   context,
 }: PortalLayoutProps) {
   const sidebar = useCollapsibleSidebar({ sidebarWidth: PORTAL_NAV_WIDTH });
+  useOskViewportGuard(); // #1648 keyboard lane — see hooks/useOskViewportGuard.ts
 
   return (
     <div
       ref={sidebar.containerRef}
-      className="flex h-screen flex-col bg-background overflow-hidden overscroll-none"
+      className="flex h-dvh flex-col bg-background overflow-hidden overscroll-none"
       style={{ touchAction: "pan-y" }}
     >
       {/* Top padding composes the base with the safe-area inset: viewport-fit=cover extends under the notch — the header is the topmost row (#1623). */}

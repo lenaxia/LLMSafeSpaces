@@ -36,7 +36,7 @@ function expiresText(expiresAt: string): string {
 
 function InvitationShell({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-4">
       <div className="w-full max-w-md rounded border border-border bg-card p-6">
         <h1 className="mb-4 text-xl font-semibold">{title}</h1>
         {children}
@@ -243,7 +243,7 @@ export function InvitationPage() {
   // --- Loading ---
   if (state.tag === "loading" || authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center">
         <Spinner size="lg" />
       </div>
     );

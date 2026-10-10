@@ -121,7 +121,7 @@ describe("AppShell mobile drawer auto-open", () => {
 // The load-bearing seam (the #1626 r1 lesson: unwiring a ref left every
 // unit test green). These drive REAL touch events through the full
 // AppShell tree — the container listeners (attached via
-// sidebar.containerRef on the h-screen root div) and the drawer's open
+// sidebar.containerRef on the h-dvh root div) and the drawer's open
 // state — so removing the ref wiring, the EDGE_ZONE recognition, or the
 // touchstart claim all fail HERE.
 
@@ -168,8 +168,8 @@ describe("AppShell safe-area padding composition (#1623 r4)", () => {
 
 describe("AppShell gesture integration (#1629)", () => {
   function gestureContainer(): HTMLElement {
-    const el = document.querySelector(".h-screen.overscroll-none");
-    if (!el) throw new Error("gesture container (h-screen root div) not rendered");
+    const el = document.querySelector(".h-dvh.overscroll-none");
+    if (!el) throw new Error("gesture container (h-dvh root div) not rendered");
     return el as HTMLElement;
   }
 
@@ -229,7 +229,7 @@ describe("AppShell root gesture surface (#1629)", () => {
   it("keeps the container's overscroll containment and pan-y touch-action", () => {
     const spy = setMobileMatchMedia();
     renderWithDataRouter("/chat", <div>Chat</div>);
-    const container = document.querySelector(".h-screen.overscroll-none") as HTMLElement;
+    const container = document.querySelector(".h-dvh.overscroll-none") as HTMLElement;
     expect(container).not.toBeNull();
     expect(container.style.touchAction).toBe("pan-y");
     spy.mockRestore();

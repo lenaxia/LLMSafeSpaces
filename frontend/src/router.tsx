@@ -78,21 +78,21 @@ const PlatformVersionsTab = lazy(() =>
 );
 
 const portalFallback = (
-  <div className="flex h-screen items-center justify-center">
+  <div className="flex h-dvh items-center justify-center">
     <Spinner size="lg" />
   </div>
 );
 
 function RequireAuth() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex h-screen items-center justify-center"><Spinner size="lg" /></div>;
+  if (loading) return <div className="flex h-dvh items-center justify-center"><Spinner size="lg" /></div>;
   if (!user) return <Navigate to="/login" replace />;
   return <Outlet />;
 }
 
 function GuestOnly() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex h-screen items-center justify-center"><Spinner size="lg" /></div>;
+  if (loading) return <div className="flex h-dvh items-center justify-center"><Spinner size="lg" /></div>;
   if (user) return <Navigate to="/chat" replace />;
   return <Outlet />;
 }
