@@ -20,7 +20,7 @@ export function PlatformAdminLayout() {
 
   if (!user || user.role !== "admin") {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4">
+      <div className="flex h-dvh flex-col items-center justify-center gap-4">
         <p className="text-sm text-red-500">Platform administrator access required.</p>
         <Link to="/chat" className="text-sm text-accent hover:underline">
           ← Back to Chat

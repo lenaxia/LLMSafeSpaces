@@ -31,7 +31,11 @@ export function AppShell() {
     <SessionActivityProvider>
       <div
         ref={sidebar.containerRef}
-        className="flex h-screen overflow-hidden overscroll-none"
+        // #1648: h-dvh (100dvh) tracks the VISUAL viewport — h-screen (100vh)
+        // is the LARGE viewport, which made this overflow-hidden shell taller
+        // than the visible screen with viewport-fit=cover + safe-area insets
+        // (#1626): header OR composer permanently off-screen on mobile.
+        className="flex h-dvh overflow-hidden overscroll-none"
         style={{ touchAction: "pan-y" }}
       >
         <a
