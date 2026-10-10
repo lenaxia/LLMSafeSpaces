@@ -347,4 +347,22 @@ describe("useEventStream — liveness watchdog (#1646)", () => {
     expect(connects).toBeGreaterThanOrEqual(2);
     expect(onReconnect).toHaveBeenCalledTimes(1);
   });
+
+  // Cadence FLOOR during a total outage (r1 non-blocking note): the
+  // watchdog plus the backoff chain must keep attempting reconnects —
+  // a floor, not a ceiling, because jitteredDelay makes exact attempt
+  // counts jitter-dependent; lower bounds cannot flake (#1532 lesson).
+  it("keeps retrying through a total outage (floor: >=2 reconnect attempts within 3 liveness periods)", async () => {
+    let connects = 0;
+    const mock = vi.fn().mockImplementation(() => {
+      connects++;
+      return Promise.resolve({ ok: false, status: 503 });
+    });
+    globalThis.fetch = mock;
+
+    renderHook(() => useEventStream("sb-outage", vi.fn()));
+
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(connects).toBeGreaterThanOrEqual(2);
+  });
 });
