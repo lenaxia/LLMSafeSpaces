@@ -187,6 +187,44 @@ the exact race the sentinel exists to prevent) + count fixes.
 Post-r2 runs: providers+hooks targeted 140/140; sseConnection 21/21;
 full frontend suite **2034/2034**; tsc + eslint clean.
 
+## Review round 3 (21:14Z on a21cc2ba) — REQUEST_CHANGES, one blocking finding (two independent reviewer probes)
+
+**The cross-workspace stale latch**: seedBusy's subscription runs a
+FULL pass over queryCache.getAll() and latches seeded.add(wsId) for
+EVERY sessions query with array data — not just the dispatching one.
+With the sidebar's ordinary multi-workspace state, the first
+workspace's post-reconnect success re-runs the pass while another
+workspace's refetch is still in flight (fetch dispatch preserves prior
+rows) or is inactive-cached (collapsed workspace, no refetch at all):
+those rows are the stale pre-outage state, so that workspace's gate
+latches, its stale busy re-adds, and its own fresh success is
+gate-suppressed — the sticky-busy freeze, per workspace, through the
+reseed this PR ships.
+
+Fix (reviewer's option b): wipeAtRef stamps the onReconnect wipe;
+seedBusy refuses to latch any query whose state.dataUpdatedAt predates
+it (strict < — a same-millisecond write is a fresh authoritative
+write; the existing :666 reconnect re-seed pin drives setQueryData
+synchronously after onReconnect and a <= boundary would break it,
+found by running the clobber-guard suite). Post-wipe data is fresh by
+construction; wipeAt=0 keeps the mount-time full pass seeding
+everything. Also landed the two r3 non-blocking notes: the action-type
+read now narrows the typed union (event.action.type after
+event.type === "updated") instead of casting, and the filter comment
+names the real dispatch union (failed/pause/continue/fetch/success/
+error/invalidate/setState; setQueryData dispatches success manual:true).
+
+Red-first (both pins written and verified red at a21cc2ba before the
+fix): (1) two-workspace in-flight latch — ws-2 mount-seeded busy, its
+post-reconnect refetch HELD via a deferred promise across ws-1's
+success, released with fresh idle rows, connects===2 enforced; (2)
+inactive-cached variant — ws-2 collapsed (query unmounted, cache kept)
+must not re-latch after the wipe. Both red (`expected 'yes' to be
+'no'`), both green after.
+
+Post-r3 runs: providers+hooks+sseConnection 356/356 targeted; full
+frontend suite **2036/2036**; tsc + eslint clean.
+
 ## Incidents in-flight (honest log)
 
 1. First vitest run deadlocked (240s timeout): I wrapped

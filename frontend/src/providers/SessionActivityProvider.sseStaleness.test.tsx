@@ -369,4 +369,143 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     expect(connects).toBe(2);
     expect(screen.getByTestId("busy").textContent).toBe("no");
   });
+
+  // r3 finding: seedBusy's cache subscription walks queryCache.getAll()
+  // and latches seeded.add(wsId) for EVERY sessions query with array
+  // data — not just the dispatching one. With the sidebar's ordinary
+  // multi-workspace state (one query per expanded workspace), the FIRST
+  // workspace's post-reconnect success runs the full pass while the
+  // second workspace's refetch is still in flight (the fetch dispatch
+  // preserves prior data) or is inactive-cached (collapsed workspace,
+  // no refetch at all): those are the stale pre-outage rows, so the
+  // second workspace's gate latches and its stale busy re-adds; its own
+  // fresh success is then gate-suppressed. Sticky per workspace.
+  function TwoWorkspaceProbe({ mountWs2 = true }: { mountWs2?: boolean }) {
+    useQuery({ queryKey: ["sessions", "ws-1"], queryFn: () => mockGetSessions("ws-1") });
+    useQuery({
+      queryKey: ["sessions", "ws-2"],
+      queryFn: () => mockGetSessions("ws-2"),
+      enabled: mountWs2,
+      refetchInterval: 60_000,
+    });
+    const busy1 = useIsSessionBusy("sess-ws1");
+    const busy2 = useIsSessionBusy("sess-ws2");
+    return (
+      <>
+        <span data-testid="busy-ws1">{busy1 ? "yes" : "no"}</span>
+        <span data-testid="busy-ws2">{busy2 ? "yes" : "no"}</span>
+      </>
+    );
+  }
+
+  it("does not latch ws-2's gate from stale rows while its refetch is in flight (#1646 r3)", async () => {
+    vi.useFakeTimers();
+
+    // ws-1: idle always. ws-2: busy at mount; its post-reconnect
+    // refetch is HELD in flight until the test releases it with fresh
+    // idle rows (the racing-GET shape across workspaces).
+    let holdWs2Refetch = false;
+    let releaseWs2: ((rows: SessionListItem[]) => void) | null = null;
+    mockGetSessions.mockImplementation((id: string) => {
+      if (id === "ws-1") {
+        return Promise.resolve([{ id: "sess-ws1", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+      }
+      if (holdWs2Refetch) {
+        return new Promise<SessionListItem[]>((resolve) => {
+          releaseWs2 = () => resolve([{ id: "sess-ws2", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+        });
+      }
+      return Promise.resolve([{ id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem]);
+    });
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <TwoWorkspaceProbe />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Mount: ws-2 busy (seeded), ws-1 idle.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy-ws1").textContent).toBe("no");
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("yes");
+
+    // ws-2's session finished server-side; hold its post-reconnect
+    // refetch in flight so ws-1's success lands first.
+    holdWs2Refetch = true;
+
+    await vi.advanceTimersByTimeAsync(75_000);
+    // ws-1's fresh success has run the (full-pass) seedBusy; ws-2's
+    // refetch is still pending. Now release it with fresh idle rows.
+    // (Cast on read: the resolver is assigned inside the queryFn
+    // closure, which TS control-flow analysis cannot track.)
+    const release = releaseWs2 as ((rows: SessionListItem[]) => void) | null;
+    expect(release).not.toBeNull();
+    if (release) {
+      release([{ id: "sess-ws2", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+    }
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(connects).toBe(2); // reconnected stream held healthy
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+  });
+
+  it("does not latch an inactive cached workspace's stale rows after reconnect (#1646 r3)", async () => {
+    vi.useFakeTimers();
+
+    // ws-1 mounted (idle). ws-2: collapsed workspace — cache
+    // pre-populated with busy rows, NO mounted query (its rows are the
+    // pre-outage state the full pass must not re-latch after a wipe).
+    mockGetSessions.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "ws-1"
+          ? [{ id: "sess-ws1", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]
+          : [{ id: "sess-ws2", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem],
+      ),
+    );
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    // ws-2's cache entry predates the provider mount — mount-seeded
+    // busy, then the workspace collapses (query inactive, cache kept).
+    qc.setQueryData(["sessions", "ws-2"], [
+      { id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem,
+    ]);
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <TwoWorkspaceProbe mountWs2={false} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("yes"); // mount-seeded from fresh cache
+
+    // Silent death → reconnect wipes busy. ws-1's success then runs
+    // the full pass; ws-2's INACTIVE cache still holds the pre-wipe
+    // busy rows — it must not re-latch them.
+    await vi.advanceTimersByTimeAsync(75_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(connects).toBe(2);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+  });
 });

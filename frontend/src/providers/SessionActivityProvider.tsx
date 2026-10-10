@@ -152,6 +152,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // lives for the mount lifetime.
   const seededRef = useRef(new Set<string>());
 
+  // #1646 r3: timestamp of the last onReconnect wipe (0 = never wiped).
+  // seedBusy must never latch a workspace's seed gate from rows that
+  // predate it — see the guard in seedBusy.
+  const wipeAtRef = useRef(0);
+
   // Sessions the user explicitly cleared (viewed). Reconcile suppresses
   // re-adding them from a stale REST refetch (markSessionSeen PUT racing the
   // GET) until REST confirms hasUnread:false, or new activity arrives
@@ -234,6 +239,23 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (seeded.has(wsId)) continue;
         const data = query.state.data;
         if (!Array.isArray(data)) continue;
+
+        // #1646 r3: never latch the gate from rows that predate the
+        // last reconnect wipe. seedBusy is a FULL pass — any workspace's
+        // success dispatch re-runs it against every cached sessions
+        // query, including workspaces whose refetch is still in flight
+        // (the fetch dispatch preserves prior rows) or inactive
+        // (collapsed workspace, no refetch at all). Pre-wipe rows are
+        // the stale pre-outage state: seeding from them re-adds stale
+        // busy and suppresses that workspace's own fresh success.
+        // Post-wipe data (dataUpdatedAt > wipeAt) is fresh by
+        // construction; wipeAt=0 (no wipe yet) keeps the mount-time
+        // full pass seeding everything. Strict `<` — a write landing
+        // in the SAME millisecond as the wipe (the existing reconnect
+        // re-seed pin drives setQueryData synchronously after
+        // onReconnect) is a fresh authoritative write, not stale
+        // pre-outage data.
+        if (query.state.dataUpdatedAt < wipeAtRef.current) continue;
 
         seeded.add(wsId);
 
@@ -350,21 +372,20 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (event.type === "updated" || event.type === "added") {
         const key = event.query.queryKey;
         if (Array.isArray(key) && key[0] === "sessions") {
-          // #1646 r2: query-core notifies the cache "updated" for EVERY
-          // dispatch, and most of them PRESERVE stale state.data: "failed"
-          // (attempt failed, retries left), "error" (exhausted — the
-          // reducer spreads prior state; production runs retry:1),
-          // "fetch" (fetch-START — carries nothing new, by definition
-          // pre-dates the in-flight result), "invalidate", "cancel".
-          // Post-reconnect, after onReconnect opened the seed gate,
-          // seeding from those stale pre-outage rows re-latches the
-          // gate and suppresses every later success (the add-only seed
-          // can never clear) — sticky busy until the next
-          // reconnect/phase-change/remount. Seed ONLY on dispatches
-          // that carry data: "success" (a fetch resolved — fresh rows)
-          // and "setState" (an explicit write — the SSE handlers'
-          // authoritative setQueryData, test/manual writes).
-          const actionType = (event as { action?: { type?: string } }).action?.type;
+          // #1646 r2/r3: query-core notifies the cache "updated" for
+          // EVERY dispatch, and the no-new-data ones PRESERVE stale
+          // state.data: "fetch" (fetch-START — by definition predates
+          // the in-flight result), "failed" (attempt failed, retries
+          // left), "error" (exhausted; production runs retry:1),
+          // "pause"/"continue", "invalidate". Seeding from stale rows
+          // re-latches a wiped-open seed gate and suppresses every
+          // later success (the add-only seed can never clear) — sticky
+          // busy until the next reconnect/phase-change/remount. Seed
+          // ONLY on dispatches that carry data: "success" (a fetch
+          // resolved — fresh rows; setQueryData dispatches this too,
+          // with manual:true) and "setState" (query.setState — explicit
+          // authoritative writes).
+          const actionType = event.type === "updated" ? event.action.type : undefined;
           if (event.type === "added" || actionType === "success" || actionType === "setState") {
             seedBusy();
           }
@@ -378,6 +399,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   useUserEventStream({
     onReconnect: () => {
+      // #1646 r3: stamp the wipe. Any sessions data predating this
+      // moment is pre-outage state that the full-pass seed must not
+      // re-latch (see the guard in seedBusy).
+      wipeAtRef.current = Date.now();
       seededRef.current.clear();
       setBusySessions(new Map());
       // A badge latched by live SSE survives a disconnect only as
