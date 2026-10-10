@@ -241,3 +241,110 @@ describe("useEventStream — read timeout", () => {
     expect(connectCount).toBe(2);
   });
 });
+
+// #1646: the workspace stream gets the same liveness watchdog the user
+// stream has (#1365). Both server endpoints heartbeat every 25s
+// (heartbeatLoop → ":\n\n" comment frames), so a stream that carries
+// bytes but no heartbeats and no events past 60s (2× heartbeat + margin)
+// is semantically dead even though the read timeout stays fed — force a
+// reconnect instead of trusting it. Against the pre-fix code these are
+// RED: no watchdog exists here, so a proxy-fed but broker-dead
+// connection never reconnects.
+describe("useEventStream — liveness watchdog (#1646)", () => {
+  let fetchRestore: typeof globalThis.fetch;
+  const encoder = new TextEncoder();
+
+  // A reader that resolves one chunk every intervalMs — simulates a
+  // proxy/keepalive cadence that keeps the read timeout fed without ever
+  // carrying a data event or heartbeat comment.
+  function periodicReader(intervalMs: number, chunk: string) {
+    return {
+      read: () =>
+        new Promise<{ done: boolean; value: Uint8Array }>((resolve) => {
+          setTimeout(() => resolve({ done: false, value: encoder.encode(chunk) }), intervalMs);
+        }),
+      cancel: () => Promise.resolve(),
+    };
+  }
+
+  beforeEach(() => {
+    fetchRestore = globalThis.fetch;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = fetchRestore;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("reconnects when bytes flow but no events or heartbeats arrive past the silence window", async () => {
+    let connects = 0;
+    const mock = vi.fn().mockImplementation(() => {
+      connects++;
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => periodicReader(20_000, "x\n\n") },
+        status: 200,
+      });
+    });
+    globalThis.fetch = mock;
+
+    renderHook(() => useEventStream("sb-liveness", vi.fn()));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connects).toBe(1);
+
+    // 70s of garbage bytes: the read timeout never fires (bytes flow
+    // every 20s < 35s), but the watchdog sees 60s+ of event/heartbeat
+    // silence and forces a reconnect.
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(connects).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not reconnect while heartbeat comment frames flow", async () => {
+    let connects = 0;
+    const mock = vi.fn().mockImplementation(() => {
+      connects++;
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => periodicReader(25_000, ":\n\n") },
+        status: 200,
+      });
+    });
+    globalThis.fetch = mock;
+
+    renderHook(() => useEventStream("sb-heartbeat", vi.fn()));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connects).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(connects).toBe(1); // heartbeats are liveness — a healthy idle stream must not flap
+  });
+
+  it("fires onReconnect on a forced reconnect, never on the first connect", async () => {
+    const onReconnect = vi.fn();
+    let connects = 0;
+    const mock = vi.fn().mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? periodicReader(20_000, "x\n\n") : periodicReader(25_000, ":\n\n");
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => reader },
+        status: 200,
+      });
+    });
+    globalThis.fetch = mock;
+
+    renderHook(() => useEventStream("sb-reconn", vi.fn(), { onReconnect }));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(connects).toBe(1);
+    expect(onReconnect).not.toHaveBeenCalled(); // first connect is not a reconnect
+
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(connects).toBeGreaterThanOrEqual(2);
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+});
