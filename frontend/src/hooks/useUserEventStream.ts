@@ -89,6 +89,18 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
         onKeepalive: touchAlive,
         onConnect: () => {
           touchAlive();
+          // #1646: sessions reseed on every (re)connect — first included.
+          // The provider's busy/hung state is event-tracked by design;
+          // onReconnect wipes it so events missed during a dead window
+          // cannot stick — but the re-seed only runs when a sessions
+          // query UPDATES. Without this invalidation a silent stream
+          // death (API pod restart: watchdog reconnects, the restarted
+          // broker has no replay) leaves busy/session-list stale until
+          // a remount — the #1646 freeze. Invalidation refetches ACTIVE
+          // (mounted) sessions queries; inactive ones go stale and
+          // converge on next mount (seededRef was cleared at reconnect,
+          // so seedBusy re-runs when their cache updates).
+          queryClient.invalidateQueries({ queryKey: ["sessions"] });
           if (lastEventIDRef.current !== null) {
             wsLog("user_stream.reconnected", "");
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });

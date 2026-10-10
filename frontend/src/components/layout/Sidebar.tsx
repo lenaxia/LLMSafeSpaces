@@ -582,6 +582,17 @@ function WorkspaceSessionList({
       return result;
     },
     enabled: !!workspaceId,
+    // #1646: reconciliation floor for the session LIST (and its unread
+    // reconcile, which runs on every cache update). SSE events converge
+    // it live, but a stream that died silently leaves the list frozen
+    // at last-known state; a 60s interval bounds the staleness with
+    // zero events and zero focus. Explicit refetchOnWindowFocus (the
+    // default) documents the same intent for tab switches. Busy state
+    // is NOT re-derived here by design — the provider's seedBusy stays
+    // gated (SSE-tracked busy must survive a stale REST refetch); busy
+    // convergence rides the reconnect reseed + liveness watchdog.
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 
   // S36.5: Subscribe to workspace status cache (populated by ChatPage poller)
