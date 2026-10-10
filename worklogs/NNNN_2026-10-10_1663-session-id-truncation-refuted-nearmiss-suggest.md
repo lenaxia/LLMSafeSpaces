@@ -71,18 +71,21 @@ the caller's corrupted id.
 
 Wired into every id-taking tool's not-found branch: send_message (target AND origin),
 session_read, session_metadata (explicit scope; ids already in hand), abort_session,
-session_archive, delete_session. mcpSessionArchive gains the `password` param
-(dispatch already had it; mcpDeleteSession's pattern). Error PREFIXES unchanged
-(Contains-pins stay green).
+session_archive, delete_session, rename_session, and compact's synchronous idle path
+(r1 review finding 1; the busy path is detached/log-only — no error surface).
+mcpSessionArchive gains the `password` param (dispatch already had it;
+mcpDeleteSession's pattern). Error PREFIXES unchanged (Contains-pins stay green).
 
 ## Pins
 
-- **Red-first** (agentd, `session_suggest_test.go`): compile-red on the undefined
-  helpers captured pre-implementation; post-fix 14/14 green — both observed live
-  single-char drop variants of the incident id, boundary lengths 29/30/31 both
-  directions (drop/insert/substitute), distance-2 in / distance-3 out, exact-id and
-  empty-inventory silence, ambiguity (no single guess), determinism, list-failure
-  silence, and one tool-level pin per wired surface (send/read/metadata/abort/archive).
+- **Red-first** (agentd, `session_suggest_test.go`, 18 test functions — count
+  corrected per r1 finding 3): compile-red on the undefined helpers captured
+  pre-implementation; both observed live single-char drop variants of the incident
+  id, boundary lengths 29/30/31 both directions (drop/insert/substitute),
+  distance-2 in / distance-3 out, exact-id and empty-inventory silence, ambiguity
+  (no single guess), determinism, list-failure silence, the 5xx no-suggestion
+  inverse, and one tool-level pin per wired surface
+  (send ×2 / read / metadata / abort / archive / delete / rename / compact-idle).
 - **Standing guard** (`pkg/agent/opencode/session_id_fidelity_1663_test.go`): loop 45
   creations through the real SessionCreate path against a store-faithful fake minting
   ids at lengths 29/30/31 — response-vs-store byte equality per round, list + by-ID

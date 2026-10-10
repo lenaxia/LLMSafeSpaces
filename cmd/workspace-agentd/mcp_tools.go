@@ -73,7 +73,14 @@ func mcpRenameSession(ctx context.Context, password, sessionID, title string) (s
 	if len(title) > titleMaxLength {
 		return "", fmt.Errorf("title exceeds maximum length (%d)", titleMaxLength)
 	}
-	if err := seamClientWithPassword(password).SessionRename(ctx, sessionID, title); err != nil {
+	client := seamClientWithPassword(password)
+	if err := client.SessionRename(ctx, sessionID, title); err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663 near-miss clause, same as the other id-taking
+			// tools: the rename is refused either way — suggest-only.
+			return "", fmt.Errorf("failed to rename session: %w%s",
+				err, sessionSuggestClause(ctx, client, sessionID))
+		}
 		return "", fmt.Errorf("failed to rename session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{
@@ -975,6 +982,13 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 	}
 
 	if err := client.SessionSummarize(ctx, sessionID, providerID, modelID); err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663 near-miss clause on the synchronous idle path (the
+			// busy path is detached/log-only — no error surface). The
+			// compaction is refused either way — suggest-only.
+			return "", fmt.Errorf("compaction failed: %w%s",
+				err, sessionSuggestClause(ctx, client, sessionID))
+		}
 		return "", fmt.Errorf("compaction failed: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{

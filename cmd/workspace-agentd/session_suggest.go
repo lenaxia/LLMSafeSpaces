@@ -32,9 +32,10 @@ import (
 
 // suggestMaxEdits bounds how close a live id must be to the requested
 // (unresolvable) id to be offered: distance 1 covers the observed
-// single-character drops/inserts/transpositions-class slips, distance 2
-// covers a double drop or a drop plus a substitution. Three or more
-// edits between 30-char mixed-case ids is noise, not a typo.
+// single-character drops/inserts/substitutions; distance 2 also covers
+// an adjacent transposition or a double drop (plain Levenshtein — a
+// transposition scores 2, not 1). Three or more edits between 30-char
+// mixed-case ids is noise, not a typo.
 const suggestMaxEdits = 2
 
 // suggestSessionID returns a did-you-mean clause for a session id that
@@ -42,7 +43,9 @@ const suggestMaxEdits = 2
 // inventory; "" when there is nothing useful to say (no near candidate,
 // the id actually resolves, or the inventory is empty). Deterministic:
 // a unique closest candidate is named; a tie names all tied candidates
-// and never picks one.
+// and never picks one. The inventory is list-based (#1452 caveat): a
+// near-match hidden from GET /session cannot be suggested — best-effort
+// by design, never a substitute for the exact id.
 func suggestSessionID(requested string, ids []string) string {
 	if requested == "" {
 		return ""

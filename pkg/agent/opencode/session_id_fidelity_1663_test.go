@@ -6,7 +6,6 @@ package opencode
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -147,5 +146,4 @@ func TestSessionCreate_IDFidelity_ListAndByID_SameBytes(t *testing.T) {
 	exists, err := c.SessionExists(context.Background(), dropped)
 	require.NoError(t, err)
 	assert.False(t, exists, "a single-char-dropped id must not resolve to its parent")
-	_ = fmt.Sprint()
 }

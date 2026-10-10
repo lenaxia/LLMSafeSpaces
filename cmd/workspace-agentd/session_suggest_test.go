@@ -258,6 +258,31 @@ func TestDeleteSession_MistypedID_SuggestsLiveID(t *testing.T) {
 	assert.Contains(t, err.Error(), "did you mean")
 }
 
+func TestRenameSession_MistypedID_SuggestsLiveID(t *testing.T) {
+	// Seventh wired surface (r1 finding 1): rename is the same incident
+	// class — an id-taking tool whose 404 previously read as a bare
+	// failure. Refused either way; the clause names the live id.
+	withIncidentAgent(t)
+	_, err := mcpRenameSession(context.Background(), mcpTestPassword, incidentDropFinal, "New title")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to rename session")
+	assert.Contains(t, err.Error(), incidentID)
+	assert.Contains(t, err.Error(), "did you mean")
+}
+
+func TestCompactIdle_MistypedID_SuggestsLiveID(t *testing.T) {
+	// Eighth wired surface (r1 finding 1): the synchronous idle
+	// compaction path. Explicit model skips the list-based model
+	// resolution so the mistyped id reaches the summarize 404; the
+	// session is idle in the fake (statuses empty).
+	withIncidentAgent(t)
+	_, err := mcpCompact(context.Background(), mcpTestPassword, incidentDropMid, "p/text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "compaction failed")
+	assert.Contains(t, err.Error(), incidentID)
+	assert.Contains(t, err.Error(), "did you mean")
+}
+
 // TestSessionSuggestClause_ListFailureStaysSilent: the suggestion fetch
 // is best-effort — when the list endpoint itself fails, the failure path
 // must degrade to the legacy bare error, never add noise or block.
