@@ -107,25 +107,27 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
         onKeepalive: touchAlive,
         onConnect: () => {
           touchAlive();
-          // #1646: sessions reseed on every (re)connect — first included.
-          // The provider's busy/hung state is event-tracked by design;
-          // onReconnect wipes it so events missed during a dead window
-          // cannot stick — but the re-seed only runs when a sessions
-          // query UPDATES. Without this invalidation a silent stream
-          // death (API pod restart: watchdog reconnects, the restarted
-          // broker has no replay) leaves busy/session-list stale until
-          // a remount — the #1646 freeze. Invalidation refetches ACTIVE
-          // (mounted) sessions queries; inactive ones go stale and
-          // converge on next mount (the reconnect-cleared seed gate
-          // lets seedBusy re-run when their cache updates).
-          queryClient.invalidateQueries({ queryKey: ["sessions"] });
           if (hasConnectedOnce) {
             wsLog("user_stream.reconnected", "");
+            // r5 (#1646): the wipe (onReconnect) MUST stamp before the
+            // sessions invalidation fires. query-core dispatches "fetch"
+            // synchronously inside invalidateQueries, so invalidating
+            // first stamps fetch starts microseconds before wipeAt — and
+            // on a real clock, a millisecond tick between the two
+            // statements makes every legitimate post-reconnect re-seed's
+            // birth predate the wipe, which the provider's birth guard
+            // then refuses (convergence would degrade to the 60s floor).
+            // Wipe first: re-seed births postdate the wipe by construction.
+            onReconnectRef.current?.();
+            queryClient.invalidateQueries({ queryKey: ["sessions"] });
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
-            onReconnectRef.current?.();
           } else {
             wsLog("user_stream.connected", "");
+            // First connect: no wipe exists (wipeAt stays 0), so the
+            // ordering constraint does not apply — refreshing any
+            // pre-mounted sessions list is all this does.
+            queryClient.invalidateQueries({ queryKey: ["sessions"] });
           }
           hasConnectedOnce = true;
         },

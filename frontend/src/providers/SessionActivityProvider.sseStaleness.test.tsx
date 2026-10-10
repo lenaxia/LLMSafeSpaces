@@ -689,4 +689,151 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     expect(ws2Calls).toBe(2);
     expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
   });
+
+  // r5 finding: onConnect invalidated ["sessions"] BEFORE onReconnect
+  // stamped the wipe. query-core dispatches "fetch" synchronously
+  // inside invalidateQueries, so the fetch starts (dataBirth) were
+  // stamped microseconds BEFORE wipeAt — and on a real clock, whenever
+  // the millisecond ticks between the two statements, every legitimate
+  // post-reconnect re-seed's birth predates the wipe and the birth
+  // guard refuses it (convergence degrades to the 60s floor — the
+  // issue's own polarity). Fake timers freeze Date.now() at one
+  // millisecond, so the shipped pins were structurally blind to the
+  // race; this pin advances the clock ≥1ms after the sessions
+  // invalidation (the reviewer's probe shape) to expose it.
+  it("converges busy when the clock ticks between the sessions invalidation and the wipe (#1646 r5)", async () => {
+    vi.useFakeTimers();
+
+    let restBusy = false;
+    mockGetSessions.mockImplementation(() =>
+      Promise.resolve([
+        {
+          id: "sess-1",
+          title: "t",
+          messageCount: 0,
+          status: restBusy ? "busy" : "idle",
+          hasUnread: false,
+        } as SessionListItem,
+      ]),
+    );
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    // Advance the fake clock 5ms after EVERY sessions invalidation —
+    // the real-clock ms tick between the invalidation and the wipe,
+    // made deterministic. (Every one, not just the first: the first
+    // connect has no wipe, and the reconnect-path tick is the one that
+    // must expose the ordering.)
+    const origInvalidate = qc.invalidateQueries.bind(qc);
+    qc.invalidateQueries = ((opts: Parameters<typeof origInvalidate>[0]) => {
+      const r = origInvalidate(opts);
+      if (Array.isArray(opts?.queryKey) && opts.queryKey[0] === "sessions") {
+        vi.setSystemTime(Date.now() + 5);
+      }
+      return r;
+    }) as typeof qc.invalidateQueries;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+
+    // The session goes busy while the stream silently dies.
+    restBusy = true;
+
+    await vi.advanceTimersByTimeAsync(75_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(connects).toBe(2);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  // r5 non-blocking (R-B): a fetch whose RETRY succeeds post-wipe (the
+  // retryer is one fetch — its birth is the pre-wipe start) is refused
+  // by the birth guard — a BOUNDED deferral, never a sticky refusal:
+  // the gate stays open and the floor's next fetch (born post-wipe)
+  // seeds freely.
+  it("a pre-wipe-started fetch whose retry succeeds post-wipe defers, not sticks — the floor seeds (#1646 r5)", async () => {
+    vi.useFakeTimers();
+
+    let ws2Calls = 0;
+    let releaseRetry: ((rows: SessionListItem[]) => void) | null = null;
+    mockGetSessions.mockImplementation((id: string) => {
+      if (id === "ws-1") {
+        return Promise.resolve([{ id: "sess-ws1", title: "t", messageCount: 0, status: "idle", hasUnread: false } as SessionListItem]);
+      }
+      ws2Calls++;
+      if (ws2Calls === 1) {
+        // Attempt 1 rejects (dying pod) — pre-wipe, inside the same
+        // in-flight fetch as its retry.
+        return Promise.reject(new Error("dying pod"));
+      }
+      if (ws2Calls === 2) {
+        // The retry (same fetch, born pre-wipe) is held and released
+        // post-wipe with genuinely-busy rows: the birth guard must
+        // REFUSE this seed (bounded deferral), leaving the gate open.
+        return new Promise<SessionListItem[]>((resolve) => {
+          releaseRetry = (rows) => resolve(rows);
+        });
+      }
+      return Promise.resolve([{ id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem]);
+    });
+
+    fetchMock.mockImplementation(() => {
+      connects++;
+      const reader = connects === 1 ? scriptedReader([":\n\n"]) : healthyHeartbeatReader();
+      return Promise.resolve({ ok: true, body: { getReader: () => reader } });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <Harness showWs2 />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Mount phase: ws-2's attempt 1 fails, its retry hangs (held).
+    // The mount-time seed gate: birth rules do not apply (wipeAt=0) —
+    // but there is no data yet, so nothing seeds.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ws2Calls).toBe(2);
+
+    // Silent death → reconnect (wipe stamps) → invalidation reuses the
+    // pending retry (same fetch, pre-wipe birth) → release it post-wipe
+    // with busy rows: refused (bounded deferral), gate stays open.
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(connects).toBe(2);
+    const release = releaseRetry as ((rows: SessionListItem[]) => void) | null;
+    expect(release).not.toBeNull();
+    if (release) {
+      release([{ id: "sess-ws2", title: "t", messageCount: 0, status: "busy", hasUnread: false } as SessionListItem]);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Bounded deferral: the refused seed must NOT latch the gate —
+    // busy is not shown yet (deferral), and it must not be sticky.
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("no");
+
+    // The floor's next fetch (born post-wipe) seeds the genuinely-busy
+    // rows: convergence within one floor period.
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect(ws2Calls).toBeGreaterThanOrEqual(3);
+    expect(screen.getByTestId("busy-ws2").textContent).toBe("yes");
+  });
 });

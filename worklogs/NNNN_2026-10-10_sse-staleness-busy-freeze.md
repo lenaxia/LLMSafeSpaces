@@ -271,6 +271,43 @@ useEventStream.test.ts's cancel-less mock readers; two clean reruns);
 full frontend suite **2038/2038** (two consecutive clean runs); tsc +
 eslint clean.
 
+## Review round 5 (23:11Z on d9e15ae4) — REQUEST_CHANGES, one blocking finding (reviewer + skeptical sub-agent, three-level verification)
+
+**The stamp-ordering race**: onConnect invalidated ["sessions"] BEFORE
+onReconnect stamped the wipe. query-core dispatches "fetch"
+synchronously inside invalidateQueries, so fetch starts (dataBirth)
+were stamped microseconds BEFORE wipeAt — and on a real clock, when the
+millisecond ticks between the two statements, every legitimate
+post-reconnect re-seed's birth predates the wipe and the birth guard
+refuses it: layer-1 immediate convergence degrades to the 60s floor
+(the issue's own polarity), recurring every outage cycle. Bounded, not
+sticky (the refusal precedes seeded.add — no latch). The shipped pins
+were structurally blind: fake timers freeze Date.now() at one
+millisecond, so pendingFetchStart === wipeAt and the strict-< same-ms
+rule masked the race.
+
+Fix: reorder — onConnect now wipes (onReconnect) BEFORE invalidating
+sessions on the reconnect path (first connect keeps its invalidation;
+no wipe exists there). Also the two r5 minor items: the manual-success
+cast removed (SuccessAction.manual is typed after narrowing), and the
+birth-guard comment states the ordering guarantee.
+
+Red-first PROPERLY this round (pin written first, verified RED at
+d9e15ae4: `expected 'no' to be 'yes'`): the ordering pin wraps
+qc.invalidateQueries to advance the fake clock 5ms after EVERY sessions
+invalidation — the deterministic form of the real-clock tick. First
+draft of the pin was itself buggy (a once-only flag consumed the tick
+on the wipe-free first connect — the pin passed at head, caught on the
+red check and fixed to tick on every sessions invalidation; kept as a
+lesson: a red-check that accidentally greens is a pin that verifies
+nothing). Also added the r5 non-blocking R-B deferral pin: a
+pre-wipe-started fetch whose retry succeeds post-wipe is refused
+(bounded deferral — no latch) and the floor's next fetch seeds within
+one period.
+
+Post-r5 runs: providers+hooks 339/339; full suite **2040/2040**; tsc +
+eslint clean.
+
 ## Incidents in-flight (honest log)
 
 1. First vitest run deadlocked (240s timeout): I wrapped

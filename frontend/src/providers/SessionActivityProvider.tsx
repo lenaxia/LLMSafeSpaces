@@ -276,6 +276,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // STARTED (fetch dispatch) or when an authoritative write
         // landed (setState / manual success); seeding refuses data
         // BORN before the wipe. Strict `<`, same-ms rule as above.
+        // Ordering guarantee (r5): the reconnect path wipes BEFORE
+        // invalidating sessions (useUserEventStream onConnect), so
+        // every invalidation-born fetch start — and therefore every
+        // legitimate post-reconnect re-seed's birth — postdates the
+        // wipe by construction, even when the clock ticks between the
+        // statements.
         const birth = dataBirthRef.current.get(wsId) ?? 0;
         if (birth < wipeAtRef.current) continue;
 
@@ -420,7 +426,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
             if (action.type === "fetch") {
               pendingFetchStartRef.current.set(wsId, Date.now());
             } else if (action.type === "success") {
-              const manual = (action as { manual?: boolean }).manual === true;
+              const manual = action.manual === true;
               const startedAt = manual ? Date.now() : (pendingFetchStartRef.current.get(wsId) ?? Date.now());
               dataBirthRef.current.set(wsId, startedAt);
             } else if (action.type === "setState") {
