@@ -241,6 +241,23 @@ func TestSessionArchive_MistypedID_SuggestsLiveID(t *testing.T) {
 	assert.Contains(t, err.Error(), "did you mean")
 }
 
+func TestDeleteSession_MistypedID_SuggestsLiveID(t *testing.T) {
+	// Sixth wired surface: delete refuses on the platform 404 (never
+	// acts on a guess) and names the live id. No injected session and
+	// no busy fallback → the self-delete guard is inert by design.
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"session not found"}`))
+	}))
+	defer platform.Close()
+	setupPodSessionEnv(t, platform)
+	withIncidentAgent(t)
+	_, err := mcpDeleteSession(context.Background(), mcpTestPassword, incidentDropMid, "")
+	require.Error(t, err, "a mistyped id must NEVER delete on a guess")
+	assert.Contains(t, err.Error(), incidentID)
+	assert.Contains(t, err.Error(), "did you mean")
+}
+
 // TestSessionSuggestClause_ListFailureStaysSilent: the suggestion fetch
 // is best-effort — when the list endpoint itself fails, the failure path
 // must degrade to the legacy bare error, never add noise or block.
@@ -261,4 +278,17 @@ func TestSessionSuggestClause_ListFailureStaysSilent(t *testing.T) {
 	client := opencode.NewLoopbackClient(srv.URL, mcpTestPassword)
 	assert.Empty(t, sessionSuggestClause(context.Background(), client, incidentDropMid))
 	assert.Equal(t, 1, listCalls, "exactly one bounded list fetch per suggestion")
+}
+
+// TestSessionRead_ServerError_NoSuggestion: only NOT-FOUND gets the
+// clause. A 5xx (server trouble, not a typo) must keep the bare error —
+// a suggestion there would train callers to ignore real failures (the
+// isSessionNotFoundErr guard against an always-match mutation).
+func TestSessionRead_ServerError_NoSuggestion(t *testing.T) {
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	_, err := mcpSessionRead(context.Background(), mcpTestPassword, incidentDropMid, 5)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "did you mean", "a 502 is not a typo — no suggestion")
 }
