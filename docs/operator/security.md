@@ -237,6 +237,12 @@ Set these when running multiple instances that should not accept each other's to
 
 The JWT signing secret has no in-process rotation primitive. Rotation requires changing the secret and restarting the API pods, which invalidates all active sessions. See the [Runbook](runbook.md#rotating-the-jwt-secret).
 
+## Registration gating
+
+`POST /auth/register` and passkey signup (`/auth/passkey/register/begin|finish`) are gated on the `auth.registrationEnabled` instance setting (admin-toggleable, default `true`); `GET /auth/config` advertises the same value so the UI and the API can never disagree. Scope is local account creation only — passkey login/recovery, passkey enrollment for signed-in users, SSO auto-provision, and org invitations are not affected by the toggle.
+
+Fail-open note: if the settings store is unreadable past its cache TTL, the gate (like the advertisement) falls back to **allowing** registration, so a settings outage cannot lock out the fresh-install first-user bootstrap. Instances that must stay closed even during a settings outage should keep Turnstile enabled as the second layer.
+
 ---
 
 ## CORS and the terminal Origin check

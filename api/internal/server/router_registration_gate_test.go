@@ -4,9 +4,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -168,6 +170,83 @@ func TestPasskeySignup_EnabledByDefault_GatePassesThrough(t *testing.T) {
 	// Zero-value handler: body bind fails → 400 "invalid request" — i.e. the
 	// gate passed control to the handler. A gate bug would produce 403.
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// newRegistrationGateFixtureTurnstile is newRegistrationGateFixture plus
+// Turnstile wired at a mock siteverify server, for the gate-ordering pin.
+func newRegistrationGateFixtureTurnstile(t *testing.T, vals map[string]any, verifyServerURL string) (*gin.Engine, *authMockServices) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	data := make(map[string]json.RawMessage)
+	for k, v := range vals {
+		raw, err := json.Marshal(v)
+		require.NoError(t, err)
+		data[k] = raw
+	}
+	instanceSettings := settings.NewInstanceService(&settingsStore{data: data}, nil)
+	instanceSettings.Start()
+
+	apiLog, _ := apilogger.New(false, "error", "json")
+	auth := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
+	auth.On("GetUserID", mock.Anything).Return("").Maybe()
+
+	svc := &authMockServices{auth: auth, metrics: met, database: &imocks.MockDatabaseService{}, cache: &imocks.MockCacheService{}}
+	router := NewRouter(svc, apiLog, nil, RouterConfig{
+		Debug:            false,
+		InstanceSettings: instanceSettings,
+		PasskeyHandler:   &handlers.PasskeyHandler{},
+		Turnstile: TurnstileRouterConfig{
+			Enabled:   true,
+			SecretKey: "test-secret",
+			VerifyURL: verifyServerURL,
+		},
+	})
+	return router, svc
+}
+
+// TestRegister_TurnstileEnabled_RegistrationDisabled_403BeforeTurnstile pins
+// the only changed wiring branch not covered elsewhere: turnstile.Enabled=true
+// × registration disabled. The gate must run BEFORE the Turnstile middleware —
+// a closed instance must neither burn a Cloudflare verification nor surface a
+// Turnstile error; it must get the plain 403. Review r1 on #1657: a regression
+// dropping the gate from this chain (or reordering it after Turnstile) failed
+// no test before this pin. The request carries a VALID turnstile token so the
+// only way to see a non-403 is the gate not running first.
+func TestRegister_TurnstileEnabled_RegistrationDisabled_403BeforeTurnstile(t *testing.T) {
+	var verifyCalls int32
+	verify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&verifyCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"error-codes":[],"hostname":"test"}`))
+	}))
+	defer verify.Close()
+
+	router, svc := newRegistrationGateFixtureTurnstile(t, map[string]any{
+		settings.KeyAuthRegistrationEnabled.Name(): false,
+	}, verify.URL)
+
+	svc.auth.On("Register", mock.Anything, mock.Anything).
+		Return(&types.AuthResponse{Token: "should-not-be-issued"}, nil).
+		Maybe()
+
+	body := `{"username":"u","email":"e@example.com","password":"securepassword123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("cf-turnstile-response", "valid-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code, "gate must 403 before Turnstile runs")
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errMsg, _ := resp["error"].(string)
+	assert.Equal(t, "registration is disabled", errMsg)
+	assert.EqualValues(t, 0, atomic.LoadInt32(&verifyCalls), "no Cloudflare siteverify call may be burned on a closed instance")
+	svc.auth.AssertNotCalled(t, "Register", mock.Anything, mock.Anything)
 }
 
 // TestPasskeyLoginRecover_NotGatedByRegistrationToggle pins scope: the gate
