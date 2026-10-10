@@ -107,6 +107,14 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
         return;
       }
 
+      // #1646 r2: a fetch that resolves AFTER destroy()/reconnect()
+      // (generation bumped) must not fire onConnect — a late connect
+      // callback would run consumer reset machinery (wipes, invalida-
+      // tions) against a connection the consumer already tore down.
+      if (cancelled || gen !== generation) {
+        return;
+      }
+
       // Successful connection — reset backoff
       retryDelay = minReconnectMs;
       wsLog(`${logPrefix}.connected`, logId);

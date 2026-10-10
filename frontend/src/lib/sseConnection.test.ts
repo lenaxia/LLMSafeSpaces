@@ -533,3 +533,66 @@ describe("createSSEConnection — keepalive frames (#1365)", () => {
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createSSEConnection — late connect guard (#1646 r2)", () => {
+  let fetchRestore: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    fetchRestore = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = fetchRestore;
+    vi.restoreAllMocks();
+  });
+
+  it("does not fire onConnect when the fetch resolves after destroy()", async () => {
+    // A fetch that resolves AFTER destroy(): the connection object is
+    // gone but the pending await still completes. A late onConnect
+    // would run consumer reset machinery (busy wipes, invalidations)
+    // against a torn-down connection — it must not fire.
+    let resolveFetch!: (v: unknown) => void;
+    const hangingFetch = vi.fn().mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    globalThis.fetch = hangingFetch;
+
+    const onConnect = vi.fn();
+    const conn = createSSEConnection({ url: "/api/v1/events", onEvent: vi.fn(), onConnect });
+
+    conn.destroy();
+    resolveFetch({ ok: true, status: 200, body: { getReader: () => makeMockReader({ hangForever: true }) } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+
+  it("does not fire onConnect when the fetch resolves after an explicit reconnect() superseded it", async () => {
+    // reconnect() bumps the generation and starts a NEW connect; the
+    // OLD fetch resolving late must not fire onConnect for the stale
+    // generation (the new connection's onConnect is the only valid one).
+    let resolveFirst!: (v: unknown) => void;
+    let call = 0;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      call++;
+      if (call === 1) {
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      }
+      return Promise.resolve({ ok: true, status: 200, body: { getReader: () => makeMockReader({ hangForever: true }) } });
+    });
+    globalThis.fetch = fetchMock;
+
+    const onConnect = vi.fn();
+    const conn = createSSEConnection({ url: "/api/v1/events", onEvent: vi.fn(), onConnect });
+
+    conn.reconnect();
+    resolveFirst({ ok: true, status: 200, body: { getReader: () => makeMockReader({ hangForever: true }) } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Exactly one onConnect — for the NEW generation, never the stale one.
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    conn.destroy();
+  });
+});

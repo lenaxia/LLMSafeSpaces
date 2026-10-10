@@ -54,6 +54,24 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
       lastAlive.at = Date.now();
     };
 
+    // r1 (#1646): ANY post-first connect is a reconnect. lastEventIDRef
+    // is NOT a reconnect discriminator — the server writes snapshot/
+    // anti-entropy/resync events with EventID 0 and NO id: line
+    // (stream_user_events.go: "Snapshot event — no id: line"), so a
+    // quiet stream can run (and reconnect) forever without ever setting
+    // it. Gating the reconnect reset on it left a sticky-busy residual:
+    // the provider's wipe + seed-gate clear were skipped, so a
+    // mount-seeded busy could never clear after an event-less gap.
+    // NOTE (r2 review): lastEventIDRef feeds buildHeaders(), which is
+    // captured ONCE at start() and reused verbatim by sseConnection on
+    // every internal reconnect — so the Last-Event-ID replay header is
+    // effectively mount-frozen and does not fire post-mount. Known
+    // follow-up (header-factory, see the #1646 thread); every #1646
+    // convergence path is replay-independent by design (REST
+    // invalidation for busy/list, US-55.3 snapshot anti-entropy for
+    // asks, D6 getAlerts seed for hung, phase invalidations).
+    let hasConnectedOnce = false;
+
     function start() {
       conn = createSSEConnection({
         url: `${apiBaseUrl}/events`,
@@ -89,7 +107,19 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
         onKeepalive: touchAlive,
         onConnect: () => {
           touchAlive();
-          if (lastEventIDRef.current !== null) {
+          // #1646: sessions reseed on every (re)connect — first included.
+          // The provider's busy/hung state is event-tracked by design;
+          // onReconnect wipes it so events missed during a dead window
+          // cannot stick — but the re-seed only runs when a sessions
+          // query UPDATES. Without this invalidation a silent stream
+          // death (API pod restart: watchdog reconnects, the restarted
+          // broker has no replay) leaves busy/session-list stale until
+          // a remount — the #1646 freeze. Invalidation refetches ACTIVE
+          // (mounted) sessions queries; inactive ones go stale and
+          // converge on next mount (the reconnect-cleared seed gate
+          // lets seedBusy re-run when their cache updates).
+          queryClient.invalidateQueries({ queryKey: ["sessions"] });
+          if (hasConnectedOnce) {
             wsLog("user_stream.reconnected", "");
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
@@ -97,6 +127,7 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
           } else {
             wsLog("user_stream.connected", "");
           }
+          hasConnectedOnce = true;
         },
         logPrefix: "user_stream",
         readTimeoutMs: READ_TIMEOUT_MS,

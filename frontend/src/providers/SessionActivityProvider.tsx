@@ -350,7 +350,24 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (event.type === "updated" || event.type === "added") {
         const key = event.query.queryKey;
         if (Array.isArray(key) && key[0] === "sessions") {
-          seedBusy();
+          // #1646 r2: query-core notifies the cache "updated" for EVERY
+          // dispatch, and most of them PRESERVE stale state.data: "failed"
+          // (attempt failed, retries left), "error" (exhausted — the
+          // reducer spreads prior state; production runs retry:1),
+          // "fetch" (fetch-START — carries nothing new, by definition
+          // pre-dates the in-flight result), "invalidate", "cancel".
+          // Post-reconnect, after onReconnect opened the seed gate,
+          // seeding from those stale pre-outage rows re-latches the
+          // gate and suppresses every later success (the add-only seed
+          // can never clear) — sticky busy until the next
+          // reconnect/phase-change/remount. Seed ONLY on dispatches
+          // that carry data: "success" (a fetch resolved — fresh rows)
+          // and "setState" (an explicit write — the SSE handlers'
+          // authoritative setQueryData, test/manual writes).
+          const actionType = (event as { action?: { type?: string } }).action?.type;
+          if (event.type === "added" || actionType === "success" || actionType === "setState") {
+            seedBusy();
+          }
           reconcileUnread();
         }
       }
