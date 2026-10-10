@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -87,6 +88,42 @@ func TestRegister_DuplicateEmail_GenericError(t *testing.T) {
 	assert.NotContains(t, errMsg, "email", "error must not reveal email is taken")
 	assert.NotContains(t, errMsg, "duplicate", "error must not reveal duplication")
 	assert.NotContains(t, errMsg, "exists", "error must not reveal existence")
+}
+
+// TestRegister_DuplicateEmail_ConflictError_GenericOnWire pins the WIRE
+// response when the auth service returns the real duplicate-email error
+// (audit #1649 gap C): the conflict status is kept, but the rendered message
+// must stay generic. Pre-fix, the service returned
+// NewConflictError("user","email",...) whose Error() renders
+// "conflict: user email already exists (registration failed)" — an
+// account-existence oracle on a public endpoint. The sibling test above
+// mocks a plain error, so it never saw the leak.
+func TestRegister_DuplicateEmail_ConflictError_GenericOnWire(t *testing.T) {
+	router, svc := newAuthFixture(t)
+
+	svc.auth.On("Register", mock.Anything, mock.Anything).
+		Return(nil, &apierrors.APIError{
+			Type:    apierrors.ErrorTypeConflict,
+			Code:    "conflict",
+			Message: "registration failed",
+		})
+
+	rec := doRequest(t, router, http.MethodPost, "/api/v1/auth/register", types.RegisterRequest{
+		Username: "testuser",
+		Email:    "taken@example.com",
+		Password: "securepassword123",
+	})
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+
+	errMsg, _ := body["error"].(string)
+	assert.Equal(t, "conflict: registration failed", errMsg)
+	assert.NotContains(t, errMsg, "exists", "error must not reveal existence")
+	assert.NotContains(t, errMsg, "already", "error must not reveal duplication")
+	assert.NotContains(t, errMsg, "email", "error must not reveal email is taken")
 }
 
 func TestLogin_WrongPassword_GenericError(t *testing.T) {

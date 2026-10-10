@@ -84,6 +84,12 @@ paths:
                 $ref: "#/components/schemas/AuthResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Registration failed (conflict; message is generic and does not reveal whether the email is registered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /auth/login:
     post:
       tags: [auth]

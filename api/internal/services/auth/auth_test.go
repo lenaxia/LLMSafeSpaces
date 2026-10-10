@@ -996,6 +996,11 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "registration failed")
+	// Audit #1649 gap C: the duplicate-register error must not leak account
+	// existence. NewConflictError("user","email",...) renders
+	// "user email already exists" — the wire response must stay generic.
+	assert.NotContains(t, err.Error(), "exists", "duplicate-register error must not reveal the email is taken")
+	assert.NotContains(t, err.Error(), "already", "duplicate-register error must not reveal duplication")
 	assert.Nil(t, resp)
 	mockDb.AssertExpectations(t)
 }

@@ -898,7 +898,16 @@ func (s *Service) Register(ctx context.Context, req types.RegisterRequest) (*typ
 	}
 	if existing != nil {
 		s.logger.Warn("Register: duplicate email attempt", "email", req.Email)
-		return nil, apierrors.NewConflictError("user", "email", fmt.Errorf("registration failed"))
+		// Audit #1649 gap C: keep the 409 status but carry a generic
+		// message. NewConflictError derives "user email already exists"
+		// from its arguments, which leaks account existence on the wire
+		// (the codebase's own anti-enumeration intent is pinned by
+		// TestRegister_DuplicateEmail_GenericError at the router layer).
+		return nil, &apierrors.APIError{
+			Type:    apierrors.ErrorTypeConflict,
+			Code:    "conflict",
+			Message: "registration failed",
+		}
 	}
 
 	// G8 (Epic 17): role assignment is now atomic in CreateUser via
