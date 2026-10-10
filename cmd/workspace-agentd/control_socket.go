@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -163,10 +164,23 @@ func (s *controlSocketServer) close() error {
 // the same section makes. Concurrency boundary: reads (hello/status/
 // metrics) are lock-free; restart is serialized by restartMu;
 // spawn_env stores atomically. The A.3 amendment lands with this code.
+//
+// #1644: a listener closed by ANY path (not just close() — the only
+// path that sets the `closed` flag) makes Accept return net.ErrClosed
+// permanently. That is terminal: retrying spins the loop forever with
+// a WARN per iteration (~1M-line logs, dead CI jobs, zero test
+// failures). ErrClosed therefore exits after one debug line; every
+// OTHER error stays on the warn+retry path — transient failures
+// (EMFILE-class) can self-heal, and killing the loop on them would
+// break recovery.
 func (s *controlSocketServer) serve() {
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				slog.Debug("control socket accept loop stopped: listener closed", "err", err.Error())
+				return
+			}
 			s.mu.Lock()
 			stopped := s.closed
 			s.mu.Unlock()
