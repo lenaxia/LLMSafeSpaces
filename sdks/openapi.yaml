@@ -84,6 +84,18 @@ paths:
                 $ref: "#/components/schemas/AuthResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Registration is disabled on this instance (auth.registrationEnabled instance setting)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Registration failed (conflict; message is generic and does not reveal whether the email is registered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /auth/login:
     post:
       tags: [auth]
@@ -4744,6 +4756,12 @@ paths:
                 $ref: "#/components/schemas/PasskeyBeginRegistration"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Registration is disabled on this instance (auth.registrationEnabled instance setting)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Account already exists
           content:
@@ -4783,6 +4801,12 @@ paths:
                       type: string
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Registration is disabled on this instance (auth.registrationEnabled instance setting)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           $ref: "#/components/responses/Conflict"
   /auth/passkey/login/begin:

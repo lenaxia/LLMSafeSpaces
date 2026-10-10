@@ -474,10 +474,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Epic 59: WebAuthn passkey registration + login (public — the ceremony IS
 	// the authentication). Nil when passkey support is not configured.
+	// Signup routes carry the #1650 registration gate; login/recovery do not
+	// (existing users must keep working on closed-signup instances).
 	if cfg.PasskeyHandler != nil {
 		pg := authGroup.Group("/passkey")
-		pg.POST("/register/begin", cfg.PasskeyHandler.RegisterBegin)
-		pg.POST("/register/finish", cfg.PasskeyHandler.RegisterFinish)
+		pg.POST("/register/begin", registrationGateMiddleware(cfg.InstanceSettings), cfg.PasskeyHandler.RegisterBegin)
+		pg.POST("/register/finish", registrationGateMiddleware(cfg.InstanceSettings), cfg.PasskeyHandler.RegisterFinish)
 		pg.POST("/login/begin", cfg.PasskeyHandler.LoginBegin)
 		pg.POST("/login/finish", cfg.PasskeyHandler.LoginFinish)
 		pg.POST("/recover", cfg.PasskeyHandler.Recover)
@@ -935,6 +937,41 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 	c.SetCookie(cookieName, token, maxAge, "/", cookieDomain, true, true)
 }
 
+// registrationGateMiddleware enforces the auth.registrationEnabled instance
+// setting on account-creation routes (#1650). The toggle was previously
+// advertised by GET /auth/config (hiding the frontend signup link) but never
+// enforced — POST /auth/register and passkey signup stayed open on closed
+// instances.
+//
+// Semantics:
+//   - 403 + a constant message. Registration-disabled is INSTANCE state, not
+//     per-account state, so the response is not an enumeration oracle; 403
+//     (not 404) keeps the documented route contract honest.
+//   - Fail-open on settings read errors (nil service, DB/type errors) —
+//     identical to /auth/config's GetBool fallback, so advertisement and
+//     enforcement can never disagree, and a settings-store outage never locks
+//     out the first-user bootstrap (registry default true, pinned by
+//     TestRegister_RegistrationEnabledByDefault_BootstrapKept).
+//   - Scope: local account CREATION only (password register + passkey
+//     signup). Passkey login/recovery, authenticated passkey enrollment,
+//     SSO auto-provision, and org invitations are intentionally NOT gated —
+//     they serve EXISTING users or are independently controlled by org
+//     admins (pinned by TestPasskeyLoginRecover_NotGatedByRegistrationToggle).
+func registrationGateMiddleware(instanceSettings *settings.InstanceService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if instanceSettings == nil {
+			c.Next()
+			return
+		}
+		v, err := instanceSettings.GetBool(c.Request.Context(), settings.KeyAuthRegistrationEnabled.Name())
+		if err == nil && !v {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "registration is disabled"})
+			return
+		}
+		c.Next()
+	}
+}
+
 // API key management routes.
 func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
 	authSvc := services.GetAuth()
@@ -979,10 +1016,14 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		rg.GET("/sso/:orgSlug/callback", ssoHandler.Callback)
 	}
 
+	// #1650: gate account-creation routes on the registration toggle (see
+	// registrationGateMiddleware). Runs FIRST so a closed instance neither
+	// burns Turnstile verifications nor reaches CreateUser.
+
 	// Build the /register handler chain. When Turnstile is enabled, the
-	// middleware runs first (fails-closed on any token issue) and only
-	// then invokes the register handler. When disabled, we register the
-	// same handler naked.
+	// registration gate runs first (#1650), then the Turnstile middleware
+	// (fails-closed on any token issue), and only then the register handler.
+	// When disabled, we register the same handler behind the gate alone.
 	registerHandler := func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)
 		var req types.RegisterRequest
@@ -1003,13 +1044,13 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		c.JSON(http.StatusCreated, resp)
 	}
 	if turnstile.Enabled {
-		rg.POST("/register", middleware.Turnstile(middleware.TurnstileConfig{
+		rg.POST("/register", registrationGateMiddleware(instanceSettings), middleware.Turnstile(middleware.TurnstileConfig{
 			SecretKey: turnstile.SecretKey,
 			VerifyURL: turnstile.VerifyURL,
 			Logger:    logger.ZapLogger(),
 		}), registerHandler)
 	} else {
-		rg.POST("/register", registerHandler)
+		rg.POST("/register", registrationGateMiddleware(instanceSettings), registerHandler)
 	}
 
 	rg.POST("/login", func(c *gin.Context) {
