@@ -159,4 +159,66 @@ describe("SessionActivityProvider — silent SSE death convergence (#1646)", () 
     expect(connects).toBeGreaterThanOrEqual(2);
     expect(screen.getByTestId("busy").textContent).toBe("yes");
   });
+
+  it("clears mount-seeded busy when a reconnect happens without any id-carrying event (#1646 r1)", async () => {
+    // r1 finding: the reconnect reset (busy wipe + seed-gate clear) was
+    // gated on lastEventIDRef !== null — but lastEventIDRef is only set
+    // by id-carrying events, and the server writes snapshot/anti-entropy/
+    // resync events with NO id: line. A quiet stream can reconnect
+    // forever without ever setting it, so a busy seeded at mount that
+    // went idle during a dead window could never clear (add-only seed).
+    vi.useFakeTimers();
+
+    let restIdle = false;
+    mockGetSessions.mockImplementation(() =>
+      Promise.resolve([
+        {
+          id: "sess-1",
+          title: "t",
+          messageCount: 0,
+          status: restIdle ? "idle" : "busy",
+          hasUnread: false,
+        } as SessionListItem,
+      ]),
+    );
+
+    // connect#1: ONLY a heartbeat comment frame — no id: line, so the
+    // client's Last-Event-ID bookkeeping never engages (the quiet-system
+    // shape the server's EventID:0 snapshot events produce).
+    fetchMock.mockImplementation(() => {
+      connects++;
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => scriptedReader([":\n\n"]) },
+      });
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Initial convergence: REST says busy → seeded busy at mount.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The session finishes while the stream is silently dead; REST now
+    // says idle. No id-carrying event was ever seen.
+    restIdle = true;
+
+    // Past the watchdog window the forced reconnect must run the FULL
+    // reset: wipe busy, clear the seed gate, refetch, re-seed (from idle
+    // → nothing) — busy must CLEAR.
+    await vi.advanceTimersByTimeAsync(70_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(connects).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
 });

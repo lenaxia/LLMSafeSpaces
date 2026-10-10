@@ -54,6 +54,17 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
       lastAlive.at = Date.now();
     };
 
+    // r1 (#1646): ANY post-first connect is a reconnect. lastEventIDRef
+    // is NOT a reconnect discriminator — the server writes snapshot/
+    // anti-entropy/resync events with EventID 0 and NO id: line
+    // (stream_user_events.go: "Snapshot event — no id: line"), so a
+    // quiet stream can run (and reconnect) forever without ever setting
+    // it. Gating the reconnect reset on it left a sticky-busy residual:
+    // the provider's wipe + seed-gate clear were skipped, so a
+    // mount-seeded busy could never clear after an event-less gap. The
+    // ref keeps its actual job: the Last-Event-ID replay header.
+    let hasConnectedOnce = false;
+
     function start() {
       conn = createSSEConnection({
         url: `${apiBaseUrl}/events`,
@@ -98,10 +109,10 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
           // broker has no replay) leaves busy/session-list stale until
           // a remount — the #1646 freeze. Invalidation refetches ACTIVE
           // (mounted) sessions queries; inactive ones go stale and
-          // converge on next mount (seededRef was cleared at reconnect,
-          // so seedBusy re-runs when their cache updates).
+          // converge on next mount (the reconnect-cleared seed gate
+          // lets seedBusy re-run when their cache updates).
           queryClient.invalidateQueries({ queryKey: ["sessions"] });
-          if (lastEventIDRef.current !== null) {
+          if (hasConnectedOnce) {
             wsLog("user_stream.reconnected", "");
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
@@ -109,6 +120,7 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
           } else {
             wsLog("user_stream.connected", "");
           }
+          hasConnectedOnce = true;
         },
         logPrefix: "user_stream",
         readTimeoutMs: READ_TIMEOUT_MS,

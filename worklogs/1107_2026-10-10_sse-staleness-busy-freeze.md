@@ -104,12 +104,63 @@ this diff.
 - `npm run typecheck` (tsc --noEmit): 0 errors.
 - `npx eslint` on all 6 touched files: clean.
 
-## Files
+## Review round 1 (PR #1656 → recreated as #1662 after the review-bot
+permission incident; see below) — REQUEST_CHANGES, one blocking finding
 
-- `frontend/src/hooks/useUserEventStream.ts` (L1)
+The finding (verified in server source before fixing): the busy wipe +
+seed-gate clear rode the `lastEventIDRef.current !== null` gate — but
+`lastEventIDRef` is only set by id-carrying events, and the server
+writes snapshot/anti-entropy/resync events with EventID 0 and NO `id:`
+line (stream_user_events.go:154-169 "Snapshot event — no id: line",
+:290, :351-363). A quiet stream can reconnect forever without setting
+it → the reconnect reset was skipped → a mount-seeded busy that went
+idle during a dead window could never clear (add-only seedBusy) — the
+sticky-busy mirror of the reported freeze.
+
+Fix: `useUserEventStream` now tracks `hasConnectedOnce` locally (same
+shape as `useEventStream`); ANY post-first connect runs the full reset
+(invalidations + onReconnect). `lastEventIDRef` keeps its actual job:
+the Last-Event-ID replay header. Red-first pin added BEFORE the fix:
+"clears mount-seeded busy when a reconnect happens without any
+id-carrying event" — red at 9e93cb38 (`expected 'yes' to be 'no'`),
+green after. Non-blocking notes: e2e infeasibility accepted (repo's
+Playwright layer can't stream SSE; session-activity e2e block already
+`.fixme` with precedent #1365 `7321a2be`); watchdog-cadence-during-
+outage pin deliberately not added — the attempt count under fake timers
+is jitter-dependent (`jitteredDelay` = base×[0.5,1.5]) so any tight
+bound is flaky; the cadence is floored by the 10s check period by
+construction. Sidebar floor-test act() stderr warnings noted, left
+(repo fake-timer pattern is act-free).
+
+Post-r1 runs: sseStaleness+hooks+provider+alerts targeted 121/121;
+full frontend suite **2029/2029**; tsc + eslint clean.
+
+## Incidents in-flight (honest log)
+
+1. First vitest run deadlocked (240s timeout): I wrapped
+   `advanceTimersByTimeAsync` in `act(async …)` — the repo's
+   established fake-timer pattern is bare advancement. Restructured the
+   pins to follow it; also folded the workspace-watchdog pins into the
+   pre-existing `useEventStream.test.ts` instead of a duplicate
+   parallel harness file.
+2. PR-review workflow failed fleet-wide 17:31-18:10Z
+   (`agentic-actor-coder[bot]` permission: none — app-bot authors
+   can't pass the reviewer's collaborator assert). Owner closed #1656
+   and recreated #1662 under the user identity; review round 1 then
+   delivered normally.
+3. CI race-detector flake: TestUpload_ConcurrentStorm… raced
+   (api/internal/handlers — zero .go files in this PR). Green on the
+   recreated PR's own rerun; also green on ≥3 other branches that day.
+   Local repro not feasible: multi-GB race build vs 15G PVC at 81%
+   (sandbox-writable dirs only); ran standing `go clean` + cleared
+   stale /tmp/go-build* after the ENOSPC build failure.
+
+## Files (r1 additions marked)
+
+- `frontend/src/hooks/useUserEventStream.ts` (L1; r1: hasConnectedOnce gate)
 - `frontend/src/hooks/useEventStream.ts` (L2)
 - `frontend/src/components/layout/Sidebar.tsx` (L3)
 - pins: `frontend/src/providers/SessionActivityProvider.sseStaleness.test.tsx`
-  (new), `frontend/src/hooks/useEventStream.test.ts` (watchdog
+  (new; r1: +event-less-reconnect sticky-busy pin), `frontend/src/hooks/useEventStream.test.ts` (watchdog
   describe added), `frontend/src/components/layout/Sidebar.refetchFloor.test.tsx`
   (new)
