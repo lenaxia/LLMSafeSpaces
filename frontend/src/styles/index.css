@@ -84,6 +84,27 @@ html {
   touch-action: pan-y;
 }
 
+/* #1648 — dvh fallback. The shell roots are h-dvh/min-h-dvh (100dvh =
+ * the visual viewport; 100vh is the LARGE viewport and made the shell
+ * taller than the visible screen with viewport-fit=cover + safe-area
+ * insets inside the box, #1626/#1648). Tailwind v4 emits
+ * `.h-dvh { height: 100dvh }` with NO fallback (verified against the
+ * built CSS): a browser without dvh support drops the only declaration
+ * and the shell collapses to content height. This restores the legacy
+ * large-viewport height there — the pre-#1648 behavior, never worse.
+ * Must stay inside @layer utilities: unlayered CSS would outrank the
+ * utilities layer wholesale and force 100vh on modern browsers too. */
+@layer utilities {
+  @supports not (height: 100dvh) {
+    .h-dvh {
+      height: 100vh;
+    }
+    .min-h-dvh {
+      min-height: 100vh;
+    }
+  }
+}
+
 /* Minimal scrollbars */
 ::-webkit-scrollbar {
   width: 4px;

@@ -37,7 +37,7 @@ export function PortalLayout({
   return (
     <div
       ref={sidebar.containerRef}
-      className="flex h-screen flex-col bg-background overflow-hidden overscroll-none"
+      className="flex h-dvh flex-col bg-background overflow-hidden overscroll-none"
       style={{ touchAction: "pan-y" }}
     >
       {/* Top padding composes the base with the safe-area inset: viewport-fit=cover extends under the notch — the header is the topmost row (#1623). */}

@@ -102,7 +102,7 @@ describe("PortalLayout", () => {
   it("renders as full-screen without AppShell", () => {
     const { container } = renderPortal();
     const root = container.firstElementChild;
-    expect(root).toHaveClass("h-screen");
+    expect(root).toHaveClass("h-dvh");
   });
 
   it("propagates the context prop to child routes via useOutletContext", () => {
