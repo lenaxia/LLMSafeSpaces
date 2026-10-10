@@ -85,3 +85,65 @@ ErrorBoundary.tsx, styles/index.css. Tests: AppShell.viewport.test.tsx (new),
 styles/index.test.ts (+3), AppShell.test.tsx (selectors h-screen→h-dvh),
 PortalLayout.test.tsx (same). Not touched: Sidebar/SidebarDrawer/useEventStream/
 SessionActivityProvider (w20/#1646 lane), Composer (its inset padding is correct).
+
+---
+
+## Round 1 review (CHANGES_REQUESTED @18:52Z, on #1661) — findings and response
+
+Reviewer confirmed the core fix (dvh + fallback + red pin independently reproduced) and
+raised three substantive items; all accepted:
+
+**Finding 1 — keyboard mechanism claim was FALSE.** I claimed "dvh tracks the visual
+viewport → keyboard shrinks it → composer visible". Wrong: Chrome 108+ defaults to
+`interactive-widget=resizes-visual` — the OSK resizes only the visual viewport, viewport
+units do NOT change; iOS Safari overlays the keyboard without resizing anything. dvh
+covers browser-chrome dynamics only. Corrected in code, not just prose:
+- `index.html`: viewport meta += `interactive-widget=resizes-content` (Android Chrome
+  resizes the layout viewport for the OSK → 100dvh shrinks natively; where honored, the
+  guard below never even activates since innerHeight shrinks with it).
+- `useOskViewportGuard` (new hook, AppShell + PortalLayout): when the visual viewport
+  shrinks ≥24px below the layout viewport, sets `data-osk-open` + `--shell-visual-height`
+  (min(vv.height, innerHeight − vv.offsetTop)) on `<html>`; CSS rule
+  `[data-osk-open] .h-dvh { height: var(--shell-visual-height, 100dvh) }` (higher
+  specificity, same layer) pins the shells to the live visible span. Conditional by
+  design: no keyboard → attribute absent → purely declarative dvh; the guard cannot
+  regress the primary fix. 6 unit tests incl. pan-offset and no-visualViewport cases.
+
+**Finding 2 — layer rationale was FALSE.** I wrote that the @layer wrapper prevents the
+fallback from "unseating 100dvh in modern browsers". Wrong: the @supports not(...) guard
+alone makes the block inert there; in dvh-less browsers the 100dvh declaration is dropped
+at parse, so nothing competes. The @layer wrapper is co-location, not protection.
+Corrected the index.css comment and replaced the layer-pinning test with
+guard-semantics pins (fallback anchored INSIDE the @supports block, adjacency for
+min-h-dvh, exact guard condition).
+
+**Minor** — "dvh tracks the visual viewport" / "iOS 16.4+" phrasing corrected everywhere
+(dynamic viewport; dvh is iOS 15.4+).
+
+**Missing tiers added:**
+- Served-artifact e2e `tests/e2e/app-shell-viewport.spec.ts` (route-mocks include the
+  session-origins + runs/active composition lesson): served meta carries cover +
+  resizes-content; served stylesheet carries `.h-dvh{height:100dvh}`, the @supports 100vh
+  fallback, and the osk override; mobile-emulated geometry smoke + LIVE override check
+  (setting the guard's attribute+var switches the shell's computed height to the var —
+  red pre-fix for the class/rule absence since Tailwind only emits used utilities).
+- Pin arithmetic now includes the nonzero insets (interior-budget invariant) with a
+  documented analysis of why the literal "box + insets ≤ innerHeight" formula is
+  incoherent (insets are paid FROM the box; the literal sum would demand a shell shorter
+  than the screen).
+
+## Honest ledger (supersedes the "Verified vs reasoned" section above)
+
+The earlier section's keyboard claim is RETIRED — see Finding 1. Current truth:
+- Unit-tested: shell resolves to the visual viewport; fallback guard semantics; OSK
+  guard behavior incl. thresholds, pan offset, cleanup, no-vv no-op; AppShell wiring of
+  the guard. 2038/2038 vitest green, lint 0 errors, tsc clean.
+- E2E-tested (headless Chromium, dev-server served artifacts): meta keys, served CSS
+  rules (dvh + fallback + osk override), osk override live in cascade, geometry smoke.
+- REASONED, device-QA-required: actual soft-keyboard behavior on real iOS Safari /
+  Android Chrome. Android mechanism is documented platform behavior (Chrome 108+
+  release notes: resizes-content resizes the layout viewport); iOS mechanism is the
+  standard visualViewport pinning pattern. Neither is device-verified here — headless
+  Chromium has no keyboard; state this in any release note.
+- Known flake observed (pre-existing, unrelated): sidebar-gesture.spec.ts "hamburger
+  both halves" fails ~1-in-8 under parallel load, passes standalone and on retry.
