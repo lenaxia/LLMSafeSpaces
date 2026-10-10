@@ -85,3 +85,13 @@ behavior; Turnstile vs Cloudflare live API.
    credentials (cacaec0c, acc05b8a) — lane-correct authors verified. Review plane still
    failing at the verify-step assert at 19:30Z (fleet-wide, ai-workflows #49 pending);
    verdicts await the heal.
+
+## Close-out
+
+- #1659 MERGED (fallback ruling after 3×53-min coverage-job infra evictions).
+- #1657 MERGED @22:5xZ — #1650 registration enforcement on main; post-rebase APPROVED @22:29.
+- #1660 APPROVED @22:06 (r3, post-residue-fix); awaiting orchestrator merge.
+- Fleet infra events this lane rode: review-plane assert outage (app-sender poisoning;
+  diagnosed + reported; fixed by orchestrator plumbing), mode-B credential routing,
+  worktree identity provisioning fault (wt-1648 attribution, LEAVE AS-IS ruling),
+  coverage-job runner evictions, #1644 warn-flood class (post-rebase moot).
