@@ -330,6 +330,26 @@ func runWatchdogLoop(t *testing.T, srvURL string, timeout time.Duration, restart
 	return cache
 }
 
+// settleWatchdogToFailed polls until the cache has recorded at least
+// threshold+7 consecutive probe failures — #1532 de-flake: the old
+// shape slept a fixed 1.2s and asserted, which requires the failures
+// to accumulate WITHIN that wall-clock window; a multi-second runner
+// stall (SIGSTOP-shaped, reproduced 2/6 locally) burns the budget
+// before the loop reaches the threshold and the assert reads a healthy
+// cache. Waiting on the observable is outcome-deterministic and
+// wait-bounded: the deadline only matters when the code is genuinely
+// broken. threshold+7 ≈ the old "~20 polls / reached ~4 times"
+// semantics: many would-fire moments for the suppression verdicts to
+// hold over.
+func settleWatchdogToFailed(t *testing.T, cache *healthzCache) {
+	t.Helper()
+	want := readinessFailureThreshold + 7
+	require.Eventually(t, func() bool {
+		return cache.Snapshot().ConsecutiveFailures >= want
+	}, 15*time.Second, 20*time.Millisecond,
+		"probe failures must accumulate past the threshold (want >= %d consecutive failures)", want)
+}
+
 func TestRefreshIsHealthyLoop_WatchdogSuppressesWhenStarved(t *testing.T) {
 	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	srv := newHungServer(t, 500*time.Millisecond)
@@ -338,7 +358,7 @@ func TestRefreshIsHealthyLoop_WatchdogSuppressesWhenStarved(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, starved)
 
-	time.Sleep(1200 * time.Millisecond) // ~20 polls: threshold crossed many times over
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy, "probe failures must still mark the cache unhealthy")
 	assert.Zero(t, fr.callCount(),
 		"watchdog must NOT restart a process whose event loop is advancing (starved, not hung) — incident 2026-08-15")
@@ -354,7 +374,9 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnCorroboratedDeadListener(t *testing
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, hung)
 
-	time.Sleep(1200 * time.Millisecond)
+	require.Eventually(t, func() bool { return fr.callCount() >= 1 },
+		15*time.Second, 20*time.Millisecond,
+		"corroborated dead-listener hang must fire (the fire moment is the first threshold crossing; a stalled runner only delays it)")
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Equal(t, 1, fr.callCount(),
 		"corroborated dead-listener hang must fire exactly once (latch)")
@@ -370,7 +392,7 @@ func TestRefreshIsHealthyLoop_WatchdogSuppressesWhenFlat(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, flat)
 
-	time.Sleep(1200 * time.Millisecond)
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Zero(t, fr.callCount(),
 		"flat CPU (blocked-IO turn) must never be killed — recovery is honest state + informed Stop")
@@ -384,7 +406,7 @@ func TestRefreshIsHealthyLoop_VitalsUnknownSuppresses(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, unknown)
 
-	time.Sleep(1200 * time.Millisecond)
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Zero(t, fr.callCount(),
 		"killing without evidence is banned (#892); probe degradation must surface via metric/log, not a restart")
@@ -400,7 +422,7 @@ func TestRefreshIsHealthyLoop_VitalsRespawnSuppresses(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, respawn)
 
-	time.Sleep(1200 * time.Millisecond)
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Zero(t, fr.callCount(),
 		"refused dial during respawn window must not race crash recovery's restart")
@@ -418,10 +440,11 @@ func TestRefreshIsHealthyLoop_MaxDeferForceSuppressedWhenStarved(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, fakeBusy{}, starved)
 
-	// With maxDefers=2 and 60ms polls, the force path is reached ~4 times
-	// in 1.2s. Old behavior: restart fires at the first force. New: the
+	// With maxDefers=2, every failure tick past the second deferral is a
+	// FORCE moment; settling to threshold+7 failures crosses it ~8
+	// times. Old behavior: restart fires at the first force. New: the
 	// starved verdict re-arms the deferral window every time.
-	time.Sleep(1200 * time.Millisecond)
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Zero(t, fr.callCount(),
 		"max-defer force must not kill busy sessions when vitals prove opencode is progressing — the force exists for stale busy state on a HUNG process")
@@ -439,11 +462,10 @@ func TestRefreshIsHealthyLoop_MaxDeferForceSuppressedWhenFlat(t *testing.T) {
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, fakeBusy{}, flat)
 
-	// With maxDefers=2 and 60ms polls, the force path is reached ~4 times
-	// in 1.2s. Old behavior: restart fires at the first force. New: the
-	// flat verdict re-arms the deferral window every time — a busy
+	// Same force-moment arithmetic as the starved variant: the flat
+	// verdict re-arms the deferral window every time — a busy
 	// blocked-IO turn must survive the force path.
-	time.Sleep(1200 * time.Millisecond)
+	settleWatchdogToFailed(t, cache)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Zero(t, fr.callCount(),
 		"max-defer force must not kill busy sessions when the listener accepts — blocked-IO turns are alive (#892)")
@@ -640,10 +662,11 @@ func TestRefreshIsHealthyLoop_MaxDeferForceFiresOnCorroboratedDeadListener(t *te
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, fakeBusy{}, hung)
 
-	// threshold=2 + maxDefers=1 at 60ms polls: the force moment arrives
-	// within a few hundred ms; the HUNG verdict must reach the restarter.
+	// threshold=2 + maxDefers=1: the force moment is the first
+	// threshold crossing plus one deferral — a fixed 1.5s budget raced
+	// stalled runners (#1532 class); the fire is eventual, wait-bounded.
 	require.Eventually(t, func() bool { return fr.callCount() >= 1 },
-		1500*time.Millisecond, 20*time.Millisecond,
+		15*time.Second, 20*time.Millisecond,
 		"max-defer force with a corroborated dead-listener hang must fire despite busy sessions")
 	assert.False(t, cache.Snapshot().Healthy)
 }

@@ -104,6 +104,36 @@ type seamProc struct{ restarts atomic.Int64 }
 
 func (p *seamProc) restart() { p.restarts.Add(1) }
 
+// startScriptAdvancer pops one scripted answer per interval on a
+// background ticker until the test ends (#1532 de-flake: the script
+// used to be advanced from INSIDE an Eventually condition — a
+// side-effecting poll that raced the decision goroutine's own reads
+// and destroyed an answer per 5ms tick). A slow cadence empties the
+// script to its terminal answer and LEAVES it there, so the decision
+// goroutine cannot miss a state no matter how the runner schedules it.
+func startScriptAdvancer(t *testing.T, src *fakeDeferSource, interval time.Duration) {
+	t.Helper()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tk := time.NewTicker(interval)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				src.advance()
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+}
+
 // TestDeferSeam_PolicyIsSwappable: the restart decision runs against a
 // NON-tracker source — busy then idle applies the deferred restart by
 // the SOURCE's answers alone (the seam is real; defer-until-idle is one
@@ -123,14 +153,18 @@ func TestDeferSeam_PolicyIsSwappable(t *testing.T) {
 		StallBound:   time.Hour,
 	})
 	require.False(t, decided, "busy → deferred to the background goroutine (the documented contract: false = deferred)")
-	require.InDelta(t, deferralsBefore+1.0, testutil.ToFloat64(restartDeferralsFired), 0.001,
+	// >= not ==: the counter is package-global; a leaked deferred
+	// goroutine from an earlier test can legitimately bump it between
+	// the read and this assert — OUR deferral is what must be counted.
+	require.GreaterOrEqual(t, testutil.ToFloat64(restartDeferralsFired), deferralsBefore+1.0,
 		"each deferral counts — the how-often datum")
 
-	// The deferred goroutine applies when the source turns idle.
+	// The deferred goroutine applies when the source turns idle
+	// (non-mutating condition; the 15s bound absorbs runner stalls).
+	startScriptAdvancer(t, src, 50*time.Millisecond)
 	require.Eventually(t, func() bool {
-		src.advance()
 		return proc.restarts.Load() > 0
-	}, 5*time.Second, 5*time.Millisecond)
+	}, 15*time.Second, 5*time.Millisecond, "the deferred restart must apply once the source turns idle")
 }
 
 // TestDeferSeam_TrackerRemainsTheDefaultSource: the production wiring
@@ -165,16 +199,19 @@ func TestDeferSeam_ForceLegObservesStall(t *testing.T) {
 	})
 	require.False(t, decided, "busy → deferred")
 
+	startScriptAdvancer(t, src, 50*time.Millisecond)
 	require.Eventually(t, func() bool {
-		src.advance()
 		return proc.restarts.Load() > 0
-	}, 5*time.Second, 5*time.Millisecond, "the stalled-only path forces the restart")
+	}, 15*time.Second, 5*time.Millisecond, "the stalled-only path forces the restart")
 
 	// The restart fires inside forceInterruptRestart; the observation
 	// lands on the line AFTER — wait for the datum, not just the
-	// restart (they are deliberately separate events).
+	// restart (they are deliberately separate events). >= not ==:
+	// the histogram is package-global; another test's deferred
+	// goroutine can observe concurrently — OUR observation landing is
+	// the datum, and it cannot be subtracted by noise.
 	require.Eventually(t, func() bool {
-		return stallObservations(t) == stallObsBefore+1
-	}, 5*time.Second, 5*time.Millisecond,
+		return stallObservations(t) >= stallObsBefore+1
+	}, 15*time.Second, 5*time.Millisecond,
 		"the force leg observes its stall duration — deferred-then-forced is the case the decision data exists for")
 }
