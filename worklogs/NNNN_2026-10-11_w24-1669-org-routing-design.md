@@ -115,3 +115,17 @@ wording); root-page matching behavior unchanged. Orchestrator informed.
 §6.2: subdomain login suppresses cross-org verified-domain buttons; the
 cross-org user's path remains the root page (existing behavior). No change to
 recommendation or phases; phase-1 frontend tests gain the suppression case.
+
+## Review round 3 (CHANGES_REQUESTED) — r2 fix verified; three findings, all fixed
+
+Reviewer verified the r2 residual fixed and all citations clean. New findings:
+1. §6.2 half-edit — §10 still pinned "verified-domain button behavior
+   untouched" and §7's phase-1 list omitted the suppression case (worklog had
+   promised it). Fixed: both propagated.
+2. Same-org tie-break dropped in the aafbfaaf rewrite — spec as written would
+   render two "Sign in with Acme" buttons on acme.<base> for an email matching
+   acme's own verified domain. Fixed: §6.2 now states the net rule — on an org
+   subdomain exactly one org SSO button renders (the host org's): matched-org
+   ≠ host → suppressed; matched-org = host → single orgContext button.
+3. PR body still carried the overstated r1 sentence ("Both findings accepted
+   and fixed"). Fixed in the PR body itself this time, not only in comments.
