@@ -421,6 +421,31 @@ func (s *Service) RotateToken(ctx context.Context, orgID string) (string, error)
 	return token, nil
 }
 
+// ResolveSSOOrg resolves an org by slug for login-surface display (design
+// 0064 §6.1, #1669) and returns it ONLY when the org exists AND has an SSO
+// config. Returns (nil, nil) for both the unknown-slug and the
+// org-without-SSO cases — callers must keep the two indistinguishable on the
+// wire (the existence oracle stays equal to the public
+// /auth/sso/:slug/start oracle). A non-nil error means a real store failure;
+// callers fail soft (omit the org context, never 5xx).
+func (s *Service) ResolveSSOOrg(ctx context.Context, slug string) (*types.Organization, error) {
+	org, err := s.orgs.GetOrgBySlug(ctx, slug)
+	if err != nil {
+		return nil, fmt.Errorf("lookup org by slug: %w", err)
+	}
+	if org == nil {
+		return nil, nil
+	}
+	cfg, err := s.orgs.GetSSOConfig(ctx, org.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load sso config: %w", err)
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+	return org, nil
+}
+
 // StartResult is the outcome of StartLogin: the IdP authorization URL to
 // redirect the browser to, and the signed state cookie to set on the response.
 type StartResult struct {

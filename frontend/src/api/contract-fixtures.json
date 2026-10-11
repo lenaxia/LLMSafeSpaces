@@ -18,6 +18,17 @@
       "okta"
     ],
     "instanceName": "",
+    "motd": "",
+    "orgContext": {
+      "slug": "acme",
+      "name": "Acme Corp"
+    }
+  },
+  "AuthConfigNoOrgContext": {
+    "registrationEnabled": true,
+    "oidcEnabled": false,
+    "passkeyEnabled": false,
+    "instanceName": "",
     "motd": ""
   },
   "AuthResponse": {

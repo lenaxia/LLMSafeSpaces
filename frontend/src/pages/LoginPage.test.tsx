@@ -407,4 +407,87 @@ describe("LoginPage", () => {
       }
     });
   });
+
+  // Design 0064 (#1669) phase 1 — org-scoped login surface. When
+  // /auth/config returns orgContext (request arrived on <slug>.<base> for an
+  // SSO-configured org), the login page offers the host org's SSO
+  // first-class; on an org subdomain exactly one org SSO button renders (the
+  // host org's): the email-matched verified-domain button is suppressed
+  // whether it names a different org or the same one.
+  describe("orgContext (org-scoped login surface)", () => {
+    it("renders the host org's SSO button first-class when orgContext present", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme", name: "Acme Corp" },
+      });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Sign in with Acme Corp")).toBeInTheDocument());
+      expect(screen.getByPlaceholderText("Password")).toBeInTheDocument();
+    });
+
+    it("falls back to a generic label when the org name is absent (C-strict shape)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme" },
+      });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Sign in with your organisation")).toBeInTheDocument());
+    });
+
+    it("suppresses the verified-domain button for a different org when orgContext present", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme", name: "Acme Corp" },
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "beta.com", orgSlug: "beta", orgName: "Beta Ltd" }],
+      });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Sign in with Acme Corp")).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "alice@beta.com" } });
+      await waitFor(() => {
+        expect(screen.queryByText("Sign in with Beta Ltd")).not.toBeInTheDocument();
+      });
+    });
+
+    it("renders exactly one org button when the email matches the host org's own verified domain", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme", name: "Acme Corp" },
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme Corp" }],
+      });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Sign in with Acme Corp")).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "alice@acme.com" } });
+      await waitFor(() => {
+        expect(screen.getAllByText("Sign in with Acme Corp")).toHaveLength(1);
+      });
+    });
+
+    it("renders no org button when orgContext is absent (root-page behavior unchanged)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Password")).toBeInTheDocument());
+      expect(screen.queryByText(/^Sign in with /)).not.toBeInTheDocument();
+    });
+  });
 });

@@ -243,6 +243,12 @@ type RouterConfig struct {
 	// cookie is host-only — current behavior, single-host deploys.
 	CookieDomain string
 
+	// OrgSubdomainBaseDomain (design 0064, #1669): auth.orgSubdomainRouting.
+	// baseDomain. When non-empty, GET /auth/config derives an optional
+	// orgContext {slug, name} from a <slug>.<base> request Host for
+	// SSO-configured orgs — display-only, fail-soft (omitted on every miss).
+	OrgSubdomainBaseDomain string
+
 	// SSOHandler handles org-admin SSO config CRUD + the public OIDC login flow
 	// (start/callback) and claimed-domain discovery (US-43.10, D17).
 	SSOHandler *handlers.SSOHandler
@@ -450,7 +456,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.OrgSubdomainBaseDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -973,7 +979,7 @@ func registrationGateMiddleware(instanceSettings *settings.InstanceService) gin.
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain, subdomainBaseDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -998,6 +1004,14 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		if ssoHandler != nil {
 			oidcEnabled = ssoHandler.OIDCEnabled(c.Request.Context())
 		}
+		// orgContext (design 0064, #1669): on an org subdomain, name the org
+		// this login surface is scoped to. Display-only; omitted on every
+		// miss (unknown slug / no SSO / routing disabled / store error) — the
+		// fail-soft posture of this endpoint, never a 5xx.
+		var orgContext *types.AuthConfigOrgContext
+		if ssoHandler != nil {
+			orgContext = ssoHandler.OrgContextForHost(c.Request.Context(), c.Request.Host, subdomainBaseDomain)
+		}
 		c.JSON(http.StatusOK, types.AuthConfig{
 			RegistrationEnabled:  regEnabled,
 			OIDCEnabled:          oidcEnabled,
@@ -1005,6 +1019,7 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 			PasskeyDefaultSignup: passkeyDefaultSignup,
 			InstanceName:         instanceName,
 			MOTD:                 motd,
+			OrgContext:           orgContext,
 		})
 	})
 

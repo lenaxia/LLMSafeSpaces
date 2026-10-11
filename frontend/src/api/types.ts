@@ -18,6 +18,13 @@ export interface AuthConfig {
   ssoProviders?: string[];
   instanceName: string;
   motd?: string;
+  /**
+   * Design 0064 (#1669): present iff this request arrived on an org
+   * subdomain (<slug>.<baseDomain>) for an SSO-configured org — the login
+   * surface is scoped to that org. Absent on the root host and on every
+   * miss (fail-soft).
+   */
+  orgContext?: { slug: string; name?: string } | null;
 }
 
 export interface AuthResponse {

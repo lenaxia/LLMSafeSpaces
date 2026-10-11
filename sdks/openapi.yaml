@@ -8426,6 +8426,23 @@ components:
         motd:
           type: string
           description: Message of the day. Always present; empty string when unset.
+        orgContext:
+          type: object
+          description: >
+            Design 0064 (#1669): present iff the request arrived on an org
+            subdomain (<slug>.<auth.orgSubdomainRouting.baseDomain>) for an
+            org that exists AND has an SSO config — the login surface is
+            scoped to that org. Display-only; omitted on every miss
+            (routing disabled, non-matching host, unknown slug, org without
+            SSO config, store error). Unknown-slug and org-without-SSO are
+            indistinguishable.
+          required: [slug]
+          properties:
+            slug:
+              type: string
+            name:
+              type: string
+              description: Org display name. Omitted in the C-strict variant.
     RegisterRequest:
       type: object
       required: [username, email, password]

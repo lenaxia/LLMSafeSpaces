@@ -20,6 +20,7 @@ export function LoginPage() {
   const [motd, setMotd] = useState("");
   const [email, setEmail] = useState("");
   const [domains, setDomains] = useState<SSODomain[]>([]);
+  const [orgContext, setOrgContext] = useState<{ slug: string; name?: string } | null>(null);
   const [returnTo, setReturnTo] = useState("");
   const [ssoStatus, setSsoStatus] = useState<string | null>(null);
   const [lookupStatus, setLookupStatus] = useState<string | null>(null);
@@ -36,6 +37,9 @@ export function LoginPage() {
       if (c.passkeyEnabled) {
         setMode("passkey");
       }
+      // Design 0064 (#1669): on an org subdomain the config names the host
+      // org — the login surface is scoped to it.
+      setOrgContext(c.orgContext ?? null);
       if (c.oidcEnabled) {
         ssoApi.domains().then((r) => setDomains(r.domains)).catch(() => {});
       }
@@ -81,6 +85,12 @@ export function LoginPage() {
 
   const matchedDomain = domains.find((d) => email.toLowerCase().endsWith(d.domain.toLowerCase()));
   const emailLooksValid = email.includes("@") && email.split("@")[1]?.includes(".");
+  // 0064 §6.2: on an org subdomain exactly one org SSO button renders — the
+  // host org's. The email-matched verified-domain button keeps its root-page
+  // behavior and is suppressed here whether it names a different org
+  // (cross-org inference belongs on the root page) or the same one (no
+  // duplicate of the orgContext button).
+  const showMatchedDomainButton = matchedDomain !== undefined && orgContext === null;
   const showDiscoveryButton = domains.length > 0 && !matchedDomain && emailLooksValid;
 
   const handleDiscovery = async () => {
@@ -175,6 +185,20 @@ export function LoginPage() {
         </p>
       )}
 
+      {orgContext && (
+        <div className="mb-4 border-b border-border pb-4">
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => {
+              window.location.href = ssoRedirectURL(orgContext.slug);
+            }}
+          >
+            Sign in with {orgContext.name || "your organisation"}
+          </Button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">or sign in with a personal account</p>
+        </div>
+      )}
       {mode === "passkey" ? (
         <div className="flex flex-col gap-4">
           <PasskeyLoginForm
@@ -219,7 +243,7 @@ export function LoginPage() {
         </div>
       )}
 
-      {matchedDomain && (
+      {showMatchedDomainButton && (
         <div className="mt-4 border-t border-border pt-4">
           <p className="mb-2 text-center text-xs text-muted-foreground">or</p>
           <Button
