@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.37.0] - 2026-10-11
+
+### Added — auth completion
+
+- **Email-verification and password-reset frontend** (#1651, #1670): the
+  emailed links now land on real pages — /verify-email (410 expired/used
+  and 404 states, resend with prefilled email, token stripped from the
+  URL on terminal results, StrictMode double-POST guard) and
+  /reset-password (request + confirm, always-202 neutral copy, redirect
+  chain with success notice). Routes verified OUTSIDE GuestOnly — the
+  discriminating placement: inside it, link-clickers bounce and the
+  lockout re-creates itself. Login's email-verified 403 is now
+  actionable with a threaded resend link; unverified signups get a
+  check-email card. The auth audit's last HIGH gap, closed.
+- **Org-scoped login surface, phase 1** (#1669, #1674, design 0064
+  option C): optional orgContext {slug, name} on /auth/config
+  (Host-derived, present iff the org has SSO — existence oracle equal
+  to the start-URL baseline) and a first-class "Sign in with {org}"
+  button on the org's login page, with cross-org verified-domain
+  buttons suppressed (§6.2, justified from the gap persona's journey).
+  The arbitrary-email user arriving at their org's URL now has an
+  obvious path.
+
+### Fixed
+
+- **Initial-load busy composition** (#1672, #1673): the sessions
+  listing's busy state derived entirely from SSE-event-fed sources that
+  miss turns starting during stream-recycle gaps, and a reconcile step
+  actively un-busied quiet mid-turn sessions — a fresh app restart
+  showed 1-of-3 busy while the platform said 3-of-3. The harness live
+  /session/status registry now composes in as an add-only busy floor
+  (permission-wait carve-out survives on confirmed pending-ask only;
+  staleness-bounded, failure-inert). Owner-observed, triaged to the
+  server root with the frontend exonerated by evidence.
+- **ProxyHandler/ResolverHost data races** (#1641, #1668): both
+  lazy-init frames locked (RWMutex double-checked), all shared-resolver
+  writes guarded — caught live by the v0.36.0 release run, completed
+  through a reviewer-caught second frame.
+
 ## [0.36.0] - 2026-10-11
 
 ### Fixed — auth hardening (audit #1649)
