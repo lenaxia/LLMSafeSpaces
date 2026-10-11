@@ -642,7 +642,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		if !ok {
 			return "", fmt.Errorf("archived (boolean) is required: true = archive, false = unarchive — no default")
 		}
-		return mcpSessionArchive(ctx, sessionID, archived)
+		return mcpSessionArchive(ctx, password, sessionID, archived)
 	case "delete_session":
 		sessionID, _ := args["session_id"].(string)
 		injected, _ := args["lsp_injected_session"].(string)
@@ -713,8 +713,14 @@ func mcpSessionList(ctx context.Context, password string) (string, error) {
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
-	body, _, err := seamClientWithPassword(password).SessionMessagesRaw(ctx, sessionID, limit, "")
+	client := seamClientWithPassword(password)
+	body, _, err := client.SessionMessagesRaw(ctx, sessionID, limit, "")
 	if err != nil {
+		if isSessionNotFoundErr(err) {
+			// #1663: a not-found read gets the near-miss clause — the
+			// mistyped-id caller learns the live id in one round trip.
+			return "", fmt.Errorf("failed to read session: %w%s", err, sessionSuggestClause(ctx, client, sessionID))
+		}
 		return "", fmt.Errorf("failed to read session: %w", err)
 	}
 	// #1307: image data URLs never cross this surface either — strip
