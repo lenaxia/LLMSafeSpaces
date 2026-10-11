@@ -95,3 +95,13 @@ behavior; Turnstile vs Cloudflare live API.
   diagnosed + reported; fixed by orchestrator plumbing), mode-B credential routing,
   worktree identity provisioning fault (wt-1648 attribution, LEAVE AS-IS ruling),
   coverage-job runner evictions, #1644 warn-flood class (post-rebase moot).
+
+## Final disposition (2026-10-11)
+
+- #1660 MERGED (615c0137) after r5-on-rerun APPROVED @00:08Z (first attempt = no-verdict
+  infra death). #1649 CLOSED by orchestrator with full disposition record.
+- Lane shipped: #1659 (gap-C enumeration fix), #1657 (gap-A registration enforcement,
+  closes #1650), #1660 (gap-D1 dead-code removal). Filed for owner: #1651 (verify-email/
+  reset-password frontend, feature lane), #1652 (low follow-ups, parked).
+- Owner's question answered: backend auth verified complete + hardened; both HIGH gaps
+  closed or filed. Standing by for the train.
