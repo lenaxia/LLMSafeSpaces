@@ -67,3 +67,21 @@ additive). Phase 2: docs + dead-end copy. Phase 3: A′ / hardening, ruling-gate
 
 Design PR open; implementation HELD pending review per charter. No production
 code touched in this PR.
+
+## Review round 1 (formal bot review, CHANGES_REQUESTED) — both findings accepted
+
+1. **Issue closure gate**: PR body said "Closes #1669" — would auto-close a
+   design+implement issue on a docs-only diff. Fixed: `Refs #1669`; issue stays
+   open for phases 1-2.
+2. **Privacy-claim precision** (verified by reviewer against source):
+   `/auth/sso/:slug/start` reveals existence-at-slug but NOT the org display
+   name; `orgContext {slug, name}` additionally reveals the name. My original
+   "byte-for-byte the accepted baseline" claim was payload-inaccurate — the
+   correct statement is *set-equal on existence, plus a bounded name delta*.
+   Fixed in §2 (baseline now splits existence-oracle vs metadata-reveal axes),
+   §4C (score + justification of the delta), §6.1, §5, §10 (pins now assert
+   the existence contract; the name is pinned as intended payload, not as a
+   parity claim). Added a "C-strict" zero-delta variant (slug-only orgContext,
+   generic label) to the §8 owner menu so the delta is an explicit ruling.
+
+Recommendation unchanged: C (default with name, or C-strict).
