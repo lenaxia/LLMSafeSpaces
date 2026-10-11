@@ -610,4 +610,107 @@ describe("LoginPage", () => {
       expect(screen.queryByText(/^Sign in with /)).not.toBeInTheDocument();
     });
   });
+
+  // Design 0064 phase 2 (persona (e)-at-root dead-end cell): the root page
+  // cannot know which org an arbitrary-email newcomer means — and must never
+  // enumerate them — so the dead-end copy's honest answer is the out-of-band
+  // channel: ask your administrator (or whoever invited you) for the org's
+  // sign-in link. The link itself is the answer (#1669 option C).
+  describe("not_found dead-end copy (design 0064 phase 2)", () => {
+    const driveToDeadEnd = async () => {
+      mockLookup.mockResolvedValue({ redirectUrl: "/?lookup=not_found" });
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "nobody@gmail.com" } });
+      const continueBtn = await screen.findByText("Continue with email");
+      fireEvent.click(continueBtn);
+      await waitFor(() => {
+        expect(screen.getByTestId("lookup-not-found")).toBeInTheDocument();
+      });
+      return screen.getByTestId("lookup-not-found");
+    };
+
+    it("points org-bound users at their organisation's sign-in link (registration enabled)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme" }],
+      });
+
+      const banner = await driveToDeadEnd();
+      // The existing dead-end sentence and the register affordance survive.
+      expect(banner.textContent).toMatch(/couldn't find an account/i);
+      expect(screen.getByText("create an account")).toBeInTheDocument();
+      // The phase-2 guidance: the org's sign-in link, obtained out-of-band.
+      expect(banner.textContent).toMatch(/Trying to sign in to an organisation\?/i);
+      expect(banner.textContent).toMatch(/organisation's sign-in link/i);
+    });
+
+    it("points org-bound users at their organisation's sign-in link (registration disabled)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: false, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme" }],
+      });
+
+      const banner = await driveToDeadEnd();
+      expect(banner.textContent).toMatch(/couldn't find an account/i);
+      expect(banner.textContent).toMatch(/contact your administrator/i);
+      expect(banner.textContent).toMatch(/organisation's sign-in link/i);
+      expect(screen.queryByText("create an account")).not.toBeInTheDocument();
+    });
+
+    it("never names an org in the dead-end copy (no enumeration via the dead end)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+      // The verified-domain listing (acme/Acme) is loaded on the page; the
+      // dead-end guidance must stay static — no slug, no org name, no URL
+      // flows into it (design 0064 §4A enumeration stance).
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme" }],
+      });
+
+      const banner = await driveToDeadEnd();
+      expect(banner.textContent).not.toMatch(/acme/i);
+      expect(banner.textContent).not.toMatch(/https?:\/\//);
+    });
+
+    it("renders the same honest guidance on the org-scoped surface (orgContext present, suppression unbroken)", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme", name: "Acme Corp" },
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "beta.com", orgSlug: "beta", orgName: "Beta Ltd" }],
+      });
+
+      mockLookup.mockResolvedValue({ redirectUrl: "/?lookup=not_found" });
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Sign in with Acme Corp")).toBeInTheDocument());
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "nobody@gmail.com" } });
+      const continueBtn = await screen.findByText("Continue with email");
+      fireEvent.click(continueBtn);
+
+      const banner = await waitFor(() => {
+        const el = screen.getByTestId("lookup-not-found");
+        expect(el).toBeInTheDocument();
+        return el;
+      });
+      expect(banner.textContent).toMatch(/organisation's sign-in link/i);
+      // The host org's button is still the one obvious org door (§6.2).
+      expect(screen.getAllByText("Sign in with Acme Corp")).toHaveLength(1);
+      expect(screen.queryByText("Sign in with Beta Ltd")).not.toBeInTheDocument();
+    });
+  });
 });

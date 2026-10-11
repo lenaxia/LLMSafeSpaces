@@ -1,0 +1,80 @@
+# Worklog: #1669 phase 2 — org-scoped login docs + root dead-end copy (design 0064 C)
+
+**Date:** 2026-10-11
+**Session:** w26 deliverable 1 of 3 — the phase-2 companion to the merged phase-1 orgContext surface (PR #1674): the CX matrix §11 dead-end cell copy ((e)-at-root) and the operator/user documentation of org-scoped login, per design 0064 §7 phase 2 and §10's UNVERIFIED citation rule.
+**Status:** Complete
+
+---
+
+## Objective
+
+Close the two phase-2 items design 0064 scoped: (a) honest dead-end copy for a new arbitrary-email user at the root login (guide to the org's sign-in link / administrator, WITHOUT enumerating orgs), and (b) documentation — operator + user facing — of org-scoped login (how an org member/invited user reaches the org login, what the button does, where they land post-callback), never describing cross-subdomain session behavior as verified without live-ingress evidence.
+
+---
+
+## Work Completed
+
+### Red-first frontend pins (4 new, all RED before implementation, GREEN after)
+
+`LoginPage.test.tsx` gains a `not_found dead-end copy (design 0064 phase 2)` describe: (1) org-sign-in-link guidance present with registration enabled, (2) present with registration disabled, (3) no-enumeration pin — banner textContent never matches the loaded org's name/slug (`/acme/i`) and contains no URL, (4) the same guidance renders on the org-scoped surface (orgContext present) with the §6.2 suppression arms re-pinned in the same test (host org button exactly once, cross-org button absent).
+
+Mutation check performed: rewriting `organisation's sign-in link` → `org's URL` in the copy fails tests 1/2/4 (3 passing is correct — it pins absence, not presence). Reverted the mutation by re-applying the implementation after `git checkout` (initial checkout also reverted the uncommitted implementation — lesson: commit before mutating).
+
+### Dead-end copy (LoginPage.tsx)
+
+The `not_found` banner becomes a two-paragraph `div[data-testid="lookup-not-found"]`: the original sentence (try a different email / create an account / contact your administrator) unchanged in meaning, plus the phase-2 guidance: "Trying to sign in to an organisation? Ask your administrator or the person who invited you for your organisation's sign-in link." Static copy only — no org data flows into it (pinned by test 3).
+
+### Operator docs (docs/operator/oidc-sso.md)
+
+New section "Org-scoped login for arbitrary-email orgs" (after DNS domain verification): the onboarding artifact to share (`https://<slug>.<base>` or `/sso/<slug>`), a which-user-uses-what table, where users land post-callback (root frontend URL, membership server-side) with the explicit UNVERIFIED disclosure for cross-subdomain session behavior (audit #1649 — unit/Host-header tests only), the honest root dead end, and a provisioning-note pointer to the §9 ruling doc. "Known gaps" gains the #1669-closed entry and the invitation-JWT-chicken-and-egg entry. "Frontend" subsection and the page nav updated.
+
+### User docs (docs/user/signing-in.md, new)
+
+User-facing "Signing In" page: personal vs SSO paths, the which-door table (org link shapes, verified-domain button, invitation paths incl. the SSO-only caveat), what the button does (IdP redirect, auto-provision on first login), post-callback landing (main app; subdomain session described as *intended*, not verified), and the not_found message explained. Added to mkdocs.yml nav (User Guide, first).
+
+### values.yaml comment refresh
+
+The `orgSubdomainRouting` block comment now records that the subdomain login page is org-aware (phase 1) and the blessed onboarding artifact (phase 2), points at the operator doc section, and carries the UNVERIFIED warning verbatim so operators don't field-claim cookie behavior.
+
+---
+
+## Key Decisions
+
+- **One copy for both surfaces** — the same dead-end guidance renders at root and on the org subdomain (where the discovery button can also dead-end). On the org surface the host-org button above it is already the obvious door; the guidance stays honest there. Pinned by test 4.
+- **Guidance sentence is design-verbatim** — design 0064 §11.2(e): "points them at 'contact your administrator for your organisation's sign-in link'". Added "or the person who invited you" to cover the invited-user CX cell.
+- **Amendment mid-flight** — the orchestrator's amendment file (owner ruled §9 while D1 was in progress) landed before this commit: the operator doc's provisioning note and the invitation known-gap entry were rewritten against the ruling before first push (org registration is IdP-administered; no invitation-through-SSO direction). The D2 forward reference now names `design/0065_2026-10-11_org-provisioning-policy-ruling.md` (inline code, not a markdown link — no dead-link risk regardless of merge order).
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+- `npx vitest run src/pages/LoginPage.test.tsx` — 31/31 passed (27 pre-existing incl. all orgContext suppression arms + 4 new; RED-first observed: 4 failed pre-implementation)
+- `npx tsc --noEmit` — clean
+- `npx eslint src/pages/LoginPage.tsx src/pages/LoginPage.test.tsx` — clean
+- `mkdocs build --strict` — aborts on git-revision-date plugin warnings **identically on pristine main in the same worktree environment** (56 "no git logs" warnings on both; 1 residual warning each; mine is the untracked-file timestamp quirk which resolves once committed). Non-strict build diff vs main: no new broken-link INFO lines; my new intra-doc anchors resolve. CI runs from a full clone where the plugin has history.
+
+---
+
+## Next Steps
+
+- Deliverable 2 (amended): design 0065 — the §9 OWNER RULING documentation (org registration via OIDC, org-owner's IdP is the signup-policy lever; the no-SSO-org edge flagged as an owner QUESTION; IdP signup-restriction guidance for org owners).
+- Deliverable 3: #1652 hardening (passkey issuance checks, per-route rate caps, D4 assessment).
+
+---
+
+## Files Modified
+
+- frontend/src/pages/LoginPage.tsx
+- frontend/src/pages/LoginPage.test.tsx
+- docs/operator/oidc-sso.md
+- docs/user/signing-in.md (new)
+- mkdocs.yml
+- helm/values.yaml (comment only)
+- worklogs/NNNN_2026-10-11_w26-1669-org-login-phase2-docs.md (this file)
+- COORDINATE.md (claim)

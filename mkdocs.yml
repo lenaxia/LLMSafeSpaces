@@ -101,6 +101,7 @@ nav:
       - Quickstart: getting-started/quickstart.md
       - Concepts: getting-started/concepts.md
   - User Guide:
+      - Signing In (password / passkey / SSO): user/signing-in.md
       - Account Recovery (verify email / reset password): user/account-recovery.md
       - Dev Preview: user/dev-preview.md
   - Operator Guide:
