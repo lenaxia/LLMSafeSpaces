@@ -98,3 +98,20 @@ the r2 commit: the blast-radius bullet now states existence-at-slug equality
 PLUS the same disclosed name delta, and notes it collapses to exact
 start-parity under C-strict. My r1 reply's "both findings accepted and fixed"
 was overstated — one instance survived; corrected here.
+
+## Review-infrastructure note (2026-10-11 ~03:05-03:30Z)
+
+The round-3 "PR Review" bot run (38107249319, for the r2-fix commit) failed
+bot-side at "Verify review submitted" — the model never delivered a formal
+verdict (both attempts + salvage failed). `/review` comment retrigger was
+SKIPPED (commands are owner/member/collaborator-only; the PR-author identity
+does not qualify). Retriggered instead with a genuine content commit: §6.2
+refinement — on an org subdomain, the email-driven verified-domain button for
+a DIFFERENT org is now explicitly suppressed (previously ambiguous "wins"
+wording); root-page matching behavior unchanged. Orchestrator informed.
+
+## Post-r2 substantive refinement (same commit)
+
+§6.2: subdomain login suppresses cross-org verified-domain buttons; the
+cross-org user's path remains the root page (existing behavior). No change to
+recommendation or phases; phase-1 frontend tests gain the suppression case.
