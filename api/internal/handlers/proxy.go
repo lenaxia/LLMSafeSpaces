@@ -55,8 +55,11 @@ type ProxyHandler struct {
 	// resolvers owns the shared connection-resolution state (password
 	// cache + pod-IP lookup) the Agent Adapter and the handler both
 	// consume — see ResolverHost. Lazily initialized for struct-literal
-	// constructions.
-	resolvers *ResolverHost
+	// constructions; resolversMu guards the lazy init so concurrent
+	// requests cannot race the nil-check write (#1641 — the release-run
+	// DATA RACE in ProxyHandler.host() under the upload storm test).
+	resolvers   *ResolverHost
+	resolversMu sync.RWMutex
 
 	// connCount is intentionally NOT in stateStore — it represents a
 	// per-replica resource (HTTP file descriptors, memory) that must

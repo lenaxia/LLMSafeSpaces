@@ -333,12 +333,23 @@ func (h *ProxyHandler) MarkSessionDeletedForTest(workspaceID, sessionID string) 
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 }
 
-// host returns the resolver host, initializing it lazily. Tests that
-// construct ProxyHandler via `&ProxyHandler{...}` literal bypass
-// NewProxyHandler; this guard prevents a nil dereference. Production
-// code goes through NewProxyHandler (or SetResolverHost) so the lazy
-// path is never taken in production.
+// host returns the resolver host, initializing it lazily under a lock
+// (#1641: the unsynchronized nil-check write raced under concurrent
+// requests — release-run v0.36.0's race detector caught it in the upload
+// storm test). Tests that construct ProxyHandler via `&ProxyHandler{...}`
+// literal bypass NewProxyHandler; this guard prevents both the nil
+// dereference and the lazy-init race. Production code goes through
+// NewProxyHandler (or SetResolverHost) so the lazy path is never taken
+// in production, but the read must still be race-free.
 func (h *ProxyHandler) host() *ResolverHost {
+	h.resolversMu.RLock()
+	r := h.resolvers
+	h.resolversMu.RUnlock()
+	if r != nil {
+		return r
+	}
+	h.resolversMu.Lock()
+	defer h.resolversMu.Unlock()
 	if h.resolvers == nil {
 		h.resolvers = &ResolverHost{k8sClient: h.k8sClient, namespace: h.namespace}
 	}
