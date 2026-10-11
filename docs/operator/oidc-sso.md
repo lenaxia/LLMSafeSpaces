@@ -254,6 +254,17 @@ Existing claimed domains at migration time were grandfathered as verified (opera
 | SameSite=Lax state cookie | Survives top-level redirect, blocked on cross-site POST |
 | IdP-registered redirect URI | Defense-in-depth; IdP only redirects to registered URIs |
 | Auto-provision off → 403 | `ErrAutoProvisionOff` mapped to `provisioning_disabled` |
+| `/auth/lookup` membership oracle (audit #1649 D4) | **Accepted risk** — see the assessment below the table |
+
+### Accepted risk: `/auth/lookup` membership oracle (audit #1649 D4, assessed #1652)
+
+`POST /auth/lookup` always answers 200 with `{redirectUrl}`, but the **body** differentiates: an email belonging to an org-attached user resolves to their org's URL (subdomain, or the org's SSO start URL), every miss returns `/?lookup=not_found`. The endpoint is therefore an email → (account exists, org slug) oracle. **Assessment: accepted.**
+
+- **Bounded exposure.** No credentials or session material are returned; personal-only (no-org) users are indistinguishable from unknown emails; SSO-configured org slugs are already derivable by probing the public `/auth/sso/:slug/start` (existence oracle, accepted baseline), and verified-domain orgs already publish slug **and** name via `/auth/sso/domains`. Uniform status and body shape are enforced on every error branch (DB errors masked — never 5xx); there is no timing pad, matching the password-reset enumeration precedent.
+- **Uniform-response change: rejected.** Returning one redirect regardless of outcome would remove the email→org routing that is the endpoint's entire function — the existing-member journey (type your email at the root page, be routed to your org's flow). The UX cost is total; the oracle gain would not extend to the other, already-public surfaces.
+- **Issue-suggested middle option (generic redirect when the user's org has no SSO config): not implemented.** With subdomain routing on, such users are routed to their org's own login page (password/passkey forms work there); only the no-routing fallback lands on a `not_configured` error. The change would add a new distinguishing dimension (the org's SSO-ness) to the body — a *new* oracle facet — for a cosmetic gain.
+- **Standing mitigations.** The global 100/min/IP limiter caps probing. Design 0064's enumeration posture does not grow this oracle (`orgContext` is display-only; existence set-equal to the `start` oracle).
+- **Revisit trigger.** If email-spray against the lookup becomes an observed abuse pattern, the designed evolution path is a per-route rate cap (5–10/min/IP, the existing `PerRouteRateLimit` pattern) as the cheap first lever — not scheduled now.
 
 ---
 

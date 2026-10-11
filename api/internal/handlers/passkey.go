@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -304,6 +305,15 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		return
 	}
 
+	// #1652 item 1: mirror the password-login account-state gates at the
+	// token-issuance source. AuthMiddleware already rejects suspended users
+	// on every subsequent request, so the pre-fix exposure was a useless
+	// token + session cookie for an account that cannot use it — closed
+	// here so the token is never minted.
+	if rejectIssuanceForAccountState(c, user) {
+		return
+	}
+
 	tok, err := h.auth.IssueTokenAndUnlockDEK(c.Request.Context(), userID, h.tokenTTL, "passkey")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
@@ -315,6 +325,35 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		"token": tok,
 		"user":  user,
 	})
+}
+
+// rejectIssuanceForAccountState applies the password-login account-state
+// gates (auth.Service.Login: suspended / active / email-verified) before any
+// passkey token issuance (LoginFinish and Recover — #1652 item 1). Response
+// shapes mirror the /auth/login mappings so the frontend treats passkey
+// sign-ins identically:
+//
+//   - suspended → 401 "account suspended" (auth.go's own message)
+//   - inactive → masked 401 (password login masks inactive the same way —
+//     the credential itself already verified, but the account state fails)
+//   - unverified email → 403 + emailVerified:false (the
+//     auth.ErrEmailNotVerified shape, routing the user to verify-email UX)
+//
+// Returns true when the request was rejected (handler must return).
+func rejectIssuanceForAccountState(c *gin.Context, user *types.User) bool {
+	if user.Status == types.UserStatusSuspended {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "account suspended"})
+		return true
+	}
+	if !user.Active {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "passkey login failed"})
+		return true
+	}
+	if !user.EmailVerified {
+		c.JSON(http.StatusForbidden, gin.H{"error": auth.ErrEmailNotVerified.Error(), "emailVerified": false})
+		return true
+	}
+	return false
 }
 
 // --- helpers ---
@@ -372,6 +411,13 @@ func (h *PasskeyHandler) Recover(c *gin.Context) {
 	user, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil || user == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user lookup failed"})
+		return
+	}
+
+	// #1652 item 1: the same issuance-side account-state gates as
+	// LoginFinish — a recovery code is a credential presentation too, and
+	// this handler mints the same session token.
+	if rejectIssuanceForAccountState(c, user) {
 		return
 	}
 
