@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { authApi } from "../api/auth";
-import type { User } from "../api/types";
+import type { AuthResponse, User } from "../api/types";
 
 interface AuthContextValue {
   user: User | null;
@@ -13,7 +13,7 @@ interface AuthContextValue {
     email: string,
     password: string,
     turnstileToken?: string,
-  ) => Promise<void>;
+  ) => Promise<AuthResponse>;
   logout: () => Promise<void>;
 }
 
@@ -43,7 +43,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const register = useCallback(
     async (username: string, email: string, password: string, turnstileToken = "") => {
       const res = await authApi.register({ username, email, password }, turnstileToken);
-      setUser(res.user);
+      // #1651: an unverified registration is NOT a logged-in app user —
+      // login is 403-gated until the emailed link is clicked. Leave user
+      // null in that case so GuestOnly keeps the user on /register to see
+      // the verification guidance instead of bouncing them to /chat.
+      // (The register response also carries a session cookie; the user
+      // can still enter the app via the card's continue path.)
+      if (res.user?.emailVerified !== false) {
+        setUser(res.user);
+      }
+      return res;
     },
     [],
   );

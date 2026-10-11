@@ -12,7 +12,7 @@ import { Button } from "../components/ui/Button";
 type Mode = "passkey" | "password" | "recovery-codes" | "verify-email";
 
 export function RegisterPage() {
-  const { loginWithToken } = useAuth();
+  const { register, loginWithToken } = useAuth();
   const [returnTo, setReturnTo] = useState("");
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [mode, setMode] = useState<Mode>("password");
@@ -62,27 +62,22 @@ export function RegisterPage() {
   // #1651: password registration needs the RESPONSE (not just success) to
   // branch on user.emailVerified. With a verifier wired (email_verified=false
   // at signup) show verification guidance instead of redirecting: the next
-  // login is 403-gated until the emailed link is clicked. The user state is
-  // deliberately NOT populated in that branch — GuestOnly would otherwise
-  // bounce the user off /register before they read the guidance.
+  // login is 403-gated until the emailed link is clicked. AuthProvider
+  // deliberately leaves user null in that branch — GuestOnly would otherwise
+  // bounce the user off /register before they read the guidance. For the
+  // auto-verified branch the provider has already set the user, so the
+  // GuestOnly bounce to /chat (or the returnTo hard-nav) completes the flow.
   const handlePasswordRegister = async (
     username: string,
     email: string,
     password: string,
     turnstileToken?: string,
   ) => {
-    const res = await authApi.register({ username, email, password }, turnstileToken);
+    const res = await register(username, email, password, turnstileToken);
     if (res.user?.emailVerified === false) {
       setRegisteredEmail(email);
       setMode("verify-email");
       return;
-    }
-    // Auto-verified (or older API shape without the field): populate the
-    // user state from the session cookie the register call just set.
-    try {
-      await loginWithToken("");
-    } catch {
-      // Non-fatal — cookie is set, session will work on reload.
     }
     redirectAfterAuth();
   };

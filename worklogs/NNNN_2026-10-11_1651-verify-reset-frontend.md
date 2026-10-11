@@ -145,8 +145,13 @@ Verified (commands run, counts checked) unless labeled reasoned.
 
 ## Test runs (verified counts)
 
-- Frontend targeted: 5 files, **56/56 PASS** (vitest).
-- Frontend FULL suite: **188 files, 2087/2087 PASS** (~200s).
+- Frontend targeted: 5 files, **56/56 PASS** (vitest); after the provider
+  fix: 15 auth-related files, **115/115 PASS**.
+- Frontend FULL suite: **188 files, 2087/2087 PASS** (~200s) — re-run after
+  the AuthProvider change.
+- Playwright e2e FULL suite: **187 passed, 13 skipped, 0 failed** (~5m);
+  new verify-reset.spec.ts: **8/8**, 108 consecutive green across
+  repeat-each batches after the flake fix.
 - `tsc --noEmit`: clean. `eslint .`: 0 errors (1 warning removed from my
   code; abi_pb warnings pre-existing on main).
 - Go: `TestOpenAPIRouterContract` PASS; handlers `-run "TestPasswordReset|
@@ -162,6 +167,26 @@ Verified (commands run, counts checked) unless labeled reasoned.
 - jsdom note (reasoned, not a defect): `<a>` clicks don't navigate in jsdom,
   so redirect assertions use link-href attributes (reset-success) and
   href-setter spies (existing patterns) rather than click-through.
+- **CI round 1: "Frontend (unit + typecheck + e2e)" FAILED** — the existing
+  `register-turnstile.spec.ts` happy path broke. Verified root cause: the
+  old register flow navigated via `setUser` → GuestOnly bounce to /chat;
+  my refactor replaced it with `loginWithToken` (a `/auth/me` round-trip),
+  which 401s in the route-mocked e2e (no cookie propagation) so the URL
+  stayed /register. Fix: `AuthProvider.register` now returns the
+  `AuthResponse` and skips `setUser` ONLY when `user.emailVerified ===
+  false` — verified registrations get the exact old navigation semantics
+  back (and one less request in prod); unverified ones stay on /register
+  for the guidance card. This is a behavior-affecting change to a provider
+  method (return type widened, setUser made conditional) — flagged for the
+  reviewer; RegisterPage is its only caller (grep-verified).
+- New e2e suite `verify-reset.spec.ts` (8 tests): one test flaked ~2/90
+  runs (click-after-SPA-navigation race: click landed, no submit state
+  change). Could not reproduce with tracing; restructured the test to pin
+  the forgot-password link by href and drive the request flow via direct
+  navigation (deterministic). 108 consecutive green runs after.
+- Playwright `getByPlaceholder` substring-matching pitfall: "New password"
+  also matched "Confirm new password" → strict-mode violation; fixed with
+  `{ exact: true }`.
 
 ## Follow-ups (not in scope)
 
