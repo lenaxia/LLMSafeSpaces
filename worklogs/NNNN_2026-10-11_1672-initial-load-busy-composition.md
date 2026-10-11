@@ -153,3 +153,44 @@ listing's derivation — **layer (a), server-side in agentd**:
   event path) is reasoned from the signature match — agentd SSE
   reconnect logs from the incident window would confirm, but the fix
   covers the class either way.
+
+## Round 2 (AI review r1 — CHANGES_REQUESTED → addressed)
+
+Findings and dispositions (review at PR #1673, commit c1a14c44):
+
+1. **[r1 finding 1] ≤15s TTL busy-linger after a cleanly-observed turn
+   end** (hit path applied the cached registry with no staleness
+   check; reached the listing pill AND /sessions/active). **FIXED, not
+   just disclosed**: the tracker now stamps `idleObservedAt` on every
+   OBSERVED session.status=idle (and on the generation-change busy
+   reset — its own contract calls that state honest idle; a busy mark
+   clears it), and the floor defers to observed-idle evidence strictly
+   NEWER than the registry's read (`observedIdleAfter`). A cleanly
+   observed turn end renders idle on the very next render — zero
+   linger on the normal path, and during a refresh outage the observed
+   idle still wins over the grace-stale registry. Rejected alternative
+   during design: keying off `lastEventAt` (ANY activity) instead of
+   observed idle — sparse-but-alive mid-turn workers (w23's polling
+   loop) would have refreshed lastEventAt and DEFEATED the floor for
+   exactly the incident's sessions; only a status TRANSITION to idle is
+   end-of-turn evidence.
+2. **[r1 finding 2] authority-blind pending-ask floors to busy**
+   (the same gap that blinded the tracker can blind the authority to
+   the ask events → carve-out cannot confirm → floor applies for the
+   ask's duration). **PINNED AS ACCEPTED + disclosed**: the ratified
+   carve-out requires CONFIRMATION; an unconfirmable ask does not
+   override the harness live-turn truth, and the ask surfaces on its
+   own channel (frontend pendingActions pills ride the browser event
+   stream, not this composition). `TestCachedState_BlindPendingAskFloorsBusy`.
+3. **[r1 missing-1]** → `TestCachedState_RegistryFlipAppliedOnNextRefresh`
+   (refresh result stored AND applied — reorder/dropped-store guard).
+4. **[r1 robustness]** starvation-window claim reworded (the fetch DOES
+   extend the mu window, bounded ≤2s); `io.LimitReader(64KB)` added to
+   the agentd registry read (now truly mirrors the pkg twin).
+5. **[r1 noted, disclosed]** positive side effect: the floor also
+   corrects GET /sessions/active admission data (same statusz source).
+
+Mutation-checked r2: observed-idle check removed → the r2 pin fails;
+restored → green. Full cmd/workspace-agentd suite green (326.7s),
+sessionstate green, vet/lint/goimports clean. Leg B tracking issue to
+be filed per review ask.

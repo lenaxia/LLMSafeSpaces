@@ -358,3 +358,85 @@ func TestOpenCodeClient_GetSessionStatuses(t *testing.T) {
 	_, err = client.GetSessionStatuses(context.Background())
 	require.Error(t, err, "a non-200 registry read must fail loudly, never decode as empty")
 }
+
+// TestCachedState_ObservedIdleBeatsStaleRegistry (r2, review finding 1):
+// a cleanly-observed turn end must not be re-busied by the ≤TTL-stale
+// cached registry. The SSE idle event is strictly newer evidence than
+// the registry snapshot — the floor defers to it on the hit path, so
+// there is NO busy-linger window after an observed idle.
+func TestCachedState_ObservedIdleBeatsStaleRegistry(t *testing.T) {
+	client, fake := newRegistryFloorTestClient(t,
+		map[string]string{"s1": "busy"},
+		"s1")
+	fake.setRegistry(map[string]string{"s1": "busy"})
+	tracker := newSessionStatusTracker()
+
+	// Prime: registry floors to busy (tracker never saw the session).
+	cache := &providerCache{}
+	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	require.Equal(t, "busy", statusByIDs(sessions)["s1"], "primed: registry floors to busy")
+
+	// The turn ends and the SSE stream cleanly observes the idle —
+	// AFTER the registry was fetched. The authority agrees (not busy).
+	tracker.set("s1", "idle")
+	busyTruth := func() map[string]busyVerdict {
+		return map[string]busyVerdict{"s1": {Busy: false}}
+	}
+
+	// Hit-path render (TTL fresh, registry still the busy snapshot):
+	// observed-idle evidence newer than the registry's read must win.
+	_, _, sessions = cachedState(context.Background(), client, cache, tracker, busyTruth)
+	assert.Equal(t, "idle", statusByIDs(sessions)["s1"],
+		"r2: an observed idle strictly newer than the registry fetch must not be re-busied by the stale cached registry (no TTL busy-linger)")
+}
+
+// TestCachedState_RegistryFlipAppliedOnNextRefresh (r2, review missing-
+// test 1): pins that refreshRegistryLocked's fresh result is STORED and
+// APPLIED after refresh — a reorder (apply-before-refresh) or a dropped
+// store would linger the previous registry's busy for a full grace
+// window undetected.
+func TestCachedState_RegistryFlipAppliedOnNextRefresh(t *testing.T) {
+	client, fake := newRegistryFloorTestClient(t,
+		map[string]string{"s1": "busy"},
+		"s1")
+	tracker := newSessionStatusTracker()
+
+	// Prime: registry busy floors s1.
+	cache := &providerCache{}
+	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	require.Equal(t, "busy", statusByIDs(sessions)["s1"])
+
+	// The turn ends (harness registry now idle). Force the miss path.
+	fake.setRegistry(map[string]string{"s1": "idle"})
+	cache.lastFetchedAt = time.Time{}
+	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
+	assert.Equal(t, "idle", statusByIDs(sessions)["s1"],
+		"the refreshed registry must be the one the floor judges — no stale-registry linger after a successful refresh")
+}
+
+// TestCachedState_BlindPendingAskFloorsBusy (r2, review finding 2 —
+// pinned as ACCEPTED, disclosed): when the same SSE gap that blinded
+// the tracker also blinded the authority to the ask events, a
+// user-blocked session cannot CONFIRM its pending ask — the #1574
+// carve-out requires confirmation, and an unconfirmable ask does not
+// override the harness's live-turn truth. The session floors to busy.
+// The ask itself surfaces on its own channel (frontend pendingActions
+// pills ride the browser's event stream, not this composition), so the
+// busy pill costs a spinner — hiding the turn would cost the truth.
+func TestCachedState_BlindPendingAskFloorsBusy(t *testing.T) {
+	client, _ := newRegistryFloorTestClient(t,
+		map[string]string{"s1": "busy"},
+		"s1")
+	tracker := newSessionStatusTracker() // blind: the gap ate everything
+
+	// Authority blind to s1 — no verdict at all (the ask events were
+	// missed with the same gap).
+	busyTruth := func() map[string]busyVerdict {
+		return map[string]busyVerdict{}
+	}
+
+	cache := &providerCache{}
+	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	assert.Equal(t, "busy", statusByIDs(sessions)["s1"],
+		"accepted edge: an UNCONFIRMABLE pending ask (authority blind) does not beat the harness live-turn registry")
+}

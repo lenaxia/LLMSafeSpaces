@@ -161,7 +161,10 @@ func (c *OpenCodeClient) GetSessionStatuses(ctx context.Context) (map[string]str
 	var raw map[string]struct {
 		Type string `json:"type"`
 	}
-	if err := decodeStrict(resp.Body, &raw); err != nil {
+	// 64 KB cap, mirroring the pkg/agent/opencode twin (client.go
+	// GetSessionStatuses): a session count in the thousands still fits
+	// (~30 bytes/entry) while a runaway upstream stays bounded.
+	if err := decodeStrict(io.LimitReader(resp.Body, 64*1024), &raw); err != nil {
 		return nil, fmt.Errorf("GET /session/status: decode: %w", err)
 	}
 	result := make(map[string]string, len(raw))
