@@ -1,6 +1,6 @@
 # 0065 — Org provisioning policy: owner ruling (registration is IdP-administered); amends design 0064 §9
 
-**Status:** Accepted — owner ruling recorded 2026-10-11 (this document is ruling-documentation, not a proposal; the owner's comment below decides nothing further — it is already decided).
+**Status:** Accepted — owner rulings recorded 2026-10-11: §9 (org provisioning is IdP-administered), §4 (all orgs require OIDC), and design 0064 §8 = C (recorded at §4b). This document is ruling-documentation, not a proposal.
 **Date:** 2026-10-11
 **Issues:** #1669 (the charter this completes: design 0064 §9 deferred "who may join an arbitrary-email org" — ruled here).
 **Amends:** [`design/0064_2026-10-11_multi-org-arbitrary-email-login-routing.md`](0064_2026-10-11_multi-org-arbitrary-email-login-routing.md) §9 (in review as PR #1671 at time of writing — this file is separate to avoid editing that open PR; when 0064 lands, its §9 should point here).
@@ -40,14 +40,21 @@ Design 0064 §9 deferred four candidate policies; the ruling resolves each:
 3. **Operator/user documentation carries the policy.** `docs/operator/oidc-sso.md` ("Provisioning policy (owner-ruled)" and "Known gaps") and `docs/user/signing-in.md` state it; this document is the citable record.
 4. **Abuse surface is unchanged and remains the org owner's to manage.** Instance operators still hold the blunt instruments (suspend org/users; the org's SSO config can be deleted or `auto_provision` turned off) if an org's IdP becomes a spray source.
 
-## 4. OPEN QUESTION for the owner (flagged, deliberately unanswered)
+## 4. NO-SSO ORGS — ruled: all orgs require OIDC
 
-The ruling covers orgs **with** SSO configured. It does not address orgs with **no** SSO configuration at all:
+This section was written as an open question and **ruled on 2026-10-11** while this document was in review (ruling relayed by the orchestrator on PR #1676):
 
-- Today such an org's only member-acquisition path is **invitations**, and invitations work only for users who hold (or create) a password/passkey account — the instance-level `auth.registrationEnabled` gate therefore indirectly shapes who can join a no-SSO org.
-- Is "invitation-only, riding instance registration policy" the intended steady state for no-SSO orgs — or should orgs without SSO not exist (i.e., SSO configuration become a prerequisite for org creation)?
+> **"All orgs require OIDC. We don't support anything else."**
 
-This document does not answer it. **Owner: one comment here picks a branch.** Until then, no change: invitations remain the no-SSO org path, and nothing in this ruling is read to require SSO.
+An org without SSO configured is **not a supported state**. Consequences and enforcement status:
+
+- **Enforcement gap, pinned:** org creation today is platform-admin-only with **no SSO requirement anywhere** (`orgs.go` `Create`), and a created org is immediately active and usable (invitations + password members). `TestCreateOrg_NoSSORequirementGapPin` (orgs_admin_create_test.go, PR #1677) will lock this current behavior with the ruling context once #1677 merges (currently open), so any enforcement change must deliberately flip the pin.
+- **The enforcement mechanism needs its own owner decision** (bootstrap semantics): creation-gating has a chicken-and-egg — the first owner must be an existing (password/passkey) user, because SSO users are provisioned by the org's own IdP, which can only be configured after the org exists (creation would need to accept an initial SSO config inline); a not-usable-until-SSO state must define what the bootstrap owner can still do (configure SSO, nothing else?). **Filed as #1679**; the mechanism did not ride the #1652 hardening PR (which carries only the pin).
+- Under the ruling, the no-SSO invitation path (§6's verification trail records the mechanical surface: org member acquisition = SSO auto-provision ∪ invitation accept; the user-facing shapes are documented in `docs/operator/oidc-sso.md` and `docs/user/signing-in.md`) is a **transition mechanism only** for orgs predating enforcement.
+
+## 4b. Related ruling recorded here: design 0064 §8 = C
+
+The owner simultaneously resolved design 0064's §8 org-name-display question: **C** — the org-scoped login page **shows the org name** ("Sign in with {org}"); phase 1's implemented behavior stands permanently; no C-strict rework. The display-name metadata delta of design 0064 §4C is therefore owner-accepted as permanent. (Recorded here with the §4 ruling per the orchestrator's relay; no code change — phase 1 already renders the name.)
 
 ## 5. Operational guidance for org owners (where signup policy now lives)
 
@@ -68,4 +75,4 @@ In every case the platform-side `auto_provision` toggle remains available as the
 
 ## 7. History
 
-Deferred by design 0064 §9 (2026-10-11, PR #1671); w26 chartered to prepare a decision document (options i–iv + recommendation); **the owner ruled before the decision document was drafted** (orchestrator amendment, 2026-10-11) — this file records the ruling and its consequences instead. Design 0064 §8's C-vs-C-strict org-name display question remains the owner's one open decision in that design; it is untouched and unrelated to this ruling.
+Deferred by design 0064 §9 (2026-10-11, PR #1671); w26 chartered to prepare a decision document (options i–iv + recommendation); **the owner ruled before the decision document was drafted** (orchestrator amendment, 2026-10-11) — this file records the ruling and its consequences instead. While this document was in review, the owner resolved its §4 question (**all orgs require OIDC**) and design 0064 §8 (**C** — org name shown), both relayed on PR #1676 and recorded at §4/§4b above. The §8 = C record closes design 0064's owner menu in full: option C with the name-bearing orgContext is the permanent shape.
