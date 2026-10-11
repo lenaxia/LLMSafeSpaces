@@ -81,3 +81,6 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 
 - Owner ruling "All orgs require OIDC" (design 0065 §4) enforcement follow-up filed as **#1679** (org-creation/SSO gating mechanism; owner decision on bootstrap semantics; this PR's gap pin must be flipped deliberately when implemented).
 - Anomaly noted: PR #1677's `pull_request: opened` event produced ZERO workflow runs (no CI, no PR Review — confirmed via actions API: 0 runs for head SHA 06601982). This addendum commit exists to re-fire `synchronize`; if workflows still do not run, escalate to the orchestrator (event delivery problem outside the workspace).
+
+- Update: the rulings record MERGED as PR #1678 (3 review rounds — the citable-record discipline caught a never-filed follow-up, now issue #1679, plus cross-record tense fixes). Design 0065 §4 cites #1679; this PR's gap pin is referenced from it as "pin pending: PR #1677".
+- The zero-workflow-runs anomaly on this PR persists (both head SHAs 06601982 and 7e22fdf8: 0 runs via actions API, while sibling PRs' events flow). CI manually dispatched on the branch per ci.yml's workflow_dispatch; this commit is a third synchronize probe — if it also produces no runs the PR needs recreating (GitHub event drop specific to this PR's opened/synchronize webhooks).
