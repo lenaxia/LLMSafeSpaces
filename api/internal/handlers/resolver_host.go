@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -32,6 +33,11 @@ type ResolverHost struct {
 	k8sClient  pkginterfaces.KubernetesClient
 	namespace  string
 	stateStore wsstate.Store
+	// stateMu guards stateStore's lazy init (#1641 r2: State()'s
+	// unsynchronized nil-write raced under concurrent GetPassword —
+	// the frame the r1 reviewer reproduced twice on the first fix's
+	// head). Same double-checked pattern as ProxyHandler.host().
+	stateMu sync.RWMutex
 }
 
 // NewResolverHost constructs a standalone host with an in-memory state
@@ -40,17 +46,30 @@ func NewResolverHost(k8sClient pkginterfaces.KubernetesClient, namespace string)
 	return &ResolverHost{k8sClient: k8sClient, namespace: namespace}
 }
 
-// State returns the state store, initializing it lazily (struct-literal
-// constructions bypass the normal wiring; production always sets one).
+// State returns the state store, initializing it lazily under the lock
+// (struct-literal constructions bypass the normal wiring; production
+// always sets one — but the read must be race-free either way).
 func (r *ResolverHost) State() wsstate.Store {
+	r.stateMu.RLock()
+	s := r.stateStore
+	r.stateMu.RUnlock()
+	if s != nil {
+		return s
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	if r.stateStore == nil {
 		r.stateStore = wsstate.NewInMemoryStore()
 	}
 	return r.stateStore
 }
 
-// SetStateStore swaps the backing store. Pre-Start only.
+// SetStateStore swaps the backing store. Pre-Start by convention; the
+// write lock makes that invariant enforced rather than assumed (#1641
+// r2 discipline: no unguarded writes to shared resolver state remain).
 func (r *ResolverHost) SetStateStore(store wsstate.Store) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	r.stateStore = store
 }
 
