@@ -3,7 +3,7 @@
 **Status:** Ruled (2026-10-11) — **owner selected C** (relay recorded in design 0065 §4b): the org-scoped login page shows the org name; the phase-1 implementation is the permanent shape, no C-strict rework. Phases 1–2 shipped (PRs #1674, #1676); §9 filed onward as design 0065.
 **Date:** 2026-10-11
 **Issues:** #1669 (this design's charter) · audit #1649 gap D4 (the lookup body-oracle accepted risk this design must not grow) · Epic 54 (US-54.1/54.3 — the subdomain routing this design completes).
-**Binding rulings:** §8 = **C** (org name shown; recorded in [design 0065 §4b](0065_2026-10-11_org-provisioning-policy-ruling.md), relayed by the orchestrator on PR #1676) · §9 (provisioning policy) → **ruled in [design 0065](0065_2026-10-11_org-provisioning-policy-ruling.md)**: org registration is IdP-administered, and all orgs require OIDC (enforcement gap pinned; follow-up #1679).
+**Binding rulings:** §8 = **C** (org name shown; recorded in [design 0065 §4b](0065_2026-10-11_org-provisioning-policy-ruling.md), relayed by the orchestrator on PR #1676) · §9 (provisioning policy) → **ruled in [design 0065](0065_2026-10-11_org-provisioning-policy-ruling.md)**: org registration is IdP-administered, and all orgs require OIDC (pin pending: PR #1677, currently open; follow-up #1679).
 
 ---
 
