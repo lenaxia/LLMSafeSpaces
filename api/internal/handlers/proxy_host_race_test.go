@@ -32,3 +32,21 @@ func TestProxyHost_ConcurrentLazyInit(t *testing.T) {
 		t.Fatal("host() nil after wait")
 	}
 }
+
+// TestResolverHostState_ConcurrentLazyInit (#1641 r2): the frame the r1
+// reviewer reproduced twice on the first fix's head — State()'s lazy
+// nil-write racing under concurrent readers (the GetPassword path).
+func TestResolverHostState_ConcurrentLazyInit(t *testing.T) {
+	r := &ResolverHost{}
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if r.State() == nil {
+				t.Error("State() returned nil")
+			}
+		}()
+	}
+	wg.Wait()
+}

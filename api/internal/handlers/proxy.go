@@ -323,6 +323,8 @@ func (h *ProxyHandler) SetResolverHost(host *ResolverHost) {
 	if h.started {
 		panic("SetResolverHost called after Start — request goroutines may already be reading resolvers")
 	}
+	h.resolversMu.Lock()
+	defer h.resolversMu.Unlock()
 	h.resolvers = host
 }
 
