@@ -85,3 +85,16 @@ code touched in this PR.
    generic label) to the §8 owner menu so the delta is an explicit ruling.
 
 Recommendation unchanged: C (default with name, or C-strict).
+
+## Review round 2 (CHANGES_REQUESTED) — residual accepted
+
+r1 findings confirmed resolved (Refs; privacy claims in §2/§4C/§5/§6.1/§8/§10;
+UNVERIFIED citation verified verbatim). One blocking residual: the §4C
+blast-radius bullet still claimed a spoofed-Host reveal is "information equal
+to probing start" — the same payload-inaccuracy as r1 finding 2 (start reveals
+existence only; the name has no existing public surface for non-verified-domain
+orgs), and it contradicted the corrected lines elsewhere in the doc. Fixed in
+the r2 commit: the blast-radius bullet now states existence-at-slug equality
+PLUS the same disclosed name delta, and notes it collapses to exact
+start-parity under C-strict. My r1 reply's "both findings accepted and fixed"
+was overstated — one instance survived; corrected here.
