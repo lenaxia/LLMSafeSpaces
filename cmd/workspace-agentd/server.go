@@ -171,14 +171,15 @@ func buildStatuszHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		healthy, version, _ := client.IsHealthy(r.Context())
-		// ONE truth snapshot per render: the sessions overlay and the
-		// busy-age filter below judge the same map (never a second
-		// authority fetch, never two different truths in one response).
-		var truth map[string]bool
+		// ONE truth snapshot per render: the sessions overlay, the
+		// registry floor, and the busy-age filter below judge the same
+		// map (never a second authority fetch, never two different
+		// truths in one response).
+		var truth map[string]busyVerdict
 		if busyTruth != nil {
 			truth = busyTruth()
 		}
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, func() map[string]bool { return truth })
+		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, func() map[string]busyVerdict { return truth })
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -206,7 +207,7 @@ func buildStatuszHandler(
 		busyAges := tracker.busyDurations()
 		ages := make(map[string]int, len(busyAges))
 		for id, d := range busyAges {
-			if busy, known := truth[id]; known && !busy {
+			if v, known := truth[id]; known && !v.Busy {
 				continue // authority-unbusied: the age was fiction
 			}
 			secs := int(d.Seconds())

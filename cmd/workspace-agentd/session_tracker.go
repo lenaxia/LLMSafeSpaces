@@ -28,6 +28,14 @@ type providerCache struct {
 	configured    int
 	sessions      []agentd.SessionInfo
 	lastFetchedAt time.Time
+	// registry is the harness live-turn registry (/session/status,
+	// #1672) fetched alongside the session list on TTL expiry — the
+	// busy FLOOR input for cachedState's render composition. Nil when
+	// never fetched or dropped past the staleness grace.
+	registry map[string]string
+	// registryFetchedAt stamps the last successful registry fetch —
+	// the staleness-grace clock when refreshes start failing.
+	registryFetchedAt time.Time
 	// readySnapshot mirrors connected/configured behind an atomic
 	// pointer so /v1/readyz never touches mu (design 0050 D4, review
 	// round 4 on #895): cachedState holds mu across three synchronous
@@ -552,18 +560,72 @@ func (c *providerCache) lastKnown() (connected []string, configured int) {
 	return nil, 0
 }
 
+// busyVerdict is one session's #1574 busy truth, carrying both fields
+// the render composition needs: the derived busy (streaming ∥ in-flight
+// parts ∥ queue depth — pending asks carved out) and whether a pending
+// USER ask exists. The carve-out marker exists for #1672: a harness-busy
+// floor must be able to distinguish "not busy because user-blocked"
+// (#1574's ruled shape — stays idle) from "not busy because the
+// projection missed the turn" (the initial-load incident — floors to
+// busy).
+type busyVerdict struct {
+	Busy           bool
+	PendingUserAsk bool
+}
+
 // busyTruthFn is the #1574 authority overlay: the projection's derived
 // busy (one definition) for every session the projection knows, in ONE
 // snapshot (fetched once per render — never per session). Sessions
-// absent from the map keep the tracker's answer.
-type busyTruthFn func() map[string]bool
+// absent from the map keep the tracker's answer. The fn must be
+// snapshot-backed (repeat calls return the same truth) — cachedState
+// consults it from more than one overlay within a single render.
+type busyTruthFn func() map[string]busyVerdict
+
+// registryFetchBudget bounds the live-registry fetch inside the cache
+// window: cachedState already holds mu across synchronous opencode
+// calls, and the floor is the composition's least-critical input —
+// better to drop it for one render than extend the documented
+// starvation window (session_tracker.go's readySnapshot exists because
+// of exactly that window).
+var registryFetchBudget = 2 * time.Second
+
+// registryStalenessGrace bounds how long a previously-fetched registry
+// may keep flooring renders after its refreshes start failing (#1672):
+// a mid-turn session's floor is worth bounded staleness, but a registry
+// that cannot be refreshed for longer than this goes inert so a session
+// that finished its turn cannot stay phantom-busy indefinitely.
+const registryStalenessGrace = 60 * time.Second
+
+// refreshRegistryLocked fetches the harness live-turn registry with its
+// own budget and stores it. On failure the previous registry survives
+// only inside the staleness grace; beyond it the floor goes inert
+// (never floors off unrefreshably-stale data). Caller holds cache.mu.
+func refreshRegistryLocked(ctx context.Context, client *OpenCodeClient, cache *providerCache) {
+	fetchCtx, cancel := context.WithTimeout(ctx, registryFetchBudget)
+	defer cancel()
+	registry, err := client.GetSessionStatuses(fetchCtx)
+	if err != nil {
+		log.Debug("harness session registry fetch failed; busy floor degrading",
+			zap.Error(err),
+			zap.Bool("staleRegistryKept", cache.registry != nil && time.Since(cache.registryFetchedAt) <= registryStalenessGrace))
+		if cache.registry != nil && time.Since(cache.registryFetchedAt) > registryStalenessGrace {
+			cache.registry = nil
+		}
+		return
+	}
+	cache.registry = registry
+	cache.registryFetchedAt = time.Now()
+}
 
 // cachedState merges the client's session list with SSE-tracked
-// statuses, then overlays the authority's derived busy truth (#1574
-// ask 2: one definition feeding both views — the #1573 incident caught
-// them holding opposite answers). busyTruth may be nil (no authority
-// wired: bare tracker behavior, preserved for constructions without
-// one).
+// statuses, overlays the authority's derived busy truth (#1574 ask 2:
+// one definition feeding both views — the #1573 incident caught them
+// holding opposite answers), then overlays the harness live-turn
+// registry as a busy FLOOR (#1672: both event-fed legs miss turns that
+// start inside SSE recycle/backoff gaps — the registry is the live
+// truth the platform's own status consumers read). busyTruth may be nil
+// (no authority wired: bare tracker behavior, preserved for
+// constructions without one).
 func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker, busyTruth busyTruthFn) ([]string, int, []agentd.SessionInfo) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -573,6 +635,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 			cache.sessions[i].Status = tracker.get(cache.sessions[i].ID)
 		}
 		applyBusyTruthLocked(cache.sessions, busyTruth)
+		applyRegistryFloorLocked(cache.sessions, cache.registry, busyTruth)
 		return cache.connected, cache.configured, cache.sessions
 	}
 	connected, connErr := client.ConnectedProviders(ctx)
@@ -598,6 +661,11 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 	}
 	tracker.prune(ids)
 	applyBusyTruthLocked(sessions, busyTruth)
+	// #1672: refresh the harness live-turn registry alongside the
+	// session list (one fetch per TTL window — the floor composes with
+	// fresh tracker/authority input on every render).
+	refreshRegistryLocked(ctx, client, cache)
+	applyRegistryFloorLocked(sessions, cache.registry, busyTruth)
 	cache.connected = connected
 	cache.configured = configured
 	cache.sessions = sessions
@@ -619,15 +687,61 @@ func applyBusyTruthLocked(sessions []agentd.SessionInfo, busyTruth busyTruthFn) 
 	}
 	truth := busyTruth()
 	for i := range sessions {
-		busy, known := truth[sessions[i].ID]
+		v, known := truth[sessions[i].ID]
 		if !known {
 			continue
 		}
-		if busy {
+		if v.Busy {
 			sessions[i].Status = "busy"
 		} else if sessions[i].Status == "busy" {
 			sessions[i].Status = "idle"
 		}
+	}
+}
+
+// applyRegistryFloorLocked overlays the harness live-turn registry on
+// the rendered session statuses (#1672): registry-busy is a BUSY FLOOR
+// — add-only, it can never clear busy (the idle leg belongs to the
+// tracker/authority; a registry "idle" is deliberately ignored here).
+// The #1574 permission-wait carve-out survives the floor ONLY where the
+// authority confirms a pending user ask with zero streaming, zero
+// in-flight parts, and zero queue depth (Busy=false, PendingUserAsk=
+// true): user-blocked stays idle even though the harness registry says
+// busy. Sessions the registry does not know keep the tracker ∥
+// authority answer. registry may be nil/stale-grace-dropped (inert).
+// The verdict fetch is lazy and snapshot-backed: it fires only when a
+// session actually needs the carve-out check, and repeat calls within
+// one render return the same truth.
+func applyRegistryFloorLocked(sessions []agentd.SessionInfo, registry map[string]string, busyTruth busyTruthFn) {
+	if len(registry) == 0 {
+		return
+	}
+	var verdicts map[string]busyVerdict
+	for i := range sessions {
+		live, known := registry[sessions[i].ID]
+		if !known || !registrySaysBusy(live) {
+			continue
+		}
+		if verdicts == nil && busyTruth != nil {
+			verdicts = busyTruth()
+		}
+		if v, seen := verdicts[sessions[i].ID]; seen && !v.Busy && v.PendingUserAsk {
+			continue // #1574 carve-out: user-blocked ≠ busy
+		}
+		sessions[i].Status = "busy"
+	}
+}
+
+// registrySaysBusy maps a live /session/status value to floor-busy,
+// mirroring the tracker's own session.status mapping
+// (handleSessionStatus): busy, retry, error, and compacting are live
+// turn activity; idle (and anything unknown) is not.
+func registrySaysBusy(typ string) bool {
+	switch typ {
+	case "busy", "retry", "error", "compacting":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -640,13 +754,16 @@ func busyTruthFrom(a *sessionstate.Authority) busyTruthFn {
 	if a == nil {
 		return nil
 	}
-	return func() map[string]bool {
+	return func() map[string]busyVerdict {
 		st := a.State().Sessions
-		out := make(map[string]bool, len(st))
+		out := make(map[string]busyVerdict, len(st))
 		for id, v := range st {
 			// State() always enriches BusyComponents (enrichBusyLocked
 			// runs on every view render) — no fallback leg exists here.
-			out[id] = v.BusyComponents.GetBusy()
+			out[id] = busyVerdict{
+				Busy:           v.BusyComponents.GetBusy(),
+				PendingUserAsk: v.BusyComponents.GetPendingUserInputs() > 0,
+			}
 		}
 		return out
 	}

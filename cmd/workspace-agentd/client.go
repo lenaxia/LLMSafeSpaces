@@ -142,6 +142,35 @@ func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, provide
 	return 0
 }
 
+// GetSessionStatuses calls GET /session/status on the local opencode and
+// returns the harness live-turn registry: session ID → status type
+// ("idle", "busy", "retry", ...). #1672: the event-fed tracker misses
+// turns that start inside SSE recycle/backoff gaps — this registry is
+// the live truth the platform's own status consumers (session_metadata,
+// the drain gate, the orphaned-tool repair) already read.
+func (c *OpenCodeClient) GetSessionStatuses(ctx context.Context) (map[string]string, error) {
+	resp, err := c.doRequest(ctx, "/session/status")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("GET /session/status returned %d: %s", resp.StatusCode, string(body))
+	}
+	var raw map[string]struct {
+		Type string `json:"type"`
+	}
+	if err := decodeStrict(resp.Body, &raw); err != nil {
+		return nil, fmt.Errorf("GET /session/status: decode: %w", err)
+	}
+	result := make(map[string]string, len(raw))
+	for id, info := range raw {
+		result[id] = info.Type
+	}
+	return result, nil
+}
+
 func (c *OpenCodeClient) ListSessions(ctx context.Context) ([]agentd.SessionInfo, error) {
 	resp, err := c.doRequest(ctx, "/session")
 	if err != nil {
