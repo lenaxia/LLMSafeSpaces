@@ -270,7 +270,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../user/account-recovery/" class="md-tabs__link">
+        <a href="../../user/signing-in/" class="md-tabs__link">
           
   
   
@@ -615,6 +615,8 @@
       
         
       
+        
+      
     
     
     
@@ -659,6 +661,34 @@
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user/signing-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Signing In (password / passkey / SSO)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1310,6 +1340,78 @@
     <span class="md-ellipsis">
       
         Grandfathering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#org-scoped-login-for-arbitrary-email-orgs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Org-scoped login for arbitrary-email orgs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Org-scoped login for arbitrary-email orgs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-onboarding-artifact-to-share" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The onboarding artifact to share
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-each-kind-of-user-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each kind of user does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-users-land-after-sso" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where users land after SSO
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-root-page-dead-end-is-honest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The root-page dead end is honest
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provisioning-policy-owner-ruled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning policy (owner-ruled)
       
     </span>
   </a>
@@ -2763,6 +2865,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#org-scoped-login-for-arbitrary-email-orgs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Org-scoped login for arbitrary-email orgs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Org-scoped login for arbitrary-email orgs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-onboarding-artifact-to-share" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The onboarding artifact to share
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-each-kind-of-user-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each kind of user does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-users-land-after-sso" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where users land after SSO
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-root-page-dead-end-is-honest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The root-page dead end is honest
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provisioning-policy-owner-ruled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning policy (owner-ruled)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#security-controls" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2943,6 +3117,7 @@
 <li><a href="#org-admin-configuration">Org admin configuration</a></li>
 <li><a href="#auto-provisioning-and-role-mapping">Auto-provisioning and role mapping</a></li>
 <li><a href="#dns-domain-verification">DNS domain verification</a></li>
+<li><a href="#org-scoped-login-for-arbitrary-email-orgs">Org-scoped login for arbitrary-email orgs</a></li>
 <li><a href="#security-controls">Security controls</a></li>
 <li><a href="#idp-specific-setup-notes">IdP-specific setup notes</a></li>
 <li><a href="#troubleshooting-sso">Troubleshooting SSO</a></li>
@@ -3179,7 +3354,7 @@
 </ul>
 <p>Domains are normalized (lowercased, leading <code>@</code> stripped, deduplicated).</p>
 <h3 id="frontend">Frontend<a class="headerlink" href="#frontend" title="Permanent link">&para;</a></h3>
-<p>The frontend ships an org-admin SSO config form at <code>OrgAdminLayout.tsx</code> → <code>sso</code> tab (<code>OrgSSOTab.tsx</code>). The login page (<code>LoginPage.tsx</code>) fetches <code>/auth/sso/domains</code> and matches the typed email domain against claimed domains, surfacing a "Sign in with {orgName}" button.</p>
+<p>The frontend ships an org-admin SSO config form at <code>OrgAdminLayout.tsx</code> → <code>sso</code> tab (<code>OrgSSOTab.tsx</code>). The login page (<code>LoginPage.tsx</code>) fetches <code>/auth/sso/domains</code> and matches the typed email domain against claimed domains, surfacing a "Sign in with {orgName}" button. On an org subdomain, <code>/auth/config</code> additionally returns <code>orgContext {slug, name}</code> and the page renders the host org's "Sign in with {name}" button first-class (design 0064 phase 1) — see <a href="#org-scoped-login-for-arbitrary-email-orgs">Org-scoped login for arbitrary-email orgs</a>.</p>
 <hr />
 <h2 id="auto-provisioning-and-role-mapping">Auto-provisioning and role mapping<a class="headerlink" href="#auto-provisioning-and-role-mapping" title="Permanent link">&para;</a></h2>
 <h3 id="auto-provisioning">Auto-provisioning<a class="headerlink" href="#auto-provisioning" title="Permanent link">&para;</a></h3>
@@ -3225,6 +3400,53 @@
 </ol>
 <h3 id="grandfathering">Grandfathering<a class="headerlink" href="#grandfathering" title="Permanent link">&para;</a></h3>
 <p>Existing claimed domains at migration time were grandfathered as verified (operator decision). New domains added after the migration must go through verification.</p>
+<hr />
+<h2 id="org-scoped-login-for-arbitrary-email-orgs">Org-scoped login for arbitrary-email orgs<a class="headerlink" href="#org-scoped-login-for-arbitrary-email-orgs" title="Permanent link">&para;</a></h2>
+<p>Verified domains give an org root-page discovery: a user types their email and the "Sign in with {org}" button appears. An org that runs SSO <strong>without</strong> verified domains (an "arbitrary-email" org — any email its IdP authenticates is welcome) is invisible to that surface <strong>by design</strong>: the platform does not enumerate its orgs to unauthenticated visitors. The org-scoped entry point is the answer — org identity is asserted by the URL, never listed (#1669, design 0064 option C).</p>
+<h3 id="the-onboarding-artifact-to-share">The onboarding artifact to share<a class="headerlink" href="#the-onboarding-artifact-to-share" title="Permanent link">&para;</a></h3>
+<p>Give new members your org's sign-in link — it is permanent, shareable, and org-wide:</p>
+<ul>
+<li><strong>With wildcard subdomain routing</strong> (<code>orgSubdomainRouting.enabled=true</code> in <code>values.yaml</code>, see the <code>orgSubdomainRouting</code> block there for prerequisites): <code>https://&lt;orgSlug&gt;.&lt;baseDomain&gt;</code> (e.g. <code>https://acme.app.example.com</code>). That page knows it is org-scoped: it renders <strong>"Sign in with {org name}"</strong> first-class, above the password/passkey forms.</li>
+<li><strong>Without wildcard routing</strong> (any deploy): <code>https://&lt;frontend&gt;/sso/&lt;orgSlug&gt;</code> — a shortcut that hops straight into the same SSO start flow.</li>
+</ul>
+<p>One button, one IdP redirect, and the user lands signed in. On an org subdomain exactly one org SSO button renders (the host org's); the root page keeps all its existing behavior for everybody else.</p>
+<h3 id="what-each-kind-of-user-does">What each kind of user does<a class="headerlink" href="#what-each-kind-of-user-does" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>User</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Existing org member</td>
+<td>Any entry point works. At the root page, type your email → <em>Continue with email</em> → you are redirected to your org's flow.</td>
+</tr>
+<tr>
+<td>New user with an email at a <strong>verified</strong> domain</td>
+<td>Root page: type the email → the "Sign in with {org}" button appears (DNS-verified opt-in to listing).</td>
+</tr>
+<tr>
+<td>New user of an <strong>arbitrary-email</strong> org</td>
+<td>Arrive via the org's sign-in link (see above) → "Sign in with {org}" → authenticate at your IdP. Auto-provision (if enabled) creates the account and org membership on first login.</td>
+</tr>
+<tr>
+<td>Invited user (password/passkey)</td>
+<td>The emailed invitation link is the full journey — accept with an account whose email matches the invitation.</td>
+</tr>
+<tr>
+<td>Invited user who is SSO-only</td>
+<td>Use the org's sign-in link instead. Invitation <em>accept</em> currently requires an account first; the invitation-through-SSO binding is an open provisioning-policy question (see <a href="#known-gaps-and-non-goals">Known gaps</a>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="where-users-land-after-sso">Where users land after SSO<a class="headerlink" href="#where-users-land-after-sso" title="Permanent link">&para;</a></h3>
+<p>The post-callback redirect goes to the instance's configured frontend URL (<code>oidc.frontendRedirectUrl</code>, default <code>/</code>) — the <strong>root</strong> app, not the org subdomain. Org membership is carried server-side: the member's org workspaces are reachable from there. The session cookie carries <code>Domain=&lt;cookieDomain&gt;</code> when <code>orgSubdomainRouting.cookieDomain</code> is set, so the session is intended to be valid across the root host and org subdomains. <strong>Honest scope:</strong> cross-subdomain session behavior under real wildcard ingress is UNVERIFIED (audit #1649) — verified by unit/integration/Host-header tests only, not a live-ingress pass. Do not treat root↔subdomain session sharing as field-proven until that pass exists.</p>
+<h3 id="the-root-page-dead-end-is-honest">The root-page dead end is honest<a class="headerlink" href="#the-root-page-dead-end-is-honest" title="Permanent link">&para;</a></h3>
+<p>A new user of an arbitrary-email org who types their email at the root page gets "We couldn't find an account for that email" plus guidance to ask their administrator (or whoever invited them) for their organisation's sign-in link. That dead end is the enumeration stance at work: the platform will not say which org an email might belong to, and it will not list candidate orgs. If org onboarding at your instance regularly hits this dead end, distribute the org link (previous section) — that is the blessed artifact.</p>
+<h3 id="provisioning-policy-owner-ruled">Provisioning policy (owner-ruled)<a class="headerlink" href="#provisioning-policy-owner-ruled" title="Permanent link">&para;</a></h3>
+<p>Reaching an org's SSO with <code>auto_provision=true</code> provisions the account — whoever the org's IdP authenticates joins the org. <strong>Owner ruling (2026-10-11, design 0065):</strong> for orgs, registration is provided via OIDC; the org owner is responsible for handling sign-ups <strong>at their identity provider</strong>. The platform adds no org-local registration path and gates nothing on top of the IdP — signup policy (domain restrictions, approval flows, open vs closed) is administered at the IdP, the org owner's lever. Operator guidance for org owners: see <code>design/0065_2026-10-11_org-provisioning-policy-ruling.md</code>.</p>
 <hr />
 <h2 id="security-controls">Security controls<a class="headerlink" href="#security-controls" title="Permanent link">&para;</a></h2>
 <table>
@@ -3380,6 +3602,8 @@
 <ul>
 <li><strong><code>redirectBaseUrl</code> header-trust gap (F11)</strong> — fixed. The platform now requires <code>redirectBaseUrl</code> and fails loud. Header derivation is removed.</li>
 <li><strong>State cookie replay within TTL</strong> — the 10-minute window is the design trade-off for statelessness. Mitigated by orgID binding.</li>
+<li><strong>#1669 routing gap for arbitrary-email orgs</strong> — closed. New users of such orgs onboard via the org-scoped entry points (see <a href="#org-scoped-login-for-arbitrary-email-orgs">Org-scoped login for arbitrary-email orgs</a>); the root page dead-ends honestly by the enumeration stance. The org-subdomain login surface is org-aware (<code>/auth/config</code> <code>orgContext</code>, design 0064 phase 1).</li>
+<li><strong>Invitation accept requires an existing account</strong> — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. The mechanical gap is recorded, not scheduled for change.</li>
 </ul>
 <h3 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h3>
 <ul>
@@ -3416,7 +3640,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 07:39:07 UTC"><span class="timeago" datetime="2026-07-11T07:39:07+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 07:39:07 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 11, 2026 22:32:27 UTC"><span class="timeago" datetime="2026-10-11T22:32:27+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 11, 2026 22:32:27 UTC">2026-10-11</span>
   </span>
 
     
