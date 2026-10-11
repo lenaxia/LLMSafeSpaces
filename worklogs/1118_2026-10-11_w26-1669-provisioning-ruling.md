@@ -56,5 +56,5 @@ None. The §4 QUESTION awaits the owner; nothing in this lane blocks on it.
 ## Files Modified
 
 - design/0065_2026-10-11_org-provisioning-policy-ruling.md (new)
-- worklogs/NNNN_2026-10-11_w26-1669-provisioning-ruling.md (this file)
+- worklogs/1118_2026-10-11_w26-1669-provisioning-ruling.md (this file)
 - COORDINATE.md (status flip)
