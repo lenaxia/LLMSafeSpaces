@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.36.0] - 2026-10-11
+
+### Fixed — auth hardening (audit #1649)
+
+- **Registration actually stops when disabled** (#1650, #1657): the
+  `registrationEnabled` operator toggle — advertised in /auth/config but
+  never enforced — now gates both signup paths (password + passkey
+  begin/finish) server-side with 403s; login/recovery stay ungated;
+  fail-open on setting-read errors; Turnstile runs before the gate.
+  Mutation-verified in all three directions.
+- **Duplicate-register no longer leaks account existence** (#1659): the
+  409's wire message was "user email already exists" (an enumeration
+  oracle) while the router-level pin mocked the service and never saw it;
+  now generic, pinned at the wire level.
+- **Dead API client surface removed** (#1660): changePassword/rotateKey
+  methods pointing at routes deleted long ago.
+
+### Fixed — frontend reliability
+
+- **SSE staleness: busy/session state freezes no more** (#1646, #1662):
+  after a silently-dead event stream (e.g. API pod restarts under an open
+  tab), the app now converges within one reconciliation window — a 60s
+  liveness watchdog force-reconnects dead streams, every (re)connect
+  reseeds sessions+busy with causality guards (dataBirth/wipeAt
+  ordering-by-construction) that refuse stale re-latches, and a 60s
+  refetch floor backstops it all. Six review rounds closed five real
+  holes; independent sub-agent verification against query-core source.
+- **Mobile viewport regression** (#1648, #1661): h-screen (100vh — the
+  LARGE viewport) + viewport-fit=cover made the shell taller than the
+  visible screen (header OR composer off-screen). All viewport-height
+  shells are now h-dvh with a verified @supports 100vh fallback, Android
+  keyboard resizes-content, and a conditional on-screen-keyboard
+  viewport guard; zero h-screen invariant; served-artifact e2e.
+
+### Fixed — CI reliability
+
+- **The warn-flood job killer** (#1644, #1658): the control-socket accept
+  loop now exits on net.ErrClosed instead of warn-retrying forever — the
+  bug that drowned CI jobs in million-line logs (two confirmed job
+  deaths incl. a release run). Transient errors keep the recovery path.
+- **Four flake families given real fixes** (#1532, #1664): BusyTruth (7+
+  CI hits), watchdog-family, DeferSeam, and UploadStorm tests
+  restructured to outcome-deterministic waits with red/green evidence
+  under an identical SIGSTOP stall schedule; residual production finding
+  split to #1666.
+
+### Added — operator tooling
+
+- **Near-miss session-id did-you-mean** (#1663, #1667): all six
+  session-addressing tools' not-found errors now suggest the live id
+  (levenshtein ≤2, deterministic, SUGGEST-ONLY — never auto-delivers),
+  plus a standing 45-creation ID-fidelity guard. Born from this fleet's
+  own incident: a one-character transcription slip looked like a lost
+  session for an hour.
+
 ## [0.35.0] - 2026-10-09
 
 ### Added — mechanical disk-space recovery (#1601, #1642)
