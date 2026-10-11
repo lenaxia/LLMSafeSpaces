@@ -5,9 +5,6 @@
 // org API clients. The three clients keep their own method implementations
 // (different base paths and auth contexts) but import these types so a field
 // added to the credential shape only needs updating in one place.
-//
-// Note: this is distinct from credentials.ts, which holds the older
-// CredentialSet admin-API types.
 
 // ProviderCredential is the base API response shape for any provider credential.
 // Never includes apiKey. The owner scope (orgId for org credentials) and a

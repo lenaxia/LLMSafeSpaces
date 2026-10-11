@@ -33,7 +33,4 @@ export const secretsApi = {
   reveal: (id: string, password: string) => api.post<{ value: string }>(`/secrets/${id}/reveal`, { password }),
   getSecretBindings: (id: string) => api.get<{ workspaces: string[] }>(`/secrets/${id}/bindings`),
   audit: () => api.get<{ entries: { action: string; timestamp: string; metadata: Record<string, string> }[] }>("/secrets/audit"),
-  rotateKey: (password: string) => api.post<{ keyVersion: number }>("/account/rotate-key", { password }),
-  changePassword: (oldPassword: string, newPassword: string) =>
-    api.post<void>("/account/change-password", { oldPassword, newPassword }),
 };
