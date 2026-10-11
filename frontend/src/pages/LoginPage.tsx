@@ -23,6 +23,7 @@ export function LoginPage() {
   const [returnTo, setReturnTo] = useState("");
   const [ssoStatus, setSsoStatus] = useState<string | null>(null);
   const [lookupStatus, setLookupStatus] = useState<string | null>(null);
+  const [resetSuccess, setResetSuccess] = useState(false);
   const [lookingUp, setLookingUp] = useState(false);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [mode, setMode] = useState<LoginMode>("password");
@@ -58,6 +59,12 @@ export function LoginPage() {
     if (rt) {
       setReturnTo(sanitiseReturnTo(rt));
       params.delete("return_to");
+    }
+    // #1651: redirected here after a completed password reset — show a
+    // success notice so the user knows to sign in with the NEW password.
+    if (params.get("reset") === "success") {
+      setResetSuccess(true);
+      params.delete("reset");
     }
     const clean = params.toString();
     window.history.replaceState({}, "", clean ? `?${clean}` : window.location.pathname);
@@ -174,6 +181,11 @@ export function LoginPage() {
           Something went wrong. Please try again.
         </p>
       )}
+      {resetSuccess && (
+        <p className="mb-3 text-sm text-muted-foreground" data-testid="reset-success">
+          Password updated — sign in with your new password.
+        </p>
+      )}
 
       {mode === "passkey" ? (
         <div className="flex flex-col gap-4">
@@ -195,6 +207,13 @@ export function LoginPage() {
             }}
             onEmailChange={setEmail}
           />
+          {/* #1651: entry point for the self-service password-reset flow. */}
+          <Link
+            to="/reset-password"
+            className="text-center text-xs text-muted-foreground underline-offset-4 hover:underline"
+          >
+            Forgot your password?
+          </Link>
           {passkeyEnabled && (
             <div className="border-t border-border pt-4">
               <p className="mb-2 text-center text-xs text-muted-foreground">or</p>

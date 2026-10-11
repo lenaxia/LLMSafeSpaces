@@ -8,6 +8,12 @@ export interface User {
   role: string;
   active: boolean;
   createdAt: string;
+  /**
+   * #1651 / US-49.6: false until the user clicks the emailed verification
+   * link. Instances without an email verifier auto-verify at registration
+   * (and older API shapes omit the field) — treat undefined as verified.
+   */
+  emailVerified?: boolean;
 }
 
 export interface AuthConfig {
@@ -244,6 +250,12 @@ export interface CreateApiKeyResponse {
 export interface ApiError {
   error: string;
   code?: string;
+  /**
+   * #1651 / US-49.6: present (false) on the login 403 that gates unverified
+   * users — the credentials were correct, so the backend deliberately says
+   * WHY instead of a generic invalid-credentials error.
+   */
+  emailVerified?: boolean;
   /**
    * Current workspace phase on upload 409s (the workspace must be Active
    * to accept uploads, Epic 68 D5) — surfaced in the composer chip error.

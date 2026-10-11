@@ -89,12 +89,83 @@ the route-level Go contract test stays green; flagged regardless.
 
 ## Implementation log
 
-(in progress)
+Verified (commands run, counts checked) unless labeled reasoned.
 
-## Test runs
+1. **Read-before-write**: router.tsx, all auth pages/forms, AuthCard, api
+   client + types, AuthProvider, email/service.go (link builder — `?token=`
+   query param), email_verify.go + password_reset.go handlers (exact status
+   codes + body error strings), openapi.yaml auth-lifecycle section,
+   LoginPage/RegisterPage/SSOStartPage/InvitationPage tests, the Go
+   OpenAPI↔router contract test (route-level only — response docs not
+   enforced there, which is why the doc gaps survived).
+2. **Red-first**: wrote VerifyEmailPage.test.tsx (11), ResetPasswordPage.test.tsx
+   (13), router.integration additions (4), LoginPage additions (3),
+   RegisterPage additions (2) BEFORE any implementation. Confirmed RED:
+   new-page suites fail on missing module; router tests render NotFoundPage;
+   LoginPage/RegisterPage new tests fail on missing UI. One RegisterPage
+   guard test ("still redirects when emailVerified absent") passes on
+   current code by design — it is the regression pin for auto-verify
+   instances. Fixed cross-test pollution in my own new tests during the red
+   phase (window.location stub not restored on failure → try/finally).
+3. **Implementation**:
+   - `api/auth.ts`: verifyEmail, resendVerification, requestPasswordReset,
+     confirmPasswordReset (exactly the four spec'd endpoints).
+   - `lib/tokenResult.ts`: classifyTokenError (410 body-string → expired |
+     used | gone; 404 → not-found) + stripQueryParam (terminal-state URL
+     hygiene via history.replaceState).
+   - `pages/VerifyEmailPage.tsx`: states missing/verifying/verified/expired/
+     used/not-found/gone/error; POST-on-mount with a StrictMode double-invoke
+     ref guard (dev double-POST would misreport single-use tokens as
+     already-used); resend sub-form (email prefilled from ?email=); neutral
+     always-202 resend copy; return_to threaded to the sign-in link.
+   - `pages/ResetPasswordPage.tsx`: request mode (neutral fixed confirmation,
+     429/network transport errors only) + confirm mode (client-side min-8 +
+     match validation; 200 → done + /login?reset=success CTA; 410-expired →
+     request-a-new-link returns to request mode; used/not-found/gone states).
+   - `router.tsx`: both routes added OUTSIDE GuestOnly next to /invitations
+     and /sso (register sets a session cookie even unverified — GuestOnly
+     placement would re-create the lockout).
+   - `LoginForm.tsx`: 403 + body.emailVerified===false → actionable message
+     + prefilled `<a href="/verify-email?email=…">` resend link (hard-nav,
+     router-context-free).
+   - `LoginPage.tsx`: "Forgot your password?" link (password mode);
+     `?reset=success` → notice + param stripped.
+   - `RegisterPage.tsx`: password signup now inspects the register response;
+     strict `user.emailVerified === false` → check-your-email card (no
+     redirect; user state deliberately not populated so GuestOnly doesn't
+     bounce; verify link carries email + return_to; secondary
+     "Continue without verifying" honors return_to since the register
+     session is valid). Absent/true → loginWithToken best-effort +
+     existing redirect (passkey-flow pattern).
+   - `types.ts`: User.emailVerified?, ApiError.emailVerified?.
+4. **OpenAPI sync**: doc-only fixes — verify-email + confirm now document
+   404/410; resend 200→202 (matches handler); request documents 400.
+   Route/method contract test re-run green; handler suites re-run (32 pass)
+   to confirm documented statuses match behavior.
 
-(pending)
+## Test runs (verified counts)
+
+- Frontend targeted: 5 files, **56/56 PASS** (vitest).
+- Frontend FULL suite: **188 files, 2087/2087 PASS** (~200s).
+- `tsc --noEmit`: clean. `eslint .`: 0 errors (1 warning removed from my
+  code; abi_pb warnings pre-existing on main).
+- Go: `TestOpenAPIRouterContract` PASS; handlers `-run "TestPasswordReset|
+  TestEmailVerify"` **32 PASS**.
 
 ## Incidents / disclosures
 
-(none yet)
+- During the red phase my first RegisterPage test run showed 2 failures
+  where 1 was expected: my new test threw before restoring a stubbed
+  `window.location`, polluting the next test (pre-existing file pattern had
+  the same latent hazard but never tripped). Fixed with try/finally in the
+  new tests. No production code was affected; disclosed for the record.
+- jsdom note (reasoned, not a defect): `<a>` clicks don't navigate in jsdom,
+  so redirect assertions use link-href attributes (reset-success) and
+  href-setter spies (existing patterns) rather than click-through.
+
+## Follow-ups (not in scope)
+
+- Per-route rate caps for register/reset/verify (audit D3).
+- Passkey signup on verifier-wired instances: passkey issuance is not
+  email-gated (audit D2) — no lockout, but no verification nudge either.
+- A verified-email banner inside the app for logged-in unverified users.

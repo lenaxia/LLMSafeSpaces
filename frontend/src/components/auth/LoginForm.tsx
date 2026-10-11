@@ -14,6 +14,11 @@ export function LoginForm({ onSubmit, onEmailChange }: Props) {
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
+  // #1651: set when the backend 403s with emailVerified:false — the
+  // credentials were correct but the account isn't verified yet. The backend
+  // deliberately says why (reaching this branch proves password possession),
+  // so the UI names the reason and offers a prefilled resend link.
+  const [needsVerification, setNeedsVerification] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleEmail = (value: string) => {
@@ -24,11 +29,20 @@ export function LoginForm({ onSubmit, onEmailChange }: Props) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
+    setNeedsVerification(false);
     setLoading(true);
     try {
       await onSubmit(username, password, rememberMe);
     } catch (err) {
-      setError(err instanceof ApiClientError ? "Invalid email or password" : "Something went wrong");
+      if (
+        err instanceof ApiClientError &&
+        err.status === 403 &&
+        err.body?.emailVerified === false
+      ) {
+        setNeedsVerification(true);
+      } else {
+        setError(err instanceof ApiClientError ? "Invalid email or password" : "Something went wrong");
+      }
     } finally {
       setLoading(false);
     }
@@ -37,6 +51,21 @@ export function LoginForm({ onSubmit, onEmailChange }: Props) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {needsVerification && (
+        <div className="text-sm">
+          <p className="text-destructive">
+            Please verify your email address before logging in.
+          </p>
+          <p className="mt-1">
+            <a
+              href={`/verify-email?email=${encodeURIComponent(username)}`}
+              className="text-primary underline underline-offset-4"
+            >
+              Resend verification email
+            </a>
+          </p>
+        </div>
+      )}
       <Input
         type="email"
         placeholder="Email"
