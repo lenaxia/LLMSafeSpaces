@@ -71,10 +71,11 @@ func TestCachedState_AuthorityBusyTruthOverlaysTracker(t *testing.T) {
 	tracker.set("s2", "busy") // …the #1573 shape: tracker stuck busy…
 	tracker.set("s3", "busy") // …and a session the projection never saw
 
-	busyTruth := func() map[string]bool {
-		return map[string]bool{
-			"s1": true,  // a tool part is in flight (derived)
-			"s2": false, // a permission wait — the carve-out
+	busyTruth := func() map[string]busyVerdict {
+		return map[string]busyVerdict{
+			"s1": {Busy: true}, // a tool part is in flight (derived)
+			// a permission wait — the carve-out (not busy, pending ask)
+			"s2": {Busy: false, PendingUserAsk: true},
 		}
 	}
 
@@ -122,8 +123,8 @@ func TestStatuszHandler_BusyTruthThroughTheRealHandler(t *testing.T) {
 	tracker.busySince["s2"] = time.Now().Add(-7 * time.Hour)
 	tracker.mu.Unlock()
 
-	busyTruth := func() map[string]bool {
-		return map[string]bool{"s1": true, "s2": false}
+	busyTruth := func() map[string]busyVerdict {
+		return map[string]busyVerdict{"s1": {Busy: true}, "s2": {Busy: false}}
 	}
 
 	handler := buildStatuszHandler(client, &providerCache{}, tracker, busyTruth, newMemoryPressureMonitor(),
@@ -198,10 +199,10 @@ func TestBusyTruthFrom_RealAuthority(t *testing.T) {
 	truth := busyTruthFrom(a)
 	require.NotNil(t, truth)
 	require.Eventually(t, func() bool {
-		return truth()["s1"]
+		return truth()["s1"].Busy
 	}, 5*time.Second, 20*time.Millisecond, "queued delivery must derive busy (the queue leg)")
 	require.Never(t, func() bool {
-		return truth()["s2"]
+		return truth()["s2"].Busy
 	}, 200*time.Millisecond, 20*time.Millisecond, "at-rest session derives not-busy")
 	assert.NotContains(t, truth(), "s3", "projection-unknown sessions stay absent (tracker fallback)")
 	assert.Nil(t, busyTruthFrom(nil), "nil authority yields nil (bare tracker behavior)")
