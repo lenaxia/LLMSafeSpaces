@@ -84,3 +84,9 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 
 - Update: the rulings record MERGED as PR #1678 (3 review rounds — the citable-record discipline caught a never-filed follow-up, now issue #1679, plus cross-record tense fixes). Design 0065 §4 cites #1679; this PR's gap pin is referenced from it as "pin pending: PR #1677".
 - The zero-workflow-runs anomaly on this PR persists (both head SHAs 06601982 and 7e22fdf8: 0 runs via actions API, while sibling PRs' events flow). CI manually dispatched on the branch per ci.yml's workflow_dispatch; this commit is a third synchronize probe — if it also produces no runs the PR needs recreating (GitHub event drop specific to this PR's opened/synchronize webhooks).
+
+---
+
+## Import-cycle fix (found by CI on the recreated PR; PR #1677 → #1680)
+
+The dispatched CI + #1680's review exposed what local scoped runs missed: passkey.go importing `services/auth` (for `ErrEmailNotVerified`) is a **test-time import cycle** — services/auth's tests import handlers, so `go vet ./...` / full-suite CI fails with "import cycle not allowed in test" at services/auth [setup failed]. Fix: the message is now a local const `verifyEmailMessage` in passkey.go (documented as mirroring auth.ErrEmailNotVerified), and `TestLoginFinish_UnverifiedEmail_Rejected` pins parity against the canonical `authsvc.ErrEmailNotVerified` (test-only import — cycle-safe). Verified: `go vet ./...` clean; services/auth full package ok (8.9s); handlers full ok (74.6s).
