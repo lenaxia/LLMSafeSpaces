@@ -53,6 +53,10 @@ Details worth knowing:
 - Reset links are **single-use** and expire after **15 minutes**. If yours
   expired or was already used, the page offers to request a new one.
 - **Resetting signs you out everywhere** — all active sessions are revoked.
+- **Running workspaces are suspended.** Any of your workspaces that were
+  active at reset time are suspended (and their ephemeral secrets scrubbed),
+  as a security precaution. Restart them from the workspaces list once
+  you're signed back in.
 - **Saved secrets are deleted.** Provider credentials and user secrets are
   encrypted with a key derived from your account; a reset provisions fresh
   keys, so anything saved under *Settings → Secrets / Provider keys* must be
