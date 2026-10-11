@@ -424,8 +424,55 @@ describe("LoginPage", () => {
       });
 
       renderLoginPage();
-      await waitFor(() => expect(screen.getByText("Sign in with Acme Corp")).toBeInTheDocument());
+      const orgButton = await waitFor(() => {
+        const btn = screen.getByText("Sign in with Acme Corp");
+        expect(btn).toBeInTheDocument();
+        return btn;
+      });
       expect(screen.getByPlaceholderText("Password")).toBeInTheDocument();
+      // 0064 §6.2 "first-class": the org button renders ABOVE the password
+      // form in DOM order (DocumentPosition: the form FOLLOWS the button).
+      const passwordForm = screen.getByPlaceholderText("Password").closest("form");
+      expect(passwordForm).not.toBeNull();
+      expect(orgButton.compareDocumentPosition(passwordForm!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it("navigates to the org's SSO start URL on org-button click", async () => {
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+        orgContext: { slug: "acme", name: "Acme Corp" },
+      });
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/login" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/login",
+        set: hrefSetter,
+        configurable: true,
+      });
+
+      try {
+        renderLoginPage();
+        const orgButton = await waitFor(() => screen.getByText("Sign in with Acme Corp"));
+        await act(async () => {
+          fireEvent.click(orgButton.closest("button")!);
+        });
+        // The mocked ssoRedirectURL renders /api/v1/auth/sso/<slug>/start —
+        // pinning the SLUG (not just that navigation happened) so a wiring
+        // regression (wrong org / hardcoded slug) fails here.
+        expect(hrefSetter).toHaveBeenCalledWith("/api/v1/auth/sso/acme/start");
+      } finally {
+        if (originalDescriptor) {
+          Object.defineProperty(window, "location", originalDescriptor);
+        }
+      }
     });
 
     it("falls back to a generic label when the org name is absent (C-strict shape)", async () => {
