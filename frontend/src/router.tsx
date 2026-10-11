@@ -5,6 +5,12 @@ import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { SSOStartPage } from "./pages/SSOStartPage";
 import { InvitationPage } from "./pages/InvitationPage";
+// #1651: interstitials for the emailed verification + password-reset links.
+// Like /invitations/:token and /sso/:orgSlug they sit OUTSIDE GuestOnly:
+// registration sets a session cookie even before email verification, so a
+// logged-in user clicking an emailed link must not be bounced to /chat.
+import { VerifyEmailPage } from "./pages/VerifyEmailPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { ChatPage } from "./pages/ChatPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -182,5 +188,9 @@ export const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/chat" replace /> },
   { path: "/invitations/:token", element: <InvitationPage /> },
   { path: "/sso/:orgSlug", element: <SSOStartPage /> },
+  // #1651: emailed links target these routes (email/service.go buildLink).
+  // The token is consumed via POST inside the page — never a consuming GET.
+  { path: "/verify-email", element: <VerifyEmailPage /> },
+  { path: "/reset-password", element: <ResetPasswordPage /> },
   { path: "*", element: <NotFoundPage /> },
 ]);

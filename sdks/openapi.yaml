@@ -3470,6 +3470,8 @@ paths:
       responses:
         "202":
           description: Reset email sent (or would be sent if the email exists)
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /auth/password-reset/confirm:
     post:
       tags: [auth]
@@ -3494,6 +3496,10 @@ paths:
           description: Password reset successful
         "400":
           $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Token not found (unknown token or wrong kind)
+        "410":
+          description: Token already used or expired (single-use, 15-minute TTL)
   /auth/verify-email:
     post:
       tags: [auth]
@@ -3515,10 +3521,17 @@ paths:
           description: Email verified
         "400":
           $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Token not found (unknown token or wrong kind)
+        "410":
+          description: Token already used or expired (single-use, 24-hour TTL)
   /auth/verify-email/resend:
     post:
       tags: [auth]
       summary: Resend email verification
+      description: |
+        Always returns 202 regardless of whether the email exists or is
+        already verified (enumeration-safe).
       security: []
       operationId: resendEmailVerification
       requestBody:
@@ -3533,8 +3546,10 @@ paths:
                   type: string
                   format: email
       responses:
-        "200":
+        "202":
           description: Verification email resent (or would be sent)
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /auth/lookup:
     post:
       tags: [auth]

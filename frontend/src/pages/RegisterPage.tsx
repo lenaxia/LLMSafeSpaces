@@ -9,7 +9,7 @@ import { PasskeyRegisterForm } from "../components/auth/PasskeyRegisterForm";
 import { RecoveryCodesDisplay } from "../components/auth/RecoveryCodesDisplay";
 import { Button } from "../components/ui/Button";
 
-type Mode = "passkey" | "password" | "recovery-codes";
+type Mode = "passkey" | "password" | "recovery-codes" | "verify-email";
 
 export function RegisterPage() {
   const { register, loginWithToken } = useAuth();
@@ -17,6 +17,10 @@ export function RegisterPage() {
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [mode, setMode] = useState<Mode>("password");
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  // #1651: set when registration returns emailVerified=false — the instance
+  // wires an email verifier, so the user MUST verify before their next
+  // login or they are locked out (login is 403-gated until verified).
+  const [registeredEmail, setRegisteredEmail] = useState("");
 
   useEffect(() => {
     const raw = new URLSearchParams(window.location.search).get("return_to");
@@ -55,6 +59,29 @@ export function RegisterPage() {
     redirectAfterAuth();
   };
 
+  // #1651: password registration needs the RESPONSE (not just success) to
+  // branch on user.emailVerified. With a verifier wired (email_verified=false
+  // at signup) show verification guidance instead of redirecting: the next
+  // login is 403-gated until the emailed link is clicked. AuthProvider
+  // deliberately leaves user null in that branch — GuestOnly would otherwise
+  // bounce the user off /register before they read the guidance. For the
+  // auto-verified branch the provider has already set the user, so the
+  // GuestOnly bounce to /chat (or the returnTo hard-nav) completes the flow.
+  const handlePasswordRegister = async (
+    username: string,
+    email: string,
+    password: string,
+    turnstileToken?: string,
+  ) => {
+    const res = await register(username, email, password, turnstileToken);
+    if (res.user?.emailVerified === false) {
+      setRegisteredEmail(email);
+      setMode("verify-email");
+      return;
+    }
+    redirectAfterAuth();
+  };
+
   if (mode === "recovery-codes" && recoveryCodes.length > 0) {
     return (
       <AuthCard
@@ -65,6 +92,51 @@ export function RegisterPage() {
           codes={recoveryCodes}
           onContinue={handleRecoveryCodesContinue}
         />
+      </AuthCard>
+    );
+  }
+
+  // #1651: post-signup verification guidance. The register session is valid
+  // (only the NEXT login is gated), so offer both next steps: verify, or
+  // continue into the app and verify later before the session expires.
+  if (mode === "verify-email") {
+    const verifyHref = `/verify-email?email=${encodeURIComponent(registeredEmail)}${
+      returnTo ? `&return_to=${encodeURIComponent(returnTo)}` : ""
+    }`;
+    return (
+      <AuthCard
+        title="Check your email"
+        description="One more step to finish signing up"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted-foreground">
+            We sent a verification link to{" "}
+            <span className="font-medium">{registeredEmail}</span>. Click the
+            link to verify your email address, then sign in — you'll need to
+            verify before your next sign-in.
+          </p>
+          <Link
+            to={verifyHref}
+            className="block w-full text-center text-primary underline-offset-4 hover:underline"
+          >
+            Verify or resend the verification email
+          </Link>
+          <div className="border-t border-border pt-4">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                window.location.href = returnTo || "/chat";
+              }}
+            >
+              Continue without verifying
+            </Button>
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              {/* TTL mirrors emailVerifyTokenTTL (email_verify.go:26) */}
+              The verification link expires in 24 hours.
+            </p>
+          </div>
+        </div>
       </AuthCard>
     );
   }
@@ -94,12 +166,7 @@ export function RegisterPage() {
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <RegisterForm
-            onSubmit={async (u, e, p, t) => {
-              await register(u, e, p, t);
-              redirectAfterAuth();
-            }}
-          />
+          <RegisterForm onSubmit={handlePasswordRegister} />
           {passkeyEnabled && (
             <div className="border-t border-border pt-4">
               <p className="mb-2 text-center text-xs text-muted-foreground">or</p>

@@ -34,4 +34,31 @@ export const authApi = {
    */
   lookup: (email: string) =>
     api.post<{ redirectUrl: string }>("/auth/lookup", { email }),
+  /**
+   * #1651: consume a single-use email-verification token (from the emailed
+   * /verify-email?token= link). 200 = verified; 404 = unknown token;
+   * 410 = expired or already used (see lib/tokenResult.classifyTokenError).
+   */
+  verifyEmail: (token: string) =>
+    api.post<{ verified: boolean }>("/auth/verify-email", { token }),
+  /**
+   * #1651: resend the verification email. Enumeration-safe: the backend
+   * always returns 202 — it never reveals whether the email has an account.
+   */
+  resendVerification: (email: string) =>
+    api.post<void>("/auth/verify-email/resend", { email }),
+  /**
+   * #1651: request a password-reset email. Always 202 regardless of whether
+   * the email exists (enumeration-safe; only existing verified mailboxes
+   * actually receive a link).
+   */
+  requestPasswordReset: (email: string) =>
+    api.post<void>("/auth/password-reset/request", { email }),
+  /**
+   * #1651: confirm a password reset with the single-use token from the
+   * emailed /reset-password?token= link. 200 = done; 404 = unknown token;
+   * 410 = expired or already used.
+   */
+  confirmPasswordReset: (token: string, newPassword: string) =>
+    api.post<{ reset: boolean }>("/auth/password-reset/confirm", { token, newPassword }),
 };

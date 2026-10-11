@@ -138,4 +138,100 @@ describe("RegisterPage", () => {
       }
     });
   });
+
+  // #1651: when the instance wires an email verifier, registration returns
+  // emailVerified=false and the user MUST verify before their next login.
+  describe("email verification gated signup", () => {
+    it("shows a check-your-email card instead of redirecting when emailVerified=false", async () => {
+      window.history.replaceState({}, "", "/register?return_to=%2Fchat");
+      mockRegister.mockResolvedValue({
+        user: { id: "u-1", role: "user" as const, email: "a@b.com", emailVerified: false },
+      });
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+
+      renderRegisterPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Username")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/register" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/register",
+        set: hrefSetter,
+        configurable: true,
+      });
+
+      try {
+        fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "alice" } });
+        fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+        fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+        });
+
+        await waitFor(() =>
+          expect(screen.getByText(/check your email/i)).toBeInTheDocument(),
+        );
+        // The registered email is echoed back with next-step guidance.
+        expect(screen.getByText(/a@b\.com/)).toBeInTheDocument();
+        // No blind redirect: the user must see the guidance first.
+        expect(hrefSetter).not.toHaveBeenCalled();
+
+        // The verify link carries the email (prefilled resend) and return_to.
+        const verifyLink = screen.getByText(/verify or resend/i).closest("a");
+        expect(verifyLink!.getAttribute("href")).toContain("email=a%40b.com");
+        expect(verifyLink!.getAttribute("href")).toContain("return_to=%2Fchat");
+      } finally {
+        if (originalDescriptor) {
+          Object.defineProperty(window, "location", originalDescriptor);
+        }
+      }
+    });
+
+    it("still redirects immediately when the instance auto-verifies (emailVerified absent)", async () => {
+      window.history.replaceState({}, "", "/register?return_to=%2Fchat");
+      // Dev/air-gapped instances auto-verify; older shapes omit the field.
+      mockRegister.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+
+      renderRegisterPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Username")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/register" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/register",
+        set: hrefSetter,
+        configurable: true,
+      });
+
+      try {
+        fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "alice" } });
+        fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+        fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+        });
+
+        await waitFor(() => {
+          expect(hrefSetter).toHaveBeenCalledWith("/chat");
+        });
+      } finally {
+        if (originalDescriptor) {
+          Object.defineProperty(window, "location", originalDescriptor);
+        }
+      }
+    });
+  });
 });

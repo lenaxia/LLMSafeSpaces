@@ -279,6 +279,79 @@ describe("LoginPage", () => {
     });
   });
 
+  // #1651: entry point for the password-reset flow.
+  it("shows a forgot-password link in password mode", async () => {
+    renderLoginPage();
+    await waitFor(() =>
+      expect(screen.getByText(/forgot your password\?/i)).toBeInTheDocument(),
+    );
+    const link = screen.getByText(/forgot your password\?/i).closest("a");
+    expect(link!.getAttribute("href")).toBe("/reset-password");
+  });
+
+  it("shows password-updated notice after a successful reset (?reset=success)", async () => {
+    window.history.replaceState({}, "", "/login?reset=success");
+    renderLoginPage();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/password updated — sign in with your new password/i),
+      ).toBeInTheDocument(),
+    );
+    // The param is consumed — stripped from the URL after read.
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).has("reset")).toBe(false),
+    );
+  });
+
+  it("403 email_not_verified surfaces verification guidance with prefilled resend link", async () => {
+    const { ApiClientError: ACE } = await import("../api/client");
+    mockLoginApi.mockRejectedValue(
+      new ACE(403, { error: "please verify your email address before logging in", emailVerified: false }),
+    );
+
+    renderLoginPage();
+    await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+    fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/verify your email address before logging in/i)).toBeInTheDocument(),
+    );
+    const resend = screen.getByText(/resend verification email/i).closest("a");
+    expect(resend!.getAttribute("href")).toBe("/verify-email?email=a%40b.com");
+  });
+
+  it("403 resend link threads return_to through the verify → sign-in chain", async () => {
+    const { ApiClientError: ACE } = await import("../api/client");
+    window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+    mockLoginApi.mockRejectedValue(
+      new ACE(403, { error: "please verify your email address before logging in", emailVerified: false }),
+    );
+
+    renderLoginPage();
+    await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+    fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/verify your email address before logging in/i)).toBeInTheDocument(),
+    );
+    const resend = screen.getByText(/resend verification email/i).closest("a");
+    expect(resend!.getAttribute("href")).toBe(
+      "/verify-email?email=a%40b.com&return_to=%2Fchat",
+    );
+  });
+
   describe("return_to handling", () => {
     it("\"Create an account\" link preserves return_to param", async () => {
       window.history.replaceState({}, "", "/login?return_to=%2Fchat");
