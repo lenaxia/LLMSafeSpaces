@@ -11,6 +11,7 @@ This page covers LLMSafeSpaces' per-organization OIDC single sign-on: the model 
 - [Org admin configuration](#org-admin-configuration)
 - [Auto-provisioning and role mapping](#auto-provisioning-and-role-mapping)
 - [DNS domain verification](#dns-domain-verification)
+- [Org-scoped login for arbitrary-email orgs](#org-scoped-login-for-arbitrary-email-orgs)
 - [Security controls](#security-controls)
 - [IdP-specific setup notes](#idp-specific-setup-notes)
 - [Troubleshooting SSO](#troubleshooting-sso)
@@ -175,7 +176,7 @@ Domains are normalized (lowercased, leading `@` stripped, deduplicated).
 
 ### Frontend
 
-The frontend ships an org-admin SSO config form at `OrgAdminLayout.tsx` → `sso` tab (`OrgSSOTab.tsx`). The login page (`LoginPage.tsx`) fetches `/auth/sso/domains` and matches the typed email domain against claimed domains, surfacing a "Sign in with {orgName}" button.
+The frontend ships an org-admin SSO config form at `OrgAdminLayout.tsx` → `sso` tab (`OrgSSOTab.tsx`). The login page (`LoginPage.tsx`) fetches `/auth/sso/domains` and matches the typed email domain against claimed domains, surfacing a "Sign in with {orgName}" button. On an org subdomain, `/auth/config` additionally returns `orgContext {slug, name}` and the page renders the host org's "Sign in with {name}" button first-class (design 0064 phase 1) — see [Org-scoped login for arbitrary-email orgs](#org-scoped-login-for-arbitrary-email-orgs).
 
 ---
 
@@ -234,6 +235,43 @@ Claimed domains must be verified before they appear in the login-page discovery 
 ### Grandfathering
 
 Existing claimed domains at migration time were grandfathered as verified (operator decision). New domains added after the migration must go through verification.
+
+---
+
+## Org-scoped login for arbitrary-email orgs
+
+Verified domains give an org root-page discovery: a user types their email and the "Sign in with {org}" button appears. An org that runs SSO **without** verified domains (an "arbitrary-email" org — any email its IdP authenticates is welcome) is invisible to that surface **by design**: the platform does not enumerate its orgs to unauthenticated visitors. The org-scoped entry point is the answer — org identity is asserted by the URL, never listed (#1669, design 0064 option C).
+
+### The onboarding artifact to share
+
+Give new members your org's sign-in link — it is permanent, shareable, and org-wide:
+
+- **With wildcard subdomain routing** (`orgSubdomainRouting.enabled=true` in `values.yaml`, see the `orgSubdomainRouting` block there for prerequisites): `https://<orgSlug>.<baseDomain>` (e.g. `https://acme.app.example.com`). That page knows it is org-scoped: it renders **"Sign in with {org name}"** first-class, above the password/passkey forms.
+- **Without wildcard routing** (any deploy): `https://<frontend>/sso/<orgSlug>` — a shortcut that hops straight into the same SSO start flow.
+
+One button, one IdP redirect, and the user lands signed in. On an org subdomain exactly one org SSO button renders (the host org's); the root page keeps all its existing behavior for everybody else.
+
+### What each kind of user does
+
+| User | Path |
+|---|---|
+| Existing org member | Any entry point works. At the root page, type your email → *Continue with email* → you are redirected to your org's flow. |
+| New user with an email at a **verified** domain | Root page: type the email → the "Sign in with {org}" button appears (DNS-verified opt-in to listing). |
+| New user of an **arbitrary-email** org | Arrive via the org's sign-in link (see above) → "Sign in with {org}" → authenticate at your IdP. Auto-provision (if enabled) creates the account and org membership on first login. |
+| Invited user (password/passkey) | The emailed invitation link is the full journey — accept with an account whose email matches the invitation. |
+| Invited user who is SSO-only | Use the org's sign-in link instead. Invitation *accept* currently requires an account first; the invitation-through-SSO binding is an open provisioning-policy question (see [Known gaps](#known-gaps-and-non-goals)). |
+
+### Where users land after SSO
+
+The post-callback redirect goes to the instance's configured frontend URL (`oidc.frontendRedirectUrl`, default `/`) — the **root** app, not the org subdomain. Org membership is carried server-side: the member's org workspaces are reachable from there. The session cookie carries `Domain=<cookieDomain>` when `orgSubdomainRouting.cookieDomain` is set, so the session is intended to be valid across the root host and org subdomains. **Honest scope:** cross-subdomain session behavior under real wildcard ingress is UNVERIFIED (audit #1649) — verified by unit/integration/Host-header tests only, not a live-ingress pass. Do not treat root↔subdomain session sharing as field-proven until that pass exists.
+
+### The root-page dead end is honest
+
+A new user of an arbitrary-email org who types their email at the root page gets "We couldn't find an account for that email" plus guidance to ask their administrator (or whoever invited them) for their organisation's sign-in link. That dead end is the enumeration stance at work: the platform will not say which org an email might belong to, and it will not list candidate orgs. If org onboarding at your instance regularly hits this dead end, distribute the org link (previous section) — that is the blessed artifact.
+
+### Provisioning policy (owner-ruled)
+
+Reaching an org's SSO with `auto_provision=true` provisions the account — whoever the org's IdP authenticates joins the org. **Owner ruling (2026-10-11, design 0065):** for orgs, registration is provided via OIDC; the org owner is responsible for handling sign-ups **at their identity provider**. The platform adds no org-local registration path and gates nothing on top of the IdP — signup policy (domain restrictions, approval flows, open vs closed) is administered at the IdP, the org owner's lever. Operator guidance for org owners: see `design/0065_2026-10-11_org-provisioning-policy-ruling.md`.
 
 ---
 
@@ -319,6 +357,8 @@ To debug claims, temporarily point a test org at a debugging IdP (e.g. `https://
 
 - **`redirectBaseUrl` header-trust gap (F11)** — fixed. The platform now requires `redirectBaseUrl` and fails loud. Header derivation is removed.
 - **State cookie replay within TTL** — the 10-minute window is the design trade-off for statelessness. Mitigated by orgID binding.
+- **#1669 routing gap for arbitrary-email orgs** — closed. New users of such orgs onboard via the org-scoped entry points (see [Org-scoped login for arbitrary-email orgs](#org-scoped-login-for-arbitrary-email-orgs)); the root page dead-ends honestly by the enumeration stance. The org-subdomain login surface is org-aware (`/auth/config` `orgContext`, design 0064 phase 1).
+- **Invitation accept requires an existing account** — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. The mechanical gap is recorded, not scheduled for change.
 
 ### Non-goals
 

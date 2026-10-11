@@ -1606,6 +1606,16 @@ passkey:
 # routes them to the frontend. The session cookie carries Domain=<cookieDomain>
 # so it survives the root→subdomain redirect.
 #
+# Design 0064 (phases 1-2, #1669): the org subdomain's login page is
+# org-aware — /auth/config derives orgContext {slug, name} from the Host
+# (SSO-configured orgs only) and renders "Sign in with {org name}"
+# first-class. The org subdomain (or /sso/<orgSlug> without wildcard
+# routing) is the blessed onboarding artifact for arbitrary-email orgs.
+# Operator docs: docs/operator/oidc-sso.md → "Org-scoped login for
+# arbitrary-email orgs". Cross-subdomain session behavior under live
+# wildcard ingress remains audit-#1649-UNVERIFIED — unit/Host-header
+# tests only; do not field-claim it without a live-ingress pass.
+#
 # PREREQUISITES (operator tasks — see S54-0 spike in the epic README):
 #   1. Wildcard DNS:  *.app.example.com  →  ingress controller LB IP.
 #   2. cert-manager installed (the chart already depends on it for webhooks;

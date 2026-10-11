@@ -169,17 +169,27 @@ export function LoginPage() {
     >
       {ssoErrorBanner}
       {lookupStatus === "not_found" && (
-        <p className="mb-3 text-sm text-red-500">
-          We couldn't find an account for that email. Try a different email, or{" "}
-          {registrationEnabled ? (
-            <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="underline underline-offset-4">
-              create an account
-            </Link>
-          ) : (
-            "contact your administrator"
-          )}
-          .
-        </p>
+        <div className="mb-3 text-sm text-red-500" data-testid="lookup-not-found">
+          <p>
+            We couldn't find an account for that email. Try a different email, or{" "}
+            {registrationEnabled ? (
+              <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="underline underline-offset-4">
+                create an account
+              </Link>
+            ) : (
+              "contact your administrator"
+            )}
+            .
+          </p>
+          {/* Design 0064 phase 2 (persona (e)-at-root): the honest dead end.
+              The root page cannot know which org an arbitrary-email newcomer
+              means — and the enumeration stance forbids listing them — so the
+              guidance is the out-of-band channel: the org's sign-in link. */}
+          <p className="mt-1">
+            Trying to sign in to an organisation? Ask your administrator or the
+            person who invited you for your organisation's sign-in link.
+          </p>
+        </div>
       )}
       {lookupStatus === "rate_limited" && (
         <p className="mb-3 text-sm text-red-500">
