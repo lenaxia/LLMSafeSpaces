@@ -114,6 +114,40 @@ func TestCreateOrg_Admin_KnownEmail_CreatesActiveOrgWithResolvedOwner(t *testing
 	}
 }
 
+// TestCreateOrg_NoSSORequirementGapPin documents the enforcement gap the
+// owner's 0065 §4 ruling exposes (design
+// 0065_2026-10-11_org-provisioning-policy-ruling.md §4: "All orgs require
+// OIDC. We don't support anything else."). Today org creation —
+// platform-admin-only — requires NO SSO configuration, and a created org is
+// immediately active and usable via invitations/password members. This pin
+// locks the CURRENT behavior so any future enforcement of the ruling
+// (creation gating on an initial SSO config, or a not-usable-until-SSO
+// state) must deliberately flip this test. It is a gap PIN, not an
+// endorsement: the ruling makes no-SSO orgs an unsupported state, and the
+// enforcement mechanism is an open follow-up (bootstrap chicken-and-egg:
+// the first owner must be a password user, since SSO users are provisioned
+// by the org's own IdP — which can only be configured after the org exists).
+func TestCreateOrg_NoSSORequirementGapPin(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+	// No SSO config seeded anywhere — the store has none.
+
+	router, _ := setupAdminCreateRouter(t, store, true, nil)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		`{"name":"Acme","slug":"acme-nosso","ownerEmail":"owner@example.com"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("current behavior: org creation succeeds with no SSO config (gap pin — see design 0065 §4 ruling follow-up); expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp types.CreateOrgResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Status != types.OrgStatusActive {
+		t.Errorf("current behavior: org is active without SSO (gap pin); got status=%q", resp.Status)
+	}
+}
+
 func TestCreateOrg_Admin_DefaultPlanIsEnterprise(t *testing.T) {
 	store := newMockOrgStore()
 	store.usersByEmail["owner@example.com"] = "owner-1"
