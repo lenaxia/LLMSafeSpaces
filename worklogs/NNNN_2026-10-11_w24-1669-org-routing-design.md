@@ -129,3 +129,25 @@ Reviewer verified the r2 residual fixed and all citations clean. New findings:
    ≠ host → suppressed; matched-org = host → single orgContext button.
 3. PR body still carried the overstated r1 sentence ("Both findings accepted
    and fixed"). Fixed in the PR body itself this time, not only in comments.
+
+## Owner-driven CX directive (lenaxia on #1671, ~03:35Z) — acknowledged
+
+Add a customer-experience section to design 0064: platform goals, personas
+(a)-(f) walked through the actual UI, workflow sanity, coverage matrix;
+phase-1 code holds until it lands. Added as §11 on the design branch:
+- Goals: five no-confusion capabilities (self-serve signup, IdP onboarding,
+  member login, join-a-specific-org, admin gating).
+- The gap persona (e) walked end-to-end through PR #1674's actual surfaces
+  (arrival via org link → orgContext → "Sign in with Acme Corp" + caption →
+  start → IdP (F8) → auto-provision → /chat on the root frontend URL — the
+  landing-host characteristic noted honestly as pre-existing, shared with
+  persona (c)).
+- §6.2 suppression justified from (e)'s journey (one org door on its own
+  doorstep; cross-org visitors belong to the root page) in addition to
+  oracle-equality.
+- (f) knows-no-org: explicit non-goal by the enumeration stance.
+- Coverage matrix makes the three gaps visible: (e)-at-root (phase-2 copy),
+  (e)-invitation (JWT chicken-and-egg → §9 hardening), (f) (permanent).
+- §11.4 checkpoint: walk written against shipped LoginPage.tsx; no
+  contradiction; no #1674 amendment needed. Verified against the vitest
+  suite (22/22 incl. both suppression arms + generic-label fallback).

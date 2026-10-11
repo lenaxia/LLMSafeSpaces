@@ -135,3 +135,57 @@ A single comment selects; phases release as scoped above.
 - **Frontend (vitest):** orgContext → button present, href = `ssoRedirectURL(slug)`, positioned first-class; absent → DOM identical to pre-change snapshot cases with the verified-domain matched button keeping its root-page behavior; on an org subdomain, both §6.2 suppression arms pinned (matched org ≠ host org → no second button; matched org = host org → exactly one button, no duplicate).
 - **Contract:** `pkg/types` contract test + `sdks/openapi.yaml` auth-config schema additive-only.
 - **E2e-tier (honest scope):** true wildcard-host serving is ingress-level; pinned at router tier with Host headers, and noted as such — no live-ingress claim made from this workspace. In particular, **session-cookie behavior under real wildcard-subdomain routing is UNVERIFIED** (audit #1649's explicit UNVERIFIED list: "Cookie domain behavior under real wildcard-subdomain routing" — unit/integration/JWT-e2e coverage only). Phase 1 does not depend on it (`orgContext` is display-only; the SSO flow is untouched), but the phase-2 docs must not describe the cross-subdomain session experience as verified until a live-ingress pass says so.
+
+## 11. Customer experience: goals, personas, journeys, coverage
+
+(Added by owner directive on #1671: anchor the design in the workflows, not just the routing mechanics. Phase-1 surfaces referenced here are the implemented shapes in PR #1674.)
+
+### 11.1 Platform goals, stated plainly
+
+LLMSafeSpaces runs AI agents for people in isolated, persistent workspaces; organizations are the multi-tenant unit, each optionally with its own OIDC identity. The login experience must let five things happen without confusion:
+
+1. **Self-serve signup** where the instance allows it (password/passkey at the root login).
+2. **Org onboarding with an IdP**: an org admin wires OIDC once, then never hand-creates accounts.
+3. **A member logging in**: type your email anywhere on the root surface, land in your org's flow.
+4. **A new user joining a specific org**: arrive by that org's link, sign in, be *in* the org.
+5. **An admin gating who gets in**: invitations (and, per §9's future hardening, invite-gated provisioning).
+
+### 11.2 Personas × journeys (walked through the actual UI)
+
+**(a) Personal-instance owner.** Root login, no orgs configured. Sees exactly today's page: password form (passkey if enabled), no SSO button, no org context. Phase 1 changes nothing — `orgContext` is absent on the root host (`OrgSlugFromHost` returns `""`), and the button block does not render. **Sanity: one obvious path, unchanged.**
+
+**(b) Org admin, first-time OIDC setup.** Org settings → SSO tab: discovery URL, client ID/secret, claimed domains, auto-provision toggle (existing UI, untouched). If they want seamless root-page discovery they verify a domain via DNS TXT — that is the deliberate opt-in to public listing. If they run arbitrary-email (no domains), phase 2's doc tells them the onboarding artifact to share: `https://<slug>.<base>` (or `/sso/<slug>` without wildcard routing). **Sanity: the admin's mental model — "my org's link is how my people arrive" — matches the mechanism.**
+
+**(c) Existing org member at the root login.** Types email → "Continue with email" → `POST /auth/lookup` → found → browser redirected to their org's subdomain. **Before phase 1 that landing was a generic login page with no org awareness — the Epic 54 half-realization. After phase 1** (this is a quiet completion the CX walk surfaces): the subdomain login shows "Sign in with {org name}" first-class. One click → IdP → callback → session cookie (`Domain=.base` when configured) → `/chat`. **Sanity: the dead-feeling redirect target became the journey's front door.**
+
+**(d) New user, email at a DNS-verified domain.** Root login, types email: the verified-domain match shows "Sign in with {org name}" right there (existing behavior, untouched). Click → `start` → IdP → callback → auto-provisioned, member, `/chat`. **Sanity: seamless case stays seamless; phase 1 adds nothing and removes nothing here.**
+
+**(e) THE GAP PERSONA — new user, arbitrary email, wants to join a SPECIFIC org.** The journey #1669 is about, walked end-to-end through phase 1's surface:
+
+1. *Arrival:* a colleague or the org admin shared `https://acme.safespaces.dev` (or, on a deploy without wildcard routing, `https://app.safespaces.dev/sso/acme`, which hops straight to step 3). Alternatively an invitation link — but for a brand-new SSO user the invitation path is awkward today (accept requires an account first; §4B), so the org link is the blessed artifact.
+2. *What `acme.safespaces.dev` shows them:* the login page fetches `/auth/config` from its own host; the API sees `Host: acme.safespaces.dev`, baseDomain `safespaces.dev`, resolves acme — exists, has SSO — and returns `orgContext: {slug: "acme", name: "Acme Corp"}`. The page renders **"Sign in with Acme Corp"** as the first button, above the password/passkey forms, with the caption *"or sign in with a personal account"* beneath it (the password form stays: org members can also be password users, and a lost visitor can still use the root page). If the org's name were withheld (C-strict), the button reads *"Sign in with your organisation"*.
+3. *Suppression from this journey:* if the visitor types an email whose domain matches some org's *verified* domain, the email-matched button does **not** appear — even if it names Acme itself. On Acme's own doorstep there is exactly one org door (§6.2). A visitor whose email matches a *different* org's verified domain and who intends that other org is one root-page visit away, where that matching already works (persona d) — the subdomain does not try to be a directory.
+4. *Click:* → `GET /api/v1/auth/sso/acme/start` → the org's IdP. The user authenticates with whatever email their IdP knows (arbitrary — that is the point); `email_verified` must be true (F8) or the flow stops with a clean error.
+5. *After the IdP:* callback → auto-provision (org's `autoProvision` on) → membership ensured → **lands on the app (`/chat`) at the configured frontend URL** — the session cookie carries `Domain=.safespaces.dev` (US-54.3) so it is valid on the subdomain too. Honest note: the post-callback landing host is the *root* frontend URL by existing design (`frontendRedirectWithSuccess`), not `acme.…`; org membership is carried server-side (their workspaces are org-scoped), not by the login host. Phase 1 does not change this, and it matches persona (c)'s landing. (Live-ingress cookie behavior remains audit-#1649-UNVERIFIED — §10.)
+6. *Second visit:* back to `acme.safespaces.dev` — same button, one click, done. The org link is permanent, shareable, and org-wide: the one-time knowledge requirement (§4C) is paid once by the org, not per user.
+
+**Sanity: one obvious path (the shared link → one button → IdP → in), no dead ends on the org surface, no guessing.** The dead end that remains is at the *root* page for this persona (lookup → `not_found`) — phase 2's copy improvement points them at "contact your administrator for your organisation's sign-in link"; the link itself is the answer.
+
+**(f) New user who does NOT know which org they want.** Explicitly out of scope, by the enumeration stance: the platform will not enumerate its orgs to an unauthenticated visitor, so "show me the orgs" cannot exist on the public surface (§4A). Such a user must obtain the org's identity out-of-band (ask a colleague/admin) — the same channel that would deliver an invitation under option B, minus the per-user ceremony. This is a deliberate non-goal, not an oversight.
+
+### 11.3 Coverage matrix
+
+| Persona | Entry: root login | Entry: org subdomain | Entry: `/sso/:slug` link | Entry: invitation link |
+|---|---|---|---|---|
+| (a) personal owner | existing (password/passkey) | n/a (no org) | n/a | n/a |
+| (b) org admin setup | existing (SSO tab; verified-domain DNS opt-in) | existing (admin UI org-scoped) | n/a | existing (create invitations) |
+| (c) existing member | existing (lookup → subdomain) **+ phase 1 completes the landing** (org button on arrival) | phase 1 (org button first-class) | existing (auto-start) | n/a (already a member) |
+| (d) verified-domain newcomer | existing (domain-matched button) | phase 1 (host-org button; email-matched suppressed §6.2) | existing (auto-start) | existing (password users) |
+| (e) arbitrary-email newcomer | **not covered — by design** (lookup dead-ends; phase 2 copy points to org link) | **phase 1 (the blessed path)** | existing (auto-start; the non-wildcard equivalent) | existing-but-awkward (accept needs an account first; §9 hardening would fix) |
+| (f) knows-no-org visitor | **explicitly not covered** (enumeration stance, §4A/§11.2-f) | — | — | — |
+
+Gaps made visible rather than implicit: the (e)-root cell (phase-2 copy only), the (e)-invitation cell (the JWT chicken-and-egg — §9's invitation-through-SSO hardening would close it), and the entire (f) row (permanent, by policy).
+
+### 11.4 Checkpoint against phase-1 surfaces (PR #1674)
+
+Persona (e)'s walk above is written against the shipped code, not the design text: button label `Sign in with {name}` with the `your organisation` fallback, first-class placement above the forms, the personal-account caption, and the §6.2 suppression (both arms) — each matches PR #1674's `LoginPage.tsx` and is pinned by its vitest cases (22/22, including the two suppression arms and the generic-label fallback). The walk surfaces **no contradiction**: the implemented surfaces render exactly the journey described, and the one journey characteristic that could surprise (post-callback landing on the root frontend URL) is pre-existing behavior shared with persona (c), not a phase-1 regression. No amendment to #1674 required.
