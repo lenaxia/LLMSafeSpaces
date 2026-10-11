@@ -74,3 +74,10 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 - docs/operator/oidc-sso.md (D4 assessment; note — this branch is off main, D1's other oidc-sso edits ride #1676; the two edits touch different sections and merge cleanly)
 - worklogs/NNNN_2026-10-11_w26-1652-auth-hardening.md (this file)
 - COORDINATE.md (claim status)
+
+---
+
+## Post-push addendum: follow-ups from the ruling-relay window
+
+- Owner ruling "All orgs require OIDC" (design 0065 §4) enforcement follow-up filed as **#1679** (org-creation/SSO gating mechanism; owner decision on bootstrap semantics; this PR's gap pin must be flipped deliberately when implemented).
+- Anomaly noted: PR #1677's `pull_request: opened` event produced ZERO workflow runs (no CI, no PR Review — confirmed via actions API: 0 runs for head SHA 06601982). This addendum commit exists to re-fire `synchronize`; if workflows still do not run, escalate to the orchestrator (event delivery problem outside the workspace).
