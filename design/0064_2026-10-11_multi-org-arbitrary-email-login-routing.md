@@ -1,0 +1,133 @@
+# 0064 — Multi-org arbitrary-email login routing: org-scoped entry points (option C), not a root-surface picker
+
+**Status:** Proposed (2026-10-11) — decision document; **owner ruling requested** (§8 selects the option; a single owner comment choosing A / B / C, or unchallenged survival of this recommendation through review, releases the phase-1 implementation).
+**Date:** 2026-10-11
+**Issues:** #1669 (this design's charter) · audit #1649 gap D4 (the lookup body-oracle accepted risk this design must not grow) · Epic 54 (US-54.1/54.3 — the subdomain routing this design completes).
+**Binding rulings:** none yet — this document proposes; §8 is the owner's menu.
+
+---
+
+## 1. The problem, in half a page
+
+Each org can run its own OIDC IdP with auto-provision enabled and **no** claimed/verified email domains ("arbitrary-email orgs"). A **new** user of such an org has no routing mechanism at the root login page:
+
+- `POST /auth/lookup` (`api/internal/handlers/login_discovery.go:90`) answers **membership only**: an existing user resolves to their one org; an unknown email returns the uniform `/?lookup=not_found` dead end.
+- Email-domain inference on the login page (`frontend/src/pages/LoginPage.tsx:82`) works solely off `GET /auth/sso/domains`, which lists **DNS-verified** domains only (`pg_org_store.go:1812`, `WHERE array_length(verified_domains,1) IS NOT NULL`). Arbitrary-email orgs are invisible to it by construction.
+- Per-org OIDC start (`GET /auth/sso/:orgSlug/start`, `org_sso.go:235`) is public and org-scoped, but the root surface never routes a **new** user to it: with N arbitrary-email orgs coexisting, nothing on the platform says "which org did you mean?" — today such users arrive only via a direct org URL or an invitation, and the org subdomain's own login page (Epic 54's wildcard ingress routes `*.<base>` → frontend) is **generic**: it does not know it is org-scoped and offers no org SSO button.
+
+One pin before the options: auto-provision is **not** domain-gated anywhere today. `resolveUser` (`services/sso/sso.go:633`) gates on `cfg.AutoProvision` alone; domain verification only drives login-page button *inference*. An arbitrary-email org with `autoProvision=true` provisions any identity its IdP authenticates with a verified email claim (F8 holds; the IdP is the gatekeeper). The gap is therefore purely a **routing/discoverability** gap — and any fix must respect the enumeration posture: the always-200 lookup contract (`login_discovery.go:44-56`), and the acceptance criterion that the lookup oracle does not grow (#1669).
+
+## 2. Flow map (verified this tree, @ b97dd185)
+
+| Entry | What happens today | Files |
+|---|---|---|
+| Root login, email matches a **verified** domain | First-class "Sign in with {orgName}" button → `/auth/sso/:slug/start` | `LoginPage.tsx:82,222-235` |
+| Root login, email valid, no domain match (and ≥1 verified domain instance-wide) | "Continue with email" → `POST /auth/lookup` → existing user: org subdomain/`start` redirect; **new user: `/?lookup=not_found` dead end** | `LoginPage.tsx:84,86-105`; `login_discovery.go:90-147` |
+| Direct `GET /auth/sso/:orgSlug/start` | Works for any SSO-configured org; sets org-bound HMAC state cookie (`issueStateCookie`, payload `o`=orgID, `sso.go:732`); callback refuses org-swap (`sso.go:527-533`) | `org_sso.go:235-255` |
+| Frontend shortcut `/sso/:orgSlug` | Spinner page → immediate redirect to `start` | `SSOStartPage.tsx` |
+| Org subdomain `https://<slug>.<base>` | Wildcard ingress (`helm/templates/frontend-wildcard-ingress.yaml`) serves the **same generic SPA** + API under `/api`; login page has **zero org awareness** | `helm/…/frontend-wildcard-ingress.yaml:32-46` |
+| Invitation link | Public detail view; **accept requires a JWT + email match** — effectively password/passkey users only; a brand-new SSO user cannot accept (chicken-and-egg) | `invitations.go:332,369,416-429` |
+| Callback | `email_verified` mandatory (F8); existing-by-email or auto-provision (`AutoProvision` gate only); membership ensured; org-bound state cookie verified | `sso.go:513-614` |
+
+Enumeration baseline (what is *already* publicly observable, all accepted):
+- `/auth/sso/:slug/start` reveals "an SSO-configured org exists at this slug" (IdP redirect vs `sso=not_configured`) — existing accepted oracle.
+- `/auth/sso/domains` reveals verified domains + org slug/name — opt-in via DNS verification.
+- `/auth/lookup` reveals existing-user membership by body (audit #1649 **D4**, accepted risk) — this design must not widen it.
+
+## 3. Evaluation constraints
+
+From #1669 and the audit: (i) the lookup's enumeration-safe always-200 contract is inviolable; (ii) the verified-domain listing stays public only for verified domains; (iii) state cookies are org-bound — any picker must flow the chosen org into the existing start flow (trivially satisfied: the start URL is org-parameterized); (iv) invitation UX exists; (v) existing users' routing unchanged; (vi) the lookup oracle does not grow. Scoring axes: privacy/enumeration, UX friction (esp. for the new user of an arbitrary-email org), implementation cost, blast radius.
+
+## 4. Option analysis
+
+### A — Org picker at discovery (root surface shows org choice)
+
+As specified in the issue: when an email is unknown and ≥2 arbitrary-email orgs exist, the login page offers the org choice. The issue itself names the defect: showing "orgs the user could complete login for" *is* the leak — it enumerates the instance's arbitrary-email org directory on the public root page, unauthenticated, per-email. The suggested mitigation (reveal nothing until the user types the org name/slug with autocomplete) does not close it: autocomplete requires a prefix-search endpoint, which is a *finer-grained* org-directory oracle than anything the platform exposes today. Either form **grows the public oracle** and fails acceptance criterion (vi). The degenerate oracle-free variant — free-text slug entry, no listing, no autocomplete, link straight to the existing `start` URL — adds nothing the start URL doesn't already reveal, but it is no longer a picker; it demands the user already know their org slug, i.e. exactly option C's knowledge requirement expressed as a worse interface (typed exact-match vs a shareable URL), while keeping the root page the place org users thrash.
+
+- Privacy: ✗ as a picker (new directory oracle); ✓ only in degenerate typed form.
+- UX: best for genuinely-public directories — but arbitrary-email orgs are private organizations; being listed on a public login page is a feature *regression* for them. Verified-domain orgs already opted into listing via DNS; arbitrary-email orgs opted into nothing.
+- Cost: moderate (new endpoint or lookup extension + picker UI + flow into start).
+- Blast radius: public-surface growth (the one thing the constraints forbid).
+
+**Verdict: reject.** The picker form violates the oracle constraint; the typed form is dominated by C.
+
+### B — Invitation-only for arbitrary-email orgs
+
+Auto-provision without a verified domain requires an invitation carrying the org binding; domain-verified orgs keep seamless routing. Disambiguation moves out-of-band (the invitation email *is* the org binding).
+
+- Privacy: strongest — no new public surface, no listing, nothing revealed.
+- UX: highest friction, and it is a **breaking change for the premise's own population**: orgs running arbitrary-email auto-provision today (several exist — that is why #1669 was filed) onboard new users via the direct org URL; B severs that path for every user without an invitation, effective on deploy. New-user onboarding at every such org stops until invitations are sent.
+- Cost: **highest of the three.** The current invitation accept flow is password/passkey-shaped end-to-end (`Accept` requires a JWT; `InvitationPage.tsx` routes unauthenticated users to `/login` or `/register`). A new SSO-only user has no credentials and no account — carrying an invitation binding through the OIDC redirect means extending the state cookie payload or the start URL with the invitation token, teaching `HandleCallback` to consume it, and marking the invitation accepted at provision time. That is a new flow, not a wiring change.
+- Blast radius: behavioral break for existing arbitrary-email orgs' onboarding; touches the SSO callback hot path; changes invitation semantics.
+- Also: B conflates two questions. "#1669 asks *how does a new user reach the right org*" — B answers "*should arbitrary-email auto-provision be allowed at all*". That second question is real (anyone who learns a slug can today self-join such an org through its IdP — the org-admin's open-registration door), but it is a **provisioning-policy ruling**, per-org, with a migration story; bundling it into a routing fix makes both harder to rule on.
+
+**Verdict: reject as the vehicle for #1669.** File the provisioning-policy question (invite-gated auto-provision as opt-in per-org hardening) as its own issue; owner rules on it independently (§9).
+
+### C — Subdomain-first login (org-scoped entry points), additively scoped
+
+De-emphasize the root page for new-user SSO disambiguation; each org's own entry point — its subdomain when routing is enabled, the existing `/sso/:orgSlug` shortcut otherwise — hosts a first-class org login. Disambiguation *is* the URL: `acme.app.example.com` vs `beta.app.example.com`. The user selects their org by going to it.
+
+One reconciliation with the issue's phrasing: "root login serves personal/password accounts **only**" would remove the root SSO affordances and **violate acceptance criterion (v)** (existing users' routing unchanged). The additive scoping: the root page keeps everything it does today — membership lookup, verified-domain button — and merely stops *pretending* it can disambiguate new users among arbitrary-email orgs (it never could; it dead-ends). No existing behavior changes; the org surface is added.
+
+- Privacy: **no new oracle.** Org identity is revealed only on the org's own subdomain, which the user must already know (it arrived out-of-band — the same channel an invitation would use, but permanent and org-wide, not per-user). Resolving subdomain→org for the login button reveals exactly what `GET /auth/sso/<same-slug>/start` already reveals (SSO-configured org exists) — byte-for-byte the accepted baseline, nothing finer.
+- UX: the one-time knowledge requirement ("know your org's sign-in URL") is the minimum any privacy-preserving design can demand — B's invitations carry the same information per-user with ceremony on top. On the subdomain the experience is *better* than the root page has ever been for these users: "Sign in with Acme" first-class, above the password form.
+- Cost: **lowest.** Epic 54 already built the substrate — wildcard ingress, `cookieDomain` session survival, `subdomainFor` — but stopped one step short: the subdomain's login page is generic. The completion is (a) `GET /auth/config` returns an optional `orgContext {slug, name}` when the request's Host is `<slug>.<baseDomain>` for an SSO-configured org (server-side Host parse against the *configured* baseDomain; fail-soft omit on unknown slug / no SSO / DB error — the endpoint's existing posture), and (b) `LoginPage` renders the first-class org SSO button from it, linking the *existing* start URL. No new endpoints, no schema, no cookie changes, no lookup changes, no SSO-flow changes.
+- Blast radius: purely additive. `/auth/lookup` byte-identical; `/auth/sso/domains` untouched; state cookie and callback untouched (the button just links the existing org-parameterized start). The `orgContext` Host derivation is display-only — never an authz input; the flow's security remains path-resolved org + org-bound state cookie + callback org-swap refusal (`sso.go:527-533`). A spoofed Host yields at worst a wrong org *name* on a card — information equal to probing `start` for that slug directly.
+- Architecture fit: this is the completion of Epic 54's own design intent (`values.yaml:1603`: "org-scoped login via wildcard subdomain routing" — currently realized only as a redirect target, never as a login surface).
+
+**Verdict: recommend.**
+
+| | A (picker) | A′ (typed entry) | B (invitation-only) | **C (subdomain-first)** |
+|---|---|---|---|---|
+| Lookup/oracle growth | **yes** (directory) | no | no | **no** |
+| New-user friction | none (listed) | know slug + type it | invitation per user | **know org URL (once, shared)** |
+| Breaks existing orgs | no | no | **yes** (direct-URL onboarding) | **no** |
+| Implementation cost | moderate | small | **highest** (invitation↔SSO flow) | **lowest-moderate** |
+| Blast radius | public surface | small | SSO hot path + invitations | **additive** |
+
+## 5. Recommendation
+
+**Option C, additively scoped** (§4): org-scoped entry points become the blessed path for arbitrary-email orgs. Rationale, compressed:
+
+1. It is the only option that satisfies all three #1669 acceptance criteria simultaneously — the new-user flow is completable and documentable, existing routing is untouched, and the oracle does not grow (acceptance three is *unsatisfiable* for A-as-picker; B satisfies it but breaks criterion two's spirit by breaking new-user onboarding at existing orgs).
+2. It has the smallest blast radius and the lowest cost because the substrate exists — Epic 54 built the routing and then stopped before building the surface.
+3. It matches the codebase's enumeration posture: the user asserts org identity (by URL), the platform never asserts it for them (no listing).
+4. A and B each answer an adjacent question better asked separately: A′ (typed org entry at the root dead end) is a compatible *optional* add-on (§7 phase 3) — oracle-free by the same argument; B's provisioning-policy core is a per-org hardening setting to file as its own issue (§9).
+
+## 6. The selected design (detail)
+
+**6.1 — `orgContext` on `GET /auth/config`.** When `auth.orgSubdomainRouting.baseDomain` is configured and the request Host equals `<label>.<baseDomain>` with exactly one label (reject deeper hosts and exact-base hosts), the handler resolves the org by slug and, **iff the org exists and has an SSO config**, includes `orgContext: { "slug": …, "name": … }` in the response (new optional field, `omitempty`). Every miss — routing disabled, non-matching host, unknown slug, org without SSO, soft-deleted org, DB error — omits the field and still returns 200 (fail-soft, matching the endpoint's existing settings-read posture). The SSO-configured check keeps the revealed set byte-equal to the `start`-URL oracle: an org *without* SSO is not revealed. The field is display-only; no authz anywhere consumes it.
+
+**6.2 — `LoginPage` org awareness.** When `orgContext` is present: render a first-class "Sign in with {orgName}" button **above** the password/passkey forms, linking `ssoRedirectURL(orgContext.slug)` (the existing public start URL); keep all existing forms and affordances below it (org members may also be password users). When absent: byte-identical behavior to today. The verified-domain matched-button logic is untouched and cannot fire on a subdomain for a *different* org (verified-domain matching remains email-driven; if both would render, the orgContext button wins — one org, one button).
+
+**6.3 — Non-subdomain deployments.** `/sso/:orgSlug` (SSOStartPage → `start`) already exists as the org-scoped entry; §7 phase 2 documents it as the canonical org link for deploys without wildcard routing, alongside the subdomain form.
+
+**6.4 — What deliberately does not change.** `POST /auth/lookup` (byte-identical contract and body), `GET /auth/sso/domains` (verified-only listing), the state cookie, `StartLogin`/`HandleCallback`, invitation flows, `subdomainFor`, the wildcard ingress.
+
+## 7. Phased implementation plan
+
+- **Phase 1 (this charter, upon ruling):** §6.1 + §6.2 — `orgContext` field + Host-derivation with fail-soft misses; LoginPage org button; red-first pins: handler unit tests (subdomain host + SSO org → context; each miss branch → omitted + 200), router-level test with Host header, `LoginPage.test.tsx` (renders/links; absent → unchanged), `AuthConfig` contract/openapi additive update. No docs beyond code comments in this phase.
+- **Phase 2 (same charter, second PR):** documentation — `docs/operator/oidc-sso.md` gains an "Org-scoped login for arbitrary-email orgs" section (onboard by sharing `https://<slug>.<base>` or `/sso/<slug>`; known-gaps entry for #1669 closed), LoginPage `not_found` dead-end copy updated to point new users at their organisation's sign-in link ("contact your administrator"), values.yaml comment refresh.
+- **Phase 3 (owner-ruling-gated, likely separate issues):** (a) A′ typed org entry at the root dead end — oracle-free free-text slug → `start` link, only if the owner wants a root-surface affordance; (b) §9's provisioning hardening. Not implemented without an explicit ruling.
+
+## 8. Owner selection menu
+
+A single comment selects; phases release as scoped above.
+
+- **"C"** (or unchallenged survival of this recommendation through review) → phase 1 releases immediately.
+- **"A"** → I will treat that as A′ (the typed form) unless the owner explicitly accepts the directory oracle growth over the acceptance criterion — which then needs re-wording, since criterion three becomes unsatisfiable.
+- **"B"** → breaks direct-URL onboarding at existing arbitrary-email orgs on deploy; I will ask for the migration ruling (flag? per-org setting? migration window?) and the invitation-through-SSO design will be written before any code.
+- **"C + A′"** → phase 1–2 as above, A′ joins phase 3.
+
+## 9. Filed separately (recommended, not this charter)
+
+**Invite-gated auto-provision (per-org hardening):** today any org with `autoProvision=true` provisions whatever its IdP authenticates — for arbitrary-email orgs whose IdP allows open signup, the org's slug is an open-registration door into that org (and into instance user count). This is org-admin prerogative the same way `auth.registrationEnabled` is instance prerogative, but it deserves an explicit per-org setting ("require invitation when the org has no verified domain matching the user's email") and its own privacy/cost pass (invitation binding through the OIDC state cookie; accept-without-account). Filing as a new issue on ruling.
+
+## 10. Test strategy (phase 1)
+
+- **Handler/unit (red-first):** Host-derivation truth table — every §6.1 branch; `orgContext` never present when baseDomain unset; deep/exact hosts rejected.
+- **Router (real wiring):** httptest against `/auth/config` with `Host: acme.app.example.com` and configured baseDomain, fake store with/without SSO config — response shape pinned including the fail-soft 200.
+- **Enumeration pins:** `/auth/lookup` and `/auth/sso/domains` response contracts re-pinned unchanged in the same PR (red-first against accidental coupling).
+- **Frontend (vitest):** orgContext → button present, href = `ssoRedirectURL(slug)`, positioned first-class; absent → DOM identical to pre-change snapshot cases; verified-domain button behavior untouched.
+- **Contract:** `pkg/types` contract test + `sdks/openapi.yaml` auth-config schema additive-only.
+- **E2e-tier (honest scope):** true wildcard-host serving is ingress-level; pinned at router tier with Host headers, and noted as such — no live-ingress claim made from this workspace.

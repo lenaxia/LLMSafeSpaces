@@ -1,0 +1,69 @@
+# Worklog: #1669 — multi-org arbitrary-email login routing decision document (design 0064)
+
+Session: w24 (ses_*), branch feat/1669-org-routing from main @ b97dd185.
+
+## Charter
+
+Design-first: a decision document as a PR against design/, analyzing the issue's
+three candidate options (A org picker / B invitation-only / C subdomain-first)
+against the enumeration-safe constraints, with a recommendation, acceptance
+criteria mapping, and a phased plan. Implementation of phase 1 only after an
+owner selection lands in review.
+
+## What I verified before writing (all read-only, this tree @ b97dd185)
+
+- `login_discovery.go` — lookup is membership-only, always-200, uniform body
+  shape; D4 accepted-risk body oracle (found vs not_found).
+- `org_sso.go` + `pg_org_store.go:1812` — `/auth/sso/domains` lists only
+  DNS-verified domains; `start` is public, org-parameterized, org-binds the
+  HMAC state cookie.
+- `services/sso/sso.go` — auto-provision gates on `AutoProvision` ONLY (no
+  domain gate anywhere); callback refuses org-swap (org.ID != payload.OrgID →
+  ErrStateInvalid); email_verified mandatory (F8). So the #1669 gap is pure
+  routing/discoverability, not a provisioning hole.
+- `LoginPage.tsx` — verified-domain matched button + "Continue with email"
+  lookup; the discovery button doesn't even render when no org has verified
+  domains (domains.length > 0 gate).
+- `SSOStartPage.tsx` + router — `/sso/:orgSlug` shortcut already exists.
+- `helm/templates/frontend-wildcard-ingress.yaml` — wildcard routes `/api` →
+  API and `/` → frontend on `*.baseDomain`; so the SPA on an org subdomain
+  reaches the API same-origin, and `/auth/config` can derive org context from
+  the Host server-side. The Epic 54 subdomain surface is a redirect target
+  today, never a login surface — the login page there is generic.
+- `invitations.go` — Accept requires JWT + email match; InvitationPage routes
+  unauthenticated users to /login or /register → a brand-new SSO-only user
+  cannot accept invitations today (chicken-and-egg) — this drove B's cost
+  assessment.
+- audit #1649 SSO section + D4 — the enumeration baseline the design must not
+  grow: `/auth/sso/:slug/start` already reveals SSO-configured org existence.
+
+## Decision (design/0064_2026-10-11_multi-org-arbitrary-email-login-routing.md)
+
+Recommend **C, additively scoped**: org-scoped entry points (subdomain login
+page gains a first-class org SSO button via an optional `orgContext` on
+`/auth/config`; `/sso/:slug` documented as the non-subdomain equivalent).
+Root login unchanged (keeps membership lookup + verified-domain button) — the
+issue's "root serves personal/password only" phrasing would break the
+existing-users-unchanged acceptance, and the doc reconciles that explicitly.
+
+- A-as-picker rejected: enumerates the arbitrary-email org directory on the
+  public root page — unsatisfiable vs "the lookup oracle does not grow". The
+  oracle-free typed variant (A′) is dominated by C (same knowledge, worse
+  ergonomics) but kept as an optional phase-3 add-on.
+- B rejected as vehicle: breaks direct-URL onboarding at the existing
+  arbitrary-email orgs on deploy, highest implementation cost (invitation
+  binding must flow through the OIDC state cookie because accept requires a
+  JWT), and conflates routing with the real but separate provisioning-policy
+  question (slug = open-registration door for orgs with open IdPs) — filed
+  separately in the doc (§9), owner to rule.
+
+Phase 1 (releases on owner selection): `orgContext` on `/auth/config` (Host
+parse vs configured baseDomain, SSO-configured orgs only, fail-soft omit) +
+LoginPage org button + red-first pins (handler truth table, router Host test,
+lookup/domains contracts re-pinned unchanged, LoginPage vitest, openapi
+additive). Phase 2: docs + dead-end copy. Phase 3: A′ / hardening, ruling-gated.
+
+## Status
+
+Design PR open; implementation HELD pending review per charter. No production
+code touched in this PR.
