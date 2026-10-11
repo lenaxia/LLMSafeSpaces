@@ -130,7 +130,7 @@ Reviewer verified the r2 residual fixed and all citations clean. New findings:
 3. PR body still carried the overstated r1 sentence ("Both findings accepted
    and fixed"). Fixed in the PR body itself this time, not only in comments.
 
-## Owner-driven CX directive (lenaxia on #1671, ~03:35Z) — acknowledged
+## Owner-driven CX directive (lenaxia on #1671, 2026-10-11T04:10:24Z) — acknowledged
 
 Add a customer-experience section to design 0064: platform goals, personas
 (a)-(f) walked through the actual UI, workflow sanity, coverage matrix;
@@ -148,6 +148,17 @@ phase-1 code holds until it lands. Added as §11 on the design branch:
 - (f) knows-no-org: explicit non-goal by the enumeration stance.
 - Coverage matrix makes the three gaps visible: (e)-at-root (phase-2 copy),
   (e)-invitation (JWT chicken-and-egg → §9 hardening), (f) (permanent).
-- §11.4 checkpoint: walk written against shipped LoginPage.tsx; no
-  contradiction; no #1674 amendment needed. Verified against the vitest
-  suite (22/22 incl. both suppression arms + generic-label fallback).
+- §11.4 checkpoint: walk written against the phase-1 branch's LoginPage.tsx
+  (PR #1674, unmerged); no contradiction; no #1674 amendment needed. Verified
+  against the vitest suite (22/22 incl. both suppression arms + generic-label
+  fallback).
+
+## Review round 5 (CHANGES_REQUESTED, on the §11 commit) — fixed
+
+Directive compliance verified; all twelve §11 code claims verified exact.
+One blocking finding: §11.2(b) omitted invitations from persona (b)'s walk
+(the directive scoped "OIDC + domains + invitations") — fixed: (b) now walks
+the invitation surface and its relationship to the org-link artifact, with
+the §9 hardening future pointed at the matrix's (e) column. Two nits also
+fixed: worklog directive timestamp corrected (04:10:24Z), and §11.4's
+"shipped code" reworded to "phase-1 branch's implemented code (unmerged)".
