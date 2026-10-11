@@ -19,6 +19,9 @@ import { Button, Input } from "../components/ui";
  * new password + confirmation and POSTs once. Success redirects to
  * /login?reset=success (the login page shows the success notice); expired or
  * already-used tokens offer a fresh request.
+ *
+ * The "15 minutes" TTL in the copy mirrors passwordResetTokenTTL
+ * (api/internal/handlers/password_reset.go:26) — update both together.
  */
 
 type RequestState =
@@ -220,7 +223,7 @@ export function ResetPasswordPage() {
 
   if (confirm.tag === "error") {
     return (
-      <AuthCard title="Reset your password" description="Password reset">
+      <AuthCard title="Reset your password" description="Password reset failed">
         <p className="mb-4 text-sm text-muted-foreground">
           Something went wrong while resetting your password. Please try again.
         </p>

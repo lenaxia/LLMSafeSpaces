@@ -143,17 +143,42 @@ Verified (commands run, counts checked) unless labeled reasoned.
    Route/method contract test re-run green; handler suites re-run (32 pass)
    to confirm documented statuses match behavior.
 
+## Review rounds (AI reviewer, per-push)
+
+- **Round 1** (vs design-note commit a03f1d0f): CHANGES_REQUESTED — "no
+  code yet" (expected; draft).
+- **Round 2** (vs a3309619): CHANGES_REQUESTED. Findings + dispositions:
+  - e2e layer missing → already landed in 963ba09b (8 tests); extended to
+    12 with browser-level 410-used (verify + reset) and 404 unhappy paths.
+  - issue piece 4 (user-facing docs) → ADDED `docs/user/account-recovery.md`
+    (both flows, single-use/TTL semantics, session revocation, secrets-erasure
+    consequence, takeover-notification guidance) + registered a User Guide
+    nav section (also surfaces the previously orphaned dev-preview.md).
+  - ResetPasswordPage error card description "Password reset" read as
+    success → now "Password reset failed".
+  - LoginForm 403 resend link dropped return_to → new `verifyHrefFor` prop;
+    LoginPage threads sanitised return_to (unit-pinned).
+  - router.integration stale comment + dead `me:` stub → corrected/removed
+    (enforcement comes from the AuthProvider mock, now stated accurately).
+  - VerifyEmailPage "used"-state over-promise + hard-coded TTLs → caveat
+    comment on the consume-before-UpdateUser ordering; TTL comments tying
+    copy to the backend constants at all three surfaces.
+
 ## Test runs (verified counts)
 
 - Frontend targeted: 5 files, **56/56 PASS** (vitest); after the provider
-  fix: 15 auth-related files, **115/115 PASS**.
-- Frontend FULL suite: **188 files, 2087/2087 PASS** (~200s) — re-run after
-  the AuthProvider change.
+  fix: 15 auth-related files, **115/115 PASS**; after round-2 fixes:
+  5 files, **57/57** (new return_to-threading pin).
+- Frontend FULL suite: **188 files, 2088/2088 PASS** (re-run after every
+  remediation).
 - Playwright e2e FULL suite: **187 passed, 13 skipped, 0 failed** (~5m);
-  new verify-reset.spec.ts: **8/8**, 108 consecutive green across
-  repeat-each batches after the flake fix.
-- `tsc --noEmit`: clean. `eslint .`: 0 errors (1 warning removed from my
-  code; abi_pb warnings pre-existing on main).
+  verify-reset.spec.ts now **12/12** (register→check-email, verify
+  consume/expired/used/404/return_to + URL-strip, reset request
+  neutral-202, confirm success chain, expired→request-new, used→request-new,
+  login-403 resend link), 108 consecutive green across repeat-each batches
+  after the flake fix.
+- `tsc --noEmit`: clean. `eslint .`: 0 errors (abi_pb warnings pre-existing
+  on main).
 - Go: `TestOpenAPIRouterContract` PASS; handlers `-run "TestPasswordReset|
   TestEmailVerify"` **32 PASS**.
 

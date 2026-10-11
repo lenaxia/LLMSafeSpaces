@@ -16,6 +16,9 @@ import { Spinner } from "../components/ui/Spinner";
  * outcome has its own guidance. This page is the difference between a
  * locked-out registrant (login is 403-gated until verified) and a first
  * successful login.
+ *
+ * The "24 hours" TTL in the copy mirrors emailVerifyTokenTTL
+ * (api/internal/handlers/email_verify.go:26) — update both together.
  */
 type VerifyState =
   | { tag: "missing" }
@@ -157,6 +160,11 @@ export function VerifyEmailPage() {
   if (state.tag === "used") {
     // The token was consumed — the email IS verified. Guide to sign-in; a
     // resend is pointless here (and the backend no-ops for verified users).
+    // Caveat (reasoned, pre-existing backend ordering): the handler consumes
+    // the token BEFORE setting email_verified (email_verify.go:109-128), so
+    // a DB failure between the two could leave a consumed token with an
+    // unverified user — this copy would then over-promise. The window is
+    // tiny and the user can still resend from the login 403 path.
     return (
       <AuthCard title="Verify your email" description="Link already used">
         <p className="mb-4 text-sm text-muted-foreground">

@@ -206,6 +206,11 @@ export function LoginPage() {
               redirectAfterAuth();
             }}
             onEmailChange={setEmail}
+            verifyHrefFor={(email) =>
+              `/verify-email?email=${encodeURIComponent(email)}${
+                returnTo ? `&return_to=${encodeURIComponent(returnTo)}` : ""
+              }`
+            }
           />
           {/* #1651: entry point for the self-service password-reset flow. */}
           <Link

@@ -132,6 +132,7 @@ export function RegisterPage() {
               Continue without verifying
             </Button>
             <p className="mt-2 text-center text-xs text-muted-foreground">
+              {/* TTL mirrors emailVerifyTokenTTL (email_verify.go:26) */}
               The verification link expires in 24 hours.
             </p>
           </div>

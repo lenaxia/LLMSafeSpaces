@@ -100,6 +100,9 @@ nav:
       - Overview: getting-started/index.md
       - Quickstart: getting-started/quickstart.md
       - Concepts: getting-started/concepts.md
+  - User Guide:
+      - Account Recovery (verify email / reset password): user/account-recovery.md
+      - Dev Preview: user/dev-preview.md
   - Operator Guide:
       - Installation: operator/installation.md
       - Configuration: operator/configuration.md

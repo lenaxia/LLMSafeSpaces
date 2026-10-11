@@ -30,10 +30,10 @@ vi.mock("./api/orgs", () => ({
 }));
 
 // Stub the auth API so the token-consuming pages (#1651) can load without a
-// real server.
+// real server. (The auth-session state itself comes from the AuthProvider
+// mock above — these pages never call me().)
 vi.mock("./api/auth", () => ({
   authApi: {
-    me: () => Promise.reject(new Error("401")),
     getConfig: () =>
       Promise.resolve({
         registrationEnabled: true,
@@ -76,8 +76,8 @@ describe("production router", () => {
   });
 
   it("/verify-email is reachable while logged in (outside GuestOnly)", async () => {
-    // The auth mock above returns a logged-in user; GuestOnly would bounce
-    // /verify-email to /chat if the route were inside its children.
+    // The AuthProvider mock above returns a logged-in user; GuestOnly would
+    // bounce /verify-email to /chat if the route were inside its children.
     window.history.replaceState({}, "", "/verify-email?token=abc");
     renderRoute("/verify-email?token=abc");
     await waitFor(() => {

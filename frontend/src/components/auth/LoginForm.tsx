@@ -7,9 +7,18 @@ interface Props {
   onSubmit: (username: string, password: string, rememberMe: boolean) => Promise<void>;
   /** Fired on every email change so parents (e.g. SSO domain detection) can react. */
   onEmailChange?: (email: string) => void;
+  /**
+   * #1651: builds the resend-verification link shown on the 403
+   * email-not-verified branch. LoginPage overrides the default to thread
+   * its sanitised return_to through the verify → sign-in chain.
+   */
+  verifyHrefFor?: (email: string) => string;
 }
 
-export function LoginForm({ onSubmit, onEmailChange }: Props) {
+const defaultVerifyHrefFor = (email: string) =>
+  `/verify-email?email=${encodeURIComponent(email)}`;
+
+export function LoginForm({ onSubmit, onEmailChange, verifyHrefFor = defaultVerifyHrefFor }: Props) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
@@ -58,7 +67,7 @@ export function LoginForm({ onSubmit, onEmailChange }: Props) {
           </p>
           <p className="mt-1">
             <a
-              href={`/verify-email?email=${encodeURIComponent(username)}`}
+              href={verifyHrefFor(username)}
               className="text-primary underline underline-offset-4"
             >
               Resend verification email

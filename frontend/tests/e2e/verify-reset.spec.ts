@@ -140,6 +140,43 @@ test.describe("/verify-email interstitial", () => {
       { timeout: 5000 },
     );
   });
+
+  test("already-used token points to sign-in without a resend form", async ({ page }) => {
+    await mockConfigAndMe(page);
+    await page.route(`${API_PREFIX}/auth/verify-email`, async (route: Route) => {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "token already used" }),
+      });
+    });
+
+    await page.goto("/verify-email?token=used");
+    await expect(page.getByText(/already been used/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole("link", { name: /^sign in$/i })).toHaveAttribute(
+      "href",
+      "/login",
+    );
+    // Already-used means verified — no resend form.
+    await expect(page.getByPlaceholder("Email")).toHaveCount(0);
+  });
+
+  test("unknown token (404) offers a resend", async ({ page }) => {
+    await mockConfigAndMe(page);
+    await page.route(`${API_PREFIX}/auth/verify-email`, async (route: Route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "token not found" }),
+      });
+    });
+
+    await page.goto("/verify-email?token=ghost");
+    await expect(
+      page.getByText(/verification link is invalid or incomplete/i),
+    ).toBeVisible({ timeout: 5000 });
+    await expect(page.getByPlaceholder("Email")).toBeVisible();
+  });
 });
 
 test.describe("/reset-password interstitial", () => {
@@ -213,6 +250,26 @@ test.describe("/reset-password interstitial", () => {
     await expect(page.getByText(/reset link has expired/i)).toBeVisible({ timeout: 5000 });
     await page.getByRole("button", { name: /request a new link/i }).click();
     await expect(page.getByPlaceholder("Email")).toBeVisible({ timeout: 5000 });
+  });
+
+  test("confirm mode: already-used link offers request-a-new-link + sign-in", async ({ page }) => {
+    await mockConfigAndMe(page);
+    await page.route(`${API_PREFIX}/auth/password-reset/confirm`, async (route: Route) => {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "token already used" }),
+      });
+    });
+
+    await page.goto("/reset-password?token=used");
+    await page.getByPlaceholder("New password", { exact: true }).fill("newpassword1");
+    await page.getByPlaceholder("Confirm new password").fill("newpassword1");
+    await page.getByRole("button", { name: /reset password/i }).click();
+
+    await expect(page.getByText(/already been used/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole("button", { name: /request a new link/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: /^sign in$/i })).toBeVisible();
   });
 });
 
