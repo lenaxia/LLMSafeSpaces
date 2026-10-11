@@ -61,6 +61,16 @@ None. The §4 QUESTION awaits the owner; nothing in this lane blocks on it.
 
 ---
 
-## Post-review addendum (same day): rulings recorded in 0064 §8 and 0065 §4
+## Post-review addendum (same day): rulings recorded — 0064 §8 = C and 0065 §4 (both records live in design 0065 §4/§4b; 0064's own status/menu lines updated to point at them)
 
 While PR #1676 was in review, the owner resolved the two open design decisions (relayed by the orchestrator on the PR thread): **design 0064 §8 = C** (org name shown on the org-scoped login; phase-1 behavior permanent; no C-strict) and **design 0065 §4 = "All orgs require OIDC. We don't support anything else."** (no-SSO org is not a supported state). Applied: 0065 §4 rewritten from open question to ruling with the enforcement-gap status (pinned by `TestCreateOrg_NoSSORequirementGapPin` in PR #1677; enforcement mechanism — creation gate vs not-usable-until-SSO — flagged for owner decision given the bootstrap chicken-and-egg) and §4b added recording §8 = C. Status line and §7 History updated. No code change from either ruling record.
+
+---
+
+## Review round 1 remediation (PR #1678, CHANGES_REQUESTED → fixes)
+
+1. "Filed as follow-up" was unvalidated prose — **issue #1679 now exists** and is cited in §4.
+2. Dangling "§1/§3" cross-reference — §4 now points at §6's verification trail (+ the operator/user docs).
+3. 0064 (merged while this PR was open) still advertised its owner menu as open — 0064's Status + Binding rulings lines now record §8 = C → 0065 §4b, §8's section carries the RESOLVED banner, and the header's promised §9 → 0065 pointer landed with the Binding rulings line.
+4. Pin tense — §4 now says the pin "will lock … once #1677 merges (currently open)".
+Worklog addendum heading corrected (both ruling records live in 0065).
