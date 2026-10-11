@@ -1559,6 +1559,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		WebhookReceiverHandler:          webhookReceiverHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
+		OrgSubdomainBaseDomain:          cfg.OrgSubdomainRouting.BaseDomain,
 		FaultInjectionRules:             faultInjectionRules,
 		Turnstile: server.TurnstileRouterConfig{
 			Enabled:   cfg.Turnstile.Enabled,

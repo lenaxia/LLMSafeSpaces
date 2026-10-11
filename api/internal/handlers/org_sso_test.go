@@ -40,6 +40,7 @@ type mockSSOStore struct {
 	domains   []types.SSODomain
 	getErr    error
 	deleteErr error
+	slugErr   error // when set, GetOrgBySlug returns this error (0064 fail-soft tests)
 	auditLog  []string
 }
 
@@ -113,6 +114,9 @@ func (m *mockSSOStore) RotateVerificationToken(_ context.Context, orgID string) 
 func (m *mockSSOStore) GetOrgBySlug(_ context.Context, slug string) (*types.Organization, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.slugErr != nil {
+		return nil, m.slugErr
+	}
 	return m.slugToOrg[strings.ToLower(slug)], nil
 }
 func (m *mockSSOStore) GetOrgMember(_ context.Context, orgID, userID string) (*types.OrgMember, error) {

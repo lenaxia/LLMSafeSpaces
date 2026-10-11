@@ -110,6 +110,20 @@ type AuthConfig struct {
 	SSOProviders         []string `json:"ssoProviders,omitempty"`
 	InstanceName         string   `json:"instanceName"`
 	MOTD                 string   `json:"motd"`
+	// OrgContext (design 0064, #1669): present iff the request arrived on an
+	// org subdomain (<slug>.<auth.orgSubdomainRouting.baseDomain>) for an org
+	// that exists AND has an SSO config. Display-only — never an authz input.
+	// The SSO-configured gate keeps the existence oracle equal to the public
+	// /auth/sso/:slug/start oracle (unknown slug and org-without-SSO are
+	// indistinguishable); the org Name is a disclosed metadata delta over
+	// that oracle (Name is omitempty so a "C-strict" variant can omit it).
+	OrgContext *AuthConfigOrgContext `json:"orgContext,omitempty"`
+}
+
+// AuthConfigOrgContext names the org a login surface is scoped to.
+type AuthConfigOrgContext struct {
+	Slug string `json:"slug"`
+	Name string `json:"name,omitempty"`
 }
 
 // DEKSource identifies which encryption tier a user's personal secrets live in.

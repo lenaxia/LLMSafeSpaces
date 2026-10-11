@@ -24,6 +24,13 @@ describe("Go↔TS contract", () => {
     expect(data.registrationEnabled).toBe(true);
     expect(data.oidcEnabled).toBe(false);
     expect(data.ssoProviders).toEqual(["okta"]);
+    // 0064 (#1669): orgContext present on an org subdomain.
+    expect(data.orgContext).toEqual({ slug: "acme", name: "Acme Corp" });
+  });
+
+  it("AuthConfig omits orgContext on the root host", () => {
+    const data: AuthConfig = fixtures.AuthConfigNoOrgContext;
+    expect(data.orgContext).toBeUndefined();
   });
 
   it("ActivateWorkspaceResponse matches Go shape", () => {
@@ -75,7 +82,7 @@ describe("Go↔TS contract", () => {
 
   it("all fixture keys have corresponding tests", () => {
     const testedKeys = [
-      "AuthConfig", "ActivateWorkspaceResponse", "ActiveSessionsResponse",
+      "AuthConfig", "AuthConfigNoOrgContext", "ActivateWorkspaceResponse", "ActiveSessionsResponse",
       "SessionListItem", "WorkspaceListItem", "AuthResponse",
       "InputRequestQuestion", "InputRequestPermission",
     ];

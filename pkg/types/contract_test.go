@@ -28,6 +28,12 @@ func TestGenerateContractFixtures(t *testing.T) {
 			RegistrationEnabled: true,
 			OIDCEnabled:         false,
 			SSOProviders:        []string{"okta"},
+			OrgContext:          &AuthConfigOrgContext{Slug: "acme", Name: "Acme Corp"},
+		},
+		"AuthConfigNoOrgContext": AuthConfig{
+			RegistrationEnabled: true,
+			OIDCEnabled:         false,
+			// OrgContext nil — omitted from JSON (root-host shape, 0064 #1669).
 		},
 		"ActivateWorkspaceResponse": ActivateWorkspaceResponse{
 			Resumed:   "ws-1",
