@@ -35,11 +35,13 @@ describe("VerifyEmailPage", () => {
     window.history.replaceState({}, "", "/verify-email");
   });
 
-  it("shows invalid-link state without calling the API when no token is present", async () => {
+  it("shows resend-oriented state without calling the API when no token is present", async () => {
     renderPage();
     await waitFor(() =>
-      expect(screen.getByText(/verification link is invalid or incomplete/i)).toBeInTheDocument(),
+      expect(screen.getByText(/we'll send a verification link/i)).toBeInTheDocument(),
     );
+    // No link was clicked — the page must NOT claim a link is invalid.
+    expect(screen.queryByText(/invalid or incomplete/i)).not.toBeInTheDocument();
     expect(mockVerifyEmail).not.toHaveBeenCalled();
   });
 
@@ -123,7 +125,6 @@ describe("VerifyEmailPage", () => {
     );
     expect(screen.getByPlaceholderText("Email")).toBeInTheDocument();
   });
-
   it("shows retry on network error", async () => {
     window.history.replaceState({}, "", "/verify-email?token=abc");
     mockVerifyEmail.mockRejectedValue(new Error("network down"));

@@ -98,8 +98,8 @@ Verified (commands run, counts checked) unless labeled reasoned.
    LoginPage/RegisterPage/SSOStartPage/InvitationPage tests, the Go
    OpenAPI↔router contract test (route-level only — response docs not
    enforced there, which is why the doc gaps survived).
-2. **Red-first**: wrote VerifyEmailPage.test.tsx (11), ResetPasswordPage.test.tsx
-   (13), router.integration additions (4), LoginPage additions (3),
+2. **Red-first**: wrote VerifyEmailPage.test.tsx (10), ResetPasswordPage.test.tsx
+   (13), router.integration additions (4), LoginPage additions (3+1 later),
    RegisterPage additions (2) BEFORE any implementation. Confirmed RED:
    new-page suites fail on missing module; router tests render NotFoundPage;
    LoginPage/RegisterPage new tests fail on missing UI. One RegisterPage
@@ -148,7 +148,8 @@ Verified (commands run, counts checked) unless labeled reasoned.
 - **Round 1** (vs design-note commit a03f1d0f): CHANGES_REQUESTED — "no
   code yet" (expected; draft).
 - **Round 2** (vs a3309619): CHANGES_REQUESTED. Findings + dispositions:
-  - e2e layer missing → already landed in 963ba09b (8 tests); extended to
+  - e2e layer missing → already landed in 963ba09b (9 tests — commit
+    message's "(8)" was a miscount, see Errata); extended to
     12 with browser-level 410-used (verify + reset) and 404 unhappy paths.
   - issue piece 4 (user-facing docs) → ADDED `docs/user/account-recovery.md`
     (both flows, single-use/TTL semantics, session revocation, secrets-erasure
@@ -163,6 +164,28 @@ Verified (commands run, counts checked) unless labeled reasoned.
   - VerifyEmailPage "used"-state over-promise + hard-coded TTLs → caveat
     comment on the consume-before-UpdateUser ordering; TTL comments tying
     copy to the backend constants at all three surfaces.
+- **Round 3** (vs 963ba09b): CHANGES_REQUESTED. Docs piece 4, error-card
+  copy, return_to threading, dead stub — all already addressed in 59990e34
+  (the review raced the push; its findings were re-checked against 59990e34
+  and are fixed there). NEW findings acted on:
+  - VerifyEmailPage missing-token state said "link is invalid or
+    incomplete" — false for the register check-email path (no link was ever
+    clicked). Copy split: missing → resend-oriented ("we'll send a
+    verification link"), not-found keeps "invalid or incomplete";
+    unit-pinned both ways.
+  - Worklog count erratum (Rule 7): earlier revisions claimed
+    VerifyEmailPage "(11)" tests (actual 10) and the e2e suite "(8 tests)"
+    in the 963ba09b commit message (actual 9 at that commit; 12 after the
+    round-2 additions). Corrected here; commit messages are immutable.
+  - Stale "DRAFT" preamble in the PR body — PR body rewritten to final
+    state.
+
+## Errata / count corrections
+
+- VerifyEmailPage.test.tsx: 10 tests (not 11 as first logged).
+- verify-reset.spec.ts: 9 tests at commit 963ba09b (commit message said
+  8); 12 tests after round-2 additions (current).
+- New-test totals at head: 33 vitest (10+13+4+2+4) + 12 e2e.
 
 ## Test runs (verified counts)
 

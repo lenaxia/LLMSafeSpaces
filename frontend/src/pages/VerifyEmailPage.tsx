@@ -102,8 +102,25 @@ export function VerifyEmailPage() {
       });
   };
 
-  // --- Missing / invalid token ---
-  if (state.tag === "missing" || state.tag === "not-found") {
+  // --- Missing token (e.g. arrived from the register check-email card or a
+  // mistyped URL) — no link was ever clicked, so don't claim one is invalid;
+  // just offer a resend. Not-found (below) is the "link is bad" state.
+  if (state.tag === "missing") {
+    return (
+      <AuthCard title="Verify your email" description="Email verification">
+        <ResendForm
+          intro="Enter your email below and we'll send a verification link. Links are single-use and expire after 24 hours."
+          resend={resend}
+          email={resendEmail}
+          onEmailChange={setResendEmail}
+          onSubmit={handleResend}
+          loginHref={loginHref}
+        />
+      </AuthCard>
+    );
+  }
+
+  if (state.tag === "not-found") {
     return (
       <AuthCard title="Verify your email" description="Email verification">
         <ResendForm
