@@ -58,3 +58,9 @@ None. The §4 QUESTION awaits the owner; nothing in this lane blocks on it.
 - design/0065_2026-10-11_org-provisioning-policy-ruling.md (new)
 - worklogs/NNNN_2026-10-11_w26-1669-provisioning-ruling.md (this file)
 - COORDINATE.md (status flip)
+
+---
+
+## Post-review addendum (same day): rulings recorded in 0064 §8 and 0065 §4
+
+While PR #1676 was in review, the owner resolved the two open design decisions (relayed by the orchestrator on the PR thread): **design 0064 §8 = C** (org name shown on the org-scoped login; phase-1 behavior permanent; no C-strict) and **design 0065 §4 = "All orgs require OIDC. We don't support anything else."** (no-SSO org is not a supported state). Applied: 0065 §4 rewritten from open question to ruling with the enforcement-gap status (pinned by `TestCreateOrg_NoSSORequirementGapPin` in PR #1677; enforcement mechanism — creation gate vs not-usable-until-SSO — flagged for owner decision given the bootstrap chicken-and-egg) and §4b added recording §8 = C. Status line and §7 History updated. No code change from either ruling record.
