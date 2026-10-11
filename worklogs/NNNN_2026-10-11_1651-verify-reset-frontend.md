@@ -180,6 +180,22 @@ Verified (commands run, counts checked) unless labeled reasoned.
   - Stale "DRAFT" preamble in the PR body — PR body rewritten to final
     state.
 
+- **Round 4** (vs 57d53484): CHANGES_REQUESTED, one minor finding —
+  docs omitted that a reset also suspends Active workspaces + scrubs their
+  ephemeral secrets (NeutralizeUserWorkspaces, password_reset.go:300-308,
+  wired app.go:2077-2080). Fixed in 65140c31 (4-line docs addition;
+  reviewer verified the copy matches backend semantics: Active-only
+  suspend, PVC retained/resumable).
+- **Round 5** (vs 65140c31): **APPROVE** — "all four #1651 pieces and every
+  scope item implemented and verified against the actual handlers, every
+  required test level present and green (re-run at this head), final round-4
+  docs finding remediated accurately, adversarial second pass found no
+  contract mismatches." Reviewer's own runs at head: 57/57 targeted vitest,
+  2088/2088 full, 12/12 verify-reset e2e, full Playwright 189/0 fail
+  (13 skipped, one pre-existing unrelated sidebar-gesture flake retried
+  clean), tsc clean, Go contract + handler suites + TestNeutralizeUserWorkspaces
+  PASS. CI at head: 32/32 checks pass, 0 fail.
+
 ## Errata / count corrections
 
 - VerifyEmailPage.test.tsx: 10 tests (not 11 as first logged).
