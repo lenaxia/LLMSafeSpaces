@@ -90,3 +90,5 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 ## Import-cycle fix (found by CI on the recreated PR; PR #1677 → #1680)
 
 The dispatched CI + #1680's review exposed what local scoped runs missed: passkey.go importing `services/auth` (for `ErrEmailNotVerified`) is a **test-time import cycle** — services/auth's tests import handlers, so `go vet ./...` / full-suite CI fails with "import cycle not allowed in test" at services/auth [setup failed]. Fix: the message is now a local const `verifyEmailMessage` in passkey.go (documented as mirroring auth.ErrEmailNotVerified), and `TestLoginFinish_UnverifiedEmail_Rejected` pins parity against the canonical `authsvc.ErrEmailNotVerified` (test-only import — cycle-safe). Verified: `go vet ./...` clean; services/auth full package ok (8.9s); handlers full ok (74.6s).
+
+- Event-delivery incident trail complete: repo-wide Actions silence 23:54Z–00:33Z (zero runs of any event kind, verified via API); resumed with an issue_comment run at 00:32:51Z. This PR (#1682, branch r2) was opened inside the silence window — this nudge re-fires synchronize so CI + PR Review run against b3a07f8a + this addendum.
