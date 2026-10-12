@@ -1432,6 +1432,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Security controls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#accepted-risk-authlookup-membership-oracle-audit-1649-d4-assessed-1652" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accepted risk: /auth/lookup membership oracle (audit #1649 D4, assessed #1652)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2945,6 +2962,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Security controls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#accepted-risk-authlookup-membership-oracle-audit-1649-d4-assessed-1652" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accepted risk: /auth/lookup membership oracle (audit #1649 D4, assessed #1652)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3509,8 +3543,21 @@
 <td>Auto-provision off → 403</td>
 <td><code>ErrAutoProvisionOff</code> mapped to <code>provisioning_disabled</code></td>
 </tr>
+<tr>
+<td><code>/auth/lookup</code> membership oracle (audit #1649 D4)</td>
+<td><strong>Accepted risk</strong> — see the assessment below the table</td>
+</tr>
 </tbody>
 </table>
+<h3 id="accepted-risk-authlookup-membership-oracle-audit-1649-d4-assessed-1652">Accepted risk: <code>/auth/lookup</code> membership oracle (audit #1649 D4, assessed #1652)<a class="headerlink" href="#accepted-risk-authlookup-membership-oracle-audit-1649-d4-assessed-1652" title="Permanent link">&para;</a></h3>
+<p><code>POST /auth/lookup</code> always answers 200 with <code>{redirectUrl}</code>, but the <strong>body</strong> differentiates: an email belonging to an org-attached user resolves to their org's URL (subdomain, or the org's SSO start URL), every miss returns <code>/?lookup=not_found</code>. The endpoint is therefore an email → (account exists, org slug) oracle. <strong>Assessment: accepted.</strong></p>
+<ul>
+<li><strong>Bounded exposure.</strong> No credentials or session material are returned; personal-only (no-org) users are indistinguishable from unknown emails; SSO-configured org slugs are already derivable by probing the public <code>/auth/sso/:slug/start</code> (existence oracle, accepted baseline), and verified-domain orgs already publish slug <strong>and</strong> name via <code>/auth/sso/domains</code>. Uniform status and body shape are enforced on every error branch (DB errors masked — never 5xx); there is no timing pad, matching the password-reset enumeration precedent.</li>
+<li><strong>Uniform-response change: rejected.</strong> Returning one redirect regardless of outcome would remove the email→org routing that is the endpoint's entire function — the existing-member journey (type your email at the root page, be routed to your org's flow). The UX cost is total; the oracle gain would not extend to the other, already-public surfaces.</li>
+<li><strong>Issue-suggested middle option (generic redirect when the user's org has no SSO config): not implemented.</strong> With subdomain routing on, such users are routed to their org's own login page (password/passkey forms work there); only the no-routing fallback lands on a <code>not_configured</code> error. The change would add a new distinguishing dimension (the org's SSO-ness) to the body — a <em>new</em> oracle facet — for a cosmetic gain.</li>
+<li><strong>Standing mitigations.</strong> The global 100/min/IP limiter caps probing. Design 0064's enumeration posture does not grow this oracle (<code>orgContext</code> is display-only; existence set-equal to the <code>start</code> oracle).</li>
+<li><strong>Revisit trigger.</strong> If email-spray against the lookup becomes an observed abuse pattern, the designed evolution path is a per-route rate cap (5–10/min/IP, the existing <code>PerRouteRateLimit</code> pattern) as the cheap first lever — not scheduled now.</li>
+</ul>
 <hr />
 <h2 id="idp-specific-setup-notes">IdP-specific setup notes<a class="headerlink" href="#idp-specific-setup-notes" title="Permanent link">&para;</a></h2>
 <h3 id="google-workspace">Google Workspace<a class="headerlink" href="#google-workspace" title="Permanent link">&para;</a></h3>
@@ -3640,7 +3687,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 11, 2026 22:32:27 UTC"><span class="timeago" datetime="2026-10-11T22:32:27+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 11, 2026 22:32:27 UTC">2026-10-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 12, 2026 04:26:46 UTC"><span class="timeago" datetime="2026-10-12T04:26:46+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 12, 2026 04:26:46 UTC">2026-10-12</span>
   </span>
 
     
