@@ -144,7 +144,7 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 		c.JSON(200, gin.H{"userID": userID})
 	})
 
-	auth := newTestAuthenticator()
+	auth := NewTestAuthenticator()
 
 	// === PHASE 1: Registration over HTTP ===
 
@@ -166,7 +166,7 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NotEmpty(t, challenge)
 
 	// Step 2: generate attestation with the test authenticator.
-	attResp, err := auth.generateRegistrationResponse(challenge)
+	attResp, err := auth.GenerateRegistrationResponse(challenge)
 	require.NoError(t, err)
 
 	// Step 3: finish registration.
@@ -212,7 +212,7 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NotEmpty(t, loginChallenge)
 
 	// Step 5: generate assertion with the test authenticator (same key).
-	assertResp, err := auth.generateAssertionResponse(loginChallenge)
+	assertResp, err := auth.GenerateAssertionResponse(loginChallenge)
 	require.NoError(t, err)
 
 	// Step 6: finish login.

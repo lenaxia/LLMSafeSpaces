@@ -15,9 +15,13 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-// testAuthenticator generates valid WebAuthn attestation/assertion responses
+// TestAuthenticator generates valid WebAuthn attestation/assertion responses
 // for ceremony happy-path tests using P-256 + "none" attestation format.
-type testAuthenticator struct {
+// Exported (this file has no _test suffix) so cross-package integration
+// tests — e.g. the handlers' issuance-gate e2e — can drive a REAL ceremony
+// through the real passkey.Service and handlers.PasskeyHandler without
+// duplicating the WebAuthn crypto (#1652 review requirement).
+type TestAuthenticator struct {
 	rpID         string
 	origin       string
 	credentialID []byte
@@ -25,19 +29,19 @@ type testAuthenticator struct {
 	signCount    uint32
 }
 
-func newTestAuthenticator() *testAuthenticator {
+func NewTestAuthenticator() *TestAuthenticator {
 	credID := make([]byte, 32)
 	_, _ = rand.Read(credID)
-	return &testAuthenticator{
+	return &TestAuthenticator{
 		rpID:         "localhost",
 		origin:       "https://localhost",
 		credentialID: credID,
 	}
 }
 
-// generateRegistrationResponse builds a valid WebAuthn attestation response
+// GenerateRegistrationResponse builds a valid WebAuthn attestation response
 // map for the "none" format matching the given challenge.
-func (a *testAuthenticator) generateRegistrationResponse(challengeB64 string) (map[string]any, error) {
+func (a *TestAuthenticator) GenerateRegistrationResponse(challengeB64 string) (map[string]any, error) {
 	challenge, err := base64.RawURLEncoding.DecodeString(challengeB64)
 	if err != nil {
 		return nil, fmt.Errorf("decode challenge: %w", err)
@@ -103,9 +107,9 @@ func (a *testAuthenticator) generateRegistrationResponse(challengeB64 string) (m
 	}, nil
 }
 
-// generateAssertionResponse builds a valid WebAuthn assertion response map
+// GenerateAssertionResponse builds a valid WebAuthn assertion response map
 // matching the given challenge, signed with the credential's private key.
-func (a *testAuthenticator) generateAssertionResponse(challengeB64 string) (map[string]any, error) {
+func (a *TestAuthenticator) GenerateAssertionResponse(challengeB64 string) (map[string]any, error) {
 	if a.privateKey == nil {
 		return nil, fmt.Errorf("no registered credential")
 	}
@@ -146,7 +150,7 @@ func (a *testAuthenticator) generateAssertionResponse(challengeB64 string) (map[
 	}, nil
 }
 
-func (a *testAuthenticator) buildClientDataJSON(typ string, challenge []byte) ([]byte, error) {
+func (a *TestAuthenticator) buildClientDataJSON(typ string, challenge []byte) ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"type":        typ,
 		"challenge":   base64.RawURLEncoding.EncodeToString(challenge),

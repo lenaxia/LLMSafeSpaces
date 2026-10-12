@@ -80,3 +80,14 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 ## Cycle-fix restoration on feat/1652-hardening-final (PR #1683)
 
 The recreation branch carried the pre-cycle-fix passkey files (import of services/auth in passkey.go) — the exact shape CI failed on at 23:39 (test-time import cycle: services/auth's tests import handlers). This commit restores the b3a07f8a fix: local `verifyEmailMessage` const + test-only parity pin (`authsvc.ErrEmailNotVerified`). Verified locally again: `go vet ./...` clean on this tree.
+
+---
+
+## Review round 1 on #1683 (CHANGES_REQUESTED → integration tier added)
+
+The review confirmed correctness + full issue closure but required integration/e2e coverage for the issuance gates through REAL wiring (the existing passkey e2e bypasses handlers.PasskeyHandler with inline mirrors). Added:
+
+- `passkey.NewTestAuthenticator` — the software authenticator exported (it already shipped in a non-_test file; mechanical rename + doc note) so cross-package tests drive real ceremonies without duplicating WebAuthn crypto.
+- `TestE2E_PasskeyIssuanceGates_ThroughRealCeremony` (handlers): full register→login ceremony through the REAL passkey.Service (real go-webauthn verification, miniredis challenge store) and REAL PasskeyHandler at its production paths. Asserts: healthy user → 200 + token + `lsp_session` cookie set; suspended/inactive/unverified → 401/401/403 with NO token and NO Set-Cookie — the assertion genuinely verifies (the credential is theirs) and issuance still refuses.
+- RED evidence at this tier: gating disabled via mutation → suspended/inactive/unverified arms fail; restored → green.
+- Verification: handlers full 82.4s ok (incl. new e2e), passkey package ok (post-rename), go vet ./api/... clean.
