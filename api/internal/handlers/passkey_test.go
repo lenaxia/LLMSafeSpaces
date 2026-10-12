@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	authsvc "github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -60,9 +61,13 @@ func (f *fakePasskeyUsers) DeleteUser(_ context.Context, userID string) error {
 type fakePasskeyAuth struct {
 	token string
 	err   error
+	// calls counts IssueTokenAndUnlockDEK invocations so tests can pin
+	// that NO token was issued on rejected paths (#1652 item 1).
+	calls int
 }
 
 func (f *fakePasskeyAuth) IssueTokenAndUnlockDEK(_ context.Context, _ string, _ time.Duration, _ string) (string, error) {
+	f.calls++
 	if f.err != nil {
 		return "", f.err
 	}
@@ -296,6 +301,8 @@ func TestLoginFinish_Success(t *testing.T) {
 		ID:            "user-1",
 		Username:      "alice",
 		Email:         "alice@test.com",
+		Active:        true,
+		Status:        types.UserStatusActive,
 		EmailVerified: true,
 	}
 
@@ -313,12 +320,132 @@ func TestLoginFinish_Success(t *testing.T) {
 	assert.NotNil(t, body["user"], "user object must be returned")
 }
 
+// --- #1652 item 1: issuance-side account-state checks (mirror password login) ---
+//
+// LoginFinish and Recover must apply the password-login account-state gates
+// (auth.Service.Login: suspended → 401 "account suspended"; inactive → masked
+// 401; unverified email → 403 with emailVerified:false) BEFORE
+// IssueTokenAndUnlockDEK, so a suspended/inactive/unverified account never
+// receives a session token + cookie at the source. Today AuthMiddleware
+// rejects suspended users per-request, bounding exposure to a useless-token
+// issuance — these pins assert the source-side closure.
+
+func newLoginFinishRouter(svc PasskeyService, users *fakePasskeyUsers, auth *fakePasskeyAuth) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
+	r.POST("/passkey/login/finish", h.LoginFinish)
+	r.POST("/passkey/recover", h.Recover)
+	return r
+}
+
+func healthyPasskeyUser() *types.User {
+	return &types.User{
+		ID:            "user-1",
+		Username:      "alice",
+		Email:         "alice@test.com",
+		Active:        true,
+		Status:        types.UserStatusActive,
+		EmailVerified: true,
+	}
+}
+
+func TestLoginFinish_SuspendedUser_Rejected(t *testing.T) {
+	svc := &fakePasskeySvc{finishLoginUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{"alice@test.com": healthyPasskeyUser()}}
+	users.users["alice@test.com"].Status = types.UserStatusSuspended
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	r := newLoginFinishRouter(svc, users, auth)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.Equal(t, "account suspended", body["error"])
+	assert.Empty(t, body["token"], "no session token may be issued for a suspended account")
+	assert.Equal(t, 0, auth.calls, "IssueTokenAndUnlockDEK must not run for a suspended account")
+}
+
+func TestLoginFinish_InactiveUser_Rejected(t *testing.T) {
+	svc := &fakePasskeySvc{finishLoginUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{"alice@test.com": healthyPasskeyUser()}}
+	users.users["alice@test.com"].Active = false
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	r := newLoginFinishRouter(svc, users, auth)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.Empty(t, body["token"], "no session token may be issued for an inactive account")
+	assert.Equal(t, 0, auth.calls, "IssueTokenAndUnlockDEK must not run for an inactive account")
+}
+
+func TestLoginFinish_UnverifiedEmail_Rejected(t *testing.T) {
+	svc := &fakePasskeySvc{finishLoginUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{"alice@test.com": healthyPasskeyUser()}}
+	users.users["alice@test.com"].EmailVerified = false
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	r := newLoginFinishRouter(svc, users, auth)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+
+	// Same shape as the password-login ErrEmailNotVerified mapping in
+	// router.go: 403 + emailVerified:false, so the frontend can route to
+	// the verify-email UX identically for passkey sign-ins.
+	assert.Equal(t, http.StatusForbidden, resp.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	// Parity pin: the literal used here (a local const — importing
+	// services/auth from passkey.go is a test-time import cycle) must stay
+	// identical to the canonical auth.ErrEmailNotVerified message.
+	assert.Equal(t, authsvc.ErrEmailNotVerified.Error(), body["error"],
+		"passkey unverified-email message must match auth.ErrEmailNotVerified; update verifyEmailMessage with it")
+	assert.Equal(t, false, body["emailVerified"])
+	assert.Empty(t, body["token"], "no session token may be issued for an unverified account")
+	assert.Equal(t, 0, auth.calls, "IssueTokenAndUnlockDEK must not run for an unverified account")
+}
+
+func TestRecover_SuspendedUser_Rejected(t *testing.T) {
+	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{"alice@test.com": healthyPasskeyUser()}}
+	users.users["alice@test.com"].Status = types.UserStatusSuspended
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	r := newLoginFinishRouter(svc, users, auth)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{
+		"email": "alice@test.com",
+		"code":  "VALIDRECOVERYCODE12",
+	})
+
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.Equal(t, "account suspended", body["error"])
+	assert.Empty(t, body["token"])
+	assert.Equal(t, 0, auth.calls, "IssueTokenAndUnlockDEK must not run for a suspended account")
+}
+
 // --- recovery handler tests ---
 
 func TestRecover_ValidCode_Succeeds(t *testing.T) {
 	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
 	users := &fakePasskeyUsers{users: map[string]*types.User{
-		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice", Active: true, Status: types.UserStatusActive, EmailVerified: true},
 	}}
 	auth := &fakePasskeyAuth{token: "jwt-tok"}
 	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
@@ -381,7 +508,7 @@ func TestRecover_UserLookupFailure(t *testing.T) {
 func TestRecover_TokenIssuanceFailure(t *testing.T) {
 	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
 	users := &fakePasskeyUsers{users: map[string]*types.User{
-		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice", Active: true, Status: types.UserStatusActive, EmailVerified: true},
 	}}
 	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
 	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
@@ -447,7 +574,7 @@ func TestLoginFinish_TokenIssuanceFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &fakePasskeySvc{finishLoginUserID: "user-1"}
 	users := &fakePasskeyUsers{users: map[string]*types.User{
-		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice", Active: true, Status: types.UserStatusActive, EmailVerified: true},
 	}}
 	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
 	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")

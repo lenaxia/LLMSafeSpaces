@@ -359,7 +359,7 @@ func TestConsumeRecoveryCode_UserNotFound(t *testing.T) {
 func TestFinishRegistration_HappyPath(t *testing.T) {
 	svc, _, _, _ := newTestService(t)
 	ctx := context.Background()
-	auth := newTestAuthenticator()
+	auth := NewTestAuthenticator()
 
 	// Begin registration to get the challenge.
 	opts, err := svc.BeginRegistration(ctx, "user-happy", "alice")
@@ -370,7 +370,7 @@ func TestFinishRegistration_HappyPath(t *testing.T) {
 	require.True(t, ok, "options must contain a challenge string")
 
 	// Generate a valid attestation response using the test authenticator.
-	parsed, err := auth.generateRegistrationResponse(challengeB64)
+	parsed, err := auth.GenerateRegistrationResponse(challengeB64)
 	require.NoError(t, err)
 
 	// Finish registration — should verify the attestation successfully.
@@ -415,14 +415,14 @@ func TestFinishRegistration_ConsumesChallenge_OnFailure(t *testing.T) {
 func TestFinishLogin_HappyPath(t *testing.T) {
 	svc, store, _, lookup := newTestService(t)
 	ctx := context.Background()
-	auth := newTestAuthenticator()
+	auth := NewTestAuthenticator()
 
 	// Phase 1: register a credential (happy path).
 	regOpts, err := svc.BeginRegistration(ctx, "user-login", "bob")
 	require.NoError(t, err)
 	regChallenge, ok := regOpts.Options["challenge"].(string)
 	require.True(t, ok, "regOpts must contain a challenge")
-	regParsed, err := auth.generateRegistrationResponse(regChallenge)
+	regParsed, err := auth.GenerateRegistrationResponse(regChallenge)
 	require.NoError(t, err)
 	regResult, err := svc.FinishRegistration(ctx, regOpts.SessionToken, "bob", "Bob Passkey", regParsed)
 	require.NoError(t, err)
@@ -436,7 +436,7 @@ func TestFinishLogin_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	loginChallenge, ok := loginOpts.Options["challenge"].(string)
 	require.True(t, ok, "loginOpts must contain a challenge")
-	loginParsed, err := auth.generateAssertionResponse(loginChallenge)
+	loginParsed, err := auth.GenerateAssertionResponse(loginChallenge)
 	require.NoError(t, err)
 
 	userID, err := svc.FinishLogin(ctx, loginOpts.SessionToken, "bob@test.com", loginParsed)

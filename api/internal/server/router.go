@@ -366,6 +366,51 @@ func DefaultRouterConfig() RouterConfig {
 					Burst:  5,
 					Window: time.Minute,
 				},
+				// #1652 item 2: /auth/register is a DB-write endpoint (a user
+				// row + welcome/verification email per request). With Turnstile
+				// off it is an account-spam vector under the global 100/min/IP
+				// limiter alone. 10/min/burst-5 leaves a legitimate signup's
+				// retry headroom (validation errors, taken usernames) while
+				// capping spray an order of magnitude below the global budget.
+				"/api/v1/auth/register": {
+					Limit:  10,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: password-reset request writes a token row and
+				// sends an email per call — an email-spray / token-table-flood
+				// vector under the global limiter alone. 5/min/burst-5 matches
+				// the credential-bearing pattern (a user requests a reset a
+				// handful of times at most before reading their inbox).
+				"/api/v1/auth/password-reset/request": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: password-reset confirm verifies a bearer token
+				// (the reset token IS the credential for this route).
+				// 5/min/burst-5 caps brute-force attempts at the token space;
+				// token entropy already makes success infeasible, this bounds
+				// the attempt rate cheaply.
+				"/api/v1/auth/password-reset/confirm": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: verify-email verifies a single-use bearer token.
+				// Same rationale as password-reset confirm.
+				"/api/v1/auth/verify-email": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: verify-email resend sends an email per call —
+				// the spray vector. 5/min/burst-5 matches reset-request.
+				"/api/v1/auth/verify-email/resend": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
 			},
 		},
 		SecurityConfig: middleware.DefaultSecurityConfig(),
