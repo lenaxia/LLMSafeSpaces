@@ -74,3 +74,9 @@ None. Follow-up flagged: no-SSO-org enforcement mechanism (owner decision).
 - docs/operator/oidc-sso.md (D4 assessment; note — this branch is off main, D1's other oidc-sso edits ride #1676; the two edits touch different sections and merge cleanly)
 - worklogs/NNNN_2026-10-11_w26-1652-auth-hardening.md (this file)
 - COORDINATE.md (claim status)
+
+---
+
+## Cycle-fix restoration on feat/1652-hardening-final (PR #1683)
+
+The recreation branch carried the pre-cycle-fix passkey files (import of services/auth in passkey.go) — the exact shape CI failed on at 23:39 (test-time import cycle: services/auth's tests import handlers). This commit restores the b3a07f8a fix: local `verifyEmailMessage` const + test-only parity pin (`authsvc.ErrEmailNotVerified`). Verified locally again: `go vet ./...` clean on this tree.

@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -350,11 +349,23 @@ func rejectIssuanceForAccountState(c *gin.Context, user *types.User) bool {
 		return true
 	}
 	if !user.EmailVerified {
-		c.JSON(http.StatusForbidden, gin.H{"error": auth.ErrEmailNotVerified.Error(), "emailVerified": false})
+		// Message mirrors auth.ErrEmailNotVerified verbatim (the canonical
+		// copy lives in services/auth; importing it here creates a test-time
+		// import cycle — services/auth's tests import handlers). The test
+		// below pins this literal against drift.
+		c.JSON(http.StatusForbidden, gin.H{"error": verifyEmailMessage, "emailVerified": false})
 		return true
 	}
 	return false
 }
+
+// verifyEmailMessage is the unverified-email rejection message, identical to
+// auth.ErrEmailNotVerified's text so passkey sign-ins surface the same
+// verify-email UX as password sign-ins. Kept as a local literal because
+// services/auth cannot be imported from this package (import cycle in
+// services/auth's tests). TestLoginFinish_UnverifiedEmail_Rejected pins the
+// exact string; change both together.
+const verifyEmailMessage = "please verify your email address before logging in"
 
 // --- helpers ---
 

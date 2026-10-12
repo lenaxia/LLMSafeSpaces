@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	authsvc "github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -409,7 +410,11 @@ func TestLoginFinish_UnverifiedEmail_Rejected(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.Code)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
-	assert.Equal(t, "please verify your email address before logging in", body["error"])
+	// Parity pin: the literal used here (a local const — importing
+	// services/auth from passkey.go is a test-time import cycle) must stay
+	// identical to the canonical auth.ErrEmailNotVerified message.
+	assert.Equal(t, authsvc.ErrEmailNotVerified.Error(), body["error"],
+		"passkey unverified-email message must match auth.ErrEmailNotVerified; update verifyEmailMessage with it")
 	assert.Equal(t, false, body["emailVerified"])
 	assert.Empty(t, body["token"], "no session token may be issued for an unverified account")
 	assert.Equal(t, 0, auth.calls, "IssueTokenAndUnlockDEK must not run for an unverified account")
