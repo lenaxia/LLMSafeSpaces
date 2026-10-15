@@ -45,3 +45,13 @@ None — design document only. Every code claim verified by direct source read a
 - design/0066_2026-10-15_short-session-ids-alias-layer.md (new)
 - worklogs/NNNN_2026-10-15_w30-1691-short-session-ids-design.md (this file)
 - COORDINATE.md (claim row)
+
+## Review round 1 remediation (PR #1693, CHANGES_REQUESTED → fixes)
+
+All four findings verified against the tree before applying:
+
+1. **"Five UPSERT shapes" wrong — six** (`UpsertSessionContextUsed` and `UpsertSessionMessageCount` are distinct functions; my own citation list had all six line refs). §3 corrected to six; §4.2 callers bullet now names all six and §6 gains the per-path wiring pin (implementation consequence made explicit).
+2. **`EnsureSessionResponse` citation**: `session.go:105-108`, not `:96` (inside `SessionAlert`). Fixed.
+3. **`archived` column attribution**: added by migration 000035 (#1627), not the base schema at `:375-387`. §3 row now attributes it to 000035.
+4. **Ruling 5's "search" half was undesigned** (no server-side session search exists; `GET /sessions` is unfiltered, `workspace_service.go:1822`). Not re-litigated — designed minimally: additive optional `q` filter on `GET /sessions` (title substring ci, short/legacy id prefix, same authz, suggestions-on-empty for id/title-like queries), slotted into M3; §3 notes the surface gap; §6 gains `q`-semantics pins.
+   Also fixed: §4.2 create_session bullet's control-plane cross-ref now points at §4.3; §4.6's regex sketch replaced with prose shape-classification (heuristic-only, never validation).
