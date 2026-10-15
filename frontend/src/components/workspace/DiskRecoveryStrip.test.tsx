@@ -51,17 +51,34 @@ describe("DiskRecoveryStrip — surfacing rules", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders the prominent banner at >=95% (critical tier)", () => {
+  it("renders the compact banner at >=95% (critical tier)", () => {
     render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
     expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
     expect(screen.getByText(/97%/)).toBeInTheDocument();
     expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
   });
 
-  it("below 95% renders only the subtle on-demand action, no banner", () => {
-    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+  // #1686 (owner dogfooding): the strip renders ONLY at the critical tier.
+  // The pre-#1686 behavior — a permanent "Free up disk space" on-demand
+  // line whenever disk metrics were known — trained users to ignore the
+  // safety banner (it showed at 5% as at 97%), occupied a dedicated line
+  // under the metrics row, and on mobile sat right below the Hide/Metrics
+  // toggle so "hide" never cleared it. This pin was deliberately flipped
+  // from "below 95% renders only the subtle on-demand action": below the
+  // threshold the component must render NOTHING.
+  it("below 95% renders nothing at all (#1686 — no on-demand line)", () => {
+    const { container } = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+    expect(container).toBeEmptyDOMElement();
     expect(screen.queryByTestId("disk-recovery-strip")).not.toBeInTheDocument();
-    expect(screen.getByTestId("disk-recover-on-demand")).toBeInTheDocument();
+    expect(screen.queryByTestId("disk-recover-on-demand")).not.toBeInTheDocument();
+  });
+
+  it("threshold boundary: 94% renders nothing, 95% renders the banner", () => {
+    const below = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9400} diskTotalBytes={10000} />);
+    expect(below.container).toBeEmptyDOMElement();
+    below.unmount();
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9500} diskTotalBytes={10000} />);
+    expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
   });
 });
 
