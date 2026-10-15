@@ -66,6 +66,7 @@ vi.mock("../api/workspaces", () => ({
 vi.mock("../providers/SessionActivityProvider", () => ({
   useIsSessionDeleted: () => false,
   useClearPendingUnread: () => () => {},
+  useClearSessionBusy: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,
   useWorkspaceBusyCount: () => 0,
@@ -166,7 +167,7 @@ const HOOK_CALL = /\buse[A-Z][A-Za-z0-9]*\s*[<(]/g;
 // intentionally add or remove a hook in ChatPage, update this number —
 // an unexpected change means hooks moved across the early-return guard
 // or the hook order was accidentally restructured.
-const EXPECTED_HOOK_CALLS = 72; // +useIsSessionDeleted +useEffect (#786 deleted-session navigation)
+const EXPECTED_HOOK_CALLS = 75; // +useClearSessionBusy +fold-ref/useEffect (#1687 live-update bridge)
 
 describe("ChatPage hook count stability (React error #310 regression guard)", () => {
   beforeEach(() => {

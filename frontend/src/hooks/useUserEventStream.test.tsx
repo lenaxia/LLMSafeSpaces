@@ -350,3 +350,68 @@ describe("useUserEventStream — liveness watchdog (#1365)", () => {
     expect(connects).toBe(1); // heartbeats are liveness — a healthy idle stream must not flap
   });
 });
+
+// #1687 header-factory coverage at the hook level: the Last-Event-ID the
+// hook records from live events must reach the RECONNECT request's
+// headers. The regression: `headers: buildHeaders()` captured the
+// mount-time (empty) header set once, so replay never fired post-mount
+// even though the server implements it.
+describe("useUserEventStream — Last-Event-ID replay on reconnect (#1687)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends the CURRENT Last-Event-ID header on the reconnect fetch", async () => {
+    const encoder = new TextEncoder();
+    const event7 = `id: 7\ndata: ${JSON.stringify({ event_id: 7, workspace_id: "ws-1", type: "workspace.phase", phase: "Active" })}\n\n`;
+
+    let connects = 0;
+    fetchMock.mockImplementation(() => {
+      connects++;
+      if (connects === 1) {
+        // Connection 1 delivers event 7, then the stream ends (server
+        // closed) — the connection must reconnect internally.
+        let read = 0;
+        return Promise.resolve({
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: () =>
+                ++read === 1
+                  ? Promise.resolve({ done: false, value: encoder.encode(event7) })
+                  : Promise.resolve({ done: true }),
+              cancel: () => Promise.resolve(),
+            }),
+          },
+        });
+      }
+      // Connection 2 hangs open.
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => Promise.resolve() }) },
+      });
+    });
+
+    const { wrapper } = createWrapper();
+    renderHook(() => useUserEventStream(), { wrapper });
+
+    await waitFor(
+      () => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2),
+      { timeout: 5000 },
+    );
+
+    const headersOf = (i: number) => fetchMock.mock.calls[i]?.[1]?.headers as Record<string, string>;
+    // First connect: no replay position yet.
+    expect(headersOf(0)["Last-Event-ID"]).toBeUndefined();
+    // Reconnect: the CURRENT replay position — the factory was
+    // re-evaluated at connect time, not captured at mount.
+    expect(headersOf(1)["Last-Event-ID"]).toBe("7");
+  });
+});

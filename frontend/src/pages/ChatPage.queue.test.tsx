@@ -55,6 +55,7 @@ vi.mock("../providers/SessionActivityProvider", async () => {
     useIsSessionDeleted: () => false,
     useWhileAwayStalenessSweep: () => {},
     useClearPendingUnread: () => () => {},
+    useClearSessionBusy: () => () => {},
     useIsSessionBusy: () => {
       const [val, setVal] = useState(mockBusyState.get());
       useEffect(() => {
