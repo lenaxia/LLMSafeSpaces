@@ -27,6 +27,10 @@ SSO in LLMSafeSpaces is **per-org, not instance-wide**. There is no global ident
 - `/auth/config` advertises `oidcEnabled = (CountSSOConfigs > 0)` so the frontend hides SSO UI when no org has configured it.
 - Every SSO login is org-scoped: `/auth/sso/:orgSlug/...`.
 
+### SSO is required at org creation (design 0065 §4, Option B)
+
+**All orgs require OIDC — an org without SSO is not a supported state.** Since #1679, `POST /api/v1/orgs` rejects any request that does not carry a **complete initial SSO configuration in the same step** (`sso.discoveryUrl`, `sso.clientId`, `sso.clientSecret` — all required; claimed domains, auto-provision and group-role mapping optional). There is no two-step bootstrap and no waiting state: the org is born with its IdP, and the platform-admin creation form in the UI collects the IdP fields inline. If the SSO configuration cannot be persisted, the creation is rolled back — no org survives without its SSO config. Orgs created before enforcement keep the invitation path as a transition mechanism (see [Known gaps](#known-gaps-and-non-goals)).
+
 ### Data model
 
 One row per org in `org_sso_configs`, keyed by `org_id`:
@@ -369,7 +373,7 @@ To debug claims, temporarily point a test org at a debugging IdP (e.g. `https://
 - **`redirectBaseUrl` header-trust gap (F11)** — fixed. The platform now requires `redirectBaseUrl` and fails loud. Header derivation is removed.
 - **State cookie replay within TTL** — the 10-minute window is the design trade-off for statelessness. Mitigated by orgID binding.
 - **#1669 routing gap for arbitrary-email orgs** — closed. New users of such orgs onboard via the org-scoped entry points (see [Org-scoped login for arbitrary-email orgs](#org-scoped-login-for-arbitrary-email-orgs)); the root page dead-ends honestly by the enumeration stance. The org-subdomain login surface is org-aware (`/auth/config` `orgContext`, design 0064 phase 1).
-- **Invitation accept requires an existing account** — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. The mechanical gap is recorded, not scheduled for change.
+- **Invitation accept requires an existing account** — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. Since #1679 (design 0065 §4, Option B) every NEW org is created with its SSO configuration inline, which makes the invitation path a transition mechanism for orgs predating enforcement. The mechanical gap is recorded, not scheduled for change.
 
 ### Non-goals
 

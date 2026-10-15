@@ -333,6 +333,9 @@ func setupOrgTestRouter(t *testing.T, store *mockOrgStore) (*gin.Engine, *OrgsHa
 	gin.SetMode(gin.TestMode)
 
 	handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+	// Option B (#1679): creation requires the SSO provisioner; wire the
+	// succeeding fake so Create-path tests exercise the real flow shape.
+	handler.SetSSOProvisioner(&fakeSSOProvisioner{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -756,7 +759,7 @@ func TestOrgsHandler_Create_HyphenatedSlug(t *testing.T) {
 	store.usersByEmail["owner@example.com"] = "owner-1"
 	router, _ := setupOrgTestRouter(t, store)
 
-	body := `{"name":"My Org","slug":"my-org","ownerEmail":"owner@example.com","planId":"enterprise"}`
+	body := `{"name":"My Org","slug":"my-org","ownerEmail":"owner@example.com","planId":"enterprise","sso":{"discoveryUrl":"https://idp.example/.well-known/openid-configuration","clientId":"client-1","clientSecret":"secret-1"}}`
 	w := doRequest(router, "POST", "/api/v1/orgs", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -808,6 +811,13 @@ func TestOrgsHandler_Create_SlugValidation(t *testing.T) {
 				"slug":       tc.slug,
 				"ownerEmail": "owner@example.com",
 				"planId":     "enterprise",
+				// Option B (#1679): a complete SSO block so valid-slug arms
+				// reach 201 rather than the (correct) missing-SSO 400.
+				"sso": map[string]any{
+					"discoveryUrl": "https://idp.example/.well-known/openid-configuration",
+					"clientId":     "client-1",
+					"clientSecret": "secret-1",
+				},
 			})
 			w := doRequest(router, "POST", "/api/v1/orgs", string(b))
 

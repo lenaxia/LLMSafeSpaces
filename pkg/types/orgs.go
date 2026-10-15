@@ -97,11 +97,21 @@ type OrgMember struct {
 // pkg/types/validators.go. Hyphens are required because the frontend's
 // slugify() produces them from multi-word names; rejecting hyphens would
 // produce an unreachable 400 for any user-friendly name.
+//
+// SSO carries the org's INITIAL OIDC configuration and is required at
+// creation per design 0065 §4 (Option B, issue #1679): all orgs require
+// OIDC, and the configuration must arrive complete in the same request —
+// no two-step bootstrap, no waiting state. The handler (not binding tags)
+// validates the block so nested failures surface with `sso.<field>` detail
+// keys; in particular ClientSecret is REQUIRED here even though the shared
+// UpsertSSOConfigRequest treats it as optional (at creation there is no
+// stored secret for the "leave unchanged" path to fall back on).
 type CreateOrgRequest struct {
-	Name       string  `json:"name"       binding:"required,min=2,max=100"`
-	Slug       string  `json:"slug"       binding:"required,min=2,max=50,slug"`
-	OwnerEmail string  `json:"ownerEmail" binding:"required,email"`
-	PlanID     OrgPlan `json:"planId"     binding:"omitempty"`
+	Name       string                  `json:"name"       binding:"required,min=2,max=100"`
+	Slug       string                  `json:"slug"       binding:"required,min=2,max=50,slug"`
+	OwnerEmail string                  `json:"ownerEmail" binding:"required,email"`
+	PlanID     OrgPlan                 `json:"planId"     binding:"omitempty"`
+	SSO        *UpsertSSOConfigRequest `json:"sso"       binding:"omitempty"`
 }
 
 // UpdateOrgRequest is the request body for updating an organization.

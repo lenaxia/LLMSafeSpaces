@@ -5964,6 +5964,13 @@ paths:
       description: |
         The owner is resolved by `ownerEmail` and becomes the first admin.
         The owner must not already belong to another organization.
+
+        Design 0065 §4 (Option B): a COMPLETE initial SSO configuration
+        (`sso`) must accompany the request — all orgs require OIDC; there is
+        no two-step bootstrap and no waiting state. Missing or incomplete
+        `sso` is a 400 with `sso.<field>` detail keys and zero side effects.
+        The config is persisted in the same request; if that fails the
+        creation is rolled back (no org survives without its SSO config).
       operationId: createOrg
       requestBody:
         required: true
@@ -5973,13 +5980,13 @@ paths:
               $ref: "#/components/schemas/CreateOrgRequest"
       responses:
         "201":
-          description: Created (memberCount = 1)
+          description: Created (memberCount = 1; SSO configured in the same step)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgResponse"
         "400":
-          description: Validation failed (`details` maps field → message)
+          description: Validation failed (`details` maps field → message; SSO block errors key as `sso.<field>`)
           content:
             application/json:
               schema:
@@ -5996,6 +6003,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Slug already in use, or owner already in another organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: SSO provisioning unavailable (server key not configured / SSO service not wired) — no org was created
           content:
             application/json:
               schema:
@@ -10889,7 +10902,7 @@ components:
               type: integer
     CreateOrgRequest:
       type: object
-      required: [name, slug, ownerEmail]
+      required: [name, slug, ownerEmail, sso]
       properties:
         name:
           type: string
@@ -10907,6 +10920,19 @@ components:
           type: string
           enum: [free, team, business, enterprise]
           description: Defaults to enterprise (handler default)
+        sso:
+          $ref: "#/components/schemas/InitialOrgSsoConfig"
+    InitialOrgSsoConfig:
+      description: |
+        The org's INITIAL OIDC configuration, required at creation per design
+        0065 §4 (Option B): all orgs require OIDC, complete in the same
+        request — no two-step bootstrap. Same shape as UpsertOrgSsoRequest,
+        except clientSecret is REQUIRED here (at creation there is no stored
+        secret for the "leave unchanged" path to fall back on).
+      allOf:
+        - $ref: "#/components/schemas/UpsertOrgSsoRequest"
+        - type: object
+          required: [clientSecret]
     UpdateOrgRequest:
       type: object
       description: Partial update — omitted fields keep existing values.
