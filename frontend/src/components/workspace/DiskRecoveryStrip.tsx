@@ -8,9 +8,12 @@ import { formatBytes } from "../../lib/format";
 //
 // SURFACED_AUTOMATIC_THRESHOLD mirrors pkg/agent/systemnotices'
 // critical tier (0.95) — the single threshold source on the platform
-// side. At or above it the strip renders as a prominent banner; below
-// it a subtle on-demand action stays available (issue: "menu action"
-// below the threshold).
+// side. At or above it the strip renders as a compact critical banner;
+// below it the component renders NOTHING (#1686: the pre-#1686
+// permanent on-demand line trained users to ignore the safety banner,
+// occupied a dedicated line under the metrics row, and broke the mobile
+// Hide toggle's perceived behavior — the API stays available at any
+// usage level, this is presentation-only).
 const SURFACED_AUTOMATIC_PCT = 95;
 
 // The strip is intentionally dumb about disk math: ChatPage feeds it
@@ -46,10 +49,25 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
+  // #1686: the critical banner is dismissible. A dismissal lasts for the
+  // current critical EPISODE (the continuous stretch at >=95%); dropping
+  // below the threshold ends the episode and re-arms the banner, so the
+  // alert can be quieted per-spike but never permanently silenced while
+  // the disk keeps crossing the line.
+  const [dismissedEpisode, setDismissedEpisode] = useState(false);
+  const [prevCritical, setPrevCritical] = useState(false);
 
   const known = diskTotalBytes != null && diskTotalBytes > 0 && diskUsedBytes != null;
   const pct = known ? Math.min(100, Math.round((diskUsedBytes! / diskTotalBytes!) * 100)) : 0;
   const critical = known && pct >= SURFACED_AUTOMATIC_PCT;
+  const active = phase.kind !== "idle" || error != null;
+
+  // Derived-state adjustment (the React-endorsed adjust-during-render
+  // pattern): leaving the critical tier ends the dismissal episode.
+  if (prevCritical !== critical) {
+    setPrevCritical(critical);
+    if (!critical) setDismissedEpisode(false);
+  }
 
   const mutation = useMutation({
     mutationFn: ({ dryRun }: { dryRun: boolean }) => workspacesApi.recoverDisk(workspaceId!, dryRun),
@@ -77,23 +95,10 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
     );
   };
 
-  if (!workspaceId || !known) return null;
-
-  // On-demand affordance below the auto-surface threshold: subtle, in
-  // the metrics row's visual language, never a banner.
-  if (!critical && phase.kind === "idle" && !error) {
-    return (
-      <div className="flex items-center justify-end px-4 py-0.5 text-[10px] text-muted-foreground/50">
-        <button
-          className="uppercase tracking-wider hover:text-muted-foreground"
-          onClick={() => run(true)}
-          data-testid="disk-recover-on-demand"
-        >
-          Free up disk space
-        </button>
-      </div>
-    );
-  }
+  // Below the critical threshold: render NOTHING (#1686) — not even an
+  // on-demand affordance. The recovery API remains usable at any level;
+  // this component is the >=95% safety surface only.
+  if (!workspaceId || !known || (!critical && !active)) return null;
 
   const report = phase.kind === "report" ? phase.report : null;
   // `?? []` is belt to the engine's braces (review r1 F2): the engine
@@ -105,27 +110,48 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
     .filter((c) => c.status === "would_free" || c.status === "freed")
     .reduce((sum, c) => sum + c.bytes, 0) ?? 0;
 
+  // The dismissible compact banner only shows while critical and not
+  // dismissed; an active phase (report/error) keeps the strip mounted so
+  // results never vanish mid-interaction even if usage dipped.
+  const showBanner = critical && !dismissedEpisode;
+
+  if (!showBanner && !active) return null;
+
   return (
     <div
       role="status"
-      className="flex flex-col gap-1.5 border-b border-orange-500/30 bg-orange-500/10 px-4 py-2 text-xs text-orange-700 dark:text-orange-300"
+      className="flex flex-col border-b border-orange-500/30 bg-orange-500/10 px-4 py-1 text-[11px] text-orange-700 dark:text-orange-300"
       data-testid="disk-recovery-strip"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        {critical && (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        {showBanner && (
           <span className="font-medium">
-            Disk at {pct}% — critically low. Free known-reproducible caches (build caches only — your files, source, and logs are never touched).
+            Disk at {pct}% — critically low.
+          </span>
+        )}
+        {showBanner && (
+          <span className="text-muted-foreground">
+            Free known-reproducible caches (build caches only — files, source, and logs are never touched).
           </span>
         )}
         <span className="ml-auto flex items-center gap-2">
-          {phase.kind === "idle" && (
-            <button
-              className="rounded-md border border-orange-500/40 bg-orange-500/20 px-2 py-0.5 font-medium hover:bg-orange-500/30"
-              onClick={() => run(true)}
-              data-testid="disk-recover-review"
-            >
-              Review what can be freed
-            </button>
+          {phase.kind === "idle" && !error && (
+            <>
+              <button
+                className="rounded-md border border-orange-500/40 bg-orange-500/20 px-2 py-0.5 font-medium hover:bg-orange-500/30"
+                onClick={() => run(true)}
+                data-testid="disk-recover-review"
+              >
+                Review what can be freed
+              </button>
+              <button
+                className="underline hover:no-underline"
+                onClick={() => setDismissedEpisode(true)}
+                data-testid="disk-recovery-dismiss"
+              >
+                Dismiss
+              </button>
+            </>
           )}
           {phase.kind === "busy" && (
             <span className="text-muted-foreground">

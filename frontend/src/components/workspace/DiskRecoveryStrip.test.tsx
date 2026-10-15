@@ -80,6 +80,45 @@ describe("DiskRecoveryStrip — surfacing rules", () => {
     render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9500} diskTotalBytes={10000} />);
     expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
   });
+
+  // #1686: dismissal is per critical episode — quieting the banner must
+  // not permanently silence the safety alert. Drop below the threshold
+  // (episode ends, dismissal resets) and climb back: the banner re-arms.
+  it("Dismiss hides the banner; re-crossing the threshold re-arms it", async () => {
+    const user = userEvent.setup();
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recovery-dismiss"));
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Still critical, still dismissed (no nagging within the episode).
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9800} diskTotalBytes={10000} />);
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Drop below the threshold → episode ends.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Re-cross → the banner is back.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
+    expect(screen.getByText(/96%/)).toBeInTheDocument();
+  });
+
+  // The compact placement (#1686 item 2): collapsed, the banner is ONE
+  // line — headline, inline action and Dismiss all live in the same flex
+  // row (py-1 text-[11px], not the old py-2 multi-row strip).
+  it("collapsed banner is a single compact line with inline actions", () => {
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    const strip = screen.getByTestId("disk-recovery-strip");
+    expect(strip.className).toContain("py-1");
+    expect(strip.className).toContain("text-[11px]");
+    const review = screen.getByTestId("disk-recover-review");
+    const dismiss = screen.getByTestId("disk-recovery-dismiss");
+    // All three affordances share the banner's first (collapsed) row.
+    const row = review.closest("div");
+    expect(row).toContainElement(dismiss);
+    expect(row).toContainElement(screen.getByText(/critically low/i));
+  });
 });
 
 describe("DiskRecoveryStrip — dry-run first render", () => {
