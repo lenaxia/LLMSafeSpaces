@@ -177,7 +177,7 @@ function renderChat(qc: QueryClient) {
  * that latches the badge — exactly what the live socket does). */
 function deliverUserStreamBusy() {
   act(() => {
-    capturedUserStreamOptions?.onEvent({
+    capturedUserStreamOptions?.onEvent?.({
       type: "session.status",
       workspace_id: "ws-1",
       session_id: "sess-1",

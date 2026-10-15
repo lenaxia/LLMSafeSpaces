@@ -17,7 +17,14 @@ const DEFAULT_MAX_RECONNECT_MS = 30_000;
 
 export interface SSEConnectionConfig {
   url: string;
-  headers?: Record<string, string>;
+  /** Extra request headers. Pass a FACTORY (function) when the headers
+   * must reflect live state at connect time — it is re-evaluated on EVERY
+   * connect (the initial one and each internal reconnect). A plain
+   * object is captured once at creation. #1687: the user stream passed a
+   * static object, so reconnects re-sent the mount-time header set and
+   * the Last-Event-ID replay header (which the server implements) never
+   * fired post-mount. */
+  headers?: Record<string, string> | (() => Record<string, string>);
   onEvent: (data: unknown, eventName?: string) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -46,7 +53,6 @@ export interface SSEConnection {
 export function createSSEConnection(config: SSEConnectionConfig): SSEConnection {
   const {
     url,
-    headers: extraHeaders,
     onEvent,
     onConnect,
     onDisconnect,
@@ -91,6 +97,10 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
     wsLog(`${logPrefix}.connecting`, logId, `url=${url}`);
 
     try {
+      // Re-evaluate the header set per connect: a factory returns the
+      // CURRENT headers (e.g. the up-to-date Last-Event-ID replay
+      // position), so a reconnect actually sends them.
+      const extraHeaders = typeof config.headers === "function" ? config.headers() : config.headers;
       const res = await fetch(url, {
         credentials: "include",
         headers: {

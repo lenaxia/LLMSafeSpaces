@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
@@ -52,6 +52,12 @@ interface SessionActivityContextValue {
   workspaceBusyCount: (workspaceId: string) => number;
   hungWorkspaces: Set<string>;
   clearPendingUnread: (sessionId: string) => void;
+  // #1687 (pin 2): bridge for the contract stream's SESSION_STATUS IDLE —
+  // an equally authoritative end-of-turn signal as the user stream's
+  // session.status=idle frame. ChatPage calls it so a busy latched by the
+  // user stream clears even when that stream's idle frame was lost
+  // (broker drop / reconnect gap).
+  clearSessionBusy: (workspaceId: string, sessionId: string) => void;
   isSessionPendingAction: (sessionId: string) => boolean;
   pendingActionSessionIds: Set<string>;
   // #786: sessions interrupted by a force-stop — the "was interrupted"
@@ -115,6 +121,26 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
     const oldest = tombs.keys().next().value;
     if (oldest !== undefined) tombs.delete(oldest);
   }
+}
+
+// wipeBusyForEventLoss is the shared reconciliation core for
+// admitted-event-loss on the user stream: the reconnect wipe (#1646) and
+// the broker's resync signal (#1687 pin 1 — the dropped set may include
+// the session.status=idle that would have cleared a latched badge; no
+// onReconnect will fire on the still-healthy connection). It stamps the
+// wipe, reopens the REST seed gate, and drops latched busy so the gated
+// re-seed re-adds only sessions REST still reports busy. Callers MUST
+// invalidate ["sessions"] only AFTER this returns — a fetch born before
+// the stamp is refused by seedBusy's birth guard (#1646 r4/r5). Module
+// scope: runs from event callbacks, outside any render-analyzed body.
+function wipeBusyForEventLoss(
+  wipeAtRef: { current: number },
+  seededRef: { current: Set<string> },
+  setBusySessions: Dispatch<SetStateAction<Map<string, string>>>,
+): void {
+  wipeAtRef.current = Date.now();
+  seededRef.current.clear();
+  setBusySessions(new Map());
 }
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
@@ -462,10 +488,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     onReconnect: () => {
       // #1646 r3: stamp the wipe. Any sessions data predating this
       // moment is pre-outage state that the full-pass seed must not
-      // re-latch (see the guard in seedBusy).
-      wipeAtRef.current = Date.now();
-      seededRef.current.clear();
-      setBusySessions(new Map());
+      // re-latch (see the guard in seedBusy). The hook's onConnect
+      // invalidates ["sessions"] only after this returns.
+      wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions);
       // A badge latched by live SSE survives a disconnect only as
       // memory: if the session recovered while the tab was offline,
       // no idle SSE will ever clear it (Last-Event-ID replay is
@@ -937,6 +962,17 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // is also unreliable (its staging may have been dropped) — clear it so
       // the stuck-session gate cannot lean on pre-resync proof.
       if (evt.type === "resync") {
+        // #1687 (pin 1): the dropped set may include the
+        // session.status=idle that would have cleared a latched busy
+        // badge — resync is admitted event loss on a HEALTHY connection
+        // (no onReconnect will fire), so run the same reconciliation as
+        // onReconnect: wipe busy, reopen the seed gate, and re-derive
+        // from REST. Ordering (#1646 r5): the wipe and its wipeAt stamp
+        // MUST land BEFORE the sessions invalidation dispatches its
+        // refetches, so every re-seed's data birth postdates the wipe —
+        // mirror of the onConnect ordering in useUserEventStream.
+        wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions);
+        queryClient.invalidateQueries({ queryKey: ["sessions"] });
         committedWsRef.current.clear();
         flightsRef.current.clear();
         legacyStagingRef.current.clear();
@@ -1033,6 +1069,36 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     }
     clearedRef.current.set(sessionId, wsId ?? "");
   }, [pendingUnread, queryClient]);
+
+  // #1687 (pin 2): the contract stream's SESSION_STATUS IDLE clears the
+  // busy map exactly like the user stream's session.status=idle frame.
+  // Before this bridge the user-stream frame was the ONLY clear path —
+  // lose it to a broker drop or a reconnect gap and the badge latched
+  // until manual stop (and the send gate kept rerouting messages into
+  // the queue). One stream reporting the turn's end must be enough.
+  const clearSessionBusy = useCallback((workspaceId: string, sessionId: string) => {
+    setBusySessions((prev) => {
+      if (!prev.has(sessionId)) return prev;
+      const next = new Map(prev);
+      next.delete(sessionId);
+      return next;
+    });
+    // Mirror the user-stream idle row flip so the sessions cache does
+    // not keep the busy frame's "active" status until the next refetch.
+    const sessionsKey = ["sessions", workspaceId];
+    const existing = queryClient.getQueryData(sessionsKey);
+    if (existing) {
+      queryClient.setQueryData(sessionsKey, (old: unknown) => {
+        if (!Array.isArray(old)) return old;
+        return old.map((s: Record<string, unknown>) =>
+          s.id === sessionId ? { ...s, status: "idle" } : s
+        );
+      });
+    }
+    // The turn ending resolves any hung alert for the workspace — same
+    // rule as the user-stream idle path.
+    dropHungWorkspace(workspaceId);
+  }, [queryClient, dropHungWorkspace]);
 
   const addPendingAction = useCallback((workspaceId: string, sessionId: string, requestId: string) => {
     // #1365: a tombstoned ask stays cleared — a racing flight's staged
@@ -1244,7 +1310,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   return (
     <SessionActivityContext.Provider
-      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, isSessionAborted, isSessionDeleted, pendingActionSessionIds, addPendingAction, removePendingAction, dropPendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
+      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, clearSessionBusy, isSessionPendingAction, isSessionAborted, isSessionDeleted, pendingActionSessionIds, addPendingAction, removePendingAction, dropPendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
     >
       {children}
     </SessionActivityContext.Provider>
@@ -1281,6 +1347,14 @@ export function useClearPendingUnread(): (sessionId: string) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
   return ctx.clearPendingUnread;
+}
+
+// useClearSessionBusy (#1687): the contract-idle bridge — clears the busy
+// badge for one session from outside the user event stream.
+export function useClearSessionBusy(): (workspaceId: string, sessionId: string) => void {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return () => {};
+  return ctx.clearSessionBusy;
 }
 
 export function useIsSessionPendingAction(sessionId: string): boolean {
