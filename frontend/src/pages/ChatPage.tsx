@@ -13,7 +13,7 @@ import { isSessionGoneError } from "../hooks/useMessageHistory";
 import { useActivateWorkspace } from "../hooks/useActivateWorkspace";
 import { useChatStream } from "../hooks/useChatStream";
 import { useEventStream } from "../hooks/useEventStream";
-import { useContractStream } from "../hooks/useContractStream";
+import { useContractStream, type ContractStreamState } from "../hooks/useContractStream";
 import type { Event, InputRequest } from "../abi/llmsafespaces/abi/v1/contract_pb";
 import { EventType, InputKind, MessageType, SessionStatus } from "../abi/llmsafespaces/abi/v1/contract_pb";
 import type { Part } from "../abi/llmsafespaces/abi/v1/contract_pb";
@@ -38,7 +38,7 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useIsSessionDeleted, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useClearSessionBusy, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useIsSessionDeleted, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
@@ -407,6 +407,11 @@ export function ChatPage() {
 
   const isSessionBusy = useIsSessionBusy(sessionId ?? "");
 
+  // #1687 (pin 2): the contract-stream SESSION_STATUS IDLE bridge —
+  // feeds the turn's end into the provider's busy map so the badge
+  // clears even when the user stream's idle frame was lost.
+  const clearSessionBusy = useClearSessionBusy();
+
   // Real-time context_used from session.next.step.ended SSE events.
   // The ref map is updated synchronously on each event; setContextVersion triggers
   // a re-render so contextUsedForDisplay reads the new ref value.
@@ -473,6 +478,13 @@ export function ChatPage() {
   // auto-abort's evidence gate (replaces the D9/D10 input-snapshot flight:
   // a stamped snapshot is authoritative for pending inputs, I12).
   const lastContractSnapshotAtRef = useRef(0);
+  // #1687 (pin 3): the fold's latest session statuses, read at RECONCILE
+  // time. reconcileOnIdle is a long-lived callback; its render closure
+  // would pin a stale fold, and the stream's onEvent fires before React
+  // commits the fold update — so the ref is where the gate reads from.
+  // Kept current by the effect below the useContractStream call and by
+  // onSnapshot (which lands before the re-render).
+  const foldSessionsRef = useRef<ContractStreamState["sessions"]>(new Map());
   // Dwell anchor: set when all abort evidence first holds; cleared when any
   // evidence breaks (or on session change — evidence is per-session).
   // A persistent anchor (not a fresh timer) means frequent effect re-runs
@@ -514,8 +526,21 @@ export function ChatPage() {
   }, [sessionId]);
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
-  const reconcileOnIdle = useCallback(async () => {
+  // #1687 (pin 3): the buffer wipe (and the optimistic trim) is gated on
+  // the viewed session NOT being mid-turn. The old rule — "history is
+  // nonempty" — fired on every reconnect: mid-turn the refetch never
+  // contains the in-flight message (it exists nowhere else), so the wipe
+  // destroyed the streamed-so-far text and later deltas re-materialized
+  // as bare unformatted parts. Mid-turn is what the fold says it is: the
+  // session reporting BUSY. turnEnded=true comes from the SESSION_STATUS
+  // IDLE event itself (authoritative — it wins over a not-yet-updated
+  // fold). An absent fold entry keeps the legacy catch-up rule: history
+  // owning the turn still clears the buffer (the reconnect-resync
+  // regression), and the true end-of-turn clear is pinned by the guard.
+  const reconcileOnIdle = useCallback(async (turnEnded?: boolean) => {
     if (!workspaceId || !sessionId) return;
+    const foldStatus = foldSessionsRef.current.get(sessionId)?.status;
+    const midTurn = turnEnded !== true && foldStatus === SessionStatus.BUSY;
     try {
       queryClient.setQueryData(["messages", workspaceId, sessionId], (old: unknown) => {
         if (!old) return old;
@@ -527,7 +552,7 @@ export function ChatPage() {
         ["messages", workspaceId, sessionId],
       );
       const msgs = freshHistory?.pages.flatMap((p) => p.messages) ?? [];
-      if (msgs.length > 0) {
+      if (!midTurn && msgs.length > 0) {
         setSseStreamParts([]);
         // #447: only drop optimistic messages the server has demonstrably caught
         // up with. Clearing localMessages unconditionally wiped the just-sent user
@@ -549,11 +574,20 @@ export function ChatPage() {
   // (the only agent-derived consumption path after the hard cutover).
   const contractStream = useContractStream(sseWorkspaceId, {
     onEvent: (evt) => handleContractABIEvent(evt),
-    onSnapshot: () => { lastContractSnapshotAtRef.current = Date.now(); },
+    onSnapshot: (state) => {
+      lastContractSnapshotAtRef.current = Date.now();
+      // #1687 (pin 3): snapshots land before the fold's state publish
+      // re-renders — capture the statuses now so a reconnect racing the
+      // commit still reads the freshest fold in reconcileOnIdle's gate.
+      foldSessionsRef.current = state.sessions;
+    },
     onReconnect: () => {
       // A stream gap may have missed MESSAGE_END events whose messages
       // are already persisted — refetch page 1 so the transcript catches
       // up; the fresh snapshot replaces in-flight state exactly.
+      // #1687 (pin 3): the reconcile keeps its history refetch but gates
+      // the streaming-buffer wipe on the fold NOT saying BUSY — mid-turn
+      // the in-flight message exists nowhere but that buffer.
       if (workspaceId) {
         queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
       }
@@ -561,6 +595,12 @@ export function ChatPage() {
       void reconcileOnIdle();
     },
   });
+
+  // #1687 (pin 3): keep the reconcile gate's fold view current on every
+  // fold publish (events flip statuses between snapshots too).
+  useEffect(() => {
+    foldSessionsRef.current = contractStream.sessions;
+  }, [contractStream]);
 
   // I12 prompt sync (pod-wide fold): the fold's pendingInputs are the
   // projection-authoritative standing prompts — seeded from the snapshot
@@ -792,7 +832,15 @@ export function ChatPage() {
           notifySessionIdle(evt.sessionId);
           clearStreamTimedOut();
           setHungAlert((prev) => (prev && prev.session_id === evt.sessionId ? null : prev));
-          reconcileOnIdle();
+          // #1687 (pin 2): bridge the contract IDLE into the provider's
+          // busy map — the user stream's idle frame is not the only
+          // authoritative end-of-turn signal (it can be lost to a broker
+          // drop or a reconnect gap).
+          if (workspaceId) clearSessionBusy(workspaceId, evt.sessionId);
+          // turnEnded: the event itself says the turn ended — the
+          // reconcile's buffer wipe must not be gated out by a
+          // not-yet-committed fold (#1687 pin 3 guard).
+          reconcileOnIdle(true);
           queue.refreshQueue();
           // US-16.12: Clear stale prompts on session idle (global, scoped to
           // this session — survives across views, cleared when idle).
@@ -863,7 +911,7 @@ export function ChatPage() {
       default:
         return;
     }
-  }, [workspaceId, sessionId, queryClient, notifySessionIdle, reconcileOnIdle, queue, clearSessionPendingPrompts, clearStreamTimedOut, upsertStreamPart, appendStreamDelta]);
+  }, [workspaceId, sessionId, queryClient, notifySessionIdle, reconcileOnIdle, queue, clearSessionPendingPrompts, clearStreamTimedOut, clearSessionBusy, upsertStreamPart, appendStreamDelta]);
 
   // Platform events only: the workspace stream's session-state dialect is
   // deleted (hard cutover); workspace.phase/alert, queue.update, and

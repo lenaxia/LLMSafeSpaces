@@ -62,20 +62,17 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
     // it. Gating the reconnect reset on it left a sticky-busy residual:
     // the provider's wipe + seed-gate clear were skipped, so a
     // mount-seeded busy could never clear after an event-less gap.
-    // NOTE (r2 review): lastEventIDRef feeds buildHeaders(), which is
-    // captured ONCE at start() and reused verbatim by sseConnection on
-    // every internal reconnect — so the Last-Event-ID replay header is
-    // effectively mount-frozen and does not fire post-mount. Known
-    // follow-up (header-factory, see the #1646 thread); every #1646
-    // convergence path is replay-independent by design (REST
-    // invalidation for busy/list, US-55.3 snapshot anti-entropy for
-    // asks, D6 getAlerts seed for hung, phase invalidations).
+    // NOTE (#1687, resolves the #1646 r2 follow-up): buildHeaders is
+    // passed as a FACTORY — sseConnection re-evaluates it on every
+    // connect — so a reconnect sends the CURRENT Last-Event-ID and the
+    // server-side replay (stream_user_events.go) refills the gap instead
+    // of the header staying mount-frozen.
     let hasConnectedOnce = false;
 
     function start() {
       conn = createSSEConnection({
         url: `${apiBaseUrl}/events`,
-        headers: buildHeaders(),
+        headers: buildHeaders,
         onEvent: (data) => {
           touchAlive();
           const evt = data as {

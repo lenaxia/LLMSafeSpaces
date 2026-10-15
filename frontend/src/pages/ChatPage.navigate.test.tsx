@@ -31,6 +31,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useWhileAwayStalenessSweep: () => {},
   useIsSessionDeleted: () => deletedFlag.current,
   useClearPendingUnread: () => vi.fn(),
+  useClearSessionBusy: () => vi.fn(),
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,
   useWorkspaceBusyCount: () => 0,
