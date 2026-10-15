@@ -596,3 +596,139 @@ describe("createSSEConnection — late connect guard (#1646 r2)", () => {
     conn.destroy();
   });
 });
+
+// #1687 header-factory coverage: a header FACTORY must be re-evaluated on
+// EVERY connect (initial + each internal reconnect) so a reconnect sends
+// the factory's CURRENT header set. The regression this pins:
+// useUserEventStream passed a static object (`buildHeaders()`), freezing
+// the Last-Event-ID replay header at its mount-time value — the server
+// implements replay, but it never fired post-mount.
+describe("createSSEConnection — header factory (#1687)", () => {
+  let fetchRestore: typeof globalThis.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function failingResponse() {
+    return { ok: false, status: 503, body: null };
+  }
+
+  beforeEach(() => {
+    fetchRestore = globalThis.fetch;
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = fetchRestore;
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("re-evaluates a header FACTORY on every connect — each fetch carries the factory's current value", async () => {
+    let n = 0;
+    const factory = vi.fn(() => ({ "X-Attempt": String(++n) }));
+    fetchMock.mockImplementation(() => Promise.resolve(failingResponse()));
+
+    const conn = createSSEConnection({
+      url: "/sse",
+      headers: factory,
+      onEvent: () => {},
+      minReconnectMs: 10,
+      maxReconnectMs: 20,
+    });
+
+    // Connect 1 fires immediately and fails; every backoff retry
+    // (5–15ms jittered) reconnects and fails again.
+    await vi.advanceTimersByTimeAsync(5);
+    const afterFirst = fetchMock.mock.calls.length;
+    expect(afterFirst).toBeGreaterThanOrEqual(1);
+    await vi.advanceTimersByTimeAsync(200);
+    const total = fetchMock.mock.calls.length;
+    expect(total).toBeGreaterThanOrEqual(3);
+
+    // The factory ran once per connect — never captured at creation.
+    expect(factory).toHaveBeenCalledTimes(total);
+    const headersOf = (i: number) => fetchMock.mock.calls[i]?.[1]?.headers as Record<string, string>;
+    expect(headersOf(0)["X-Attempt"]).toBe("1");
+    expect(headersOf(1)["X-Attempt"]).toBe("2");
+    expect(headersOf(2)["X-Attempt"]).toBe("3");
+
+    conn.destroy();
+  });
+
+  it("a static header object keeps working verbatim on every connect (back-compat)", async () => {
+    const staticHeaders = { "X-Custom": "static" };
+    fetchMock.mockImplementation(() => Promise.resolve(failingResponse()));
+
+    const conn = createSSEConnection({
+      url: "/sse",
+      headers: staticHeaders,
+      onEvent: () => {},
+      minReconnectMs: 10,
+      maxReconnectMs: 20,
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    for (const call of fetchMock.mock.calls) {
+      const headers = call?.[1]?.headers as Record<string, string>;
+      expect(headers["X-Custom"]).toBe("static");
+    }
+
+    conn.destroy();
+  });
+
+  it("a stream that ends mid-read reconnects with the factory's REFRESHED headers (replay position)", async () => {
+    let factoryValue = "initial";
+    const factory = () => ({ "Last-Event-ID": factoryValue });
+
+    let connects = 0;
+    fetchMock.mockImplementation(() => {
+      connects++;
+      if (connects === 1) {
+        // Connection 1 delivers one event, then the body ends (server
+        // closed) — the client must reconnect.
+        const chunks = [new TextEncoder().encode('id: 7\ndata: {"event_id":7,"type":"session.status"}\n\n')];
+        let read = 0;
+        return Promise.resolve({
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: () =>
+                read < chunks.length
+                  ? Promise.resolve({ done: false, value: chunks[read++]! })
+                  : Promise.resolve({ done: true }),
+              cancel: () => Promise.resolve(),
+            }),
+          },
+        });
+      }
+      // Connection 2 hangs open.
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => makeMockReader({ hangForever: true }) },
+      });
+    });
+
+    const conn = createSSEConnection({
+      url: "/sse",
+      headers: factory,
+      onEvent: () => {
+        // The consumer records the replay position — the next connect
+        // must observe it through the factory.
+        factoryValue = "7";
+      },
+      minReconnectMs: 10,
+      maxReconnectMs: 20,
+    });
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(secondHeaders["Last-Event-ID"]).toBe("7");
+
+    conn.destroy();
+  });
+});
