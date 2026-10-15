@@ -114,37 +114,35 @@ func TestCreateOrg_Admin_KnownEmail_CreatesActiveOrgWithResolvedOwner(t *testing
 	}
 }
 
-// TestCreateOrg_NoSSORequirementGapPin documents the enforcement gap the
-// owner's 0065 §4 ruling exposes (design
-// 0065_2026-10-11_org-provisioning-policy-ruling.md §4: "All orgs require
-// OIDC. We don't support anything else."). Today org creation —
-// platform-admin-only — requires NO SSO configuration, and a created org is
-// immediately active and usable via invitations/password members. This pin
-// locks the CURRENT behavior so any future enforcement of the ruling
-// (creation gating on an initial SSO config, or a not-usable-until-SSO
-// state) must deliberately flip this test. It is a gap PIN, not an
-// endorsement: the ruling makes no-SSO orgs an unsupported state, and the
-// enforcement mechanism is an open follow-up (bootstrap chicken-and-egg:
-// the first owner must be a password user, since SSO users are provisioned
-// by the org's own IdP — which can only be configured after the org exists).
-func TestCreateOrg_NoSSORequirementGapPin(t *testing.T) {
+// TestCreateOrg_RequiresSSOConfigAtCreation enforces the owner's 0065 §4
+// ruling (Option B, issue #1679): "All orgs require OIDC. We don't support
+// anything else." Org creation (POST /api/v1/orgs, platform-admin only)
+// must reject any request that does not carry a COMPLETE initial SSO
+// configuration in the same step — no two-step bootstrap, no waiting state.
+// A request without an `sso` block gets a 400 and produces zero side
+// effects: no org row, no membership row.
+//
+// This is the deliberately-flipped successor of
+// TestCreateOrg_NoSSORequirementGapPin, which documented the pre-enforcement
+// gap (creation succeeded with no SSO config anywhere and the org came up
+// immediately active). The pin flipped when #1679 implemented Option B; the
+// flip is recorded here so the history is citable.
+func TestCreateOrg_RequiresSSOConfigAtCreation(t *testing.T) {
 	store := newMockOrgStore()
 	store.usersByEmail["owner@example.com"] = "owner-1"
-	// No SSO config seeded anywhere — the store has none.
 
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
 		`{"name":"Acme","slug":"acme-nosso","ownerEmail":"owner@example.com"}`)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("current behavior: org creation succeeds with no SSO config (gap pin — see design 0065 §4 ruling follow-up); expected 201, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("contract (design 0065 §4, Option B): org creation without an SSO config must be rejected; expected 400, got %d: %s", w.Code, w.Body.String())
 	}
-	var resp types.CreateOrgResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if store.orgsLen() != 0 {
+		t.Errorf("no org may be created without a complete SSO config; store has %d orgs", store.orgsLen())
 	}
-	if resp.Status != types.OrgStatusActive {
-		t.Errorf("current behavior: org is active without SSO (gap pin); got status=%q", resp.Status)
+	if store.membersLen() != 0 {
+		t.Errorf("no org membership may be created without a complete SSO config; store has %d membership rows", store.membersLen())
 	}
 }
 
@@ -355,6 +353,18 @@ func (m *mockOrgStore) orgsLen() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.orgs)
+}
+
+// membersLen counts total membership rows across orgs (the rollback/no-side-
+// effect assertions care that NO row survives, not which org it belonged to).
+func (m *mockOrgStore) membersLen() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, ms := range m.members {
+		n += len(ms)
+	}
+	return n
 }
 
 // --- Single-org enforcement (D8): Create path must pre-check the owner ---
