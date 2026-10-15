@@ -70,7 +70,8 @@ function renderTab() {
 
 /**
  * Fills the create form with valid values, including the required OIDC
- * fields (design 0065 §4 Option B — the org is born with its IdP). Pass
+ * fields (design 0065 §4 Option B — the org is born with its IdP). The SSO
+ * section is progressively disclosed: the helper opens it first. Pass
  * skipSSO to leave the SSO fields empty (client-side gate tests).
  */
 async function fillCreateForm(
@@ -86,6 +87,8 @@ async function fillCreateForm(
     opts.name ?? "Acme",
   );
   if (!opts.skipSSO) {
+    // Progressive disclosure (#1679 r1): the OIDP section starts collapsed.
+    await user.click(screen.getByRole("button", { name: /identity provider/i }));
     await user.type(
       screen.getByPlaceholderText(/discovery url/i),
       "https://idp.acme.example/.well-known/openid-configuration",
@@ -222,6 +225,9 @@ describe("OrgSettingsTab", () => {
     );
     await user.click(screen.getByText("New Organisation"));
     await fillCreateForm(user);
+    // Progressive disclosure (#1679 r1): with all required IdP fields filled,
+    // the section header reports "configured" — visible even when collapsed.
+    expect(screen.getByText("configured")).toBeInTheDocument();
     await user.click(screen.getByText("Create"));
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     const req = mockCreate.mock.calls[0]![0] as {
@@ -257,13 +263,17 @@ describe("OrgSettingsTab", () => {
       expect(screen.getByText("New Organisation")).toBeInTheDocument(),
     );
     await user.click(screen.getByText("New Organisation"));
-    // Name + owner filled; SSO fields deliberately empty.
+    // Name + owner filled; SSO section still collapsed and unconfigured.
     await fillCreateForm(user, { skipSSO: true });
+    expect(screen.getByText("not configured")).toBeInTheDocument();
     await user.click(screen.getByText("Create"));
     await waitFor(() =>
       expect(screen.getByText(/discovery URL is required/i)).toBeInTheDocument(),
     );
     expect(mockCreate).not.toHaveBeenCalled();
+    // The failed gate auto-opens the collapsed SSO section (progressive
+    // disclosure must not hide the required work).
+    expect(screen.getByPlaceholderText(/discovery url/i)).toBeInTheDocument();
 
     // Fill discovery but leave clientId + secret empty: still blocked (clientId).
     await user.type(

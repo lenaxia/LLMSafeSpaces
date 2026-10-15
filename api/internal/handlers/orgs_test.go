@@ -41,6 +41,8 @@ type mockOrgStore struct {
 	auditEvents           []mockAuditEvent
 	auditErr              error
 	getMemberErr          error
+	removeMemberErr       error // Option B rollback-failure injection (#1679)
+	softDeleteErr         error // Option B rollback-failure injection (#1679)
 }
 
 type mockAuditEvent struct {
@@ -123,6 +125,9 @@ func (m *mockOrgStore) UpdateOrg(_ context.Context, orgID string, req types.Upda
 func (m *mockOrgStore) SoftDeleteOrg(_ context.Context, orgID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.softDeleteErr != nil {
+		return m.softDeleteErr
+	}
 	delete(m.orgs, orgID)
 	return nil
 }
@@ -180,6 +185,9 @@ func (m *mockOrgStore) AddOrgMember(_ context.Context, orgID, userID string, rol
 }
 
 func (m *mockOrgStore) RemoveOrgMember(_ context.Context, orgID, userID string) error {
+	if m.removeMemberErr != nil {
+		return m.removeMemberErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	members := m.members[orgID]
@@ -746,6 +754,10 @@ type warnCaptureLogger struct {
 }
 
 func (c *warnCaptureLogger) Warn(_ string, _ ...any) { c.warned = true }
+
+// Error satisfies the extended orgsLogger interface (rollback alerting,
+// #1679 r1); the audit test never triggers it.
+func (c *warnCaptureLogger) Error(_ string, _ error, _ ...any) {}
 
 // --- Create tests ---------------------------------------------------------
 

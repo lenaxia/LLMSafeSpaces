@@ -915,6 +915,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			imageFactoryHandler.SetExtensionReviewer(dbSvc)
 		}
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
+		// Wire the logger at construction: rollbackOrgCreation logs ORPHAN
+		// ORG rows at alert grade when the best-effort Option B rollback
+		// itself fails (#1679) — without this the precise failure operators
+		// must remediate would be silent in production.
+		orgsHandler.SetLogger(log)
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
 		orgMcpHandler = handlers.NewOrgMCPServersHandler(pgStore, orgCredsProv, pgOrgStore)
 		orgMcpHandler.SetSettings(instanceSettings)

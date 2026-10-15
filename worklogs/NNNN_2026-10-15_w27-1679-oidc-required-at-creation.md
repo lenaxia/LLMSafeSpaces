@@ -81,7 +81,21 @@ None.
 
 ---
 
-## Next Steps
+## Review round 1 (CHANGES_REQUESTED → remediated)
 
-- PR for #1679 → orchestrator review loop → merge-readiness report (no self-merge).
-- Then #1686 (disk-space banner) and #1685 (busy-15-min nudge), one PR each, per charter order.
+Findings + dispositions (all addressed; commit follows 9c91959f):
+
+1. **Alert-grade rollback-failure logging + pinned log assertion** (orchestrator addition on the #1679 issue thread — arrived after my plan message via the issue channel; disclosed that I picked it up from the review): `orgsLogger` extended with `Error(msg, err, ...kv)` (matches webHookLogger / `*logger.Logger` — my first shape `(msg, ...any)` did not compile against the real logger; fixed to the repo's established signature); `rollbackOrgCreation` now logs `ORPHAN ORG: … manual cleanup required` at Error with orgID/ownerID/cause; still deliberately NOT transactional per the ruling. Pinned by `TestCreateOrg_RollbackItselfFails_LogsAlertGrade` (2 arms: membership-removal failure, soft-delete failure; `alertCaptureLogger`; asserts the 500 still surfaces, the specific alert fires, and the orphan bookkeeping matches per arm) + `TestCreateOrg_RollbackSucceeds_NoAlertLog` (quiet side: successful rollback emits zero Error logs). Mock store gained `removeMemberErr`/`softDeleteErr` knobs.
+2. **Production observability gap (reviewer robustness finding)**: `orgsHandler.SetLogger(log)` was never called in app.go — rollback alerts would have been silent in production. Wired at construction with a comment.
+3. **BREAKING CHANGE changelog flag** (orchestrator addition 2): `CHANGELOG.md` `[Unreleased]` gained the org-provisioning BREAKING entry, including the SDK audit (no hand-written SDK models `POST /orgs` — their only `createOrg`-named methods are agent-role helpers on `/orgs/{id}/agent-roles`; grep-verified across sdks/{typescript,python,go,java}; openapi.yaml is the canonical contract, updated in lockstep).
+4. **Progressive disclosure** (orchestrator addition 2, "not a wall"): the SSO section is now collapsed behind an "Identity provider (OIDC) — required" toggle with a live status hint ("not configured" red / "configured" green, visible while collapsed); a failed submit gate auto-opens the section.
+5. **E2E coverage** (reviewer missing-cases): new `frontend/tests/e2e/org-creation-sso.spec.ts` — 3 Playwright tests against the real form with a mocked backend: (a) happy path asserts the POSTed body carries the full `sso` block and the form closes on 201; (b) unconfigured IdP blocks submit with zero POSTs and auto-opens the section; (c) backend 400 `sso.discoveryUrl` detail renders as "Discovery URL: Must be a valid URL". API adjustments discovered en route: this Playwright version exposes `getByPlaceholder` (not `getByPlaceholderText`), and the status assertion needs `{ exact: true }` (substring matched both states).
+
+Tests run post-remediation: `TestCreateOrg*` 27 top-level PASS / 0 FAIL; full handlers package ok (79s); app package ok; vitest OrgSettingsTab 15/15; settings dir suite ok; tsc/eslint clean; Playwright org-creation-sso 3/3.
+
+---
+
+## Next Steps (updated r1)
+
+- r1 remediation pushed; awaiting review round 2.
+- After merge: #1686 (disk-space banner) then #1685 (busy-15-min nudge), one PR each, per charter order.

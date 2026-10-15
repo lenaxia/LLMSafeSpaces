@@ -357,6 +357,126 @@ func TestCreateOrg_SSOPersistFails_ServerKeyMissing_503(t *testing.T) {
 	}
 }
 
+// alertCaptureLogger records Error-level emissions so tests can PIN the
+// alert-grade rollback-failure logs (orchestrator ruling on #1679: rollback
+// is best-effort and deliberately not transactional — when it fails, the
+// orphan org must be logged loudly, never silently swallowed).
+type alertCaptureLogger struct {
+	mu     sync.Mutex
+	errors []string
+}
+
+func (l *alertCaptureLogger) Warn(_ string, _ ...any) {}
+
+func (l *alertCaptureLogger) Error(msg string, _ error, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errors = append(l.errors, msg)
+}
+
+func (l *alertCaptureLogger) errorCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.errors)
+}
+
+// TestCreateOrg_RollbackItselfFails_LogsAlertGrade pins the orphan-org
+// observability contract: when the SSO persist fails AND the best-effort
+// rollback ALSO fails, the request still reports the creation error (500),
+// but the orphan must surface at Error level with the identifiers operators
+// need (orgID, ownerID, cause) — the exact scenario the orchestrator's r1
+// addition guards. Not transactional by ruling; loud by requirement.
+func TestCreateOrg_RollbackItselfFails_LogsAlertGrade(t *testing.T) {
+	cases := []struct {
+		name           string
+		inject         func(*mockOrgStore)
+		wantOrphanOrgs int
+		wantLogMsg     string
+	}{
+		{
+			name:   "membership removal fails (owner stays blocked by D8 index)",
+			inject: func(s *mockOrgStore) { s.removeMemberErr = errors.New("membership delete failed") },
+			// SoftDeleteOrg still succeeds → org row is gone; the orphan is
+			// the membership row (invisible to orgsLen, counted below).
+			wantOrphanOrgs: 0,
+			wantLogMsg:     "could not remove the owner membership",
+		},
+		{
+			name:           "org soft-delete fails (no-SSO org row survives)",
+			inject:         func(s *mockOrgStore) { s.softDeleteErr = errors.New("soft delete failed") },
+			wantOrphanOrgs: 1,
+			wantLogMsg:     "could not soft-delete the org",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockOrgStore()
+			store.usersByEmail["owner@example.com"] = "owner-1"
+			tc.inject(store)
+
+			prov := &fakeSSOProvisioner{err: errors.New("persist sso config: connection refused")}
+			handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+			handler.SetSSOProvisioner(prov)
+			alerts := &alertCaptureLogger{}
+			handler.SetLogger(alerts)
+			router := newAdminTestRouter(true)
+			router.POST("/api/v1/orgs", handler.Create)
+
+			w := doRequest(router, "POST", "/api/v1/orgs",
+				withSSO(`{"name":"Acme","slug":"acme-orphan","ownerEmail":"owner@example.com"}`))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 (the creation error still surfaces), got %d: %s", w.Code, w.Body.String())
+			}
+			if alerts.errorCount() == 0 {
+				t.Fatal("rollback failure MUST emit an Error-level (alert-grade) log — silent orphan violates the #1679 ruling")
+			}
+			found := false
+			alerts.mu.Lock()
+			for _, m := range alerts.errors {
+				if strings.Contains(m, tc.wantLogMsg) {
+					found = true
+				}
+			}
+			alerts.mu.Unlock()
+			if !found {
+				t.Errorf("expected an alert containing %q, got %v", tc.wantLogMsg, alerts.errors)
+			}
+			if got := store.orgsLen(); got != tc.wantOrphanOrgs {
+				t.Errorf("orphan-org bookkeeping: expected %d surviving org rows for this arm, got %d", tc.wantOrphanOrgs, got)
+			}
+		})
+	}
+}
+
+// TestCreateOrg_RollbackSucceeds_NoAlertLog pins the quiet side of the same
+// contract: a SUCCESSFUL rollback (the common case) emits no Error-level
+// noise — alert-grade logging is reserved for operator action, so a noisy
+// alert stream would hide the real orphans.
+func TestCreateOrg_RollbackSucceeds_NoAlertLog(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	prov := &fakeSSOProvisioner{err: errors.New("persist sso config: connection refused")}
+	handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+	handler.SetSSOProvisioner(prov)
+	alerts := &alertCaptureLogger{}
+	handler.SetLogger(alerts)
+	router := newAdminTestRouter(true)
+	router.POST("/api/v1/orgs", handler.Create)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		withSSO(`{"name":"Acme","slug":"acme-cleanrb","ownerEmail":"owner@example.com"}`))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if alerts.errorCount() != 0 {
+		t.Errorf("successful rollback must not log at Error level; got %d alerts: %v", alerts.errorCount(), alerts.errors)
+	}
+	if store.orgsLen() != 0 || store.membersLen() != 0 {
+		t.Errorf("rollback must clean up; orgs=%d members=%d", store.orgsLen(), store.membersLen())
+	}
+}
+
 // TestCreateOrg_SSOProvisionerUnwired_Returns503 pins the deployment-shape
 // gate: a handler with NO SSO provisioner wired (SSO service unavailable —
 // e.g. state-signing key derivation failed at boot) refuses creation with

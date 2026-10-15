@@ -61,11 +61,15 @@ type orgSSOProvisioner interface {
 	ApplyConfigMutation(ctx context.Context, orgID string, req types.UpsertSSOConfigRequest, existingEncrypted []byte, existingVerified []string) ([]byte, error)
 }
 
-// orgsLogger is the optional logger surface used to record non-fatal audit
-// emission failures. Matches the policyLogger / ssoLogger shapes used by the
-// other org-scoped handlers. Nil ⇒ silent (test default).
+// orgsLogger is the optional logger surface used to surface non-fatal audit
+// emission failures and — at alert grade — failed org-creation rollbacks
+// (the orchestrator's #1679 ruling: rollback is best-effort; a failed
+// rollback leaves an orphan org that must be logged loudly, not
+// transactionally retried). The Error signature matches webHookLogger /
+// *logger.Logger (msg, err, kv...). Nil ⇒ silent (test default).
 type orgsLogger interface {
 	Warn(msg string, args ...any)
+	Error(msg string, err error, args ...any)
 }
 
 // OrgsHandler handles org CRUD endpoints.
@@ -727,19 +731,26 @@ func validateInitialSSOConfig(cfg *types.UpsertSSOConfigRequest) map[string]any 
 
 // rollbackOrgCreation undoes CreateOrgWithAdmin after a later step in the
 // creation flow failed (Option B: an org must not survive without its SSO
-// config). Best-effort: the membership row is removed first so the owner is
-// not blocked from a future creation by the single-org unique index
-// (GetUserOrgID does not filter soft-deleted orgs), then the org row is
-// soft-deleted. Failures are logged and swallowed — the caller already has
-// an error to report; this only limits the blast radius.
+// config). Best-effort — deliberately NOT transactional across the two
+// stores (orchestrator ruling on #1679): the membership row is removed first
+// so the owner is not blocked from a future creation by the single-org
+// unique index (GetUserOrgID does not filter soft-deleted orgs), then the
+// org row is soft-deleted. A rollback failure means an ORPHAN org in the
+// unsupported no-SSO state: that is logged at alert grade (Error) so
+// operators can remediate (configure SSO on the org or delete it); it is
+// never swallowed silently when a logger is wired.
 func (h *OrgsHandler) rollbackOrgCreation(ctx context.Context, orgID, ownerID string, cause error) {
-	if err := h.orgStore.RemoveOrgMember(ctx, orgID, ownerID); err != nil && h.logger != nil {
-		h.logger.Warn("org creation rollback: membership removal failed (manual cleanup may be needed)",
-			"orgID", orgID, "ownerID", ownerID, "cause", cause.Error(), "error", err.Error())
+	if err := h.orgStore.RemoveOrgMember(ctx, orgID, ownerID); err != nil {
+		if h.logger != nil {
+			h.logger.Error("ORPHAN ORG: org-creation rollback could not remove the owner membership — manual cleanup required (the owner stays blocked from future orgs by the single-org index until the membership row is removed)",
+				err, "orgID", orgID, "ownerID", ownerID, "cause", cause.Error())
+		}
 	}
-	if err := h.orgStore.SoftDeleteOrg(ctx, orgID); err != nil && h.logger != nil {
-		h.logger.Warn("org creation rollback: org soft-delete failed (manual cleanup may be needed)",
-			"orgID", orgID, "cause", cause.Error(), "error", err.Error())
+	if err := h.orgStore.SoftDeleteOrg(ctx, orgID); err != nil {
+		if h.logger != nil {
+			h.logger.Error("ORPHAN ORG: org-creation rollback could not soft-delete the org — manual cleanup required (the org exists without its required SSO configuration)",
+				err, "orgID", orgID, "ownerID", ownerID, "cause", cause.Error())
+		}
 	}
 }
 
