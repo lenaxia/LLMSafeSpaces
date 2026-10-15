@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { workspacesApi } from "../../api/workspaces";
 import type { DiskRecoveryReport } from "../../api/types";
@@ -62,6 +62,14 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   // without the reset, a dismissal (or an in-flight report) from workspace
   // A would silence or mislead workspace B, whose numbers were never seen.
   const [prevWorkspaceId, setPrevWorkspaceId] = useState(workspaceId);
+  // Latest-value ref for stale-callback guarding (review r2): react-query
+  // dispatches mutate-time callbacks irrespective of the CURRENT props, so
+  // onSuccess/onError from a request started on workspace A can arrive
+  // after the switch to workspace B — without the guard they would
+  // resurrect ws-A's report (whose "Free N now" would then sweep ws-B with
+  // ws-A's numbers) or plant ws-A's error on ws-B.
+  const workspaceIdRef = useRef(workspaceId);
+  workspaceIdRef.current = workspaceId;
 
   const known = diskTotalBytes != null && diskTotalBytes > 0 && diskUsedBytes != null;
   const ratio = known ? (diskUsedBytes! / diskTotalBytes!) : 0;
@@ -72,10 +80,17 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   const critical = known && ratio >= SURFACED_AUTOMATIC_RATIO;
   const pct = known ? Math.min(100, Math.floor(ratio * 100)) : 0;
 
+  const mutation = useMutation({
+    mutationFn: ({ dryRun }: { dryRun: boolean }) => workspacesApi.recoverDisk(workspaceId!, dryRun),
+  });
+
   // Derived-state adjustment (the React-endorsed adjust-during-render
-  // pattern): leaving the critical tier ends the dismissal episode, and a
-  // workspace switch resets ALL interaction state (dismissal, report,
-  // error) so nothing leaks across workspaces.
+  // pattern): leaving the critical tier ends the dismissal episode (and
+  // clears any terminal error — a new episode starts clean, review r2),
+  // and a workspace switch resets ALL interaction state (dismissal,
+  // report, error) so nothing leaks across workspaces. Note: hooks above
+  // are unconditional; this guard only adjusts state / short-circuits
+  // rendering.
   if (prevWorkspaceId !== workspaceId) {
     setPrevWorkspaceId(workspaceId);
     setPhase({ kind: "idle" });
@@ -86,28 +101,32 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   }
   if (prevCritical !== critical) {
     setPrevCritical(critical);
-    if (!critical) setDismissedEpisode(false);
+    if (!critical) {
+      setDismissedEpisode(false);
+      setError(null);
+    }
   }
-
-  const mutation = useMutation({
-    mutationFn: ({ dryRun }: { dryRun: boolean }) => workspacesApi.recoverDisk(workspaceId!, dryRun),
-  });
 
   const run = (dryRun: boolean) => {
     if (!workspaceId) return;
+    // Capture the workspace this request belongs to; stale responses from
+    // another workspace are dropped (review r2 race fix).
+    const target = workspaceId;
     setPhase({ kind: "busy", dryRun });
     mutation.mutate(
       { dryRun },
       {
         onSuccess: (report) => {
+          if (workspaceIdRef.current !== target) return; // stale — switched workspaces mid-flight
           setError(null);
           setPhase({ kind: "report", report, dryRun });
           if (!dryRun) {
             // The sweep ran: refetch so DiskUsageBar reflects reality.
-            void queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
+            void queryClient.invalidateQueries({ queryKey: ["workspace-status", target] });
           }
         },
         onError: (err: unknown) => {
+          if (workspaceIdRef.current !== target) return; // stale — switched workspaces mid-flight
           setPhase({ kind: "idle" });
           setError(err instanceof Error ? err.message : "Disk recovery failed");
         },
