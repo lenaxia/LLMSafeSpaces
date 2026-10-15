@@ -43,7 +43,7 @@ Real ChatPage composition, archive.spec.ts harness shape, status mock carrying `
 
 ### (e) Audit (issue item 4) — conclusion: API/SDK/MCP surfaces are presentation-agnostic, no changes needed
 
-Grep-verified: `sdks/openapi.yaml` `POST /workspaces/{id}/disk-recover` documents authz + sweep semantics only — no frontend-surfacing or threshold language anywhere in the contract; no hand-written SDK (typescript/python/go/java) models the endpoint; no MCP tool description mentions disk recovery (the lever is not an MCP surface); no user docs describe the frontend threshold. The surfacing rule lives in exactly one place after this change (the frontend `SURFACED_AUTOMATIC_PCT` constant + the systemnotices 0.95 source it mirrors). CHANGELOG [Unreleased] records the UX fix (the 0.35.0 entry's "surfaced automatically at ≥95%" remains true — it is now ALSO the only place it surfaces).
+Grep-verified: `sdks/openapi.yaml` `POST /workspaces/{id}/disk-recover` documents authz + sweep semantics only — no frontend-surfacing or threshold language anywhere in the contract; no hand-written SDK (typescript/python/go/java) models the endpoint; no MCP tool description mentions disk recovery (the lever is not an MCP surface); no user docs describe the frontend threshold. The surfacing rule lives in exactly one place after this change (the frontend `SURFACED_AUTOMATIC_RATIO` constant (named `SURFACED_AUTOMATIC_PCT` before the r2 raw-ratio correction) + the systemnotices 0.95 source it mirrors). CHANGELOG [Unreleased] records the UX fix (the 0.35.0 entry's "surfaced automatically at ≥95%" remains true — it is now ALSO the only place it surfaces).
 
 ---
 
@@ -86,11 +86,37 @@ Incidents disclosed: two Playwright runs reported 3 failures/hangs that were env
 
 CI note: PR #1690's two failing Go suites (`Test (-short)`, `Test (full suite, race)`) both fail ONLY in `TestBusyTruthE2E_InStreamReseedReconciles` (usagestream) — a package this frontend-only PR does not touch, and the exact test family PR #1689 (w29) reworks. Verified locally 8/8 green (`-run` target ×3, then full package ×5, 11.8s). Treated as a runner-side flake: re-running the failed jobs after this push; if it recurs it is a main-lane flake for the #1687 owner to adjudicate.
 
-Tests run post-remediation: DiskRecoveryStrip 19/19 (14 + 5 new r1 pins); DiskUsageBar 13/13 (12 + hide-stick pin); workspace dir 82/82; Playwright disk spec 3/3; tsc/eslint clean.
+Tests run post-remediation: DiskRecoveryStrip 19/19 (14 + 5 new r1 pins); DiskUsageBar 13/13 (12 + hide-stick pin); workspace dir 82/82; Playwright disk spec 3/3.
+
+CORRECTION (round 3 review finding — the r1 record above claimed "tsc/eslint clean"; that was measurably FALSE at 035bd82f and is corrected here rather than rewritten silently): the r1 remediation verified tsc via `npx tsc -b` and eslint via a per-file `npx eslint <touched files>` invocation — NOT the repo's own gates. At 035bd82f the repo gates failed: `npx tsc --noEmit` → 2× TS2769 (DiskUsageBar.test.tsx:124,130 — testing-library's ByRoleOptions in the locked @testing-library/dom 10.4.1 has no `exact` option), and `npm run lint` → react-hooks/rules-of-hooks error (useMutation called conditionally after the workspace-guard early return). Both were introduced by r1 and both were caught by the round-2 review, fixed in r2. The per-file eslint invocation ran the file through the flat config but produced no output — I treated silence as pass without cross-checking the repo script; the hooks error should have surfaced there and did under `npm run lint`. Lesson recorded: verify with the repo's exact gate commands (`npm run lint`, `npm run typecheck`), not approximations.
 
 ---
 
-## Next Steps (updated r1)
+---
 
-- r1 remediation pushed; re-running the flaked CI jobs; awaiting review round 2.
+## Review round 2 (CHANGES_REQUESTED → remediated at 31da0d59)
+
+Findings + dispositions:
+
+1. **In-flight race (reviewer-reproduced)**: a dry-run response from ws-1 settling after the switch to ws-2 resurrected the stale report — whose "Free N now" would execute `recoverDisk(ws-B)` sized by ws-A's numbers; late errors planted ws-A's failure on ws-B. Fixed: `workspaceIdRef` latest-value ref; `run()` captures the request's workspace and `onSuccess`/`onError` no-op on mismatch; `invalidateQueries` keys on the captured target. Pinned with 3 DEFERRED-response pins (response-after-switch dropped; error-after-switch plants nothing; same-workspace error does not resurrect in a later episode).
+2. **Gate breaks introduced in r1** (the correction above): `useMutation` hoisted above the workspace guard; `exact: true` → anchored `/^Hide$/` regexes. Verified with the REPO gates this round: `npx tsc --noEmit` exit 0; `npm run lint` 0 errors.
+3. **Episode reset also clears terminal errors** (`setError(null)` on leaving the critical tier) — a failure at 97% no longer renders inside a later episode of the same workspace (pinned).
+4. **Drawer-collapsed state pinned** (`.overflow-hidden.transition-all` carries `max-h-0 opacity-0` after Hide), not just the label flip.
+
+Tests run at 31da0d59 (measured): strip 22/22 (19 + 3 race/episode pins); DiskUsageBar 13/13 (hide-stick pin + collapsed-state assertions); workspace dir 85/85; FULL vitest 2113/2113; Playwright disk spec 3/3 (--workers=1); `npx tsc --noEmit` clean; `npm run lint` 0 errors. Reviewer red-checks: 13 pins RED vs base 9b1f317c; exactly the 3 r2 pins RED vs 035bd82f.
+
+---
+
+## Review round 3 (CHANGES_REQUESTED → docs-only correction, this commit)
+
+The review verified ALL code findings closed across r0-r2 ("the code fully delivers #1686 and survives adversarial verification"; all four issue items FULLY ADDRESSED) — the sole blocking finding was this worklog's integrity: the false r1 "tsc/eslint clean" line (corrected above with the honest account) and the missing round-2 record (added above). Constant-name stale reference fixed (SURFACED_AUTOMATIC_RATIO).
+
+CI note (recurring): `Test (-short, with coverage)` failed AGAIN at 31da0d59 on the same single test — `TestBusyTruthE2E_InStreamReseedReconciles` (api/internal/services/usagestream) — while the race-detector suite passed the same package at the same head. This PR is frontend-only (zero Go diffs; the usagestream package untouched). The test passes 8/8 locally. This is the exact test family PR #1689 (w29) reworks; flagged to the orchestrator for main-lane adjudication rather than treated as a #1690 defect.
+
+Non-blocking reviewer notes recorded for follow-up (outside this PR's scope, pre-existing): (a) dry-run report dead-end with reclaimable===0 (no Done exit short of a workspace switch) — follow-up issue to file after merge; (b) `!known` transient unmount of an in-flight strip; (c) backend DISK_CRITICAL_THRESHOLD env override vs the frontend's constant mirror.
+
+## Next Steps (updated r3)
+
+- This docs-only correction pushed; expecting approval; then merge-readiness report (no self-merge).
+- #1685 implementation starts when PR #1689 merges (owner ruling parameters: issue #1685 comment 6202575356 — 30-min MESSAGE-LEVEL no-progress window, 15-min busy floor, both tunable + boundary-pinned, owner's bash case pinned: last message 20 min + long tool → NO alert).
 - #1685 (busy nudge): owner ruling received — evidence-gate APPROVED, 30-min MESSAGE-LEVEL window (LLM-completed or user-sent message resets; chunks/tools do NOT), 15-min busy floor kept, both pinned + the owner's bash case (last message 20 min + long tool → NO alert). Implementation starts after PR #1689 merges (shared plumbing).
