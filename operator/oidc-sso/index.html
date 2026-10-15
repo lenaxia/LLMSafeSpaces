@@ -1130,6 +1130,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#sso-is-required-at-org-creation-design-0065-4-option-b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSO is required at org creation (design 0065 §4, Option B)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#data-model" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2660,6 +2671,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#sso-is-required-at-org-creation-design-0065-4-option-b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSO is required at org creation (design 0065 §4, Option B)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#data-model" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3165,6 +3187,8 @@
 <li><code>/auth/config</code> advertises <code>oidcEnabled = (CountSSOConfigs &gt; 0)</code> so the frontend hides SSO UI when no org has configured it.</li>
 <li>Every SSO login is org-scoped: <code>/auth/sso/:orgSlug/...</code>.</li>
 </ul>
+<h3 id="sso-is-required-at-org-creation-design-0065-4-option-b">SSO is required at org creation (design 0065 §4, Option B)<a class="headerlink" href="#sso-is-required-at-org-creation-design-0065-4-option-b" title="Permanent link">&para;</a></h3>
+<p><strong>All orgs require OIDC — an org without SSO is not a supported state.</strong> Since #1679, <code>POST /api/v1/orgs</code> rejects any request that does not carry a <strong>complete initial SSO configuration in the same step</strong> (<code>sso.discoveryUrl</code>, <code>sso.clientId</code>, <code>sso.clientSecret</code> — all required; claimed domains, auto-provision and group-role mapping optional). There is no two-step bootstrap and no waiting state: the org is born with its IdP, and the platform-admin creation form in the UI collects the IdP fields inline. If the SSO configuration cannot be persisted, the creation is rolled back — no org survives without its SSO config. Orgs created before enforcement keep the invitation path as a transition mechanism (see <a href="#known-gaps-and-non-goals">Known gaps</a>).</p>
 <h3 id="data-model">Data model<a class="headerlink" href="#data-model" title="Permanent link">&para;</a></h3>
 <p>One row per org in <code>org_sso_configs</code>, keyed by <code>org_id</code>:</p>
 <table>
@@ -3650,7 +3674,7 @@
 <li><strong><code>redirectBaseUrl</code> header-trust gap (F11)</strong> — fixed. The platform now requires <code>redirectBaseUrl</code> and fails loud. Header derivation is removed.</li>
 <li><strong>State cookie replay within TTL</strong> — the 10-minute window is the design trade-off for statelessness. Mitigated by orgID binding.</li>
 <li><strong>#1669 routing gap for arbitrary-email orgs</strong> — closed. New users of such orgs onboard via the org-scoped entry points (see <a href="#org-scoped-login-for-arbitrary-email-orgs">Org-scoped login for arbitrary-email orgs</a>); the root page dead-ends honestly by the enumeration stance. The org-subdomain login surface is org-aware (<code>/auth/config</code> <code>orgContext</code>, design 0064 phase 1).</li>
-<li><strong>Invitation accept requires an existing account</strong> — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. The mechanical gap is recorded, not scheduled for change.</li>
+<li><strong>Invitation accept requires an existing account</strong> — an SSO-only newcomer cannot accept an invitation (JWT + email-match gate). Under the owner's §9 ruling (design 0065) org onboarding is IdP-administered, so the invitation path is not being extended through SSO; the org sign-in link is the SSO-only newcomer's path. Since #1679 (design 0065 §4, Option B) every NEW org is created with its SSO configuration inline, which makes the invitation path a transition mechanism for orgs predating enforcement. The mechanical gap is recorded, not scheduled for change.</li>
 </ul>
 <h3 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h3>
 <ul>
@@ -3687,7 +3711,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 12, 2026 04:26:46 UTC"><span class="timeago" datetime="2026-10-12T04:26:46+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 12, 2026 04:26:46 UTC">2026-10-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 15, 2026 20:37:24 UTC"><span class="timeago" datetime="2026-10-15T20:37:24+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 15, 2026 20:37:24 UTC">2026-10-15</span>
   </span>
 
     
