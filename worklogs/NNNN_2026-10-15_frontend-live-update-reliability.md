@@ -39,7 +39,9 @@ Green automatically via Pin 2: the stale busy no longer holds `handleSend`'s `is
 ### Review-loop additions (round 1 blockers)
 
 - **Unit coverage for the factory** (was zero): `sseConnection.test.ts` gains a `#1687 header factory` describe (factory re-evaluated per connect; static-object back-compat; mid-read stream end reconnects with the factory's REFRESHED replay position) and `useUserEventStream.test.tsx` a hook-level pin (first connect sends no `Last-Event-ID`; the reconnect sends `"7"` — verified red when the factory is reverted to `buildHeaders()`).
-- **E2E coverage** (`tests/e2e/live-update-1687.spec.ts`, all-mocked backend, deferred-SSE harness): `resync clears a mount-seeded busy badge…` (no reconnect can mask the heal — later connections are held; the sessions refetch after the resync is asserted), `contract SESSION_STATUS IDLE clears a user-stream-latched badge; the next send goes DIRECT` (POST /prompt + optimistic bubble; zero queue POSTs; the user stream's idle frame is never delivered), and `mid-turn contract reconnect keeps the live streaming buffer…` (a 10s sampled invariant: the streamed text never disappears across the reconnect while the fold says BUSY — the reconnect snapshot deliberately carries EMPTY inFlightParts so the client buffer is the only copy; then the real IDLE clears it to exactly one history-rendered copy). Mutation-checked: commenting out the bridge or the resync wipe makes the corresponding e2e fail.
+- **E2E coverage** (`tests/e2e/live-update-1687.spec.ts`, all-mocked backend, deferred-SSE harness): `resync clears a mount-seeded busy badge…` (no reconnect can mask the heal — later connections are held; the sessions refetch after the resync is asserted), `contract SESSION_STATUS IDLE clears a user-stream-latched badge; the next send goes DIRECT` (POST /prompt + optimistic bubble; zero queue POSTs; the user stream's idle frame is never delivered), and `mid-turn contract reconnect keeps the live streaming buffer…` (a 10s sampled invariant: the streamed text never disappears across the reconnect while the fold says BUSY; the reconnect snapshot deliberately carries EMPTY inFlightParts so the client buffer is the only copy; then the real IDLE clears it to exactly one history-rendered copy). Mutation-checked: commenting out the bridge or the resync wipe makes the corresponding e2e fail.
+
+  **Review r2 correction (the vacuous-test trap):** the mid-turn e2e as first submitted passed with the fold gate disabled — the harness closed the destructive window atomically (reconnect + IDLE in one body) AND the "streamed text" assert was satisfied by the post-idle HISTORY copy, not the live buffer; the buffer never even rendered because the user stream was silent (ChatView gates the streaming bubble on `streaming`, which follows the provider busy map). Restructured: the user stream now latches busy (the bubble renders — same shape as contract-stream.spec.ts), the reconnect body stays mid-turn (no IDLE, continuation delta proving accumulation), and the turn-end connection is DEFERRED until after the survival window. Re-verified mutant-killing: `midTurn = false` now fails the spec.
 - **Worklog** — this file.
 
 ### Harness adaptations (no pin weakened)
@@ -67,16 +69,17 @@ None. Review round 1 also documented two validated residual lost-IDLE corners (t
 ## Tests Run
 
 - Pins red-first verified: base e1ce3c2f = `4 failed | 1 passed`; after implementation = `5 passed` (`npx vitest run src/providers/SessionActivityProvider.resyncBusy.test.tsx src/pages/ChatPage.contractIdleBridge.test.tsx src/pages/ChatPage.midturnReconnect.test.tsx`).
-- Full frontend suite (`npm ci` then `npx vitest run`): **191 files / 2104 tests passed** (plus the new unit tests: 35 green across the two touched files).
+- Full frontend suite (`npm ci` then `npx vitest run`): **191 files / 2108 tests passed** (plus the new unit tests: 35 green across the two touched files).
 - `npm run typecheck` clean; `npm run lint` 0 errors (6 pre-existing unused-disable warnings, identical to the pins branch).
-- `npx playwright test tests/e2e/live-update-1687.spec.ts`: **3 passed** (after `npm ci`); mutation checks: bridge removed → DIRECT e2e fails; resync wipe removed → resync e2e fails.
+- `npx playwright test tests/e2e/live-update-1687.spec.ts`: **3 passed** (after `npm ci`); mutation checks: bridge removed → DIRECT e2e fails; resync wipe removed → resync e2e fails; `midTurn = false` → mid-turn e2e fails (r2 restructure; the r1 version passed the mutation and was rebuilt — see above).
 - Factory revert check: `headers: buildHeaders()` → hook-level replay test fails (red-on-revert confirmed), restored to factory.
+- Full Playwright suite: 192–193 passed / 13 skipped / 0 failed, with one known resource-contention flake (`sidebar-gesture` hamburger test) that fails only under full-suite 2-worker concurrency and passes alone — reproduced both with and without this branch's changes.
 
 ---
 
 ## Next Steps
 
-- Review round 2 on PR #1689 (round-1 blockers addressed: factory unit tests, e2e suite, this worklog).
+- Review round 3 on PR #1689 (r2 blockers addressed: empty-pattern lint fix; mid-turn e2e restructured so the destructive window is open and mutant-killing).
 - Follow-up candidates noted in review: the two lost-IDLE residual corners; #1685 (15-min busy nudge) likely retirable now the root causes landed.
 
 ---

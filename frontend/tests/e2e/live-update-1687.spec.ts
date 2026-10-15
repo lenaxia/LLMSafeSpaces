@@ -124,7 +124,7 @@ test.describe("#1687 live-update reliability (mocked backend)", () => {
     // finished).
     let resyncFired = false;
     let sessionsCalls = 0;
-    const { } = await setupChat(page, {
+    await setupChat(page, {
       history: () => [userHistoryMessage("prior turn")],
       sessions: () => {
         sessionsCalls++;
@@ -284,19 +284,37 @@ test.describe("#1687 live-update reliability (mocked backend)", () => {
   test("mid-turn contract reconnect keeps the live streaming buffer; the real end of turn still clears it", async ({ page }) => {
     let turnOver = false;
     const streamedText = "Hello world — the beginning of the answer";
+    const continuation = " and the middle passage";
     await setupChat(page, {
       // History is NONEMPTY during the turn (the old code's destructive
       // precondition); the full message appears only after the turn ends.
       history: () =>
         turnOver
-          ? [userHistoryMessage("draft the release notes"), assistantHistoryMessage(streamedText)]
+          ? [userHistoryMessage("draft the release notes"), assistantHistoryMessage(streamedText + continuation)]
           : [userHistoryMessage("draft the release notes")],
       sessions: () => [idleSessionRow()],
     });
 
-    // User stream: held open, silent (no busy latch needed — the buffer's
-    // survival does not depend on the badge).
-    await page.route(`${API}/events`, () => new Promise<never>(() => {}));
+    // User stream: busy frames on every connection — the badge latches so
+    // the streaming bubble renders (ChatView gates it on `streaming`,
+    // which follows the provider busy map), and the idle frame NEVER
+    // arrives. Reconnects re-deliver busy; harmless here.
+    await page.route(`${API}/events`, (r: Route) => {
+      void r.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        body: sseBody(`data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`),
+      });
+    });
+
+    // Connection 4 (the post-reconnect one) is DEFERRED: the reconnect
+    // stays mid-turn until the test fires the turn's end, so the
+    // destructive window (reconnect reconcile with the fold still BUSY)
+    // is observable rather than closed atomically by an immediate IDLE.
+    let fireContractTurnEnd: ((body: string) => void) | null = null;
+    // Read through an indirection: TS control-flow can't see the route
+    // callback's assignment from the test scope.
+    const fireTurnEnd = (body: string): void => fireContractTurnEnd?.(body);
 
     let contractHits = 0;
     await page.route(`${API}/workspaces/${WORKSPACE_ID}/contract-events`, async (r: Route) => {
@@ -317,20 +335,32 @@ test.describe("#1687 live-update reliability (mocked backend)", () => {
         return;
       }
       if (contractHits === 3) {
-        // Reconnect: fresh BUSY snapshot with EMPTY inFlightParts — the
-        // pod's snapshot does NOT carry the in-flight text, so the client
-        // buffer is the only copy and must survive the reconcile. Then the
-        // turn genuinely ends: SESSION_STATUS IDLE.
+        // Reconnect, STILL MID-TURN (no IDLE in this body): fresh BUSY
+        // snapshot with EMPTY inFlightParts — the pod's snapshot does NOT
+        // carry the in-flight text, so the client buffer is the only
+        // copy — plus a continuation delta proving the buffer keeps
+        // accumulating. The body ends again; the turn has NOT ended.
         await r.fulfill({
           status: 200,
           headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
           body: sseBody(
             snapshotFrame(9, [busySnapshotSession()]),
-            partDelta(10, "p1", " …and the end"),
-            sessionStatus(11, "SESSION_STATUS_IDLE"),
+            partDelta(10, "p1", continuation),
           ),
         });
-        turnOver = true;
+        return;
+      }
+      if (contractHits === 4) {
+        await new Promise<void>((resolve) => {
+          fireContractTurnEnd = (body: string) => {
+            void r.fulfill({
+              status: 200,
+              headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+              body,
+            });
+            resolve();
+          };
+        });
         return;
       }
       await new Promise<never>(() => {});
@@ -342,17 +372,34 @@ test.describe("#1687 live-update reliability (mocked backend)", () => {
     const streamed = page.getByText(streamedText, { exact: false });
     await expect(streamed.first()).toBeVisible({ timeout: 10_000 });
 
-    // INVARIANT across the reconnect window (~1–3s backoff after the
+    // INVARIANT across the mid-turn reconnect (~1–3s backoff after the
     // connection-2 body ends): the streamed text must NEVER disappear —
-    // the in-flight message exists nowhere else. (Old code: the reconnect
+    // the in-flight message exists nowhere else and history does not
+    // contain it while the fold says BUSY. (Old code: the reconnect
     // reconcile wiped the buffer whenever history was nonempty.)
     for (let i = 0; i < 100; i++) {
       expect(await streamed.count()).toBeGreaterThan(0);
       await page.waitForTimeout(100);
     }
 
-    // The REAL end of turn: history owns the message — exactly one
-    // rendered copy remains (the buffer yielded to the store).
-    await expect.poll(async () => page.getByText(streamedText, { exact: false }).count(), { timeout: 15_000 }).toBe(1);
+    // The buffer kept accumulating across the reconnect.
+    await expect(page.getByText(continuation, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+
+    // The reconnect's connection is held mid-turn; fire the REAL end of
+    // turn on it: SESSION_STATUS IDLE, history now owns the message.
+    await expect
+      .poll(() => contractHits, { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(4);
+    turnOver = true;
+    fireTurnEnd(sseBody(
+      snapshotFrame(11, [busySnapshotSession()]),
+      partDelta(12, "p1", " …and the end"),
+      sessionStatus(13, "SESSION_STATUS_IDLE"),
+    ));
+
+    // Exactly one rendered copy remains (the buffer yielded to the store).
+    await expect
+      .poll(async () => page.getByText(streamedText, { exact: false }).count(), { timeout: 15_000 })
+      .toBe(1);
   });
 });
