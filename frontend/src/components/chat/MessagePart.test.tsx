@@ -32,7 +32,11 @@ describe("MessagePart", () => {
     consoleSpy.mockRestore();
   });
 
-  it("renders user text as plain paragraph", () => {
+  // #1694: user text renders through the markdown pipeline — plain text
+  // still lands in a <p> (single-paragraph markdown), so the historical
+  // assertion holds; formatting pins live in
+  // MessagePart.markdownMermaid.test.tsx.
+  it("renders user text as a paragraph", () => {
     render(<MessagePart part={{ type: "text", text: "Hello world" }} isUser={true} />);
     const p = screen.getByText("Hello world");
     expect(p.tagName).toBe("P");

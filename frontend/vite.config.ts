@@ -73,7 +73,12 @@ export default defineConfig({
             // The regex is defined in src/lib/shiki-chunks.ts (CORE_CHUNK_PATTERN)
             // and kept in sync here — see that file for the unit tests.
             // NOTE: vite-plugin-pwa serializes this function body into sw.js at build
-            // time; it does NOT bundle imports. The regex must be inline here.
+            // time; it does not bundle imports. The regex must be inline here.
+            // #1694: the lazy mermaid chunk (dynamic import() only, never
+            // core) deliberately rides this same CacheFirst bucket — it is
+            // content-hashed, so it expires/refreshes exactly like a shiki
+            // grammar chunk and must NOT be precached (offline-first install
+            // should not download ~1MB for a feature most sessions never use).
             urlPattern: ({ url }: { url: URL }) =>
               url.pathname.startsWith("/assets/") &&
               url.pathname.endsWith(".js") &&
