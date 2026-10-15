@@ -107,4 +107,55 @@ test.describe("user markdown + mermaid rendering (#1694)", () => {
     const diagram = page.locator('[data-testid="mermaid-diagram"] svg');
     await expect(diagram).toBeVisible({ timeout: 15000 });
   });
+
+  // r1: the jsdom pins mock mermaid.render's rejection — only a real
+  // browser exercises mermaid 12's actual error path, including the
+  // #d<id> diagnostic div it leaves in <body> on parse failure.
+  test("malformed assistant mermaid fence shows the inline error state — no crash, no diagnostic bombsite (r1)", async ({ page }) => {
+    const messages = [
+      {
+        id: "msg_user_1",
+        type: "user",
+        parts: [{ type: "text", text: "draw it" }],
+      },
+      {
+        id: "msg_asst_1",
+        type: "assistant",
+        parts: [
+          { type: "text", text: "```mermaid\nthis is ((( not a diagram\n```" },
+        ],
+      },
+    ];
+    await setupAPIMocks(page, messages);
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+
+    await expect(page.locator('[data-testid="mermaid-error"]')).toBeVisible({ timeout: 15000 });
+    // the transcript stays alive (no crash) — the user message still renders
+    await expect(page.getByText("draw it")).toBeVisible();
+    // mermaid's failed-parse diagnostic divs (#d<lsp-mermaid-*>) are
+    // removed by the component; none accumulate in <body>
+    await expect(page.locator('body > div[id^="dlsp-mermaid-"]')).toHaveCount(0);
+  });
+
+  // r1: real-browser unhappy path for the user-markdown workflow —
+  // dangerous HTML in a user message must not execute and must not
+  // render as literal markup through the markdown path.
+  test("user message with dangerous HTML renders safe — no execution, no literal markup (r1)", async ({ page }) => {
+    const messages = [
+      {
+        id: "msg_user_1",
+        type: "user",
+        parts: [{ type: "text", text: "<script>window.__pwned = 1</script>\n\n**safe** text" }],
+      },
+    ];
+    await setupAPIMocks(page, messages);
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+
+    // the markdown around it still renders
+    await expect(page.locator("strong", { hasText: "safe" })).toBeVisible({ timeout: 10000 });
+    // the script never executed
+    expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).__pwned)).toBeUndefined();
+    // the raw markup is not visible as literal text
+    await expect(page.getByText("<script>window.__pwned = 1</script>")).toHaveCount(0);
+  });
 });

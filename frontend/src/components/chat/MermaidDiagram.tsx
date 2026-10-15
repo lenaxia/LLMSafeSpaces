@@ -61,11 +61,13 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
         setSvg(result.svg);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
         // Malformed syntax → graceful inline error state, never a crash.
         // mermaid also leaves a diagnostic element (#d<id>) in the body
         // on parse failure — remove it so it can't leak into the page.
+        // This runs BEFORE the cancelled check: an unmount mid-failed-parse
+        // must still clean up the bombsite (r1).
         document.getElementById(`d${id}`)?.remove();
+        if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
       });
 

@@ -20,9 +20,10 @@
 // assertions run against the real component output — the mock only stands
 // in for what mermaid.render/initialize return.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
-import { render } from "../../test/utils";
+import { act, screen, waitFor } from "@testing-library/react";
+import { render, renderBare } from "../../test/utils";
 import { MessagePart } from "./MessagePart";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 vi.mock("../../lib/shiki", () => ({
   highlight: vi.fn().mockResolvedValue(null),
@@ -114,6 +115,44 @@ describe("#1694 pin 6 — sanitize on the user path", () => {
     expect(a).toBeInTheDocument();
     expect(a?.getAttribute("href") ?? "").not.toContain("javascript:");
   });
+
+  it("r1: rehypeSanitize is PRESENT on the user path — footnote ids get the clobber prefix (discriminating)", () => {
+    // The three pins above pass on react-markdown built-ins alone (it
+    // drops raw-HTML nodes intrinsically and defaultUrlTransform strips
+    // javascript: hrefs) — probed during review. THE observable effect of
+    // rehypeSanitize in this pipeline (no rehype-raw, so sanitize only
+    // ever sees markdown-generated hast) is the default schema's
+    // clobberPrefix: generated ids are prefixed with "user-content-".
+    // A GFM footnote reference generates an id — WITH the plugin the sup
+    // anchor id is "user-content-user-content-fnref-…", WITHOUT it
+    // "user-content-fnref-…" (react-markdown's own prefix). Removing
+    // rehypePlugins from MarkdownBody flips this pin red.
+    // (Task-list checkboxes do NOT discriminate: the GitHub schema allows
+    // task-list <input>s — probed: 1 input rendered with the plugin.)
+    const text = "See note[^1].\n\n[^1]: the note";
+    const { container } = render(<MessagePart part={{ type: "text", text }} isUser={true} />);
+    const ref = container.querySelector("sup a");
+    expect(ref).toBeInTheDocument();
+    expect(ref?.getAttribute("id")).toMatch(/^user-content-user-content-fnref-/);
+  });
+
+  it("r1: soft line breaks follow CommonMark semantics in user bubbles (documenting pin)", () => {
+    // #1694 review: pre-change, user text rendered in a
+    // whitespace-pre-wrap <p>, so single newlines were visible breaks.
+    // The shared markdown pipeline (issue mandate: SAME pipeline as
+    // assistant text) collapses soft breaks — identical to the assistant
+    // path, and deliberate. remark-breaks was considered and rejected:
+    // user/assistant parity is the requested behavior. This pin records
+    // that decision so the collapse is a choice, not an accident.
+    const { container } = render(
+      <MessagePart part={{ type: "text", text: "line one\nline two" }} isUser={true} />,
+    );
+    const ps = container.querySelectorAll("p");
+    expect(ps).toHaveLength(1);
+    expect(ps[0]?.textContent).toContain("line one");
+    expect(ps[0]?.textContent).toContain("line two");
+    expect(ps[0]?.className).not.toContain("whitespace-pre-wrap");
+  });
 });
 
 describe("#1694 pins 3/4/5/6 — mermaid fences", () => {
@@ -186,5 +225,48 @@ describe("#1694 pins 3/4/5/6 — mermaid fences", () => {
     } finally {
       localStorage.removeItem("lsp-theme");
     }
+  });
+
+  it("r1: re-parses with the new theme when the resolved theme changes after mount", async () => {
+    const code = "flowchart TD\nA-->B";
+    const { rerender } = renderBare(
+      <MermaidDiagram code={code} theme="light" isStreaming={false} />,
+    );
+    await waitFor(() =>
+      expect(mockInitialize).toHaveBeenCalledWith(expect.objectContaining({ theme: "default" })),
+    );
+    rerender(<MermaidDiagram code={code} theme="dark" isStreaming={false} />);
+    await waitFor(() =>
+      expect(mockInitialize).toHaveBeenCalledWith(expect.objectContaining({ theme: "dark" })),
+    );
+    // the re-parse lands: the diagram container swaps back in
+    await waitFor(() => expect(screen.getByTestId("mermaid-diagram")).toBeInTheDocument());
+  });
+
+  it("r1: removes mermaid's #d<id> diagnostic bombsite even when unmounted before the parse rejects", async () => {
+    let rejectRender: (e: Error) => void = () => {};
+    mockRender.mockImplementation(
+      () =>
+        new Promise((_res, rej) => {
+          rejectRender = rej;
+        }),
+    );
+    const { unmount } = render(
+      <MessagePart part={{ type: "text", text: FLOWCHART_FENCE }} isUser={false} />,
+    );
+    // Wait for the in-flight parse, then plant the diagnostic div
+    // mermaid 12 leaves in <body> when a parse rejects.
+    await waitFor(() => expect(mockRender).toHaveBeenCalled());
+    const renderId = mockRender.mock.calls[mockRender.mock.calls.length - 1]![0] as string;
+    const bombsite = document.createElement("div");
+    bombsite.id = `d${renderId}`;
+    document.body.appendChild(bombsite);
+    // Unmount BEFORE the rejection arrives: cancelled=true, but the
+    // bombsite cleanup must still run (r1 fix — cleanup precedes the
+    // cancelled guard).
+    unmount();
+    rejectRender(new Error("Parse error on line 1"));
+    await act(async () => {});
+    expect(document.getElementById(`d${renderId}`)).not.toBeInTheDocument();
   });
 });
