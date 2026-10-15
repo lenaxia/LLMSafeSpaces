@@ -51,17 +51,189 @@ describe("DiskRecoveryStrip — surfacing rules", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders the prominent banner at >=95% (critical tier)", () => {
+  it("renders the compact banner at >=95% (critical tier)", () => {
     render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
     expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
     expect(screen.getByText(/97%/)).toBeInTheDocument();
     expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
   });
 
-  it("below 95% renders only the subtle on-demand action, no banner", () => {
-    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+  // #1686 (owner dogfooding): the strip renders ONLY at the critical tier.
+  // The pre-#1686 behavior — a permanent "Free up disk space" on-demand
+  // line whenever disk metrics were known — trained users to ignore the
+  // safety banner (it showed at 5% as at 97%), occupied a dedicated line
+  // under the metrics row, and on mobile sat right below the Hide/Metrics
+  // toggle so "hide" never cleared it. This pin was deliberately flipped
+  // from "below 95% renders only the subtle on-demand action": below the
+  // threshold the component must render NOTHING.
+  it("below 95% renders nothing at all (#1686 — no on-demand line)", () => {
+    const { container } = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+    expect(container).toBeEmptyDOMElement();
     expect(screen.queryByTestId("disk-recovery-strip")).not.toBeInTheDocument();
-    expect(screen.getByTestId("disk-recover-on-demand")).toBeInTheDocument();
+    expect(screen.queryByTestId("disk-recover-on-demand")).not.toBeInTheDocument();
+  });
+
+  it("threshold boundary: 94% renders nothing, 95% renders the banner", () => {
+    const below = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9400} diskTotalBytes={10000} />);
+    expect(below.container).toBeEmptyDOMElement();
+    below.unmount();
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9500} diskTotalBytes={10000} />);
+    expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
+  });
+
+  // Review r1: the threshold compares the RAW ratio (systemnotices mirror)
+  // — a rounded comparison would surface 94.5-94.99% as "95%" and
+  // over-alert vs the backend's floored critical tier.
+  it("sub-integer boundary: 94.5% renders nothing (raw ratio, floored display)", () => {
+    const { container } = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9450} diskTotalBytes={10000} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  // Review r1: strip state is workspace-scoped. ChatPage's Outlet is not
+  // keyed, so the instance survives workspace switches — a dismissal (or
+  // in-flight report) from one workspace must not silence another.
+  it("a dismissal does not leak across a workspace switch (review r1)", async () => {
+    const user = userEvent.setup();
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recovery-dismiss"));
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Same instance, NEW workspace at 96% — the banner must be back.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-2" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
+    expect(screen.getByText(/96%/)).toBeInTheDocument();
+  });
+
+  it("an in-flight report does not survive a workspace switch (no wrong-workspace execute)", async () => {
+    const user = userEvent.setup();
+    mocked.mockResolvedValueOnce(report());
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    expect(await screen.findByText("Go build cache")).toBeInTheDocument();
+
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-2" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    // ws-2 is critical but the stale ws-1 report is gone; a fresh banner.
+    expect(screen.queryByText("Go build cache")).not.toBeInTheDocument();
+    expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
+  });
+
+  // Review r1: a terminal error must not keep the strip mounted below the
+  // threshold ("renders ONLY at >=95%" — error retention falsified it).
+  it("a failed recovery leaves no residue once usage drops below the threshold", async () => {
+    const user = userEvent.setup();
+    mocked.mockRejectedValueOnce(new Error("pod unreachable"));
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    expect(await screen.findByText(/pod unreachable/)).toBeInTheDocument(); // visible while critical
+
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+    expect(view.container).toBeEmptyDOMElement();
+  });
+
+  it("retry re-runs the dry-run (not just clears the error)", async () => {
+    const user = userEvent.setup();
+    mocked.mockRejectedValueOnce(new Error("pod unreachable"));
+    mocked.mockResolvedValueOnce(report());
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    await user.click(await screen.findByText("retry"));
+    await waitFor(() => expect(mocked).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Go build cache")).toBeInTheDocument();
+  });
+
+  // Review r2 race pins: react-query dispatches mutate-time callbacks
+  // irrespective of current props — a response started on ws-1 that
+  // settles after the switch to ws-2 must be DROPPED, or ws-A's report
+  // (whose "Free N now" would sweep ws-B with ws-A's numbers) or error
+  // resurrects on the wrong workspace.
+  it("a dry-run response arriving after a workspace switch is dropped (no stale report, no wrong-workspace sweep)", async () => {
+    const user = userEvent.setup();
+    let resolveDryRun: (r: DiskRecoveryReport) => void = () => {};
+    mocked.mockImplementationOnce(() => new Promise<DiskRecoveryReport>((res) => { resolveDryRun = res; }));
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+
+    // Switch BEFORE the response lands.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-2" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    resolveDryRun(report());
+
+    // The stale report must never render: ws-2 shows its fresh banner only.
+    await waitFor(() => expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument());
+    expect(screen.queryByText("Go build cache")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("disk-recover-free-now")).not.toBeInTheDocument();
+    expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
+  });
+
+  it("a late error arriving after a workspace switch plants nothing", async () => {
+    const user = userEvent.setup();
+    let rejectRun: (e: Error) => void = () => {};
+    mocked.mockImplementationOnce(() => new Promise<DiskRecoveryReport>((_, rej) => { rejectRun = rej; }));
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-2" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    rejectRun(new Error("ws-1 pod unreachable"));
+
+    // ws-2's banner stays clean — no ws-1 error text, no retry planting.
+    await waitFor(() => expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument());
+    expect(screen.queryByText(/ws-1 pod unreachable/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
+  });
+
+  // Review r2: a terminal error must not survive into the NEXT critical
+  // episode on the same workspace — the episode reset clears it.
+  it("an error does not resurrect on a later critical episode of the same workspace", async () => {
+    const user = userEvent.setup();
+    mocked.mockRejectedValueOnce(new Error("pod unreachable"));
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+    expect(await screen.findByText(/pod unreachable/)).toBeInTheDocument();
+
+    // Dip below the threshold (episode ends, error cleared) and re-cross.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9000} diskTotalBytes={10000} />);
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    await waitFor(() => expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument());
+    expect(screen.queryByText(/pod unreachable/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("disk-recover-review")).toBeInTheDocument();
+  });
+
+  // #1686: dismissal is per critical episode — quieting the banner must
+  // not permanently silence the safety alert. Drop below the threshold
+  // (episode ends, dismissal resets) and climb back: the banner re-arms.
+  it("Dismiss hides the banner; re-crossing the threshold re-arms it", async () => {
+    const user = userEvent.setup();
+    const view = render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recovery-dismiss"));
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Still critical, still dismissed (no nagging within the episode).
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9800} diskTotalBytes={10000} />);
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Drop below the threshold → episode ends.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={7000} diskTotalBytes={10000} />);
+    expect(view.container).toBeEmptyDOMElement();
+
+    // Re-cross → the banner is back.
+    view.rerender(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9600} diskTotalBytes={10000} />);
+    expect(screen.getByTestId("disk-recovery-strip")).toBeInTheDocument();
+    expect(screen.getByText(/96%/)).toBeInTheDocument();
+  });
+
+  // The compact placement (#1686 item 2): collapsed, the banner is ONE
+  // line — headline, inline action and Dismiss all live in the same flex
+  // row (py-1 text-[11px], not the old py-2 multi-row strip).
+  it("collapsed banner is a single compact line with inline actions", () => {
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    const strip = screen.getByTestId("disk-recovery-strip");
+    expect(strip.className).toContain("py-1");
+    expect(strip.className).toContain("text-[11px]");
+    const review = screen.getByTestId("disk-recover-review");
+    const dismiss = screen.getByTestId("disk-recovery-dismiss");
+    // All three affordances share the banner's first (collapsed) row.
+    const row = review.closest("div");
+    expect(row).toContainElement(dismiss);
+    expect(row).toContainElement(screen.getByText(/critically low/i));
   });
 });
 
