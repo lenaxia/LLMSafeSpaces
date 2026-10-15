@@ -6,15 +6,16 @@ import { formatBytes } from "../../lib/format";
 
 // #1601 — the mechanical disk-recovery surface.
 //
-// SURFACED_AUTOMATIC_THRESHOLD mirrors pkg/agent/systemnotices'
-// critical tier (0.95) — the single threshold source on the platform
-// side. At or above it the strip renders as a compact critical banner;
-// below it the component renders NOTHING (#1686: the pre-#1686
-// permanent on-demand line trained users to ignore the safety banner,
-// occupied a dedicated line under the metrics row, and broke the mobile
-// Hide toggle's perceived behavior — the API stays available at any
-// usage level, this is presentation-only).
-const SURFACED_AUTOMATIC_PCT = 95;
+// SURFACED_AUTOMATIC_RATIO mirrors pkg/agent/systemnotices' critical tier
+// (0.95) — the single threshold source on the platform side, compared on
+// the RAW ratio (floored for display, exactly like the backend). At or
+// above it the strip renders as a compact critical banner; below it the
+// component renders NOTHING (#1686: the pre-#1686 permanent on-demand
+// line trained users to ignore the safety banner, occupied a dedicated
+// line under the metrics row, and broke the mobile Hide toggle's
+// perceived behavior — the API stays available at any usage level, this
+// is presentation-only).
+const SURFACED_AUTOMATIC_RATIO = 0.95;
 
 // The strip is intentionally dumb about disk math: ChatPage feeds it
 // the same status fields DiskUsageBar renders.
@@ -56,14 +57,33 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
   // the disk keeps crossing the line.
   const [dismissedEpisode, setDismissedEpisode] = useState(false);
   const [prevCritical, setPrevCritical] = useState(false);
+  // All strip state is workspace-scoped (review r1): ChatPage's Outlet is
+  // not keyed by workspace, so this instance survives workspace switches —
+  // without the reset, a dismissal (or an in-flight report) from workspace
+  // A would silence or mislead workspace B, whose numbers were never seen.
+  const [prevWorkspaceId, setPrevWorkspaceId] = useState(workspaceId);
 
   const known = diskTotalBytes != null && diskTotalBytes > 0 && diskUsedBytes != null;
-  const pct = known ? Math.min(100, Math.round((diskUsedBytes! / diskTotalBytes!) * 100)) : 0;
-  const critical = known && pct >= SURFACED_AUTOMATIC_PCT;
-  const active = phase.kind !== "idle" || error != null;
+  const ratio = known ? (diskUsedBytes! / diskTotalBytes!) : 0;
+  // The threshold compares the RAW ratio, and the display floors it —
+  // mirroring pkg/agent/systemnotices' critical tier exactly (raw 0.9499
+  // shows "94%" and does NOT surface; a rounded comparison would surface
+  // 94.5-94.99% as "95%", over-alerting vs the mirrored source).
+  const critical = known && ratio >= SURFACED_AUTOMATIC_RATIO;
+  const pct = known ? Math.min(100, Math.floor(ratio * 100)) : 0;
 
   // Derived-state adjustment (the React-endorsed adjust-during-render
-  // pattern): leaving the critical tier ends the dismissal episode.
+  // pattern): leaving the critical tier ends the dismissal episode, and a
+  // workspace switch resets ALL interaction state (dismissal, report,
+  // error) so nothing leaks across workspaces.
+  if (prevWorkspaceId !== workspaceId) {
+    setPrevWorkspaceId(workspaceId);
+    setPhase({ kind: "idle" });
+    setError(null);
+    setDismissedEpisode(false);
+    setPrevCritical(critical);
+    return null;
+  }
   if (prevCritical !== critical) {
     setPrevCritical(critical);
     if (!critical) setDismissedEpisode(false);
@@ -95,10 +115,13 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
     );
   };
 
-  // Below the critical threshold: render NOTHING (#1686) — not even an
-  // on-demand affordance. The recovery API remains usable at any level;
-  // this component is the >=95% safety surface only.
-  if (!workspaceId || !known || (!critical && !active)) return null;
+  // Below the critical threshold the strip renders NOTHING (#1686) — not
+  // even an on-demand affordance, and not a terminal error either (review
+  // r1: a failed recovery's error line must not persist below the
+  // threshold). Only a genuinely IN-FLIGHT interaction (busy/report) keeps
+  // the strip mounted so results never vanish mid-interaction.
+  if (!workspaceId || !known) return null;
+  const inFlight = phase.kind === "busy" || phase.kind === "report";
 
   const report = phase.kind === "report" ? phase.report : null;
   // `?? []` is belt to the engine's braces (review r1 F2): the engine
@@ -111,11 +134,11 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
     .reduce((sum, c) => sum + c.bytes, 0) ?? 0;
 
   // The dismissible compact banner only shows while critical and not
-  // dismissed; an active phase (report/error) keeps the strip mounted so
+  // dismissed; an in-flight phase (busy/report) keeps the strip mounted so
   // results never vanish mid-interaction even if usage dipped.
   const showBanner = critical && !dismissedEpisode;
 
-  if (!showBanner && !active) return null;
+  if (!showBanner && !inFlight) return null;
 
   return (
     <div
@@ -169,7 +192,7 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
         </span>
       </div>
 
-      {error && <div className="text-red-500">{error} <button className="underline hover:no-underline" onClick={() => setError(null)}>retry</button></div>}
+      {error && <div className="text-red-500">{error} <button className="underline hover:no-underline" onClick={() => run(true)}>retry</button></div>}
 
       {report?.alreadyBelowTarget && (
         <div className="text-muted-foreground">

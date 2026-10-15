@@ -72,7 +72,25 @@ None.
 
 ---
 
-## Next Steps
+## Review round 1 (CHANGES_REQUESTED → remediated)
 
-- PR for #1686 → review loop → merge-readiness report (no self-merge).
-- Then #1685 (busy-15-min nudge) — final charter deliverable.
+Findings + dispositions (all addressed; commit follows 142b7b1d):
+
+1. **Cross-workspace dismissal/report leak (reviewer-reproduced)**: ChatPage's Outlet is not workspace-keyed, so the strip instance (and its dismissal, error, and in-flight report) survived workspace switches — a ws-A dismissal silenced ws-B's banner, and a ws-A report could execute against ws-B's workspaceId with ws-A's numbers. Fixed INSIDE the strip (self-contained, no ChatPage keying change): a `prevWorkspaceId` adjust-during-render guard resets phase/error/dismissal on workspace change. Pinned: dismissal-does-not-leak-across-workspaces; in-flight-report-does-not-survive-switch (also closes the wrong-workspace execute hazard).
+2. **Error path violated "renders ONLY at ≥95%"**: a terminal error kept the strip mounted indefinitely below threshold. Render condition is now `showBanner || inFlight` (busy/report only — genuinely in-flight); a terminal error below threshold renders nothing. The retry button now ACTUALLY retries (`run(true)`) instead of just clearing. Pinned: failed-recovery-leaves-no-residue-below-threshold; retry-re-runs (mock called twice, report renders).
+3. **Threshold rounding diverged from the mirrored source**: `Math.round(pct) >= 95` surfaced raw 94.5–94.99% as "95%" (over-alerting vs systemnotices' floored comparison). Now compares the RAW ratio (`used/total >= 0.95`) and floors the display percentage — an exact mirror. Pinned: sub-integer boundary 9450/10000 → nothing.
+4. **Mobile e2e pin didn't pin the claim** (both-labels regex passed a no-op click): now asserts the full state flip — Hide→click→Metrics (and old label gone)→click→Hide.
+5. **REAL root cause of the mobile-hide complaint found while re-pinning (pre-existing, in DiskUsageBar)**: `toggleDrawer` cleared `mobileAutoOpened`, so the auto-open effect immediately re-opened the drawer after an explicit close while ANY metric was critical — Hide was literally impossible at exactly the moment the user needed it. Fixed red-first (new pin in DiskUsageBar.test.tsx verified RED pre-fix): explicit close marks the critical episode served (`mobileAutoOpened=true` on close); leaving the critical tier re-arms auto-open (episode reset effect). The mobile e2e now passes the flip chain in the real browser.
+
+Incidents disclosed: two Playwright runs reported 3 failures/hangs that were environmental (a leftover `playwright show-trace` background server + stale test-results dir; one test-line bug of mine — the final toggle assertion expected "Metrics" while the drawer was open). After killing the background server, cleaning test-results, and fixing the assertion: 3/3 green (`--workers=1`). The full-suite run that reported "3 failed" mid-remediation was the same environmental cause, re-verified green.
+
+CI note: PR #1690's two failing Go suites (`Test (-short)`, `Test (full suite, race)`) both fail ONLY in `TestBusyTruthE2E_InStreamReseedReconciles` (usagestream) — a package this frontend-only PR does not touch, and the exact test family PR #1689 (w29) reworks. Verified locally 8/8 green (`-run` target ×3, then full package ×5, 11.8s). Treated as a runner-side flake: re-running the failed jobs after this push; if it recurs it is a main-lane flake for the #1687 owner to adjudicate.
+
+Tests run post-remediation: DiskRecoveryStrip 19/19 (14 + 5 new r1 pins); DiskUsageBar 13/13 (12 + hide-stick pin); workspace dir 82/82; Playwright disk spec 3/3; tsc/eslint clean.
+
+---
+
+## Next Steps (updated r1)
+
+- r1 remediation pushed; re-running the flaked CI jobs; awaiting review round 2.
+- #1685 (busy nudge): owner ruling received — evidence-gate APPROVED, 30-min MESSAGE-LEVEL window (LLM-completed or user-sent message resets; chunks/tools do NOT), 15-min busy floor kept, both pinned + the owner's bash case (last message 20 min + long tool → NO alert). Implementation starts after PR #1689 merges (shared plumbing).

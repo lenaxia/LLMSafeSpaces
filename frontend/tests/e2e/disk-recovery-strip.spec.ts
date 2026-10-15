@@ -103,17 +103,25 @@ test.describe("#1686: mobile viewport", () => {
     await expect(page.getByTestId("disk-recovery-strip")).toBeVisible({ timeout: 10_000 });
 
     // The metrics row's Hide/Metrics toggle must remain functional with
-    // the banner mounted (the #1686 mobile complaint).
-    const metricsToggle = page.getByRole("button", { name: /^(Hide|Metrics)$/ });
+    // the banner mounted (the #1686 mobile complaint) — pinned as an
+    // actual STATE FLIP (review r1: a both-labels regex would pass a
+    // no-op click). Disk at 97% is itself a critical metric, so the
+    // mobile drawer AUTO-OPENS and the toggle starts as "Hide".
+    const hideToggle = page.getByRole("button", { name: "Hide", exact: true });
+    await expect(hideToggle).toBeVisible();
+    await hideToggle.click();
+    const metricsToggle = page.getByRole("button", { name: "Metrics" });
     await expect(metricsToggle).toBeVisible();
+    await expect(hideToggle).toHaveCount(0);
     await metricsToggle.click();
-    await expect(page.getByRole("button", { name: /^(Hide|Metrics)$/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Hide", exact: true })).toBeVisible();
 
     // Dismiss hides the banner for this critical episode.
     await page.getByTestId("disk-recovery-dismiss").click();
     await expect(page.getByTestId("disk-recovery-strip")).toHaveCount(0);
-    // The metrics toggle survives the dismissal — nothing disk-related
+    // The metrics toggle survives the dismissal (drawer is open from the
+    // flip above, so the label reads "Hide") — nothing disk-related
     // lingers under it.
-    await expect(metricsToggle).toBeVisible();
+    await expect(page.getByRole("button", { name: "Hide", exact: true })).toBeVisible();
   });
 });
