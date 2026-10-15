@@ -915,6 +915,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			imageFactoryHandler.SetExtensionReviewer(dbSvc)
 		}
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
+		// Wire the logger at construction: rollbackOrgCreation logs ORPHAN
+		// ORG rows at alert grade when the best-effort Option B rollback
+		// itself fails (#1679) — without this the precise failure operators
+		// must remediate would be silent in production.
+		orgsHandler.SetLogger(log)
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
 		orgMcpHandler = handlers.NewOrgMCPServersHandler(pgStore, orgCredsProv, pgOrgStore)
 		orgMcpHandler.SetSettings(instanceSettings)
@@ -968,6 +973,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 					log.Error("failed to construct sso service", ssoErr)
 				} else {
 					ssoHandler = handlers.NewSSOHandler(ssoSvc, pgOrgStore, svc.GetAuth(), cfg.Auth.CookieName, cfg.OrgSubdomainRouting.CookieDomain, cfg.OIDC.FrontendRedirectURL, log)
+					// Design 0065 §4 (Option B, #1679): org creation requires
+					// the initial SSO config in the same request. Without the
+					// provisioner the handler refuses creation (503) rather
+					// than producing an org in the unsupported no-SSO state.
+					orgsHandler.SetSSOProvisioner(ssoSvc)
 				}
 			}
 		}

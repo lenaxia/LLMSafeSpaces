@@ -6,7 +6,9 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -51,22 +53,35 @@ type orgAuthService interface {
 	GetUserID(c *gin.Context) string
 }
 
-// orgsLogger is the optional logger surface used to record non-fatal audit
-// emission failures. Matches the policyLogger / ssoLogger shapes used by the
-// other org-scoped handlers. Nil ⇒ silent (test default).
+// orgSSOProvisioner is the sso.Service subset org creation needs to persist
+// the org's INITIAL SSO configuration in the same request (design 0065 §4,
+// Option B — issue #1679: all orgs require OIDC; creation must carry a
+// complete SSO config, no two-step bootstrap). *sso.Service satisfies it.
+type orgSSOProvisioner interface {
+	ApplyConfigMutation(ctx context.Context, orgID string, req types.UpsertSSOConfigRequest, existingEncrypted []byte, existingVerified []string) ([]byte, error)
+}
+
+// orgsLogger is the optional logger surface used to surface non-fatal audit
+// emission failures and — at alert grade — failed org-creation rollbacks
+// (the orchestrator's #1679 ruling: rollback is best-effort; a failed
+// rollback leaves an orphan org that must be logged loudly, not
+// transactionally retried). The Error signature matches webHookLogger /
+// *logger.Logger (msg, err, kv...). Nil ⇒ silent (test default).
 type orgsLogger interface {
 	Warn(msg string, args ...any)
+	Error(msg string, err error, args ...any)
 }
 
 // OrgsHandler handles org CRUD endpoints.
 type OrgsHandler struct {
-	orgStore   orgStore
-	authSvc    orgAuthService
-	billing    OrgBilling
-	successURL string
-	cancelURL  string
-	portalURL  string
-	logger     orgsLogger
+	orgStore       orgStore
+	authSvc        orgAuthService
+	billing        OrgBilling
+	successURL     string
+	cancelURL      string
+	portalURL      string
+	logger         orgsLogger
+	ssoProvisioner orgSSOProvisioner
 }
 
 // NewOrgsHandler creates a new OrgsHandler.
@@ -97,6 +112,15 @@ func (h *OrgsHandler) SetLogger(l orgsLogger) {
 	h.logger = l
 }
 
+// SetSSOProvisioner wires the SSO service used to persist the initial OIDC
+// configuration at org creation (design 0065 §4, Option B — issue #1679).
+// Required in production: without it, org creation cannot satisfy the
+// all-orgs-require-OIDC contract and is refused with 503 rather than
+// creating an org in the unsupported no-SSO state.
+func (h *OrgsHandler) SetSSOProvisioner(p orgSSOProvisioner) {
+	h.ssoProvisioner = p
+}
+
 // GetOrg exposes orgStore.GetOrg so middleware.FeatureGuard can read the org's
 // plan without depending on the store directly. Satisfies orgPlanReader.
 func (h *OrgsHandler) GetOrg(ctx context.Context, orgID string) (*types.Organization, error) {
@@ -113,6 +137,14 @@ func (h *OrgsHandler) GetOrg(ctx context.Context, orgID string) (*types.Organiza
 // recorded as CreatedBy; the owner is the email-resolved user. No Stripe
 // Checkout session is created at org-creation time — the self-service flow is
 // deferred to the future billing-portal epic.
+//
+// Design 0065 §4 (Option B, issue #1679): the request MUST carry a complete
+// initial SSO configuration (`sso`); an org without OIDC is an unsupported
+// state. Missing or incomplete configs are rejected with 400 before any
+// persistence. The config is persisted in the same request; if that
+// persistence fails after the org row exists, the creation is rolled back
+// (membership removed, org soft-deleted) so no no-SSO org survives a
+// reported failure.
 func (h *OrgsHandler) Create(c *gin.Context) {
 	callerID := h.authSvc.GetUserID(c)
 	if callerID == "" {
@@ -131,6 +163,31 @@ func (h *OrgsHandler) Create(c *gin.Context) {
 	}
 	req.Slug = strings.ToLower(req.Slug)
 	ownerEmail := strings.ToLower(strings.TrimSpace(req.OwnerEmail))
+
+	// Option B gate (design 0065 §4, #1679): reject before ANY store call so a
+	// bad request leaves zero side effects.
+	if req.SSO == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "an initial SSO configuration is required at org creation (all orgs require OIDC — design 0065 §4)",
+			"details": map[string]any{"sso": "This field is required: provide the org's OIDC discoveryUrl, clientId and clientSecret in the same request"},
+		})
+		return
+	}
+	if ssoDetails := validateInitialSSOConfig(req.SSO); len(ssoDetails) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "validation failed",
+			"details": ssoDetails,
+		})
+		return
+	}
+	if h.ssoProvisioner == nil {
+		// The deployment cannot persist SSO configs (server key not wired /
+		// SSO service unavailable). Refuse creation outright: creating the org
+		// anyway would produce exactly the unsupported no-SSO state Option B
+		// forbids.
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SSO provisioning is unavailable; organizations cannot be created without OIDC configuration"})
+		return
+	}
 
 	ctx := c.Request.Context()
 
@@ -182,6 +239,22 @@ func (h *OrgsHandler) Create(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create organization"})
+		return
+	}
+
+	// Persist the initial SSO config in the same step (Option B, #1679). The
+	// org row now exists; if this fails, roll the creation back so a no-SSO
+	// org never survives a reported failure. Both rollback calls are
+	// best-effort: on rollback failure we log (when a logger is wired) and
+	// still report the error — the operator's remediation is to configure SSO
+	// on the leftover org or delete it.
+	if _, err := h.ssoProvisioner.ApplyConfigMutation(ctx, created.ID, *req.SSO, nil, nil); err != nil {
+		h.rollbackOrgCreation(ctx, created.ID, ownerID, err)
+		if strings.Contains(err.Error(), "server key not configured") {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SSO provisioning is unavailable; organization was not created"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to provision initial SSO configuration; organization was not created"})
 		return
 	}
 
@@ -618,6 +691,66 @@ func (h *OrgsHandler) VerifyMember(c *gin.Context) {
 func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
+	}
+}
+
+// validateInitialSSOConfig checks the creation-time SSO block for Option B
+// completeness (design 0065 §4, #1679). It returns a field→message details
+// map (keys are dotted `sso.<field>` JSON paths so clients can highlight the
+// right form field); an empty map means the config is complete. This mirrors
+// the rules sso.Service.ApplyConfigMutation enforces, hoisted to the
+// zero-side-effect phase so an invalid payload never creates an org row:
+// the shared UpsertSSOConfigRequest's own binding tags are NOT relied on
+// here because CreateOrgRequest binds the block as an opaque pointer and
+// nested validator errors would surface with unhelpful detail keys.
+func validateInitialSSOConfig(cfg *types.UpsertSSOConfigRequest) map[string]any {
+	details := map[string]any{}
+	raw := strings.TrimSpace(cfg.DiscoveryURL)
+	if raw == "" {
+		details["sso.discoveryUrl"] = "This field is required"
+	} else if u, err := url.ParseRequestURI(raw); err != nil || u.Scheme == "" || u.Host == "" {
+		details["sso.discoveryUrl"] = "Must be a valid URL"
+	}
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		details["sso.clientId"] = "This field is required"
+	}
+	// First-configuration rule: there is no stored secret for the "leave
+	// unchanged" path to fall back on, so the plaintext secret is mandatory
+	// at creation (same rule ApplyConfigMutation enforces server-side).
+	if cfg.ClientSecret == "" {
+		details["sso.clientSecret"] = "This field is required"
+	}
+	for group, role := range cfg.GroupRoleMapping {
+		if role != types.OrgRoleAdmin && role != types.OrgRoleMember {
+			details["sso.groupRoleMapping"] = fmt.Sprintf("Invalid role %q for group %q (allowed: admin, member)", role, group)
+			break
+		}
+	}
+	return details
+}
+
+// rollbackOrgCreation undoes CreateOrgWithAdmin after a later step in the
+// creation flow failed (Option B: an org must not survive without its SSO
+// config). Best-effort — deliberately NOT transactional across the two
+// stores (orchestrator ruling on #1679): the membership row is removed first
+// so the owner is not blocked from a future creation by the single-org
+// unique index (GetUserOrgID does not filter soft-deleted orgs), then the
+// org row is soft-deleted. A rollback failure means an ORPHAN org in the
+// unsupported no-SSO state: that is logged at alert grade (Error) so
+// operators can remediate (configure SSO on the org or delete it); it is
+// never swallowed silently when a logger is wired.
+func (h *OrgsHandler) rollbackOrgCreation(ctx context.Context, orgID, ownerID string, cause error) {
+	if err := h.orgStore.RemoveOrgMember(ctx, orgID, ownerID); err != nil {
+		if h.logger != nil {
+			h.logger.Error("ORPHAN ORG: org-creation rollback could not remove the owner membership — manual cleanup required (the owner stays blocked from future orgs by the single-org index until the membership row is removed)",
+				err, "orgID", orgID, "ownerID", ownerID, "cause", cause.Error())
+		}
+	}
+	if err := h.orgStore.SoftDeleteOrg(ctx, orgID); err != nil {
+		if h.logger != nil {
+			h.logger.Error("ORPHAN ORG: org-creation rollback could not soft-delete the org — manual cleanup required (the org exists without its required SSO configuration)",
+				err, "orgID", orgID, "ownerID", ownerID, "cause", cause.Error())
+		}
 	}
 }
 

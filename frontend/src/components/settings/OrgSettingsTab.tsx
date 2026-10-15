@@ -48,8 +48,24 @@ function CreateOrgForm({
   const [slug, setSlug] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
   const [planId, setPlanId] = useState<OrgPlan>("enterprise");
+  // Option B (design 0065 §4): the org is born with its IdP — the initial
+  // OIDC config is part of the creation request, no second step. The section
+  // is progressively disclosed (collapsed until opened) per the orchestrator
+  // ruling; the header always shows configuration state so "required" is
+  // visible without expanding.
+  const [ssoOpen, setSsoOpen] = useState(false);
+  const [discoveryUrl, setDiscoveryUrl] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [claimedDomains, setClaimedDomains] = useState("");
+  const [autoProvision, setAutoProvision] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const ssoConfigured =
+    discoveryUrl.trim() !== "" &&
+    clientId.trim() !== "" &&
+    clientSecret.trim() !== "";
 
   const handleSubmit = async () => {
     setError("");
@@ -61,6 +77,21 @@ function CreateOrgForm({
       setError("Owner email is required");
       return;
     }
+    if (!discoveryUrl.trim()) {
+      setError("Discovery URL is required — the organisation needs its identity provider at creation");
+      setSsoOpen(true);
+      return;
+    }
+    if (!clientId.trim()) {
+      setError("Client ID is required — the organisation needs its identity provider at creation");
+      setSsoOpen(true);
+      return;
+    }
+    if (!clientSecret.trim()) {
+      setError("Client secret is required — it cannot be added later by another step");
+      setSsoOpen(true);
+      return;
+    }
     setLoading(true);
     try {
       const finalSlug = slug.trim() || slugify(name);
@@ -69,6 +100,17 @@ function CreateOrgForm({
         slug: finalSlug,
         ownerEmail: ownerEmail.trim(),
         planId,
+        sso: {
+          discoveryUrl: discoveryUrl.trim(),
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          claimedDomains: claimedDomains
+            .split(",")
+            .map((d) => d.trim())
+            .filter(Boolean),
+          autoProvision,
+          groupRoleMapping: {},
+        },
       });
       onCreated();
     } catch (e) {
@@ -80,8 +122,9 @@ function CreateOrgForm({
         setError("Only platform admins can create organisations");
       } else if (e instanceof ApiClientError && e.status === 400 && e.body.details) {
         // Surface per-field validation messages from the backend
-        // (e.g. bad slug, malformed email) instead of the opaque top-level
-        // "validation failed" string. Keys are JSON field names.
+        // (e.g. bad slug, malformed email, incomplete SSO block) instead of
+        // the opaque top-level "validation failed" string. Keys are JSON
+        // field names; nested SSO keys arrive dotted (sso.discoveryUrl).
         const details = e.body.details;
         const field = Object.keys(details)[0];
         if (field) {
@@ -90,8 +133,13 @@ function CreateOrgForm({
             slug: "Slug",
             name: "Name",
             ownerEmail: "Owner email",
+            "sso.discoveryUrl": "Discovery URL",
+            "sso.clientId": "Client ID",
+            "sso.clientSecret": "Client secret",
+            "sso.groupRoleMapping": "Group → role mapping",
           };
-          setError(`${labels[field] ?? field}: ${msg}`);
+          const label = labels[field] ?? field.replace(/^sso\./, "");
+          setError(`${label}: ${msg}`);
         } else {
           setError("Validation failed");
         }
@@ -106,6 +154,10 @@ function CreateOrgForm({
   return (
     <div className="rounded border border-border bg-background p-4 space-y-3">
       <p className="text-sm font-medium">New Organisation</p>
+      <p className="text-xs text-muted-foreground">
+        Every organisation requires OIDC single sign-on (design 0065 §4): the
+        identity provider is configured here, in the same step as creation.
+      </p>
       {error && <p className="text-xs text-red-500">{error}</p>}
       <div className="space-y-2">
         <input
@@ -144,6 +196,62 @@ function CreateOrgForm({
           <option value="business">Business</option>
           <option value="enterprise">Enterprise</option>
         </select>
+        <div className="rounded border border-border">
+          <button
+            type="button"
+            onClick={() => setSsoOpen((o) => !o)}
+            aria-expanded={ssoOpen}
+            className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left"
+          >
+            <span className="text-xs font-medium">
+              {ssoOpen ? "▾" : "▸"} Identity provider (OIDC) — required
+            </span>
+            <span className={`text-xs ${ssoConfigured ? "text-green-600" : "text-red-500"}`}>
+              {ssoConfigured ? "configured" : "not configured"}
+            </span>
+          </button>
+          {ssoOpen && (
+            <div className="space-y-2 border-t border-border p-2">
+              <input
+                type="url"
+                value={discoveryUrl}
+                onChange={(e) => setDiscoveryUrl(e.target.value)}
+                placeholder="Discovery URL (https://idp.example.com/.well-known/openid-configuration)"
+                className="h-8 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <input
+                type="text"
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                placeholder="Client ID"
+                className="h-8 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <input
+                type="password"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder="Client secret"
+                className="h-8 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                autoComplete="new-password"
+              />
+              <input
+                type="text"
+                value={claimedDomains}
+                onChange={(e) => setClaimedDomains(e.target.value)}
+                placeholder="Claimed domains (optional, comma-separated: acme.com, acme.io)"
+                className="h-8 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={autoProvision}
+                  onChange={(e) => setAutoProvision(e.target.checked)}
+                />
+                <span>Auto-provision new users on first SSO login</span>
+              </label>
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex gap-2">
         <Button size="sm" disabled={loading} onClick={handleSubmit}>

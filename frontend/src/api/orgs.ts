@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { UpsertSSOConfigRequest } from "./sso";
 import type { ProviderCredential } from "./providerCredentialTypes";
 import type { WorkspaceListItem } from "./types";
 
@@ -104,12 +105,22 @@ export interface InvitationDetail {
   expiresAt: string;
 }
 
+/**
+ * The org's initial OIDC configuration — REQUIRED at creation (design 0065
+ * §4, Option B): all orgs require OIDC, complete in the same request. Same
+ * shape as UpsertSSOConfigRequest except clientSecret is mandatory (at
+ * creation there is no stored secret for the "leave unchanged" path).
+ */
+export type InitialSSOConfig = UpsertSSOConfigRequest & { clientSecret: string };
+
 export interface CreateOrgRequest {
   name: string;
   slug: string;
   /** Owner's email; resolved to a user ID server-side (design 0031 D1). */
   ownerEmail: string;
   planId?: OrgPlan;
+  /** Required: the org is born with its IdP — no two-step bootstrap. */
+  sso: InitialSSOConfig;
 }
 
 export interface CreateInvitationsRequest {

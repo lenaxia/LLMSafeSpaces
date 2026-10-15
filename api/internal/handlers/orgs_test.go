@@ -41,6 +41,8 @@ type mockOrgStore struct {
 	auditEvents           []mockAuditEvent
 	auditErr              error
 	getMemberErr          error
+	removeMemberErr       error // Option B rollback-failure injection (#1679)
+	softDeleteErr         error // Option B rollback-failure injection (#1679)
 }
 
 type mockAuditEvent struct {
@@ -123,6 +125,9 @@ func (m *mockOrgStore) UpdateOrg(_ context.Context, orgID string, req types.Upda
 func (m *mockOrgStore) SoftDeleteOrg(_ context.Context, orgID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.softDeleteErr != nil {
+		return m.softDeleteErr
+	}
 	delete(m.orgs, orgID)
 	return nil
 }
@@ -180,6 +185,9 @@ func (m *mockOrgStore) AddOrgMember(_ context.Context, orgID, userID string, rol
 }
 
 func (m *mockOrgStore) RemoveOrgMember(_ context.Context, orgID, userID string) error {
+	if m.removeMemberErr != nil {
+		return m.removeMemberErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	members := m.members[orgID]
@@ -333,6 +341,9 @@ func setupOrgTestRouter(t *testing.T, store *mockOrgStore) (*gin.Engine, *OrgsHa
 	gin.SetMode(gin.TestMode)
 
 	handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+	// Option B (#1679): creation requires the SSO provisioner; wire the
+	// succeeding fake so Create-path tests exercise the real flow shape.
+	handler.SetSSOProvisioner(&fakeSSOProvisioner{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -744,6 +755,10 @@ type warnCaptureLogger struct {
 
 func (c *warnCaptureLogger) Warn(_ string, _ ...any) { c.warned = true }
 
+// Error satisfies the extended orgsLogger interface (rollback alerting,
+// #1679 r1); the audit test never triggers it.
+func (c *warnCaptureLogger) Error(_ string, _ error, _ ...any) {}
+
 // --- Create tests ---------------------------------------------------------
 
 // TestOrgsHandler_Create_HyphenatedSlug verifies that the slug validator
@@ -756,7 +771,7 @@ func TestOrgsHandler_Create_HyphenatedSlug(t *testing.T) {
 	store.usersByEmail["owner@example.com"] = "owner-1"
 	router, _ := setupOrgTestRouter(t, store)
 
-	body := `{"name":"My Org","slug":"my-org","ownerEmail":"owner@example.com","planId":"enterprise"}`
+	body := `{"name":"My Org","slug":"my-org","ownerEmail":"owner@example.com","planId":"enterprise","sso":{"discoveryUrl":"https://idp.example/.well-known/openid-configuration","clientId":"client-1","clientSecret":"secret-1"}}`
 	w := doRequest(router, "POST", "/api/v1/orgs", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -808,6 +823,13 @@ func TestOrgsHandler_Create_SlugValidation(t *testing.T) {
 				"slug":       tc.slug,
 				"ownerEmail": "owner@example.com",
 				"planId":     "enterprise",
+				// Option B (#1679): a complete SSO block so valid-slug arms
+				// reach 201 rather than the (correct) missing-SSO 400.
+				"sso": map[string]any{
+					"discoveryUrl": "https://idp.example/.well-known/openid-configuration",
+					"clientId":     "client-1",
+					"clientSecret": "secret-1",
+				},
 			})
 			w := doRequest(router, "POST", "/api/v1/orgs", string(b))
 

@@ -68,6 +68,36 @@ function renderTab() {
   );
 }
 
+/**
+ * Fills the create form with valid values, including the required OIDC
+ * fields (design 0065 §4 Option B — the org is born with its IdP). The SSO
+ * section is progressively disclosed: the helper opens it first. Pass
+ * skipSSO to leave the SSO fields empty (client-side gate tests).
+ */
+async function fillCreateForm(
+  user: ReturnType<typeof userEvent.setup>,
+  opts: { name?: string; ownerEmail?: string; skipSSO?: boolean } = {},
+) {
+  await user.type(
+    screen.getByPlaceholderText(/owner email/i),
+    opts.ownerEmail ?? "owner@example.com",
+  );
+  await user.type(
+    screen.getByPlaceholderText(/organisation name/i),
+    opts.name ?? "Acme",
+  );
+  if (!opts.skipSSO) {
+    // Progressive disclosure (#1679 r1): the OIDP section starts collapsed.
+    await user.click(screen.getByRole("button", { name: /identity provider/i }));
+    await user.type(
+      screen.getByPlaceholderText(/discovery url/i),
+      "https://idp.acme.example/.well-known/openid-configuration",
+    );
+    await user.type(screen.getByPlaceholderText(/^client id$/i), "acme-idp-client");
+    await user.type(screen.getByPlaceholderText(/^client secret$/i), "idp-secret-1");
+  }
+}
+
 describe("OrgSettingsTab", () => {
   beforeEach(() => {
     mockListOrgs.mockReset();
@@ -185,7 +215,7 @@ describe("OrgSettingsTab", () => {
     await waitFor(() => expect(mockUnsuspendOrg).toHaveBeenCalledWith("org-2"));
   });
 
-  it("opens the create form and posts owner email + plan", async () => {
+  it("opens the create form and posts owner email, plan and the required SSO block", async () => {
     mockListOrgs.mockResolvedValue(listResponse([]));
     mockCreate.mockResolvedValue({});
     const user = userEvent.setup();
@@ -194,14 +224,10 @@ describe("OrgSettingsTab", () => {
       expect(screen.getByText("New Organisation")).toBeInTheDocument(),
     );
     await user.click(screen.getByText("New Organisation"));
-    await user.type(
-      screen.getByPlaceholderText(/owner email/i),
-      "owner@example.com",
-    );
-    await user.type(
-      screen.getByPlaceholderText(/organisation name/i),
-      "Acme",
-    );
+    await fillCreateForm(user);
+    // Progressive disclosure (#1679 r1): with all required IdP fields filled,
+    // the section header reports "configured" — visible even when collapsed.
+    expect(screen.getByText("configured")).toBeInTheDocument();
     await user.click(screen.getByText("Create"));
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     const req = mockCreate.mock.calls[0]![0] as {
@@ -209,11 +235,64 @@ describe("OrgSettingsTab", () => {
       slug: string;
       ownerEmail: string;
       planId: string;
+      sso: {
+        discoveryUrl: string;
+        clientId: string;
+        clientSecret: string;
+        claimedDomains: string[];
+        autoProvision: boolean;
+      };
     };
     expect(req.ownerEmail).toBe("owner@example.com");
     expect(req.name).toBe("Acme");
     expect(req.slug).toBeTruthy();
     expect(req.planId).toBe("enterprise");
+    // Option B (#1679): the initial SSO config rides the creation request.
+    expect(req.sso.discoveryUrl).toBe("https://idp.acme.example/.well-known/openid-configuration");
+    expect(req.sso.clientId).toBe("acme-idp-client");
+    expect(req.sso.clientSecret).toBe("idp-secret-1");
+    expect(req.sso.autoProvision).toBe(true);
+    expect(req.sso.claimedDomains).toEqual([]);
+  });
+
+  it("blocks submit until the required OIDC fields are filled (Option B, #1679)", async () => {
+    mockListOrgs.mockResolvedValue(listResponse([]));
+    const user = userEvent.setup();
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("New Organisation")).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText("New Organisation"));
+    // Name + owner filled; SSO section still collapsed and unconfigured.
+    await fillCreateForm(user, { skipSSO: true });
+    expect(screen.getByText("not configured")).toBeInTheDocument();
+    await user.click(screen.getByText("Create"));
+    await waitFor(() =>
+      expect(screen.getByText(/discovery URL is required/i)).toBeInTheDocument(),
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+    // The failed gate auto-opens the collapsed SSO section (progressive
+    // disclosure must not hide the required work).
+    expect(screen.getByPlaceholderText(/discovery url/i)).toBeInTheDocument();
+
+    // Fill discovery but leave clientId + secret empty: still blocked (clientId).
+    await user.type(
+      screen.getByPlaceholderText(/discovery url/i),
+      "https://idp.acme.example/.well-known/openid-configuration",
+    );
+    await user.click(screen.getByText("Create"));
+    await waitFor(() =>
+      expect(screen.getByText(/client ID is required/i)).toBeInTheDocument(),
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    // Fill clientId too, secret still empty: still blocked (clientSecret).
+    await user.type(screen.getByPlaceholderText(/^client id$/i), "acme-idp-client");
+    await user.click(screen.getByText("Create"));
+    await waitFor(() =>
+      expect(screen.getByText(/client secret is required/i)).toBeInTheDocument(),
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   // slugify() must produce slugs that the backend's "slug" validator accepts:
@@ -229,14 +308,7 @@ describe("OrgSettingsTab", () => {
       expect(screen.getByText("New Organisation")).toBeInTheDocument(),
     );
     await user.click(screen.getByText("New Organisation"));
-    await user.type(
-      screen.getByPlaceholderText(/owner email/i),
-      "owner@example.com",
-    );
-    await user.type(
-      screen.getByPlaceholderText(/organisation name/i),
-      "My - Org",
-    );
+    await fillCreateForm(user, { name: "My - Org" });
     await user.click(screen.getByText("Create"));
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     const req = mockCreate.mock.calls[0]![0] as { slug: string };
@@ -256,14 +328,7 @@ describe("OrgSettingsTab", () => {
       expect(screen.getByText("New Organisation")).toBeInTheDocument(),
     );
     await user.click(screen.getByText("New Organisation"));
-    await user.type(
-      screen.getByPlaceholderText(/owner email/i),
-      "nobody@example.com",
-    );
-    await user.type(
-      screen.getByPlaceholderText(/organisation name/i),
-      "Acme",
-    );
+    await fillCreateForm(user, { ownerEmail: "nobody@example.com" });
     await user.click(screen.getByText("Create"));
     await waitFor(() =>
       expect(screen.getByText(/no user found with that owner email/i)).toBeInTheDocument(),
@@ -300,17 +365,34 @@ describe("OrgSettingsTab", () => {
       expect(screen.getByText("New Organisation")).toBeInTheDocument(),
     );
     await user.click(screen.getByText("New Organisation"));
-    await user.type(
-      screen.getByPlaceholderText(/owner email/i),
-      "owner@example.com",
-    );
-    await user.type(
-      screen.getByPlaceholderText(/organisation name/i),
-      "Acme",
-    );
+    await fillCreateForm(user);
     await user.click(screen.getByText("Create"));
     await waitFor(() =>
       expect(screen.getByText(/^Slug:.*letters, digits/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("labels nested sso.* backend validation details with friendly names (#1679)", async () => {
+    mockListOrgs.mockResolvedValue(listResponse([]));
+    const { ApiClientError } = await import("../../api/client");
+    mockCreate.mockRejectedValue(
+      new ApiClientError(400, {
+        error: "validation failed",
+        details: {
+          "sso.discoveryUrl": "Must be a valid URL",
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("New Organisation")).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText("New Organisation"));
+    await fillCreateForm(user);
+    await user.click(screen.getByText("Create"));
+    await waitFor(() =>
+      expect(screen.getByText(/^Discovery URL: Must be a valid URL/i)).toBeInTheDocument(),
     );
   });
 });

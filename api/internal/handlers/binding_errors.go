@@ -55,7 +55,7 @@ func bindingErrorResponse(err error, model any) map[string]any {
 
 	details := make(map[string]any, len(verrs))
 	for _, ve := range verrs {
-		key := jsonFieldName(modelType, ve.StructField())
+		key := jsonFieldPath(modelType, ve)
 		details[key] = bindingErrorMessage(ve)
 	}
 
@@ -63,6 +63,47 @@ func bindingErrorResponse(err error, model any) map[string]any {
 		"error":   "validation failed",
 		"details": details,
 	}
+}
+
+// jsonFieldPath returns the dotted JSON path for a validator field error,
+// walking the error's struct namespace so NESTED field failures surface with
+// client-highlightable keys (e.g. CreateOrgRequest.SSO.DiscoveryURL →
+// "sso.discoveryUrl") instead of the bare Go field name ("DiscoveryURL").
+// For top-level fields the path is the plain JSON tag name — identical to
+// the previous jsonFieldName behavior. Degrades to the raw field name when
+// the namespace cannot be walked against the model type.
+func jsonFieldPath(modelType reflect.Type, ve validator.FieldError) string {
+	ns := ve.StructNamespace() // e.g. "CreateOrgRequest.SSO.DiscoveryURL"
+	parts := strings.Split(ns, ".")
+	if modelType == nil || modelType.Kind() != reflect.Struct || len(parts) < 2 || parts[0] != modelType.Name() {
+		return jsonFieldName(modelType, ve.StructField())
+	}
+	out := make([]string, 0, len(parts)-1)
+	t := modelType
+	for _, seg := range parts[1:] {
+		for t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct {
+			return ve.StructField()
+		}
+		field, ok := t.FieldByName(seg)
+		if !ok {
+			return ve.StructField()
+		}
+		name := field.Name
+		if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
+			if comma := strings.Index(tag, ","); comma >= 0 {
+				tag = tag[:comma]
+			}
+			if tag != "" {
+				name = tag
+			}
+		}
+		out = append(out, name)
+		t = field.Type
+	}
+	return strings.Join(out, ".")
 }
 
 // jsonFieldName returns the JSON tag name for a struct field, falling back to

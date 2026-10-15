@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — org provisioning (BREAKING)
+
+- **All orgs require OIDC; org creation requires the complete SSO
+  configuration in the same request** (#1679, design 0065 §4 Option B —
+  owner ruling: "All orgs require OIDC. We don't support anything else.").
+  **BREAKING CHANGE** for API consumers: `POST /api/v1/orgs` now REQUIRES an
+  `sso` object in the request body — `discoveryUrl`, `clientId` and
+  `clientSecret` are mandatory (the first-configuration rule: there is no
+  stored secret to leave unchanged); `claimedDomains`, `autoProvision` and
+  `groupRoleMapping` are optional. Every previously-valid request body is
+  now rejected with 400 (`sso.<field>` detail keys, zero side effects)
+  until it carries the block; the config is persisted in the same request,
+  a failed persistence rolls the creation back (a failed rollback logs an
+  ORPHAN ORG alert for operator cleanup), and a deployment whose SSO
+  service is not wired refuses creation with 503 instead of producing a
+  no-SSO org. Consumers beyond the UI: the hand-written SDKs
+  (sdks/{typescript,python,go,java}) do NOT model this endpoint (audited —
+  their only `createOrg`-named methods are agent-role helpers on
+  `/orgs/{id}/agent-roles`); the canonical contract is `sdks/openapi.yaml`,
+  updated in lockstep (`CreateOrgRequest.sso`, new `InitialOrgSsoConfig`
+  schema, 503 response). The platform-admin creation UI collects the IdP
+  fields inline in the same step.
 
 ## [0.37.0] - 2026-10-11
 

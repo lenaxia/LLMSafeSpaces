@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -17,10 +18,61 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
+// ssoJSONBlock is a complete, valid initial SSO configuration (Option B,
+// design 0065 §4 / #1679) spliced into create payloads. Complete = valid
+// discoveryUrl + clientId + clientSecret (the first-config rule: no stored
+// secret exists to fall back on).
+const ssoJSONBlock = `"sso":{"discoveryUrl":"https://idp.acme.example/.well-known/openid-configuration","clientId":"acme-idp-client","clientSecret":"idp-secret-1","claimedDomains":["acme.example"]}`
+
+// withSSO splices the complete SSO block into a flat JSON object body.
+func withSSO(body string) string {
+	return strings.Replace(body, "}", ", "+ssoJSONBlock+"}", 1)
+}
+
+// fakeSSOProvisioner records ApplyConfigMutation calls so tests can assert
+// the initial SSO config is persisted in the same step as org creation
+// (Option B, #1679). err, when set, is returned to simulate persistence
+// failure (the handler must roll the creation back).
+type fakeSSOProvisioner struct {
+	mu    sync.Mutex
+	calls []fakeSSOProvisionCall
+	err   error
+}
+
+type fakeSSOProvisionCall struct {
+	OrgID string
+	Req   types.UpsertSSOConfigRequest
+}
+
+func (f *fakeSSOProvisioner) ApplyConfigMutation(_ context.Context, orgID string, req types.UpsertSSOConfigRequest, _ []byte, _ []string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeSSOProvisionCall{OrgID: orgID, Req: req})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []byte("encrypted-secret"), nil
+}
+
+func (f *fakeSSOProvisioner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // setupAdminCreateRouter builds a router that sets the given userID + role in
 // the gin context (mimicking AuthMiddleware) and mounts only the POST /orgs
-// route. The billing provider is wired so tests can assert it is never called.
+// route. The billing provider is wired so tests can assert it is never called,
+// and a succeeding fake SSO provisioner is wired by default (Option B, #1679).
 func setupAdminCreateRouter(t *testing.T, store *mockOrgStore, isPlatformAdmin bool, billing OrgBilling) (*gin.Engine, *fakeOrgBilling) {
+	t.Helper()
+	return setupAdminCreateRouterWithSSO(t, store, isPlatformAdmin, billing, &fakeSSOProvisioner{})
+}
+
+// setupAdminCreateRouterWithSSO is setupAdminCreateRouter with an injectable
+// SSO provisioner: pass nil to simulate a deployment where the SSO service is
+// not wired (creation must refuse with 503, not create a no-SSO org).
+func setupAdminCreateRouterWithSSO(t *testing.T, store *mockOrgStore, isPlatformAdmin bool, billing OrgBilling, prov orgSSOProvisioner) (*gin.Engine, *fakeOrgBilling) {
 	t.Helper()
 	if billing == nil {
 		billing = &fakeOrgBilling{}
@@ -31,6 +83,9 @@ func setupAdminCreateRouter(t *testing.T, store *mockOrgStore, isPlatformAdmin b
 	}
 	handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
 	handler.SetBilling(fb, "https://app/success", "https://app/cancel", "https://app/portal")
+	if prov != nil {
+		handler.SetSSOProvisioner(prov)
+	}
 
 	r := newAdminTestRouter(isPlatformAdmin)
 	r.POST("/api/v1/orgs", handler.Create)
@@ -69,7 +124,7 @@ func TestCreateOrg_Admin_KnownEmail_CreatesActiveOrgWithResolvedOwner(t *testing
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com","planId":"enterprise"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com","planId":"enterprise"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -114,37 +169,334 @@ func TestCreateOrg_Admin_KnownEmail_CreatesActiveOrgWithResolvedOwner(t *testing
 	}
 }
 
-// TestCreateOrg_NoSSORequirementGapPin documents the enforcement gap the
-// owner's 0065 §4 ruling exposes (design
-// 0065_2026-10-11_org-provisioning-policy-ruling.md §4: "All orgs require
-// OIDC. We don't support anything else."). Today org creation —
-// platform-admin-only — requires NO SSO configuration, and a created org is
-// immediately active and usable via invitations/password members. This pin
-// locks the CURRENT behavior so any future enforcement of the ruling
-// (creation gating on an initial SSO config, or a not-usable-until-SSO
-// state) must deliberately flip this test. It is a gap PIN, not an
-// endorsement: the ruling makes no-SSO orgs an unsupported state, and the
-// enforcement mechanism is an open follow-up (bootstrap chicken-and-egg:
-// the first owner must be a password user, since SSO users are provisioned
-// by the org's own IdP — which can only be configured after the org exists).
-func TestCreateOrg_NoSSORequirementGapPin(t *testing.T) {
+// TestCreateOrg_RequiresSSOConfigAtCreation enforces the owner's 0065 §4
+// ruling (Option B, issue #1679): "All orgs require OIDC. We don't support
+// anything else." Org creation (POST /api/v1/orgs, platform-admin only)
+// must reject any request that does not carry a COMPLETE initial SSO
+// configuration in the same step — no two-step bootstrap, no waiting state.
+// A request without an `sso` block gets a 400 and produces zero side
+// effects: no org row, no membership row.
+//
+// This is the deliberately-flipped successor of
+// TestCreateOrg_NoSSORequirementGapPin, which documented the pre-enforcement
+// gap (creation succeeded with no SSO config anywhere and the org came up
+// immediately active). The pin flipped when #1679 implemented Option B; the
+// flip is recorded here so the history is citable.
+func TestCreateOrg_RequiresSSOConfigAtCreation(t *testing.T) {
 	store := newMockOrgStore()
 	store.usersByEmail["owner@example.com"] = "owner-1"
-	// No SSO config seeded anywhere — the store has none.
 
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
 		`{"name":"Acme","slug":"acme-nosso","ownerEmail":"owner@example.com"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("contract (design 0065 §4, Option B): org creation without an SSO config must be rejected; expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if store.orgsLen() != 0 {
+		t.Errorf("no org may be created without a complete SSO config; store has %d orgs", store.orgsLen())
+	}
+	if store.membersLen() != 0 {
+		t.Errorf("no org membership may be created without a complete SSO config; store has %d membership rows", store.membersLen())
+	}
+}
+
+// TestCreateOrg_WithCompleteSSO_PersistsConfigInSameStep pins the Option B
+// happy path (#1679, design 0065 §4): a creation request carrying a complete
+// SSO block creates the org AND provisions its initial OIDC config in the
+// same request — the provisioner is called exactly once, with the new org's
+// ID and the request's SSO payload verbatim. No second step exists.
+func TestCreateOrg_WithCompleteSSO_PersistsConfigInSameStep(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	prov := &fakeSSOProvisioner{}
+	router, _ := setupAdminCreateRouterWithSSO(t, store, true, nil, prov)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		`{"name":"Acme","slug":"acme-withsso","ownerEmail":"owner@example.com","planId":"enterprise","sso":{"discoveryUrl":"https://idp.acme.example/.well-known/openid-configuration","clientId":"acme-idp-client","clientSecret":"idp-secret-1","claimedDomains":["acme.example"," acme.io "],"autoProvision":false,"groupRoleMapping":{"admins":"admin"}}}`)
 	if w.Code != http.StatusCreated {
-		t.Fatalf("current behavior: org creation succeeds with no SSO config (gap pin — see design 0065 §4 ruling follow-up); expected 201, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 201 with complete SSO config, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp types.CreateOrgResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if resp.Status != types.OrgStatusActive {
-		t.Errorf("current behavior: org is active without SSO (gap pin); got status=%q", resp.Status)
+		t.Errorf("expected status=active, got %q", resp.Status)
+	}
+
+	if prov.callCount() != 1 {
+		t.Fatalf("provisioner must be called exactly once (same-step SSO), got %d calls", prov.callCount())
+	}
+	call := prov.calls[0]
+	if call.OrgID != resp.ID {
+		t.Errorf("provisioner must receive the NEW org's ID: call orgID=%q, created org ID=%q", call.OrgID, resp.ID)
+	}
+	if call.Req.DiscoveryURL != "https://idp.acme.example/.well-known/openid-configuration" {
+		t.Errorf("discoveryUrl not passed through verbatim: %q", call.Req.DiscoveryURL)
+	}
+	if call.Req.ClientID != "acme-idp-client" {
+		t.Errorf("clientId not passed through verbatim: %q", call.Req.ClientID)
+	}
+	if call.Req.ClientSecret != "idp-secret-1" {
+		t.Errorf("clientSecret not passed through verbatim: %q", call.Req.ClientSecret)
+	}
+	if call.Req.AutoProvision == nil || *call.Req.AutoProvision {
+		t.Errorf("autoProvision=false must be passed through (ApplyConfigMutation defaults to true when nil)")
+	}
+	if len(call.Req.GroupRoleMapping) != 1 || call.Req.GroupRoleMapping["admins"] != types.OrgRoleAdmin {
+		t.Errorf("groupRoleMapping not passed through: %v", call.Req.GroupRoleMapping)
+	}
+	// Domain normalization happens inside ApplyConfigMutation (NormalizeDomains);
+	// the handler passes the raw list through.
+	if len(call.Req.ClaimedDomains) != 2 {
+		t.Errorf("claimedDomains not passed through verbatim: %v", call.Req.ClaimedDomains)
+	}
+}
+
+// TestCreateOrg_IncompleteSSO_Rejected400NoSideEffects pins the completeness
+// gate: an SSO block that is present but incomplete/malformed is a 400 with
+// `sso.<field>` detail keys, BEFORE any store call — no org row, no
+// membership row, provisioner never invoked. This is the mutation-check
+// surface for the Option B gate: weakening validateInitialSSOConfig (or
+// removing the gate) makes these arms (and the flipped pin above) fail.
+func TestCreateOrg_IncompleteSSO_Rejected400NoSideEffects(t *testing.T) {
+	cases := []struct {
+		name       string
+		sso        string
+		wantDetail string
+	}{
+		{"missing discoveryUrl", `"sso":{"clientId":"c","clientSecret":"s"}`, "sso.discoveryUrl"},
+		{"malformed discoveryUrl", `"sso":{"discoveryUrl":"not-a-url","clientId":"c","clientSecret":"s"}`, "sso.discoveryUrl"},
+		{"missing clientId", `"sso":{"discoveryUrl":"https://idp.example/.well-known/openid-configuration","clientSecret":"s"}`, "sso.clientId"},
+		{"missing clientSecret", `"sso":{"discoveryUrl":"https://idp.example/.well-known/openid-configuration","clientId":"c"}`, "sso.clientSecret"},
+		{"invalid group role mapping", `"sso":{"discoveryUrl":"https://idp.example/.well-known/openid-configuration","clientId":"c","clientSecret":"s","groupRoleMapping":{"devs":"owner"}}`, "sso.groupRoleMapping"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockOrgStore()
+			store.usersByEmail["owner@example.com"] = "owner-1"
+			prov := &fakeSSOProvisioner{}
+			router, _ := setupAdminCreateRouterWithSSO(t, store, true, nil, prov)
+
+			w := doRequest(router, "POST", "/api/v1/orgs",
+				`{"name":"Acme","slug":"acme-bad","ownerEmail":"owner@example.com",`+tc.sso+`}`)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Error   string            `json:"error"`
+				Details map[string]string `json:"details"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, ok := body.Details[tc.wantDetail]; !ok {
+				t.Errorf("expected details key %q, got details=%v", tc.wantDetail, body.Details)
+			}
+			if store.orgsLen() != 0 || store.membersLen() != 0 {
+				t.Errorf("rejected request must leave zero side effects; orgs=%d members=%d", store.orgsLen(), store.membersLen())
+			}
+			if prov.callCount() != 0 {
+				t.Errorf("provisioner must not be called for an invalid payload; called %d times", prov.callCount())
+			}
+		})
+	}
+}
+
+// TestCreateOrg_SSOPersistFails_RollsBackOrgCreation pins the no-orphan
+// invariant: when the SSO config cannot be persisted after the org row (and
+// owner membership) exist, the creation is rolled back — membership removed
+// (so the owner is not blocked by the single-org unique index), org
+// soft-deleted — and the client gets a 500. No org survives without its SSO
+// config.
+func TestCreateOrg_SSOPersistFails_RollsBackOrgCreation(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	prov := &fakeSSOProvisioner{err: errors.New("persist sso config: connection refused")}
+	router, _ := setupAdminCreateRouterWithSSO(t, store, true, nil, prov)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		withSSO(`{"name":"Acme","slug":"acme-roll","ownerEmail":"owner@example.com"}`))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on SSO persist failure, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not created") {
+		t.Errorf("error should state the org was not created, got: %s", w.Body.String())
+	}
+	if store.orgsLen() != 0 {
+		t.Errorf("org row must be rolled back on SSO persist failure; %d orgs remain", store.orgsLen())
+	}
+	if store.membersLen() != 0 {
+		t.Errorf("membership row must be rolled back on SSO persist failure; %d memberships remain", store.membersLen())
+	}
+	if prov.callCount() != 1 {
+		t.Errorf("provisioner should have been attempted exactly once, got %d", prov.callCount())
+	}
+}
+
+// TestCreateOrg_SSOPersistFails_ServerKeyMissing_503: the specific
+// deployment-level failure (server KEK not configured) maps to 503 like the
+// SSO handler's own mutation path, with the same rollback.
+func TestCreateOrg_SSOPersistFails_ServerKeyMissing_503(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	prov := &fakeSSOProvisioner{err: errors.New("server key not configured")}
+	router, _ := setupAdminCreateRouterWithSSO(t, store, true, nil, prov)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		withSSO(`{"name":"Acme","slug":"acme-nokey","ownerEmail":"owner@example.com"}`))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the server key is not configured, got %d: %s", w.Code, w.Body.String())
+	}
+	if store.orgsLen() != 0 || store.membersLen() != 0 {
+		t.Errorf("503 must also roll back; orgs=%d members=%d", store.orgsLen(), store.membersLen())
+	}
+}
+
+// alertCaptureLogger records Error-level emissions so tests can PIN the
+// alert-grade rollback-failure logs (orchestrator ruling on #1679: rollback
+// is best-effort and deliberately not transactional — when it fails, the
+// orphan org must be logged loudly, never silently swallowed).
+type alertCaptureLogger struct {
+	mu     sync.Mutex
+	errors []string
+}
+
+func (l *alertCaptureLogger) Warn(_ string, _ ...any) {}
+
+func (l *alertCaptureLogger) Error(msg string, _ error, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errors = append(l.errors, msg)
+}
+
+func (l *alertCaptureLogger) errorCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.errors)
+}
+
+// TestCreateOrg_RollbackItselfFails_LogsAlertGrade pins the orphan-org
+// observability contract: when the SSO persist fails AND the best-effort
+// rollback ALSO fails, the request still reports the creation error (500),
+// but the orphan must surface at Error level with the identifiers operators
+// need (orgID, ownerID, cause) — the exact scenario the orchestrator's r1
+// addition guards. Not transactional by ruling; loud by requirement.
+func TestCreateOrg_RollbackItselfFails_LogsAlertGrade(t *testing.T) {
+	cases := []struct {
+		name           string
+		inject         func(*mockOrgStore)
+		wantOrphanOrgs int
+		wantLogMsg     string
+	}{
+		{
+			name:   "membership removal fails (owner stays blocked by D8 index)",
+			inject: func(s *mockOrgStore) { s.removeMemberErr = errors.New("membership delete failed") },
+			// SoftDeleteOrg still succeeds → org row is gone; the orphan is
+			// the membership row (invisible to orgsLen, counted below).
+			wantOrphanOrgs: 0,
+			wantLogMsg:     "could not remove the owner membership",
+		},
+		{
+			name:           "org soft-delete fails (no-SSO org row survives)",
+			inject:         func(s *mockOrgStore) { s.softDeleteErr = errors.New("soft delete failed") },
+			wantOrphanOrgs: 1,
+			wantLogMsg:     "could not soft-delete the org",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockOrgStore()
+			store.usersByEmail["owner@example.com"] = "owner-1"
+			tc.inject(store)
+
+			prov := &fakeSSOProvisioner{err: errors.New("persist sso config: connection refused")}
+			handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+			handler.SetSSOProvisioner(prov)
+			alerts := &alertCaptureLogger{}
+			handler.SetLogger(alerts)
+			router := newAdminTestRouter(true)
+			router.POST("/api/v1/orgs", handler.Create)
+
+			w := doRequest(router, "POST", "/api/v1/orgs",
+				withSSO(`{"name":"Acme","slug":"acme-orphan","ownerEmail":"owner@example.com"}`))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 (the creation error still surfaces), got %d: %s", w.Code, w.Body.String())
+			}
+			if alerts.errorCount() == 0 {
+				t.Fatal("rollback failure MUST emit an Error-level (alert-grade) log — silent orphan violates the #1679 ruling")
+			}
+			found := false
+			alerts.mu.Lock()
+			for _, m := range alerts.errors {
+				if strings.Contains(m, tc.wantLogMsg) {
+					found = true
+				}
+			}
+			alerts.mu.Unlock()
+			if !found {
+				t.Errorf("expected an alert containing %q, got %v", tc.wantLogMsg, alerts.errors)
+			}
+			if got := store.orgsLen(); got != tc.wantOrphanOrgs {
+				t.Errorf("orphan-org bookkeeping: expected %d surviving org rows for this arm, got %d", tc.wantOrphanOrgs, got)
+			}
+		})
+	}
+}
+
+// TestCreateOrg_RollbackSucceeds_NoAlertLog pins the quiet side of the same
+// contract: a SUCCESSFUL rollback (the common case) emits no Error-level
+// noise — alert-grade logging is reserved for operator action, so a noisy
+// alert stream would hide the real orphans.
+func TestCreateOrg_RollbackSucceeds_NoAlertLog(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	prov := &fakeSSOProvisioner{err: errors.New("persist sso config: connection refused")}
+	handler := NewOrgsHandler(store, &mockOrgAuthService{userID: "admin-1"})
+	handler.SetSSOProvisioner(prov)
+	alerts := &alertCaptureLogger{}
+	handler.SetLogger(alerts)
+	router := newAdminTestRouter(true)
+	router.POST("/api/v1/orgs", handler.Create)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		withSSO(`{"name":"Acme","slug":"acme-cleanrb","ownerEmail":"owner@example.com"}`))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if alerts.errorCount() != 0 {
+		t.Errorf("successful rollback must not log at Error level; got %d alerts: %v", alerts.errorCount(), alerts.errors)
+	}
+	if store.orgsLen() != 0 || store.membersLen() != 0 {
+		t.Errorf("rollback must clean up; orgs=%d members=%d", store.orgsLen(), store.membersLen())
+	}
+}
+
+// TestCreateOrg_SSOProvisionerUnwired_Returns503 pins the deployment-shape
+// gate: a handler with NO SSO provisioner wired (SSO service unavailable —
+// e.g. state-signing key derivation failed at boot) refuses creation with
+// 503 rather than creating an org in the unsupported no-SSO state.
+func TestCreateOrg_SSOProvisionerUnwired_Returns503(t *testing.T) {
+	store := newMockOrgStore()
+	store.usersByEmail["owner@example.com"] = "owner-1"
+
+	router, billing := setupAdminCreateRouterWithSSO(t, store, true, nil, nil)
+
+	w := doRequest(router, "POST", "/api/v1/orgs",
+		withSSO(`{"name":"Acme","slug":"acme-unwired","ownerEmail":"owner@example.com"}`))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when the SSO provisioner is not wired, got %d: %s", w.Code, w.Body.String())
+	}
+	if store.orgsLen() != 0 || store.membersLen() != 0 {
+		t.Errorf("no org may be created without the provisioner; orgs=%d members=%d", store.orgsLen(), store.membersLen())
+	}
+	if billing.checkoutCalls != 0 {
+		t.Errorf("billing must not be invoked")
 	}
 }
 
@@ -155,7 +507,7 @@ func TestCreateOrg_Admin_DefaultPlanIsEnterprise(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acmedefault","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acmedefault","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -175,7 +527,7 @@ func TestCreateOrg_Admin_SelfEmail_OwnerEqualsCreator(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"My Org","slug":"myorg","ownerEmail":"admin-1@example.com"}`)
+		withSSO(`{"name":"My Org","slug":"myorg","ownerEmail":"admin-1@example.com"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -213,7 +565,7 @@ func TestCreateOrg_Admin_OwnerEmailNormalizedBeforeLookup(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acmenorm","ownerEmail":"Owner@Example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acmenorm","ownerEmail":"Owner@Example.com"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for mixed-case email, got %d: %s",
 			w.Code, w.Body.String())
@@ -241,6 +593,8 @@ func TestCreateOrg_NonAdmin_Returns403(t *testing.T) {
 
 	router, billing := setupAdminCreateRouter(t, store, false, nil)
 
+	// Payload intentionally has NO sso block: the platform-admin guard fires
+	// before Option B SSO validation, so this also pins guard precedence.
 	w := doRequest(router, "POST", "/api/v1/orgs",
 		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
 	if w.Code != http.StatusForbidden {
@@ -265,7 +619,7 @@ func TestCreateOrg_Admin_UnknownEmail_Returns404(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"nobody@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"nobody@example.com"}`))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown owner email, got %d: %s", w.Code, w.Body.String())
 	}
@@ -304,7 +658,7 @@ func TestCreateOrg_Admin_DuplicateSlug_Returns409(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected 409 for duplicate slug, got %d: %s", w.Code, w.Body.String())
 	}
@@ -317,7 +671,7 @@ func TestCreateOrg_Admin_LookupError_Returns500(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 on lookup failure, got %d: %s", w.Code, w.Body.String())
 	}
@@ -332,7 +686,7 @@ func TestCreateOrg_Admin_SlugLowercased(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"AcMeCo","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"AcMeCo","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -357,6 +711,18 @@ func (m *mockOrgStore) orgsLen() int {
 	return len(m.orgs)
 }
 
+// membersLen counts total membership rows across orgs (the rollback/no-side-
+// effect assertions care that NO row survives, not which org it belonged to).
+func (m *mockOrgStore) membersLen() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, ms := range m.members {
+		n += len(ms)
+	}
+	return n
+}
+
 // --- Single-org enforcement (D8): Create path must pre-check the owner ---
 
 // A platform admin creating an org for an owner who is already in another org
@@ -372,7 +738,7 @@ func TestCreateOrg_Admin_OwnerAlreadyInAnotherOrg_Conflict(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
@@ -392,7 +758,7 @@ func TestCreateOrg_Admin_GetUserOrgIDError_500(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 on GetUserOrgID error, got %d: %s", w.Code, w.Body.String())
 	}
@@ -400,9 +766,12 @@ func TestCreateOrg_Admin_GetUserOrgIDError_500(t *testing.T) {
 
 // --- Error-path branches in Create (reviewer round 1) ---
 
-// CreateOrgWithAdmin succeeds but UpdateOrgStatus fails → 500. The org is left
-// pending_activation with no billing customer. This documents the partial-state
-// behavior (a separate cleanup concern tracked outside Story 2).
+// CreateOrgWithAdmin succeeds, the initial SSO config is persisted (Option B,
+// #1679), but UpdateOrgStatus fails → 500. The org is left pending_activation
+// WITH its SSO config (the no-SSO-org invariant is unaffected — the org has
+// OIDC; only billing activation failed). This documents the partial-state
+// behavior for the status leg (a separate cleanup concern tracked outside
+// Story 2; the pending-org cleaner reaps stale pending orgs).
 func TestCreateOrg_Admin_UpdateOrgStatusFails_Returns500(t *testing.T) {
 	store := newMockOrgStore()
 	store.usersByEmail["owner@example.com"] = "owner-1"
@@ -411,7 +780,7 @@ func TestCreateOrg_Admin_UpdateOrgStatusFails_Returns500(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 when UpdateOrgStatus fails, got %d: %s", w.Code, w.Body.String())
 	}
@@ -438,7 +807,7 @@ func TestCreateOrg_Admin_CreateOrgGenericError_Returns500(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 on generic create error, got %d: %s", w.Code, w.Body.String())
 	}
@@ -458,7 +827,7 @@ func TestCreateOrg_Admin_CreateOrgDuplicateTOCTOU_Returns409(t *testing.T) {
 	router, _ := setupAdminCreateRouter(t, store, true, nil)
 
 	w := doRequest(router, "POST", "/api/v1/orgs",
-		`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`)
+		withSSO(`{"name":"Acme","slug":"acme","ownerEmail":"owner@example.com"}`))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 on TOCTOU duplicate insert, got %d: %s", w.Code, w.Body.String())
 	}
