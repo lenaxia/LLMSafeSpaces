@@ -93,4 +93,4 @@ None. Review round 1 also documented two validated residual lost-IDLE corners (t
 - `frontend/src/lib/sseConnection.test.ts`, `frontend/src/hooks/useUserEventStream.test.tsx` — factory coverage
 - `frontend/tests/e2e/live-update-1687.spec.ts` — new e2e (3 workflows)
 - `frontend/src/pages/ChatPage.*.test.tsx` — `useClearSessionBusy` mock stubs; `hookcount` 75; `contractIdleBridge` compile-only `?.` fix
-- `worklogs/NNNN_2026-10-15_frontend-live-update-reliability.md` — this file
+- `worklogs/1121_2026-10-15_frontend-live-update-reliability.md` — this file
