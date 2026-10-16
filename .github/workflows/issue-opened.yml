@@ -6,6 +6,11 @@ on:
 
 jobs:
   respond:
+    # Bot-filed issues (e.g. agentic-actor-coder[bot]) are owned by platform worker lanes.
+    # opencode's pre-flight assert requires the issue author to be an admin/write
+    # collaborator, which app-bot accounts can never satisfy — a run would only produce
+    # a red X plus a failure-annotation comment on the issue.
+    if: github.event.issue.user.type != 'Bot'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -39,6 +44,9 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run OpenCode
+        # Fail-soft: a responder failure (e.g. the author-permission assert) degrades to
+        # "no AI response" rather than a red run and an error comment on the issue.
+        continue-on-error: true
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -54,6 +62,7 @@ jobs:
       # Post the AI command reference as its own comment, exactly once per thread.
       # Deduplicated by a hidden marker so repeat triggers never produce a second copy.
       - name: Post AI command reference (once per thread)
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
