@@ -27,6 +27,7 @@
     "@xyflow/react": "^12.11.2",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
+    "mermaid": "^12.2.0",
     "react": "^19.2.6",
     "react-diff-viewer-continued": "^4.2.2",
     "react-dom": "^19.2.6",

@@ -13,6 +13,7 @@ import { parseAttachments } from "../../lib/attachments";
 import { parseAgentMessage } from "../../lib/agentMessage";
 import { AttachmentChips } from "./AttachmentChips";
 import { AgentOriginBadge } from "./AgentOriginBadge";
+import { MermaidDiagram } from "./MermaidDiagram";
 import { LazyDetails } from "../ui/LazyDetails";
 import type { MessagePart as MessagePartType } from "../../api/types";
 
@@ -315,6 +316,61 @@ function ToolDiffView({ oldStr, newStr, isDark }: { oldStr: string; newStr: stri
   );
 }
 
+// MarkdownBody (#1694): the ONE markdown pipeline shared by user and
+// assistant text — ReactMarkdown + remarkGfm + rehypeSanitize, custom
+// links (new tab, noopener), word-wrap-aware code blocks, and mermaid
+// fences rendered as diagrams. The caller owns the prose wrapper so the
+// user bubble's inverted colors and the assistant surface style each
+// apply their own scoping.
+function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  const wordWrap = useUserSetting("codeBlockWordWrap", false);
+  const { resolved } = useTheme();
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize]}
+      components={{
+        a: MarkdownLink,
+        pre({ children }) {
+          const child = (Array.isArray(children) ? children[0] : children) as
+            | React.ReactElement<{ className?: string; children?: string }>
+            | null
+            | undefined;
+          const classStr = child?.props?.className ?? "";
+          const lang = classStr.startsWith("language-")
+            ? classStr.slice("language-".length)
+            : null;
+          const childrenProp = child?.props?.children;
+          if (typeof childrenProp !== "string") {
+            return <pre className="overflow-x-auto touch-manipulation p-4 text-sm font-mono">{children}</pre>;
+          }
+          const code = childrenProp.trimEnd();
+          if (!code && lang === null) {
+            return <pre className="overflow-x-auto touch-manipulation p-4 text-sm font-mono">{children}</pre>;
+          }
+          // #1694: ```mermaid fences render as diagrams — lazy-loaded
+          // (code-split), strict security level, theme-following —
+          // instead of plain code blocks. Malformed syntax surfaces as
+          // an inline error state inside MermaidDiagram.
+          if (lang === "mermaid") {
+            return <MermaidDiagram code={code} theme={resolved} isStreaming={isStreaming ?? false} />;
+          }
+          return <CodeBlock code={code} lang={lang} wordWrap={wordWrap} isStreaming={isStreaming ?? false} />;
+        },
+        code({ className, style, children }) {
+          return (
+            <code className={cn("break-all", className)} style={style}>
+              {children}
+            </code>
+          );
+        },
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
+
 interface Props {
   part: MessagePartType;
   isUser: boolean;
@@ -348,7 +404,6 @@ function ToolElapsedBadge({ startedAt, now }: { startedAt: string; now: number }
 }
 
 export function MessagePart({ part, isUser, isStreaming }: Props) {
-  const wordWrap = useUserSetting("codeBlockWordWrap", false);
   const { resolved } = useTheme();
   // Tick only when this view shows a running tool with a start time —
   // useNow's per-component interval means idle screens pay nothing.
@@ -362,12 +417,39 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
       // #1465: a leading agent-message sentinel is stripped and replaced
       // by a provenance badge — the bubble stays user-side (the role the
       // message arrives as) but is clearly marked as agent-originated.
+      // #1694: the remaining text renders through the SAME markdown
+      // pipeline as assistant text (MarkdownBody above). User messages
+      // never stream (the composer sends complete text), so there is no
+      // closeOpenFence on this path.
       const { origin, text: withoutOrigin } = parseAgentMessage(part.text);
       const { text: stripped, attachments } = parseAttachments(withoutOrigin);
       return (
         <div>
           {origin && <AgentOriginBadge origin={origin} />}
-          {stripped && <p className="whitespace-pre-wrap text-sm">{stripped}</p>}
+          {stripped && (
+            <div
+              className={cn(
+                "prose prose-sm max-w-none text-current",
+                // #1694: the user bubble is an inverted surface (bg-primary
+                // + text-primary-foreground). Tailwind Typography's default
+                // prose palette would fight that — every prose color
+                // variable is scoped to currentColor, so typography
+                // structure (spacing, headings, lists) applies without
+                // restyling the bubble. Code blocks stay on the shared
+                // CodeBlock surface (not-prose, theme tokens).
+                "[--tw-prose-body:currentColor] [--tw-prose-headings:currentColor] [--tw-prose-lead:currentColor]",
+                "[--tw-prose-links:currentColor] [--tw-prose-bold:currentColor] [--tw-prose-counters:currentColor]",
+                "[--tw-prose-bullets:currentColor] [--tw-prose-hr:currentColor] [--tw-prose-quotes:currentColor]",
+                "[--tw-prose-quote-borders:currentColor] [--tw-prose-captions:currentColor] [--tw-prose-code:currentColor]",
+                "[--tw-prose-pre-code:currentColor] [--tw-prose-pre-bg:transparent]",
+                // keep the bubble tight at the edges (prose adds margins)
+                "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+                "[&_table]:block [&_table]:overflow-x-auto [&_table]:touch-manipulation",
+              )}
+            >
+              <MarkdownBody text={stripped} isStreaming={false} />
+            </div>
+          )}
           {attachments && <AttachmentChips attachments={attachments} />}
         </div>
       );
@@ -381,41 +463,7 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
         "prose prose-sm dark:prose-invert max-w-none",
         "[&_table]:block [&_table]:overflow-x-auto [&_table]:touch-manipulation",
       )}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
-          components={{
-            a: MarkdownLink,
-            pre({ children }) {
-              const child = (Array.isArray(children) ? children[0] : children) as
-                | React.ReactElement<{ className?: string; children?: string }>
-                | null
-                | undefined;
-              const classStr = child?.props?.className ?? "";
-              const lang = classStr.startsWith("language-")
-                ? classStr.slice("language-".length)
-                : null;
-              const childrenProp = child?.props?.children;
-              if (typeof childrenProp !== "string") {
-                return <pre className="overflow-x-auto touch-manipulation p-4 text-sm font-mono">{children}</pre>;
-              }
-              const code = childrenProp.trimEnd();
-              if (!code && lang === null) {
-                return <pre className="overflow-x-auto touch-manipulation p-4 text-sm font-mono">{children}</pre>;
-              }
-              return <CodeBlock code={code} lang={lang} wordWrap={wordWrap} isStreaming={isStreaming ?? false} />;
-            },
-            code({ className, style, children }) {
-              return (
-                <code className={cn("break-all", className)} style={style}>
-                  {children}
-                </code>
-              );
-            },
-          }}
-        >
-          {text}
-        </ReactMarkdown>
+        <MarkdownBody text={text} isStreaming={isStreaming} />
       </div>
     );
   }
