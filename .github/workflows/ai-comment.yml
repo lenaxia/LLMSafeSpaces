@@ -14,6 +14,17 @@
 # workflow reads THIS repo's prompts (.github/prompts/) and skips
 # automation-bot commenters itself. The `uses:` ref MUST be a hardcoded tag
 # (no vars context); propagate.yml in ai-workflows bumps it on every release.
+#
+# Trusted app-bot allowlist (#1710, ai-workflows v0.2.16 README §4 caller
+# contract): app bots always carry author_association NONE — they are
+# neither owners nor collaborators — so the association clauses above can
+# never admit them. The exact-login arm below is the platform delivery
+# bot's ONLY path in (the orchestrator's /review outage fallback was a
+# silent no-op without it). The list literal is THE shared definition:
+# replicate it verbatim in any future author_association gate — never a
+# blanket association == 'NONE' pass; each entry is a deliberate trust
+# decision. tests/ghaworkflows/gha_callers_test.go fails on a dropped arm,
+# a drifted copy, or a non-exact-login entry.
 name: AI Commands
 
 on:
@@ -57,7 +68,8 @@ jobs:
        contains(github.event.comment.body, ' /merge')) &&
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR')
+       github.event.comment.author_association == 'COLLABORATOR' ||
+       contains(fromJson('["agentic-actor-coder[bot]"]'), github.event.comment.user.login))
     uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.16
     secrets: inherit
     with:
