@@ -521,12 +521,13 @@ func (t *sessionStatusTracker) processEvent(data string) {
 		}
 	default:
 		// #1685 (owner ruling): MESSAGE-LEVEL progress — an LLM-completed
-		// (cost-bearing) or user-sent message.updated stamps the D6
-		// evidence clock. The classifier owns the definition at the wire
-		// seam; part deltas/tools/heartbeats never stamp. Independent of
-		// the any-event progress signal (#1342) handled below — the two
-		// notions answer different questions ("has either side said
-		// anything new?" vs "is the harness alive?").
+		// (final upsert carrying info.time.completed) or user-sent
+		// message.updated stamps the D6 evidence clock. The classifier
+		// owns the definition at the wire seam; part deltas/tools/
+		// heartbeats never stamp. Independent of the any-event progress
+		// signal (#1342) handled below — the two notions answer
+		// different questions ("has either side said anything new?" vs
+		// "is the harness alive?").
 		if sid, ok := wire.ParseMessageLevelProgress(evt.Type, evt.Properties); ok {
 			t.noteMessage(sid)
 		}
