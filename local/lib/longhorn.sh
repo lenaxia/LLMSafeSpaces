@@ -47,14 +47,15 @@ longhorn_install() {
     helm repo update >/dev/null
     # defaultClass=false: kind's local-path stays default; the spike
     # provisions exclusively through the user-shared class below.
-    # csi.attachingLauncherP... not needed; defaults match the prod
-    # posture (dataEngine v1, ext4). disableRevisionCounter rides the
-    # StorageClass, same as prod.
+    # NOTE: createDefaultDiskLabeled is NOT set (run 38866952477: with it
+    # true and no node.longhorn.io/create-default-disk label, Longhorn
+    # creates NO disks — replicas never schedule, RWX volumes sit at
+    # "Waiting for volume share to be available" for their whole life).
+    # The default (false) auto-creates a disk on every schedulable node.
     helm upgrade --install longhorn longhorn/longhorn \
         --version "$LONGHORN_CHART_VERSION" \
         -n "$NS_LONGHORN" --create-namespace \
         --set defaultSettings.defaultReplicaCount=2 \
-        --set defaultSettings.createDefaultDiskLabeled=true \
         --set defaultSettings.storageMinimalAvailablePercentage=15 \
         --set persistence.defaultClass=false \
         --set preUpgradeChecker.enabled=false \

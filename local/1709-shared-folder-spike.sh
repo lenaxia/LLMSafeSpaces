@@ -148,6 +148,27 @@ else
     ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/a-lh-volume.yaml" 2>&1 || true
 fi
 
+# Full longhorn-system state dump — the run-38866952477 lesson: the
+# volume sat at "Waiting for volume share to be available" for 28
+# minutes with zero diagnostics captured.
+lh_dump_state() {
+    ${K} -n longhorn-system get pods -o wide >"$OUT/lh-pods.txt" 2>&1 || true
+    ${K} -n longhorn-system get nodes.longhorn.io -o yaml >"$OUT/lh-nodes.yaml" 2>&1 || true
+    ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/lh-volumes.yaml" 2>&1 || true
+    ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/lh-replicas.txt" 2>&1 || true
+    ${K} -n longhorn-system logs deployment/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
+    ${K} -n longhorn-system describe pod -l longhorn.io/component=share-manager >"$OUT/lh-share-describe.txt" 2>&1 || true
+    ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true
+}
+
+# Longhorn starts a share-manager per RWX volume on first attach; it must
+# exist and be Ready before kubelet's NFS mount can succeed. Give it a
+# blocking window and dump state if it never appears.
+if ! ${K} -n longhorn-system wait --for=condition=ready pod -l longhorn.io/component=share-manager --timeout=600s >/dev/null 2>&1; then
+    warn "share-manager not Ready after 600s — dumping longhorn-system"
+    lh_dump_state
+fi
+
 # Workspace-shaped pod (pod_builder.go posture, verbatim semantics):
 # runtimeClassName gvisor, uid/gid/fsGroup 1000, OnRootMismatch,
 # RunAsNonRoot, RuntimeDefault seccomp, RO rootfs, cap-drop ALL,
@@ -267,6 +288,7 @@ else
     ${KC} describe pod ws-a ws-b >"$OUT/a-pod-describe.txt" 2>&1 || true
     ${KC} get events --sort-by=.lastTimestamp >"$OUT/a-events.txt" 2>&1 || true
     docker exec "$NODE" sh -c 'mount | grep -i nfs || true' >"$OUT/a-node-mounts.txt" 2>&1 || true
+    lh_dump_state
 fi
 res "a_status=${A_STATUS}"
 
@@ -301,7 +323,10 @@ spec:
         image: ${S3_IMG}
         args: ["server", "-dir=/data", "-master.volumeSizeLimitMB=8192", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweed/s3.json"]
         ports: [{containerPort: 8333}]
-        readinessProbe: {httpGet: {path: /, port: 8333}, initialDelaySeconds: 5, periodSeconds: 5}
+        # tcpSocket, not httpGet: Seaweed's S3 answers GET / with a 404
+        # XML error (an S3 server, not a web one) — run 38866952477
+        # starved the rollout on exactly that.
+        readinessProbe: {tcpSocket: {port: 8333}, initialDelaySeconds: 5, periodSeconds: 5}
         volumeMounts:
         - {name: data, mountPath: /data}
         - {name: iam, mountPath: /etc/seaweed, readOnly: true}
