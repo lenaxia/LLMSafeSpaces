@@ -15,6 +15,16 @@
 //     workflow and central route-command.sh contain no association check);
 //     a dropped clause lets any GitHub user drive code-changing commands on
 //     a runner holding contents: write + secrets: inherit.
+//   - Trusted-bot allowlist (#1710): app bots structurally carry
+//     author_association NONE (they are neither owners nor collaborators),
+//     so an association-only gate silently drops every command they post —
+//     during the 2026-10-16 event-delivery outage the orchestrator's /review
+//     fallback via agentic-actor-coder[bot] concluded `skipped` twice with
+//     zero PR-visible trace (runs 38836736982/38850671818 on #1708). Every
+//     gate filtering on author_association must also carry the ONE shared
+//     exact-login allowlist arm (ai-workflows v0.2.16 README §4 caller
+//     contract): each entry is a deliberate trust decision, never a blanket
+//     association == 'NONE' pass.
 //   - Pin consistency: `uses: …@vX` and `with.version: vX` must be equal
 //     for both callers. propagate.yml bumps both together, but a partial
 //     bump (e.g. a manually-merged renovate ref update touching only the
@@ -31,6 +41,7 @@
 package ghaworkflows
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -255,6 +266,173 @@ func TestWorkflowScriptReferencesResolve(t *testing.T) {
 						t.Errorf("%s executes %s but the file does not exist (be3320ec regression class)", e.Name(), m)
 					}
 				}
+			}
+		}
+	}
+}
+
+// canonicalTrustedAppBots is THE shared trusted-app-bot allowlist for this
+// repo (#1710 ruling item 2: single source). Every caller gate that filters
+// on author_association must carry this exact list, verbatim, as
+// contains(fromJson('<canonicalTrustedAppBots as JSON>'),
+// github.event.comment.user.login). App bots always present
+// author_association NONE, so an exact-login arm is the only gate that can
+// authorize them; each entry is a deliberate trust decision (adding one
+// means editing this list AND every gate copy — the drift test below fails
+// until all copies match).
+var canonicalTrustedAppBots = []string{"agentic-actor-coder[bot]"}
+
+// trustedBotArmRe matches the allowlist arm in the canonical ai-workflows
+// v0.2.16 README §4 form, capturing the raw JSON array literal so copies
+// can be compared byte-for-byte (quoting/whitespace drift included).
+var trustedBotArmRe = regexp.MustCompile(
+	`contains\(fromJson\('(\[[^\r\n]*?\])'\), github\.event\.comment\.user\.login\)`)
+
+// exactBotLoginRe is the exact-bot-login shape every allowlist entry must
+// have: a GitHub app-bot login (alphanumerics/hyphens + the literal [bot]
+// suffix). Rejects wildcards ('*'), globs, and human/app logins without
+// the [bot] marker — the allowlist may never grow a pattern entry.
+var exactBotLoginRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$`)
+
+// workflowYAMLs lists every workflow file in .github/workflows.
+func workflowYAMLs(t *testing.T) []string {
+	t.Helper()
+	wfDir := filepath.Join(repoRoot(t), ".github", "workflows")
+	entries, err := os.ReadDir(wfDir)
+	if err != nil {
+		t.Fatalf("read workflows dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yml") && !strings.HasSuffix(e.Name(), ".yaml")) {
+			continue
+		}
+		files = append(files, filepath.Join(wfDir, e.Name()))
+	}
+	if len(files) == 0 {
+		t.Fatal("no workflow files found under .github/workflows")
+	}
+	return files
+}
+
+// associationGatedWorkflows returns every workflow file whose gate filters
+// on github.event.*.author_association. Those are exactly the gates the
+// #1710 trusted-bot allowlist arm must ride along with — a future gate
+// added with an association filter is automatically covered (it fails the
+// arm test until it carries the shared allowlist).
+func associationGatedWorkflows(t *testing.T) map[string]string {
+	t.Helper()
+	gates := map[string]string{}
+	for _, f := range workflowYAMLs(t) {
+		body := readFile(t, f)
+		if strings.Contains(body, "author_association") {
+			gates[filepath.Base(f)] = body
+		}
+	}
+	if len(gates) == 0 {
+		t.Fatal("no author_association-filtered gates found — the ai-comment caller gate is missing entirely (authorization is GONE)")
+	}
+	return gates
+}
+
+// gateAllowlistArms extracts the raw JSON array literal from every
+// trusted-bot allowlist arm in the given workflow body.
+func gateAllowlistArms(t *testing.T, name, body string) []string {
+	t.Helper()
+	var arms []string
+	for _, m := range trustedBotArmRe.FindAllStringSubmatch(body, -1) {
+		arms = append(arms, m[1])
+	}
+	return arms
+}
+
+// TestTrustedBotAllowlistArmOnEveryAssociationGate pins #1710 ruling item
+// 1(a): every gate filtering on author_association must ALSO carry the
+// trusted-bot allowlist arm. Removing the arm from any gate (the exact
+// 2026-10-16 outage no-op: /review from agentic-actor-coder[bot] concluded
+// `skipped`, runs 38836736982/38850671818) fails here.
+func TestTrustedBotAllowlistArmOnEveryAssociationGate(t *testing.T) {
+	for name, body := range associationGatedWorkflows(t) {
+		if len(gateAllowlistArms(t, name, body)) == 0 {
+			t.Errorf("%s filters on author_association but has no trusted-bot allowlist arm "+
+				"(contains(fromJson(...), github.event.comment.user.login)) — app bots carry association NONE "+
+				"by construction and are silently skipped by this gate (#1710 outage no-op class)", name)
+		}
+	}
+}
+
+// TestTrustedBotAllowlistCopiesDoNotDrift pins #1710 ruling items 1(b)/2:
+// the allowlist is ONE shared definition. Every gate copy's JSON literal
+// must be byte-identical to canonicalTrustedAppBots rendered as compact
+// JSON — a gate edited independently (drift), a missing entry, or an extra
+// entry all fail until every copy matches the single source again.
+func TestTrustedBotAllowlistCopiesDoNotDrift(t *testing.T) {
+	canonical, err := json.Marshal(canonicalTrustedAppBots)
+	if err != nil {
+		t.Fatalf("marshal canonical allowlist: %v", err)
+	}
+	for name, body := range associationGatedWorkflows(t) {
+		arms := gateAllowlistArms(t, name, body)
+		if len(arms) == 0 {
+			continue // covered by TestTrustedBotAllowlistArmOnEveryAssociationGate
+		}
+		for _, arm := range arms {
+			if string(arm) != string(canonical) {
+				t.Errorf("%s allowlist arm %s does not match the shared canonical list %s — "+
+					"the allowlist is ONE definition (canonicalTrustedAppBots in gha_callers_test.go); "+
+					"update every gate copy together", name, arm, canonical)
+			}
+		}
+	}
+}
+
+// TestTrustedBotAllowlistExactLoginsOnly pins #1710 ruling item 1(c): the
+// allowlist stays exact-login. Wildcards ('*'), glob fragments, empty
+// entries, or non-bot logins (an association-shaped accident — a human
+// login without the [bot] marker) all fail. Each entry must name ONE app
+// bot deliberately.
+func TestTrustedBotAllowlistExactLoginsOnly(t *testing.T) {
+	if len(canonicalTrustedAppBots) == 0 {
+		t.Fatal("canonicalTrustedAppBots must not be empty — an empty allowlist means the arm exists but trusts nobody, which is dead config")
+	}
+	for _, login := range canonicalTrustedAppBots {
+		if !exactBotLoginRe.MatchString(login) {
+			t.Errorf("canonical allowlist entry %q is not an exact app-bot login (want e.g. 'agentic-actor-coder[bot]') — wildcards and non-bot patterns are forbidden (#1710 ruling)", login)
+		}
+	}
+	// The same shape rule holds for every gate copy, not just the canonical
+	// list (a drifted copy with '*' must fail here even before drift is fixed).
+	for name, body := range associationGatedWorkflows(t) {
+		for _, arm := range gateAllowlistArms(t, name, body) {
+			var entries []string
+			if err := json.Unmarshal([]byte(arm), &entries); err != nil {
+				t.Errorf("%s allowlist arm %s is not a JSON array of strings: %v", name, arm, err)
+				continue
+			}
+			for _, login := range entries {
+				if !exactBotLoginRe.MatchString(login) {
+					t.Errorf("%s allowlist entry %q is not an exact app-bot login — wildcards and non-bot patterns are forbidden (#1710 ruling)", name, login)
+				}
+			}
+		}
+	}
+}
+
+// TestNoBlanketAssociationNonePass pins the #1710 security ruling: NEVER a
+// blanket association == 'NONE' pass. An association-NONE arm would admit
+// EVERY app bot and outside contributor (association is NONE for both),
+// converting a deliberate per-bot trust decision into an open door. The
+// exact-login allowlist is the only sanctioned way to admit an app bot.
+func TestNoBlanketAssociationNonePass(t *testing.T) {
+	for _, f := range workflowYAMLs(t) {
+		name := filepath.Base(f)
+		body := readFile(t, f)
+		for _, blanket := range []string{
+			"author_association == 'NONE'",
+			"author_association != 'NONE'",
+		} {
+			if strings.Contains(body, blanket) {
+				t.Errorf("%s contains blanket gate %q — association NONE is shared by every app bot and outside contributor; admit bots via the exact-login allowlist only (#1710 ruling)", name, blanket)
 			}
 		}
 	}
