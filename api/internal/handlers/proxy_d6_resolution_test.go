@@ -57,14 +57,19 @@ func TestEscalateHungs_ResolvesWhenRecovered(t *testing.T) {
 	var alerts fakeSessionAlerts
 	env, broker := newD6Env(t, func(w http.ResponseWriter, _ *http.Request) {
 		seconds := 10
+		progress := 10
 		if hung {
 			seconds = int((busyAlertOlderThan + 5*time.Minute).Seconds())
+			// #1685: the evidence window is independent of busy-age —
+			// hung fixtures must satisfy BOTH windows (30-min silence).
+			progress = int((busyAlertNoProgress + 5*time.Minute).Seconds())
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
-			Healthy:           true,
-			OldestBusySeconds: seconds,
-			BusyAges:          map[string]int{"ses-x": seconds},
+			Healthy:             true,
+			OldestBusySeconds:   seconds,
+			BusyAges:            map[string]int{"ses-x": seconds},
+			LastProgressSeconds: progress,
 		})
 	})
 	env.handler.sessionAlerts = &alerts
@@ -174,14 +179,19 @@ func TestEscalateHungs_ResolvesWhenWorkspaceLeavesActive(t *testing.T) {
 	var alerts fakeSessionAlerts
 	env, broker := newD6Env(t, func(w http.ResponseWriter, _ *http.Request) {
 		seconds := 10
+		progress := 10
 		if hung {
 			seconds = int((busyAlertOlderThan + 5*time.Minute).Seconds())
+			// #1685: the evidence window is independent of busy-age —
+			// hung fixtures must satisfy BOTH windows (30-min silence).
+			progress = int((busyAlertNoProgress + 5*time.Minute).Seconds())
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
-			Healthy:           true,
-			OldestBusySeconds: seconds,
-			BusyAges:          map[string]int{"ses-x": seconds},
+			Healthy:             true,
+			OldestBusySeconds:   seconds,
+			BusyAges:            map[string]int{"ses-x": seconds},
+			LastProgressSeconds: progress,
 		})
 	})
 	env.handler.sessionAlerts = &alerts

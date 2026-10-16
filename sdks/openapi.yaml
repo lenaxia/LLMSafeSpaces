@@ -730,7 +730,11 @@ paths:
         notify-only workspace.alert/session_hung event, newest-first,
         within a 24h retention window. Survives SSE disconnects; the
         reconnecting clients and workflow surfaces use it to recover
-        missed alerts.
+        missed alerts. Since #1685 an alert requires message-level
+        evidence: a session busy past the 15-min floor AND no new messages
+        from either side (LLM-completed or user-sent) for 30 min —
+        busy-age alone no longer escalates (long-but-healthy turns are
+        the norm on this platform).
       operationId: listWorkspaceAlerts
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"

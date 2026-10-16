@@ -58,6 +58,45 @@ func IsPartUpdated(eventType string) bool {
 	return eventType == "message.part.updated" || isSuffixed(eventType, "message.part.updated")
 }
 
+// ParseMessageLevelProgress classifies a message.updated event as
+// MESSAGE-LEVEL progress per the #1685 owner ruling: progress means a
+// message was COMPLETED by the LLM or SENT by the user — exactly the two
+// shapes the ABI translator discriminates (a cost-bearing message.updated
+// is the assistant-completion/billing signal; role=user is a user send).
+// Stream chunks (message.part.*), tool events, and heartbeats are NOT
+// progress and must not reset the no-message clock. Suffix-tolerant like
+// every event-type matcher here. Returns the owning session ID and
+// whether the event counts; ("", false) for everything else.
+func ParseMessageLevelProgress(eventType string, props json.RawMessage) (string, bool) {
+	if eventType != "message.updated" && !isSuffixed(eventType, "message.updated") {
+		return "", false
+	}
+	if len(props) == 0 {
+		return "", false
+	}
+	var p struct {
+		SessionID string          `json:"sessionID"`
+		Info      json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return "", false
+	}
+	var info struct {
+		Role string          `json:"role"`
+		Cost json.RawMessage `json:"cost"`
+	}
+	_ = json.Unmarshal(p.Info, &info)
+	if info.Role != "user" && len(info.Cost) == 0 {
+		// Assistant message mid-flight (no cost yet): streamed store
+		// upserts of an incomplete message are not completion.
+		return "", false
+	}
+	if p.SessionID == "" {
+		return "", false
+	}
+	return p.SessionID, true
+}
+
 // IsStepEnded reports whether eventType is the legacy per-step usage event
 // (pre-1.18.10). The legacy name is unversioned.
 func IsStepEnded(eventType string) bool {

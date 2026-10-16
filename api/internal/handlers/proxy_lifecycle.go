@@ -515,13 +515,20 @@ func (h *ProxyHandler) postOutboxDeliverSuccess(workspaceID, sessionID string, e
 
 // D6 (#998) tunables. BusyOlderThan: a session busy this long is
 // escalated (design sketch said 900s; 15 min of continuous busy with no
-// idle is the hung-and-alive signature post-watchdog-demotion).
-// AlertCooldown: minimum spacing between alerts for the same workspace —
-// unattended sessions stay busy until a human acts, so an alert per tick
-// would be noise. Vars for tests.
+// idle is the hung-and-alive signature post-watchdog-demotion) — kept as
+// a semantic guard. BusyNoProgress (#1685, owner ruling): MESSAGE-LEVEL
+// evidence window — the alert additionally requires that no new message
+// from either side (LLM-completed or user-sent) has arrived for this
+// long; 30 min because the fleet's healthy turns regularly run 30-60+
+// min with long tool executions, and busy-age alone fired on them (the
+// dogfooded false-positive noise). Stream chunks/tool activity do NOT
+// reset the clock. AlertCooldown: minimum spacing between alerts for the
+// same workspace — unattended sessions stay busy until a human acts, so
+// an alert per tick would be noise. Vars for tests.
 var (
-	busyAlertOlderThan = 15 * time.Minute
-	busyAlertCooldown  = 30 * time.Minute
+	busyAlertOlderThan  = 15 * time.Minute
+	busyAlertNoProgress = 30 * time.Minute
+	busyAlertCooldown   = 30 * time.Minute
 )
 
 // escalateHungs publishes workspace.alert for every watched Active
@@ -569,7 +576,7 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		if err != nil {
 			continue
 		}
-		if sz.OldestBusySeconds < int(busyAlertOlderThan.Seconds()) {
+		if !hungEvidence(sz) {
 			if alerted {
 				h.resolveHungs(wid)
 			}
@@ -585,11 +592,12 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 			SessionID: oldestSession(sz.BusyAges),
 			Status:    "session_hung",
 			Data: map[string]any{
-				"alert":               "session_hung",
-				"oldest_busy_seconds": sz.OldestBusySeconds,
-				"busy_ages":           sz.BusyAges,
-				"policy":              "notify_only",
-				"guidance":            "session busy beyond threshold with no progress — likely hung-and-alive; stop or resume manually",
+				"alert":                 "session_hung",
+				"oldest_busy_seconds":   sz.OldestBusySeconds,
+				"last_progress_seconds": sz.LastProgressSeconds,
+				"busy_ages":             sz.BusyAges,
+				"policy":                "notify_only",
+				"guidance":              "no new messages from either side beyond the evidence window while busy — likely hung-and-alive; stop or resume manually",
 			},
 		})
 		h.markBusyAlerted(wid)
@@ -600,8 +608,25 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 			h.sessionAlerts.RecordAlert(wid, oldestSession(sz.BusyAges), "session_hung", sz.OldestBusySeconds)
 		}
 		h.logger.Warn("D6 escalation: session hung (notify-only)",
-			"workspaceID", wid, "oldestBusySeconds", sz.OldestBusySeconds)
+			"workspaceID", wid, "oldestBusySeconds", sz.OldestBusySeconds, "lastProgressSeconds", sz.LastProgressSeconds)
 	}
+}
+
+// hungEvidence is the #1685 two-window gate: the 15-min busy floor AND
+// the 30-min message-silence window must BOTH be met. Message silence
+// (LastProgressSeconds = time since the last LLM-completed or user-sent
+// message) is the evidence the owner ruled on — a long tool execution
+// with a message 20 minutes ago is a HEALTHY long turn, not a hang.
+// 0/absent progress (no busy session, or agentd restarted mid-turn and
+// lost the stamp) means evidence-unavailable: fail toward silence.
+func hungEvidence(sz *agentd.StatuszResponse) bool {
+	if sz.OldestBusySeconds < int(busyAlertOlderThan.Seconds()) {
+		return false
+	}
+	if sz.LastProgressSeconds <= 0 {
+		return false // evidence unavailable — never alert on busy-age alone
+	}
+	return sz.LastProgressSeconds >= int(busyAlertNoProgress.Seconds())
 }
 
 // resolveHungs closes out a workspace's live hung condition: persisted

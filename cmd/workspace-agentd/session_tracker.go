@@ -66,8 +66,17 @@ type sessionStatusTracker struct {
 	// progress, not wall-clock — a busy session with fresh part output
 	// is never a force-restart candidate no matter how long the turn
 	// runs. Maintained alongside statuses; prune() owns deletion.
-	lastEventAt  map[string]time.Time
-	promptTokens map[string]int64 // session ID → current context size (input + cache.read + cache.write)
+	lastEventAt map[string]time.Time
+	// lastMessageAt records when the stream last carried MESSAGE-LEVEL
+	// progress for the session (#1685, owner ruling): an LLM-COMPLETED
+	// message (cost-bearing message.updated) or a USER-SENT message.
+	// Deliberately coarser than lastEventAt — stream chunks, tool
+	// execution, and heartbeats do NOT stamp it — because the D6
+	// hung-nudge's evidence window asks "has either side said anything
+	// new?" not "is the harness alive?". Long tool runs with a message
+	// 20 minutes ago are HEALTHY by this signal. prune() owns deletion.
+	lastMessageAt map[string]time.Time
+	promptTokens  map[string]int64 // session ID → current context size (input + cache.read + cache.write)
 	// idleObservedAt stamps when session.status=idle was last OBSERVED
 	// for the session (#1672 r2): strictly-newer observed-idle evidence
 	// beats the cached harness registry in the busy-floor composition,
@@ -88,6 +97,7 @@ func newSessionStatusTracker() *sessionStatusTracker {
 		statuses:       make(map[string]string),
 		busySince:      make(map[string]time.Time),
 		lastEventAt:    make(map[string]time.Time),
+		lastMessageAt:  make(map[string]time.Time),
 		promptTokens:   make(map[string]int64),
 		idleObservedAt: make(map[string]time.Time),
 	}
@@ -134,6 +144,33 @@ func (t *sessionStatusTracker) noteActivity(sessionID string) {
 	t.mu.Lock()
 	t.lastEventAt[sessionID] = time.Now()
 	t.mu.Unlock()
+}
+
+// noteMessage stamps MESSAGE-LEVEL progress (#1685): only the classifier
+// at the wire seam decides what counts (LLM-completed or user-sent);
+// every other caller is wrong by construction.
+func (t *sessionStatusTracker) noteMessage(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	t.mu.Lock()
+	t.lastMessageAt[sessionID] = time.Now()
+	t.mu.Unlock()
+}
+
+// lastMessageAges returns (session ID → time since the last
+// message-level progress event) for every session with a stamp — an
+// RLock'd copy in the busyDurations pattern (the SSE goroutine writes;
+// statusz must never read the map unlocked).
+func (t *sessionStatusTracker) lastMessageAges() map[string]time.Duration {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	out := make(map[string]time.Duration, len(t.lastMessageAt))
+	for id, at := range t.lastMessageAt {
+		out[id] = now.Sub(at)
+	}
+	return out
 }
 
 // busyPartitions splits the currently-busy sessions into progressing
@@ -301,6 +338,7 @@ func (t *sessionStatusTracker) prune(activeIDs []string) {
 			delete(t.statuses, id)
 			delete(t.promptTokens, id)
 			delete(t.lastEventAt, id)
+			delete(t.lastMessageAt, id)
 			delete(t.idleObservedAt, id)
 		}
 	}
@@ -468,6 +506,11 @@ func (t *sessionStatusTracker) processEvent(data string) {
 		case "session.status":
 			t.handleSessionStatus(nested.Payload.Properties)
 		default:
+			// #1685: message-level progress stamps on the nested (legacy)
+			// stream shape too — same classifier, same definition.
+			if sid, ok := wire.ParseMessageLevelProgress(nested.Payload.Type, nested.Payload.Properties); ok {
+				t.noteMessage(sid)
+			}
 			if u, ok, err := wire.ParseStepUsageProps(nested.Payload.Type, nested.Payload.Properties); err != nil {
 				log.Warn("usage event claims tokens but fails to decode — wire drift?",
 					zap.Error(err), zap.String("eventType", nested.Payload.Type))
@@ -477,6 +520,16 @@ func (t *sessionStatusTracker) processEvent(data string) {
 			}
 		}
 	default:
+		// #1685 (owner ruling): MESSAGE-LEVEL progress — an LLM-completed
+		// (cost-bearing) or user-sent message.updated stamps the D6
+		// evidence clock. The classifier owns the definition at the wire
+		// seam; part deltas/tools/heartbeats never stamp. Independent of
+		// the any-event progress signal (#1342) handled below — the two
+		// notions answer different questions ("has either side said
+		// anything new?" vs "is the harness alive?").
+		if sid, ok := wire.ParseMessageLevelProgress(evt.Type, evt.Properties); ok {
+			t.noteMessage(sid)
+		}
 		// Per-step usage (statusz ContextUsed until the usage-authority
 		// cutover): every usage-bearing shape is decoded by the wire
 		// seam — the legacy standalone step-ended event (mixed fleet)
