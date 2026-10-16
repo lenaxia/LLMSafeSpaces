@@ -43,7 +43,7 @@ None — design document only. Every code claim verified by direct source read a
 ## Files Modified
 
 - design/0066_2026-10-15_short-session-ids-alias-layer.md (new)
-- worklogs/NNNN_2026-10-15_w30-1691-short-session-ids-design.md (this file)
+- worklogs/1124_2026-10-15_w30-1691-short-session-ids-design.md (this file)
 - COORDINATE.md (claim row)
 
 ## Review round 1 remediation (PR #1693, CHANGES_REQUESTED → fixes)
