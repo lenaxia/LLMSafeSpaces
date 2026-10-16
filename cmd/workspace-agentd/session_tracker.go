@@ -69,12 +69,13 @@ type sessionStatusTracker struct {
 	lastEventAt map[string]time.Time
 	// lastMessageAt records when the stream last carried MESSAGE-LEVEL
 	// progress for the session (#1685, owner ruling): an LLM-COMPLETED
-	// message (cost-bearing message.updated) or a USER-SENT message.
-	// Deliberately coarser than lastEventAt — stream chunks, tool
-	// execution, and heartbeats do NOT stamp it — because the D6
-	// hung-nudge's evidence window asks "has either side said anything
-	// new?" not "is the harness alive?". Long tool runs with a message
-	// 20 minutes ago are HEALTHY by this signal. prune() owns deletion.
+	// message (final message.updated upsert carrying info.time.completed)
+	// or a USER-SENT message. Deliberately coarser than lastEventAt —
+	// stream chunks, tool execution, and heartbeats do NOT stamp it —
+	// because the D6 hung-nudge's evidence window asks "has either side
+	// said anything new?" not "is the harness alive?". Long tool runs
+	// with a message 20 minutes ago are HEALTHY by this signal. prune()
+	// owns deletion.
 	lastMessageAt map[string]time.Time
 	promptTokens  map[string]int64 // session ID → current context size (input + cache.read + cache.write)
 	// idleObservedAt stamps when session.status=idle was last OBSERVED

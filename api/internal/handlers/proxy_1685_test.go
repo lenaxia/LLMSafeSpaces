@@ -91,6 +91,10 @@ func TestEscalateHungs_EvidenceGate(t *testing.T) {
 		assert.Equal(t, "notify_only", data["policy"])
 		// The evidence rides the payload so consumers can state it honestly.
 		assert.Contains(t, data, "last_progress_seconds")
+		// R5: the guidance is WORKSPACE-scoped ("any busy session") —
+		// never session-attributed under the alert's oldest-busy
+		// SessionID (the evidence is the max silence across the set).
+		assert.Contains(t, data["guidance"], "any busy session")
 	})
 
 	t.Run("owner's bash case: last message 20m ago + long tool running is NOT a hang", func(t *testing.T) {
@@ -165,10 +169,11 @@ func TestEscalateHungs_EvidenceGate(t *testing.T) {
 	})
 
 	t.Run("evidence unavailable: negative LastProgressSeconds never alerts", func(t *testing.T) {
-		// The only arm where the <= 0 branch is load-bearing (0 already
-		// fails the >= window compare): a negative evidence clock
-		// (clock-skew shape) must not alert either — fail toward
-		// silence.
+		// Defensive: the <= 0 branch is NOT load-bearing in either
+		// evidence-unavailable arm (0 and -5 both fail the >= window
+		// compare anyway) — it makes the fail-toward-silence contract
+		// explicit for non-positive evidence (clock-skew shape): never
+		// alert on a nonsensical evidence clock.
 		env, broker := newD6Env(t, evidenceStatusz(3600, -5))
 		sub, done := mustSubscribeWorkspace(t, broker, "ws-1")
 		defer done()
