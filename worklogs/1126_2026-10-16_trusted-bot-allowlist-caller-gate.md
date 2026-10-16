@@ -73,7 +73,7 @@ None.
 
 - `.github/workflows/ai-comment.yml` — allowlist arm + header contract.
 - `tests/ghaworkflows/gha_callers_test.go` — four pins + helpers.
-- `worklogs/NNNN_2026-10-16_trusted-bot-allowlist-caller-gate.md`, `CHANGELOG.md` — records.
+- `worklogs/1126_2026-10-16_trusted-bot-allowlist-caller-gate.md`, `CHANGELOG.md` — records.
 
 ## Rework r1 (PR #1715 review, CHANGES_REQUESTED @ 6e3a5a51 — commit-pinned verdict)
 
