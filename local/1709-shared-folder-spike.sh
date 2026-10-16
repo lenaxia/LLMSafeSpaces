@@ -49,7 +49,7 @@ RESULTS="$OUT/results.txt"
 # record for this spike).
 DEBIAN_IMG="debian:bookworm-slim"
 RCLONE_IMG="rclone/rclone:1.67.0"
-MINIO_IMG="minio/minio:RELEASE.2024-06-13T22-53-53Z"
+MINIO_IMG="minio/minio:RELEASE.2024-11-07T00-52-20Z"
 
 if [[ -t 0 ]]; then
     BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'; RESET=$'\033[0m'

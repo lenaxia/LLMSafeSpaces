@@ -60,7 +60,7 @@ jobs:
           # minutes into a leg).
           docker pull debian:bookworm-slim
           docker pull rclone/rclone:1.67.0
-          docker pull minio/minio:RELEASE.2024-06-13T22-53-53Z
+          docker pull minio/minio:RELEASE.2024-11-07T00-52-20Z
 
       - name: Record runner environment
         run: |
