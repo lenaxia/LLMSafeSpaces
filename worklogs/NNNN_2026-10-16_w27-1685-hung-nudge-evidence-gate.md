@@ -79,6 +79,10 @@ None. #1690 (#1686) merge still pending with the orchestrator — its CHANGELOG 
 
 ---
 
+## Incident record — PR-open events lost (GitHub event-delivery)
+
+PR #1704 opened 00:26Z; 45+ minutes later ZERO workflow runs (checks 0/0, no review job) while repo Actions were demonstrably alive (another branch's PR runs fired at 00:47Z). Matches the documented GitHub event-delivery-loss shape (the #1569/#1530-era outage; remedied then by re-firing PR events). This commit is the re-fire: the worklog record you are reading is real content whose push carries the synchronize event. If the pipeline still does not fire on synchronize, the remaining lever (PR close/reopen — prior fleet use was owner-approved) is queued behind the orchestrator's word. Also disclosed: one accidental "placeholder" message was sent to the orchestrator (wrong buffer, no content; corrected immediately).
+
 ## Next Steps
 
 - PR → review loop → merge-readiness report (no self-merge).
