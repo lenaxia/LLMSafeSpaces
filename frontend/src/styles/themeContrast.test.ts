@@ -13,7 +13,7 @@ import {
  *
  * Every pair asserted here is a pair the app actually renders text on
  * (chat timeline surfaces, banners, buttons, forms — see the audit list
- * in worklog #1127). Thresholds: 4.5:1 normal text (WCAG 2.1 SC 1.4.3);
+ * in the #1716 worklog). Thresholds: 4.5:1 normal text (WCAG 2.1 SC 1.4.3);
  * all the asserted-on sizes (text-xs/sm/body) are normal text.
  *
  * jsdom cannot compute Tailwind cascades, so the math runs on the parsed
