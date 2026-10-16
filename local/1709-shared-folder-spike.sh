@@ -47,9 +47,16 @@ RESULTS="$OUT/results.txt"
 # Images: pinned tags; the resolved imageIDs are recorded into
 # results.txt (digests drift — the resolved ID is the reproducibility
 # record for this spike).
+#
+# FINDING (env note): docker.io/minio/minio is DELISTED from Docker Hub
+# (hub API "object not found"; pull fails with "repository does not
+# exist" — spike runs 38864577660/38865021006) even though prod runs an
+# old cached tag. The spike's S3 tier therefore runs SeaweedFS 4.48 —
+# the version the prod cluster pins and runs today, pullable, real S3
+# implementation. Recorded in the design doc's evidence section.
 DEBIAN_IMG="debian:bookworm-slim"
 RCLONE_IMG="rclone/rclone:1.67.0"
-MINIO_IMG="minio/minio:RELEASE.2024-11-07T00-52-20Z"
+S3_IMG="chrislusf/seaweedfs:4.48"
 
 if [[ -t 0 ]]; then
     BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'; RESET=$'\033[0m'
@@ -73,8 +80,8 @@ KC="${K} -n ${NS}"
 rclone_env_yaml() { # the five env pairs every rclone pod needs
     cat <<EOF
         - {name: RCLONE_CONFIG_SPIKE_TYPE, value: s3}
-        - {name: RCLONE_CONFIG_SPIKE_PROVIDER, value: Minio}
-        - {name: RCLONE_CONFIG_SPIKE_ENDPOINT, value: "http://minio.${NS}.svc.cluster.local:9000"}
+        - {name: RCLONE_CONFIG_SPIKE_PROVIDER, value: Other}
+        - {name: RCLONE_CONFIG_SPIKE_ENDPOINT, value: "http://s3srv.${NS}.svc.cluster.local:8333"}
         - {name: RCLONE_CONFIG_SPIKE_ACCESS_KEY_ID, value: spike1709}
         - {name: RCLONE_CONFIG_SPIKE_SECRET_ACCESS_KEY, value: spike1709-spike1709}
         - {name: RCLONE_CONFIG_SPIKE_NO_CHECK_BUCKET, value: "true"}
@@ -269,43 +276,56 @@ res "a_status=${A_STATUS}"
 sect "LEG_B_hydration"
 B_STATUS=FAIL
 
+# S3 tier: SeaweedFS all-in-one (master+volume+s3, one process), data on
+# emptyDir (NOT Longhorn — keeps the measurement off the volume under
+# test). IAM identity grants the spike key full S3 actions.
 cat <<EOF | ${K} apply -f - >/dev/null
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: seaweed-s3-iam, namespace: ${NS}}
+data:
+  s3.json: |
+    {"identities":[{"name":"spike","actions":["Admin:.*","Read:.*","Write:.*","List:.*","Tagging:.*"],"credentials":[{"accessKey":"spike1709","secretKey":"spike1709-spike1709"}]}]}
+---
 apiVersion: apps/v1
 kind: Deployment
-metadata: {name: minio, namespace: ${NS}}
+metadata: {name: s3srv, namespace: ${NS}}
 spec:
   replicas: 1
-  selector: {matchLabels: {app: minio}}
+  selector: {matchLabels: {app: s3srv}}
   template:
-    metadata: {labels: {app: minio}}
+    metadata: {labels: {app: s3srv}}
     spec:
       containers:
-      - name: minio
-        image: ${MINIO_IMG}
-        args: [server, /data, --console-address, ":9001"]
-        env:
-        - {name: MINIO_ROOT_USER, value: spike1709}
-        - {name: MINIO_ROOT_PASSWORD, value: spike1709-spike1709}
-        ports: [{containerPort: 9000}]
-        readinessProbe: {httpGet: {path: /minio/health/ready, port: 9000}, initialDelaySeconds: 5, periodSeconds: 5}
-        volumeMounts: [{name: data, mountPath: /data}]
+      - name: weed
+        image: ${S3_IMG}
+        args: ["server", "-dir=/data", "-master.volumeSizeLimitMB=8192", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweed/s3.json"]
+        ports: [{containerPort: 8333}]
+        readinessProbe: {httpGet: {path: /, port: 8333}, initialDelaySeconds: 5, periodSeconds: 5}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: iam, mountPath: /etc/seaweed, readOnly: true}
       volumes:
       - name: data
         emptyDir: {}
+      - name: iam
+        configMap: {name: seaweed-s3-iam}
 ---
 apiVersion: v1
 kind: Service
-metadata: {name: minio, namespace: ${NS}}
+metadata: {name: s3srv, namespace: ${NS}}
 spec:
-  selector: {app: minio}
-  ports: [{port: 9000, targetPort: 9000}]
+  selector: {app: s3srv}
+  ports: [{port: 8333, targetPort: 8333}]
 EOF
 
-if ! ${KC} rollout status deployment/minio --timeout=300s >/dev/null 2>&1; then
-    res "b_minio_ready=FAIL"
-    ${KC} describe deployment minio >"$OUT/b-minio.txt" 2>&1 || true
+if ! ${KC} rollout status deployment/s3srv --timeout=300s >/dev/null 2>&1; then
+    res "b_s3srv_ready=FAIL"
+    ${KC} describe deployment s3srv >"$OUT/b-s3srv.txt" 2>&1 || true
+    ${KC} logs deployment/s3srv --tail=50 >"$OUT/b-s3srv.log" 2>&1 || true
 else
-    res "b_minio_ready=PASS"
+    res "b_s3srv_ready=PASS"
+    res "b_s3_impl=seaweedfs-4.48"
 
     # B0 seed — synthetic dataset on S3: two file classes (128 MiB bulk ×
     # AUTO_GB*8, 256 KiB small × AUTO_GB*32) + per-file manifest.

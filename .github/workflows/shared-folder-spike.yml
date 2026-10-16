@@ -57,10 +57,12 @@ jobs:
           command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
           # Pre-pull the spike images on the runner so kind node pulls
           # cannot 404 on a mistagged artifact (fails LOUD here, not 20
-          # minutes into a leg).
+          # minutes into a leg). NOTE: minio/minio is delisted from
+          # Docker Hub (hub API object-not-found; both prior runs failed
+          # at this pull) — the S3 tier is SeaweedFS 4.48 (prod's pin).
           docker pull debian:bookworm-slim
           docker pull rclone/rclone:1.67.0
-          docker pull minio/minio:RELEASE.2024-11-07T00-52-20Z
+          docker pull chrislusf/seaweedfs:4.48
 
       - name: Record runner environment
         run: |
