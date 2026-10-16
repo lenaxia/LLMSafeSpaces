@@ -60,11 +60,23 @@ longhorn_install() {
         --set preUpgradeChecker.enabled=false \
         --wait --timeout 15m
     # Wait for the instance-manager pods (the CSI data plane) — helm's
-    # --wait only covers deployments, and RWX needs the share-manager
-    # image pulled before the first volume attaches.
+    # --wait only covers deployments, and Longhorn creates instance-
+    # managers ASYNCHRONOUSLY after install (run 38865495450: "no
+    # matching resources found" because a bare kubectl wait races their
+    # creation). Poll for existence first, then readiness; RWX also
+    # needs the share-manager image pulled before the first attach, but
+    # that starts on demand with the first RWX volume.
+    local i count=0
+    for i in $(seq 1 60); do
+        count=$(kubectl --context "${CTX}" -n "$NS_LONGHORN" get pods \
+            -l longhorn.io/component=instance-manager -o name 2>/dev/null | wc -l | tr -d ' ')
+        [ "$count" -ge 1 ] && break
+        sleep 10
+    done
+    [ "$count" -ge 1 ] || { echo "longhorn.sh: instance-manager pods never appeared (600s)" >&2; exit 1; }
     kubectl --context "${CTX}" -n "$NS_LONGHORN" wait \
         --for=condition=ready pod -l longhorn.io/component=instance-manager \
-        --timeout=600s
+        --timeout=900s
 }
 
 longhorn_classes() {
