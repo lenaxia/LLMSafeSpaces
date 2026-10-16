@@ -1246,8 +1246,8 @@ export function ChatPage() {
           <span>
             {hungAlert.data.last_progress_seconds != null ? (
               <>
-                No new messages for {Math.round(hungAlert.data.last_progress_seconds / 60)} min while this session kept
-                running — it may be hung. Nothing was stopped automatically; abort or resume manually.
+                No new messages for {Math.round(hungAlert.data.last_progress_seconds / 60)} min while sessions stayed
+                busy — one may be hung. Nothing was stopped automatically; abort or resume manually.
               </>
             ) : (
               <>

@@ -493,8 +493,11 @@ describe("D6 hung-session alert banner (#998)", () => {
   // #1685 (owner ruling): the banner states the EVIDENCE — "no messages
   // for X min" — never "busy for Y min" (which fired on healthy long
   // turns). The busy-minutes copy remains only as the fallback for older
-  // API servers that omit the field.
-  it("states the message-silence evidence when last_progress_seconds is present (#1685)", async () => {
+  // API servers that omit the field. Ruling R5: the evidence is the
+  // workspace-max silence across busy sessions, so the copy is
+  // workspace-scoped ("sessions stayed busy"), not attributed to the
+  // alert's named session.
+  it("states the workspace-scoped message-silence evidence when last_progress_seconds is present (#1685)", async () => {
     await renderReady();
 
     sendPlatform({
@@ -507,6 +510,7 @@ describe("D6 hung-session alert banner (#998)", () => {
 
     const banner = await screen.findByText(/No new messages for 31 min/i);
     expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent(/while sessions stayed busy/i);
     // The evidence copy replaces the busy-minutes copy when the field is present.
     expect(screen.queryByText(/busy for \d+ min without/i)).not.toBeInTheDocument();
 

@@ -597,7 +597,11 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 				"last_progress_seconds": sz.LastProgressSeconds,
 				"busy_ages":             sz.BusyAges,
 				"policy":                "notify_only",
-				"guidance":              "no new messages from either side beyond the evidence window while busy — likely hung-and-alive; stop or resume manually",
+				// Workspace-scoped on purpose (ruling R5): the evidence
+				// (last_progress_seconds) is the max silence across the
+				// busy set — it must not read as attributed to the
+				// oldest-busy session named by SessionID above.
+				"guidance": "no new messages in any busy session beyond the evidence window — likely hung-and-alive; stop or resume manually",
 			},
 		})
 		h.markBusyAlerted(wid)
@@ -615,10 +619,14 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 // hungEvidence is the #1685 two-window gate: the 15-min busy floor AND
 // the 30-min message-silence window must BOTH be met. Message silence
 // (LastProgressSeconds = time since the last LLM-completed or user-sent
-// message) is the evidence the owner ruled on — a long tool execution
-// with a message 20 minutes ago is a HEALTHY long turn, not a hang.
-// 0/absent progress (no busy session, or agentd restarted mid-turn and
-// lost the stamp) means evidence-unavailable: fail toward silence.
+// message, workspace-max over the busy set) is the evidence the owner
+// ruled on — a long tool execution with a message 20 minutes ago is a
+// HEALTHY long turn, not a hang. 0/absent progress means
+// evidence-unavailable: no busy session, agentd restarted mid-turn and
+// lost the stamp, or a PRE-#1685 agentd that never emits the field
+// (the mixed-fleet blackout, disclosed in the CHANGELOG — such
+// workspaces never alert until their agentd rolls forward). Fail
+// toward silence.
 func hungEvidence(sz *agentd.StatuszResponse) bool {
 	if sz.OldestBusySeconds < int(busyAlertOlderThan.Seconds()) {
 		return false
