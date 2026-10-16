@@ -82,12 +82,13 @@ jobs:
           kubectl get runtimeclass gvisor
 
       - name: Provision Longhorn (RWX spike posture)
+        # classes deferred past snapshot-controller: the VolumeSnapshotClass
+        # apply needs the snapshot.storage.k8s.io CRDs first (run
+        # 38865864638 died applying the VSC before they existed).
         run: |
           NODE=$(kubectl --context "kind-$CLUSTER_NAME" get nodes -o jsonpath='{.items[0].metadata.name}')
           bash local/lib/longhorn.sh node-prereqs "$NODE"
           bash local/lib/longhorn.sh install
-          bash local/lib/longhorn.sh classes
-          kubectl -n longhorn-system get storageclass user-shared -o wide || kubectl get storageclass user-shared
 
       - name: Install snapshot-controller (VolumeSnapshot CRDs)
         # Same component prod runs (talos-ops-prod storage/snapshot-controller,
@@ -99,6 +100,12 @@ jobs:
             --version 5.3.0 -n kube-system \
             --wait --timeout 10m
           kubectl -n kube-system rollout status deployment snapshot-controller --timeout=600s
+
+      - name: Apply user-shared StorageClass + VolumeSnapshotClass
+        run: |
+          bash local/lib/longhorn.sh classes
+          kubectl get storageclass user-shared -o wide
+          kubectl get volumesnapshotclass user-shared-snap
 
       - name: Run spike legs A/B/C
         env:
