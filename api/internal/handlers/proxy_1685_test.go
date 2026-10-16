@@ -132,6 +132,51 @@ func TestEscalateHungs_EvidenceGate(t *testing.T) {
 		expectWorkspaceAlertEvt(t, sub2)
 	})
 
+	t.Run("boundary: busy floor 899s does not alert, 900s does (ruling: both windows pinned)", func(t *testing.T) {
+		// The ruling demanded the boundary pinned at BOTH windows; the
+		// silence boundary is pinned above — this is the busy-floor leg.
+		// Silence is met in both arms; only the floor differs.
+		env, broker := newD6Env(t, evidenceStatusz(899, 3600))
+		sub, done := mustSubscribeWorkspace(t, broker, "ws-1")
+		defer done()
+
+		env.handler.escalateHungs([]string{"ws-1"})
+		expectNoWorkspaceAlertEvt(t, sub)
+
+		env2, broker2 := newD6Env(t, evidenceStatusz(900, 1800))
+		sub2, done2 := mustSubscribeWorkspace(t, broker2, "ws-1")
+		defer done2()
+		env2.handler.escalateHungs([]string{"ws-1"})
+		expectWorkspaceAlertEvt(t, sub2)
+	})
+
+	t.Run("evidence unavailable: busy past floor + LastProgressSeconds 0 never alerts (legacy-fleet blackout, disclosed)", func(t *testing.T) {
+		// The mixed-fleet shape: pre-#1685 agentd never emits
+		// last_progress_seconds (omitempty drops 0 on the wire) → the
+		// API decodes 0 → evidence-unavailable → no alert. The D6 net
+		// is OFF for such workspaces until their agentd rolls forward —
+		// disclosed in CHANGELOG/worklog, pinned here (ruling R4).
+		env, broker := newD6Env(t, evidenceStatusz(3600, 0))
+		sub, done := mustSubscribeWorkspace(t, broker, "ws-1")
+		defer done()
+
+		env.handler.escalateHungs([]string{"ws-1"})
+		expectNoWorkspaceAlertEvt(t, sub)
+	})
+
+	t.Run("evidence unavailable: negative LastProgressSeconds never alerts", func(t *testing.T) {
+		// The only arm where the <= 0 branch is load-bearing (0 already
+		// fails the >= window compare): a negative evidence clock
+		// (clock-skew shape) must not alert either — fail toward
+		// silence.
+		env, broker := newD6Env(t, evidenceStatusz(3600, -5))
+		sub, done := mustSubscribeWorkspace(t, broker, "ws-1")
+		defer done()
+
+		env.handler.escalateHungs([]string{"ws-1"})
+		expectNoWorkspaceAlertEvt(t, sub)
+	})
+
 	t.Run("resumed messages resolve a live alert", func(t *testing.T) {
 		// The statusz is a mutable closure (the resolution-test pattern):
 		// sweep 1 hangs on both clocks; sweep 2 keeps the turn busy but a
