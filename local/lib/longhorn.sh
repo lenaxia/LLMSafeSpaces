@@ -45,6 +45,22 @@ longhorn_default_node() {
 longhorn_install() {
     helm repo add longhorn https://charts.longhorn.io >/dev/null 2>&1 || true
     helm repo update >/dev/null
+    # The chart tarball is hosted on github release assets — run
+    # 38889584710 died on a transient 500 fetching it. Retry the whole
+    # upgrade (install is idempotent) with backoff.
+    local i
+    for i in 1 2 3; do
+        if longhorn_install_once; then return 0; fi
+        echo "longhorn install attempt $i failed — retrying in 30s" >&2
+        sleep 30
+    done
+    echo "longhorn install failed after 3 attempts" >&2
+    return 1
+}
+
+longhorn_install_once() {
+    helm repo add longhorn https://charts.longhorn.io >/dev/null 2>&1 || true
+    helm repo update >/dev/null
     # defaultClass=false: kind's local-path stays default; the spike
     # provisions exclusively through the user-shared class below.
     # NOTE: createDefaultDiskLabeled is NOT set (run 38866952477: with it
