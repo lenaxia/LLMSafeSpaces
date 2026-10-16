@@ -53,3 +53,31 @@ contains(fromJson('["agentic-actor-coder[bot]"]'), github.event.comment.user.log
 ## Operator impact
 
 The outage fallback is functional again: when `pull_request` events are lost, an orchestrator/worker `/review` (or any AI command) posted by `agentic-actor-coder[bot]` now reaches the reusable AI Commands workflow instead of clean-skipping. Deliberate trust decision, reversible by deleting the login from the shared list (the drift test then forces every copy to drop it).
+
+## Key Decisions
+
+- **Literal list replicated verbatim + pin test** over a `vars.TRUSTED_*` repo variable (ruling item 2's two options): an unversioned repo variable is invisible to offline invariants tests — the exact-login pin (item 3c) requires the definition to live in the tree; the drift pin supplies the single-source guarantee instead.
+- **Association-gate discovery is generic** (scan all `*.yml`/`*.yaml` for `author_association`): future gates are auto-covered without remembering to register them.
+- The allowlisted bot can fire ALL commands (`/merge` included) under `secrets: inherit` — the issue's explicit ask; disclosed in CHANGELOG; revocation = delete the entry.
+
+## Blockers
+
+None.
+
+## Next Steps
+
+- Orchestrator merges on APPROVED (re-review pending after the r1 rework below).
+- Live confirmation: the next orchestrator app-bot fallback command should appear as a non-skipped AI Commands run (post-fix E2E observation noted as thin by the reviewer).
+
+## Files Modified
+
+- `.github/workflows/ai-comment.yml` — allowlist arm + header contract.
+- `tests/ghaworkflows/gha_callers_test.go` — four pins + helpers.
+- `worklogs/NNNN_2026-10-16_trusted-bot-allowlist-caller-gate.md`, `CHANGELOG.md` — records.
+
+## Rework r1 (PR #1715 review, CHANGES_REQUESTED @ 6e3a5a51 — commit-pinned verdict)
+
+- **Blocking (docs):** the pre-existing header claim that the reusable workflow "skips automation-bot commenters itself" was factually false at v0.2.16 (verified: reusable `respond` has no job `if:`; `route-command.sh` has zero bot/author checks) and contradicted this PR's own added block. Corrected: caller admission is the ONLY authorization check.
+- **Pin hardening:** `TestNoBlanketAssociationNonePass` now strips YAML comment lines (prose may cite the forbidden arm) and matches case-insensitively across both quote styles (`== "none"` is semantically identical in GitHub expressions) — mutation-verified: double-quoted lowercase blanket pass fails arm + blanket pins.
+- **Style nit:** dropped the unused `name` parameter from `gateAllowlistArms`.
+- **Assessed out of scope by the reviewer** (tracked in the review, not folded here): mid-sentence ` /review` mention dispatching a full review — pre-existing, pinned as intended by `TestAiCommentAuthorizationGatePresent`; belongs in its own issue if ever changed.

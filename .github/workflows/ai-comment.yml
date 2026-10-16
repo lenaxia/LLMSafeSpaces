@@ -10,10 +10,13 @@
 # versa), and the footer posting via the central post-footer.sh.
 #
 # The `if:` filter MUST stay in the caller (ai-workflows lesson #4) — the
-# reusable workflow cannot gate on the triggering comment. The reusable
-# workflow reads THIS repo's prompts (.github/prompts/) and skips
-# automation-bot commenters itself. The `uses:` ref MUST be a hardcoded tag
-# (no vars context); propagate.yml in ai-workflows bumps it on every release.
+# reusable workflow cannot gate on the triggering comment. At v0.2.16 the
+# reusable workflow performs NO commenter filtering of its own (verified:
+# no job-level `if:`, zero bot/author checks in route-command.sh) — caller
+# admission below is the ONLY authorization check; anyone it admits,
+# trusted app bots included, reaches the command router. The `uses:` ref
+# MUST be a hardcoded tag (no vars context); propagate.yml in ai-workflows
+# bumps it on every release.
 #
 # Trusted app-bot allowlist (#1710, ai-workflows v0.2.16 README §4 caller
 # contract): app bots always carry author_association NONE — they are

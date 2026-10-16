@@ -337,7 +337,7 @@ func associationGatedWorkflows(t *testing.T) map[string]string {
 
 // gateAllowlistArms extracts the raw JSON array literal from every
 // trusted-bot allowlist arm in the given workflow body.
-func gateAllowlistArms(t *testing.T, name, body string) []string {
+func gateAllowlistArms(t *testing.T, body string) []string {
 	t.Helper()
 	var arms []string
 	for _, m := range trustedBotArmRe.FindAllStringSubmatch(body, -1) {
@@ -353,7 +353,7 @@ func gateAllowlistArms(t *testing.T, name, body string) []string {
 // `skipped`, runs 38836736982/38850671818) fails here.
 func TestTrustedBotAllowlistArmOnEveryAssociationGate(t *testing.T) {
 	for name, body := range associationGatedWorkflows(t) {
-		if len(gateAllowlistArms(t, name, body)) == 0 {
+		if len(gateAllowlistArms(t, body)) == 0 {
 			t.Errorf("%s filters on author_association but has no trusted-bot allowlist arm "+
 				"(contains(fromJson(...), github.event.comment.user.login)) — app bots carry association NONE "+
 				"by construction and are silently skipped by this gate (#1710 outage no-op class)", name)
@@ -372,7 +372,7 @@ func TestTrustedBotAllowlistCopiesDoNotDrift(t *testing.T) {
 		t.Fatalf("marshal canonical allowlist: %v", err)
 	}
 	for name, body := range associationGatedWorkflows(t) {
-		arms := gateAllowlistArms(t, name, body)
+		arms := gateAllowlistArms(t, body)
 		if len(arms) == 0 {
 			continue // covered by TestTrustedBotAllowlistArmOnEveryAssociationGate
 		}
@@ -403,7 +403,7 @@ func TestTrustedBotAllowlistExactLoginsOnly(t *testing.T) {
 	// The same shape rule holds for every gate copy, not just the canonical
 	// list (a drifted copy with '*' must fail here even before drift is fixed).
 	for name, body := range associationGatedWorkflows(t) {
-		for _, arm := range gateAllowlistArms(t, name, body) {
+		for _, arm := range gateAllowlistArms(t, body) {
 			var entries []string
 			if err := json.Unmarshal([]byte(arm), &entries); err != nil {
 				t.Errorf("%s allowlist arm %s is not a JSON array of strings: %v", name, arm, err)
@@ -418,22 +418,41 @@ func TestTrustedBotAllowlistExactLoginsOnly(t *testing.T) {
 	}
 }
 
+// blanketNonePassRe matches a blanket association-NONE gate arm in any of
+// the spellings GitHub expressions accept: comparisons are case-insensitive
+// and both quote styles work, so == 'NONE', == "none", != 'None' … are all
+// semantically identical blanket passes.
+var blanketNonePassRe = regexp.MustCompile(
+	`(?i)author_association\s*(?:==|!=)\s*["']none["']`)
+
+// stripYAMLCommentLines removes full-line YAML comments so prose mentions
+// of a gate (this file's own header documents the forbidden arm) never
+// trip the blanket-pass scan. Expression lines never start with '#'.
+func stripYAMLCommentLines(body string) string {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // TestNoBlanketAssociationNonePass pins the #1710 security ruling: NEVER a
 // blanket association == 'NONE' pass. An association-NONE arm would admit
 // EVERY app bot and outside contributor (association is NONE for both),
 // converting a deliberate per-bot trust decision into an open door. The
 // exact-login allowlist is the only sanctioned way to admit an app bot.
+// Comment lines are stripped first (prose may cite the forbidden arm) and
+// the match is case- and quote-insensitive (GitHub expression string
+// comparisons are case-insensitive; both quote styles are valid).
 func TestNoBlanketAssociationNonePass(t *testing.T) {
 	for _, f := range workflowYAMLs(t) {
 		name := filepath.Base(f)
-		body := readFile(t, f)
-		for _, blanket := range []string{
-			"author_association == 'NONE'",
-			"author_association != 'NONE'",
-		} {
-			if strings.Contains(body, blanket) {
-				t.Errorf("%s contains blanket gate %q — association NONE is shared by every app bot and outside contributor; admit bots via the exact-login allowlist only (#1710 ruling)", name, blanket)
-			}
+		body := stripYAMLCommentLines(readFile(t, f))
+		if m := blanketNonePassRe.FindString(body); m != "" {
+			t.Errorf("%s contains blanket gate %q — association NONE is shared by every app bot and outside contributor; admit bots via the exact-login allowlist only (#1710 ruling)", name, m)
 		}
 	}
 }
