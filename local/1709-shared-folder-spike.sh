@@ -156,7 +156,8 @@ lh_dump_state() {
     ${K} -n longhorn-system get nodes.longhorn.io -o yaml >"$OUT/lh-nodes.yaml" 2>&1 || true
     ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/lh-volumes.yaml" 2>&1 || true
     ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/lh-replicas.txt" 2>&1 || true
-    ${K} -n longhorn-system logs deployment/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
+    ${K} -n longhorn-system logs daemonset/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
+    ${K} -n longhorn-system logs -l longhorn.io/component=share-manager --tail=80 >"$OUT/lh-share.log" 2>&1 || true
     ${K} -n longhorn-system describe pod -l longhorn.io/component=share-manager >"$OUT/lh-share-describe.txt" 2>&1 || true
     ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true
 }
@@ -307,7 +308,7 @@ kind: ConfigMap
 metadata: {name: seaweed-s3-iam, namespace: ${NS}}
 data:
   s3.json: |
-    {"identities":[{"name":"spike","actions":["Admin:.*","Read:.*","Write:.*","List:.*","Tagging:.*"],"credentials":[{"accessKey":"spike1709","secretKey":"spike1709-spike1709"}]}]}
+    {"identities":[{"name":"spike","credentials":[{"accessKey":"spike1709","secretKey":"spike1709-spike1709"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
 ---
 apiVersion: apps/v1
 kind: Deployment

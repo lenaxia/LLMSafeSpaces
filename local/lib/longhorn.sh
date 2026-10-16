@@ -52,10 +52,19 @@ longhorn_install() {
     # creates NO disks — replicas never schedule, RWX volumes sit at
     # "Waiting for volume share to be available" for their whole life).
     # The default (false) auto-creates a disk on every schedulable node.
+    # replicaSoftAntiAffinity=true (run 38873829660): the chart default
+    # DISABLES soft anti-affinity — 2 replicas of one volume hard-affine
+    # to distinct nodes, which a single-node kind cluster can never
+    # satisfy: replica #2 stays unscheduled, the RWX engine stays
+    # degraded, ganesha crash-loops on its readiness probe
+    # (/var/run/ganesha.pid never appears), and the volume goes faulted.
+    # Allowing same-node co-location keeps the 2-replica write path (the
+    # honest throughput shape) on one node.
     helm upgrade --install longhorn longhorn/longhorn \
         --version "$LONGHORN_CHART_VERSION" \
         -n "$NS_LONGHORN" --create-namespace \
         --set defaultSettings.defaultReplicaCount=2 \
+        --set defaultSettings.replicaSoftAntiAffinity=true \
         --set defaultSettings.storageMinimalAvailablePercentage=15 \
         --set persistence.defaultClass=false \
         --set preUpgradeChecker.enabled=false \
