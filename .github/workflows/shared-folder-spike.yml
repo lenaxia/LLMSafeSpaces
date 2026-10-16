@@ -14,6 +14,22 @@ on:
         description: "rclone --transfers sweep (space-separated)"
         default: "8 32"
         type: string
+  pull_request:
+    # The dispatch path needs this file on the default branch; the spike
+    # instead fires from its PR (same trust domain as dispatch: same-repo
+    # branch, write-access author — the pool's fork restriction is about
+    # untrusted fork code, which this is not). Paths-filtered so doc-only
+    # pushes never wake the 300m spike.
+    types: [opened, synchronize, reopened]
+    branches: [design/1709-shared-folder]
+    paths:
+      - local/1709-shared-folder-spike.sh
+      - local/lib/longhorn.sh
+      - .github/workflows/shared-folder-spike.yml
+
+concurrency:
+  group: shared-folder-spike-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CLUSTER_NAME: llmsafespaces-ci
