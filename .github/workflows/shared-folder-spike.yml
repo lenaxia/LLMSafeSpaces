@@ -1,0 +1,113 @@
+name: /shared parked-PVC spike (#1709)
+
+on:
+  workflow_dispatch:
+    # Manual trigger only (spike — not a gate). Knobs:
+    #   auto_gb   — leg-B dataset size in GiB (auto-shrinks to node disk)
+    #   transfers — rclone --transfers sweep, space-separated
+    inputs:
+      auto_gb:
+        description: "Leg-B dataset GiB (auto-shrinks to fit node free disk /3)"
+        default: "24"
+        type: string
+      transfers:
+        description: "rclone --transfers sweep (space-separated)"
+        default: "8 32"
+        type: string
+
+env:
+  CLUSTER_NAME: llmsafespaces-ci
+
+jobs:
+  shared-folder-spike:
+    name: "Spike A/B/C: runsc×RWX, hydration, snapshot→RO"
+    # lenaxia-dind-runner (same privileged set as the US-70 pool —
+    # spike A/B/C need kind + docker-exec node provisioning).
+    runs-on: lenaxia-dind-runner
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install kind + kubectl + helm + jq
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind && sudo mv ./kind /usr/local/bin
+          curl -fsSLo ./kubectl "https://dl.k8s.io/release/v1.35.5/bin/linux/amd64/kubectl"
+          curl -fsSLo ./kubectl.sha256 "https://dl.k8s.io/release/v1.35.5/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x ./kubectl && sudo mv ./kubectl /usr/local/bin
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
+          # Pre-pull the spike images on the runner so kind node pulls
+          # cannot 404 on a mistagged artifact (fails LOUD here, not 20
+          # minutes into a leg).
+          docker pull debian:bookworm-slim
+          docker pull rclone/rclone:1.67.0
+          docker pull minio/minio:RELEASE.2024-06-13T22-53-53Z
+
+      - name: Record runner environment
+        run: |
+          echo "cpu: $(nproc)"
+          echo "mem: $(free -h | awk '/^Mem:/{print $2}')"
+          df -h / | tee /tmp/spike1709-df.txt
+          docker info --format 'docker={{.ServerVersion}} ncpu={{.NCPU}}' || true
+
+      - name: Create kind cluster
+        run: kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+
+      - name: Provision gVisor (runsc) on the kind node
+        run: |
+          NODE=$(kubectl --context "kind-$CLUSTER_NAME" get nodes -o jsonpath='{.items[0].metadata.name}')
+          bash local/lib/gvisor.sh install "$NODE"
+          bash local/lib/gvisor.sh runtimeclass
+          kubectl get runtimeclass gvisor
+
+      - name: Provision Longhorn (RWX spike posture)
+        run: |
+          NODE=$(kubectl --context "kind-$CLUSTER_NAME" get nodes -o jsonpath='{.items[0].metadata.name}')
+          bash local/lib/longhorn.sh node-prereqs "$NODE"
+          bash local/lib/longhorn.sh install
+          bash local/lib/longhorn.sh classes
+          kubectl -n longhorn-system get storageclass user-shared -o wide || kubectl get storageclass user-shared
+
+      - name: Install snapshot-controller (VolumeSnapshot CRDs)
+        # Same component prod runs (talos-ops-prod storage/snapshot-controller,
+        # chart 5.3.0) — the CSI snapshot cycle must measure the real shape.
+        run: |
+          helm repo add piraeus https://piraeus.io/helm-charts/ >/dev/null 2>&1 || true
+          helm repo update >/dev/null
+          helm upgrade --install snapshot-controller piraeus/snapshot-controller \
+            --version 5.3.0 -n kube-system \
+            --wait --timeout 10m
+          kubectl -n kube-system rollout status deployment snapshot-controller --timeout=600s
+
+      - name: Run spike legs A/B/C
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          AUTO_GB: ${{ inputs.auto_gb || '24' }}
+          TRANSFERS: ${{ inputs.transfers || '8 32' }}
+        run: bash local/1709-shared-folder-spike.sh
+
+      - name: Upload spike artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-folder-spike-${{ github.run_id }}
+          path: |
+            /tmp/spike1709/**
+            /tmp/spike1709-df.txt
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context "kind-$CLUSTER_NAME" get pods -A -o wide || true
+          kubectl -n longhorn-system get pods -o wide || true
+          kubectl -n longhorn-system get volumes.longhorn.io -o wide || true
+          kubectl -n spike1709 get events --sort-by='.lastTimestamp' | tail -40 || true
+
+      - name: Teardown
+        if: always()
+        run: kind delete cluster --name $CLUSTER_NAME
