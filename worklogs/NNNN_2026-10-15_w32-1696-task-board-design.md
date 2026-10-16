@@ -40,3 +40,13 @@ R1 member role matrix (with proposal), R2 org-workspace targeting breadth v1, R3
 ## Deliverable
 
 `design/0067_2026-10-15_task-board.md` via PR `--base main` (explicit). Never self-merge; iterate review to APPROVED; comment on #1696 with the PR link at open, and "w32: PR #N APPROVED" at approval.
+
+## 2026-10-16 addendum — owner rulings conformed
+
+Two rulings arrived mid-review (relayed by the orchestrator):
+1. **Blocking model** (#1696 comment 6204924480): blocked is purely structural; depends_on[] only; criteria/evaluator machinery deleted; external conditions become explicit tasks.
+2. **Consolidated R1-R5 set** (#1696 comment 6204962615): R1 entities = epic+task only (stories CUT — schema, actions, routes, identifiers, parity rows all reworked); R2 exact field model (epic.outcome, derived-not-stored progress, acceptance_criteria jsonb, assignee_session, last_progress_at, board_transitions for evidence-per-transition + cycle-time actuals, NO story points); R3 structural blocking; R4 depends_on semantics (N-ary, ALL-Done unblock, cycle rejection 409+did-you-mean, ready-set without topo sort, cancelled-dep → pending_input "dependency abandoned", within-project/cross-epic/never-cross-project); R5 no DAG entities/milestones/phases.
+
+Doc changes: §2b transcribes both rulings verbatim; reconciler invariant labels renamed R1-R5 → RC1-RC5 and open rulings → OR1-OR4 to avoid collision with the owner's ruling numbers; the criteria-evaluator open ruling is deleted (mechanism removed). Receipt confirmed on the issue thread per the orchestrator's ask.
+
+Also: main moved twice during review (worklog renumbering + #1690) — merge conflict in COORDINATE.md resolved (both rows kept); one dropped-synchronize event recovered by re-pushing.
