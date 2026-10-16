@@ -117,6 +117,235 @@ func TestParseStepUsageMalformed(t *testing.T) {
 	}
 }
 
+// --- message.updated (message-level progress, #1685 owner ruling) ---
+
+// TestParseMessageLevelProgress is the direct table-driven pin for the
+// #1685 progress classifier, defensive branches included. Real-wire
+// shapes are the golden-fixture shapes (see
+// TestGoldenFixture_MessageLevelProgress_CompletionAnchor for the
+// replay pin over every captured event); the synthetic rows below
+// exist only to hit defensive branches the fixtures do not contain.
+// RULING R1 (rework r3): the completion discriminator is
+// info.time.completed — present on final upserts, absent mid-flight.
+// The old len(info.Cost)==0 discriminator was inert on every captured
+// wire ("cost":0 rides every upsert as a JSON number, in-flight
+// creation upserts included), so the in-flight rows here were RED
+// until the re-anchor.
+func TestParseMessageLevelProgress(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		props     string
+		wantSID   string
+		wantOK    bool
+	}{
+		{
+			name:      "user-sent message stamps (real shape: cost null)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"id":"msg_1","role":"user","cost":null,"time":{"created":1787071934103}}}`,
+			wantSID:   "ses_a",
+			wantOK:    true,
+		},
+		{
+			name:      "completed assistant message stamps (real final-upsert shape: cost 0 + time.completed)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"id":"msg_2","role":"assistant","cost":0,"time":{"created":1787074779006,"completed":1787074798309}}}`,
+			wantSID:   "ses_a",
+			wantOK:    true,
+		},
+		{
+			name:      "suffixed store variant of a user send stamps",
+			eventType: "message.updated.1",
+			props:     `{"sessionID":"ses_a","info":{"role":"user","text":"hi"}}`,
+			wantSID:   "ses_a",
+			wantOK:    true,
+		},
+		{
+			name:      "in-flight assistant creation upsert does NOT stamp (real shape: cost 0, time.created only)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"id":"msg_3","role":"assistant","cost":0,"time":{"created":1787074798343}}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "assistant upsert without a cost field does NOT stamp (defensive; on no captured wire)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"role":"assistant","time":{"created":1}}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "assistant with object cost and no completion does NOT stamp (defensive; on no captured wire)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"role":"assistant","cost":{"input":1,"output":2}}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "assistant with null cost and no completion does NOT stamp (the cost:null latent)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"role":"assistant","cost":null,"time":{"created":1}}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "assistant with null cost but completed DOES stamp (cost shape is not the anchor)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"role":"assistant","cost":null,"time":{"created":1,"completed":2}}}`,
+			wantSID:   "ses_a",
+			wantOK:    true,
+		},
+		{
+			name:      "completed:null is not a completion",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":{"role":"assistant","cost":0,"time":{"created":1,"completed":null}}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "wrong event type is not progress",
+			eventType: "message.part.updated",
+			props:     `{"sessionID":"ses_a","part":{"type":"text","text":"chunk"}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "empty props",
+			eventType: "message.updated",
+			wantOK:    false,
+		},
+		{
+			name:      "malformed props JSON",
+			eventType: "message.updated",
+			props:     `{"sessionID":`,
+			wantOK:    false,
+		},
+		{
+			name:      "props not an object",
+			eventType: "message.updated",
+			props:     `"just a string"`,
+			wantOK:    false,
+		},
+		{
+			name:      "info not an object (info-unmarshal failure)",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a","info":"not-an-object"}`,
+			wantOK:    false,
+		},
+		{
+			name:      "info absent",
+			eventType: "message.updated",
+			props:     `{"sessionID":"ses_a"}`,
+			wantOK:    false,
+		},
+		{
+			name:      "empty sessionID does not stamp",
+			eventType: "message.updated",
+			props:     `{"sessionID":"","info":{"role":"user","text":"hi"}}`,
+			wantOK:    false,
+		},
+		{
+			name:      "completed assistant with empty sessionID does not stamp",
+			eventType: "message.updated",
+			props:     `{"info":{"role":"assistant","cost":0,"time":{"created":1,"completed":2}}}`,
+			wantOK:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sid, ok := ParseMessageLevelProgress(tt.eventType, json.RawMessage(tt.props))
+			if ok != tt.wantOK {
+				t.Fatalf("ParseMessageLevelProgress ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && sid != tt.wantSID {
+				t.Fatalf("sessionID = %q, want %q", sid, tt.wantSID)
+			}
+		})
+	}
+}
+
+// TestGoldenFixture_MessageLevelProgress_CompletionAnchor replays
+// EVERY message.updated event in all four golden fixtures through the
+// classifier and pins the completion anchor (ruling R1): a user send
+// stamps; an assistant upsert stamps IFF info.time.completed is
+// present. The per-fixture counts are pinned like the taxonomy tests —
+// a fixture refresh that changes them must re-pin here consciously.
+// RED against the pre-re-anchor classifier: with the inert
+// len(info.Cost)==0 discriminator, every in-flight creation upsert
+// (cost 0 as a number) stamped.
+func TestGoldenFixture_MessageLevelProgress_CompletionAnchor(t *testing.T) {
+	for _, tt := range []struct {
+		fixture            string
+		userSends          int
+		completedAssistant int
+		inflightAssistant  int
+	}{
+		{"../testdata/sse_events_1_18_10_live.jsonl", 19, 38, 18},
+		{"../testdata/sse_events_1_18_15_live.jsonl", 3, 2, 1},
+		{"../testdata/event_store_1_18_10.jsonl", 78, 59, 118},
+		{"../testdata/event_store_1_18_15.jsonl", 3, 1, 2},
+	} {
+		t.Run(tt.fixture, func(t *testing.T) {
+			data, err := os.ReadFile(tt.fixture)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			var user, completed, inflight int
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				line = strings.TrimPrefix(line, "data: ")
+				var env Envelope
+				if err := json.Unmarshal([]byte(line), &env); err != nil || env.Type == "" {
+					continue
+				}
+				if env.Type != "message.updated" && !isSuffixed(env.Type, "message.updated") {
+					continue
+				}
+				// The anchor truth, decoded from the fixture line itself.
+				var p struct {
+					SessionID string `json:"sessionID"`
+					Info      *struct {
+						Role string `json:"role"`
+						Time struct {
+							Completed *int64 `json:"completed"`
+						} `json:"time"`
+					} `json:"info"`
+				}
+				if err := json.Unmarshal(env.Properties, &p); err != nil {
+					t.Fatalf("message.updated properties undecodable: %v", err)
+				}
+				sid, ok := ParseMessageLevelProgress(env.Type, env.Properties)
+				var wantOK bool
+				switch {
+				case p.Info != nil && p.Info.Role == "user":
+					wantOK, user = true, user+1
+				case p.Info != nil && p.Info.Time.Completed != nil:
+					wantOK, completed = true, completed+1
+				default:
+					wantOK, inflight = false, inflight+1
+				}
+				if ok != wantOK {
+					t.Fatalf("%s: role=%q completed=%v classified ok=%v, want %v — the completion anchor drifted from the fixture",
+						env.Type, func() string {
+							if p.Info != nil {
+								return p.Info.Role
+							}
+							return ""
+						}(), p.Info != nil && p.Info.Time.Completed != nil, ok, wantOK)
+				}
+				if ok && sid != p.SessionID {
+					t.Fatalf("stamp attributed sessionID %q, fixture says %q", sid, p.SessionID)
+				}
+			}
+			if user != tt.userSends || completed != tt.completedAssistant || inflight != tt.inflightAssistant {
+				t.Fatalf("fixture message.updated classes changed: user=%d (pinned %d), completed assistant=%d (pinned %d), in-flight assistant=%d (pinned %d) — fixture refreshed? re-pin consciously",
+					user, tt.userSends, completed, tt.completedAssistant, inflight, tt.inflightAssistant)
+			}
+			// Floor: every fixture must exercise all three classes, or
+			// the pin goes vacuous on refresh.
+			if user == 0 || completed == 0 || inflight == 0 {
+				t.Fatalf("fixture must contain user sends (%d), completed assistant upserts (%d) AND in-flight assistant upserts (%d)",
+					user, completed, inflight)
+			}
+			t.Logf("%s: %d user sends, %d completed assistant upserts stamp; %d in-flight upserts do not",
+				tt.fixture, user, completed, inflight)
+		})
+	}
+}
+
 // Two golden fixtures pin the CURRENT (1.18.10) event surfaces — see
 // testdata/REFRESH.md for provenance and refresh procedure. The same
 // logical event type carries different names on the two surfaces; that

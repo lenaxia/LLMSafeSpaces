@@ -397,6 +397,12 @@ export interface WorkspaceAlertEvent {
   data: {
     alert: string;
     oldest_busy_seconds: number;
+    /**
+     * #1685: seconds since the last MESSAGE-LEVEL progress (LLM-completed
+     * or user-sent message) — the evidence the alert fired on. Absent on
+     * older API servers; the banner falls back to busy-minutes.
+     */
+    last_progress_seconds?: number;
     busy_ages?: Record<string, number>;
     policy: "notify_only";
     guidance: string;

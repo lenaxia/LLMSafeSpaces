@@ -1244,8 +1244,17 @@ export function ChatPage() {
       {hungAlert && (
         <div className="flex items-center justify-between gap-2 border-b border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
           <span>
-            This session has been busy for {Math.round(hungAlert.data.oldest_busy_seconds / 60)} min without
-            completing — it may be hung. Nothing was stopped automatically; abort or resume manually.
+            {hungAlert.data.last_progress_seconds != null ? (
+              <>
+                No new messages for {Math.round(hungAlert.data.last_progress_seconds / 60)} min while sessions stayed
+                busy — one may be hung. Nothing was stopped automatically; abort or resume manually.
+              </>
+            ) : (
+              <>
+                This session has been busy for {Math.round(hungAlert.data.oldest_busy_seconds / 60)} min without
+                completing — it may be hung. Nothing was stopped automatically; abort or resume manually.
+              </>
+            )}
           </span>
           <button onClick={() => setHungAlert(null)} className="underline hover:no-underline shrink-0">Dismiss</button>
         </div>

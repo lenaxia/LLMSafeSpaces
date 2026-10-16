@@ -70,13 +70,17 @@ func backendHost(t *testing.T, env *testEnv) string {
 	return net.JoinHostPort(u.Hostname(), u.Port())
 }
 
+// hungStatusz builds a statusz that is hung on BOTH #1685 windows: the
+// busy floor (seconds) and the message-silence window (always satisfying —
+// the callers vary busy-age, the evidence stays hung).
 func hungStatusz(seconds int) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
-			Healthy:           true,
-			OldestBusySeconds: seconds,
-			BusyAges:          map[string]int{"ses-x": seconds},
+			Healthy:             true,
+			OldestBusySeconds:   seconds,
+			BusyAges:            map[string]int{"ses-x": seconds},
+			LastProgressSeconds: int((busyAlertNoProgress + 5*time.Minute).Seconds()),
 		})
 	}
 }
