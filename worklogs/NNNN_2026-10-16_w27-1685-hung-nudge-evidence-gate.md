@@ -83,7 +83,11 @@ None. #1690 (#1686) merge still pending with the orchestrator — its CHANGELOG 
 
 PR #1704 opened 00:26Z; 45+ minutes later ZERO workflow runs (checks 0/0, no review job) while repo Actions were demonstrably alive (another branch's PR runs fired at 00:47Z). Matches the documented GitHub event-delivery-loss shape (the #1569/#1530-era outage; remedied then by re-firing PR events). This commit is the re-fire: the worklog record you are reading is real content whose push carries the synchronize event. If the pipeline still does not fire on synchronize, the remaining lever (PR close/reopen — prior fleet use was owner-approved) is queued behind the orchestrator's word. Also disclosed: one accidental "placeholder" message was sent to the orchestrator (wrong buffer, no content; corrected immediately).
 
+## Incident record — resolution (r2 handoff)
+
+The orchestrator's owner-side lever fired at 01:43Z: branch fix/1685-hung-nudge-evidence-gate-r2 (the same three SHAs, remote-verified) + PR #1708 + a manual workflow_dispatch. The dispatched CI run (38836645004) completed **success** — full suite, race detector, lint, harness ABI, all jobs green on the exact SHAs of this worklog (the usagestream BusyTruth test passed in both suites). PR chain for the record: #1704 (opened, events lost) → #1707 (alias r1, events lost, closed with pointers) → #1708 (r2, live). This worklog-note push is the synchronize attempt for the PR Review workflow; my actor's pull_request events were still being dropped at last probe (02:36Z).
+
 ## Next Steps
 
-- PR → review loop → merge-readiness report (no self-merge).
+- PR #1708 review loop → merge-readiness report (no self-merge).
 - Charter close after all three PRs merged + release production-verified: #1679 ✓ merged (ff68dbb5), #1686 awaiting orchestrator merge (APPROVED), #1685 this PR.
