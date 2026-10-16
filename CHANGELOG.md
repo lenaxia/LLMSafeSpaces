@@ -12,17 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The 'busy 15 min may be hung' nudge now requires message-level
   evidence** (#1685, owner ruling): a `session_hung` alert fires only when
   a session is busy past the 15-min floor AND no new messages from either
-  side — an LLM-COMPLETED message (cost-bearing `message.updated`) or a
-  user-sent message — have arrived for 30 min. Busy-age alone no longer
-  escalates: this fleet's healthy turns regularly run 30-60+ min with
-  long tool executions, and the elapsed-time nudge had become noise (the
-  owner's canonical no-alert case: last message 20 min ago + a long tool
-  running is a HEALTHY long turn). `statusz` gains `last_progress_seconds`
-  (additive, omitempty; 0 = evidence unavailable → no alert); the SSE
-  alert payload carries it; the banner states the evidence ("no new
-  messages for X min", with a busy-minutes fallback for older APIs);
-  alert resolution fires when EITHER window clears. Persisted alerts,
-  MCP, and SDK surfaces are unchanged in shape (audited).
+  side — an LLM-COMPLETED message (final `message.updated` upsert carrying
+  `info.time.completed`) or a user-sent message — have arrived for 30 min.
+  Busy-age alone no longer escalates: this fleet's healthy turns regularly
+  run 30-60+ min with long tool executions, and the elapsed-time nudge had
+  become noise (the owner's canonical no-alert case: last message 20 min
+  ago + a long tool running is a HEALTHY long turn). `statusz` gains
+  `last_progress_seconds` (additive, omitempty; 0 = evidence unavailable →
+  no alert); the SSE alert payload carries it; the banner states the
+  evidence workspace-scoped ("no new messages for X min while sessions
+  stayed busy", with a busy-minutes fallback for older APIs); alert
+  resolution fires when EITHER window clears. Persisted alerts, MCP, and
+  SDK surfaces are unchanged in shape (audited).
+- **OPERATOR DISCLOSURE — legacy-fleet hung-alert blackout during mixed
+  rollout (#1685, ruling R4):** a pre-#1685 agentd never emits
+  `last_progress_seconds`, so the API decodes 0 ("evidence unavailable")
+  and such workspaces NEVER raise `session_hung` — the D6 safety net is
+  silently off for them until their agentd rolls forward. This is the
+  sanctioned fail-toward-silence direction (a false negative is
+  human-recoverable; the false positive was the dogfooded noise the issue
+  filed), but the disablement is deliberate and disclosed, not an
+  accident of `omitempty`. The evidence clock is also in-memory: an
+  agentd restart mid-turn self-heals at the next message event (same
+  direction).
 
 ### Changed — org provisioning (BREAKING)
 

@@ -91,3 +91,34 @@ The orchestrator's owner-side lever fired at 01:43Z: branch fix/1685-hung-nudge-
 
 - PR #1708 review loop → merge-readiness report (no self-merge).
 - Charter close after all three PRs merged + release production-verified: #1679 ✓ merged (ff68dbb5), #1686 awaiting orchestrator merge (APPROVED), #1685 this PR.
+
+---
+
+## Rework r3 — owner ruling on the v0.2.16 CHANGES_REQUESTED verdicts (comment 6211972770)
+
+**Date:** 2026-10-16. The gated review (runs 38865309914 + 38873785779, head 870654cc) returned two identical CHANGES_REQUESTED verdicts; the owner ruling accepted the findings in full. All five ruling items executed; §b above is superseded where corrected below.
+
+### R1 — completion discriminator re-anchored to `info.time.completed` (F1, major)
+
+Empirically reproduced before fixing: on every golden fixture, assistant `message.updated` upserts carry `"cost":0` as a JSON **number, always present, including the mid-flight pre-streaming creation upsert** — so the §b `len(info.Cost)==0` discriminator (and its "in-flight upsert (no cost)" branch) was dead code on real wires; every assistant event stamped (342/342 across the four fixtures, 139 of them in-flight creation upserts). Re-anchored `ParseMessageLevelProgress` (pkg/agent/opencode/wire/wire.go) to `info.time.completed` — present on final upserts, absent mid-flight, in all four fixtures. Cost shape is no longer consulted at all (the ruling permitted cost only as defense-in-depth; on the real wire it separates nothing, and the `cost:null` latent is fixed for free by the anchor). This is a DELIBERATE divergence from the ABI translator's MESSAGE_END discriminator (translate_abi.go:192, `msg.GetCost() != nil` — plan-approval file:line now cited): billing upsert-stitching tolerates creation-anchored ENDs, the hung-evidence clock must not. Fabricated-shape pins in session_tracker_message_progress_test.go replaced with the fixture shapes (sse_events_1_18_10_live.jsonl:59/:62/:65). RED-first: 4 table rows + all four fixture replays + the tracker and statusz-handler integration pins fail at the pre-fix commit, green after.
+
+### R2 — busy-floor boundary pinned (ruling criterion)
+
+`TestEscalateHungs_EvidenceGate` gains the 899/900 busy-floor boundary arm alongside the existing 1799/1800 silence boundary — the ruling demanded both windows; only the silence leg existed. Green-at-head pin (the floor math was already correct; the pin closes the deletable-green hole).
+
+### R3 — statusz evidence loop pinned through the REAL handler (F3)
+
+`TestStatuszHandler_LastProgressSecondsThroughTheRealHandler` (busy_overlay_test.go, extending the `TestStatuszHandler_BusyTruthThroughTheRealHandler` pattern): SSE `processEvent` in fixture shapes → tracker stamps → the REAL `buildStatuszHandler` → asserts `last_progress_seconds` is the max silence over the authority-filtered busy set, including the stale-stamp exclusion (an authority-unbusied session's 40m-old stamp must not contribute). Deleting the server.go evidence loop, the authority filter, or the completion anchor turns this red. The false "handler half is pinned by the API-side evidence-gate suite" comment replaced with a pointer to this test (that suite hand-builds statusz JSON via `evidenceStatusz` — it never exercised the handler).
+
+### R4 — evidence-unavailable branch pinned + legacy-fleet blackout disclosed (F4)
+
+New arms: busy past floor + `LastProgressSeconds` 0 (the pre-#1685 agentd omitempty wire shape) and negative (clock-skew shape) never alert — pinning proxy_lifecycle.go's `<= 0` branch, previously zero-coverage. **Blackout disclosed here and in the CHANGELOG:** a pre-#1685 agentd never emits `last_progress_seconds` → the API decodes 0 → evidence-unavailable → the D6 hung net is silently OFF for those workspaces until their agentd rolls forward (mixed fleets). Fail-toward-silence is the sanctioned direction; a fleet-wide disablement must be a disclosed decision, not an `omitempty` accident. The in-memory-clock restart hole (agentd restart mid-turn → 0 → self-heals at the next message) is the same disclosed direction.
+
+### R5 — evidence attribution made workspace-scoped (minor)
+
+`last_progress_seconds` is the workspace-max silence, but the banner read "while this session kept running" under the alert's oldest-busy SessionID — attributing the max silence to a session that may be fresh-messaged. Smallest honest change: copy made workspace-scoped in both surfaces (banner: "while sessions stayed busy — one may be hung"; payload guidance: "no new messages in any busy session"). SessionID attribution (badge routing, persisted alerts) is pre-existing shape, unchanged; the older-API busy-minutes fallback copy is pre-existing, untouched.
+
+### r3 tests run
+
+- RED at 7fbd83cc (pre-fix parent of the re-anchor): `TestParseMessageLevelProgress` 4 rows FAIL; `TestGoldenFixture_MessageLevelProgress_CompletionAnchor` all 4 fixtures FAIL; `TestTrackerMessageProgress_StreamChunksDoNotStamp` FAIL; `TestStatuszHandler_LastProgressSecondsThroughTheRealHandler` FAIL. R2/R4 arms GREEN at head (pins of correct behavior — no bug to redden).
+- GREEN at 791f04ad: `go test ./pkg/agent/opencode/wire/ ./cmd/workspace-agentd/ ./pkg/agentd/ ./api/internal/handlers/` all ok; frontend `npm run typecheck` clean, `npm run lint` 0 errors (6 pre-existing warnings in generated protobuf files), `ChatPage.queue.test.tsx` 17/17.
