@@ -19,9 +19,10 @@ on:
     # instead fires from its PR (same trust domain as dispatch: same-repo
     # branch, write-access author — the pool's fork restriction is about
     # untrusted fork code, which this is not). Paths-filtered so doc-only
-    # pushes never wake the 300m spike.
+    # pushes never wake the 300m spike. NOTE: for pull_request the
+    # branches filter matches the PR BASE (main), not the head.
     types: [opened, synchronize, reopened]
-    branches: [design/1709-shared-folder]
+    branches: [main]
     paths:
       - local/1709-shared-folder-spike.sh
       - local/lib/longhorn.sh
