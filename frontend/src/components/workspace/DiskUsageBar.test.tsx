@@ -107,3 +107,32 @@ describe("DiskUsageBar — context unknown (contextTotal=0)", () => {
     expect(screen.queryByText(/critical/i)).not.toBeInTheDocument();
   });
 });
+
+describe("DiskUsageBar — mobile drawer hide semantics (#1686 item 3)", () => {
+  // Review r1 root cause: while a metric is critical the mobile drawer
+  // auto-opens — but an EXPLICIT close must stick. The pre-#1686
+  // toggleDrawer cleared mobileAutoOpened, so the auto-open effect
+  // immediately re-opened the drawer: the Hide control could not hide
+  // exactly when it mattered (the owner's mobile repro).
+  it("explicit Hide sticks while a metric is critical", async () => {
+    const user = userEvent.setup();
+    // Disk 97% — critical (threshold 85). Both layouts render in JSDOM;
+    // the mobile toggle is the Hide/Metrics button.
+    render(<DiskUsageBar diskUsedBytes={9700} diskTotalBytes={10000} contextUsed={10} contextTotal={100} />);
+
+    // Auto-opened on mount: the toggle reads "Hide".
+    const hide = await screen.findByRole("button", { name: /^Hide$/ });
+    await user.click(hide);
+
+    // The drawer must STAY closed — the toggle reads "Metrics", no Hide
+    // remains (a re-open would flip it back immediately), and the drawer
+    // container itself is collapsed (review r2: pin the collapsed state,
+    // not just the label).
+    expect(screen.getByRole("button", { name: "Metrics" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Hide$/ })).not.toBeInTheDocument();
+    const drawer = document.querySelector(".overflow-hidden.transition-all");
+    expect(drawer).not.toBeNull();
+    expect(drawer!.className).toContain("max-h-0");
+    expect(drawer!.className).toContain("opacity-0");
+  });
+});
