@@ -44,6 +44,17 @@ type fakeClient struct {
 	// arms it) — fired by reseed to simulate the in-stream
 	// projection.reseeded redial.
 	resynced func()
+	// seedSessions scripts the fold's snapshot content on (re)connect
+	// (#1666: the busy truth that exists only in the NEXT connection's
+	// snapshot — the frame died with the old one, no replay).
+	seedSessions map[string]*abiv1.SessionSnapshot
+}
+
+// setSeedSessions scripts every subsequent connection's snapshot fold.
+func (f *fakeClient) setSeedSessions(sessions map[string]*abiv1.SessionSnapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seedSessions = sessions
 }
 
 func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error {
@@ -55,8 +66,16 @@ func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.Sessio
 	if f.connected != nil {
 		f.connected <- struct{}{}
 	}
-	// Snapshot-first: the protocol's stamp.
-	onUpdate(&abiclient.SessionState{Seq: 0})
+	// Snapshot-first: the protocol's stamp (scripted per #1666 so a
+	// reconnect can carry truth its predecessor's frames lost).
+	f.mu.Lock()
+	seed := f.seedSessions
+	f.mu.Unlock()
+	sessions := map[string]*abiv1.SessionSnapshot{}
+	for sid, s := range seed {
+		sessions[sid] = s
+	}
+	onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
 	f.mu.Lock()
 	if f.kill == nil {
 		f.kill = make(chan struct{})
@@ -641,4 +660,79 @@ func TestConsultFailureIsObservable(t *testing.T) {
 		fc.apply(uint64(i), &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
 	}
 	require.Equal(t, 2, lg.count(), "the 51st failure warns again (every 50th)")
+}
+
+// --- #1666: the reconnect/resync snapshot fold reconciles the BRIDGE
+// onto the post-reconnect busy truth (the backend twin of #1646) ------
+
+// newReconcileFakeConsumer wires the scripted fake with the
+// mutex-guarded bridge (the reconnect path runs on the consumer's
+// goroutine — the recorded bridge is for synchronous drives only).
+func newReconcileFakeConsumer(t *testing.T) (*Consumer, *fakeClient, *syncBridge) {
+	t.Helper()
+	connected := make(chan struct{}, 4)
+	fc := &fakeClient{connected: connected}
+	br := &syncBridge{}
+	c := New(Config{
+		Resolve:   func(ctx context.Context, workspaceID string) (string, string, error) { return "http://pod", "pw", nil },
+		NewClient: func(baseURL, password string) Client { return fc },
+		Bridge:    br,
+		IdleDrop:  time.Hour,
+		Retry:     5 * time.Millisecond,
+	})
+	return c, fc, br
+}
+
+// TestReconnectSeedReconcilesBridgeTruth: the run-level reconnect row —
+// the busy frame died with the old connection (no replay), so the truth
+// arrives only via the NEXT connection's snapshot fold. The consumer's
+// derived baseline already rebuilds from it (#1664); the BRIDGE must be
+// reconciled onto it too — a never-heard session folding busy gets its
+// busy emission at the reconnect seed, not never.
+func TestReconnectSeedReconcilesBridgeTruth(t *testing.T) {
+	c, fc, br := newReconcileFakeConsumer(t)
+	requireOpen(t, c, fc)
+
+	// The busy truth exists only in the next connection's snapshot.
+	fc.setSeedSessions(map[string]*abiv1.SessionSnapshot{
+		"s1": {SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY, Busy: &abiv1.BusyComponents{Busy: true}},
+	})
+	fc.killStream()
+
+	require.Eventually(t, func() bool {
+		got := br.snapshot()
+		return len(got) == 1 && got[0] == "ws1:s1:busy"
+	}, 5*time.Second, 10*time.Millisecond,
+		"the reconnect's seeded fold must reconcile the bridge onto its busy truth")
+}
+
+// TestReseedSeedReconcilesBridgeFlip: the in-stream resync row, both
+// disagreement directions, synchronously driven. A bridged-busy session
+// whose fresh fold says idle gets the busy=false correction (the
+// stuck-busy indicator's only cure on a quiet stream); an agreeing
+// re-seed stays silent (a diff, not a spray).
+func TestReseedSeedReconcilesBridgeFlip(t *testing.T) {
+	c, fc, br := newReconcileFakeConsumer(t)
+	requireOpen(t, c, fc)
+
+	// The bridge heard busy (the consult-backed event leg).
+	fc.setSnapshot("s1", true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	require.Equal(t, []string{"ws1:s1:busy"}, br.snapshot())
+
+	// The fold's truth flips while the stream is dead; the resync's
+	// snapshot carries the fresh (idle) truth.
+	fc.setSnapshot("s1", false)
+	fc.reseed(map[string]*abiv1.SessionSnapshot{
+		"s1": {SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE, Busy: &abiv1.BusyComponents{Busy: false}},
+	})
+	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.snapshot(),
+		"a bridged-busy session folding idle must be corrected to idle at the resync seed")
+
+	// Agreement: the same truth re-seeded again emits nothing.
+	fc.reseed(map[string]*abiv1.SessionSnapshot{
+		"s1": {SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE, Busy: &abiv1.BusyComponents{Busy: false}},
+	})
+	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.snapshot(),
+		"an agreeing fold must not re-emit — the reconcile fires only on disagreement")
 }

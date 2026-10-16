@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agentd restart mid-turn self-heals at the next message event (same
   direction).
 
+### Fixed — workspace UX
+
+- **Disk-space banner surfacing** (#1686, owner dogfooding): the
+  disk-recovery strip rendered at ANY disk level (a permanent "Free up
+  disk space" on-demand line whenever metrics were known — training
+  users to ignore the safety banner), occupied its own dedicated line
+  under the metrics row, and on mobile sat under the Hide/Metrics toggle
+  so "hide" never cleared it. The strip now renders ONLY at the critical
+  tier (≥95%, mirroring systemnotices' 0.95 — the v0.35.0 surfacing
+  spec): below the threshold nothing renders at any usage level; at ≥95%
+  a compact single-line banner (inline headline, "Review what can be
+  freed", and a per-episode Dismiss that re-arms when usage drops below
+  the threshold and re-crosses). The recovery API surface is unchanged
+  (presentation-only; no SDK/MCP/API contract changes — audited).
+
 ### Changed — org provisioning (BREAKING)
 
 - **All orgs require OIDC; org creation requires the complete SSO

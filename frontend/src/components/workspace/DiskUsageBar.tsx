@@ -139,7 +139,13 @@ export function DiskUsageBar(props: Props) {
   });
   const hasCritical = criticalMetrics.length > 0;
 
-  // Auto-open drawer when a new critical metric appears (if not explicitly closed)
+  // Auto-open drawer when a new critical metric appears. #1686 item 3:
+  // an EXPLICIT close sticks for the rest of the critical episode — the
+  // toggle marks the episode as served (mobileAutoOpened=true) so this
+  // effect cannot immediately re-open the drawer over the user's close
+  // (the pre-#1686 bug: Hide was impossible exactly when a metric was
+  // critical). Leaving the critical tier re-arms auto-open for the next
+  // episode.
   useEffect(() => {
     if (hasCritical && !mobileOpen && !mobileAutoOpened) {
       setMobileOpen(true);
@@ -147,9 +153,16 @@ export function DiskUsageBar(props: Props) {
     }
   }, [hasCritical, mobileOpen, mobileAutoOpened]);
 
+  useEffect(() => {
+    if (!hasCritical) setMobileAutoOpened(false);
+  }, [hasCritical]);
+
   const toggleDrawer = useCallback(() => {
     setMobileOpen((prev) => !prev);
-    setMobileAutoOpened(false);
+    // Either direction counts as the user having taken over this
+    // critical episode: closing must not be undone by the auto-open
+    // effect above.
+    setMobileAutoOpened(true);
   }, []);
 
   if (allMetrics.length === 0) return null;
