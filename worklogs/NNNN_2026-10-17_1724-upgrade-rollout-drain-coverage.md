@@ -99,3 +99,15 @@ police. Noted on #1724 (one-line comment) per the r3 review.
 - `controller/internal/workspace/upgrade_rollout_kill_test.go` (new)
 - `helm/MONITORING-OPERATIONAL.md` (new section)
 - `CHANGELOG.md` (entry)
+
+## r5 — union merge + body-sync (post-r4)
+
+- Main moved (#1723/#1727 merges touched CHANGELOG) → branch went
+  DIRTY. Union-merge `646f7e4d` resolves CHANGELOG only (both `Fixed`
+  sections kept, main's #1722 entry first); `git diff 8ac96165..646f7e4d`
+  = exactly the four PR files, byte-identical to `7e71b550` (reviewer-
+  verified). CI green on the new head.
+- PR body Verification header re-pointed at `646f7e4d` (was naming
+  `7e71b550` as "current head" — stale after the merge; flagged r5).
+  No production or test-code change in this round; this worklog note is
+  the only tree delta.
