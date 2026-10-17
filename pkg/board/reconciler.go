@@ -43,6 +43,7 @@ const sweepScope = "default"
 const (
 	fpRC1Pre       = "rc1.pre"
 	fpRC1Post      = "rc1.post"
+	fpDispatchPre  = "dispatch.pre"
 	fpPendingPre   = "pending.pre"
 	fpRC2Pre       = "rc2.pre"
 	fpRC3Pre       = "rc3.pre"
@@ -75,6 +76,15 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 		return res, err
 	}
 	cutoff := wm
+	// The sweep's high-water is captured BEFORE any phase runs (r1-C3):
+	// events committed by concurrent writers DURING this sweep are
+	// strictly greater than cutoff, so advancing to the pre-captured max
+	// (not a post-phase re-read) never skips them — the next sweep
+	// re-scans (cutoff, sweepHigh].
+	sweepHigh, err := r.maxEventAt(ctx)
+	if err != nil {
+		return res, err
+	}
 
 	// --- RC1: lease reclaims -------------------------------------------
 	if err := s.failAt(ctx, fpRC1Pre); err != nil {
@@ -99,6 +109,21 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	}
 	res.PendingStaged = staged
 	res.Resumes = resumed
+
+	// --- dispatch drive (§4.4, r1-C2): the sweep backstop ---------------
+	// "Event-driven with a sweep backstop": RC1's reclaims (and any work
+	// the event path missed) are re-fed to workers HERE — a reclaimed
+	// task never sits in backlog. Runs only with a spawn seam installed
+	// (Lane 1's app wiring; without a spawner, granting would mint leases
+	// nobody holds and churn reclaims every sweep).
+	if err := s.failAt(ctx, fpDispatchPre); err != nil {
+		return res, err
+	}
+	dispatched, err := s.dispatchDrive(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.Dispatched = dispatched
 
 	// --- RC2: external-truth drift (event-fed) --------------------------
 	if err := s.failAt(ctx, fpRC2Pre); err != nil {
@@ -137,7 +162,7 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	if err := s.failAt(ctx, fpWatermarkPre); err != nil {
 		return res, err
 	}
-	if err := r.advanceWatermark(ctx, cutoff); err != nil {
+	if err := r.advanceWatermark(ctx, cutoff, sweepHigh); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -173,14 +198,20 @@ func (r *Reconciler) readWatermark(ctx context.Context) (time.Time, error) {
 	return wm, nil
 }
 
-func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff time.Time) error {
-	// Advance to the max event written BEFORE this sweep started (this
-	// sweep's own writes are already applied; the next pass re-checks
-	// anything newer than cutoff).
-	var next time.Time
-	if err := r.svc.q().QueryRow(ctx, `SELECT max(created_at) FROM board_events`).Scan(&next); err != nil {
-		return err
-	}
+// maxEventAt reads the current max event timestamp (the sweep's
+// high-water capture point).
+func (r *Reconciler) maxEventAt(ctx context.Context) (time.Time, error) {
+	var t time.Time
+	err := r.svc.q().QueryRow(ctx, `SELECT max(created_at) FROM board_events`).Scan(&t)
+	return t, err
+}
+
+func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff, sweepHigh time.Time) error {
+	// Advance to the sweep's PRE-CAPTURED high-water (r1-C3): events
+	// committed after the capture stay strictly above the watermark and
+	// are re-scanned next sweep — never skipped. Monotonic (never below
+	// the existing cursor).
+	next := sweepHigh
 	if next.IsZero() || next.Before(cutoff) {
 		next = cutoff
 	}
@@ -224,6 +255,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	rows.Close()
 
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
+	applied := 0
 	for _, v := range victims {
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
@@ -243,11 +275,66 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			"reclaim", "task", v.id, sys, map[string]any{"task_id": v.id}); err != nil {
 			return 0, err
 		}
+		applied++ // r1-C5: count what landed, not what was scanned
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return len(victims), nil
+	return applied, nil
+}
+
+// dispatchDrive feeds claimable work to fresh workers via the engine
+// (§4.4 "event-driven with a sweep backstop"): for every workspace whose
+// projects hold claimable candidates and free slots, claim until the
+// arbiter says done. Bounded per sweep; the engine's own DRR/slots logic
+// terminates each workspace's loop.
+func (s *Service) dispatchDrive(ctx context.Context) (int, error) {
+	if s.spawner == nil {
+		return 0, nil // no spawn seam installed: the drive is inert (no lease churn)
+	}
+	rows, err := s.q().Query(ctx, `
+		SELECT DISTINCT p.target_workspace_id::text FROM projects p
+		WHERE p.status='active' AND p.target_workspace_id IS NOT NULL
+		  AND (p.slot_cooldown_until IS NULL OR p.slot_cooldown_until < now())
+		  AND (SELECT count(*) FROM tasks t2
+		       WHERE t2.project_id=p.id AND t2.stage='in_progress') < p.worker_slots
+		  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id=t3.epic_id
+		              WHERE t3.project_id=p.id AND e3.status='active'
+		                AND t3.stage='backlog'
+		                AND NOT t3.is_blocked
+		                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))`)
+	if err != nil {
+		return 0, err
+	}
+	var workspaces []string
+	for rows.Next() {
+		var ws string
+		if err := rows.Scan(&ws); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		workspaces = append(workspaces, ws)
+	}
+	rows.Close()
+
+	const maxClaimsPerSweep = 64
+	granted := 0
+	for _, ws := range workspaces {
+		for granted < maxClaimsPerSweep {
+			c, err := s.ClaimNext(ctx, "dispatch:"+ws, ws)
+			if err != nil {
+				if err == ErrNoCandidate {
+					break
+				}
+				return granted, err
+			}
+			if c.Escalated {
+				continue // the escalated row waits for a human; claim the next
+			}
+			granted++
+		}
+	}
+	return granted, nil
 }
 
 // pendingCoupling: worker-origin pending-input auto-stage (token-keeping)
@@ -486,15 +573,18 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 			}
 			var affected bool
 			var newToken string
+			// A recorded identity consumes the re-spawn semantics (the
+			// fresh worker receives the token in its charter); no identity
+			// lands backlog (never a token-less in_progress row).
 			if t.AssigneeSession != "" {
 				newToken = uuidNew()
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-						last_progress_at=now(), assignee_session=$4,
+						last_progress_at=now(), assignee_session=NULL,
 						claim_incremented_attempts=false, pending_origin=NULL
 					WHERE id=$1 AND stage='in_review'`,
-					t.ID, newToken, s.cfg.LeaseDuration.Seconds(), t.AssigneeSession)
+					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
@@ -525,12 +615,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 				reentry++
-				if newToken != "" {
-					s.nudgeAfter(ctx, t.ID, t.AssigneeSession, newToken)
-				}
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return done, review, reentry, err
+			}
+			if newToken != "" {
+				// After commit: the re-spawn delivers the token to a fresh
+				// worker (merged doc: no nudges to dead sessions).
+				s.spawnFor(ctx, t.ID, newToken)
 			}
 		}
 	}

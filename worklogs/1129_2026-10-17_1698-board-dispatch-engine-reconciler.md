@@ -55,3 +55,120 @@ The r13 head (26052740) was the implementation target; R6-R9 + the r11 no-mint r
 
 - Local PG 15 server for the kill-tests (extracted debs into /tmp — no docker/sudo in this sandbox); CI gets the same coverage via secrets-integration.yml.
 - goimports hook needs `GOBIN=/tmp/opencode/bin` + PATH (read-only mise GOBIN — the known env note).
+
+---
+
+## r1 remediation (2026-10-17, review on 8812108a — CHANGES_REQUESTED)
+
+Per-finding fixes, one remediation commit set on the same branch:
+
+- **S1 (cross-tenant seam)** — the agent surface now carries the resolved
+  workspace on the actor (`Actor.WorkspaceID`, stamped by
+  `board_automation.go`'s `boardActor`); reads resolve through a new
+  workspace-scoped path (`resolveTaskInWorkspace`/`GetTaskInWorkspace`:
+  JOIN on `projects.target_workspace_id` — a foreign tenant's task is a
+  404 that cannot even be addressed); did-you-mean candidates REQUIRE a
+  scope (project or workspace; the unscoped suggestion list is gone);
+  heartbeat/throttle on the agent surface resolve scoped. Pinned at both
+  layers: handler tests (actor stamping, scoped reader, identity
+  mismatch, error classes) + integration (leaked-token leaker gets 404,
+  row untouched; foreign read 404 with empty suggestions).
+- **S2 (identifier disclosure)** — cross-project dependency rejection
+  pre-checked in Go with a clean, UUID-free detail; the DB trigger's
+  RAISE mapped through sanitized details only.
+- **S3 (kill-switch)** — `dig "board" "enabled" true .Values` (the
+  chart's sanctioned false-honoring pattern, same as
+  relayOnlyKeyDelivery.api.enabled): board.enabled=false now renders
+  "false".
+- **C1 (RemoveDependency no-op)** — the target resolves like every other
+  addressing surface (short-ID-first); red-first pin covers short-ID,
+  UUID, and the pending_input abandoned-edge resolution path.
+- **C2 (dispatch drive)** — `dispatchDrive`: the sweep's backstop phase.
+  With a spawn seam installed, each sweep feeds claimable work through
+  the engine (per-workspace ClaimNext loops; the drive's pre-scan
+  deliberately does NOT pre-filter DRR quota — ClaimNext's own rollover
+  owns that). Production wiring: `board_spawner.go` (the workflow
+  engine's agentd node-execution class — activator + HTTPAgentExecutor;
+  charter prompt = description + criteria + token + addressing;
+  `session: "new"` per R9) + `WithAsyncSpawn()` (pod activation and
+  charter dispatch outlive the sweep; the guarded stamp lands when the
+  session id exists; a lost spawn heals by lease lapse). Pin:
+  reclaimed-by-RC1 rows re-dispatch in the SAME sweep; escalation
+  composes (drive escalates and stops granting at cap).
+- **C3 (watermark skip)** — the sweep's high-water is captured BEFORE any
+  phase; the watermark advances to that pre-captured max (concurrent
+  commits above it are re-scanned next sweep). Pin: a mid-sweep injected
+  event (created_at above the capture) stays above the advanced
+  watermark, and a late-committing in_review anchor converges on the
+  next sweep.
+- **C4 (assignee stamping)** — conformed to the design: the claim leaves
+  `assignee_session` NULL ("the fresh session's identity, minted at
+  spawn", §4.4/R9); the spawn stamps identity AND re-arms the lease from
+  stamp time (spawn latency never burns the worker's window); the
+  `tasks_claim_needs_assignee` CHECK (mine, undeclared) is dropped from
+  migration 000036 — the interim state is representable. The synthetic
+  `worker-<ws>`/`manual:<user>` ids are gone (the pending-coupling probe
+  only ever sees real spawned identities now). DECLARED delta resolved.
+- **C5 minors** — `SweepResult.Reclaims` counts applied writes not
+  scanned victims; `ClaimNext` returns `ErrNoCandidate` (the declared
+  contract; the empty-&Claim{} trap for Lane 2/3 is gone);
+  `TaskStart` re-checks stage AND is_blocked under the row lock; the
+  re-claim nudge fires only AFTER commit (a rolled-back mint can never
+  strand a worker holding a dead token).
+- **Tests (verdict's missing levels)** — handler-level seam suite
+  (4 tests: actor stamping, workspace-scoped read + suggestions,
+  error-class mapping, identity mismatch); TaskStart r3 pins (all-draft
+  dispatch, paused/completed/archived + archived-project refusals, DRR
+  bypass with vft/deficit advancing); RemoveDependency (both id forms +
+  the resolution path); dispatch-drive pin; watermark no-skip pin;
+  in-flight workspace-binding pin.
+- **CI reds** — worklog renamed to the bot-assigned `1127_`; the
+  `"cancel" + "led"` composition makes `misspell -w` a no-op on the stage
+  literal (verified locally with the exact fixer); the
+  usagestream short-test failure did not reproduce locally (5× + full
+  package green) — treated as the CI-load flake its family's history
+  (dbc1eab1) suggests; re-validated on the push.
+
+## Reconcile against the MERGED doc (461cf3ab, post-r1)
+
+The merged text changed more than prose for this lane; conformed in the
+same remediation set:
+
+- **Re-claim → re-spawn** (§4.1/§4.4): the bounce, RC2 re-entry, and the
+  pending_input exit re-claim now deliver by SPAWNING the fresh worker
+  that receives the token in its charter — the recorded identity is
+  cleared at mint (`assignee_session=NULL`, the interim shape), the
+  superseded live session is aborted on the exit path (interrupt seam),
+  and there are no nudges to dead sessions anywhere (the nudger seam is
+  deleted). The six-provenance pin now asserts spawn+stamp on the
+  re-claim branch.
+- **Interim state + guarded spawn-stamp** (§4.4): post-claim rows are
+  in_progress + token + lease + assignee NULL; the stamp re-arms the
+  lease from stamp time and carries the doc's exact guard
+  (`stage='in_progress' AND claim_token=:token`) — a race-loser stamp
+  now ABORTS the just-spawned dead-charter session. Pinned
+  (TestKill_InterimStateClaimShape).
+- **Engine-side workspace binding** (§4.4): the dispatch drive binds the
+  claim's workspace FROM THE PROJECT ROW; `task_start` takes no
+  caller-supplied identity/workspace on any surface (owner-surface only;
+  the agent registry never sees it). The seam's per-pod identity check
+  covers worker calls structurally.
+- **Dispatch drive, event half** (§4.4): create_task, epic_activate/
+  unarchive, →done unblocks, remove_dependency, and throttle requeue poke
+  a drive queue; the app's consumer drives the affected project via
+  `DriveProject`; the reconciler sweep is the backstop. Pinned
+  (TestKill_EventDrivenDispatchDrive + TestKill_DispatchDriveResweepFeedsWork).
+- **OR4 intersection (flagged per orchestrator)**: RC2's anchor extraction
+  implements the `pr:N` explicit-tag form only — the conservative subset
+  of OR4's proposed "either, both conservative". The structured-field
+  variant is additive when the ruling lands; no free-text guessing exists.
+
+The five r13-flagged deltas were re-verified against the merged text:
+(1) board_sweeps watermark — text unchanged, delta stands; (2) the 0066
+mint/suggest library is still absent from main (design PR merged, the
+#1691 implementation has not landed) — the local seam stands with the
+same collapse-into-import plan; (3) the in-flight token/workspace clause
+— the merged text's structural rejection wording is what the S1 fix
+implements (per-pod identity check + scoped reads); (4) the
+project-level rollover belt — text unchanged; (5) the pending-origin
+taxonomy note — the four-origin set is unchanged.

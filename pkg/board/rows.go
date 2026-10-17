@@ -116,6 +116,7 @@ type Claim struct {
 	ShortID        string    `json:"short_id"`
 	ProjectID      string    `json:"project_id"`
 	EpicID         string    `json:"epic_id"`
+	WorkspaceID    string    `json:"workspace_id"`          // the project's target — the spawn's destination (R9)
 	ClaimToken     string    `json:"claim_token,omitempty"` // empty on escalation (grant withheld)
 	Assignee       string    `json:"assignee,omitempty"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"` // zero on escalation
@@ -137,6 +138,7 @@ type HeartbeatResult struct {
 
 // SweepResult summarizes one reconciler pass (health panel feed).
 type SweepResult struct {
+	Dispatched      int `json:"dispatched"`       // §4.4 sweep-backstop drive
 	Reclaims        int `json:"reclaims"`         // RC1
 	DriftDone       int `json:"drift_done"`       // RC2 merged, criteria met
 	DriftReview     int `json:"drift_review"`     // RC2 merged, criteria unmet

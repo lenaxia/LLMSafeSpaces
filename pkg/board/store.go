@@ -141,36 +141,51 @@ func (st *Store) resolveProject(ctx context.Context, q Queryer, userID, idOrShor
 	p, err := scanProject(row)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, st.notFoundProject(ctx, q, userID, idOrShort)
+			_ = userID // ownership scoping is the caller's requireOwner; suggestions scope below
+			return nil, st.notFoundProject(ctx, q, "", "", idOrShort)
 		}
 		return nil, err
 	}
 	return p, nil
 }
 
-func (st *Store) notFoundProject(ctx context.Context, q Queryer, userID, idOrShort string) error {
-	cands := st.scopeCandidates(ctx, q, "project", userID, "")
+func (st *Store) notFoundProject(ctx context.Context, q Queryer, projectID, workspaceID, idOrShort string) error {
+	cands := st.scopeCandidates(ctx, q, "project", projectID, workspaceID)
 	return &NotFoundError{Item: "project", Identifier: idOrShort, Suggestions: suggestTop3(idOrShort, cands)}
 }
 
-// scopeCandidates returns in-scope short IDs + titles for did-you-mean.
-func (st *Store) scopeCandidates(ctx context.Context, q Queryer, kind, userID, projectID string) []string {
+// scopeCandidates returns in-scope short IDs for did-you-mean. A scope is
+// REQUIRED (project or workspace): suggestions never cross authorization
+// boundaries (design §5 — the r1 S1 finding; an unscoped suggestion list
+// would leak other tenants' short IDs and make discovery feasible).
+func (st *Store) scopeCandidates(ctx context.Context, q Queryer, kind, projectID, workspaceID string) []string {
 	var rows pgx.Rows
 	var err error
 	switch kind {
 	case "project":
-		if userID != "" {
-			rows, err = q.Query(ctx, `SELECT short_id FROM projects WHERE user_id=$1`, userID)
+		if workspaceID != "" {
+			rows, err = q.Query(ctx,
+				`SELECT short_id FROM projects WHERE target_workspace_id=$1::uuid`, workspaceID)
+		} else if projectID != "" {
+			rows, err = q.Query(ctx, `SELECT short_id FROM projects WHERE id=$1::uuid`, projectID)
 		} else {
-			rows, err = q.Query(ctx, `SELECT short_id FROM projects`)
+			return nil // fail-closed: no scope, no suggestions
 		}
 	case "epic":
+		if projectID == "" {
+			return nil
+		}
 		rows, err = q.Query(ctx, `SELECT short_id FROM epics WHERE project_id=$1`, projectID)
 	case "task":
-		if projectID != "" {
+		switch {
+		case projectID != "":
 			rows, err = q.Query(ctx, `SELECT short_id FROM tasks WHERE project_id=$1`, projectID)
-		} else {
-			rows, err = q.Query(ctx, `SELECT short_id FROM tasks`)
+		case workspaceID != "":
+			rows, err = q.Query(ctx,
+				`SELECT t.short_id FROM tasks t JOIN projects p ON p.id=t.project_id
+				 WHERE p.target_workspace_id=$1::uuid`, workspaceID)
+		default:
+			return nil // fail-closed
 		}
 	default:
 		return nil
@@ -208,9 +223,7 @@ func (st *Store) resolveTask(ctx context.Context, q Queryer, projectID, idOrShor
 	t, err := scanTask(resolve())
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// Recover the project scope for suggestions when resolving by
-			// UUID-with-known-project failed, or a short id was given.
-			return nil, st.notFoundTask(ctx, q, projectID, idOrShort)
+			return nil, st.notFoundTask(ctx, q, projectID, "", idOrShort)
 		}
 		return nil, err
 	}
@@ -220,8 +233,8 @@ func (st *Store) resolveTask(ctx context.Context, q Queryer, projectID, idOrShor
 	return t, nil
 }
 
-func (st *Store) notFoundTask(ctx context.Context, q Queryer, projectID, idOrShort string) error {
-	cands := st.scopeCandidates(ctx, q, "task", "", projectID)
+func (st *Store) notFoundTask(ctx context.Context, q Queryer, projectID, workspaceID, idOrShort string) error {
+	cands := st.scopeCandidates(ctx, q, "task", projectID, workspaceID)
 	return &NotFoundError{Item: "task", Identifier: idOrShort, Suggestions: suggestTop3(idOrShort, cands)}
 }
 
@@ -243,6 +256,34 @@ func (st *Store) attachBlockedBy(ctx context.Context, q Queryer, t *Task) error 
 		t.BlockedBy = append(t.BlockedBy, id)
 	}
 	return nil
+}
+
+// resolveTaskInWorkspace resolves a task SCOPED to the caller's
+// workspace (the agent-surface reader, design §4.4 caller-workspace
+// binding): only tasks whose project targets workspaceID resolve; a miss
+// is a 404 whose suggestions stay inside the same tenant. This is the
+// r1-S1 fix — the unscoped reader leaked cross-tenant rows and ids.
+func (st *Store) resolveTaskInWorkspace(ctx context.Context, q Queryer, workspaceID, idOrShort string) (*Task, error) {
+	var row pgx.Row
+	base := `SELECT ` + taskColumns + ` FROM tasks t
+		JOIN projects p ON p.id = t.project_id
+		WHERE p.target_workspace_id = $1::uuid AND `
+	if isUUID(idOrShort) {
+		row = q.QueryRow(ctx, base+`t.id=$2`, workspaceID, idOrShort)
+	} else {
+		row = q.QueryRow(ctx, base+`lower(t.short_id)=lower($2)`, workspaceID, idOrShort)
+	}
+	t, err := scanTask(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, st.notFoundTask(ctx, q, "", workspaceID, idOrShort)
+		}
+		return nil, err
+	}
+	if err := st.attachBlockedBy(ctx, q, t); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // resolveEpic resolves an epic by UUID or case-insensitive short ID.
@@ -342,14 +383,15 @@ func epicCompletionCheck(ctx context.Context, q Queryer, epicID string) (bool, e
 // actorView is the persisted actor shape (board_events.actor,
 // board_transitions.actor).
 type actorView struct {
-	Kind       string `json:"kind"`
-	UserID     string `json:"user_id,omitempty"`
-	Surface    string `json:"surface,omitempty"`
-	ClaimToken string `json:"claim_token,omitempty"`
+	Kind        string `json:"kind"`
+	UserID      string `json:"user_id,omitempty"`
+	Surface     string `json:"surface,omitempty"`
+	ClaimToken  string `json:"claim_token,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 func actorViewOf(a Actor) []byte {
-	b, _ := json.Marshal(actorView(a))
+	b, _ := json.Marshal(actorView(a)) //nolint:staticcheck // ST1016 opt-out: the struct exists for the JSON field tags/omitempty, the conversion is the whole point
 	return b
 }
 

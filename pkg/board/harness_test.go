@@ -57,26 +57,6 @@ func (f *fakeSpawner) failWith(err error) {
 	f.err = err
 }
 
-// fakeNudger records re-claim nudges (token re-delivery to the recorded
-// assignee — the bounce/exit/RC2 re-claim class; NOT a fresh spawn, R9).
-type fakeNudger struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (f *fakeNudger) Nudge(_ context.Context, taskID, assignee, token string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, taskID+"/"+assignee)
-	return nil
-}
-
-func (f *fakeNudger) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.calls)
-}
-
 // fakeAborter records worker aborts (cancel mid-flight).
 type fakeAborter struct {
 	mu    sync.Mutex
@@ -153,21 +133,37 @@ func (f *fakePendingSource) set(assignee string, pending bool) {
 
 // failpoints is the crash-between-action-and-effect fault seam.
 type failpoints struct {
-	mu   sync.Mutex
-	arm  map[string]error
-	hits map[string]int32
+	mu    sync.Mutex
+	arm   map[string]error
+	armFn map[string]func() error
+	hits  map[string]int32
 }
 
 func newFailpoints() *failpoints {
-	return &failpoints{arm: map[string]error{}, hits: map[string]int32{}}
+	return &failpoints{arm: map[string]error{}, armFn: map[string]func() error{}, hits: map[string]int32{}}
 }
 
 func (f *failpoints) fp(where string) error {
 	f.mu.Lock()
 	f.hits[where]++
 	err := f.arm[where]
+	fn := f.armFn[where]
 	f.mu.Unlock()
-	return err
+	if err != nil {
+		return err
+	}
+	if fn != nil {
+		return fn()
+	}
+	return nil
+}
+
+// armAtFn arms a functional failpoint (side-effect injections — the
+// concurrency-race fixtures).
+func (f *failpoints) armAtFn(where string, fn func() error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.armFn[where] = fn
 }
 
 func (f *failpoints) armAt(where string, err error) {
@@ -189,7 +185,6 @@ type BoardSuite struct {
 	pool    *pgxpool.Pool
 	cfg     board.EngineConfig
 	spawner *fakeSpawner
-	nudger  *fakeNudger
 	aborter *fakeAborter
 	drift   *fakeDriftSource
 	pending *fakePendingSource
@@ -240,22 +235,22 @@ func (s *BoardSuite) SetupTest() {
 	s.Require().NoError(err, "users row must exist (FK target)")
 
 	s.spawner = &fakeSpawner{}
-	s.nudger = &fakeNudger{}
 	s.aborter = &fakeAborter{}
 	s.drift = &fakeDriftSource{prs: map[int]board.PRState{}}
 	s.pending = &fakePendingSource{pend: map[string]bool{}}
 	s.fps = newFailpoints()
 	s.svc = board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(s.spawner.Spawn),
-		board.WithNudger(s.nudger.Nudge),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
 	)
+	// The default test reconciler installs NO spawner: the §4.4 dispatch
+	// drive is inert without a spawn seam (no lease churn), so RC-phase
+	// tests observe reclaims in isolation. The drive itself is pinned by
+	// TestKill_DispatchDriveResweepFeedsWork.
 	s.recon = board.NewReconciler(s.pool, s.cfg,
-		board.WithWorkerSpawner(s.spawner.Spawn),
-		board.WithNudger(s.nudger.Nudge),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
@@ -328,6 +323,13 @@ func (s *BoardSuite) claimOrFail(wsID string) *board.Claim {
 	s.Require().NotNil(c.Task)
 	s.Require().False(c.Escalated, "test expected a grant, got escalation")
 	return c
+}
+
+// expectNoCandidate asserts the empty-claim contract (ClaimNext's
+// ErrNoCandidate — the r1-C5 error-class pin).
+func (s *BoardSuite) expectNoCandidate(wsID string) {
+	_, err := s.svc.ClaimNext(context.Background(), "worker-"+wsID, wsID)
+	s.Require().ErrorIs(err, board.ErrNoCandidate)
 }
 
 // expireLease ages a task's lease past expiry (the clock seam: rather than

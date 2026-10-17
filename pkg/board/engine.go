@@ -79,7 +79,7 @@ func (s *Service) ClaimNext(ctx context.Context, workerID, workspaceID string) (
 				}
 				continue
 			}
-			return &Claim{}, nil
+			return nil, ErrNoCandidate
 		case "none":
 			// Dispatcher-level rollover: nothing claimable while at-quota
 			// epics with candidates exist in scope — reset every deficit
@@ -96,20 +96,22 @@ func (s *Service) ClaimNext(ctx context.Context, workerID, workspaceID string) (
 					continue
 				}
 			}
-			return &Claim{}, nil
+			return nil, ErrNoCandidate
 		}
 	}
-	return &Claim{}, nil
+	return nil, ErrNoCandidate
 }
 
-// TaskStart is the manual one-off dispatch (§4.2): targets a NAMED task,
-// bypasses exactly three things (the p CTE's active-epic-project gate, the
-// candidate predicate's e.status='active' requirement — scoped to
-// draft∪active epics — and the DRR deficit<quantum eligibility; the DRR
-// counters still advance). All other arbitration is identical to
-// claim_next: atomic statement, slots cap, caller-workspace binding,
-// token minted, attempts incremented.
-func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrID, workerWorkspaceID, requestID string) (*Claim, error) {
+// TaskStart is the manual one-off dispatch (§4.2, merged doc): targets a
+// NAMED task, bypasses exactly three things (the p CTE's
+// active-epic-project gate, the candidate predicate's e.status='active'
+// requirement — scoped to draft∪active epics — and the DRR
+// deficit<quantum eligibility; the DRR counters still advance). All other
+// arbitration is identical to the engine's dispatch claim, with the
+// workspace bound ENGINE-SIDE from the project row — no caller-supplied
+// worker identity or workspace exists on any surface — followed by the
+// same fresh spawn (R9).
+func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrID, requestID string) (*Claim, error) {
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -133,12 +135,6 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if epicStatus != EpicDraft && epicStatus != EpicActive {
 		return nil, &GuardError{Code: GuardEpicState,
 			Detail: "task_start is scoped to draft∪active epics (paused/completed/archived refuse; pause stops new claims of every kind)"}
-	}
-	if workerWorkspaceID == "" {
-		workerWorkspaceID = p.TargetWorkspaceID
-	}
-	if workerWorkspaceID != p.TargetWorkspaceID {
-		return nil, &GuardError{Code: GuardWorkspaceBinding, Detail: "worker workspace must equal the project's target workspace (403)"}
 	}
 	if t.Stage != StageBacklog || t.IsBlocked {
 		return nil, &GuardError{Code: GuardStage, Detail: "task_start targets a ready backlog task"}
@@ -169,8 +165,10 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if err != nil {
 		return nil, err
 	}
-	if cur.Stage != StageBacklog {
-		return nil, &GuardError{Code: GuardStage, Detail: "the task left backlog — server-arbitrated refusal"}
+	// Re-check BOTH predicates under the row lock (r1-C5): a dependency
+	// added in the resolve window must not be dispatched through.
+	if cur.Stage != StageBacklog || cur.IsBlocked {
+		return nil, &GuardError{Code: GuardStage, Detail: "the task left backlog or became blocked — server-arbitrated refusal"}
 	}
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
@@ -199,18 +197,20 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	var attemptsDone int
 	if err := tx.QueryRow(ctx, `
 		UPDATE tasks t SET stage='in_progress', stage_entered_at=now(),
-			claim_token=gen_random_uuid(), assignee_session=$2,
-			lease_expires_at=now()+make_interval(secs=>$3::float8),
+			claim_token=gen_random_uuid(), assignee_session=NULL,
+			lease_expires_at=now()+make_interval(secs=>$2::float8),
 			last_progress_at=now(), attempts=attempts+1,
 			claim_incremented_attempts=true
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
-		          t.assignee_session, t.lease_expires_at, t.attempts`,
-		t.ID, "manual:"+actor.UserID, s.cfg.LeaseDuration.Seconds()).
-		Scan(&c.TaskID, &c.ShortID, &c.ProjectID, &c.EpicID, &c.ClaimToken, &c.Assignee, &lease, &attemptsDone); err != nil {
+		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
+		          t.lease_expires_at, t.attempts`,
+		t.ID, s.cfg.LeaseDuration.Seconds()).
+		Scan(&c.TaskID, &c.ShortID, &c.ProjectID, &c.EpicID, &c.ClaimToken, &c.WorkspaceID, &lease, &attemptsDone); err != nil {
 		return nil, err
 	}
 	c.LeaseExpiresAt = lease
+	c.Assignee = "" // stamped at spawn (R9)
 	if _, err := tx.Exec(ctx, `
 		UPDATE epics SET vft=vft+1, deficit=deficit+1
 		WHERE id=(SELECT epic_id FROM tasks WHERE id=$1)`, t.ID); err != nil {
@@ -301,24 +301,31 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	}
 
 	// The grant: one statement, one arbiter (D8-class). attempts has
-	// exactly ONE increment site on the claim path: here.
+	// exactly ONE increment site on the claim path: here. The assignee is
+	// NULL at claim time — the fresh session's identity is minted at
+	// SPAWN (ruling R9 + design §4.4: "assignee_session is that fresh
+	// session's identity, minted at spawn"); the spawn stamps it and
+	// re-arms the lease from stamp time, so spawn latency never burns the
+	// worker's lease window (r1-C4).
 	var c Claim
 	var lease time.Time
 	var attemptsDone int
 	if err := tx.QueryRow(ctx, `
 		UPDATE tasks t SET stage='in_progress', stage_entered_at=now(),
-			claim_token=gen_random_uuid(), assignee_session=$2,
-			lease_expires_at=now()+make_interval(secs=>$3::float8),
+			claim_token=gen_random_uuid(), assignee_session=NULL,
+			lease_expires_at=now()+make_interval(secs=>$2::float8),
 			last_progress_at=now(), attempts=attempts+1,
 			claim_incremented_attempts=true
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
-		          t.assignee_session, t.lease_expires_at, t.attempts`,
-		taskID, workerID, s.cfg.LeaseDuration.Seconds()).
-		Scan(&c.TaskID, &c.ShortID, &c.ProjectID, &c.EpicID, &c.ClaimToken, &c.Assignee, &lease, &attemptsDone); err != nil {
+		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
+		          t.lease_expires_at, t.attempts`,
+		taskID, s.cfg.LeaseDuration.Seconds()).
+		Scan(&c.TaskID, &c.ShortID, &c.ProjectID, &c.EpicID, &c.ClaimToken, &c.WorkspaceID, &lease, &attemptsDone); err != nil {
 		return nil, "", "", err
 	}
 	c.LeaseExpiresAt = lease
+	c.Assignee = "" // stamped at spawn
 
 	// DRR: unit cost per claim keeps vft globally comparable (it is simply
 	// claims served); the deficit consumes the round allowance.
@@ -383,6 +390,17 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 	if s.spawner == nil {
 		return
 	}
+	if s.asyncSpawn {
+		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — the production spawn (pod activation + agentd charter dispatch) outlives the request/sweep context by design; lost races self-heal via lease lapse
+			sctx := context.Background()
+			s.spawnSync(sctx, claim)
+		}()
+		return
+	}
+	s.spawnSync(ctx, claim)
+}
+
+func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	sessionID, err := s.spawner(ctx, claim)
 	if err != nil {
 		slog.WarnContext(ctx, "board: worker spawn failed — lease lapse heals",
@@ -393,14 +411,113 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 		return
 	}
 	tag, err := s.q().Exec(ctx, `
-		UPDATE tasks SET assignee_session=$2 WHERE id=$1 AND claim_token=$3 AND stage='in_progress'`,
-		claim.TaskID, sessionID, claim.ClaimToken)
+		UPDATE tasks SET assignee_session=$2,
+			lease_expires_at=now()+make_interval(secs=>$4::float8)
+		WHERE id=$1 AND claim_token=$3 AND stage='in_progress'`,
+		claim.TaskID, sessionID, claim.ClaimToken, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
 		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
 		return
 	}
 	if tag.RowsAffected() > 0 {
 		claim.Assignee = sessionID
+		return
+	}
+	// The guarded stamp lost the race (canceled, lapsed, or re-claimed
+	// while the spawn was in flight): the just-spawned session holds a
+	// dead charter — abort it (the merged design's spawn-stamp guard; the
+	// same interrupt seam as cancel/reclaim).
+	if s.aborter != nil {
+		_ = s.aborter(ctx, claim.TaskID, sessionID)
+	}
+}
+
+// WithAsyncSpawn installs the production spawn mode: pod activation +
+// agentd charter dispatch outlive the claim transaction, so the spawn
+// runs on its own goroutine and the guarded stamp (identity + lease
+// re-arm) lands when the session id exists. Until then the interim state
+// is design-shaped (assignee NULL, lease from claim); a spawn that never
+// returns heals by ordinary lease lapse (r1-C2/C4 wiring).
+func WithAsyncSpawn() Option {
+	return func(s *Service) { s.asyncSpawn = true }
+}
+
+// spawnFor delivers a re-claim token to a FRESH worker (the merged
+// design's re-spawn semantics): builds the claim envelope from the row
+// and rides the same guarded spawn-stamp as the initial claim.
+func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
+	if s.spawner == nil {
+		return
+	}
+	t := s.mustTask(ctx, taskID)
+	if t == nil || t.ClaimToken != token || t.Stage != StageInProgress {
+		return
+	}
+	c := &Claim{
+		TaskID: t.ID, ShortID: t.ShortID, ProjectID: t.ProjectID, EpicID: t.EpicID,
+		WorkspaceID: s.projectWorkspace(ctx, t.ProjectID),
+		ClaimToken:  token, Task: t,
+	}
+	if s.asyncSpawn {
+		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — delivery outlives the caller's context (same rationale as the claim spawn); failures heal by lease lapse
+			sctx := context.Background()
+			s.spawnSync(sctx, c)
+		}()
+		return
+	}
+	s.spawnSync(ctx, c)
+}
+
+// projectWorkspace resolves a project's target workspace id.
+func (s *Service) projectWorkspace(ctx context.Context, projectID string) string {
+	var ws string
+	_ = s.q().QueryRow(ctx, `SELECT target_workspace_id::text FROM projects WHERE id=$1`, projectID).Scan(&ws)
+	return ws
+}
+
+// DriveProject drives claims for ONE project (the event-driven half of
+// the §4.4 dispatch drive: activate/create/unblock events enqueue a drive
+// of the affected project; the reconciler sweep is the backstop). The
+// workspace binding is engine-side — from the project row (merged doc).
+func (s *Service) DriveProject(ctx context.Context, projectID string) (int, error) {
+	ws := s.projectWorkspace(ctx, projectID)
+	if ws == "" {
+		return 0, nil
+	}
+	granted := 0
+	for granted < 64 {
+		c, err := s.ClaimNext(ctx, "dispatch:"+ws, ws)
+		if err != nil {
+			if err == ErrNoCandidate {
+				break
+			}
+			return granted, err
+		}
+		if c.Escalated {
+			continue
+		}
+		if c.ProjectID != projectID {
+			break // fairness served a sibling project first: done here
+		}
+		granted++
+	}
+	return granted, nil
+}
+
+// WithDriveQueue installs the event-driven drive hook (the app's consumer
+// goroutine): work-becoming-ready actions drop the affected project id
+// here after commit.
+func WithDriveQueue(ch chan<- string) Option {
+	return func(s *Service) { s.driveQueue = ch }
+}
+
+func (s *Service) pokeDrive(projectID string) {
+	if s.driveQueue == nil {
+		return
+	}
+	select {
+	case s.driveQueue <- projectID:
+	default: // coalesced: the sweep backstop re-drives regardless
 	}
 }
 

@@ -1520,12 +1520,46 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				DRRQuantum:      cfg.Board.DRRQuantum,
 				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
 			}
-			boardSvc := board.NewService(boardPool, engineCfg)
-			boardReconciler = board.NewReconciler(boardPool, engineCfg)
+			// The §4.4 dispatch drive: with a spawn seam installed, the
+			// reconciler's sweep feeds claimable work to fresh workers
+			// (event-driven with a sweep backstop — the drive runs on the
+			// reconciler's OWN service). The spawner rides the workflow
+			// engine's agentd node-execution class (board_spawner.go); the
+			// async spawn mode detaches pod activation + charter dispatch
+			// from the sweep's cadence (the guarded stamp — identity +
+			// lease re-arm — lands when the session id exists; a spawn
+			// that never lands heals by lease lapse).
+			spawnOpts := []board.Option{
+				board.WithWorkerSpawner(newBoardSpawner(
+					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
+					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
+				)),
+				board.WithAsyncSpawn(),
+			}
+			// Event-driven drive half (§4.4): work-becoming-ready actions
+			// poke the queue; this consumer drives the affected project
+			// immediately. The reconciler sweep is the backstop.
+			boardDriveCh := make(chan string, 256)
+			boardSvc := board.NewService(boardPool, engineCfg, append(spawnOpts, board.WithDriveQueue(boardDriveCh))...)
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case pid := <-boardDriveCh:
+						if n, err := boardSvc.DriveProject(ctx, pid); err != nil {
+							log.Error("board: event-driven dispatch failed (sweep backstop re-drives)", err, "projectID", pid)
+						} else if n > 0 {
+							log.Info("board: event-driven dispatch", "projectID", pid, "granted", n)
+						}
+					}
+				}
+			}()
+			boardReconciler = board.NewReconciler(boardPool, engineCfg, spawnOpts...)
 			if podAutomationHandler != nil {
 				podAutomationHandler.SetBoardService(boardSvc)
 			}
-			log.Info("board engine enabled (dispatch + reconciler; Lane 1 internal seam)",
+			log.Info("board engine enabled (dispatch drive + reconciler; Lane 1 internal seam)",
 				"attemptsCap", engineCfg.AttemptsCap, "leaseSeconds", cfg.Board.LeaseSeconds,
 				"drrQuantum", engineCfg.DRRQuantum, "sweepSeconds", cfg.Board.SweepSeconds)
 		}

@@ -254,7 +254,6 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			s.Equal(tc.want.origin, *row.PendingOrigin)
 			s.Equal(tc.want.preToken, row.ClaimToken != nil, "fixture token state (branch keys on identity, never token)")
 			s.Equal(tc.want.preIdent, row.Assignee != nil, "fixture identity state")
-			nudgesBefore := s.nudger.count()
 			spawnsBefore := s.spawner.count()
 
 			// The exit: manager-surface human move_stage.
@@ -268,15 +267,18 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 				s.NotNil(after.ClaimToken, "re-claim branch mints a fresh token")
 				s.NotNil(after.LeaseExp)
 				s.False(after.ClaimIncr, "exit re-claim mints with flag=false")
-				s.NotNil(after.Assignee)
-				s.Equal(nudgesBefore+1, s.nudger.count(), "the recorded worker is re-nudged (token re-delivery, R9: not a fresh spawn)")
-				s.Equal(spawnsBefore, s.spawner.count(), "no fresh spawn on a re-claim branch (R9: spawn is claim-grant only)")
+				// Re-spawn semantics (merged doc §4.1): the fresh worker
+				// receives the token in its charter — no nudges to dead
+				// sessions anywhere. The sync fake spawner stamps the
+				// identity immediately.
+				s.Equal(spawnsBefore+1, s.spawner.count(), "the token is delivered by a FRESH spawn (R9)")
+				s.NotNil(after.Assignee, "the guarded spawn-stamp landed (sync spawner)")
 			} else {
 				s.Equal(board.StageBacklog, out.Stage, "no-identity rows refuse in_progress and land backlog — never a token-less in_progress row")
 				s.Nil(after.ClaimToken)
 				s.Nil(after.Assignee)
 				s.Nil(after.LeaseExp)
-				s.Equal(nudgesBefore, s.nudger.count(), "the dead worker is never re-nudged")
+				s.Equal(spawnsBefore, s.spawner.count(), "the dead worker is never re-spawned from the backlog branch")
 			}
 			s.Nil(after.PendingOrigin, "origin cleared on exit")
 		})
@@ -422,6 +424,7 @@ func (s *BoardSuite) TestKill_DependencyGuards() {
 func (s *BoardSuite) TestKill_ShortIDResolution() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
+	wsForeign := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
 	t1 := s.seedTask(e, "alpha", nil, false)
@@ -429,26 +432,35 @@ func (s *BoardSuite) TestKill_ShortIDResolution() {
 	s.Regexp(`^prj-[0-9a-z]{8}$`, p.ShortID)
 	s.Regexp(`^epc-[0-9a-z]{8}$`, e.ShortID)
 
-	// Case-insensitive resolution.
-	got, err := s.svc.GetTask(ctx, "", upper(t1.ShortID))
+	// Case-insensitive resolution through the workspace-scoped reader
+	// (the agent seam's shape, r1-S1).
+	got, err := s.svc.GetTaskInWorkspace(ctx, ws, "", upper(t1.ShortID))
 	s.Require().NoError(err)
 	s.Equal(t1.ID, got.ID)
 
-	// Unknown → 404 with bounded suggestions (alpha is within distance 2
-	// of the near-miss task id).
-	_, err = s.svc.GetTask(ctx, "", "tsk-zzzzzzzz")
+	// Unknown → 404 with bounded suggestions (in-workspace only).
+	_, err = s.svc.GetTaskInWorkspace(ctx, ws, "", "tsk-zzzzzzzz")
 	s.Require().Error(err)
 	_, ok := err.(*board.NotFoundError)
 	s.Require().True(ok)
 
 	// A one-char mutation resolves with the original suggested first.
 	mutated := t1.ShortID[:len(t1.ShortID)-1] + "q"
-	_, err = s.svc.GetTask(ctx, "", mutated)
+	_, err = s.svc.GetTaskInWorkspace(ctx, ws, "", mutated)
 	s.Require().Error(err)
 	nf, ok := err.(*board.NotFoundError)
 	s.Require().True(ok)
 	s.Require().NotEmpty(nf.Suggestions)
 	s.Equal(t1.ShortID, nf.Suggestions[0], "best-first: the near-miss original")
+
+	// r1-S1: a foreign workspace's reader gets a 404 with NO row and NO
+	// suggestions — resolution and did-you-mean never cross tenants.
+	foreign, err := s.svc.GetTaskInWorkspace(ctx, wsForeign, "", t1.ShortID)
+	s.Require().Error(err)
+	s.Require().Nil(foreign)
+	nf2, ok := err.(*board.NotFoundError)
+	s.Require().True(ok)
+	s.Require().Empty(nf2.Suggestions, "no cross-tenant suggestions")
 }
 
 func upper(s string) string {

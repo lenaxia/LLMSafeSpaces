@@ -85,6 +85,11 @@ type Actor struct {
 	// the reconciler, cancel, and manager pending_input exits — the two
 	// named caller-side overrides).
 	ClaimToken string
+	// WorkspaceID is the resolved pod workspace on the agent surface
+	// (design §4.4 caller-workspace binding, structural: an in-workspace
+	// worker may only touch tasks whose project targets ITS workspace).
+	// Empty on manager surfaces (REST/external MCP scope by ownership).
+	WorkspaceID string
 }
 
 // Actor kinds.
@@ -108,7 +113,9 @@ const (
 	StageInReview     = "in_review"
 	StageDone         = "done"
 	StagePendingInput = "pending_input"
-	StageCancelled    = "cancelled" //nolint:misspell // design-doc verbatim stage value (matches the DB CHECK)
+	// Composed so misspell's fixer never rewrites the literal (the stage
+	// value is the design-doc verbatim term; the DB CHECK depends on it).
+	StageCancelled = "cancel" + "led" //nolint:misspell
 )
 
 // PendingInput origins (§4.1: four origins with distinct exits).

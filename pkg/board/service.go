@@ -32,13 +32,6 @@ func WithWorkerSpawner(sp WorkerSpawner) Option {
 	return func(s *Service) { s.spawner = sp }
 }
 
-// WithNudger installs the token re-delivery seam (the re-claim class:
-// bounce, pending_input exit re-claim, RC2 re-entry — the recorded worker
-// is nudged, never freshly spawned).
-func WithNudger(fn func(ctx context.Context, taskID, assignee, token string) error) Option {
-	return func(s *Service) { s.nudger = fn }
-}
-
 // WithWorkerAborter installs the abort seam (cancel mid-flight).
 func WithWorkerAborter(ab WorkerAborter) Option {
 	return func(s *Service) { s.aborter = ab }
@@ -59,14 +52,15 @@ func WithPendingInputSource(src PendingInputSource) Option {
 // adapter. Safe for concurrent use (pgxpool arbitrates; Postgres is the
 // only scheduler state).
 type Service struct {
-	store     *Store
-	cfg       EngineConfig
-	failpoint Failpoint
-	spawner   WorkerSpawner
-	nudger    func(ctx context.Context, taskID, assignee, token string) error
-	aborter   WorkerAborter
-	drift     PRDriftSource
-	pending   PendingInputSource
+	store      *Store
+	cfg        EngineConfig
+	failpoint  Failpoint
+	spawner    WorkerSpawner
+	asyncSpawn bool
+	driveQueue chan<- string
+	aborter    WorkerAborter
+	drift      PRDriftSource
+	pending    PendingInputSource
 }
 
 // NewService constructs the BoardService.
@@ -485,6 +479,10 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 		return nil, err
 	}
 	_ = dup
+	if to == EpicActive {
+		// Event-driven drive: activation starts feeding (§4.4).
+		s.pokeDrive(p.ID)
+	}
 	return s.GetEpic(ctx, e.ID, "")
 }
 
@@ -531,6 +529,9 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 		return nil, err
 	}
 	_ = dup
+	// Event-driven drive: a created backlog task is potential work (the
+	// project's epics gate it; the drive's predicates resolve the rest).
+	s.pokeDrive(p.ID)
 	// On replay the outcome's id is the ORIGINAL task: resolve from the
 	// recorded outcome (200-with-original).
 	if oid, _ := outcome["id"].(string); oid != "" {
@@ -621,13 +622,21 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 	if err != nil {
 		var nf *NotFoundError
 		if errors.As(err, &nf) {
-			nf.Suggestions = append(nf.Suggestions, suggestTop3(dependsOnID, s.store.scopeCandidates(ctx, s.q(), "task", "", p.ID))...)
+			nf.Suggestions = append(nf.Suggestions, suggestTop3(dependsOnID, s.store.scopeCandidates(ctx, s.q(), "task", p.ID, ""))...)
 		}
 		return err
 	}
 	if t.ID == dep.ID {
 		return &DependencyError{Code: "self", Detail: "a task cannot depend on itself",
-			Suggestions: s.store.scopeCandidates(ctx, s.q(), "task", "", p.ID)}
+			Suggestions: s.store.scopeCandidates(ctx, q2(s), "task", p.ID, "")}
+	}
+	// Pre-check cross-project in Go (r1-S2): the DB trigger's RAISE
+	// carries both tasks' and projects' UUIDs — identifier disclosure a
+	// 409 has no business making. Clean detail here; the trigger remains
+	// the race belt via mapDepErr's sanitized mapping.
+	if dep.ProjectID != p.ID {
+		return &DependencyError{Code: "cross_project",
+			Detail: "cross-project dependency rejected (edges live within a project, ruling R4)"}
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "add_dependency", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
@@ -653,14 +662,18 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 func mapDepErr(err error, projectID string) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		// Sanitized details only (r1-S2): the trigger's RAISE carries row
+		// identifiers — a 409 never discloses them.
 		msg := pgErr.Message
 		switch {
 		case strings.Contains(msg, "cannot depend on itself"):
-			return &DependencyError{Code: "self", Detail: msg}
+			return &DependencyError{Code: "self", Detail: "a task cannot depend on itself"}
 		case strings.Contains(msg, "cross-project dependency"):
-			return &DependencyError{Code: "cross_project", Detail: msg}
+			return &DependencyError{Code: "cross_project",
+				Detail: "cross-project dependency rejected (edges live within a project, ruling R4)"}
 		case strings.Contains(msg, "would create a cycle"):
-			return &DependencyError{Code: "cycle", Detail: msg}
+			return &DependencyError{Code: "cycle",
+				Detail: "dependency edge would create a cycle (ruling R4a)"}
 		}
 	}
 	return err
@@ -693,20 +706,30 @@ func (s *Service) RemoveDependency(ctx context.Context, actor Actor, taskID, sho
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return err
 	}
+	// Resolve the target like AddDependency does (r1-C1): every
+	// addressing surface is short-ID-first, and a raw short id against
+	// the uuid column would match zero rows and report success.
+	dep, err := s.store.resolveTask(ctx, s.q(), p.ID, dependsOnID)
+	if err != nil {
+		return err
+	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "remove_dependency", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		if _, err := tx.Exec(ctx, `DELETE FROM board_dependencies WHERE task_id=$1 AND depends_on_task_id=$2`, t.ID, dependsOnID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM board_dependencies WHERE task_id=$1 AND depends_on_task_id=$2`, t.ID, dep.ID); err != nil {
 			return nil, err
 		}
 		if err := rederiveBlocked(ctx, txQ{tx}, t.ID); err != nil {
 			return nil, err
 		}
-		return map[string]any{"task_id": t.ID, "removed": dependsOnID}, nil
+		return map[string]any{"task_id": t.ID, "removed": dep.ID}, nil
 	})
 	if err != nil {
 		return err
 	}
 	_ = dup
+	// Event-driven drive: removing an abandoned prerequisite's edge
+	// unblocks the row (§4.4's unblocking events).
+	s.pokeDrive(p.ID)
 	return nil
 }
 
@@ -715,4 +738,13 @@ func pick(id, shortIDOrID string) string {
 		return id
 	}
 	return shortIDOrID
+}
+
+// q2 adapts the service to a Queryer for candidate scoping.
+func q2(s *Service) Queryer { return s.q() }
+
+// GetTaskInWorkspace is the agent surface's reader (r1-S1): resolution,
+// row, and did-you-mean suggestions all scoped to the caller's workspace.
+func (s *Service) GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*Task, error) {
+	return s.store.resolveTaskInWorkspace(ctx, s.q(), workspaceID, pick(taskID, shortIDOrID))
 }

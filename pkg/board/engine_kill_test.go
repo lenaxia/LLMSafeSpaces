@@ -42,6 +42,8 @@ func (s *BoardSuite) TestKill_ConcurrentClaimsSingleWinner() {
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
+			case errors.Is(err, board.ErrNoCandidate):
+				noCandidate++ // the empty contract (r1-C5)
 			case err != nil:
 				s.T().Errorf("unexpected claim error: %v", err)
 			case c.Escalated:
@@ -49,7 +51,7 @@ func (s *BoardSuite) TestKill_ConcurrentClaimsSingleWinner() {
 			case c.Task != nil:
 				grants = append(grants, c)
 			default:
-				noCandidate++ // a clean empty is a normal outcome
+				noCandidate++
 			}
 		}()
 	}
@@ -157,9 +159,7 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 	s.Equal(1, s.rawTask(fresh.ID).Attempts)
 	s.Equal(spawnsBeforeEscalation+1, s.spawner.count(), "the withheld grant spawned nothing; the fresh grant spawned one")
 	// The escalated row is no longer claimable (stage predicate).
-	c3, err := s.svc.ClaimNext(context.Background(), "w", ws)
-	s.Require().NoError(err)
-	s.Nil(c3.Task, "pending_input rows never enter the candidate set")
+	s.expectNoCandidate(ws)
 }
 
 // KILL-TEST 4 (engine pin "caller-workspace binding"): workspace A's worker
@@ -172,20 +172,20 @@ func (s *BoardSuite) TestKill_WorkspaceBinding() {
 	eB := s.seedEpic(pB, board.EpicActive)
 	task := s.seedTask(eB, "b-only", nil, false)
 
-	c, err := s.svc.ClaimNext(context.Background(), "worker-in-a", wsA)
-	s.Require().NoError(err)
-	s.Nil(c.Task, "no candidate in A's scope: B's project is invisible, not an error")
+	_, err := s.svc.ClaimNext(context.Background(), "worker-in-a", wsA)
+	s.Require().ErrorIs(err, board.ErrNoCandidate, "no candidate in A's scope: B's project is invisible")
 	s.Equal(0, s.spawner.count())
 
-	_, err = s.svc.TaskStart(context.Background(), s.owner(), task.ID, "", wsA, "")
-	s.Require().Error(err)
-	var ge *board.GuardError
-	s.Require().ErrorAs(err, &ge)
-	s.Equal(board.GuardWorkspaceBinding, ge.Code, "task_start guards the same binding (403)")
-
-	// The B-side claim works, and the granted token binds the identity.
-	c2 := s.claimOrFail(wsB)
-	s.Equal(task.ID, c2.TaskID)
+	// The merged design binds task_start's workspace ENGINE-SIDE (from
+	// the project row) — no caller-supplied identity exists to mismatch.
+	// Pin it: the manual dispatch on B's task grants with the claim
+	// envelope pointed at B's workspace (the spawn's destination).
+	started, err := s.svc.TaskStart(context.Background(), s.owner(), task.ID, "", "")
+	s.Require().NoError(err)
+	s.Require().False(started.Escalated)
+	s.Equal(wsB, started.WorkspaceID, "engine-side binding: the spawn targets the PROJECT's workspace")
+	s.Equal(task.ID, started.TaskID)
+	s.Equal(1, s.spawner.count(), "the manual dispatch spawns its fresh worker into B")
 }
 
 // KILL-TEST 5 (engine pin "throttle requeue rolls back that claim's
@@ -221,9 +221,7 @@ func (s *BoardSuite) TestKill_ThrottleRollbackIncrementingGrant() {
 	s.True(slotCool, "project slot cooldown pauses NEW claims into the project")
 
 	// New claims into the project are paused while the slot cooldown runs.
-	c2, err := s.svc.ClaimNext(context.Background(), "w", ws)
-	s.Require().NoError(err)
-	s.Nil(c2.Task, "cooldown excludes the task AND the project from the candidate set")
+	s.expectNoCandidate(ws)
 
 	// Cooldown clears → claimable again, and the grant re-increments.
 	s.clearCooldowns(p, task.ID)

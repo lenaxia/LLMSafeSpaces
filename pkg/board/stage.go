@@ -37,7 +37,7 @@ type moveStageResult struct {
 // loses a race returns the authoritative outcome and the UI snaps back.
 func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*Task, error) {
 	ref := pick(taskID, shortIDOrID)
-	t, err := s.store.resolveTask(ctx, s.q(), "", ref)
+	t, err := s.resolveTaskForActor(ctx, actor, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -49,8 +49,10 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 		return nil, err
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "move_stage", itemKind: "task", itemID: t.ID, actor: actor}
+	var pendingNudge nudge
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		res, err := s.moveStageTx(ctx, tx, actor, t.ID, toStage, evidenceURL)
+		res, n, err := s.moveStageTx(ctx, tx, actor, t.ID, toStage, evidenceURL)
+		pendingNudge = n
 		if err != nil {
 			return nil, err
 		}
@@ -58,6 +60,15 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Deliveries fire only AFTER commit (r1-C5): a token handed out for a
+	// mint that rolled back would strand a worker holding a dead claim.
+	pendingNudge.fire(ctx, s)
+	// Event-driven drive: a →done transition may unblock dependents (the
+	// reverse-edge cascade); a requeue re-enters the ready set once its
+	// cooldown expires (the sweep observes the expiry).
+	if toStage == StageDone {
+		s.pokeDrive(p.ID)
 	}
 	_ = dup // 200-with-original: the reloaded row IS the original outcome
 	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
@@ -77,10 +88,10 @@ func structMap(r moveStageResult) map[string]any {
 // moveStageTx performs one guarded transition inside tx. The row is
 // locked and re-read (server arbitration): a raced write sees the fresh
 // stage and fails cleanly.
-func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, toStage, evidenceURL string) (moveStageResult, error) {
+func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, toStage, evidenceURL string) (moveStageResult, nudge, error) {
 	cur, err := s.store.taskForUpdate(ctx, tx, taskID)
 	if err != nil {
-		return moveStageResult{}, err
+		return moveStageResult{}, nudge{}, err
 	}
 	from := cur.Stage
 	res := moveStageResult{TaskID: taskID, FromStage: from, RequestedTo: toStage}
@@ -89,7 +100,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// is not the human the exit exists for; its token does not unlock
 	// self-exit).
 	if from == StagePendingInput && actor.Surface == SurfaceAgent {
-		return res, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human decisions (manager surfaces only)"}
+		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human decisions (manager surfaces only)"}
 	}
 
 	// Enumerated-transition check FIRST (an illegal drag reports its own
@@ -107,14 +118,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		{StagePendingInput, StageInProgress}: true,
 	}
 	if !legal[[2]string{from, toStage}] {
-		return res, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
+		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
 	}
 	if from == StageInProgress && actor.ClaimToken != cur.ClaimToken {
-		return res, &GuardError{Code: GuardClaimToken, Detail: "stage writes on a claimed task require its live claim token"}
+		return res, nudge{}, &GuardError{Code: GuardClaimToken, Detail: "stage writes on a claimed task require its live claim token"}
 	}
 
 	var resulting string
 	var reclaimed bool
+	var postNudge nudge
 	switch {
 	case from == StageInProgress && toStage == StageInReview:
 		// Forward exit: work done, awaiting review — nothing is leased.
@@ -124,7 +136,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 
 	case from == StageInProgress && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
-			return res, err
+			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`, evidenceURL, actor)
@@ -144,13 +156,13 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// decrements), attempts unchanged. No identity → refuse (a
 		// token-less in_progress row is never created).
 		if cur.AssigneeSession == "" {
-			return res, &GuardError{Code: GuardStage, Detail: "bounce requires a recorded assignee (no token-less in_progress rows)"}
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "bounce requires a recorded assignee (no token-less in_progress rows)"}
 		}
-		resulting, err = s.reclaimTx(ctx, tx, taskID, cur.AssigneeSession, actor, "bounce")
+		resulting, postNudge, err = s.reclaimTx(ctx, tx, taskID, cur.AssigneeSession, actor, "bounce")
 
 	case from == StageInReview && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
-			return res, err
+			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`, evidenceURL, actor)
@@ -169,7 +181,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// dead worker is never re-nudged). The branch keys on identity
 		// presence, never token presence.
 		if toStage == StageInProgress && cur.AssigneeSession != "" {
-			resulting, reclaimed, err = s.exitPendingReclaim(ctx, tx, actor, cur)
+			resulting, reclaimed, postNudge, err = s.exitPendingReclaim(ctx, tx, actor, cur)
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
@@ -177,14 +189,35 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 
 	default:
-		return res, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
+		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
 	}
 	if err != nil {
-		return res, err
+		return res, nudge{}, err
 	}
 	res.ResultingStage = resulting
 	res.Reclaimed = reclaimed
-	return res, nil
+	return res, postNudge, nil
+}
+
+// nudge is a deferred post-commit delivery (r1-C5: a rollback must never
+// emit it). Under the merged design's re-spawn semantics the delivery is
+// a SPAWN of the fresh worker that receives the token in its charter
+// (optionally aborting a superseded live session first — the interrupt
+// seam); there are no nudges to dead sessions anywhere.
+type nudge struct {
+	taskID, token string
+	spawn         bool
+	abortAssignee string
+}
+
+func (n nudge) fire(ctx context.Context, s *Service) {
+	if !n.spawn {
+		return
+	}
+	if n.abortAssignee != "" && s.aborter != nil {
+		_ = s.aborter(ctx, n.taskID, n.abortAssignee)
+	}
+	s.spawnFor(ctx, n.taskID, n.token)
 }
 
 // doneGuard: Done = ALL acceptance criteria met + evidence (ruling R2).
@@ -232,57 +265,53 @@ func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, to
 	return toStage, nil
 }
 
-// reclaimTx mints a re-claim-class token+lease for the recorded assignee
-// (flag=false — the throttle never rolls these back) and nudges the worker
-// after commit via the caller's nudger seam.
-func (s *Service) reclaimTx(ctx context.Context, tx pgx.Tx, taskID, assignee string, actor Actor, class string) (string, error) {
+// reclaimTx mints a re-claim-class token+lease with the recorded identity
+// CLEARED (the merged design's re-spawn semantics: "the recorded identity
+// is cleared at mint and the fresh identity stamped by the guarded
+// spawn-stamp"; flag=false — the throttle never rolls these back). The
+// fresh worker is spawned after commit via spawnAfter — "there are no
+// nudges to dead sessions anywhere".
+func (s *Service) reclaimTx(ctx context.Context, tx pgx.Tx, taskID, assignee string, actor Actor, class string) (string, nudge, error) {
 	token := uuidNew()
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=$4, claim_incremented_attempts=false, pending_origin=NULL
+			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL
 		WHERE id=$1 AND stage <> 'cancelled'`,
-		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
+		taskID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
-		return "", err
+		return "", nudge{}, err
 	}
 	if tag.RowsAffected() == 0 {
-		return "", &GuardError{Code: GuardStage, Detail: "row is terminal — the write is a no-op (RC5)"}
+		return "", nudge{}, &GuardError{Code: GuardStage, Detail: "row is terminal — the write is a no-op (RC5)"}
 	}
-	s.nudgeAfter(ctx, taskID, assignee, token)
-	return StageInProgress, nil
+	_ = assignee
+	return StageInProgress, nudge{taskID: taskID, token: token, spawn: true}, nil
 }
 
 // exitPendingReclaim is the pending_input exit's re-claim branch: attempts
-// reset, fresh token+lease for the recorded identity, nudge.
-func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor, cur *Task) (string, bool, error) {
+// reset, fresh token+lease with the recorded identity cleared (the
+// interim-state shape), the superseded session aborted (its question is
+// void with the exit — the interrupt seam, merged-doc §4.1), and the
+// fresh worker spawned after commit.
+func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor, cur *Task) (string, bool, nudge, error) {
 	token := uuidNew()
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			claim_incremented_attempts=false, pending_origin=NULL, attempts=0
+			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL, attempts=0
 		WHERE id=$1 AND stage='pending_input'`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
-		return "", false, err
+		return "", false, nudge{}, err
 	}
 	if tag.RowsAffected() == 0 {
-		return "", false, &GuardError{Code: GuardStage, Detail: "row moved — the exit raced (server-arbitrated)"}
+		return "", false, nudge{}, &GuardError{Code: GuardStage, Detail: "row moved — the exit raced (server-arbitrated)"}
 	}
 	if err := writeTransition(ctx, txQ{tx}, cur.ID, StagePendingInput, StageInProgress, "", actor); err != nil {
-		return "", false, err
+		return "", false, nudge{}, err
 	}
-	s.nudgeAfter(ctx, cur.ID, cur.AssigneeSession, token)
-	return StageInProgress, true, nil
-}
-
-// nudgeAfter fires the token re-delivery seam (log-only failure — a worker
-// that misses the nudge is healed by ordinary lease lapse).
-func (s *Service) nudgeAfter(ctx context.Context, taskID, assignee, token string) {
-	if s.nudger == nil || assignee == "" {
-		return
-	}
-	_ = s.nudger(ctx, taskID, assignee, token)
+	return StageInProgress, true, nudge{taskID: cur.ID, token: token, spawn: true, abortAssignee: cur.AssigneeSession}, nil
 }
 
 // --- Cancel (terminal write) ------------------------------------------------------
@@ -477,7 +506,7 @@ func (s *Service) CancelEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 // (the worker's message-level watermark moved — #1685: elapsed time is not
 // liveness). Requires the matching claim token.
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
-	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
@@ -512,7 +541,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 // One UPDATE guarded by stage='in_progress' AND token match — a pending_
 // input or lapsed row is rejected exactly like the race case.
 func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*Task, error) {
-	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
 		return nil, err
 	}
@@ -561,6 +590,17 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 	}
 	_ = dup
 	return s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+}
+
+// resolveTaskForActor resolves a task through the actor's scope: the
+// agent surface reads workspace-scoped (r1-S1 — an unscoped read leaked
+// cross-tenant rows and claim tokens); manager surfaces resolve by id
+// (ownership follows via requireOwner).
+func (s *Service) resolveTaskForActor(ctx context.Context, actor Actor, ref string) (*Task, error) {
+	if actor.Surface == SurfaceAgent && actor.WorkspaceID != "" {
+		return s.store.resolveTaskInWorkspace(ctx, s.q(), actor.WorkspaceID, ref)
+	}
+	return s.store.resolveTask(ctx, s.q(), "", ref)
 }
 
 // writeAudit persists a non-mutating action's audit row (reads/heartbeat).

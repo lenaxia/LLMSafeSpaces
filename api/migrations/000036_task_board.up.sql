@@ -128,10 +128,11 @@ CREATE TABLE IF NOT EXISTS public.tasks (
     -- pending_origin is set exactly when the row is in pending_input (§4.1:
     -- four origins with distinct exits; cleared on exit).
     CONSTRAINT tasks_pending_origin_set CHECK ((stage = 'pending_input'::text) = (pending_origin IS NOT NULL)),
-    -- a claimed row always carries a worker identity (claim/throttle/reclaim
-    -- keep the pair in lockstep); in_review deliberately retains identity
-    -- with no token (the bounce/RC2 consumer, §4.1).
-    CONSTRAINT tasks_claim_needs_assignee CHECK ((claim_token IS NULL) OR (assignee_session IS NOT NULL)),
+    -- NOTE (r1-C4): deliberately NO claim_token->assignee constraint —
+    -- the design's interim state (token minted at claim, assignee NULL
+    -- until the spawn stamps the fresh session's identity, §4.4/R9) must
+    -- be representable; cancel/throttle/reclaim clear the pair in
+    -- lockstep, and a claim whose spawn never lands heals by lease lapse.
     CONSTRAINT tasks_uq_project_short UNIQUE (project_id, short_id)
 );
 

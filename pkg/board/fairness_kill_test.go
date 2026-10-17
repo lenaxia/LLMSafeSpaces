@@ -102,9 +102,7 @@ func (s *BoardSuite) TestKill_TwoLevelRollover() {
 	// reset — bounded: one reset per empty claim, never a loop).
 	c1 := s.claimOrFail(ws)
 	s.Equal(t1.ID, c1.TaskID)
-	c2, err := s.svc.ClaimNext(context.Background(), "w", ws)
-	s.Require().NoError(err)
-	s.Nil(c2.Task, "an empty claim is a clean no-candidate, not an error")
+	s.expectNoCandidate(ws)
 	_, def, _ := s.epicDRR(e.ID)
 	s.Equal(int64(1), def, "no reset without claimable candidates — the reset is bounded by the at-quota precondition")
 	s.finishClaim(c1)
@@ -119,7 +117,7 @@ func (s *BoardSuite) TestKill_TwoLevelRollover() {
 
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM epics WHERE project_id=$1`, p.ID).Scan(new(int)))
-	_, err = s.pool.Exec(context.Background(),
+	_, err := s.pool.Exec(context.Background(),
 		`UPDATE epics SET deficit=quantum, vft=vft+10 WHERE id=$1`, e.ID)
 	s.Require().NoError(err) // e (project p) at quota, candidate t1 done — no candidates
 	_, err = s.pool.Exec(context.Background(),
@@ -178,9 +176,7 @@ func (s *BoardSuite) TestKill_CooldownExclusion() {
 	p2 := s.seedProject(ws2, 4)
 	e2 := s.seedEpic(p2, board.EpicActive)
 	other := s.seedTask(e2, "other-project", nil, false)
-	c2, err := s.svc.ClaimNext(context.Background(), "w", ws)
-	s.Require().NoError(err)
-	s.Nil(c2.Task, "throttled project pauses new claims entirely")
+	s.expectNoCandidate(ws)
 
 	// A worker in ws2 still gets served (cross-project isolation of the
 	// pause): ws2's own claim path is unaffected.

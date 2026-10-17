@@ -151,7 +151,7 @@ func (s *BoardSuite) TestKill_MergePRConvergesToDone() {
 	// dependent `dep` is ready and outranks by created_at, so the manual
 	// dispatch targets the named task directly.
 	unmet := s.seedTask(e, "pr-unmet", []string{"pr:43"}, false) // criteria NOT met
-	started, err := s.svc.TaskStart(context.Background(), s.owner(), unmet.ID, "", ws, "")
+	started, err := s.svc.TaskStart(context.Background(), s.owner(), unmet.ID, "", "")
 	s.Require().NoError(err)
 	_, err = s.svc.MoveStage(context.Background(), s.agent("sess", started.ClaimToken), unmet.ID, "", board.StageInReview, "", "")
 	s.Require().NoError(err)
@@ -180,7 +180,14 @@ func (s *BoardSuite) TestKill_ClosedUnmergedReentryReclaims() {
 	s.Require().NoError(err)
 
 	s.drift.set(7, board.PRState{Closed: true, URL: "https://git.example/pr/7"})
-	res := s.sweep()
+	// A spawner-backed reconciler: the re-entry delivers by re-spawn (the
+	// suite default runs spawner-less to isolate RC phases).
+	respawning := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithPRDriftSource(s.drift),
+		board.WithFailpoint(s.fps.fp))
+	res, err := respawning.Sweep(context.Background())
+	s.Require().NoError(err)
 	s.Equal(1, res.DriftReentry)
 
 	row := s.rawTask(task.ID)
@@ -296,8 +303,7 @@ func (s *BoardSuite) doneDirect(t *board.Task) {
 	cur := s.reloadTask(t.ID)
 	tok := ""
 	if cur.Stage == board.StageBacklog {
-		proj := s.reloadProject(cur.ProjectID)
-		started, err := s.svc.TaskStart(ctx, s.owner(), t.ID, "", proj.TargetWorkspaceID, "")
+		started, err := s.svc.TaskStart(ctx, s.owner(), t.ID, "", "")
 		s.Require().NoError(err)
 		s.Require().False(started.Escalated)
 		tok = started.ClaimToken
