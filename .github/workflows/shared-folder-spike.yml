@@ -104,10 +104,13 @@ jobs:
         # the index digest, which is what kubelet resolves at pod time.
         run: |
           NODE="${CLUSTER_NAME}-control-plane"
+          # ctr's resolver needs registry-qualified refs (a bare
+          # `debian@sha256:...` defaults to dummy:// and dies parsing
+          # the digest as a port — run 39077806519).
           for ref in \
-            "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" \
-            "rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9" \
-            "chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d"; do
+            "docker.io/library/debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" \
+            "docker.io/rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9" \
+            "docker.io/chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d"; do
             docker exec "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "$ref"
           done
 
