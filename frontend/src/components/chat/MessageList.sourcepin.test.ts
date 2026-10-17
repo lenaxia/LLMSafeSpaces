@@ -115,7 +115,7 @@ describe("#1720 source-shape pins (scroll controller)", () => {
     // loop survived in the fresh-session flow. Mirror of S6: the deps
     // must include the scroll-container presence.
     const effectMatch = source.match(
-      /useEffect\(\(\) => \{\s*const el = scrollRef\.current;[\s\S]*?addEventListener\("scroll"[\s\S]*?\n  \}, \[[^\]]*\]\);/,
+      /useEffect\(\(\) => \{\s*const el = scrollRef\.current;[\s\S]*?addEventListener\("scroll"[\s\S]*?\n {2}\}, \[[^\]]*\]\);/,
     );
     expect(effectMatch).not.toBeNull();
     expect(effectMatch![0]).toMatch(/\[checkIfAtBottom, hasScrollContainer\]/);

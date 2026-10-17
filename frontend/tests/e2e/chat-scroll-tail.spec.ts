@@ -145,7 +145,7 @@ function tallHistory(): Array<Record<string, unknown>> {
 
 let historyFinalized: string | null = null;
 
-async function setupAPIMocks(page: Page) {
+async function setupAPIMocks(page: Page, history: Array<Record<string, unknown>> = tallHistory()) {
   await page.route(`${API}/auth/login`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "e2e-token", user: { id: "u1", username: "tester", role: "user" } }) });
   });
@@ -180,8 +180,8 @@ async function setupAPIMocks(page: Page) {
 
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/message*`, (r: Route) => {
     const body = historyFinalized
-      ? JSON.stringify([...tallHistory(), { id: MESSAGE_ID, type: "assistant", parts: [{ type: "text", text: historyFinalized }] }])
-      : JSON.stringify(tallHistory());
+      ? JSON.stringify([...history, { id: MESSAGE_ID, type: "assistant", parts: [{ type: "text", text: historyFinalized }] }])
+      : JSON.stringify(history);
     void r.fulfill({ status: 200, contentType: "application/json", body });
   });
 
@@ -372,5 +372,70 @@ test.describe("#1720 chat auto-tail vs user scroll during streaming", () => {
     after = await scrollState(page);
     expect(await atBottom(after)).toBe(true);
     await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
+  });
+
+  // r3: fresh-session composition — the component mounts WITHOUT a
+  // scroll container (empty log), the stream brings it into existence
+  // mid-flight. The scroll-intent listener must attach when the log
+  // appears: scroll-away disarms, no snap-back, affordance present.
+  test("fresh session: log mounts mid-stream — scroll away holds, affordance appears, resume follows", async ({ page }) => {
+    await setupAPIMocks(page, []);
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    await expect(page.getByText("Send a message to start the conversation")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[role="log"]')).toHaveCount(0);
+    await page.waitForTimeout(500);
+
+    // Stream starts on the empty session → the log mounts mid-stream.
+    await page.evaluate((frame: string) => {
+      (window as unknown as { __user: (f: string) => void }).__user(frame);
+    }, `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`);
+    await page.evaluate((frame: string) => {
+      (window as unknown as { __contract: (f: string) => void }).__contract(frame);
+    }, snapshotFrame(10, busySessions("seed\n")));
+    await page.evaluate((frame: string) => {
+      (window as unknown as { __contract: (f: string) => void }).__contract(frame);
+    }, partDelta(11, "Fresh session stream starts.\n"));
+    await expect(page.getByText("Fresh session stream starts.").first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[role="log"]')).toBeVisible();
+
+    const log = page.locator('[role="log"]');
+    // Grow the stream until it overflows the viewport (the fresh
+    // session starts with an empty log — no seeded history to scroll).
+    let seq = 12;
+    for (let round = 0; round < 4; round++) {
+      seq = await emitDeltas(page, seq, 10, `bulk${round}`);
+    }
+    let s = await scrollState(page);
+    expect(s.scrollHeight).toBeGreaterThan(s.clientHeight + 200);
+    expect(await atBottom(s)).toBe(true);
+
+    // User scrolls away — the listener attached at log-mount must see it.
+    const box = await log.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.wheel(0, -400);
+      await page.waitForTimeout(60);
+    }
+    await page.waitForTimeout(250);
+    s = await scrollState(page);
+    expect(s.scrollHeight - s.scrollTop - s.clientHeight).toBeGreaterThan(100);
+    const held = s.scrollTop;
+
+    // Further batches: no snap-back; the affordance is present.
+    seq = await emitDeltas(page, seq, 4, "fresh-held");
+    await page.waitForTimeout(400);
+    s = await scrollState(page);
+    expect(Math.abs(s.scrollTop - held)).toBeLessThan(4);
+    await expect(page.getByText("Resume tailing")).toBeVisible();
+
+    // Explicit resume: jumps and follows again in this composition too.
+    await page.getByRole("button", { name: "Scroll to bottom" }).click();
+    await page.waitForTimeout(120);
+    seq = await emitDeltas(page, seq, 3, "fresh-resumed");
+    await page.waitForTimeout(300);
+    s = await scrollState(page);
+    expect(await atBottom(s)).toBe(true);
+    void seq;
   });
 });
