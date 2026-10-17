@@ -194,8 +194,18 @@ func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest, s
 // the lease window: a busy-mark inside the window holds (its status event
 // may simply be late); past it, harness truth wins. In the ledger-wired
 // topology 1b's evidence sweep clears busy first (seq-gated); this is the
-// ledger-less governing rule and the sweep's backstop. a.mu must be held.
-func (a *Authority) rederiveStatusLocked(sid string, rec *sessionRecord, truth abiv1.SessionStatus) {
+// ledger-less governing rule and the sweep's backstop.
+//
+// #1722/#1727 r1 F1: the IDLE/ERROR arm carries the SAME settle signal
+// the sweep leg does — the live registry (seed.LiveBusy) must hold no
+// live turn before the turn-end verdict publishes. The LIST status is
+// idle-biased (records survive the turn) and this arm fires past the
+// lease bound, i.e. exactly for silent long turns, whose busySince is
+// stale after the first half-minute; without the gate the sibling leg
+// published IDLE mid-turn through the same fanout the bridge consumes.
+// a.mu must be held.
+func (a *Authority) rederiveStatusLocked(sid string, rec *sessionRecord, seed SessionSeed) {
+	truth := seed.Status
 	switch truth {
 	case abiv1.SessionStatus_SESSION_STATUS_BUSY:
 		// The #1576 layer-2 fold-dead hold: a session the
@@ -209,6 +219,9 @@ func (a *Authority) rederiveStatusLocked(sid string, rec *sessionRecord, truth a
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
 		}
 	case abiv1.SessionStatus_SESSION_STATUS_IDLE, abiv1.SessionStatus_SESSION_STATUS_ERROR:
+		if seed.LiveBusy {
+			return // the live registry still sees the turn — no settle
+		}
 		if rec.busy && time.Since(rec.busySince) > a.leaseBound() {
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: truth})
 		}
@@ -225,7 +238,7 @@ func (a *Authority) rederiveStatuses(seeds map[string]SessionSeed) {
 		}
 		a.mu.Lock()
 		if rec := a.sessions[sid]; rec != nil {
-			a.rederiveStatusLocked(sid, rec, seed.Status)
+			a.rederiveStatusLocked(sid, rec, seed)
 		}
 		a.mu.Unlock()
 		lock.Unlock()

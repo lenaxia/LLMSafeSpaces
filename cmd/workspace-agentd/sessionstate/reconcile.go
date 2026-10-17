@@ -375,8 +375,7 @@ func (a *Authority) recordReconcile(stats ReconcileStats) {
 // session; ERROR keeps the error visible). seqAtEvidence gates staleness:
 // a busy-mark folded AFTER the evidence read (rec.lastBusySeq newer) is a
 // live turn the evidence never saw — it survives the pass. Returns 1 when
-// the view was cleared. The a.mu hold is tiny (no I/O) — projection
-// reads/writes only.
+// the view was cleared.
 //
 // #1722: the clear is an ORDERED PUBLICATION, not a silent mutation. The
 // abort case's clear burst (session.error + session.status idle +
@@ -388,6 +387,11 @@ func (a *Authority) recordReconcile(stats ReconcileStats) {
 // stuck forever. The transition now crosses applyLocked: seq-assigned,
 // folded (same state change as before), and fanned out so subscribers
 // converge exactly as they would on the harness's own idle event.
+//
+// The publication persists the seq cursor under a.mu (fsync — the same
+// cost every Ingest pays); a cursor-persist failure drops the event, in
+// which case 0 returns so BusyCleared does not overcount the settle —
+// the next pass retries it.
 func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStatus, seqAtEvidence uint64) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -395,11 +399,15 @@ func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStat
 	if !ok || !rec.busy || rec.lastBusySeq > seqAtEvidence {
 		return 0
 	}
+	seqBefore := a.seq
 	a.applyLocked(&abiv1.Event{
 		SessionId: sid,
 		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
 		Status:    evStatus,
 	})
+	if a.seq == seqBefore {
+		return 0 // cursor persist failed — the settle did not publish
+	}
 	return 1
 }
 

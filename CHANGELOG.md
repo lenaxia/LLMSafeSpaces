@@ -43,7 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agentd composition, 3 bridge e2e, and a real-opencode integration
   repro (long bash tool aborted mid-turn through a burst-dropping
   proxy) asserting busy=false after turn end at the tracker, the
-  projection, and the publication seam.
+  projection, and the publication seam — now CI-registered beside the
+  origin e2e. Review r1: the live-registry settle gate now covers BOTH
+  reconcile legs (the `rederiveStatuses` sibling published IDLE
+  mid-turn for silent turns past the 30s lease bound — reviewer-
+  reproduced, red-first-pinned, fixed), the wiring's conservative
+  registry-failure mapping is pinned, and a cursor-outage no longer
+  overcounts `BusyCleared`.
 
 ### Added — Task Board dispatch engine + reconciler (Lane 1)
 
