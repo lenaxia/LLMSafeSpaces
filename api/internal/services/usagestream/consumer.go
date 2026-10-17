@@ -502,7 +502,8 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			return
 		}
 		switch evt.GetStatus() {
-		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING, abiv1.SessionStatus_SESSION_STATUS_IDLE:
+		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING,
+			abiv1.SessionStatus_SESSION_STATUS_IDLE, abiv1.SessionStatus_SESSION_STATUS_ERROR:
 			// #1602: the emission carries the authority's DERIVED busy
 			// truth (#1574 BusyComponents — read via GetSnapshot, never
 			// recomputed here). The raw dialect status is streaming-only
@@ -510,7 +511,12 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			// this fixes. Consult failure (pod glitch, projection-
 			// unknown session) fails open to the raw mapping: the pipe
 			// goes legacy, never quiet.
-			busy := evt.GetStatus() != abiv1.SessionStatus_SESSION_STATUS_IDLE
+			// #1722: ERROR joins the bridged set — an errored turn is
+			// OVER, not busy (the evidence settle publishes SESSION_STATUS
+			// ERROR for a harness-reported error verdict; the raw mapping
+			// below must not read it as busy). The consult governs.
+			busy := evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_BUSY ||
+				evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_COMPACTING
 			if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok {
 				busy = derived
 			}
