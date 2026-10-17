@@ -274,3 +274,99 @@ func TestReconcileEvidenceClear_PublicationIdempotent(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// TestRederiveSettle_LiveRegistryGatesSiblingLeg (#1727 r1 F1): the
+// settle-signal invariant must hold on BOTH legs of the reconcile pass.
+// rederiveStatuses (lease.go) runs right after the sweep and its
+// IDLE/ERROR arm publishes SESSION_STATUS through applyLocked for any
+// busy session whose busySince exceeds the lease bound — the silent
+// 50-minute tool run class is past that bound after its first
+// half-minute. With the live registry reporting the turn LIVE
+// (LiveBusy=true), the sibling leg must neither clear nor publish —
+// exactly the guarantee the sweep leg already carries. RED pre-fix:
+// probe-verified the ungated sibling publishes IDLE mid-turn.
+func TestRederiveSettle_LiveRegistryGatesSiblingLeg(t *testing.T) {
+	store := &settleStore{
+		evidenceStore: &evidenceStore{states: map[string]abiv1.SessionStatus{"ses_sib": abiv1.SessionStatus_SESSION_STATUS_IDLE}},
+		live:          map[string]bool{"ses_sib": true},
+	}
+	a := newReconcileAuthority(t, store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames, stop, err := a.Stream(ctx)
+	require.NoError(t, err)
+	defer stop()
+	select {
+	case <-frames:
+	case <-time.After(2 * time.Second):
+		t.Fatal("snapshot frame never arrived")
+	}
+
+	wedgeBusyWithRunningTool(t, a, "ses_sib")
+	drainFrames(t, frames, 2)
+
+	// Age the busy mark past the lease bound (30s) — the silent long
+	// turn's shape: no events, no busy re-marks, busySince stale.
+	a.mu.Lock()
+	a.sessions["ses_sib"].busySince = time.Now().Add(-(a.leaseBound() + time.Minute))
+	a.mu.Unlock()
+
+	// The pass: the sweep leg holds (LiveBusy), and the sibling
+	// rederive leg must hold too.
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, ReconcileStats{}, stats, "live turn: neither leg settles")
+
+	st := a.State()
+	require.NotNil(t, st.Sessions["ses_sib"])
+	assert.True(t, st.Sessions["ses_sib"].Busy,
+		"the live-registry gate must hold the busy view on BOTH settle legs — the sibling rederive leg publishing mid-turn is the ungated mis-fire")
+
+	select {
+	case f := <-frames:
+		t.Fatalf("mid-turn pass must publish nothing (the sibling leg fired): %+v", f)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestRederiveSettle_RegistryClearPublishesOnSiblingLeg (#1727 r1 F1):
+// the gated sibling still settles once the registry clears — the
+// aged-mark class converges through the rederive leg like the sweep's.
+func TestRederiveSettle_RegistryClearPublishesOnSiblingLeg(t *testing.T) {
+	store := &settleStore{
+		evidenceStore: &evidenceStore{states: map[string]abiv1.SessionStatus{"ses_sib": abiv1.SessionStatus_SESSION_STATUS_IDLE}},
+		live:          map[string]bool{"ses_sib": false},
+	}
+	a := newReconcileAuthority(t, store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames, stop, err := a.Stream(ctx)
+	require.NoError(t, err)
+	defer stop()
+	select {
+	case <-frames:
+	case <-time.After(2 * time.Second):
+		t.Fatal("snapshot frame never arrived")
+	}
+
+	wedgeBusyWithRunningTool(t, a, "ses_sib")
+	drainFrames(t, frames, 2)
+	a.mu.Lock()
+	a.sessions["ses_sib"].busySince = time.Now().Add(-(a.leaseBound() + time.Minute))
+	a.mu.Unlock()
+
+	// Registry clear + aged mark: both legs may run; the settle
+	// publishes and the projection converges.
+	stats := a.Reconcile(context.Background())
+	require.Equal(t, ReconcileStats{BusyCleared: 1}, stats)
+	require.False(t, a.State().Sessions["ses_sib"].Busy)
+	select {
+	case f := <-frames:
+		seq := f.GetEvent()
+		require.NotNil(t, seq, "the settle publication")
+		assert.Equal(t, abiv1.EventType_EVENT_TYPE_SESSION_STATUS, seq.GetEvent().GetType())
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry-cleared settle was never published")
+	}
+}
