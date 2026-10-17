@@ -496,4 +496,441 @@ describe("MessageList", () => {
       expect(el.scrollTop).toBe(1000);
     });
   });
+
+  // ── #1720 — streaming tail snap-back loop ────────────────────────────
+  //
+  // Owner report: during streaming the timeline keeps snapping to the
+  // bottom after the user scrolls away — repeatedly, intermittently.
+  // Root mechanics pinned here (normative rules in issue #1720):
+  //   R1 any genuine user scroll away disarms tailing durably;
+  //   R2 tailing continues until user scrolls away OR streaming stops;
+  //   R3 tailing NEVER silently re-arms — in particular NO near-bottom
+  //      re-arm while a stream is active (that heuristic IS the loop);
+  //      resume is explicit via the "Resume tailing" control;
+  //   R4 our own programmatic scrolls are invisible to the user-scroll
+  //      detector (guard flag) and never re-arm tail.
+
+  describe("#1720 streaming tail snap-back loop", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    async function scrollAway(el: HTMLElement, to = 400) {
+      await act(async () => {
+        setScrollDims(el, 1000, to);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+    }
+
+    // R3 (RED on HEAD): scrolling back NEAR the bottom while a stream is
+    // active must NOT re-arm tail. On HEAD, checkIfAtBottom recomputes
+    // stickToBottom from a near-bottom read — the same read our own
+    // programmatic snap produces — so the tail silently re-arms and the
+    // next token batch yanks the viewport back (the reported loop).
+    it("does not silently re-arm when the user scrolls back near the bottom mid-stream (R3)", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+
+      // User scrolls away → tail disarmed (pill visible).
+      await scrollAway(el, 400);
+
+      // User scrolls back to just above the bottom (within the 60px
+      // threshold): 1000 - 900 - 200 = -100 < 60.
+      await act(async () => {
+        setScrollDims(el, 1000, 900);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+
+      // Next token batch: must NOT snap. HEAD snaps to 1000 (loop).
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(900);
+    });
+
+    // R3 (RED on HEAD): a stream starting must never re-arm or snap a
+    // disarmed tail. On HEAD the [streaming] effect calls
+    // scrollToBottom() unconditionally on the streaming transition.
+    it("does not snap or re-arm when a stream starts while the user is scrolled away (R3)", async () => {
+      const { rerender } = render(
+        <MessageList messages={messages} streaming={false} />,
+      );
+      const el = screen.getByRole("log");
+      await scrollAway(el, 400);
+
+      await act(async () => {
+        rerender(
+          <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+        );
+        await flushTimers();
+      });
+
+      // No snap on the streaming transition...
+      expect(el.scrollTop).toBe(400);
+      // ...and no re-arm: subsequent tokens leave the viewport alone.
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(400);
+      // The explicit resume affordance is offered instead.
+      expect(screen.getByText("Resume tailing")).toBeInTheDocument();
+    });
+
+    // R3 (pin, green on fix): the ONLY re-arm during a stream is the
+    // explicit control — after a near-bottom visit that did NOT re-arm,
+    // clicking "Resume tailing" re-arms and follows again.
+    it("re-arms only via the explicit Resume tailing control mid-stream (R3)", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      await scrollAway(el, 400);
+
+      // Drift near the bottom without re-arming...
+      await act(async () => {
+        setScrollDims(el, 1000, 900);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+
+      // ...then click the explicit affordance.
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      expect(el.scrollTop).toBe(1000);
+
+      // Explicitly re-armed → follows the next token batch.
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(1000);
+    });
+
+    // R4 (pin): scroll events generated by OUR programmatic snaps are
+    // invisible to the user-intent detector — they neither disarm an
+    // armed tail nor linger to swallow the next genuine user scroll.
+    it("programmatic snap scroll events never disarm an armed tail (R4)", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed, at bottom
+
+      // Token snap fires (assignment), then the browser dispatches the
+      // scroll event for it (jsdom does not — we simulate the browser).
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(1000); // the snap happened
+
+      await act(async () => {
+        fireEvent.scroll(el); // the snap's own scroll event
+        await flushTimers();
+      });
+
+      // Guard consumed it → tail still armed → next token still follows.
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(1000);
+      expect(screen.queryByLabelText("Scroll to bottom")).not.toBeInTheDocument();
+    });
+
+    it("the guard does not swallow the next genuine user scroll after a snap (R4)", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800);
+
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      await act(async () => {
+        fireEvent.scroll(el); // snap's own event — consumed by the guard
+        await flushTimers();
+      });
+
+      // The very NEXT scroll event is a genuine user scroll away →
+      // must disarm immediately (the guard must not have lingered).
+      await scrollAway(el, 400);
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(400);
+    });
+
+    // Convention pin (green on HEAD and fix): while IDLE, scrolling back
+    // to the bottom re-arms follow — the near-bottom arm stays legal when
+    // no stream is active. Anchors R3's "while a stream is active" scope.
+    it("idle near-bottom scroll still re-arms follow (existing convention, R3 scope)", async () => {
+      const { rerender } = render(<MessageList messages={messages} />);
+      const el = screen.getByRole("log");
+      await scrollAway(el, 400);
+
+      // Scroll back to the bottom while idle.
+      await act(async () => {
+        setScrollDims(el, 1000, 850); // 1000-850-200 = -50 < 60
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+      await waitFor(() => {
+        expect(screen.queryByLabelText("Scroll to bottom")).not.toBeInTheDocument();
+      });
+
+      // Appended content follows again.
+      setScrollDims(el, 1200, 850);
+      rerender(<MessageList messages={[...messages, { id: "m9", role: "user", parts: [{ type: "text", text: "next" }] }]} />);
+      expect(el.scrollTop).toBe(1200);
+    });
+
+    // Acceptance: stream end settles tail state.
+    it("stream end while disarmed: no snap, free position kept, control flips to Jump to bottom", async () => {
+      const { rerender } = render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      await scrollAway(el, 400);
+
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={false} />);
+        await flushTimers();
+      });
+
+      expect(el.scrollTop).toBe(400);
+      expect(screen.getByText("Jump to bottom")).toBeInTheDocument();
+      expect(screen.queryByText("Resume tailing")).not.toBeInTheDocument();
+    });
+
+    it("stream end while tailing: stays at bottom, control hidden, state settled", async () => {
+      const { rerender } = render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed at bottom
+
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={false} />);
+        await flushTimers();
+      });
+
+      expect(el.scrollTop).toBe(800); // no scroll churn on the flip
+      expect(screen.queryByLabelText("Scroll to bottom")).not.toBeInTheDocument();
+    });
+  });
+
+  // ── #1720 r2 — resume-click must FOLLOW AGAIN, not just jump ────────
+  //
+  // r1 review (387b88d): the observer effect captured the armed state
+  // at effect-run time (`if (!streaming || !stickToBottom.current)
+  // return;`). A stream that STARTS while the tail is disarmed never
+  // attaches the follow observer, so the explicit resume click jumps to
+  // the bottom but subsequent stream batches are not followed — issue
+  // #1720 acceptance "click → jumps to bottom and follows again" fails
+  // in that composition. The observer must live for the whole stream
+  // (follow intent gated per-callback), so an explicit re-arm mid-stream
+  // needs no reconnect.
+
+  describe("#1720 r2 — resume follows again after disarmed stream start", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    // RED on 387b88d: the stream starts while disarmed → no observer →
+    // resume click jumps but the NEXT batch is not followed.
+    it("follows stream batches after a resume click when the stream started while disarmed", async () => {
+      const { rerender } = render(<MessageList messages={messages} streaming={false} />);
+      const el = screen.getByRole("log");
+
+      // User scrolled away while idle, then the stream starts (r1-pinned:
+      // no snap, no silent re-arm).
+      setScrollDims(el, 1000, 400);
+      fireEvent.scroll(el);
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(400);
+
+      // Still disarmed: batches do not scroll.
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(400);
+
+      // Explicit resume: jumps...
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      expect(el.scrollTop).toBe(1000);
+
+      // ...AND FOLLOWS AGAIN: the stream grows (scrollHeight 1000→1400)
+      // — the re-armed tail must track it. 387b88d stays at 1000 (the
+      // observer never attached for this stream).
+      setScrollDims(el, 1400, 1000);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1400);
+
+      // And keeps following the next batch (1800).
+      setScrollDims(el, 1800, 1400);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1800);
+    });
+
+    // RED on 387b88d: empty session — the streaming flip runs while the
+    // log is not mounted (empty state renders no scroll container); the
+    // observer must attach when the log appears, or an armed tail never
+    // follows the bubble's growth.
+    it("follows when the log mounts after the streaming flip (empty session bubble)", async () => {
+      const { rerender } = render(<MessageList messages={[]} streaming={true} />);
+      expect(screen.queryByRole("log")).not.toBeInTheDocument();
+
+      // The streaming bubble materializes → the log mounts.
+      await act(async () => {
+        rerender(<MessageList messages={[]} streaming={true} streamingBubble={<div data-testid="sb">grow</div>} />);
+      });
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed (default), at bottom
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1000);
+    });
+
+    // Guard (green both sides): while disarmed, the always-attached
+    // observer must not scroll on batches — only the click re-arms.
+    it("still does not follow while disarmed — the observer's per-callback gate holds", async () => {
+      const { rerender } = render(<MessageList messages={messages} streaming={false} />);
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 400);
+      fireEvent.scroll(el);
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+        await flushTimers();
+      });
+
+      for (let i = 0; i < 3; i++) {
+        setScrollDims(el, 1200 + i * 100, 400);
+        await flushMutation(el);
+        await act(async () => { await flushTimers(); });
+      }
+      expect(el.scrollTop).toBe(400);
+    });
+  });
+
+  // ── #1720 r3 — empty-at-mount: the intent listener must attach when
+  // the log comes into existence ──────────────────────────────────────
+  //
+  // r2 review (64fbc4b2): the scroll-intent listener effect ran once on
+  // mount with stable deps — mounting in the empty state (fresh session,
+  // no role="log") meant it early-returned on a null element and never
+  // re-ran when the log appeared. The reported loop then survived
+  // verbatim in the fresh-session flow: scroll-away was invisible (no
+  // disarm, no affordance) and every batch snapped.
+
+  describe("#1720 r3 — intent listener attaches when the log mounts (empty-at-mount)", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    it("scroll-away disarms and stops snapping after mounting empty (fresh session)", async () => {
+      const { rerender } = render(<MessageList messages={[]} streaming={false} />);
+      expect(screen.queryByRole("log")).not.toBeInTheDocument();
+
+      // The stream starts on the empty session → the log mounts mid-stream.
+      await act(async () => {
+        rerender(<MessageList messages={[]} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+      });
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed, at bottom
+
+      // Armed tail follows (r2 coverage, still expected).
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1000);
+
+      // USER scrolls away — on 64fbc4b2 the listener never attached for
+      // this element: no disarm, no affordance.
+      await act(async () => {
+        setScrollDims(el, 1000, 400);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      // Disarmed durably: the next batch must not snap.
+      setScrollDims(el, 1200, 400);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(400);
+
+      // Explicit resume works in this composition too.
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      expect(el.scrollTop).toBe(1200);
+      setScrollDims(el, 1600, 1200);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1600);
+    });
+  });
 });
