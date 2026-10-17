@@ -29,6 +29,35 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
   const bottomRef = useRef<HTMLDivElement>(null);
   const [showJumpButton, setShowJumpButton] = useState(false);
   const stickToBottom = useRef(true);
+  // #1720 R4: our own programmatic scroll assignments fire `scroll`
+  // events just like user scrolls do. This guard marks them so the
+  // user-intent detector (checkIfAtBottom) can tell them apart — a
+  // programmatic snap must never arm, disarm, or otherwise feed the
+  // near-bottom heuristic.
+  const programmaticScrollRef = useRef(false);
+  // Mirror of the `streaming` prop so the stable scroll handler can read
+  // it without re-subscribing listeners on every flip.
+  const streamingRef = useRef(streaming);
+
+  // #1720 R4: perform every programmatic scroll through here. A no-op
+  // assignment (already at the target) fires NO scroll event and must
+  // not mark the guard — a lingering mark would swallow the next
+  // genuine user scroll event. A real assignment fires exactly one
+  // scroll event (dispatched before the next rAF in the same rendering
+  // update); the mark is consumed by that event and self-clears on the
+  // next frame as a backstop.
+  const setProgrammaticScrollTop = useCallback((el: HTMLDivElement, target: number) => {
+    if (el.scrollTop === target) return;
+    programmaticScrollRef.current = true;
+    el.scrollTop = target;
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = false;
+    });
+  }, []);
+
+  useEffect(() => {
+    streamingRef.current = streaming;
+  }, [streaming]);
 
   const dividerIndex = useMemo(() => {
     if (!lastSeenAt) return -1;
@@ -42,6 +71,15 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
   const checkIfAtBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // #1720 R4: scroll events originating from OUR programmatic snaps
+    // are not user intent. Consume the guard and bail — they must never
+    // arm, disarm, or re-run the near-bottom heuristic (the post-snap
+    // near-bottom read is exactly what silently re-armed the tail and
+    // produced the snap-back loop).
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false;
+      return;
+    }
     // Record the user's intent SYNCHRONOUSLY, not in a deferred rAF. During
     // streaming the MutationObserver auto-scrolls to the bottom on every
     // token; if this update were deferred to a rAF, a token whose observer
@@ -50,7 +88,19 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
     // making earlier content unreadable while waiting for a response. Reading
     // scrollTop here reflects the position at the moment of the scroll event,
     // before any later mutation can act on a stale value.
-    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+    if (!nearBottom) {
+      // #1720 R1: any genuine user scroll away disarms tailing,
+      // durably — until the explicit resume control re-arms it.
+      stickToBottom.current = false;
+    } else if (!streamingRef.current && !stickToBottom.current) {
+      // #1720 R3: re-arming from a near-bottom read is legal ONLY while
+      // idle (existing convention: scroll back down → follow again).
+      // While a stream is active it is FORBIDDEN — that heuristic is
+      // the snap-back loop. Mid-stream, the ONLY re-arm is the explicit
+      // "Resume tailing" control.
+      stickToBottom.current = true;
+    }
     // The React state update (which drives a re-render) is cheap to coalesce,
     // so it stays behind a rAF to batch rapid scroll events.
     if (rafId.current) return;
@@ -75,10 +125,12 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) setProgrammaticScrollTop(el, el.scrollHeight);
+    // #1720 R3: this is the EXPLICIT re-arm path (resume control / jump
+    // button) — the only arm that is legal while a stream is active.
     stickToBottom.current = true;
     setShowJumpButton(false);
-  }, []);
+  }, [setProgrammaticScrollTop]);
 
   const hasTrailingPrompts = trailingPrompts != null;
 
@@ -116,7 +168,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
 
     if (stickToBottom.current) {
       // Existing behavior: jump to bottom on new content.
-      el.scrollTop = newScrollHeight;
+      setProgrammaticScrollTop(el, newScrollHeight);
     } else if (
       prevFirstId !== undefined &&
       newFirstId !== undefined &&
@@ -125,7 +177,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
       // Scroll anchoring: content was prepended (Load earlier completed).
       // Restore the visual position by adding the height delta so the
       // message the user was reading stays at the same screen position.
-      el.scrollTop = el.scrollTop + (newScrollHeight - prevScrollHeight);
+      setProgrammaticScrollTop(el, el.scrollTop + (newScrollHeight - prevScrollHeight));
     }
 
     prevFirstIdRef.current = newFirstId;
@@ -138,7 +190,11 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
   }, [messages.length, hasTrailingPrompts]);
 
   useEffect(() => {
-    if (streaming) {
+    // #1720 R2/R3: a stream starting continues an armed tail but NEVER
+    // re-arms a disarmed one — the user's free scroll persists until
+    // they explicitly resume. scrollToBottom() inside this guard arms
+    // only when already armed; when disarmed it must not run at all.
+    if (streaming && stickToBottom.current) {
       scrollToBottom();
     }
   }, [streaming, scrollToBottom]);
@@ -153,7 +209,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
       frameId = requestAnimationFrame(() => {
         frameId = 0;
         if (stickToBottom.current && el) {
-          el.scrollTop = el.scrollHeight;
+          setProgrammaticScrollTop(el, el.scrollHeight);
         }
       });
     });
@@ -162,7 +218,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
       observer.disconnect();
       if (frameId) cancelAnimationFrame(frameId);
     };
-  }, [streaming]);
+  }, [streaming, setProgrammaticScrollTop]);
 
   if (messages.length === 0 && !streamingBubble && !trailingPrompts) {
     return (
