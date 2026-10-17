@@ -116,6 +116,12 @@ export const TAILWIND_SLATE: Record<string, Rgb> = {
   "slate-900": [15, 23, 42],
 };
 
+export const TAILWIND_RED: Record<string, Rgb> = {
+  "red-400": [248, 113, 113], // #f87171 — dark-scheme error ink (#1716 r1)
+};
+
+const TAILWIND_LITERALS: Record<string, Rgb> = { ...TAILWIND_SLATE, ...TAILWIND_RED };
+
 const TEXT_TOKENS = new Set([
   "foreground",
   "muted-foreground",
@@ -147,17 +153,30 @@ export interface ColorRef {
 export interface ResolvedColors {
   fg?: ColorRef;
   bg?: ColorRef;
+  /**
+   * Element opacity (Tailwind `opacity-*` utility) — multiplies the
+   * effective fg alpha. CSS composites the whole element against its
+   * backdrop, which for text-without-own-background is exactly fg
+   * dilution against the ancestor surface. #1716 r1: the queue error
+   * pill diluted its text this way (opacity-70/80).
+   */
+  opacity?: number;
 }
 
 /**
  * Resolve the text/background color utilities carried by a class list
  * against one scheme's tokens. Non-color utilities (text-xs, font-mono,
- * arbitrary values like text-[11px], borders, …) are ignored.
+ * arbitrary values like text-[11px], borders, …) are ignored, except
+ * `opacity-*`, captured as a fg-alpha multiplier.
  *
  * Scheme semantics mirror the real cascade: base utilities apply in BOTH
  * schemes (the `--color-*` custom properties themselves flip values under
  * `.dark`), and a `dark:`-prefixed utility overrides its base twin when
  * the scheme is dark. For "light", `dark:`-prefixed utilities are inert.
+ *
+ * Inherited color: pass the CONTAINER's class list concatenated with the
+ * child's (container + " " + child) — an inherited `text-*` on the
+ * container becomes the child's fg exactly as currentColor does.
  */
 export function resolveColorClasses(
   classAttr: string,
@@ -166,17 +185,22 @@ export function resolveColorClasses(
 ): ResolvedColors {
   const out: ResolvedColors = {};
   const consider = (cls: string) => {
+    const opacity = /^opacity-(\d+)$/.exec(cls);
+    if (opacity?.[1]) {
+      out.opacity = Number(opacity[1]) / 100;
+      return;
+    }
     const m = /^(text|bg)-([a-z0-9-]+)(?:\/(\d+))?$/.exec(cls);
     if (!m) return;
     const kind = m[1];
     const name = m[2];
     const alpha = m[3];
     if (!kind || !name) return;
-    const rgb = tokens[name] ?? TAILWIND_SLATE[name];
+    const rgb = tokens[name] ?? TAILWIND_LITERALS[name];
     if (!rgb) return;
     const ref = { rgb, alpha: alpha ? Number(alpha) / 100 : 1 };
-    if (kind === "text" && (TEXT_TOKENS.has(name) || name in TAILWIND_SLATE)) out.fg = ref;
-    if (kind === "bg" && (BG_TOKENS.has(name) || name in TAILWIND_SLATE)) out.bg = ref;
+    if (kind === "text" && (TEXT_TOKENS.has(name) || name in TAILWIND_LITERALS)) out.fg = ref;
+    if (kind === "bg" && (BG_TOKENS.has(name) || name in TAILWIND_LITERALS)) out.bg = ref;
   };
   for (const raw of classAttr.split(/\s+/)) {
     if (!raw || raw.startsWith("dark:")) continue;
@@ -202,7 +226,9 @@ export function textOnSurfaceRatio(
 ): { fg: Rgb; bg: Rgb; ratio: number } {
   const bg = colors.bg ? alphaBlend(colors.bg.rgb, surface, colors.bg.alpha) : surface;
   if (!colors.fg) throw new Error("no text color utility resolved on element");
-  const fg = alphaBlend(colors.fg.rgb, bg, colors.fg.alpha);
+  // Element opacity dilutes the fg against its own backdrop (see
+  // ResolvedColors.opacity) — the queue pill's opacity-70/80 pattern.
+  const fg = alphaBlend(colors.fg.rgb, bg, colors.fg.alpha * (colors.opacity ?? 1));
   return { fg, bg, ratio: contrastRatio(fg, bg) };
 }
 
