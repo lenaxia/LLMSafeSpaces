@@ -57,11 +57,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convention preserved); resume is explicit via the existing
   "Resume tailing" control; and all programmatic scrolls are routed
   through a guarded helper so the user-intent detector never mistakes
-  them for user input. Regression coverage: deterministic red-first
-  jsdom pins for the loop, source-shape pins on the scroll controller,
-  WCAG contrast pins for the resume control (light + dark), and a
-  Playwright acceptance spec (mocked SSE) for scroll-away-holds /
-  explicit-resume / stream-end-settle.
+  them for user input. Follow-up (#1720 r2): the stream-follow
+  observer now lives for the whole stream instead of attaching only
+  when the tail is armed at stream start — previously, resuming via
+  the control after a stream had started while scrolled away jumped to
+  the bottom but did not follow subsequent batches, and an empty
+  session whose log mounted after the streaming flip never followed at
+  all. Regression coverage: deterministic red-first jsdom pins for the
+  loop and the resume-follows-again compositions, source-shape pins on
+  the scroll controller, WCAG contrast pins for the resume control
+  (light + dark), and a Playwright acceptance spec (mocked SSE) for
+  scroll-away-holds / explicit-resume-that-follows / stream-end-settle.
 
 ## [0.38.0] - 2026-10-17
 

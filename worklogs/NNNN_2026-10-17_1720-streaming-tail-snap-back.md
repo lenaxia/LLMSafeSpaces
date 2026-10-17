@@ -84,3 +84,18 @@ Controller: `frontend/src/components/chat/MessageList.tsx` (the only chat timeli
 - `frontend/src/components/chat/MessageList.test.tsx`, `MessageList.sourcepin.test.ts`, `MessageList.contrast.test.tsx` (new pins)
 - `frontend/tests/e2e/chat-scroll-tail.spec.ts` (new)
 - `CHANGELOG.md`, this worklog
+
+## Rework r2 (PR #1723 r1 review @ 387b88d — one finding, GO with exactly the reviewer's spec)
+
+**Finding (reproduced by both review passes, and by me):** issue #1720's acceptance "click → jumps to bottom and follows again" fails in the disarmed-mid-stream composition. The observer effect early-returned on `!stickToBottom.current`, capturing the armed state at effect-run time — a stream that STARTS while the tail is disarmed never attaches the follow observer, so the explicit resume click (a ref flip; no effect re-runs) jumped but subsequent batches were not followed, and the affordance vanished on the next batch arrival (viewport drifted off-bottom, pill reappearing). My r1 tests missed it because every resume test used the armed-at-stream-start composition (observer attached at the flip).
+
+**Fix (commit `6d692348`):** the follow observer now lives for the whole stream — attachment depends only on `streaming` and the scroll container existing, never on the armed flag; follow intent stays gated per-callback/per-rAF (S1 pins; the S2/S5 arm-gating semantics are untouched: no silent re-arm, near-bottom arm idle-only). Also keyed the effect on `hasScrollContainer`: on an empty session the streaming flip fires while the empty state renders no scroll container (el null → never attached); the effect re-attaches when the log mounts so an armed tail follows the bubble's growth.
+
+**r2 pins (commit `d25728ab`, RED on 387b88d):**
+- jsdom: disarmed-at-stream-start → resume click → batches follow (1400, 1800 growth tracked; 387b88d stays at the jump position) — **red-first, deterministic**;
+- jsdom: empty session — log mounts after the streaming flip → armed tail follows bubble growth — **red-first, deterministic** (same attachment-gap family);
+- source pin **S6**: observer effect has no armed-state early return, gates only on `!streaming`, deps include `hasScrollContainer`;
+- green guard pin: while disarmed, batches still never scroll (per-callback gate holds — the loop fix's semantics are unchanged);
+- e2e (commit `b9a6e5a3`): the stream-start-while-scrolled-away spec now clicks resume and asserts the next batches arrive at-bottom — **verified RED on 387b88d** (both attempt and retry) at the follow-again assertion.
+
+**Verification (r2 tree):** units **2184 passed / 197 files**; `tsc --noEmit` clean; eslint clean (touched files); `chat-scroll-tail.spec.ts` 3/3 consecutive green; neighbors green (streaming, chat). Commits: red pins `d25728ab` → fix `6d692348` → e2e `b9a6e5a3`.
