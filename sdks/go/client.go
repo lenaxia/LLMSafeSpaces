@@ -40,6 +40,7 @@ type Client struct {
 	Probe                    *ProbeService
 	Workflows                *WorkflowsService
 	Triggers                 *TriggersService
+	Board                    *BoardService
 	McpServers               *McpServersService
 	UserPrompts              *UserPromptsService
 	AdminMcpServers          *AdminMcpServersService
@@ -90,6 +91,7 @@ func New(baseURL string, opts ...Option) *Client {
 	c.Probe = &ProbeService{c: c}
 	c.Workflows = &WorkflowsService{c: c}
 	c.Triggers = &TriggersService{c: c}
+	c.Board = &BoardService{c: c}
 	c.McpServers = &McpServersService{c: c}
 	c.UserPrompts = &UserPromptsService{c: c}
 	c.AdminMcpServers = &AdminMcpServersService{c: c}

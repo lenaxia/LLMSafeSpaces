@@ -1,6 +1,7 @@
 """Unit tests for LLMSafeSpaces Python SDK."""
 
 import pytest
+import re
 import httpx
 import respx
 
@@ -1116,3 +1117,96 @@ def test_user_prompts_crud():
 
     client.user_prompts.delete("p1")
     assert delete_route.called
+
+
+# ─── #1699: Task Board (design 0067 §4.3a) ────────────────────────────────────
+
+
+@respx.mock
+def test_board_project_round_trip():
+    respx.post(f"{BASE}/me/projects").respond(
+        status_code=201,
+        json={"id": "p1", "short_id": "prj-aaaa1111", "user_id": "u1", "name": "B",
+              "status": "active", "worker_slots": 2, "tags": ["t"],
+              "created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z"},
+    )
+    respx.get(f"{BASE}/me/projects").respond(
+        json={"projects": [{"id": "p1", "short_id": "prj-aaaa1111", "status": "active"}]}
+    )
+    respx.get(f"{BASE}/me/projects/prj-aaaa1111").respond(
+        json={"id": "p1", "short_id": "prj-aaaa1111", "status": "active"}
+    )
+    respx.patch(f"{BASE}/me/projects/prj-aaaa1111").respond(
+        json={"id": "p1", "name": "renamed", "status": "active"}
+    )
+    respx.post(f"{BASE}/me/projects/prj-aaaa1111/archive").respond(
+        json={"id": "p1", "status": "archived"}
+    )
+    respx.post(f"{BASE}/me/projects/prj-aaaa1111/unarchive").respond(
+        json={"id": "p1", "status": "active"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    proj = client.board.create_project(name="B", target_workspace_id="ws-1", tags=["t"])
+    assert proj["short_id"] == "prj-aaaa1111"
+    assert len(client.board.list_projects()) == 1
+    assert client.board.get_project("prj-aaaa1111")["id"] == "p1"
+    assert client.board.update_project("prj-aaaa1111", name="renamed")["name"] == "renamed"
+    assert client.board.archive_project("prj-aaaa1111")["status"] == "archived"
+    assert client.board.unarchive_project("prj-aaaa1111")["status"] == "active"
+
+
+@respx.mock
+def test_board_epic_lifecycle():
+    respx.post(f"{BASE}/me/projects/prj-aaaa1111/epics").respond(
+        status_code=201,
+        json={"id": "e1", "short_id": "epc-bbbb2222", "status": "draft", "priority": "P2"},
+    )
+    respx.post(f"{BASE}/me/epics/epc-bbbb2222/activate").respond(
+        json={"id": "e1", "status": "active", "progress_derived": True, "progress_done": 1, "progress_total": 2}
+    )
+    respx.post(f"{BASE}/me/epics/epc-bbbb2222/pause").respond(json={"id": "e1", "status": "paused"})
+    respx.post(f"{BASE}/me/epics/epc-bbbb2222/cancel").respond(json={"id": "e1", "status": "paused"})
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    assert client.board.create_epic("prj-aaaa1111", title="E1")["status"] == "draft"
+    act = client.board.epic_activate("epc-bbbb2222")
+    assert act["status"] == "active" and act["progress_derived"] is True
+    assert client.board.epic_pause("epc-bbbb2222")["status"] == "paused"
+    assert client.board.cancel_epic("epc-bbbb2222", reason="r")["status"] == "paused"
+
+
+@respx.mock
+def test_board_task_or4_anchor_and_actions():
+    respx.post(f"{BASE}/me/epics/epc-bbbb2222/tasks").respond(
+        status_code=201,
+        json={"id": "t1", "short_id": "tsk-cccc3333", "stage": "backlog", "tags": ["pr:1234"]},
+    )
+    respx.post(f"{BASE}/me/tasks/tsk-cccc3333/dependencies").respond(
+        json={"task": {"id": "t1", "is_blocked": True, "blocked_by": ["tsk-aaaa0000"]}}
+    )
+    respx.delete(f"{BASE}/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000").respond(
+        json={"task": {"id": "t1", "is_blocked": False}}
+    )
+    respx.post(f"{BASE}/me/tasks/tsk-cccc3333/move-stage").respond(
+        json={"id": "t1", "stage": "done"}
+    )
+    respx.post(f"{BASE}/me/tasks/tsk-cccc3333/start").respond(
+        json={"task_id": "t1", "claim_token": "tok-1", "escalated": False}
+    )
+    respx.post(f"{BASE}/me/tasks/tsk-cccc3333/cancel").respond(
+        json={"id": "t1", "stage": "cancelled"}
+    )
+    respx.get(f"{BASE}/me/projects/prj-aaaa1111/tasks?stage=backlog").respond(
+        json={"tasks": [{"id": "t1", "stage": "backlog"}]}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    task = client.board.create_task("epc-bbbb2222", title="T", tags=["pr:1234"])
+    assert re.match(r"^pr:[1-9][0-9]*$", task["tags"][0])
+    dep = client.board.add_dependency("tsk-cccc3333", depends_on="tsk-aaaa0000")
+    assert dep["task"]["is_blocked"] is True
+    rem = client.board.remove_dependency("tsk-cccc3333", "tsk-aaaa0000")
+    assert rem["task"]["is_blocked"] is False
+    assert client.board.move_stage("tsk-cccc3333", to_stage="done", evidence_url="https://git/pr/1")["stage"] == "done"
+    claim = client.board.start_task("tsk-cccc3333")
+    assert claim["claim_token"] == "tok-1" and claim["escalated"] is False
+    assert client.board.cancel_task("tsk-cccc3333", reason="r")["stage"] == "cancelled"
+    assert len(client.board.list_project_tasks("prj-aaaa1111", stage="backlog")) == 1
