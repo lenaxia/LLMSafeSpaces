@@ -77,7 +77,7 @@ describe("#1720 source-shape pins (scroll controller)", () => {
   it("S5: no near-bottom arm of the tail flag while a stream is active (loop guard)", () => {
     // The handler may only arm when NOT streaming: pin the
     // `!streamingRef.current` condition on the arm branch.
-    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[\]\);/);
+    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/);
     expect(handlerMatch).not.toBeNull();
     const handler = handlerMatch![0];
     const armSites = handler.match(/stickToBottom\.current = true/g) ?? [];
@@ -85,5 +85,25 @@ describe("#1720 source-shape pins (scroll controller)", () => {
     // only arms are the guarded idle branch — matched by S5's condition.
     expect(handler).toMatch(/!streamingRef\.current && !stickToBottom\.current/);
     expect(armSites.length).toBe(1);
+  });
+
+  it("S6: the stream-follow observer lives for the whole stream (armed-independent attachment)", () => {
+    // r1 review gap (#1723 r1, 387b88d): the observer effect early-
+    // returned on `!stickToBottom.current`, capturing the armed state at
+    // effect-run time. A stream starting while disarmed never attached
+    // the observer, so the explicit resume click jumped but never
+    // followed again. Follow intent must be gated PER-CALLBACK (S1), and
+    // attachment must depend only on the stream + the scroll container
+    // existing — never on the armed flag.
+    const effectMatch = source.match(
+      /useEffect\(\(\) => \{[\s\S]*?new MutationObserver[\s\S]*?\}, \[streaming[^\]]*\]\);/,
+    );
+    expect(effectMatch).not.toBeNull();
+    const effect = effectMatch![0];
+    expect(effect).not.toMatch(/!stickToBottom\.current\) return/);
+    expect(effect).toMatch(/if \(!streaming\) return;/);
+    // And it re-attaches when the log mounts after the flip (empty
+    // session): the deps include the scroll-container presence.
+    expect(effect).toMatch(/\[streaming, hasScrollContainer/);
   });
 });

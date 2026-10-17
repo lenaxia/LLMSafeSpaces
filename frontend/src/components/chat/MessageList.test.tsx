@@ -744,4 +744,121 @@ describe("MessageList", () => {
       expect(screen.queryByLabelText("Scroll to bottom")).not.toBeInTheDocument();
     });
   });
+
+  // ── #1720 r2 — resume-click must FOLLOW AGAIN, not just jump ────────
+  //
+  // r1 review (387b88d): the observer effect captured the armed state
+  // at effect-run time (`if (!streaming || !stickToBottom.current)
+  // return;`). A stream that STARTS while the tail is disarmed never
+  // attaches the follow observer, so the explicit resume click jumps to
+  // the bottom but subsequent stream batches are not followed — issue
+  // #1720 acceptance "click → jumps to bottom and follows again" fails
+  // in that composition. The observer must live for the whole stream
+  // (follow intent gated per-callback), so an explicit re-arm mid-stream
+  // needs no reconnect.
+
+  describe("#1720 r2 — resume follows again after disarmed stream start", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    // RED on 387b88d: the stream starts while disarmed → no observer →
+    // resume click jumps but the NEXT batch is not followed.
+    it("follows stream batches after a resume click when the stream started while disarmed", async () => {
+      const { rerender } = render(<MessageList messages={messages} streaming={false} />);
+      const el = screen.getByRole("log");
+
+      // User scrolled away while idle, then the stream starts (r1-pinned:
+      // no snap, no silent re-arm).
+      setScrollDims(el, 1000, 400);
+      fireEvent.scroll(el);
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+        await flushTimers();
+      });
+      expect(el.scrollTop).toBe(400);
+
+      // Still disarmed: batches do not scroll.
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(400);
+
+      // Explicit resume: jumps...
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      expect(el.scrollTop).toBe(1000);
+
+      // ...AND FOLLOWS AGAIN: the stream grows (scrollHeight 1000→1400)
+      // — the re-armed tail must track it. 387b88d stays at 1000 (the
+      // observer never attached for this stream).
+      setScrollDims(el, 1400, 1000);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1400);
+
+      // And keeps following the next batch (1800).
+      setScrollDims(el, 1800, 1400);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1800);
+    });
+
+    // RED on 387b88d: empty session — the streaming flip runs while the
+    // log is not mounted (empty state renders no scroll container); the
+    // observer must attach when the log appears, or an armed tail never
+    // follows the bubble's growth.
+    it("follows when the log mounts after the streaming flip (empty session bubble)", async () => {
+      const { rerender } = render(<MessageList messages={[]} streaming={true} />);
+      expect(screen.queryByRole("log")).not.toBeInTheDocument();
+
+      // The streaming bubble materializes → the log mounts.
+      await act(async () => {
+        rerender(<MessageList messages={[]} streaming={true} streamingBubble={<div data-testid="sb">grow</div>} />);
+      });
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed (default), at bottom
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1000);
+    });
+
+    // Guard (green both sides): while disarmed, the always-attached
+    // observer must not scroll on batches — only the click re-arms.
+    it("still does not follow while disarmed — the observer's per-callback gate holds", async () => {
+      const { rerender } = render(<MessageList messages={messages} streaming={false} />);
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 400);
+      fireEvent.scroll(el);
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+      await act(async () => {
+        rerender(<MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+        await flushTimers();
+      });
+
+      for (let i = 0; i < 3; i++) {
+        setScrollDims(el, 1200 + i * 100, 400);
+        await flushMutation(el);
+        await act(async () => { await flushTimers(); });
+      }
+      expect(el.scrollTop).toBe(400);
+    });
+  });
 });
