@@ -93,13 +93,23 @@ jobs:
           kubectl get runtimeclass gvisor runc
 
       - name: Pre-warm kind node images
-        # Runner-side docker pulls validate the tags exist but do NOT
-        # warm the node (no shared image store) — kind load does (review
-        # R3; also de-risks Hub flakes mid-leg).
+        # Runner-side docker pulls validate the digests resolve LOUD
+        # (fails here, not 20 minutes into a leg). Node pre-warm uses
+        # `ctr images pull` ON THE NODE — NOT `kind load docker-image`:
+        # digest refs are multi-arch manifest lists, and kind's
+        # `docker save | ctr import --all-platforms` path dies on
+        # missing other-platform blobs ("content digest not found" —
+        # the same class that killed the pool's fast-mode dispatches
+        # 2026-09-07). ctr pulls exactly the amd64 child and records
+        # the index digest, which is what kubelet resolves at pod time.
         run: |
-          kind load docker-image "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" --name $CLUSTER_NAME
-          kind load docker-image "rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9" --name $CLUSTER_NAME
-          kind load docker-image "chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d" --name $CLUSTER_NAME
+          NODE="${CLUSTER_NAME}-control-plane"
+          for ref in \
+            "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" \
+            "rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9" \
+            "chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d"; do
+            docker exec "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "$ref"
+          done
 
       - name: Provision Longhorn (RWX spike posture)
         # classes deferred past snapshot-controller: the VolumeSnapshotClass

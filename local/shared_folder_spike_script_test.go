@@ -201,16 +201,21 @@ func TestLonghornLib_Shape(t *testing.T) {
 }
 
 // Workflow pins: the runc RuntimeClass must be applied beside gvisor
-// (N-A), and the node must be image-pre-warmed via kind load (R3).
+// (N-A), and the node must be image-pre-warmed (ctr pull by digest on
+// the node — kind load's save/import path dies on multi-arch digest
+// refs, the run-39075635564 lesson).
 func TestSharedFolderSpike_WorkflowShape(t *testing.T) {
 	src := mustReadSpike(t, spikeWF)
 	for _, marker := range []string{
 		`name: runc`,
 		`handler: runc`,
-		`kind load docker-image`,
+		`ctr -n k8s.io images pull`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("workflow missing marker %q", marker)
 		}
+	}
+	if strings.Contains(src, `kind load docker-image`) {
+		t.Fatal("kind load with digest refs dies on manifest-list imports — use ctr images pull on the node")
 	}
 }
