@@ -40,7 +40,7 @@ function errorPill(): { pillClass: string; struckClass: string; errorClass: stri
   render(
     <QueueSection messages={[failedSend]} onRetry={() => {}} onDismiss={() => {}} isMobile={false} />,
   );
-  const pill = document.querySelector("div[class*='bg-destructive']");
+  const pill = document.querySelector<HTMLElement>("div[class*='bg-destructive']");
   if (!pill) throw new Error("error pill not rendered");
   const struck = screen.getByText("Ship the r1 rework");
   const errorLine = screen.getByText("session suspended before delivery");
