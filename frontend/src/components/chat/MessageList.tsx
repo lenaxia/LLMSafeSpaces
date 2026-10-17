@@ -113,6 +113,13 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
     });
   }, []);
 
+  // Whether the scroll container (role="log") is rendered at all. The
+  // empty state (no messages, no streaming bubble, no prompts) renders
+  // no container — effects that need the element key on this so they
+  // (re-)attach when it comes into existence (#1720 r2: the stream-
+  // follow observer; #1720 r3: the scroll-intent listener).
+  const hasScrollContainer = messages.length > 0 || streamingBubble != null || trailingPrompts != null;
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -121,7 +128,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
       el.removeEventListener("scroll", checkIfAtBottom);
       if (rafId.current) cancelAnimationFrame(rafId.current);
     };
-  }, [checkIfAtBottom]);
+  }, [checkIfAtBottom, hasScrollContainer]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -207,11 +214,11 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
   // batch follow. Gating attachment on the armed state at effect-run
   // time meant the observer never attached for such streams and the
   // resume click jumped without following (r1 review finding).
-  // `hasScrollContainer` re-runs the effect when the log mounts after
-  // the streaming flip (empty session: the flip fires while the empty
-  // state renders no scroll container — el would be null and the
-  // observer would never attach).
-  const hasScrollContainer = messages.length > 0 || streamingBubble != null || trailingPrompts != null;
+  // `hasScrollContainer` (declared above with the other element-dependent
+  // effects) re-runs this effect when the log mounts after the streaming
+  // flip (empty session: the flip fires while the empty state renders no
+  // scroll container — el would be null and the observer would never
+  // attach).
   useEffect(() => {
     if (!streaming) return;
     const el = scrollRef.current;
