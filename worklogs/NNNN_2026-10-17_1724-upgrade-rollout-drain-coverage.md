@@ -50,6 +50,44 @@ Suggested `helm-release.yaml` comment block pinning the blast-radius expectation
 - D20 org-suspension drain ruling (options A/B/C on the issue) — depends on the owner's telemetry export.
 - If telemetry shows pods never died (streams only), the remaining work belongs to the #1687/#1666 resync lane; the pins and runbook here stand regardless.
 
+## Shape change vs the issue thread (r3 disclosure)
+
+The issue-thread fix plan sketched a fleet-composition pin (a
+`TestOverlayRoll_DeliberateFleetRoll_BusyAgents_Defer`-style test across
+many workspaces). What shipped is the single-workspace lazy-roll leg
+(zero-kill busy/idle + recreated-pod-carries-new-digest) plus the
+deletion-path inventory guard. Rationale: the fleet-wide behavior of the
+refuted mechanism is the composition of per-workspace reconciles with no
+cross-workspace coordination anywhere in the controller (no `DeleteAllOf`,
+no fleet pass — verified in the analysis), so the per-workspace pin at
+the real `Reconcile` seam IS the behavioral invariant; a fleet loop over
+N identical fixtures would re-execute the same code path N times and add
+runtime, not coverage. The fleet-composition risk a reviewer flagged
+lives in a DIFFERENT layer — a future deletion path added to
+`handleActive` — which is exactly what the inventory guard + kill-tests
+police. Noted on #1724 (one-line comment) per the r3 review.
+
+## Review rounds
+
+- **r1 → r2** (orchestrator verdict on 9c9d603a): the branch had been cut
+  from the #1720 lane's unmerged tip (shared checkout), carrying #1720's
+  production fix into this PR's diff undisclosed. Rebuilt from
+  origin/main (050dfa44); diff = exactly the four files below. CI green
+  on f5dcc17e (34/34 checks; one usagestream busy-truth E2E flake rerun
+  green — 3/3 local passes, zero api/ files in this diff).
+- **r3** (organic review 5558994447, CHANGES_REQUESTED — substance
+  verified, process items): (a) PR body's "Partially fixes #1724" closing
+  keyword would auto-close the open P1 on merge → reworded to
+  "addresses/Refs"; (b) positive liveness control added to both
+  zero-kills tests (`stub.statuszCalls() > 0` — the fixture's
+  maybeEnrichAgentStatus consult proves the reconcile ran over a serving
+  agent); (c) guard-wording softened everywhere to "all classified
+  `deletePodByName` call sites" with the disclosed blind spots (raw
+  `r.Delete` bypass; intra-function additions — reviewer
+  mutation-validated); (d) shape-change note above + the matching #1724
+  comment; (e) PR retitled `test(workspace):` (zero production code
+  changed).
+
 ## Verification
 
 - `go test ./controller/internal/workspace/ -count=1` — full package green (68s), incl. the #761 drain suite, #1507 suspend pins, #863/#935/#1685-adjacent suites.

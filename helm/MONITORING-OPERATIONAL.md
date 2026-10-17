@@ -187,8 +187,13 @@ touches, and what user-visible effect to expect.
 | `controller.workspaceTerminationGraceSeconds` | Termination grace on BUILT pods | Untouched (baked into the pod spec) | New grace applies | None on running sessions |
 | Org status changes (API-side suspension, D20) | Controller observes org suspended | **Active → Suspending → pod deleted with NO busy-session drain** (#1507 ruling: 40s graceful termination only) | Manual resume per workspace | In-flight turns get the 40s grace, then die — the one fleet-wide kill path an API-side data change can trigger today |
 
-Kill paths of a running, serving pod (complete inventory — enforced by
-`TestUpgrade_DeletionPathInventory`): restart-generation recycle, password
+Kill paths of a running, serving pod (all classified `deletePodByName`
+call sites at the time of writing — the (file, function)-granular
+inventory is pinned by `TestUpgrade_DeletionPathInventory`, which fails
+CI when a `deletePodByName` call appears in a new or renamed function;
+a raw `r.Delete` on a pod or a call added inside an already-classified
+function is NOT caught by that guard — the behavioral kill-tests are
+that layer): restart-generation recycle, password
 secret heal, architecture drift (all #761-drained behind busy sessions);
 suspend-family entries incl. org suspension, idle and timeout
 (#1507 grace-only); health-check restart (ungated by design — a dead

@@ -30,9 +30,12 @@ package workspace
 //   - A pod recreated for an unrelated reason AFTER the digest change
 //     picks up the NEW digest (the lazy roll actually rolls).
 //   - Every deletePodByName call site in the package stays within the
-//     classified deletion-path inventory (#761 drain matrix) — a NEW
-//     deletion path cannot appear without being consciously classified
-//     here (the opencode_overlay_contract_test.go source-guard pattern).
+//     classified deletion-path inventory (#761 drain matrix). The guard
+//     is (file, function)-granular by construction: it catches a deletion
+//     moved into or added as a NEW function, but a call added INSIDE an
+//     already-classified function or a raw r.Delete on a pod bypasses it —
+//     those are covered by the behavioral kill-tests above, not this
+//     inventory (disclosed limit, r3 review).
 //
 // Red-first verification (worklog): each pin was validated against a
 // deliberately broken mutation — an eager drift-recycle in handleActive
@@ -183,6 +186,14 @@ func TestUpgrade_OverlayDigestChange_BusySessionsZeroKills(t *testing.T) {
 	r.drainStatesMu.Lock()
 	assert.Empty(t, r.drainStates, "no drain window may open for a digest change")
 	r.drainStatesMu.Unlock()
+
+	// Positive control (r3 review): the stub agentd was actually serving
+	// this fixture (maybeEnrichAgentStatus consults statusz — StartTime
+	// −10min, PodIP set), so the zero-kill outcome above is a live
+	// reconcile over a reachable agent, not a silently short-circuited
+	// handleActive.
+	assert.Greater(t, stub.statuszCalls(), 0,
+		"liveness control: statusz must have been consulted — otherwise these pins prove nothing about a serving agent")
 }
 
 // TestUpgrade_OverlayDigestChange_IdlePodAlsoUntouched: laziness is the
@@ -213,6 +224,11 @@ func TestUpgrade_OverlayDigestChange_IdlePodAlsoUntouched(t *testing.T) {
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
 	assert.Equal(t, v1.WorkspacePhaseActive, updated.Status.Phase)
+
+	// Positive control (r3 review): live reconcile over a reachable agent
+	// (see the busy variant above).
+	assert.Greater(t, stub.statuszCalls(), 0,
+		"liveness control: statusz must have been consulted — otherwise this pin proves nothing about a serving agent")
 }
 
 // TestUpgrade_RecreatedPodPicksUpNewDigest: the lazy roll actually rolls —
@@ -278,11 +294,13 @@ func envOf(pod *corev1.Pod, container string) []corev1.EnvVar {
 
 // classifiedDeletionPaths is the #761 drain matrix as a source inventory:
 // every (file, enclosing function) that calls deletePodByName, with the
-// ruling that makes its drain classification deliberate. A NEW call site
-// fails TestUpgrade_DeletionPathInventory until it is classified HERE —
-// the point is that adding a controller-initiated pod deletion is a
-// design decision (which drain class? which event/metric?), never a
-// drive-by.
+// ruling that makes its drain classification deliberate. A new call site
+// in a NEW or renamed function fails TestUpgrade_DeletionPathInventory
+// until it is classified HERE; a call added INSIDE an already-classified
+// function or a raw r.Delete on a pod is NOT caught by this guard (the
+// behavioral kill-tests are that layer) — adding a controller-initiated
+// pod deletion is a design decision (which drain class? which
+// event/metric?), never a drive-by.
 var classifiedDeletionPaths = map[string]map[string]string{
 	"phase_active.go": {
 		"handleActive": "#761 drain: restart-gen (user-consent bypass via #1505), password-secret heal (fails open), arch drift",

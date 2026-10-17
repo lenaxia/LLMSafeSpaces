@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produces zero pod deletions, zero drain events/metrics, and no
   in-place spec mutation; idle pods are not churned; a pod recreated
   for an unrelated reason picks up the new digest (the lazy roll
-  rolls); and a source-guard inventory test fails CI if any NEW
-  `deletePodByName` call site appears without a deliberate #761/#1507
-  drain classification. A blast-radius runbook section
+  rolls); and a source-guard inventory test pins every classified
+  `deletePodByName` call site to its #761/#1507 drain ruling — it fails
+  CI when a deletion appears in a new or renamed function (a call added
+  inside an already-classified function or a raw `r.Delete` bypass is
+  the behavioral kill-tests' layer, not the guard's). A blast-radius
+  runbook section
   (helm/MONITORING-OPERATIONAL.md) documents which Helm fields touch
   workspace pods (digests: new pods only; api tag: SSE re-connect;
   org status: the one fleet-wide no-drain kill path) plus the
