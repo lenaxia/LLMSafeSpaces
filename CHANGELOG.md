@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assistant-bubble timestamp 2.58→4.88:1. The dark palette is
   unchanged (pinned byte-identical by test). Remaining lower-priority
   light-scheme pairs are enumerated in #1717.
+- **The failed-send queue pill is readable again** (#1716 r1): the
+  "queued message failed" pill in the chat composer diluted its text
+  (opacity-70/80) over a red tint — 3.06–3.58:1 in light and as low as
+  **1.46:1 in dark** (nearly invisible — worse than the sentinel).
+  Dark-scheme ink is now `red-400` (5.8:1) and the opacity dilution is
+  gone (light 4.59:1; the strikethrough alone already marks the unsent
+  text). A new browser-level e2e gate also reads the sentinel badge's
+  real computed colors in Chromium (light and dark) and enforces WCAG
+  AA ≥4.5:1, catching future drift between the design tokens and what
+  the browser actually renders.
 
 ### Fixed — AI command fallback from the platform delivery bot
 
