@@ -411,7 +411,7 @@ func (s *BoardSuite) TestKill_DependencyGuards() {
 
 	// Resolution suggestions fire on the near-miss shape: a typo'd
 	// dependency target carries suggestions naming the near-miss tasks.
-	err = s.svc.AddDependency(ctx, s.owner(), a.ID, "", b.ShortID[:len(b.ShortID)-1]+"q", "")
+	err = s.svc.AddDependency(ctx, s.owner(), a.ID, "", mutateShortIDSuffix(b.ShortID), "")
 	s.Require().Error(err)
 	nf, ok := err.(*board.NotFoundError)
 	s.Require().True(ok, "a near-miss short id resolves as 404+suggestions, got %T", err)
@@ -445,7 +445,7 @@ func (s *BoardSuite) TestKill_ShortIDResolution() {
 	s.Require().True(ok)
 
 	// A one-char mutation resolves with the original suggested first.
-	mutated := t1.ShortID[:len(t1.ShortID)-1] + "q"
+	mutated := mutateShortIDSuffix(t1.ShortID)
 	_, err = s.svc.GetTaskInWorkspace(ctx, ws, "", mutated)
 	s.Require().Error(err)
 	nf, ok := err.(*board.NotFoundError)
@@ -461,6 +461,20 @@ func (s *BoardSuite) TestKill_ShortIDResolution() {
 	nf2, ok := err.(*board.NotFoundError)
 	s.Require().True(ok)
 	s.Require().Empty(nf2.Suggestions, "no cross-tenant suggestions")
+}
+
+// mutateShortIDSuffix swaps the final char for one GUARANTEED to differ
+// (the r3 flake: appending "q" is a no-op whenever the random mint already
+// ends in q — 1/36 per fresh draw, deterministic-in-cause, random-in-
+// trigger; it reddened Secrets Integration on 4a70bfa5). Same length, so
+// the mutation stays a Levenshtein-1 near miss.
+func mutateShortIDSuffix(id string) string {
+	last := id[len(id)-1]
+	sub := byte('q')
+	if last == 'q' {
+		sub = 'r'
+	}
+	return id[:len(id)-1] + string(sub)
 }
 
 func upper(s string) string {

@@ -196,3 +196,22 @@ conflict resolved (my Added block into the fresh [Unreleased]; the
 it, caught by the chart appVersion drift pin), and the worklog renumbered
 1127→1129 (main assigned 1127 to #1716 and 1128 to the design lane while
 this branch was out).
+
+## r4 (2026-10-17): the two closing items
+
+- **The 1/36 flake** (the red Secrets Integration on 4a70bfa5): the two
+  near-miss mutations `ShortID[:len-1]+"q"` were no-ops whenever the
+  random mint already ended in q (deterministic-in-cause,
+  random-in-trigger — live-caught by the reviewer as
+  nearmiss==bShort). Replaced with `mutateShortIDSuffix` — the final
+  char swapped for one GUARANTEED to differ (q unless the last char IS
+  q, then r), same length so the Levenshtein-1 semantics hold. Both
+  sites; 10 consecutive suite runs green.
+- **CHANGELOG dedup**: the rebase resolution had left stale pre-release
+  copies of the four 0.38.0 sections in [Unreleased]; deleted —
+  [Unreleased] now holds only the board Added block. (A pre-existing
+  0.33.2 double-header exists on main itself; out of scope, noted.)
+- Non-gating, same-touch: TestBoardKillSwitch_OverridesThread now
+  asserts all six knobs (throttleBackoffSeconds/sweepSeconds were
+  pin-gap invisible to ChartDefaults — dig fallback byte-equals the
+  default).

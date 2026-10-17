@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
 ### Added — Task Board dispatch engine + reconciler (Lane 1)
 
 - **The board backend runs dark: Postgres-arbitrated dispatch, leases,
@@ -42,95 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config chain (`board.*` values). REST/SDKs, MCP projections, and the
   frontend are #1699's lanes.
 
-### Fixed — AI command fallback from the platform delivery bot
-
-- **The AI Commands caller gate no longer silently skips commands from
-  the platform's delivery app bot** (#1710, P1): `.github/workflows/
-  ai-comment.yml`'s authorization `if:` admitted only
-  OWNER/MEMBER/COLLABORATOR associations, but app bots
-  (`agentic-actor-coder[bot]`) structurally carry `author_association:
-  NONE` — they are neither owners nor collaborators — so every AI
-  command they posted clean-skipped (conclusion `skipped`, zero
-  PR-visible trace). During the 2026-10-16 event-delivery outage
-  (#1704/#1707) this made the orchestrator's `/review` fallback on
-  #1708 a silent no-op twice (runs 38836736982, 38850671818) — exactly
-  the recovery path meant to cover lost `pull_request` events. The gate
-  now carries the ai-workflows v0.2.16 caller-contract trusted-bot
-  allowlist arm: an exact-login, opt-in list (sole entry:
-  `agentic-actor-coder[bot]`), never a blanket association-`NONE` pass —
-  each entry is a deliberate trust decision. The list is ONE shared
-  definition: workflow-invariant pins (`tests/ghaworkflows/
-  gha_callers_test.go`) fail on a dropped arm from any
-  `author_association` gate, drift between gate copies, or a
-  non-exact-bot-login entry (e.g. `*`). **Operator-relevant:** the
-  outage fallback (app-bot `/review` re-fire) is functional again.
-
-### Changed — hung-session alerting
-
-- **The 'busy 15 min may be hung' nudge now requires message-level
-  evidence** (#1685, owner ruling): a `session_hung` alert fires only when
-  a session is busy past the 15-min floor AND no new messages from either
-  side — an LLM-COMPLETED message (final `message.updated` upsert carrying
-  `info.time.completed`) or a user-sent message — have arrived for 30 min.
-  Busy-age alone no longer escalates: this fleet's healthy turns regularly
-  run 30-60+ min with long tool executions, and the elapsed-time nudge had
-  become noise (the owner's canonical no-alert case: last message 20 min
-  ago + a long tool running is a HEALTHY long turn). `statusz` gains
-  `last_progress_seconds` (additive, omitempty; 0 = evidence unavailable →
-  no alert); the SSE alert payload carries it; the banner states the
-  evidence workspace-scoped ("no new messages for X min while sessions
-  stayed busy", with a busy-minutes fallback for older APIs); alert
-  resolution fires when EITHER window clears. Persisted alerts, MCP, and
-  SDK surfaces are unchanged in shape (audited).
-- **OPERATOR DISCLOSURE — legacy-fleet hung-alert blackout during mixed
-  rollout (#1685, ruling R4):** a pre-#1685 agentd never emits
-  `last_progress_seconds`, so the API decodes 0 ("evidence unavailable")
-  and such workspaces NEVER raise `session_hung` — the D6 safety net is
-  silently off for them until their agentd rolls forward. This is the
-  sanctioned fail-toward-silence direction (a false negative is
-  human-recoverable; the false positive was the dogfooded noise the issue
-  filed), but the disablement is deliberate and disclosed, not an
-  accident of `omitempty`. The evidence clock is also in-memory: an
-  agentd restart mid-turn self-heals at the next message event (same
-  direction).
-
-### Fixed — workspace UX
-
-- **Disk-space banner surfacing** (#1686, owner dogfooding): the
-  disk-recovery strip rendered at ANY disk level (a permanent "Free up
-  disk space" on-demand line whenever metrics were known — training
-  users to ignore the safety banner), occupied its own dedicated line
-  under the metrics row, and on mobile sat under the Hide/Metrics toggle
-  so "hide" never cleared it. The strip now renders ONLY at the critical
-  tier (≥95%, mirroring systemnotices' 0.95 — the v0.35.0 surfacing
-  spec): below the threshold nothing renders at any usage level; at ≥95%
-  a compact single-line banner (inline headline, "Review what can be
-  freed", and a per-episode Dismiss that re-arms when usage drops below
-  the threshold and re-crosses). The recovery API surface is unchanged
-  (presentation-only; no SDK/MCP/API contract changes — audited).
-
-### Changed — org provisioning (BREAKING)
-
-- **All orgs require OIDC; org creation requires the complete SSO
-  configuration in the same request** (#1679, design 0065 §4 Option B —
-  owner ruling: "All orgs require OIDC. We don't support anything else.").
-  **BREAKING CHANGE** for API consumers: `POST /api/v1/orgs` now REQUIRES an
-  `sso` object in the request body — `discoveryUrl`, `clientId` and
-  `clientSecret` are mandatory (the first-configuration rule: there is no
-  stored secret to leave unchanged); `claimedDomains`, `autoProvision` and
-  `groupRoleMapping` are optional. Every previously-valid request body is
-  now rejected with 400 (`sso.<field>` detail keys, zero side effects)
-  until it carries the block; the config is persisted in the same request,
-  a failed persistence rolls the creation back (a failed rollback logs an
-  ORPHAN ORG alert for operator cleanup), and a deployment whose SSO
-  service is not wired refuses creation with 503 instead of producing a
-  no-SSO org. Consumers beyond the UI: the hand-written SDKs
-  (sdks/{typescript,python,go,java}) do NOT model this endpoint (audited —
-  their only `createOrg`-named methods are agent-role helpers on
-  `/orgs/{id}/agent-roles`); the canonical contract is `sdks/openapi.yaml`,
-  updated in lockstep (`CreateOrgRequest.sso`, new `InitialOrgSsoConfig`
-  schema, 503 response). The platform-admin creation UI collects the IdP
-  fields inline in the same step.
 ## [0.38.0] - 2026-10-17
 
 ### Fixed — Light color scheme contrast (user-facing)
