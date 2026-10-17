@@ -861,4 +861,76 @@ describe("MessageList", () => {
       expect(el.scrollTop).toBe(400);
     });
   });
+
+  // ── #1720 r3 — empty-at-mount: the intent listener must attach when
+  // the log comes into existence ──────────────────────────────────────
+  //
+  // r2 review (64fbc4b2): the scroll-intent listener effect ran once on
+  // mount with stable deps — mounting in the empty state (fresh session,
+  // no role="log") meant it early-returned on a null element and never
+  // re-ran when the log appeared. The reported loop then survived
+  // verbatim in the fresh-session flow: scroll-away was invisible (no
+  // disarm, no affordance) and every batch snapped.
+
+  describe("#1720 r3 — intent listener attaches when the log mounts (empty-at-mount)", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    it("scroll-away disarms and stops snapping after mounting empty (fresh session)", async () => {
+      const { rerender } = render(<MessageList messages={[]} streaming={false} />);
+      expect(screen.queryByRole("log")).not.toBeInTheDocument();
+
+      // The stream starts on the empty session → the log mounts mid-stream.
+      await act(async () => {
+        rerender(<MessageList messages={[]} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />);
+      });
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 800); // armed, at bottom
+
+      // Armed tail follows (r2 coverage, still expected).
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1000);
+
+      // USER scrolls away — on 64fbc4b2 the listener never attached for
+      // this element: no disarm, no affordance.
+      await act(async () => {
+        setScrollDims(el, 1000, 400);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      // Disarmed durably: the next batch must not snap.
+      setScrollDims(el, 1200, 400);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(400);
+
+      // Explicit resume works in this composition too.
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      expect(el.scrollTop).toBe(1200);
+      setScrollDims(el, 1600, 1200);
+      await flushMutation(el);
+      await act(async () => { await flushTimers(); });
+      expect(el.scrollTop).toBe(1600);
+    });
+  });
 });

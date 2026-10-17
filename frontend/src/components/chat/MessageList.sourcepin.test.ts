@@ -106,4 +106,18 @@ describe("#1720 source-shape pins (scroll controller)", () => {
     // session): the deps include the scroll-container presence.
     expect(effect).toMatch(/\[streaming, hasScrollContainer/);
   });
+
+  it("S7: the scroll-intent listener attaches when the log comes into existence", () => {
+    // r2 review gap (#1723 r2, 64fbc4b2): the listener effect ran once
+    // on mount with stable deps; mounting in the empty state (fresh
+    // session, no scroll container) meant it never attached and never
+    // re-ran when the log appeared — scroll-away was invisible and the
+    // loop survived in the fresh-session flow. Mirror of S6: the deps
+    // must include the scroll-container presence.
+    const effectMatch = source.match(
+      /useEffect\(\(\) => \{\s*const el = scrollRef\.current;[\s\S]*?addEventListener\("scroll"[\s\S]*?\n  \}, \[[^\]]*\]\);/,
+    );
+    expect(effectMatch).not.toBeNull();
+    expect(effectMatch![0]).toMatch(/\[checkIfAtBottom, hasScrollContainer\]/);
+  });
 });
