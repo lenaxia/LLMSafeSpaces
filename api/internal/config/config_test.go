@@ -584,3 +584,51 @@ func TestConfig_Canary_EnabledWithoutClassesFailsClosed(t *testing.T) {
 		t.Errorf("error message should mention canary.classes; got: %v", err)
 	}
 }
+
+// TestBoardEnvOverrides_R6 (design 0067, ruling R6): the board
+// platform-deploy knobs ride the helm → env → config chain; each knob
+// overrides independently and invalid values are ignored (defaults live
+// in Load's viper layer).
+func TestBoardEnvOverrides_R6(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "5")
+	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "42")
+	t.Setenv("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS", "77")
+	t.Setenv("LLMSAFESPACES_BOARD_DRRQUANTUM", "2")
+	t.Setenv("LLMSAFESPACES_BOARD_SWEEPSECONDS", "15")
+	t.Setenv("LLMSAFESPACES_BOARD_ENABLED", "false")
+	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP_BOGUS", "ignored")
+
+	cfg := &Config{Board: struct {
+		Enabled                bool `mapstructure:"enabled"`
+		AttemptsCap            int  `mapstructure:"attemptsCap"`
+		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
+		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		DRRQuantum             int  `mapstructure:"drrQuantum"`
+		SweepSeconds           int  `mapstructure:"sweepSeconds"`
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, DRRQuantum: 1, SweepSeconds: 30}}
+	applyBoardEnvOverrides(cfg)
+
+	if cfg.Board.Enabled != false || cfg.Board.AttemptsCap != 5 || cfg.Board.LeaseSeconds != 42 ||
+		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 {
+		t.Fatalf("board env overrides not applied: %+v", cfg.Board)
+	}
+}
+
+// TestBoardEnvOverrides_R6_InvalidIgnored: non-positive / non-numeric
+// values never clobber the configured base (fail toward code defaults).
+func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "-1")
+	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "not-a-number")
+	cfg := &Config{Board: struct {
+		Enabled                bool `mapstructure:"enabled"`
+		AttemptsCap            int  `mapstructure:"attemptsCap"`
+		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
+		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		DRRQuantum             int  `mapstructure:"drrQuantum"`
+		SweepSeconds           int  `mapstructure:"sweepSeconds"`
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, DRRQuantum: 1, SweepSeconds: 30}}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {
+		t.Fatalf("invalid env must not clobber the base: %+v", cfg.Board)
+	}
+}

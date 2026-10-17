@@ -663,3 +663,35 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 	}
 	return n, nil
 }
+
+// Start runs the periodic sweep until ctx is canceled (the app's
+// root-context cancel; any API replica can run it — SKIP LOCKED + guarded
+// writes arbitrate multi-replica safety without leader election, the
+// workflow-engine lifecycle pattern). A sweep error logs and the cadence
+// continues: convergence is the contract, not an error-free pass.
+func (r *Reconciler) Start(ctx context.Context) error {
+	interval := r.svc.cfg.SweepInterval
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			res, err := r.Sweep(ctx)
+			if err != nil {
+				slog.WarnContext(ctx, "board: reconciler sweep failed (next pass converges)",
+					"error", err.Error())
+				continue
+			}
+			if res.Reclaims+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
+				res.AbandonedStaged+res.PendingStaged+res.Resumes+res.EpicCompletions > 0 {
+				slog.InfoContext(ctx, "board: reconciler sweep",
+					"reclaims", res.Reclaims, "drift_done", res.DriftDone, "drift_review", res.DriftReview,
+					"drift_reentry", res.DriftReentry, "dep_repairs", res.DepRepairs,
+					"abandoned_staged", res.AbandonedStaged, "pending_staged", res.PendingStaged,
+					"resumes", res.Resumes, "epic_completions", res.EpicCompletions)
+			}
+		}
+	}
+}

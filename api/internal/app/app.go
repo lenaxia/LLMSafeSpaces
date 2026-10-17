@@ -57,6 +57,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	apisv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 	emailpkg "github.com/lenaxia/llmsafespaces/pkg/email"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
@@ -97,6 +98,8 @@ type App struct {
 	keyRewrapSvc       *keyrewrap.Service         // US-70.4: login-independent user_keys re-wrap reconciler
 	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
 	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
+	boardReconciler    *board.Reconciler          // #1698: task-board convergence sweep (Lane 1: dark-runs with zero projects)
+	boardPool          *pgxpool.Pool              // #1698: pgx pool for the board engine; closed on shutdown
 	canarySvc          *canary.Service            // epic-71 / 0c: metrics-only canary probe runner; nil when the knob is off
 	invitationsHandler *handlers.InvitationsHandler
 	emailService       *emailsvc.Service
@@ -448,6 +451,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var passkeyHandler *handlers.PasskeyHandler
 	var asyncAudit *secrets.AsyncAuditLogger // populated when secrets are enabled; drained on Shutdown
 	var secretsPool *pgxpool.Pool            // closed on Shutdown
+	var boardPool *pgxpool.Pool              // closed on Shutdown (board engine)
+	var boardReconciler *board.Reconciler    // started in Run
 	var dekCacheClient *redis.Client         // closed on Shutdown
 	{
 		// US-50.2: construct per-purpose RootKeyProviders before the earliest
@@ -1491,6 +1496,41 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		podAutomationHandler.SetLogger(log)
 	}
 
+	// Task Board engine (design 0067, #1698 Lane 1): schema-backed in
+	// migration 000036, no external surface yet — the engine dark-runs
+	// harmlessly with zero projects (§7). The board pool mirrors the
+	// secrets pool discipline (pgx-native, traced); the reconciler sweep
+	// starts in Run beside the workflow engine.
+	if cfg.Board.Enabled {
+		boardDSN := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+			cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
+			cfg.Database.Password, cfg.Database.Database, cfg.Database.SSLMode)
+		boardCfg, boardErr := pgxpool.ParseConfig(boardDSN)
+		if boardErr == nil {
+			boardCfg.ConnConfig.Tracer = database.NewQueryTracer()
+			boardPool, boardErr = pgxpool.NewWithConfig(context.Background(), boardCfg)
+		}
+		if boardErr != nil {
+			log.Error("board engine disabled: pgxpool construction failed", boardErr)
+		} else {
+			engineCfg := board.EngineConfig{
+				AttemptsCap:     cfg.Board.AttemptsCap,
+				LeaseDuration:   time.Duration(cfg.Board.LeaseSeconds) * time.Second,
+				ThrottleBackoff: time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
+				DRRQuantum:      cfg.Board.DRRQuantum,
+				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
+			}
+			boardSvc := board.NewService(boardPool, engineCfg)
+			boardReconciler = board.NewReconciler(boardPool, engineCfg)
+			if podAutomationHandler != nil {
+				podAutomationHandler.SetBoardService(boardSvc)
+			}
+			log.Info("board engine enabled (dispatch + reconciler; Lane 1 internal seam)",
+				"attemptsCap", engineCfg.AttemptsCap, "leaseSeconds", cfg.Board.LeaseSeconds,
+				"drrQuantum", engineCfg.DRRQuantum, "sweepSeconds", cfg.Board.SweepSeconds)
+		}
+	}
+
 	// Pod-identity session archive/delete (agentd #1627 MCP tools).
 	// Needs the concrete workspace service (the archive write path) and
 	// the proxy (the hard-delete flow + SSE announcements). The
@@ -1621,6 +1661,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		keyRewrapSvc:       keyRewrapSvc,
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
+		boardReconciler:    boardReconciler,
+		boardPool:          boardPool,
 		canarySvc:          canarySvc,
 		invitationsHandler: invitationsHandler,
 		emailService:       emailService,
@@ -1712,6 +1754,20 @@ func (a *App) Run() error {
 			}
 		}()
 		a.logger.Info("workflow engine started (reconciler + scheduler)")
+	}
+
+	// Board reconciler (design 0067 §4.5): the convergence sweep. Any API
+	// replica may run it — SKIP LOCKED + guarded writes arbitrate without
+	// leader election (the workflow-engine lifecycle pattern). Crash
+	// safety is by construction: deterministic event ids replay to the
+	// same state (§6 invariant 4).
+	if a.boardReconciler != nil {
+		go func() {
+			if err := a.boardReconciler.Start(a.ctx); err != nil {
+				a.logger.Error("board reconciler stopped", err)
+			}
+		}()
+		a.logger.Info("board reconciler started")
 	}
 
 	// Start instance settings (loads cache from DB).
@@ -1904,6 +1960,10 @@ func (a *App) Shutdown() error {
 	}
 
 	a.k8sClient.Stop()
+
+	if a.boardPool != nil {
+		a.boardPool.Close()
+	}
 
 	if err := a.services.Stop(); err != nil {
 		a.logger.Error("Services shutdown error", err)

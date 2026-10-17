@@ -1875,3 +1875,22 @@ relayOnlyKeyDelivery:
   # heal on the next batch apply.
   api:
     enabled: true
+
+# Task Board engine tunables (design 0067, ruling R6): platform-deploy
+# knobs — NOT user-facing, NOT per-project (worker count stays per-project
+# worker_slots data). The engine dark-runs harmlessly with zero projects.
+board:
+  enabled: true
+  # Attempts-cap N: the (N+1)th claim attempt escalates to pending_input
+  # instead of granting (lease lapse → attempts++ → at-cap escalation).
+  attemptsCap: 3
+  # Evidence-gated lease window in seconds (#1685: elapsed time is not
+  # liveness — heartbeats extend only on progress evidence).
+  leaseSeconds: 900
+  # 429 cooldown in seconds, applied to BOTH the task and the project's
+  # worker slots (new claims into a throttled project pause).
+  throttleBackoffSeconds: 300
+  # Deficit-round-robin round allowance (claims per epic per round).
+  drrQuantum: 1
+  # Reconciler sweep cadence in seconds (lease reclaims, drift, deps).
+  sweepSeconds: 30
