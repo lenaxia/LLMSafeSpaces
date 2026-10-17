@@ -301,6 +301,28 @@ type Config struct {
 		FallbackMode string `mapstructure:"fallbackMode"`
 	} `mapstructure:"relayOnlyKeyDelivery"`
 
+	// Board (design 0067, ruling R6): the Task Board engine's
+	// platform-deploy tunables — code defaults + override via helm
+	// values.yaml → env (the same class as the relay/rate-limit knobs).
+	// NEVER user-facing UI, NEVER per-project: worker count stays
+	// per-project data (worker_slots on projects).
+	//
+	// Wired via chart values → env:
+	//   LLMSAFESPACES_BOARD_ENABLED             ("true" | unset; default true — the engine dark-runs harmlessly with zero projects)
+	//   LLMSAFESPACES_BOARD_ATTEMPTSCAP         (default 3 — the (N+1)th claim attempt escalates to pending_input)
+	//   LLMSAFESPACES_BOARD_LEASESECONDS        (default 900 — evidence-gated lease window, #1685 semantics)
+	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS (default 300 — 429 cooldown on the task AND the project's slots)
+	//   LLMSAFESPACES_BOARD_DRRQUANTUM          (default 1 — deficit-round-robin round allowance)
+	//   LLMSAFESPACES_BOARD_SWEEPSECONDS        (default 30 — reconciler cadence)
+	Board struct {
+		Enabled                bool `mapstructure:"enabled"`
+		AttemptsCap            int  `mapstructure:"attemptsCap"`
+		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
+		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		DRRQuantum             int  `mapstructure:"drrQuantum"`
+		SweepSeconds           int  `mapstructure:"sweepSeconds"`
+	} `mapstructure:"board"`
+
 	// ImageFactory holds the image-factory config (design/0046).
 	// When GHDispatcher.APIToken is empty, image builds are disabled
 	// (POST /configs returns 503). When LLMExplainer.BaseURL is empty,
@@ -416,6 +438,14 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("relayOnlyKeyDelivery.fallbackMode", "LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE")
 	v.SetDefault("relayOnlyKeyDelivery.fallbackMode", "migration")
 
+	// Board (design 0067, ruling R6): platform-deploy knobs, chart → env.
+	v.SetDefault("board.enabled", true)
+	v.SetDefault("board.attemptsCap", 3)
+	v.SetDefault("board.leaseSeconds", 900)
+	v.SetDefault("board.throttleBackoffSeconds", 300)
+	v.SetDefault("board.drrQuantum", 1)
+	v.SetDefault("board.sweepSeconds", 30)
+
 	// Epic 57 US-57.1: KMS nested-key bindings.
 	bindKMSEnvVars(v)
 
@@ -428,6 +458,10 @@ func Load(path string) (*Config, error) {
 	// misses (nested keys, comma-separated lists, typed values). Extracted
 	// to keep Load()'s cyclomatic complexity under the linter threshold.
 	applyEnvOverrides(&config)
+
+	// Board knobs (design 0067 R6): the int/bool fields viper's
+	// AutomaticEnv misses on nested keys — the relay-knob class.
+	applyBoardEnvOverrides(&config)
 
 	// JWT iss/aud defaults + Turnstile env overrides + CORS validation:
 	// all extracted to helpers for the same reason.
@@ -836,4 +870,41 @@ func isTruthy(v string) bool {
 	default:
 		return false
 	}
+}
+
+// applyBoardEnvOverrides applies the board platform-deploy knobs (design
+// 0067, ruling R6) from env — the helm values.yaml → env → config chain,
+// same class as the relay/rate-limit knobs.
+func applyBoardEnvOverrides(config *Config) {
+	if v := os.Getenv("LLMSAFESPACES_BOARD_ENABLED"); v != "" {
+		config.Board.Enabled = isTruthy(v)
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_ATTEMPTSCAP"); ok {
+		config.Board.AttemptsCap = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_LEASESECONDS"); ok {
+		config.Board.LeaseSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"); ok {
+		config.Board.ThrottleBackoffSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_DRRQUANTUM"); ok {
+		config.Board.DRRQuantum = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_SWEEPSECONDS"); ok {
+		config.Board.SweepSeconds = n
+	}
+}
+
+// envInt parses a positive integer env var (ok=false when unset/invalid).
+func envInt(key string) (int, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }

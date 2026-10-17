@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
@@ -43,6 +44,12 @@ type PodAutomationHandler struct {
 	workflows         *WorkflowsHandler
 	expectedNamespace string
 	logger            interfaces.LoggerInterface
+
+	// board is the Task Board's canonical action layer (design 0067
+	// §4.3c): installed via SetBoardService alongside the board routes;
+	// nil until Lane 1's app wiring (the routes register only with it).
+	board       boardService
+	boardEngine board.EngineConfig
 }
 
 // NewPodAutomationHandlerFromClientset is the production constructor
