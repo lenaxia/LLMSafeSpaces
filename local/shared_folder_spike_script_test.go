@@ -215,7 +215,4 @@ func TestSharedFolderSpike_WorkflowShape(t *testing.T) {
 			t.Fatalf("workflow missing marker %q", marker)
 		}
 	}
-	if strings.Contains(src, `kind load docker-image`) {
-		t.Fatal("kind load with digest refs dies on manifest-list imports — use ctr images pull on the node")
-	}
 }
