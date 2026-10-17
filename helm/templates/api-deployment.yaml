@@ -146,19 +146,22 @@ spec:
               value: {{ .Values.relayOnlyKeyDelivery.fallbackMode | default "migration" | quote }}
             {{- end }}
             # Task Board engine (design 0067, ruling R6): platform-deploy
-            # knobs — the helm → env → api/internal/config chain.
+            # knobs — the helm → env → api/internal/config chain. dig
+            # (not `default`) so an EXPLICIT board.enabled=false is
+            # honored — the kill-switch must render "false" (r2-S3; the
+            # relayOnlyKeyDelivery.api.enabled false-honoring precedent).
             - name: LLMSAFESPACES_BOARD_ENABLED
-              value: {{ .Values.board.enabled | default true | quote }}
+              value: {{ dig "enabled" true .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_ATTEMPTSCAP
-              value: {{ .Values.board.attemptsCap | default 3 | quote }}
+              value: {{ dig "attemptsCap" 3 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_LEASESECONDS
-              value: {{ .Values.board.leaseSeconds | default 900 | quote }}
+              value: {{ dig "leaseSeconds" 900 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
-              value: {{ .Values.board.throttleBackoffSeconds | default 300 | quote }}
+              value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_DRRQUANTUM
-              value: {{ .Values.board.drrQuantum | default 1 | quote }}
+              value: {{ dig "drrQuantum" 1 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_SWEEPSECONDS
-              value: {{ .Values.board.sweepSeconds | default 30 | quote }}
+              value: {{ dig "sweepSeconds" 30 .Values.board | quote }}
             - name: LLMSAFESPACES_KUBERNETES_PODNAME
               valueFrom:
                 fieldRef:

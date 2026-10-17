@@ -172,3 +172,27 @@ same collapse-into-import plan; (3) the in-flight token/workspace clause
 implements (per-pod identity check + scoped reads); (4) the
 project-level rollover belt — text unchanged; (5) the pending-origin
 taxonomy note — the four-origin set is unchanged.
+
+## r3 (2026-10-17): the S3 survivor + rebase onto main
+
+The r2 review verified every r1 item remediated except one: the helm
+kill-switch fix was ABSENT from the tree (an edit lost in the remediation
+session — the r1 commit message described a dig fix that never landed in
+the file). Fixed for real this time, red-first:
+
+- **Render pin first** (`helm/board_killswitch_chart_test.go`): three
+  tests — explicit `board.enabled: false` renders `"false"`, chart
+  defaults render untouched, knob overrides thread. Verified TRUE RED on
+  the broken head (`default true` coerced false → rendered `"true"`),
+  then green after the fix.
+- **The fix**: `dig "enabled" true .Values.board` (one-level dig into the
+  submap — root `.Values` is chartutil.Values, which dig's map assertion
+  rejects; the relayOnlyKeyDelivery.api.enabled precedent digs submaps
+  too), applied to all six board env knobs.
+
+Rebased onto main (f17cd11b, post design-merge 461cf3ab): CHANGELOG
+conflict resolved (my Added block into the fresh [Unreleased]; the
+0.38.0 release section preserved — a first-pass resolution had dropped
+it, caught by the chart appVersion drift pin), and the worklog renumbered
+1127→1129 (main assigned 1127 to #1716 and 1128 to the design lane while
+this branch was out).
