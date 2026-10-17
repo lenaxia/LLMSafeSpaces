@@ -55,15 +55,24 @@ export function QueueSection({ messages, onRetry, onDismiss, isMobile }: Props) 
                 <div
                   className={cn(
                     "max-w-[90%] sm:max-w-[80%] rounded-lg px-4 py-2.5 min-w-0 overflow-hidden break-words",
+                    // #1716 r1: dark error ink was the destructive token
+                    // (hsl(0 62.8% 30.6%)) on its own /30 tint — ~1.6:1,
+                    // unreadable. red-400 on the same tint measures 5.8:1.
                     m.status === "error"
-                      ? "bg-destructive/20 text-destructive dark:bg-destructive/30"
+                      ? "bg-destructive/20 text-destructive dark:bg-destructive/30 dark:text-red-400"
                       : "bg-primary text-primary-foreground dark:bg-slate-600 dark:text-slate-100 dark:border dark:border-slate-500",
                   )}
                 >
                   {m.status === "error" ? (
                     <>
-                      <p className="line-through opacity-70 text-sm">{m.text}</p>
-                      {m.error && <p className="text-xs mt-1 opacity-80">{m.error}</p>}
+                      {/* #1716 r1: opacity-70/80 diluted the ink below AA
+                          (3.06/3.58:1 light); line-through alone already
+                          carries the "not sent" semantics. Pinned by
+                          QueueSection.contrast.test.tsx — re-adding any
+                          opacity-* here fails it (light has only 0.09:1
+                          of headroom over 4.5). */}
+                      <p className="line-through text-sm">{m.text}</p>
+                      {m.error && <p className="text-xs mt-1">{m.error}</p>}
                       <div className="flex gap-2 mt-1.5">
                         <button
                           type="button"

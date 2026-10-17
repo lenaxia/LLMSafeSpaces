@@ -94,7 +94,12 @@ export function MessageBubble({ message, isStreaming, modelName }: Props) {
           <span
             className={cn(
               "text-xs leading-none truncate",
-              isUser ? "text-primary-foreground/70 dark:text-slate-100/80" : "text-muted-foreground/70",
+              // #1716: /70 dilution measured 2.58:1 on the muted assistant
+              // bubble — below the 4.5:1 AA bar. Full-strength muted-
+              // foreground measures 4.88:1 (post-palette-fix). The user
+              // side keeps its /70 — primary-foreground/70 over bg-primary
+              // still measures 8.8:1.
+              isUser ? "text-primary-foreground/70 dark:text-slate-100/80" : "text-muted-foreground",
             )}
           >
             {showTimestamp && (

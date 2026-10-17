@@ -147,4 +147,153 @@ test.describe("agent-originated message rendering (#1465)", () => {
     const noOverflow = await label.evaluate((el) => el.scrollWidth <= el.clientWidth);
     expect(noOverflow).toBe(true);
   });
+
+  // #1716 r1: browser-level contrast gate. The unit pins resolve Tailwind
+  // classes against parsed tokens — a resolver-vs-cascade drift (a utility
+  // the harness mis-models, a token emitted differently than authored)
+  // would pass units and still ship invisible text. This row reads the
+  // badge's REAL computed colors in Chromium, composites the translucent
+  // badge bg over its ancestor surfaces exactly as the renderer does, and
+  // asserts WCAG ≥ 4.5:1 in both schemes. The theme is forced via the
+  // same localStorage key ThemeProvider reads at mount.
+  for (const theme of ["light", "dark"] as const) {
+    test(`provenance badge meets WCAG AA contrast in ${theme} theme (computed styles)`, async ({ page }) => {
+      await page.addInitScript((t) => localStorage.setItem("lsp-theme", t), theme);
+      await setupAPIMocks(page, [
+        { id: "m1", type: "user", parts: [{ type: "text", text: sentineledUserText("injected") }] },
+      ]);
+      await openChat(page);
+
+      const badge = page.getByTestId("agent-origin-badge");
+      await expect(badge).toBeVisible({ timeout: 10_000 });
+
+      const measured = await badge.evaluate((el) => {
+        type Rgba = { r: number; g: number; b: number; a: number };
+        // Tailwind v4 serializes computed colors beyond rgb(): palette
+        // literals resolve to oklch(...), alpha-diluted utilities to
+        // oklab(... / 0.4). Parse every form the engine can emit and
+        // convert to sRGB (oklab→linear sRGB per the CSS Color 4
+        // reference), else layers silently drop and the gate measures
+        // garbage.
+        const parse = (s: string): Rgba | null => {
+          const split = (body: string) => {
+            const [mainRaw, alpha] = body.split("/");
+            const main = mainRaw ?? body;
+            const n = main.trim().split(/[\s,]+/).map(Number);
+            return { n, alphaGiven: alpha !== undefined, a: alpha !== undefined ? Number(alpha.trim()) : 1 };
+          };
+          const alphaOf = (s: ReturnType<typeof split>) =>
+            s.alphaGiven ? s.a : s.n[3] ?? 1;
+          const gamma = (v: number) =>
+            v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+          const oklabToRgb = (L: number, a: number, b: number): [number, number, number] => {
+            const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+            const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+            const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+            const l = l_ * l_ * l_, m = m_ * m_ * m_, sc = s_ * s_ * s_;
+            const lin = [
+              4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * sc,
+              -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * sc,
+              -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * sc,
+            ];
+            return lin.map((v) => Math.round(Math.min(255, Math.max(0, gamma(v) * 255)))) as [number, number, number];
+          };
+          let m = /^rgba?\(([^)]+)\)$/.exec(s);
+          if (m?.[1]) {
+            const parts = split(m[1]);
+            const [r, g, b] = parts.n;
+            // rgba() may carry POSITIONAL alpha (rgba(r,g,b,a)) or the
+            // modern slash form (rgb(r g b / a)) — read whichever is
+            // present. Missing this misreads transparent backgrounds
+            // (rgba(0,0,0,0)) as OPAQUE black and truncates the layer
+            // walk (validated: the dark run composited over black).
+            if (r !== undefined && g !== undefined && b !== undefined) {
+              return { r, g, b, a: alphaOf(parts) };
+            }
+          }
+          m = /^oklab\(([^)]+)\)$/.exec(s);
+          if (m?.[1]) {
+            const { n, a } = split(m[1]);
+            const [L, A, B] = n;
+            if (L !== undefined && A !== undefined && B !== undefined) {
+              const [r, g, b] = oklabToRgb(L, A, B);
+              return { r, g, b, a };
+            }
+          }
+          m = /^oklch\(([^)]+)\)$/.exec(s);
+          if (m?.[1]) {
+            const { n, a } = split(m[1]);
+            const [L, C, H] = n;
+            if (L !== undefined && C !== undefined && H !== undefined) {
+              const rad = (H * Math.PI) / 180;
+              const [r, g, b] = oklabToRgb(L, C * Math.cos(rad), C * Math.sin(rad));
+              return { r, g, b, a };
+            }
+          }
+          m = /^color\(srgb ([^)]+)\)$/.exec(s);
+          if (m?.[1]) {
+            const { n, a } = split(m[1]);
+            const [r, g, b] = n;
+            if (r !== undefined && g !== undefined && b !== undefined) {
+              return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255), a };
+            }
+          }
+          m = /^#([0-9a-f]{3,8})$/i.exec(s.trim());
+          if (m?.[1]) {
+            const h = m[1];
+            const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+            return {
+              r: parseInt(full.slice(0, 2), 16),
+              g: parseInt(full.slice(2, 4), 16),
+              b: parseInt(full.slice(4, 6), 16),
+              a: full.length === 8 ? parseInt(full.slice(6, 8), 16) / 255 : 1,
+            };
+          }
+          return null;
+        };
+        const blend = (fg: Rgba, bg: Rgba, alpha: number): Rgba => ({
+          r: fg.r * alpha + bg.r * (1 - alpha),
+          g: fg.g * alpha + bg.g * (1 - alpha),
+          b: fg.b * alpha + bg.b * (1 - alpha),
+          a: 1,
+        });
+        const lum = ({ r, g, b }: Rgba) => {
+          const ch = (v: number) => {
+            const s = v / 255;
+            return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+          };
+          return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+        };
+        // fg: nearest computed color with alpha (walks up for inheritance).
+        let fg: Rgba | null = null;
+        for (let n: HTMLElement | SVGElement | null = el; n && !fg; n = n.parentElement) {
+          const c = parse(getComputedStyle(n).color);
+          if (c && c.a > 0) fg = c;
+        }
+        if (!fg) return { ratio: 0, dark: false, reason: "no fg" };
+        // bg: stack this element's translucent background(s) outward until
+        // an opaque ancestor layer (the bubble), then composite inward.
+        const layers: Rgba[] = [];
+
+        for (let n: HTMLElement | SVGElement | null = el; n instanceof HTMLElement; n = n.parentElement) {
+          const c = parse(getComputedStyle(n).backgroundColor);
+          if (c && c.a > 0) {
+            layers.push(c);
+            if (c.a >= 1) break;
+          }
+        }
+        if (layers.length === 0) return { ratio: 0, dark: false, reason: "no bg layers" };
+        let bg = layers[layers.length - 1]!;
+        for (let i = layers.length - 2; i >= 0; i--) bg = blend(layers[i]!, bg, layers[i]!.a);
+        const l1 = lum(fg);
+        const l2 = lum(bg);
+        const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        return { ratio, dark: document.documentElement.classList.contains("dark") };
+      });
+
+      expect(measured.reason).toBeUndefined();
+      expect(measured.dark).toBe(theme === "dark");
+      expect(measured.ratio).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });

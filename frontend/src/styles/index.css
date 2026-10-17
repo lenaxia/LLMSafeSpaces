@@ -11,7 +11,11 @@
   --color-background: hsl(0 0% 100%);
   --color-foreground: hsl(222.2 84% 4.9%);
   --color-muted: hsl(210 40% 96.1%);
-  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
+  /* #1716: 46.9% lightness measured 4.34:1 on muted/secondary surfaces
+   * (assistant-bubble meta, thinking blocks, code headers) — below the
+   * 4.5:1 AA bar. 43.5% → 4.88:1 on muted, 5.35:1 on white. Dark value
+   * (65.1%, 4.66:1) is untouched. */
+  --color-muted-foreground: hsl(215.4 16.3% 43.5%);
   --color-popover: hsl(0 0% 100%);
   --color-popover-foreground: hsl(222.2 84% 4.9%);
   --color-card: hsl(0 0% 100%);
@@ -24,7 +28,11 @@
   --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
   --color-accent: hsl(210 40% 96.1%);
   --color-accent-foreground: hsl(222.2 47.4% 11.2%);
-  --color-destructive: hsl(0 84.2% 60.2%);
+  /* #1716: red-500 lightness measured 3.76:1 as text on white, 3.29:1 on
+   * the bg-destructive/10 banner tint, and its button pair (near-white on
+   * destructive) 3.60:1 — all below 4.5:1. #b91c1c-grade red → 6.43:1 on
+   * white, ~5.5:1 on the tint, 6.15:1 as button bg. Dark value untouched. */
+  --color-destructive: hsl(0 73.8% 41.8%);
   --color-destructive-foreground: hsl(210 40% 98%);
   --color-ring: hsl(222.2 84% 4.9%);
   --radius: 0.5rem;
