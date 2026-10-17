@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Platform-upgrade blast-radius contract pinned + rollout kill-tests (#1724)
+
+- **The v0.38.0 incident's suspected mechanism is refuted and the real
+  invariant is now pinned.** Code-path analysis (posted on #1724)
+  showed overlay digests enter the workspace pod spec only at BUILD
+  time (`wireAgentdOverlay` / `wireOpencodeOverlay`) and no reconcile
+  path ever compares a running pod's overlay against the configured
+  delivery — an overlay-digest bump cannot and does not delete running
+  pods (the #761 drain never fired because no deferrable deletion ran;
+  the identical-shape v0.37.0 bump had no incident). Red-first
+  kill-tests (the #1719 pattern, extending the #761 suite) now pin the
+  contract: an overlay digest change with busy in-flight sessions
+  produces zero pod deletions, zero drain events/metrics, and no
+  in-place spec mutation; idle pods are not churned; a pod recreated
+  for an unrelated reason picks up the new digest (the lazy roll
+  rolls); and a source-guard inventory test pins every classified
+  `deletePodByName` call site to its #761/#1507 drain ruling — it fails
+  CI when a deletion appears in a new or renamed function (a call added
+  inside an already-classified function or a raw `r.Delete` bypass is
+  the behavioral kill-tests' layer, not the guard's). A blast-radius
+  runbook section
+  (helm/MONITORING-OPERATIONAL.md) documents which Helm fields touch
+  workspace pods (digests: new pods only; api tag: SSE re-connect;
+  org status: the one fleet-wide no-drain kill path) plus the
+  discriminating metric series for rollout-incident triage. The live
+  v0.38.0 trigger remains under owner telemetry review; the D20
+  org-suspension drain question is escalated for ruling on the issue.
+
 ### Fixed — stuck busy after an aborted turn (busy-truth machinery)
 
 - **A session no longer shows busy forever after a user aborts a

@@ -167,6 +167,54 @@ The "Canary & Loop Liveness (Epic 71)" dashboard row (operational.json) carries 
 
 ---
 
+## Upgrade blast-radius contract (which Helm fields touch workspace pods)
+
+Post-incident runbook section (#1724: the v0.38.0 GitOps rollout was blamed
+for killing all in-flight sessions; the code-path analysis showed the
+overlay-digest suspicion was wrong — pins landed as kill-tests in
+`controller/internal/workspace/upgrade_rollout_kill_test.go`). This table
+is the contract an operator needs BEFORE pushing a bump: what each field
+touches, and what user-visible effect to expect.
+
+| Helm field | What it changes | Existing workspace pods | New/recreated pods | Expected user effect |
+|---|---|---|---|---|
+| `controller.agentdDelivery.image` | Controller args only (`--agentd-image`); per-arch binary pins re-resolve from the new index at controller startup | **Untouched.** Nothing compares a running pod's overlay volume/env pins against the configured digest — no spec-hash reconcile exists. Pinned by `TestUpgrade_OverlayDigestChange_*` | Built with the new digest + pins (lazy roll) | None on running sessions; pods pick up the new agentd on their next natural recreation |
+| `controller.opencodeDelivery.image` | Same mechanism, opencode overlay | **Untouched** (same pin) | New digest on recreation | None on running sessions |
+| `controller.image.tag` | The controller Deployment rolls | Reconciles resume; in-memory state resets: **open #761 drain windows restart** (a draining workspace's stall clock resets — bounded impact, documented in `session_drain.go`) | New digest (see above) | None directly; a drain in progress can extend by up to one controller lifetime |
+| `api.image.tag` | The API Deployment rolls (2 replicas) | Pods untouched, **all user SSE streams re-connect** (#1687 resync / #1666 bridge reconcile carry busy truth and in-flight turns across the roll) | — | Streams blip; in-flight turns must survive via resync. If they do not, that is an API-side regression, not a controller kill |
+| `frontend.image.tag`, `llmRelay.router.image.tag` | Frontend / relay-router roll | Pods untouched; SSE + relay traffic re-dials | — | Stream blips as above |
+| `runtimeEnvironments.base.image` | The base RuntimeEnvironment CR | Untouched (runtime resolution is build-time only) | New workspaces use the new base | None on running sessions |
+| `controller.workspaceTerminationGraceSeconds` | Termination grace on BUILT pods | Untouched (baked into the pod spec) | New grace applies | None on running sessions |
+| Org status changes (API-side suspension, D20) | Controller observes org suspended | **Active → Suspending → pod deleted with NO busy-session drain** (#1507 ruling: 40s graceful termination only) | Manual resume per workspace | In-flight turns get the 40s grace, then die — the one fleet-wide kill path an API-side data change can trigger today |
+
+Kill paths of a running, serving pod (all classified `deletePodByName`
+call sites at the time of writing — the (file, function)-granular
+inventory is pinned by `TestUpgrade_DeletionPathInventory`, which fails
+CI when a `deletePodByName` call appears in a new or renamed function;
+a raw `r.Delete` on a pod or a call added inside an already-classified
+function is NOT caught by that guard — the behavioral kill-tests are
+that layer): restart-generation recycle, password
+secret heal, architecture drift (all #761-drained behind busy sessions);
+suspend-family entries incl. org suspension, idle and timeout
+(#1507 grace-only); health-check restart (ungated by design — a dead
+agentd cannot be drained); explicit terminate. **A Helm upgrade touching
+only image tags/digests enters none of them.**
+
+Discriminating telemetry when a rollout is suspected of killing sessions
+(`vm` series, controller metrics):
+
+- `llmsafespaces_workspace_drain_{deferred,forced,failed_open}_total` —
+  flat ⇒ no controller-initiated deletion ran at all (the #1724 window).
+- `llmsafespaces_workspace_phase_transitions_total{to_phase=...}` — a
+  spike into `Suspending` names the suspend family (check org status!);
+  into `Creating` names recycle/health paths.
+- `llmsafespaces_workspace_controller_restarts_total` — health-restart
+  storm signature.
+- Pod-UID churn per workspace — the ground truth for "pods actually died"
+  vs "streams severed, pods alive" (the API-roll appearance-of-death).
+
+---
+
 ## Future improvements (not blocking)
 
 - Helm hook for automatic stale-dashboard purge (declined for now — see "Why we don't auto-fix this" above)
