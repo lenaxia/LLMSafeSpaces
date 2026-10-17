@@ -40,40 +40,44 @@ describe("#1720 source-shape pins (scroll controller)", () => {
 
   it("S2: the streaming-transition effect gates scrollToBottom on the tail flag", () => {
     const effectMatch = source.match(
-      /useEffect\(\(\) => \{\s*if \(streaming[^)]*\) \{[\s\S]*?\}\s*\}, \[streaming, scrollToBottom\]\);/,
+      /useEffect\(\(\) => \{[\s\S]*?\}, \[streaming, scrollToBottom\]\);/,
     );
     expect(effectMatch).not.toBeNull();
     expect(effectMatch![0]).toContain("if (streaming && stickToBottom.current)");
   });
 
   it("S3: the scroll-event handler carries a programmatic-scroll guard branch", () => {
-    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/);
+    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[\]\);/);
     expect(handlerMatch).not.toBeNull();
     const handler = handlerMatch![0];
     expect(handler).toMatch(/if \(programmaticScrollRef\.current\)/);
   });
 
-  it("S4: every scrollTop write is preceded by a programmatic-scroll guard mark", () => {
+  it("S4: every scrollTop write goes through the guarded helper", () => {
     const lines = source.split("\n");
+    // Raw assignment sites (exclude `===` reads). After the #1720 fix
+    // there is exactly ONE — inside setProgrammaticScrollTop, directly
+    // after the guard flag is set. Any new raw write regresses in
+    // unguarded and must fail this pin.
     const writeLines = lines
       .map((line, i) => ({ line, i }))
-      .filter(({ line }) => /el\.scrollTop\s*=/.test(line) && !line.trim().startsWith("//"));
-    // Four write sites today: explicit jump/resume, layout snap on
-    // append, prepend scroll-anchoring, stream-follow observer rAF.
-    expect(writeLines.length).toBeGreaterThanOrEqual(4);
-    for (const { i } of writeLines) {
-      const window = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
-      expect(
-        /markProgrammaticScroll\(\)/.test(window) || /programmaticScrollRef\.current = true/.test(window),
-        `scrollTop write at line ${i + 1} lacks a guard mark within 6 preceding lines:\n${window}`,
-      ).toBe(true);
-    }
+      .filter(({ line }) => /el\.scrollTop\s*=(?!=)/.test(line) && !line.trim().startsWith("//"));
+    expect(writeLines.length).toBe(1);
+    const { i } = writeLines[0]!;
+    const window = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
+    expect(window).toContain("programmaticScrollRef.current = true");
+
+    // And the four behavior sites route through the helper: explicit
+    // jump/resume, layout snap on append, prepend scroll-anchoring,
+    // stream-follow observer rAF.
+    const callSites = (source.match(/setProgrammaticScrollTop\(el/g) ?? []).length;
+    expect(callSites).toBeGreaterThanOrEqual(4);
   });
 
   it("S5: no near-bottom arm of the tail flag while a stream is active (loop guard)", () => {
     // The handler may only arm when NOT streaming: pin the
     // `!streamingRef.current` condition on the arm branch.
-    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/);
+    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[\]\);/);
     expect(handlerMatch).not.toBeNull();
     const handler = handlerMatch![0];
     const armSites = handler.match(/stickToBottom\.current = true/g) ?? [];

@@ -30,7 +30,7 @@ const messages: Message[] = [
   { id: "2", role: "assistant", parts: [{ type: "text", text: "Hi!" }] },
 ];
 
-function resumeControlClass(): string {
+function resumeControlClass() {
   render(
     <MessageList messages={messages} streaming={true} streamingBubble={<div>streaming…</div>} />,
   );
