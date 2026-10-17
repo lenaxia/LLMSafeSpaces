@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.38.0] - 2026-10-17
+
 ### Fixed — Light color scheme contrast (user-facing)
 
 - **The "message from session X" provenance badge is readable in the
@@ -123,7 +126,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updated in lockstep (`CreateOrgRequest.sso`, new `InitialOrgSsoConfig`
   schema, 503 response). The platform-admin creation UI collects the IdP
   fields inline in the same step.
-
 ## [0.37.0] - 2026-10-11
 
 ### Added — auth completion
