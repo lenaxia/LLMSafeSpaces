@@ -199,8 +199,21 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
     }
   }, [streaming, scrollToBottom]);
 
+  // #1720 r2: the follow observer lives for the WHOLE stream. Follow
+  // intent is gated per-callback (below), so attachment must NOT depend
+  // on the armed flag: a stream that starts while the tail is disarmed
+  // must still have the observer in place, so the explicit resume click
+  // (which only flips the ref — no effect re-runs) makes the very next
+  // batch follow. Gating attachment on the armed state at effect-run
+  // time meant the observer never attached for such streams and the
+  // resume click jumped without following (r1 review finding).
+  // `hasScrollContainer` re-runs the effect when the log mounts after
+  // the streaming flip (empty session: the flip fires while the empty
+  // state renders no scroll container — el would be null and the
+  // observer would never attach).
+  const hasScrollContainer = messages.length > 0 || streamingBubble != null || trailingPrompts != null;
   useEffect(() => {
-    if (!streaming || !stickToBottom.current) return;
+    if (!streaming) return;
     const el = scrollRef.current;
     if (!el) return;
     let frameId = 0;
@@ -218,7 +231,7 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
       observer.disconnect();
       if (frameId) cancelAnimationFrame(frameId);
     };
-  }, [streaming, setProgrammaticScrollTop]);
+  }, [streaming, hasScrollContainer, setProgrammaticScrollTop]);
 
   if (messages.length === 0 && !streamingBubble && !trailingPrompts) {
     return (
