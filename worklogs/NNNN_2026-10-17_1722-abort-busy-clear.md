@@ -1,0 +1,234 @@
+# Worklog: #1722 — session shows busy after turn end (abort-path busy-clear lost at the ingestion boundary)
+
+**Date:** 2026-10-17
+**Session:** w33 — debugging/fix worker for #1722
+**Status:** Complete (PR pending review)
+**Branch:** `fix/1722-abort-busy-clear`
+
+---
+
+## Objective
+
+Close #1722: a session kept displaying busy after its turn ended. Repro
+context: the orchestrator session ran a ~50-minute blocking tool poll;
+the owner aborted mid-flight ("User aborted the command"); the turn
+ended immediately — and the session stayed busy until the next user
+message re-settled it. Acceptance: root-cause WHICH path leaks (abort
+teardown / SSE bridge / tracker race) with a deterministic repro, fix
+at the source, define the abort case's settle signal explicitly,
+red-first pin at the fixed layer.
+
+## Root cause (empirically established — suspected class was WRONG in an interesting way)
+
+**The harness is innocent.** A standalone probe (real opencode
+1.18.10 AND 1.18.15, `opencode serve` + an OpenAI-compatible mock
+provider emitting a `bash {sleep 120}` tool call, turn aborted via
+POST `/session/:id/abort`) captured the abort wire verbatim:
+
+```
+t+0.000  session.error   {name: "MessageAbortedError", data: {message: "Aborted"}}
+t+0.000  session.status  {type: "idle"}
+t+0.000  session.idle    {}
+t+0.016  message.part.updated  TOOL state=completed
+         output="...(no output)\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>"
+t+0.016  session.status  {type: "idle"}
+t+0.016  session.idle    {}
+```
+
+Identical on both pinned versions. The issue's suspected class 1
+("abort-path turn teardown skips the busy-clear") is therefore NOT in
+opencode — the clear burst exists. (The "User aborted the command"
+string from the issue is the tool's terminal output.)
+
+**The leak is the ingestion boundary + a silent heal.** The ~30ms burst
+rides agentd's RAW `/event` subscription
+(`sessionStatusTracker.connectAndRead`), which is replay-less and
+recycles every 5 minutes by design (`sseConnectionTimeout`) plus
+2s-backoff reconnects on transport errors. A burst landing in a
+recycle/backoff gap is lost to BOTH the tracker and the sessionstate
+authority (the authority ingests via `tracker.onRawEvent` — same
+connection). Then:
+
+1. **Tracker**: `statuses[sid]="busy"` sticks FOREVER — no evidence
+   settle existed on the raw-dialect path (only a generation change or
+   the next turn's events). Consequences beyond display:
+   `trackerHasBusyOrUnknown` defers credential-apply restarts and
+   suspends indefinitely; the busy gauge lies; the #1685 evidence clock
+   reads fiction.
+2. **Authority**: the 15s reconcile pass (`runSessionStateWatchdog` →
+   `Reconcile` → `sweepAgainstEvidence` → `clearBusyFromEvidence`)
+   re-derives busy from store evidence and heals — but SILENTLY: direct
+   record mutation, no seq, no fold, no fanout.
+3. **Bridge/consumer**: the API usagestream consumer emits
+   `Bridge.SessionStatus` only on events (SESSION_STATUS leg +
+   flip-candidate consults) or on a connection's first fold
+   publication. The silent heal publishes nothing; after the lost burst
+   there are no further events to consult — so the user stream never
+   carries `session.status idle` and the badge sticks until the next
+   turn (or a frontend reconnect reseed). This is the issue's observed
+   symptom, and post-#1685 it also surfaces as a (correct!) hung-nudge
+   alert.
+
+Suspected class 2 (SSE bridge dropping the clear under churn) is the
+SAME disease at a different seam — and #1666/#1687 already pinned the
+bridge/frontend halves; the unpinned half was the authority's silent
+heal. Suspected class 3 (tracker set-without-clear race on giant
+turns) was ruled out: the evidence-clear's `lastBusySeq` freshness gate
+plus one mutex make giant-turn races converge; nothing in the repro
+requires a race.
+
+Supporting wire facts (same probe): `/session/status` (the live
+registry) reports `busy` throughout the tool execution and clears to
+`{}` after the abort; the `/session` LIST is idle-biased (status null;
+`ListSessions` hard-defaults idle — records survive the turn). That
+asymmetry is exactly what the settle signal needed.
+
+## The fix (settle signal defined explicitly)
+
+**Settle signal for the abort case**: *store evidence says the turn
+ended (session absent, or list-status idle/error) AND the harness's
+live registry holds no live turn (`SessionSeed.LiveBusy == false`).*
+Both sources must agree the turn is over — the registry is the live
+truth that separates "turn observably finished" from "silent long
+turn" (a 50-minute tool run emits nothing; its LIST evidence reads
+idle-biased).
+
+- `sessionstate/reconcile.go` — `clearBusyFromEvidence` PUBLISHES the
+  transition through `applyLocked` (seq-assigned, folded — the same
+  state change as the old mutation, including the empty-not-nil
+  `toolDeadlines` reset — and fanned out). `turnEnded` in the sweep now
+  additionally requires `!seed.LiveBusy`.
+- `cmd/workspace-agentd/sessionstate_wiring.go` — `SessionStates` fills
+  `LiveBusy` from `/session/status` (2s budget inside the pass
+  deadline). CONSERVATIVE on failure: an unreadable registry marks
+  every session potentially-live; the settle retries next pass (15s),
+  never mis-fires mid-turn.
+- `cmd/workspace-agentd/session_tracker.go` — `settleTrackerBusyLocked`
+  in `cachedState` (both the TTL-hit and full-fetch legs): tracker
+  marks the authority's single busy definition proves idle converge —
+  projection-known sessions only, no pending user ask (the #1574
+  carve-out), and not registry-floored (the render being busy means
+  stop). `set(id,"idle")` stamps `idleObservedAt`, so a stale registry
+  cannot re-busy later renders (#1672 r2 semantics).
+- `api/internal/services/usagestream/consumer.go` — SESSION_STATUS
+  ERROR joins the bridged case-set; an errored turn is over, not busy
+  (the raw mapping reads ERROR as not-busy; the consult governs as
+  before).
+
+Mid-turn safety: with the LiveBusy gate, a silent live turn (adapter-
+path sends hold no agentd session lock; their only old protection was
+the evidence gate) is now ALSO protected by the live registry — the
+publication can't fire mid-turn. This closes a latent main-tree hazard
+where a mid-run silent clear would have become user-visible the moment
+publication landed.
+
+## Red-first pins (all verified RED on main, GREEN after)
+
+| Layer | File | Pins |
+|---|---|---|
+| sessionstate | `sessionstate/reconcile_publish_1722_test.go` | publishes IDLE; publishes ERROR status; exactly-once; LiveBusy gates; LiveBusy end-to-end (hold → registry-clear → settle+publish) |
+| agentd composition | `busy_settle_1722_test.go` | settles from authority idle truth (stamps observedIdle); no settle under registry floor; projection-unknown sessions untouched |
+| api bridge | `usagestream/bridge_publish_1722_test.go` | lost-idle-burst wedge reconciles THROUGH the bridge; ERROR-evidence settle clears; live-registry hold stays silent |
+| integration (real binary) | `abort_busy_clear_1722_integration_test.go` | the issue's repro: real opencode, real bash sleep tool, real abort, clear burst dropped at the /event boundary (the production loss point, modeled deterministically by a burst-dropping proxy); asserts the settle publication + tracker settle + derived convergence |
+
+Commit 1 (pins + the inert `SessionSeed.LiveBusy` type skeleton,
+compiles clean): verified RED — sessionstate 5/5 fail ("never
+PUBLISHED" / gate missing), agentd settle pin fails (tracker stays
+busy), bridge 2 settle pins fail (30s "never reached") + gate pin fails
+(clears when it must hold), integration fails ("the evidence settle was
+never PUBLISHED"). Commit 2 (fix): all green.
+
+## Probe artifacts
+
+- Probe driver (mock provider + abort + /event + registry capture):
+  `/tmp/opencode/probe1722/main.go` (scratch, not committed — the
+  committed integration test IS the durable form).
+- Key captures: `run6.log` (1.18.10 abort), `run1515.log` (1.18.15
+  abort), mid-turn registry polls (busy during tool execution, `{}`
+  post-abort).
+
+## Verification
+
+- `go test ./cmd/workspace-agentd/sessionstate/... -count=1` — green
+  (31s; includes the #1311/#1576/#1310 reconcile/lease/declared-timeout
+  suites — the LiveBusy default-false keeps every existing evidence
+  row's semantics).
+- `go test . ./faultmatrix/... -count=1` in cmd/workspace-agentd —
+  green (327s; includes #1342 restart-interrupt, #1685 statusz evidence
+  pins, busy overlay, #1672 registry-floor rows).
+- `go test ./api/internal/services/usagestream/... -count=1` — green
+  (the #1666 bridge-reconcile + #1602 busy-truth e2e suites).
+- `go test ./pkg/agent/opencode/... -count=1` — green (wire/translator
+  goldens untouched).
+- Integration: `go test -tags integration ./cmd/workspace-agentd/ -run
+  TestIntegration1722` — green against a real 1.18.15 binary
+  (`OPENCODE_BINARY` override; CI runs the harness default 1.18.10 —
+  the abort wire was verified identical on both).
+- Frontend: ZERO diffs under `frontend/` — #1687's pins are untouched;
+  their backend twins (usagestream) ran green. The fix is entirely
+  server-side truth publication.
+- `golangci-lint run --new-from-rev=origin/main` on the touched
+  packages — 0 issues; gofmt/goimports clean.
+
+## Regressions / interactions considered
+
+- **#1666 (bridge reconcile)**: untouched — the reconnect/resync
+  reconcile remains the connection-level belt; the publication is the
+  event-level fix. Both suites green.
+- **#1687 (frontend live-update)**: no frontend changes needed — the
+  badge heals because the user stream now CARRIES the settle (the
+  exact frame the frontend pins consume).
+- **#1685 (hung-nudge evidence gate)**: the tracker settle stops
+  feeding the nudge phantom busy evidence; the gate itself untouched.
+- **#1576 layer 2 (declared-timeout fold)**: left silent-by-design (its
+  sessions are fold-dead; the reseed/reconnect path already publishes
+  for that class). Noted as adjacent, out of scope.
+- **#1719 (board engine)**: no overlap — checked the worklog
+  (1129); its tracker/busy-adjacent seams are `pkg/board` leases, not
+  the busy-truth machinery.
+
+## Files
+
+- `cmd/workspace-agentd/sessionstate/projection.go` — `SessionSeed.LiveBusy` (type skeleton in the pins commit)
+- `cmd/workspace-agentd/sessionstate/reconcile.go` — gate + publication
+- `cmd/workspace-agentd/sessionstate_wiring.go` — registry fill
+- `cmd/workspace-agentd/session_tracker.go` — composition settle
+- `api/internal/services/usagestream/consumer.go` — ERROR leg
+- 4 new pin files (sessionstate / agentd / bridge / integration)
+
+---
+
+## r1 remediation (PR #1727, review 2026-10-17)
+
+- **F1 (must-fix, reproduced by the reviewer and independently
+  re-confirmed by the red pin)**: the settle-signal invariant was
+  enforced on only ONE of the reconcile pass's two settle legs —
+  `rederiveStatuses`' IDLE/ERROR arm (lease.go) published
+  SESSION_STATUS past the 30s lease bound with no LiveBusy gate, so a
+  silent long turn (busySince stale after its first half-minute) got
+  its IDLE published MID-TURN through the same fanout the bridge
+  consumes even with the registry reporting the turn live. Fixed: the
+  arm now carries the same `!seed.LiveBusy` gate (the seed was already
+  in hand at the call site); the sweep leg's gate is unchanged.
+  Red-first: `TestRederiveSettle_LiveRegistryGatesSiblingLeg` (RED on
+  the pre-remediation tree) + the registry-clear complementary guard.
+- **F2 (must-fix)**: the integration repro is now CI-registered — a
+  dedicated step in ci.yml beside the origin e2e (same pinned-binary
+  harness; `-run TestIntegration1722`).
+- **F4**: the wiring's registry-failure mapping is pinned
+  (`sessionstate_wiring_livebusy_1722_test.go`): unreadable registry ⇒
+  every seed LiveBusy=true (conservative — the direction whose
+  inversion would settle LIVE turns); per-session busy mapping on
+  success; absent-from-healthy-registry = no live turn. Coupling noted
+  in the r1 review (a registry outage also holds the ledger sweep's
+  TURN_ENDED/LEDGERED→FAILED arms via the floored seeds): acceptable —
+  conservative, self-healing on the next good read (15s), and the
+  direction that can never mis-settle a live turn.
+- **F3 (must-fix)**: worklog renamed to the NNNN_ sentinel (the merge
+  bot assigns the final number).
+- **Robustness minor**: `clearBusyFromEvidence` now returns 0 when the
+  seq-cursor persist dropped the settle event — `BusyCleared` no longer
+  overcounts during a cursor outage (the settle retries next pass).
+- **Style minor**: the stale "no I/O under a.mu" doc sentence replaced
+  with the true contract (cursor fsync per publication, the same cost
+  every Ingest pays).

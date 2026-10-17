@@ -18,6 +18,15 @@ import (
 type SessionSeed struct {
 	Status        abiv1.SessionStatus
 	PendingInputs []*abiv1.InputRequest
+	// LiveBusy is the harness's LIVE turn-registry verdict for the
+	// session (#1722's settle gate): true while the registry itself
+	// reports a turn running. The LIST status the reconcile reads is
+	// idle-biased (opencode's session records survive the turn), so the
+	// evidence busy-clear needs the live view to distinguish "turn
+	// observably finished" from "silent long turn". Filled by the wiring
+	// layer's store reader; zero (false) when the source has no live
+	// registry.
+	LiveBusy bool
 }
 
 // SessionView is one session's projected state (I12: a snapshot of these

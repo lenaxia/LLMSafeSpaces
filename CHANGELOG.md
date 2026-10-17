@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — stuck busy after an aborted turn (busy-truth machinery)
+
+- **A session no longer shows busy forever after a user aborts a
+  long-running tool call mid-turn** (#1722): wire-proven against the
+  real harness (opencode 1.18.10 + 1.18.15 probe), the abort path DOES
+  emit its busy-clear burst — `session.error` + `session.status idle` +
+  `session.idle` + the aborted tool's terminal update — but the whole
+  burst lands in ~30ms on agentd's RAW `/event` subscription, which is
+  replay-less and recycled every 5 minutes (`sseConnectionTimeout`)
+  plus 2s-backoff reconnects. A burst lost to a recycle gap wedged
+  THREE layers: the `sessionStatusTracker`'s raw mark stuck busy
+  forever (no evidence settle existed — blocking config-apply restarts
+  and suspends via `trackerHasBusyOrUnknown`, skewing the busy gauge
+  and the #1685 evidence clock); the sessionstate authority healed from
+  store evidence on its 15s reconcile pass but **mutated silently** (no
+  seq, no fold, no fanout), so the API usagestream consumer never
+  consulted, never flipped, and the user stream's `session.status`
+  badge stayed busy until the next turn's events — the reported
+  symptom, now also an alerting symptom post-#1685 (a genuinely stuck
+  busy flag trips the evidence-gated nudge). The fix defines the abort
+  case's settle signal explicitly — *store evidence says the turn ended
+  AND the harness's live registry (`/session/status`, busy throughout
+  tool execution, cleared by the abort) holds no live turn* — and makes
+  it an ordered publication: `clearBusyFromEvidence` folds the
+  transition through `applyLocked` (seq-assigned, projected, fanned
+  out), the wiring's store reader fills the new `SessionSeed.LiveBusy`
+  gate (conservative on registry failure), the composition
+  (`cachedState`) settles tracker marks the authority's one busy
+  definition proves idle (projection-known, no pending user ask, not
+  registry-floored — and stamps `idleObservedAt` so a stale registry
+  cannot re-busy later renders, #1672 r2), and the bridge's
+  SESSION_STATUS leg now carries ERROR verdicts too (an errored turn is
+  over, not busy). Red-first pins at every layer: 5 sessionstate, 3
+  agentd composition, 3 bridge e2e, and a real-opencode integration
+  repro (long bash tool aborted mid-turn through a burst-dropping
+  proxy) asserting busy=false after turn end at the tracker, the
+  projection, and the publication seam — now CI-registered beside the
+  origin e2e. Review r1: the live-registry settle gate now covers BOTH
+  reconcile legs (the `rederiveStatuses` sibling published IDLE
+  mid-turn for silent turns past the 30s lease bound — reviewer-
+  reproduced, red-first-pinned, fixed), the wiring's conservative
+  registry-failure mapping is pinned, and a cursor-outage no longer
+  overcounts `BusyCleared`.
+
 ### Added — Task Board dispatch engine + reconciler (Lane 1)
 
 - **The board backend runs dark: Postgres-arbitrated dispatch, leases,

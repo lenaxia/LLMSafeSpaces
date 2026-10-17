@@ -47,11 +47,31 @@ type opencodeStoreReader struct {
 	client *OpenCodeClient
 }
 
+// liveRegistryBudget bounds the registry fetch inside the store read:
+// the evidence read runs under the reconcile pass's own deadline, and
+// the registry is one more synchronous harness call (#1722's settle
+// gate input).
+var liveRegistryBudget = 2 * time.Second
+
 func (r opencodeStoreReader) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	sessions, err := r.client.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// #1722's settle gate: the harness's LIVE turn registry. The list
+	// status above is idle-biased (records survive the turn), so the
+	// evidence busy-clear needs the live view to distinguish "turn
+	// observably finished" from "silent long turn". Wire-proven on
+	// 1.18.15: busy throughout a tool execution, cleared by the abort.
+	// CONSERVATIVE on failure: a registry that cannot be read marks
+	// every session potentially-live (LiveBusy=true) — the settle
+	// retries on the next pass (15s), never mis-fires mid-turn.
+	registry, regErr := func() (map[string]string, error) {
+		regCtx, cancel := context.WithTimeout(ctx, liveRegistryBudget)
+		defer cancel()
+		return r.client.GetSessionStatuses(regCtx)
+	}()
+	liveUnknown := regErr != nil
 	out := make(map[string]sessionstate.SessionSeed, len(sessions))
 	for _, s := range sessions {
 		var status abiv1.SessionStatus
@@ -63,7 +83,7 @@ func (r opencodeStoreReader) SessionStates(ctx context.Context) (map[string]sess
 		default:
 			status = abiv1.SessionStatus_SESSION_STATUS_IDLE
 		}
-		out[s.ID] = sessionstate.SessionSeed{Status: status}
+		out[s.ID] = sessionstate.SessionSeed{Status: status, LiveBusy: liveUnknown || registrySaysBusy(registry[s.ID])}
 	}
 	d := &opencode.Dialect{}
 	questions, qerr := fetchList(ctx, r.client, "/question", d.ParseQuestionListItem)
