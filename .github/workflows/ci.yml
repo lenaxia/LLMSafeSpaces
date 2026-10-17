@@ -614,6 +614,12 @@ jobs:
       - name: Run the origin e2e (real opencode + real agentd dispatch)
         run: go test -tags=integration -timeout 600s -count=1 -run TestOriginE2E ./cmd/workspace-agentd/
 
+      # #1722: the abort-path busy-settle repro (real opencode + real
+      # abort mid-tool + the clear burst dropped at the /event boundary)
+      # rides the same pinned-binary harness as the origin e2e above.
+      - name: Run the #1722 abort busy-settle repro (real opencode)
+        run: go test -tags=integration -timeout 600s -count=1 -run TestIntegration1722 ./cmd/workspace-agentd/
+
       # #1530: the falsification harness (replica of the pinned
       # dispatch — sequential awaited hooks, shared args reference,
       # wire serialization) runs on every PR so a future async-unsafe

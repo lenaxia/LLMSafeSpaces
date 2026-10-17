@@ -724,6 +724,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 		}
 		applyBusyTruthLocked(cache.sessions, busyTruth)
 		applyRegistryFloorLocked(cache.sessions, cache.registry, cache.registryFetchedAt, tracker, busyTruth)
+		settleTrackerBusyLocked(tracker, cache.sessions, busyTruth)
 		return cache.connected, cache.configured, cache.sessions
 	}
 	connected, connErr := client.ConnectedProviders(ctx)
@@ -754,6 +755,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 	// fresh tracker/authority input on every render).
 	refreshRegistryLocked(ctx, client, cache)
 	applyRegistryFloorLocked(sessions, cache.registry, cache.registryFetchedAt, tracker, busyTruth)
+	settleTrackerBusyLocked(tracker, sessions, busyTruth)
 	cache.connected = connected
 	cache.configured = configured
 	cache.sessions = sessions
@@ -826,6 +828,50 @@ func applyRegistryFloorLocked(sessions []agentd.SessionInfo, registry map[string
 			continue // #1574 carve-out: user-blocked ≠ busy
 		}
 		sessions[i].Status = "busy"
+	}
+}
+
+// settleTrackerBusyLocked converges the tracker's raw busy marks the
+// authority's single busy definition proves idle (#1722). The abort
+// case's clear burst (~30ms of session.error + session.status idle +
+// session.idle) rides the tracker's replay-less /event subscription;
+// lost to a recycle gap, the tracker's mark sticks FOREVER — no evidence
+// settle existed on that path, keeping the pod phantom-busy for restart
+// gating (trackerHasBusyOrUnknown defers credential applies and
+// suspends), the ops busy gauge, and the #1685 evidence clock, even
+// though the render already converged via the #1574 overlay. The
+// settle is deliberately narrow, on the same truth the render composes:
+//
+//   - the authority KNOWS the session (a projection-unknown session
+//     keeps the tracker's answer verbatim — the fallback contract);
+//   - the derived busy is false AND there is no pending user ask (the
+//     #1574 carve-out: user-blocked is not turn-end);
+//   - the composed render is NOT busy (the #1672 registry floor re-busy
+//     means the live registry still sees a turn — conservative, the
+//     mark survives to the next render).
+//
+// Callers hold cache.mu; the tracker nests its own lock (the same
+// ordering cachedState's tracker.get reads already use).
+func settleTrackerBusyLocked(tracker *sessionStatusTracker, sessions []agentd.SessionInfo, busyTruth busyTruthFn) {
+	if busyTruth == nil {
+		return
+	}
+	truth := busyTruth()
+	for i := range sessions {
+		sid := sessions[i].ID
+		if sessions[i].Status == "busy" {
+			continue // floored or truth-busy — nothing to settle
+		}
+		v, known := truth[sid]
+		if !known || v.Busy || v.PendingUserAsk {
+			continue
+		}
+		if tracker.get(sid) == "busy" {
+			// set("idle") stamps idleObservedAt too (#1672 r2): the
+			// settle is honest idle evidence and outranks a stale
+			// registry floor on later renders.
+			tracker.set(sid, "idle")
+		}
 	}
 }
 
