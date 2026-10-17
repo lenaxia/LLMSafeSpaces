@@ -63,7 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the control after a stream had started while scrolled away jumped to
   the bottom but did not follow subsequent batches, and an empty
   session whose log mounted after the streaming flip never followed at
-  all. Regression coverage: deterministic red-first jsdom pins for the
+  all, and — the same attachment gap on the listener side — a fresh
+  session (log mounted mid-stream after starting empty) never saw
+  user-scroll intent at all, so scroll-away could not disarm and every
+  batch snapped; the scroll-intent listener now attaches when the log
+  comes into existence. Regression coverage: deterministic red-first jsdom pins for the
   loop and the resume-follows-again compositions, source-shape pins on
   the scroll controller, WCAG contrast pins for the resume control
   (light + dark), and a Playwright acceptance spec (mocked SSE) for

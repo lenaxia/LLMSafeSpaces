@@ -99,3 +99,16 @@ Controller: `frontend/src/components/chat/MessageList.tsx` (the only chat timeli
 - e2e (commit `b9a6e5a3`): the stream-start-while-scrolled-away spec now clicks resume and asserts the next batches arrive at-bottom — **verified RED on 387b88d** (both attempt and retry) at the follow-again assertion.
 
 **Verification (r2 tree):** units **2184 passed / 197 files**; `tsc --noEmit` clean; eslint clean (touched files); `chat-scroll-tail.spec.ts` 3/3 consecutive green; neighbors green (streaming, chat). Commits: red pins `d25728ab` → fix `6d692348` → e2e `b9a6e5a3`.
+
+## Rework r3 (PR #1723 r2 review @ 64fbc4b2 — one finding, GO with exactly the reviewer's spec)
+
+**Finding (reproduced):** the r1 loop survived in the **empty-at-mount** composition. The scroll-intent listener effect ran once on mount with stable deps (`[checkIfAtBottom]`) — mounting in the empty state (fresh session, no `role="log"`) meant it early-returned on a null element and never re-ran when the log appeared. Scroll-away was invisible for the rest of the stream: no disarm, no affordance, every batch snapped. Mirrors the r2 observer gap on the listener side — both effects need the element and both must key on its existence.
+
+**Fix (commit `0f6dd2f8`):** `hasScrollContainer` (declaration moved up, shared) added to the listener effect deps — the intent listener attaches when the scroll container comes into existence. No semantics change for the always-mounted case (flag constant → effect runs once).
+
+**r3 pins (commit `9037dc57`, RED on 64fbc4b2):**
+- jsdom: empty-mount → stream starts → log mounts → armed follows → user scroll-away DISARMS + affordance appears → next batch does not snap → explicit resume follows (on 64fbc4b2 the pill never appears) — **red-first, deterministic**;
+- source pin **S7**: listener effect deps `[checkIfAtBottom, hasScrollContainer]` (mirror of S6);
+- e2e (commit `43d81a8d`): fresh-session row — mount empty (asserted no log) → stream starts → log appears → grow past viewport → wheel away → holds across further batches + "Resume tailing" visible → click → follows again. **Verified RED on 64fbc4b2** at the holds assertion (attempt + retry).
+
+**Verification (r3 tree):** units **2186 passed / 197 files**; `tsc --noEmit` clean; eslint clean (touched files); `chat-scroll-tail.spec.ts` 3/3 × 3 consecutive green runs. Commits: red pins `9037dc57` → fix `0f6dd2f8` → e2e `43d81a8d`.
