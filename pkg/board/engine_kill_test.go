@@ -42,14 +42,14 @@ func (s *BoardSuite) TestKill_ConcurrentClaimsSingleWinner() {
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
-			case err == nil && c.Escalated:
-				escalated++
-			case err == nil && c.Task != nil:
-				grants = append(grants, c)
-			case errors.Is(err, board.ErrNoCandidate):
-				noCandidate++
-			default:
+			case err != nil:
 				s.T().Errorf("unexpected claim error: %v", err)
+			case c.Escalated:
+				escalated++
+			case c.Task != nil:
+				grants = append(grants, c)
+			default:
+				noCandidate++ // a clean empty is a normal outcome
 			}
 		}()
 	}
@@ -67,9 +67,11 @@ func (s *BoardSuite) TestKill_ConcurrentClaimsSingleWinner() {
 	s.Equal(1, s.countEvents("claim"))
 }
 
-// KILL-TEST 2 (engine pin "worker_slots cap race"): N+1 concurrent claimers
-// on a full project → the surplus get empty; the in-flight count NEVER
-// exceeds worker_slots (the p CTE's row lock serializes the count read).
+// KILL-TEST 2 (engine pin "worker_slots cap race"): a project AT capacity
+// (2 in_progress = worker_slots) — N+1 concurrent claimers all get clean
+// empties and the in-flight count NEVER exceeds worker_slots (the p CTE's
+// row lock serializes the count read; SKIP LOCKED makes racers on a locked
+// project return empty rather than block).
 func (s *BoardSuite) TestKill_WorkerSlotsCapRace() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2) // 2 slots
@@ -77,6 +79,10 @@ func (s *BoardSuite) TestKill_WorkerSlotsCapRace() {
 	for i := 0; i < 5; i++ {
 		s.seedTask(e, fmt.Sprintf("t%d", i), nil, false)
 	}
+	// Fill both slots first (the pin's "full project" precondition).
+	c1 := s.claimOrFail(ws)
+	c2 := s.claimOrFail(ws)
+	s.Equal(2, s.inProgressCount(p.ID))
 
 	const racers = 6
 	var wg sync.WaitGroup
@@ -96,9 +102,11 @@ func (s *BoardSuite) TestKill_WorkerSlotsCapRace() {
 	}
 	wg.Wait()
 
-	s.Equal(2, grants)
+	s.Equal(0, grants, "the surplus claimers on a full project get empty")
 	s.Equal(2, s.inProgressCount(p.ID), "in-flight never exceeds worker_slots")
-	s.Equal(2, s.spawner.count())
+	s.Equal(2, s.spawner.count(), "no third spawn while both slots are held")
+	_ = c1
+	_ = c2
 }
 
 // KILL-TEST 3 (engine pin "escalation-at-claim"): pre-increment
@@ -122,6 +130,7 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 		s.Equal(1, res.Reclaims)
 	}
 	s.Equal(3, s.rawTask(tired.ID).Attempts)
+	spawnsBeforeEscalation := s.spawner.count()
 
 	// Claim N+1: the grant is withheld; escalation is returned to the caller.
 	c, err := s.svc.ClaimNext(context.Background(), "w", ws)
@@ -139,14 +148,14 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 	s.Nil(row.LeaseExp)
 	s.Nil(row.Assignee)
 	s.Equal(3, row.Attempts, "escalation is NOT an increment")
-	s.Equal(0, s.spawner.count(), "no worker spawned for a withheld grant")
+	s.Equal(spawnsBeforeEscalation, s.spawner.count(), "no worker spawned for a withheld grant")
 	s.Equal(1, s.countEvents("escalate"))
 
 	// The worker claims again → the next candidate grants normally.
 	c2 := s.claimOrFail(ws)
 	s.Equal(fresh.ID, c2.TaskID)
 	s.Equal(1, s.rawTask(fresh.ID).Attempts)
-	s.Equal(1, s.spawner.count())
+	s.Equal(spawnsBeforeEscalation+1, s.spawner.count(), "the withheld grant spawned nothing; the fresh grant spawned one")
 	// The escalated row is no longer claimable (stage predicate).
 	c3, err := s.svc.ClaimNext(context.Background(), "w", ws)
 	s.Require().NoError(err)
@@ -201,10 +210,10 @@ func (s *BoardSuite) TestKill_ThrottleRollbackIncrementingGrant() {
 	s.Nil(row.Assignee, "worker identity retires with the claim")
 	s.Nil(row.ClaimToken)
 	s.False(row.ClaimIncr)
-	s.Require().NotNil(row.Attempts)
+	var taskCooled bool
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
-		`SELECT cooldown_until IS NOT NULL AND cooldown_until > now() FROM tasks WHERE id=$1`, task.ID).Scan(&row.Attempts))
-	s.Equal(1, row.Attempts, "task cooldown_until is set in the future")
+		`SELECT cooldown_until IS NOT NULL AND cooldown_until > now() FROM tasks WHERE id=$1`, task.ID).Scan(&taskCooled))
+	s.True(taskCooled, "task cooldown_until is set in the future")
 
 	var slotCool bool
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
@@ -361,7 +370,10 @@ func (s *BoardSuite) TestKill_LeaseLifecycleTotality() {
 		board.TaskInput{Title: markCriteria.Title, AcceptanceCriteria: markCriteria.AcceptanceCriteria}, "")
 	s.Require().NoError(err)
 	_ = updated
-	_, err = s.svc.MoveStage(context.Background(), s.owner(), task.ID, "", board.StageDone, "https://evidence.example/x", "")
+	// The bounced worker still holds the work: its (fresh) token drives
+	// the forward exit. A manager drag here would snap back (in-flight).
+	bounceToken := s.reloadTask(task.ID).ClaimToken
+	_, err = s.svc.MoveStage(context.Background(), s.agent("sess", bounceToken), task.ID, "", board.StageDone, "https://evidence.example/x", "")
 	s.Require().NoError(err)
 	row = s.rawTask(task.ID)
 	s.Equal(board.StageDone, row.Stage)
@@ -369,8 +381,10 @@ func (s *BoardSuite) TestKill_LeaseLifecycleTotality() {
 	s.Nil(row.LeaseExp)
 
 	// RC1 NULL-belt: a corrupted in_progress row (NULL lease) is still
-	// reclaimed — never permanently unreclaimable.
-	belt := s.seedTask(e, "belt", nil, false)
+	// reclaimed — never permanently unreclaimable. (Fresh epic: the main
+	// flow's lone-task done completed the first epic — RC4.)
+	beltEpic := s.seedEpic(p, board.EpicActive)
+	belt := s.seedTask(beltEpic, "belt", nil, false)
 	c2 := s.claimOrFail(ws)
 	_ = c2
 	_, err = s.pool.Exec(context.Background(),

@@ -34,14 +34,12 @@ func (s *BoardSuite) TestKill_StageMachineGuards() {
 	withToken := func(from, to string) fixture {
 		return fixture{from + "→" + to + " (worker)", from, to, func(_ board.Actor, tok string) board.Actor { return s.agent("sess", tok) }, ""}
 	}
-	manager := func(from, to string) fixture {
-		return fixture{from + "→" + to + " (manager)", from, to, func(a board.Actor, _ string) board.Actor { return a }, ""}
-	}
 
 	cases := []fixture{
 		withToken(board.StageInProgress, board.StageInReview),
 		withToken(board.StageInProgress, board.StagePendingInput),
-		manager(board.StageInProgress, board.StageInReview),
+		{"in_progress→in_review (manager, no token): an in-flight drag snaps back",
+			board.StageInProgress, board.StageInReview, func(a board.Actor, _ string) board.Actor { return a }, board.GuardClaimToken},
 		withToken(board.StageInReview, board.StagePendingInput),
 		{"backlog→in_progress via move_stage: NO token-less in_progress row is ever created",
 			board.StageBacklog, board.StageInProgress, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
@@ -101,6 +99,10 @@ func (s *BoardSuite) parkAt(t *board.Task, stage, wsID string) {
 		_, err := s.svc.MoveStage(ctx, s.agent("sess", c.ClaimToken), t.ID, "", board.StageInReview, "", "")
 		s.Require().NoError(err)
 	case board.StageDone:
+		c := s.claimOrFail(wsID)
+		s.Require().Equal(t.ID, c.TaskID)
+		_, err := s.svc.MoveStage(ctx, s.agent("sess", c.ClaimToken), t.ID, "", board.StageInReview, "", "")
+		s.Require().NoError(err)
 		s.doneDirect(t)
 	case board.StagePendingInput:
 		c := s.claimOrFail(wsID)
@@ -252,7 +254,8 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			s.Equal(tc.want.origin, *row.PendingOrigin)
 			s.Equal(tc.want.preToken, row.ClaimToken != nil, "fixture token state (branch keys on identity, never token)")
 			s.Equal(tc.want.preIdent, row.Assignee != nil, "fixture identity state")
-			nudgesBefore := s.spawner.count()
+			nudgesBefore := s.nudger.count()
+			spawnsBefore := s.spawner.count()
 
 			// The exit: manager-surface human move_stage.
 			out, err := s.svc.MoveStage(context.Background(), s.owner(), task.ID, "", board.StageInProgress, "", "")
@@ -266,15 +269,16 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 				s.NotNil(after.LeaseExp)
 				s.False(after.ClaimIncr, "exit re-claim mints with flag=false")
 				s.NotNil(after.Assignee)
-				s.Equal(nudgesBefore+1, s.spawner.count(), "the recorded worker is re-nudged (fresh-charter spawn)")
+				s.Equal(nudgesBefore+1, s.nudger.count(), "the recorded worker is re-nudged (token re-delivery, R9: not a fresh spawn)")
+				s.Equal(spawnsBefore, s.spawner.count(), "no fresh spawn on a re-claim branch (R9: spawn is claim-grant only)")
 			} else {
 				s.Equal(board.StageBacklog, out.Stage, "no-identity rows refuse in_progress and land backlog — never a token-less in_progress row")
 				s.Nil(after.ClaimToken)
 				s.Nil(after.Assignee)
 				s.Nil(after.LeaseExp)
-				s.Equal(nudgesBefore, s.spawner.count(), "the dead worker is never re-nudged")
+				s.Equal(nudgesBefore, s.nudger.count(), "the dead worker is never re-nudged")
 			}
-			s.Empty(after.PendingOrigin, "origin cleared on exit")
+			s.Nil(after.PendingOrigin, "origin cleared on exit")
 		})
 	}
 }
@@ -314,28 +318,31 @@ func (s *BoardSuite) TestKill_IdempotentReplayConverges() {
 	e := s.seedEpic(p, board.EpicActive)
 	task := s.seedTask(e, "replay", nil, true)
 
-	// move_stage with a fault injected between effect and event write:
-	// the tx aborts — nothing lands.
+	// Park the task in a claimed in_progress state (the Done transition's
+	// legal source), then fault between effect and event write: the tx
+	// aborts — nothing lands.
+	parked := s.claimOrFail(ws)
+	s.Require().Equal(task.ID, parked.TaskID)
 	s.fps.armAt("move_stage.effect", fmt.Errorf("crash between action and effect"))
-	_, err := s.svc.MoveStage(ctx, s.owner(), task.ID, "", board.StageDone, "https://evidence.example/r", "")
+	_, err := s.svc.MoveStage(ctx, s.agent("sess", parked.ClaimToken), task.ID, "", board.StageDone, "https://evidence.example/r", "")
 	s.Require().Error(err)
 	s.fps.disarm("move_stage.effect")
-	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage, "the aborted tx left nothing")
+	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "the aborted tx left nothing")
 	s.Equal(0, s.countEvents("move_stage"))
 
 	// Replay with the SAME requestId: succeeds (first effective commit).
-	_, err = s.svc.MoveStage(ctx, s.owner(), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
+	_, err = s.svc.MoveStage(ctx, s.agent("sess", parked.ClaimToken), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
 	s.Require().NoError(err)
 	s.Equal(board.StageDone, s.rawTask(task.ID).Stage)
 
 	// Replay again: 200-with-original, never an error; no double effect.
-	_, err = s.svc.MoveStage(ctx, s.owner(), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
+	_, err = s.svc.MoveStage(ctx, s.agent("sess", parked.ClaimToken), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
 	s.Require().NoError(err, "duplicate requestId returns the original outcome")
 	s.Equal(1, s.countTransitions(task.ID, board.StageDone), "no double transition")
 	s.Equal(1, s.countEvents("move_stage"))
 
 	// Plain duplicate (no crash involved).
-	_, err = s.svc.MoveStage(ctx, s.owner(), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
+	_, err = s.svc.MoveStage(ctx, s.agent("sess", parked.ClaimToken), task.ID, "", board.StageDone, "https://evidence.example/r", "req-1")
 	s.Require().NoError(err)
 	s.Equal(1, s.countTransitions(task.ID, board.StageDone))
 

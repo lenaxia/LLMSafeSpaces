@@ -57,6 +57,26 @@ func (f *fakeSpawner) failWith(err error) {
 	f.err = err
 }
 
+// fakeNudger records re-claim nudges (token re-delivery to the recorded
+// assignee — the bounce/exit/RC2 re-claim class; NOT a fresh spawn, R9).
+type fakeNudger struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeNudger) Nudge(_ context.Context, taskID, assignee, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"/"+assignee)
+	return nil
+}
+
+func (f *fakeNudger) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // fakeAborter records worker aborts (cancel mid-flight).
 type fakeAborter struct {
 	mu    sync.Mutex
@@ -169,6 +189,7 @@ type BoardSuite struct {
 	pool    *pgxpool.Pool
 	cfg     board.EngineConfig
 	spawner *fakeSpawner
+	nudger  *fakeNudger
 	aborter *fakeAborter
 	drift   *fakeDriftSource
 	pending *fakePendingSource
@@ -219,12 +240,14 @@ func (s *BoardSuite) SetupTest() {
 	s.Require().NoError(err, "users row must exist (FK target)")
 
 	s.spawner = &fakeSpawner{}
+	s.nudger = &fakeNudger{}
 	s.aborter = &fakeAborter{}
 	s.drift = &fakeDriftSource{prs: map[int]board.PRState{}}
 	s.pending = &fakePendingSource{pend: map[string]bool{}}
 	s.fps = newFailpoints()
 	s.svc = board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithNudger(s.nudger.Nudge),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
@@ -232,6 +255,7 @@ func (s *BoardSuite) SetupTest() {
 	)
 	s.recon = board.NewReconciler(s.pool, s.cfg,
 		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithNudger(s.nudger.Nudge),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
@@ -317,8 +341,10 @@ func (s *BoardSuite) expireLease(taskID string) {
 // clearCooldowns removes task + project cooldowns (test accelerator).
 func (s *BoardSuite) clearCooldowns(p *board.Project, taskID string) {
 	_, err := s.pool.Exec(context.Background(),
-		`UPDATE tasks SET cooldown_until=NULL WHERE id=$1;
-		 UPDATE projects SET slot_cooldown_until=NULL WHERE id=$2`, taskID, p.ID)
+		`UPDATE tasks SET cooldown_until=NULL WHERE id=$1`, taskID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE projects SET slot_cooldown_until=NULL WHERE id=$1`, p.ID)
 	s.Require().NoError(err)
 }
 

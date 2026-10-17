@@ -230,7 +230,7 @@ CREATE OR REPLACE FUNCTION public.board_dependency_guard() RETURNS trigger
 DECLARE
     v_task_project   uuid;
     v_dep_project    uuid;
-    v_cycle          uuid;
+    v_cycle          int;
 BEGIN
     IF NEW.task_id = NEW.depends_on_task_id THEN
         RAISE EXCEPTION 'board: task % cannot depend on itself', NEW.task_id
@@ -246,15 +246,17 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Acyclicity: does the target (transitively) depend on the source?
-    WITH RECURSIVE downstream(task_id) AS (
+    -- Acyclicity: would the source become reachable from the target by
+    -- following depends-on edges forward? (a -> c is cyclic iff c's
+    -- transitive dependency closure already contains a.)
+    WITH RECURSIVE deps_up(task_id) AS (
         SELECT NEW.depends_on_task_id
         UNION
-        SELECT bd.task_id
+        SELECT bd.depends_on_task_id
         FROM public.board_dependencies bd
-        JOIN downstream d ON bd.depends_on_task_id = d.task_id
+        JOIN deps_up u ON bd.task_id = u.task_id
     )
-    SELECT task_id INTO v_cycle FROM downstream WHERE task_id = NEW.task_id LIMIT 1;
+    SELECT 1 INTO v_cycle FROM deps_up WHERE task_id = NEW.task_id LIMIT 1;
 
     IF v_cycle IS NOT NULL THEN
         RAISE EXCEPTION 'board: dependency edge would create a cycle through task %', v_cycle

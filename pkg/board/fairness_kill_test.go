@@ -16,10 +16,23 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// finishClaim runs a claimed task to done (criteria pre-met, evidence
-// supplied) so the next claim sees fresh candidates.
+// finishClaim runs a claimed task to done (checking off its criteria if
+// the fixture did not pre-met them, evidence supplied) so the next claim
+// sees fresh candidates.
 func (s *BoardSuite) finishClaim(c *board.Claim) {
-	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), c.TaskID, "",
+	ctx := context.Background()
+	t := s.reloadTask(c.TaskID)
+	crit := t.AcceptanceCriteria
+	for i := range crit {
+		crit[i].Met = true
+	}
+	if len(crit) == 0 {
+		crit = []board.AcceptanceCriterion{{Text: "done", Met: true}}
+	}
+	_, err := s.svc.UpdateTask(ctx, s.owner(), c.TaskID, "",
+		board.TaskInput{Title: t.Title, AcceptanceCriteria: crit}, "")
+	s.Require().NoError(err)
+	_, err = s.svc.MoveStage(ctx, s.agent("sess", c.ClaimToken), c.TaskID, "",
 		board.StageDone, "https://evidence.example/"+c.ShortID, "")
 	s.Require().NoError(err)
 }
@@ -35,7 +48,9 @@ func (s *BoardSuite) TestKill_DRRStarvationTwoEpics() {
 	for i := 0; i < 8; i++ {
 		s.seedTask(aggressive, fmt.Sprintf("a%d", i), nil, true)
 	}
-	s.seedTask(quiet, "q0", nil, true)
+	for i := 0; i < 6; i++ {
+		s.seedTask(quiet, fmt.Sprintf("q%d", i), nil, true)
+	}
 
 	for i := 0; i < 6; i++ {
 		c := s.claimOrFail(ws)
@@ -45,8 +60,10 @@ func (s *BoardSuite) TestKill_DRRStarvationTwoEpics() {
 	qVFT, qDef, _ := s.epicDRR(quiet.ID)
 	s.Equal(int64(3), aVFT, "aggressive epic served 3 of 6 grants")
 	s.Equal(int64(3), qVFT, "quiet epic served 3 of 6 grants — no starvation")
-	s.Equal(int64(0), aDef)
-	s.Equal(int64(0), qDef)
+	// After an EVEN number of grants the round is mid-flight: each epic
+	// holds its consumed quantum until the next rollover.
+	s.Equal(int64(1), aDef)
+	s.Equal(int64(1), qDef)
 }
 
 // KILL-TEST 13 (engine pin "DRR quantum-skip"): an epic at deficit >=
@@ -77,18 +94,19 @@ func (s *BoardSuite) TestKill_TwoLevelRollover() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	t1 := s.seedTask(e, "only", nil, false)
+	t1 := s.seedTask(e, "only", nil, true)
 
-	// (a) project-level: take the only candidate; the next claimer locks
-	// the project, finds nothing, resets deficits, retries, and reports a
-	// clean empty — no error, no loop, deficits rolled over.
+	// (a) project-level emptiness: take the only candidate; the next
+	// claimer reports a clean empty with NO spurious reset (at-quota
+	// epics WITHOUT claimable candidates never trigger the dispatcher
+	// reset — bounded: one reset per empty claim, never a loop).
 	c1 := s.claimOrFail(ws)
 	s.Equal(t1.ID, c1.TaskID)
 	c2, err := s.svc.ClaimNext(context.Background(), "w", ws)
 	s.Require().NoError(err)
-	s.Nil(c2.Task, "empty claim after project-level rollover is a clean no-candidate")
+	s.Nil(c2.Task, "an empty claim is a clean no-candidate, not an error")
 	_, def, _ := s.epicDRR(e.ID)
-	s.Equal(int64(0), def, "project-level rollover reset the project's epic deficits")
+	s.Equal(int64(1), def, "no reset without claimable candidates — the reset is bounded by the at-quota precondition")
 	s.finishClaim(c1)
 
 	// (b) dispatcher-level: two projects, every epic at quota (deficit=
@@ -142,8 +160,8 @@ func (s *BoardSuite) TestKill_CooldownExclusion() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	hot := s.seedTask(e, "hot", nil, false)
-	cold := s.seedTask(e, "cold", nil, false)
+	hot := s.seedTask(e, "hot", nil, true)
+	cold := s.seedTask(e, "cold", nil, true)
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$1`, cold.ID)
 	s.Require().NoError(err)
@@ -186,8 +204,10 @@ func (s *BoardSuite) TestKill_CandidateLessLeastServedSkipped() {
 	anchor := s.seedTask(eStarved, "starved-anchor", nil, false)
 	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), hole.ID, "", anchor.ID, ""))
 	_, err := s.pool.Exec(context.Background(),
-		`UPDATE epics SET vft = -100 WHERE id=$1;
-		 UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$2`, eStarved.ID, anchor.ID)
+		`UPDATE epics SET vft = -100 WHERE id=$1`, eStarved.ID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$1`, anchor.ID)
 	s.Require().NoError(err)
 
 	// Project-level served project: plain claimable work.
@@ -210,8 +230,10 @@ func (s *BoardSuite) TestKill_CandidateLessLeastServedSkipped() {
 	next := s.seedTask(eNext, "next-work", nil, false)
 	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), lowHole.ID, "", lowAnchor.ID, ""))
 	_, err = s.pool.Exec(context.Background(),
-		`UPDATE epics SET vft = -50 WHERE id=$1;
-		 UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$2`, eLow.ID, lowAnchor.ID)
+		`UPDATE epics SET vft = -50 WHERE id=$1`, eLow.ID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$1`, lowAnchor.ID)
 	s.Require().NoError(err)
 
 	c2 := s.claimOrFail(ws)

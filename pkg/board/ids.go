@@ -169,7 +169,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 }
 
 // Pool exposes the pool for transactional callers (the service layer).
-func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+func (st *Store) Pool() *pgxpool.Pool { return st.pool }
 
 // Clock is the engine's time source (seam for tests; production UTC).
 type Clock func() time.Time

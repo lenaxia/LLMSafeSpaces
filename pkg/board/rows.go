@@ -66,7 +66,7 @@ type Task struct {
 	Title              string                `json:"title"`
 	Description        string                `json:"description"`
 	Stage              string                `json:"stage"`
-	PendingOrigin      string                `json:"pending_origin,omitempty"`
+	PendingOrigin      *string               `json:"pending_origin,omitempty"`
 	Priority           string                `json:"priority"`
 	ProjectName        string                `json:"project_name"`
 	EpicName           string                `json:"epic_name"`
