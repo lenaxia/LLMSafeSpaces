@@ -5,13 +5,27 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 
 ## What ran
 
-- **Runner:** self-hosted `lenaxia-dind-runner` (the US-70 delivery pool's privileged docker-in-dind set), GitHub run **38866952477** (branch `design/1709-shared-folder`).
+- **Runner:** self-hosted `lenaxia-dind-runner` (the US-70 delivery pool's privileged docker-in-dind set), GitHub run per the ledger below (branch `design/1709-shared-folder`).
+
+## Run ledger
+
+| Run | Outcome | Root cause / lesson (committed where it matters) |
+|---|---|---|
+| 38864577660 | fail @ image pull | minio/minio delisted from Docker Hub — design §3.5 |
+| 38865021006 | fail @ image pull | same (tag was not the issue; the repo is gone) |
+| 38865495450 | fail @ Longhorn wait | instance-manager async creation — poll-then-wait (`local/lib/longhorn.sh`) |
+| 38865864638 | fail @ VSC apply | VolumeSnapshotClass needs snapshot-controller CRDs first — workflow step order |
+| 38866952477 | fail @ leg A | createDefaultDiskLabeled created no disks — "Waiting for volume share" class |
+| 38873829660 | fail @ legs A+B | replicaSoftAntiAffinity default hard-affine (single node) + Seaweed IAM plain action names |
+| 38889584710 | fail @ chart fetch | transient GitHub 500 on the release-asset tgz — 3-attempt retry |
+| 38892896347 | cancelled | first run to clear all provisioning; runner reclaimed mid-legs |
+| (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
 - **Longhorn:** chart **1.12.1** — the production cluster's version; node prereqs `open-iscsi` + `nfs-common` via `local/lib/longhorn.sh`; StorageClass `user-shared` (prod `longhorn-2r` parameter set, 2 replicas); snapshot-controller 5.3.0 (piraeus chart — prod's pin); VolumeSnapshotClass `user-shared-snap`.
 - **S3 tier:** SeaweedFS `chrislusf/seaweedfs:4.48` in-cluster (prod's pin). **minio/minio is delisted from Docker Hub** — see the design doc §3.5; runs 38864577660/38865021006 record the delisting evidence.
 - **Client:** rclone 1.67.0 (`rclone/rclone`), env-var S3 config, provider `Other`.
-- **Pod posture:** every data-path pod is the exact workspace shape from `controller/internal/workspace/pod_builder.go` — `runtimeClassName: gvisor`, uid/gid/fsGroup 1000, `FSGroupChangePolicy: OnRootMismatch`, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, no SA token, no service links.
+- **Pod posture:** every pod that MOUNTS THE LONGHORN VOLUME (ws-a/ws-b, ws-writer, hydration jobs, sync job) runs the exact workspace shape from `controller/internal/workspace/pod_builder.go` — `runtimeClassName: gvisor`, uid/gid/fsGroup 1000, `FSGroupChangePolicy: OnRootMismatch`, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, no SA token, no service links. The S3 tier and S3-only seed jobs are spike-side infrastructure (no Longhorn mount); SA tokens are disabled on every namespace object regardless.
 - **Dataset:** synthetic `/dev/urandom`, two classes (128 MiB bulk × N, 256 KiB small × 4N) + per-file sha256 manifest; auto-sized to node free disk (S3 copy + 2 Longhorn replicas within 50% of free).
 
 ## Files

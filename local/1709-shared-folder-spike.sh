@@ -11,26 +11,32 @@
 #       token, no service links) mounting the same RWX PVC at /shared.
 #       Cross-pod write→read, concurrent writers, uid mapping, 1 GiB
 #       sequential throughput per side.
-#   B — hydration throughput: parallel rclone S3(MinIO)→Longhorn-RWX at
+#   B — hydration throughput: parallel rclone S3(SeaweedFS)→Longhorn-RWX at
 #       auto-sized volume, transfers sweep {8,32} under gVisor + a runc
 #       comparison leg, plus no-change and 1 GiB-delta incremental resync.
 #   C — snapshot→RO-mount: VolumeSnapshot taken DURING a live append
 #       writer (crash consistency), restore PVC from snapshot, gVisor'd
 #       sync pod mounts it readOnly, full-dataset manifest verify +
-#       journal torn-tail parse, rclone RO-view→S3 push timing, cleanup.
+#       journal gap/dupe/torn-tail parse (gaps/dupes FAIL the leg), rclone
+#       RO-view→S3 push timing, cleanup.
 #
 # Environment:
 #   CLUSTER_NAME (default llmsafespaces-ci) / CTX (default kind-$CLUSTER_NAME)
 #   NS (default spike1709)
 #   AUTO_GB    — leg-B dataset size in GiB (default 24; auto-shrinks to
-#                fit node free disk — S3 copy X + 2 Longhorn replicas 2X
-#                must fit in half the free disk)
+#                fit node free disk — SeaweedFS data + seed staging + 2
+#                Longhorn replicas = 4× the dataset within half of free)
 #   TRANSFERS  — rclone --transfers sweep (default "8 32")
 #
 # Results: /tmp/spike1709/results.txt (KEY=VALUE + verifier verdicts),
-# full leg logs under /tmp/spike1709/. Legs are best-effort: a FAIL
-# records the failure and later legs still run; leg A failing exits
-# non-zero at the end (architecture-stop signal).
+# full leg logs under /tmp/spike1709/. Exit contract: non-zero iff ANY
+# leg fails (A, B, or C) — a green workflow check means all three legs
+# produced evidence.
+#
+# Self-test: `selftest` exercises the journal parser on synthetic
+# fixtures (clean / torn-tail / gap / dupe / empty) and the exit-contract
+# helper — local/shared_folder_spike_script_test.go drives it; `render
+# <dir>` emits every generated pod/job script for dash -n validation.
 set -uo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-llmsafespaces-ci}"
@@ -40,23 +46,194 @@ AUTO_GB="${AUTO_GB:-24}"
 TRANSFERS="${TRANSFERS:-8 32}"
 
 OUT=/tmp/spike1709
-mkdir -p "$OUT"
 RESULTS="$OUT/results.txt"
-: >"$RESULTS"
 
-# Images: pinned tags; the resolved imageIDs are recorded into
-# results.txt (digests drift — the resolved ID is the reproducibility
-# record for this spike).
-#
+# Images: digest-pinned (resolved digests recorded in results.txt are
+# the reproducibility record; re-pin on tag refresh).
 # FINDING (env note): docker.io/minio/minio is DELISTED from Docker Hub
 # (hub API "object not found"; pull fails with "repository does not
 # exist" — spike runs 38864577660/38865021006) even though prod runs an
 # old cached tag. The spike's S3 tier therefore runs SeaweedFS 4.48 —
 # the version the prod cluster pins and runs today, pullable, real S3
 # implementation. Recorded in the design doc's evidence section.
-DEBIAN_IMG="debian:bookworm-slim"
-RCLONE_IMG="rclone/rclone:1.67.0"
-S3_IMG="chrislusf/seaweedfs:4.48"
+DEBIAN_IMG="debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587"
+RCLONE_IMG="rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9"
+S3_IMG="chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d"
+
+# ---------------------------------------------------------------------------
+# Journal record parser (leg C's crash-consistency gate). Shared by the
+# sync job and selftest. Reads a journal on stdin, prints
+# "JOURNAL_RECS=<n> JOURNAL_GAPS=<g> JOURNAL_DUPES=<d>". Verdict is the
+# caller's: gaps/dupes > 0 = corruption; a torn FINAL line is acceptable
+# under crash consistency; zero parsed records = vacuous = FAIL.
+# Records: `REC%08d|<base64 4KiB>|` one per line; seq strictly +1.
+journal_parse() {
+    awk -F'|' '
+        NF==2 && $1 ~ /^REC[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$/ {
+            s = substr($1,4)+0
+            if (p != "") {
+                if (s == p) dup++
+                else if (s != p+1) gap++
+            }
+            p = s; n++
+        }
+        END { printf "JOURNAL_RECS=%d JOURNAL_GAPS=%d JOURNAL_DUPES=%d\n", n+0, gap+0, dup+0 }
+    '
+}
+
+# journal_verdict <file>: prints the parse + verdict line; exit 0 =
+# consistent (≥1 record, no gaps, no dupes — torn tail tolerated).
+journal_verdict() { # <journal-file>
+    local out recs gaps dupes
+    out=$(journal_parse <"$1")
+    echo "$out"
+    recs=$(printf '%s\n' "$out" | sed -n 's/.*JOURNAL_RECS=\([0-9]*\).*/\1/p')
+    gaps=$(printf '%s\n' "$out" | sed -n 's/.*JOURNAL_GAPS=\([0-9]*\).*/\1/p')
+    dupes=$(printf '%s\n' "$out" | sed -n 's/.*JOURNAL_DUPES=\([0-9]*\).*/\1/p')
+    if [ "${gaps:-1}" != "0" ] || [ "${dupes:-1}" != "0" ]; then
+        echo "JOURNAL_VERDICT=FAIL (gaps=${gaps:-?} dupes=${dupes:-?})"
+        return 1
+    fi
+    if [ "${recs:-0}" -lt 1 ]; then
+        echo "JOURNAL_VERDICT=FAIL (no records parsed)"
+        return 1
+    fi
+    echo "JOURNAL_VERDICT=PASS (torn tail tolerated if present)"
+    return 0
+}
+
+# Exit-contract helper: green iff ALL three legs PASS.
+leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ]; }
+
+# ---------------------------------------------------------------------------
+# selftest — journal-parser fixtures + exit-contract helper. Driven by
+# local/shared_folder_spike_script_test.go; no cluster required.
+# Assertions avoid `fn | grep -q` shapes: under `set -o pipefail` the
+# verdict function's deliberate non-zero rc (corrupt journal) or a
+# SIGPIPE from grep -q's early exit would poison the pipeline and fail
+# correct cases — capture output, test rc and pattern separately.
+selftest() {
+    local fail=0 dir out rc
+    dir=$(mktemp -d)
+    printf 'REC00000000|%s\nREC00000001|%s\nREC00000002|%s\n' a b c >"$dir/clean.j"
+    printf 'REC00000000|%s\nREC00000001|%s\nREC00000' a b >"$dir/torn.j"
+    printf 'REC00000000|%s\nREC00000002|%s\n' a c >"$dir/gap.j"
+    printf 'REC00000000|%s\nREC00000000|%s\n' a a >"$dir/dupe.j"
+    : >"$dir/empty.j"
+
+    out=$(journal_verdict "$dir/clean.j"); rc=$?
+    { [ "$rc" = "0" ] && [[ $out == *"JOURNAL_VERDICT=PASS"* ]]; } || { echo "selftest: clean journal must PASS"; fail=1; }
+    out=$(journal_verdict "$dir/torn.j"); rc=$?
+    { [ "$rc" = "0" ] && [[ $out == *"JOURNAL_VERDICT=PASS"* ]]; } || { echo "selftest: torn tail must PASS (crash consistency)"; fail=1; }
+    [[ $out == *"JOURNAL_RECS=2 "* ]] || { echo "selftest: torn tail counts only complete records"; fail=1; }
+    out=$(journal_verdict "$dir/gap.j"); rc=$?
+    { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: gap journal must FAIL"; fail=1; }
+    out=$(journal_verdict "$dir/dupe.j"); rc=$?
+    { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: dupe journal must FAIL"; fail=1; }
+    out=$(journal_verdict "$dir/empty.j"); rc=$?
+    { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: empty journal must FAIL"; fail=1; }
+
+    leg_exit PASS PASS PASS || { echo "selftest: all-PASS must exit 0"; fail=1; }
+    leg_exit PASS FAIL PASS && { echo "selftest: leg-B FAIL must exit non-zero"; fail=1; }
+    leg_exit PASS PASS FAIL && { echo "selftest: leg-C FAIL must exit non-zero"; fail=1; }
+    leg_exit FAIL PASS PASS && { echo "selftest: leg-A FAIL must exit non-zero"; fail=1; }
+
+    rm -rf "$dir"
+    if [ "$fail" = "0" ]; then echo "SELFTEST=PASS"; return 0; fi
+    echo "SELFTEST=FAIL"; return 1
+}
+
+# ---------------------------------------------------------------------------
+# render <dir> — emit every generated pod/job embedded script (the
+# block-scalar bodies the heredocs produce at defaults) for external
+# dash -n validation. No cluster required. Each file starts with the
+# `# spike-script: <name>` anchor. Placeholders are substituted at the
+# same values the live render would use.
+render() { # dir
+    local dir="$1"
+    mkdir -p "$dir"
+    local SEED_BIG=$(( AUTO_GB * 8 ))
+    local SEED_SMALL=$(( AUTO_GB * 32 ))
+    local LAST_T; LAST_T="$(echo $TRANSFERS | awk '{print $NF}')"
+    local PVC_GB=$(( AUTO_GB + AUTO_GB / 4 + 1 ))
+    local EXPECTED_BYTES=$(( AUTO_GB * 1024 * 1024 * 1024 ))
+    local EXPECTED_90=$(( EXPECTED_BYTES * 9 / 10 ))
+
+    { echo "# spike-script: seed"
+      sed -e "s/@@SEED_SMALL@@/${SEED_SMALL}/g" -e "s/@@SEED_BIG@@/${SEED_BIG}/g" <<'REOF'
+set -e
+mkdir -p /data/big /data/small
+i=0; while [ $i -lt @@SEED_SMALL@@ ]; do
+  dd if=/dev/urandom of=/data/small/s-$i.bin bs=256k count=1 2>/dev/null
+  i=$((i+1))
+done
+i=0; while [ $i -lt @@SEED_BIG@@ ]; do
+  dd if=/dev/urandom of=/data/big/b-$i.bin bs=1M count=128 2>/dev/null
+  i=$((i+1))
+done
+cd /data && find big small -type f | sort | xargs sha256sum > /data/manifest.txt
+rclone copy /data/big spike:shared/big --transfers 16
+rclone copy /data/small spike:shared/small --transfers 16
+rclone copyto /data/manifest.txt spike:shared/manifest.txt
+rclone size spike:shared || true
+REOF
+    } >"$dir/seed.sh"
+
+    { echo "# spike-script: hydrate"
+      sed -e "s/@@T@@/${LAST_T}/g" -e "s/@@E90@@/${EXPECTED_90}/g" -e "s/@@E@@/${EXPECTED_BYTES}/g" <<'REOF'
+set -e
+rclone sync spike:shared /shared --transfers @@T@@ --checkers @@T@@
+sz=$(rclone size --json /shared | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')
+[ -n "$sz" ] || { echo "HYD_SIZE=FAIL (no size)"; exit 1; }
+if [ "$sz" -lt @@E90@@ ]; then echo "HYD_SIZE=FAIL ($sz bytes < 90% of @@E@@)"; exit 1; fi
+echo "HYD_SIZE=OK bytes=$sz"
+rclone size /shared || true
+REOF
+    } >"$dir/hydrate.sh"
+
+    { echo "# spike-script: writer" <<'REOF'
+i=0
+while [ $i -lt 100000 ]; do
+  { printf 'REC%08d|' "$i"; dd if=/dev/urandom bs=4096 count=1 2>/dev/null | base64 -w0; printf '\n'; } >> /shared/journal.bin
+  i=$((i+1))
+done
+REOF
+    } >"$dir/writer.sh"
+
+    { echo "# spike-script: sync" <<'REOF'
+set -e
+echo "-- RO mount check"
+if touch /shared/.rw-probe 2>/dev/null; then echo "RO_CHECK=FAIL (mount writable)"; exit 1; else echo "RO_CHECK=PASS"; fi
+echo "-- manifest verify"
+rclone cat spike:shared/manifest.txt > /tmp/manifest.txt
+cd /shared && sha256sum -c /tmp/manifest.txt > /tmp/verify.out 2>&1 || { echo "MANIFEST=FAIL"; tail -20 /tmp/verify.out; exit 1; }
+echo "MANIFEST=PASS files=$(grep -c ': OK' /tmp/verify.out || true)"
+echo "-- journal parse (gaps/dupes FAIL; torn tail tolerated)"
+awk -F'|' 'NF==2 && $1 ~ /^REC[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$/ { s=substr($1,4)+0; if (p != "") { if (s == p) dup++; else if (s != p+1) gap++ } p=s; n++ } END { printf "JOURNAL_RECS=%d JOURNAL_GAPS=%d JOURNAL_DUPES=%d\n", n+0, gap+0, dup+0 }' /shared/journal.bin > /tmp/journal.out
+cat /tmp/journal.out
+JG=$(sed -n 's/.*JOURNAL_GAPS=\([0-9]*\).*/\1/p' /tmp/journal.out)
+JD=$(sed -n 's/.*JOURNAL_DUPES=\([0-9]*\).*/\1/p' /tmp/journal.out)
+JR=$(sed -n 's/.*JOURNAL_RECS=\([0-9]*\).*/\1/p' /tmp/journal.out)
+[ "$JG" = "0" ] && [ "$JD" = "0" ] || { echo "JOURNAL_VERDICT=FAIL (gaps=$JG dupes=$JD)"; exit 1; }
+[ "$JR" -ge 1 ] || { echo "JOURNAL_VERDICT=FAIL (no records)"; exit 1; }
+echo "JOURNAL_VERDICT=PASS"
+echo "-- rclone RO-view push"
+rclone sync /shared spike:sync-copy --transfers 32
+rclone size spike:sync-copy || true
+echo "SYNC_POD=PASS"
+REOF
+    } >"$dir/sync.sh"
+
+    echo "rendered: $(ls "$dir" | tr '\n' ' ')"
+}
+
+case "${1:-}" in
+    selftest) selftest; exit $? ;;
+    render) render "${2:?render needs a dir}"; exit 0 ;;
+esac
+
+mkdir -p "$OUT"
+: >"$RESULTS"
 
 if [[ -t 0 ]]; then
     BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'; RESET=$'\033[0m'
@@ -77,7 +254,38 @@ mbps() { awk -v e="$1" -v gb="$2" 'BEGIN{printf "%.1f", gb*1024/e}'; }
 K="kubectl --context ${CTX}"
 KC="${K} -n ${NS}"
 
-rclone_env_yaml() { # the five env pairs every rclone pod needs
+# wait_job <name> <timeout-s>: fail FAST on a terminal-Failed job
+# (kubectl's condition=complete wait polls the full timeout otherwise —
+# review R1). Polls status.conditions every 10s.
+wait_job() { # name timeout
+    local name="$1" tmo="$2" deadline=$(( $(date +%s) + tmo )) cond
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        cond=$(${KC} get job "$name" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+        case "$cond" in
+            *"Complete=True"*) return 0 ;;
+            *"Failed=True"*)   echo "wait_job: job $name FAILED" >&2; return 1 ;;
+        esac
+        sleep 10
+    done
+    echo "wait_job: job $name timed out after ${tmo}s (conditions: ${cond:-none})" >&2
+    return 1
+}
+
+# Full longhorn-system state dump — the run-38866952477 lesson: the
+# volume sat at "Waiting for volume share to be available" for 28
+# minutes with zero diagnostics captured.
+lh_dump_state() {
+    ${K} -n longhorn-system get pods -o wide >"$OUT/lh-pods.txt" 2>&1 || true
+    ${K} -n longhorn-system get nodes.longhorn.io -o yaml >"$OUT/lh-nodes.yaml" 2>&1 || true
+    ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/lh-volumes.yaml" 2>&1 || true
+    ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/lh-replicas.txt" 2>&1 || true
+    ${K} -n longhorn-system logs daemonset/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
+    ${K} -n longhorn-system logs -l longhorn.io/component=share-manager --tail=80 >"$OUT/lh-share.log" 2>&1 || true
+    ${K} -n longhorn-system describe pod -l longhorn.io/component=share-manager >"$OUT/lh-share-describe.txt" 2>&1 || true
+    ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true
+}
+
+rclone_env_yaml() { # the env pairs every rclone pod needs
     cat <<EOF
         - {name: RCLONE_CONFIG_SPIKE_TYPE, value: s3}
         - {name: RCLONE_CONFIG_SPIKE_PROVIDER, value: Other}
@@ -98,12 +306,25 @@ res "node=${NODE}"
 res "kind_node_image=$(docker inspect --format='{{.Config.Image}}' "$NODE" 2>/dev/null || echo unknown)"
 res "longhorn_chart=$(helm list -n longhorn-system -o json 2>/dev/null | jq -r '.[0].chart' 2>/dev/null || echo unknown)"
 
+# RuntimeClass preflight — every runtimeClassName referenced below must
+# be registered BEFORE any pod is created (review N-A: a missing runc
+# class kills the B2 comparison at admission, silently to the legs).
+for RC in gvisor runc; do
+    if ! ${K} get runtimeclass "$RC" >/dev/null 2>&1; then
+        res "env_runtimeclass_${RC}=MISSING"
+        die "RuntimeClass ${RC} not registered — apply it before running the spike"
+        exit 1
+    fi
+    res "env_runtimeclass_${RC}=OK"
+done
+
 # Disk budget — Longhorn refuses replica scheduling under 25% node free
-# (prod incident note, talos-ops-prod storageclass-2r.yaml). Keep S3 (X) +
-# 2 replicas (2X) inside half of current free.
+# (prod incident note, talos-ops-prod storageclass-2r.yaml). FOUR copies
+# of the dataset touch node disk: SeaweedFS data + seed staging scratch +
+# 2 Longhorn replicas (review N-C). Keep all four inside half of free.
 FREE_KB=$(docker exec "$NODE" df -k --output=avail / 2>/dev/null | tail -1 | tr -d ' ')
 FREE_GB=$((FREE_KB / 1024 / 1024))
-FIT_GB=$(( FREE_GB / 2 / 3 ))
+FIT_GB=$(( FREE_GB / 2 / 4 ))
 if (( AUTO_GB > FIT_GB )); then
     warn "AUTO_GB=${AUTO_GB} exceeds auto-fit ${FIT_GB} GiB (node free=${FREE_GB} GiB) — shrinking"
     AUTO_GB=$FIT_GB
@@ -111,10 +332,13 @@ fi
 res "node_free_gb=${FREE_GB}"
 res "auto_gb=${AUTO_GB}"
 res "transfers_sweep=${TRANSFERS// /,}"
+res "expected_bytes=$(( AUTO_GB * 1024 * 1024 * 1024 ))"
 (( AUTO_GB >= 4 )) || { die "auto-fit dataset < 4 GiB — node disk too small for a meaningful leg B"; exit 1; }
 
 PVC_GB=$(( AUTO_GB + AUTO_GB / 4 + 1 ))
 res "pvc_gb=${PVC_GB}"
+EXPECTED_BYTES=$(( AUTO_GB * 1024 * 1024 * 1024 ))
+EXPECTED_BYTES_90=$(( EXPECTED_BYTES * 9 / 10 ))
 
 # ---------------------------------------------------------------------------
 # Leg A — runsc × Longhorn RWX in workspace-shaped pods
@@ -146,28 +370,6 @@ else
     ${K} -n longhorn-system get pods -o wide >"$OUT/a-longhorn-pods.txt" 2>&1 || true
     ${KC} get events --sort-by=.lastTimestamp >"$OUT/a-events.txt" 2>&1 || true
     ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/a-lh-volume.yaml" 2>&1 || true
-fi
-
-# Full longhorn-system state dump — the run-38866952477 lesson: the
-# volume sat at "Waiting for volume share to be available" for 28
-# minutes with zero diagnostics captured.
-lh_dump_state() {
-    ${K} -n longhorn-system get pods -o wide >"$OUT/lh-pods.txt" 2>&1 || true
-    ${K} -n longhorn-system get nodes.longhorn.io -o yaml >"$OUT/lh-nodes.yaml" 2>&1 || true
-    ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/lh-volumes.yaml" 2>&1 || true
-    ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/lh-replicas.txt" 2>&1 || true
-    ${K} -n longhorn-system logs daemonset/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
-    ${K} -n longhorn-system logs -l longhorn.io/component=share-manager --tail=80 >"$OUT/lh-share.log" 2>&1 || true
-    ${K} -n longhorn-system describe pod -l longhorn.io/component=share-manager >"$OUT/lh-share-describe.txt" 2>&1 || true
-    ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true
-}
-
-# Longhorn starts a share-manager per RWX volume on first attach; it must
-# exist and be Ready before kubelet's NFS mount can succeed. Give it a
-# blocking window and dump state if it never appears.
-if ! ${K} -n longhorn-system wait --for=condition=ready pod -l longhorn.io/component=share-manager --timeout=600s >/dev/null 2>&1; then
-    warn "share-manager not Ready after 600s — dumping longhorn-system"
-    lh_dump_state
 fi
 
 # Workspace-shaped pod (pod_builder.go posture, verbatim semantics):
@@ -212,8 +414,28 @@ spec:
 EOF
 }
 
+# Apply the consumer pods FIRST (review N1: Longhorn creates a
+# share-manager only when the RWX volume is first ATTACHED — waiting for
+# it before any consumer exists is a no-op by construction). The pods
+# schedule and stall on FailedAttachVolume while the share-manager
+# boots; then poll-then-wait for the share pod.
 ws_pod_yaml ws-a "sleep 7200" | ${K} apply -f - >/dev/null
 ws_pod_yaml ws-b "sleep 7200" | ${K} apply -f - >/dev/null
+
+SM_COUNT=0
+for i in $(seq 1 30); do
+    SM_COUNT=$(${K} -n longhorn-system get pods -l longhorn.io/component=share-manager -o name 2>/dev/null | wc -l | tr -d ' ')
+    [ "$SM_COUNT" -ge 1 ] && break
+    sleep 10
+done
+if [ "${SM_COUNT:-0}" -ge 1 ] && ${K} -n longhorn-system wait --for=condition=ready pod -l longhorn.io/component=share-manager --timeout=900s >/dev/null 2>&1; then
+    res "a_share_manager=PASS"
+    ok "share-manager Ready (attach-triggered)"
+else
+    res "a_share_manager=FAIL"
+    warn "share-manager never appeared/Ready — dumping longhorn-system"
+    lh_dump_state
+fi
 
 A_READY=1
 ${KC} wait --for=condition=ready pod/ws-a --timeout=900s >/dev/null 2>&1 || A_READY=0
@@ -241,7 +463,7 @@ if [ "$A_READY" = "1" ]; then
     if [ -n "$SHA_A" ] && [ "$SHA_A" = "$SHA_B" ]; then
         res "a_cross_pod_rw=PASS"; ok "A→B cross-pod RW (64 MiB sha match)"
     else
-        res "a_cross_pod_rw=FAIL sha_a=${SHA_A:-none} sha_b=${SHA_B:-none}"; die "cross-pod RW failed"; note_a_fail=1
+        res "a_cross_pod_rw=FAIL"; die "cross-pod RW failed"
     fi
 
     # A2 concurrent writers, full cross-verify
@@ -256,7 +478,7 @@ if [ "$A_READY" = "1" ]; then
     if [ "$CONC_A_R" = "$CONC_A_W" ] && [ -n "$CONC_A_R" ] && [ "$CONC_B_R" = "$CONC_B_W" ] && [ -n "$CONC_B_R" ]; then
         res "a_concurrent_writers=PASS"; ok "concurrent writers, cross-verified"
     else
-        res "a_concurrent_writers=FAIL"; note_a_fail=1
+        res "a_concurrent_writers=FAIL"
     fi
 
     # A3 uid/fsGroup mapping through the share-manager NFS export
@@ -267,7 +489,7 @@ if [ "$A_READY" = "1" ]; then
     if [ "$OWN_A" = "1000:1000" ] && [ "$OWN_A" = "$OWN_B" ]; then
         res "a_uid_mapping=PASS"; ok "uid-1000 files visible 1000:1000 from both pods"
     else
-        res "a_uid_mapping=FAIL"; note_a_fail=1
+        res "a_uid_mapping=FAIL"
     fi
 
     # A4 sequential throughput through the gofer (write ws-a / read ws-b)
@@ -282,7 +504,8 @@ if [ "$A_READY" = "1" ]; then
     res "a_dd_read_gvisor_mbs=$(mbps "$(elapsed "$TP_T1" "$TP_T2")" 1)"
     ok "leg A throughput recorded"
 
-    [ "${note_a_fail:-0}" = "0" ] && A_STATUS=PASS
+    # A_STATUS aggregates the leg's sub-verdicts
+    if sed -n '/### LEG_A/,/### LEG_B/p' "$RESULTS" | grep -q "=FAIL"; then A_STATUS=FAIL; else A_STATUS=PASS; fi
 else
     res "a_pods_ready=FAIL"
     die "workspace-shaped gVisor pods never Ready on RWX — LEG A FAILS"
@@ -301,7 +524,9 @@ B_STATUS=FAIL
 
 # S3 tier: SeaweedFS all-in-one (master+volume+s3, one process), data on
 # emptyDir (NOT Longhorn — keeps the measurement off the volume under
-# test). IAM identity grants the spike key full S3 actions.
+# test). IAM identity grants the spike key full S3 actions (PLAIN action
+# names — "Admin:.*" regex forms match nothing and every call 403s; run
+# 38873829660).
 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
 kind: ConfigMap
@@ -319,14 +544,13 @@ spec:
   template:
     metadata: {labels: {app: s3srv}}
     spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
       containers:
       - name: weed
         image: ${S3_IMG}
         args: ["server", "-dir=/data", "-master.volumeSizeLimitMB=8192", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweed/s3.json"]
         ports: [{containerPort: 8333}]
-        # tcpSocket, not httpGet: Seaweed's S3 answers GET / with a 404
-        # XML error (an S3 server, not a web one) — run 38866952477
-        # starved the rollout on exactly that.
         readinessProbe: {tcpSocket: {port: 8333}, initialDelaySeconds: 5, periodSeconds: 5}
         volumeMounts:
         - {name: data, mountPath: /data}
@@ -354,7 +578,9 @@ else
     res "b_s3_impl=seaweedfs-4.48"
 
     # B0 seed — synthetic dataset on S3: two file classes (128 MiB bulk ×
-    # AUTO_GB*8, 256 KiB small × AUTO_GB*32) + per-file manifest.
+    # AUTO_GB*8, 256 KiB small × AUTO_GB*32) + per-file manifest. The
+    # final rclone size is REPORT-ONLY (|| true — review N-C: a reporting
+    # failure must not fail a successful seed).
     SEED_BIG=$(( AUTO_GB * 8 ))
     SEED_SMALL=$(( AUTO_GB * 32 ))
     ${K} delete job seed --ignore-not-found >/dev/null 2>&1
@@ -367,6 +593,8 @@ spec:
   template:
     metadata: {labels: {spike: "1709"}}
     spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
       restartPolicy: Never
       containers:
       - name: rclone
@@ -376,28 +604,33 @@ spec:
         - |
           set -e
           mkdir -p /data/big /data/small
-          i=0; while [ \$\$i -lt ${SEED_SMALL} ]; do
-            dd if=/dev/urandom of=/data/small/s-\$\$i.bin bs=256k count=1 2>/dev/null
-            i=\$\$((i+1))
+          i=0; while [ \$i -lt ${SEED_SMALL} ]; do
+            dd if=/dev/urandom of=/data/small/s-\$i.bin bs=256k count=1 2>/dev/null
+            i=\$((i+1))
           done
-          i=0; while [ \$\$i -lt ${SEED_BIG} ]; do
-            dd if=/dev/urandom of=/data/big/b-\$\$i.bin bs=1M count=128 2>/dev/null
-            i=\$\$((i+1))
+          i=0; while [ \$i -lt ${SEED_BIG} ]; do
+            dd if=/dev/urandom of=/data/big/b-\$i.bin bs=1M count=128 2>/dev/null
+            i=\$((i+1))
           done
           cd /data && find big small -type f | sort | xargs sha256sum > /data/manifest.txt
           rclone copy /data/big spike:shared/big --transfers 16
           rclone copy /data/small spike:shared/small --transfers 16
           rclone copyto /data/manifest.txt spike:shared/manifest.txt
-          rclone size spike:shared
+          rclone size spike:shared || true
         env:
 $(rclone_env_yaml)
         resources: {requests: {cpu: "1"}}
+        volumeMounts:
+        - {name: scratch, mountPath: /data}
+      volumes:
+      - name: scratch
+        emptyDir: {}
 EOF
     T0=$(now_s)
-    if ${KC} wait --for=condition=complete job/seed --timeout=5400s >/dev/null 2>&1; then
+    if wait_job seed 5400; then
         res "b_seed_s=$(elapsed "$T0" "$(now_s)")"
         res "b_dataset_gb=${AUTO_GB}"
-        ok "seeded ~${AUTO_GB} GiB to MinIO"
+        ok "seeded ~${AUTO_GB} GiB to SeaweedFS"
         SEED_OK=1
     else
         res "b_seed_s=FAIL"
@@ -407,7 +640,7 @@ EOF
     fi
 
     if [ "${SEED_OK:-0}" = "1" ]; then
-        hyd_job_yaml() { # name runtimeclass transfers extra-args
+        hyd_job_yaml() { # name runtimeclass transfers
             cat <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -432,7 +665,15 @@ spec:
       - name: rclone
         image: ${RCLONE_IMG}
         command: ["/bin/sh", "-c"]
-        args: ["set -e; rclone sync spike:shared /shared --transfers $3 --checkers $3 $4; rclone size /shared"]
+        args:
+        - |
+          set -e
+          rclone sync spike:shared /shared --transfers $3 --checkers $3
+          sz=\$(rclone size --json /shared | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')
+          [ -n "\$sz" ] || { echo "HYD_SIZE=FAIL (no size)"; exit 1; }
+          if [ "\$sz" -lt ${EXPECTED_BYTES_90} ]; then echo "HYD_SIZE=FAIL (\$sz bytes < 90% of ${EXPECTED_BYTES})"; exit 1; fi
+          echo "HYD_SIZE=OK bytes=\$sz"
+          rclone size /shared || true
         env:
 $(rclone_env_yaml)
         securityContext:
@@ -457,9 +698,9 @@ EOF
         for T in $TRANSFERS; do
             ${K} delete job hyd-gvisor-t${T} --ignore-not-found >/dev/null 2>&1
             clean_shared
-            hyd_job_yaml "hyd-gvisor-t${T}" gvisor "$T" "" | ${K} apply -f - >/dev/null
+            hyd_job_yaml "hyd-gvisor-t${T}" gvisor "$T" | ${K} apply -f - >/dev/null
             TH0=$(now_s)
-            if ${KC} wait --for=condition=complete job/hyd-gvisor-t${T} --timeout=7200s >/dev/null 2>&1; then
+            if wait_job "hyd-gvisor-t${T}" 7200; then
                 TH1=$(now_s)
                 res "b_hydrate_gvisor_t${T}_s=$(elapsed "$TH0" "$TH1")"
                 res "b_hydrate_gvisor_t${T}_mbs=$(mbps "$(elapsed "$TH0" "$TH1")" "${AUTO_GB}")"
@@ -474,9 +715,9 @@ EOF
         ${K} delete job hyd-runc --ignore-not-found >/dev/null 2>&1
         clean_shared
         LAST_T="$(echo $TRANSFERS | awk '{print $NF}')"
-        hyd_job_yaml hyd-runc runc "$LAST_T" "" | ${K} apply -f - >/dev/null
+        hyd_job_yaml hyd-runc runc "$LAST_T" | ${K} apply -f - >/dev/null
         TH0=$(now_s)
-        if ${KC} wait --for=condition=complete job/hyd-runc --timeout=7200s >/dev/null 2>&1; then
+        if wait_job hyd-runc 7200; then
             TH1=$(now_s)
             res "b_hydrate_runc_t${LAST_T}_s=$(elapsed "$TH0" "$TH1")"
             res "b_hydrate_runc_t${LAST_T}_mbs=$(mbps "$(elapsed "$TH0" "$TH1")" "${AUTO_GB}")"
@@ -487,11 +728,11 @@ EOF
         fi
 
         # B3 no-change resync (steady-state park→rehydrate of unchanged
-        # data = metadata scan cost)
+        # data = metadata scan cost). Same dataset stays in place.
         ${K} delete job hyd-nochange --ignore-not-found >/dev/null 2>&1
-        hyd_job_yaml hyd-nochange gvisor "$LAST_T" "" | ${K} apply -f - >/dev/null
+        hyd_job_yaml hyd-nochange gvisor "$LAST_T" | ${K} apply -f - >/dev/null
         TI0=$(now_s)
-        if ${KC} wait --for=condition=complete job/hyd-nochange --timeout=3600s >/dev/null 2>&1; then
+        if wait_job hyd-nochange 3600; then
             res "b_resync_nochange_s=$(elapsed "$TI0" "$(now_s)")"
             ok "no-change resync: $(elapsed "$TI0" "$(now_s)")s"
         else
@@ -508,6 +749,8 @@ spec:
   backoffLimit: 0
   template:
     spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
       restartPolicy: Never
       containers:
       - name: rclone
@@ -517,19 +760,24 @@ spec:
         - |
           set -e
           mkdir -p /data/delta
-          i=0; while [ \$\$i -lt 8 ]; do
-            dd if=/dev/urandom of=/data/delta/d-\$\$i.bin bs=1M count=128 2>/dev/null
-            i=\$\$((i+1))
+          i=0; while [ \$i -lt 8 ]; do
+            dd if=/dev/urandom of=/data/delta/d-\$i.bin bs=1M count=128 2>/dev/null
+            i=\$((i+1))
           done
           rclone copy /data/delta spike:shared/big --transfers 8
         env:
 $(rclone_env_yaml)
+        volumeMounts:
+        - {name: scratch, mountPath: /data}
+      volumes:
+      - name: scratch
+        emptyDir: {}
 EOF
-        if ${KC} wait --for=condition=complete job/delta-seed --timeout=1800s >/dev/null 2>&1; then
+        if wait_job delta-seed 1800; then
             ${K} delete job hyd-delta --ignore-not-found >/dev/null 2>&1
-            hyd_job_yaml hyd-delta gvisor "$LAST_T" "" | ${K} apply -f - >/dev/null
+            hyd_job_yaml hyd-delta gvisor "$LAST_T" | ${K} apply -f - >/dev/null
             TD0=$(now_s)
-            if ${KC} wait --for=condition=complete job/hyd-delta --timeout=3600s >/dev/null 2>&1; then
+            if wait_job hyd-delta 3600; then
                 res "b_resync_1gib_delta_s=$(elapsed "$TD0" "$(now_s)")"
                 ok "1 GiB delta resync: $(elapsed "$TD0" "$(now_s)")s"
             else
@@ -538,7 +786,8 @@ EOF
         else
             res "b_resync_1gib_delta_s=DELTA_SEED_FAIL"
         fi
-        B_STATUS=PASS
+        # B_STATUS aggregates the leg's sub-verdicts
+        if ! sed -n '/### LEG_B/,/### LEG_C/p' "$RESULTS" | grep -q "=FAIL"; then B_STATUS=PASS; fi
     fi
 fi
 res "b_status=${B_STATUS}"
@@ -551,9 +800,10 @@ C_STATUS=FAIL
 if [ "$B_STATUS" != "PASS" ]; then
     res "c_status=SKIPPED_B_FAILED"
 else
-    # C1 live append writer: SEQ|b64(4KiB random)| lines, direct append.
-    # Verifier tolerates a torn TAIL only; gaps/dupes/out-of-order are
-    # corruption.
+    # C1 live append writer: `REC%08d|<b64>|` lines appended WHOLE to the
+    # journal (grouped redirect — the run-1 writer leaked everything but
+    # the newline to pod stdout and the journal recorded blank lines,
+    # making the crash-consistency gate vacuous).
     ${K} delete pod ws-writer --ignore-not-found >/dev/null 2>&1
     cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
@@ -577,11 +827,9 @@ spec:
     args:
     - |
       i=0
-      while [ \$\$i -lt 100000 ]; do
-        printf 'REC%08d|' "\$\$i"
-        dd if=/dev/urandom bs=4096 count=1 2>/dev/null | base64 -w0
-        printf '\n' >> /shared/journal.bin
-        i=\$\$((i+1))
+      while [ \$i -lt 100000 ]; do
+        { printf 'REC%08d|' "\$i"; dd if=/dev/urandom bs=4096 count=1 2>/dev/null | base64 -w0; printf '\n'; } >> /shared/journal.bin
+        i=\$((i+1))
       done
     securityContext:
       readOnlyRootFilesystem: true
@@ -642,7 +890,9 @@ EOF
                 ok "restore PVC bound"
 
                 # C4 gVisor'd sync pod: RO mount + manifest verify +
-                # torn-tail journal parse + rclone push of the RO view
+                # journal parse (gaps/dupes FAIL) + rclone push of the
+                # RO view. Every check exits non-zero on failure — a
+                # green Job means every gate passed (review N-B/C3).
                 ${K} delete job sync --ignore-not-found >/dev/null 2>&1
                 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: batch/v1
@@ -677,12 +927,18 @@ spec:
           rclone cat spike:shared/manifest.txt > /tmp/manifest.txt
           cd /shared && sha256sum -c /tmp/manifest.txt > /tmp/verify.out 2>&1 || { echo "MANIFEST=FAIL"; tail -20 /tmp/verify.out; exit 1; }
           echo "MANIFEST=PASS files=\$(grep -c ': OK' /tmp/verify.out || true)"
-          echo "-- journal torn-tail parse"
-          awk -F'|' 'NF==2 && \$1 ~ /^REC[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\$/ { s=substr(\$1,4)+0; if (p != "" && s != p+1) { if (s == p) dup++; else gap++ } p=s; n++ } END { printf "JOURNAL_RECS=%d JOURNAL_GAPS=%d JOURNAL_DUPES=%d\n", n, gap+0, dup+0 }' /shared/journal.bin
-          tail -n 1 /shared/journal.bin | grep -q '^REC[0-9]*|.' || echo "JOURNAL_TORN_TAIL=yes (complete-prefix — acceptable)"
+          echo "-- journal parse (gaps/dupes FAIL; torn tail tolerated)"
+          awk -F'|' 'NF==2 && \$1 ~ /^REC[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\$/ { s=substr(\$1,4)+0; if (p != "") { if (s == p) dup++; else if (s != p+1) gap++ } p=s; n++ } END { printf "JOURNAL_RECS=%d JOURNAL_GAPS=%d JOURNAL_DUPES=%d\n", n+0, gap+0, dup+0 }' /shared/journal.bin > /tmp/journal.out
+          cat /tmp/journal.out
+          JG=\$(sed -n 's/.*JOURNAL_GAPS=\([0-9]*\).*/\1/p' /tmp/journal.out)
+          JD=\$(sed -n 's/.*JOURNAL_DUPES=\([0-9]*\).*/\1/p' /tmp/journal.out)
+          JR=\$(sed -n 's/.*JOURNAL_RECS=\([0-9]*\).*/\1/p' /tmp/journal.out)
+          [ "\$JG" = "0" ] && [ "\$JD" = "0" ] || { echo "JOURNAL_VERDICT=FAIL (gaps=\$JG dupes=\$JD)"; exit 1; }
+          [ "\$JR" -ge 1 ] || { echo "JOURNAL_VERDICT=FAIL (no records)"; exit 1; }
+          echo "JOURNAL_VERDICT=PASS"
           echo "-- rclone RO-view push"
           rclone sync /shared spike:sync-copy --transfers 32
-          rclone size spike:sync-copy
+          rclone size spike:sync-copy || true
           echo "SYNC_POD=PASS"
         env:
 $(rclone_env_yaml)
@@ -701,11 +957,11 @@ $(rclone_env_yaml)
         emptyDir: {medium: Memory}
 EOF
                 T4=$(now_s)
-                if ${KC} wait --for=condition=complete job/sync --timeout=7200s >/dev/null 2>&1; then
+                if wait_job sync 7200; then
                     res "c_sync_pod_s=$(elapsed "$T4" "$(now_s)")"
                     ok "gVisor'd sync pod completed ($(elapsed "$T4" "$(now_s)")s)"
                     ${KC} logs job/sync >"$OUT/c-sync.log" 2>&1
-                    grep -E "RO_CHECK|MANIFEST|JOURNAL|SYNC_POD|rclone size|Total" "$OUT/c-sync.log" >>"$RESULTS" || true
+                    grep -E "RO_CHECK|MANIFEST=|JOURNAL_RECS|JOURNAL_VERDICT|SYNC_POD|HYD_SIZE" "$OUT/c-sync.log" >>"$RESULTS" || true
                     grep -q "SYNC_POD=PASS" "$OUT/c-sync.log" 2>/dev/null && C_STATUS=PASS
                 else
                     res "c_sync_pod_s=FAIL"
@@ -735,5 +991,7 @@ res "leg_c=${C_STATUS}"
 res "finished_at=$(date -u +%FT%TZ)"
 log "spike complete — A=${A_STATUS} B=${B_STATUS} C=${C_STATUS} (results: ${RESULTS})"
 
-if [ "$A_STATUS" != "PASS" ]; then exit 1; fi
+# Exit contract: ANY failed leg ⇒ non-zero (a green workflow check means
+# all three legs produced evidence — review C4).
+leg_exit "$A_STATUS" "$B_STATUS" "$C_STATUS" || exit 1
 exit 0

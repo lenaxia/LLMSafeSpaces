@@ -47,20 +47,23 @@ longhorn_install() {
     helm repo update >/dev/null
     # The chart tarball is hosted on github release assets — run
     # 38889584710 died on a transient 500 fetching it. Retry the whole
-    # upgrade (install is idempotent) with backoff.
+    # upgrade with backoff. Scope note: a FAILED `--wait` leaves the
+    # release pending-install and Helm 3 refuses to re-upgrade it — the
+    # retry genuinely covers only the pre-install FETCH failure class,
+    # which is the observed mode; anything past the fetch aborts loud.
     local i
     for i in 1 2 3; do
         if longhorn_install_once; then return 0; fi
-        echo "longhorn install attempt $i failed — retrying in 30s" >&2
-        sleep 30
+        if [ "$i" -lt 3 ]; then
+            echo "longhorn install attempt $i failed — retrying in 30s" >&2
+            sleep 30
+        fi
     done
     echo "longhorn install failed after 3 attempts" >&2
     return 1
 }
 
 longhorn_install_once() {
-    helm repo add longhorn https://charts.longhorn.io >/dev/null 2>&1 || true
-    helm repo update >/dev/null
     # defaultClass=false: kind's local-path stays default; the spike
     # provisions exclusively through the user-shared class below.
     # NOTE: createDefaultDiskLabeled is NOT set (run 38866952477: with it
@@ -76,6 +79,9 @@ longhorn_install_once() {
     # (/var/run/ganesha.pid never appears), and the volume goes faulted.
     # Allowing same-node co-location keeps the 2-replica write path (the
     # honest throughput shape) on one node.
+    # preUpgradeChecker.jobEnabled=false (review R2: the chart's real key
+    # — `preUpgradeChecker.enabled` is silently accepted by helm --set
+    # and does nothing).
     helm upgrade --install longhorn longhorn/longhorn \
         --version "$LONGHORN_CHART_VERSION" \
         -n "$NS_LONGHORN" --create-namespace \
@@ -83,7 +89,7 @@ longhorn_install_once() {
         --set defaultSettings.replicaSoftAntiAffinity=true \
         --set defaultSettings.storageMinimalAvailablePercentage=15 \
         --set persistence.defaultClass=false \
-        --set preUpgradeChecker.enabled=false \
+        --set preUpgradeChecker.jobEnabled=false \
         --wait --timeout 15m
     # Wait for the instance-manager pods (the CSI data plane) — helm's
     # --wait only covers deployments, and Longhorn creates instance-
@@ -99,7 +105,7 @@ longhorn_install_once() {
         [ "$count" -ge 1 ] && break
         sleep 10
     done
-    [ "$count" -ge 1 ] || { echo "longhorn.sh: instance-manager pods never appeared (600s)" >&2; exit 1; }
+    [ "$count" -ge 1 ] || { echo "longhorn.sh: instance-manager pods never appeared (600s)" >&2; return 1; }
     kubectl --context "${CTX}" -n "$NS_LONGHORN" wait \
         --for=condition=ready pod -l longhorn.io/component=instance-manager \
         --timeout=900s
@@ -126,6 +132,7 @@ parameters:
   dataLocality: "best-effort"
   disableRevisionCounter: "true"
   dataEngine: "v1"
+  unmapMarkSnapChainRemoved: "ignored"
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass

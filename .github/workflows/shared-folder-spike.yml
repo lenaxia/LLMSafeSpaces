@@ -2,12 +2,12 @@ name: /shared parked-PVC spike (#1709)
 
 on:
   workflow_dispatch:
-    # Manual trigger only (spike — not a gate). Knobs:
+    # Dispatch works once this file exists on the default branch. Knobs:
     #   auto_gb   — leg-B dataset size in GiB (auto-shrinks to node disk)
     #   transfers — rclone --transfers sweep, space-separated
     inputs:
       auto_gb:
-        description: "Leg-B dataset GiB (auto-shrinks to fit node free disk /3)"
+        description: "Leg-B dataset GiB (auto-shrinks to fit node free disk /4)"
         default: "24"
         type: string
       transfers:
@@ -15,12 +15,11 @@ on:
         default: "8 32"
         type: string
   pull_request:
-    # The dispatch path needs this file on the default branch; the spike
-    # instead fires from its PR (same trust domain as dispatch: same-repo
-    # branch, write-access author — the pool's fork restriction is about
-    # untrusted fork code, which this is not). Paths-filtered so doc-only
-    # pushes never wake the 300m spike. NOTE: for pull_request the
-    # branches filter matches the PR BASE (main), not the head.
+    # Until the file is on main, the spike fires from its PR (same trust
+    # domain as dispatch: same-repo branch, write-access author — the
+    # pool's restriction targets fork code, which this is not).
+    # Paths-filtered so doc-only pushes never wake the 300m spike. NOTE:
+    # for pull_request the branches filter matches the PR BASE (main).
     types: [opened, synchronize, reopened]
     branches: [main]
     paths:
@@ -55,14 +54,15 @@ jobs:
           chmod +x ./kubectl && sudo mv ./kubectl /usr/local/bin
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
-          # Pre-pull the spike images on the runner so kind node pulls
-          # cannot 404 on a mistagged artifact (fails LOUD here, not 20
-          # minutes into a leg). NOTE: minio/minio is delisted from
-          # Docker Hub (hub API object-not-found; both prior runs failed
-          # at this pull) — the S3 tier is SeaweedFS 4.48 (prod's pin).
-          docker pull debian:bookworm-slim
-          docker pull rclone/rclone:1.67.0
-          docker pull chrislusf/seaweedfs:4.48
+          # Pre-pull on the RUNNER validates the digests resolve LOUD
+          # (fails here, not 20 minutes into a leg); the node itself is
+          # warmed by the dedicated kind-load step below. NOTE:
+          # minio/minio is delisted from Docker Hub (hub API
+          # object-not-found; runs 38864577660/38865021006) — the S3
+          # tier is SeaweedFS 4.48 (prod's pin).
+          docker pull debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+          docker pull rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9
+          docker pull chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
 
       - name: Record runner environment
         run: |
@@ -79,7 +79,27 @@ jobs:
           NODE=$(kubectl --context "kind-$CLUSTER_NAME" get nodes -o jsonpath='{.items[0].metadata.name}')
           bash local/lib/gvisor.sh install "$NODE"
           bash local/lib/gvisor.sh runtimeclass
-          kubectl get runtimeclass gvisor
+          # The runc comparison leg (B2) references runtimeClassName:
+          # runc explicitly — kind registers no runc RuntimeClass by
+          # default and the spike's preflight fail-closes without it
+          # (review N-A).
+          cat <<'EOF' | kubectl --context "kind-$CLUSTER_NAME" apply -f -
+          apiVersion: node.k8s.io/v1
+          kind: RuntimeClass
+          metadata:
+            name: runc
+          handler: runc
+          EOF
+          kubectl get runtimeclass gvisor runc
+
+      - name: Pre-warm kind node images
+        # Runner-side docker pulls validate the tags exist but do NOT
+        # warm the node (no shared image store) — kind load does (review
+        # R3; also de-risks Hub flakes mid-leg).
+        run: |
+          kind load docker-image "debian@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587" --name $CLUSTER_NAME
+          kind load docker-image "rclone/rclone@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9" --name $CLUSTER_NAME
+          kind load docker-image "chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d" --name $CLUSTER_NAME
 
       - name: Provision Longhorn (RWX spike posture)
         # classes deferred past snapshot-controller: the VolumeSnapshotClass
