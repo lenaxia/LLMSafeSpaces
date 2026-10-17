@@ -447,3 +447,164 @@ export interface UpdateUserPromptRequest {
   name?: string;
   content?: string;
 }
+
+// ─── Task Board (design 0067, #1699) ─────────────────────────────────────────
+// Row encoding is the engine's canonical JSON (snake_case short_id —
+// identical to the internal automation seam's rendering).
+
+export interface BoardAcceptanceCriterion {
+  text: string;
+  met: boolean;
+}
+
+export interface BoardProject {
+  id: string;
+  short_id: string;
+  user_id: string;
+  name: string;
+  target_workspace_id?: string;
+  worker_slots: number;
+  slot_cooldown_until?: string | null;
+  tags: string[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BoardEpic {
+  id: string;
+  project_id: string;
+  short_id: string;
+  title: string;
+  outcome: string;
+  status: string;
+  priority: string;
+  project_name?: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  /** Derived at read time (ruling R2 — never stored); progress_derived false = no-progress, never 0/0. */
+  progress_done: number;
+  progress_total: number;
+  progress_derived: boolean;
+}
+
+export interface BoardTask {
+  id: string;
+  project_id: string;
+  epic_id: string;
+  short_id: string;
+  title: string;
+  description: string;
+  stage: string;
+  pending_origin?: string | null;
+  priority: string;
+  project_name?: string;
+  epic_name?: string;
+  tags: string[];
+  acceptance_criteria: BoardAcceptanceCriterion[];
+  is_blocked: boolean;
+  blocked_by?: string[];
+  assignee_session?: string;
+  claim_token?: string;
+  lease_expires_at?: string | null;
+  last_progress_at?: string | null;
+  attempts: number;
+  cooldown_until?: string | null;
+  stage_entered_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BoardClaim {
+  task_id: string;
+  short_id: string;
+  project_id: string;
+  epic_id: string;
+  workspace_id?: string;
+  claim_token?: string;
+  assignee?: string;
+  lease_expires_at?: string;
+  /** true = attempts cap reached; the task waits in pending_input instead. */
+  escalated: boolean;
+  task?: BoardTask;
+}
+
+export interface BoardDependencyMutation {
+  task: BoardTask;
+}
+
+export interface BoardProjectCreateRequest {
+  name: string;
+  targetWorkspaceId: string;
+  workerSlots?: number;
+  tags?: string[];
+  requestId?: string;
+}
+
+export interface BoardProjectUpdateRequest {
+  name?: string;
+  targetWorkspaceId?: string;
+  workerSlots?: number;
+  /** REPLACES the set when provided — send the full set. */
+  tags?: string[];
+  requestId?: string;
+}
+
+export interface BoardEpicCreateRequest {
+  title: string;
+  outcome?: string;
+  priority?: string;
+  tags?: string[];
+  requestId?: string;
+}
+
+export interface BoardEpicUpdateRequest {
+  title?: string;
+  outcome?: string;
+  priority?: string;
+  /** REPLACES the set when provided — send the full set. */
+  tags?: string[];
+  requestId?: string;
+}
+
+export interface BoardTaskCreateRequest {
+  title: string;
+  description?: string;
+  priority?: string;
+  /** May carry the pr:N anchor tag (owner ruling OR4: pattern ^pr:[1-9][0-9]*$). */
+  tags?: string[];
+  acceptanceCriteria?: BoardAcceptanceCriterion[];
+  requestId?: string;
+}
+
+export interface BoardTaskUpdateRequest {
+  title?: string;
+  description?: string;
+  priority?: string;
+  tags?: string[];
+  acceptanceCriteria?: BoardAcceptanceCriterion[];
+  /** Checks off the criterion at this 0-based index (Done preparation). */
+  setCriteriaMet?: number;
+  requestId?: string;
+}
+
+export interface BoardMoveStageRequest {
+  toStage: string;
+  evidenceUrl?: string;
+  requestId?: string;
+}
+
+export interface BoardCancelRequest {
+  reason?: string;
+  requestId?: string;
+}
+
+export interface BoardDependencyRequest {
+  dependsOn: string;
+  requestId?: string;
+}
+
+export interface BoardRequestIdOnly {
+  requestId?: string;
+}

@@ -79,6 +79,156 @@ class _WorkflowsAPI:
         self._c._request("POST", f"/me/runs/{run_id}/cancel")
 
 
+
+class _BoardAPI:
+    """Task Board (design 0067, #1699): the owner's manager surface.
+    Row encoding is the engine's canonical JSON (snake_case short_id)."""
+
+    def __init__(self, client: "LLMSafeSpaces"):
+        self._c = client
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        return self._c._request("GET", "/me/projects").get("projects", [])
+
+    def create_project(
+        self,
+        *,
+        name: str,
+        target_workspace_id: str,
+        worker_slots: int = 0,
+        tags: list[str] | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"name": name, "targetWorkspaceId": target_workspace_id}
+        if worker_slots:
+            body["workerSlots"] = worker_slots
+        if tags is not None:
+            body["tags"] = tags
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", "/me/projects", json=body)
+
+    def get_project(self, project_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/me/projects/{project_id}")
+
+    def update_project(self, project_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._c._request("PATCH", f"/me/projects/{project_id}", json=kwargs)
+
+    def archive_project(self, project_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/projects/{project_id}/archive", json={})
+
+    def unarchive_project(self, project_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/projects/{project_id}/unarchive", json={})
+
+    def list_project_tasks(self, project_id: str, stage: str = "") -> list[dict[str, Any]]:
+        path = f"/me/projects/{project_id}/tasks"
+        if stage:
+            path += f"?stage={stage}"
+        return self._c._request("GET", path).get("tasks", [])
+
+    def create_epic(
+        self,
+        project_id: str,
+        *,
+        title: str,
+        outcome: str = "",
+        priority: str = "",
+        tags: list[str] | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"title": title}
+        if outcome:
+            body["outcome"] = outcome
+        if priority:
+            body["priority"] = priority
+        if tags is not None:
+            body["tags"] = tags
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/projects/{project_id}/epics", json=body)
+
+    def get_epic(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/me/epics/{epic_id}")
+
+    def update_epic(self, epic_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._c._request("PATCH", f"/me/epics/{epic_id}", json=kwargs)
+
+    def epic_activate(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json={})
+
+    def epic_pause(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/epics/{epic_id}/pause", json={})
+
+    def epic_archive(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/epics/{epic_id}/archive", json={})
+
+    def epic_unarchive(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/epics/{epic_id}/unarchive", json={})
+
+    def cancel_epic(self, epic_id: str, *, reason: str = "", request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"reason": reason} if reason else {}
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/epics/{epic_id}/cancel", json=body)
+
+    def create_task(
+        self,
+        epic_id: str,
+        *,
+        title: str,
+        description: str = "",
+        priority: str = "",
+        tags: list[str] | None = None,
+        acceptance_criteria: list[dict[str, Any]] | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"title": title}
+        if description:
+            body["description"] = description
+        if priority:
+            body["priority"] = priority
+        if tags is not None:
+            body["tags"] = tags
+        if acceptance_criteria is not None:
+            body["acceptanceCriteria"] = acceptance_criteria
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/epics/{epic_id}/tasks", json=body)
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/me/tasks/{task_id}")
+
+    def update_task(self, task_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._c._request("PATCH", f"/me/tasks/{task_id}", json=kwargs)
+
+    def move_stage(self, task_id: str, *, to_stage: str, evidence_url: str = "", request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"toStage": to_stage}
+        if evidence_url:
+            body["evidenceUrl"] = evidence_url
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/tasks/{task_id}/move-stage", json=body)
+
+    def start_task(self, task_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/tasks/{task_id}/start", json=body)
+
+    def cancel_task(self, task_id: str, *, reason: str = "", request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"reason": reason} if reason else {}
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/tasks/{task_id}/cancel", json=body)
+
+    def add_dependency(self, task_id: str, *, depends_on: str, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"dependsOn": depends_on}
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/tasks/{task_id}/dependencies", json=body)
+
+    def remove_dependency(self, task_id: str, depends_on: str) -> dict[str, Any]:
+        return self._c._request("DELETE", f"/me/tasks/{task_id}/dependencies/{depends_on}")
+
+
 class _TriggersAPI:
     def __init__(self, client: "LLMSafeSpaces"):
         self._c = client
@@ -177,6 +327,7 @@ class LLMSafeSpaces:
         self.org_mcp_servers = _OrgMcpServersAPI(self)
         self.workflows = _WorkflowsAPI(self)
         self.triggers = _TriggersAPI(self)
+        self.board = _BoardAPI(self)
 
     def close(self) -> None:
         self._client.close()

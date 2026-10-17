@@ -10,7 +10,9 @@ package llmsafespaces
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
 )
 
 // Board lifecycle / stage vocabulary (rulings R2/R1).
@@ -31,10 +33,6 @@ const (
 	BoardStagePendingInput = "pending_input"
 	BoardStageCancelled    = "cancelled"
 )
-
-// ErrBoardNotImplemented is the red-first lane stub (filled by the
-// projection impl commit).
-var ErrBoardNotImplemented = errors.New("board: not implemented")
 
 // BoardProject is a board project row (swimlane; user-level per R7,
 // single target workspace per R8).
@@ -172,119 +170,186 @@ type BoardDependencyMutation struct {
 // BoardService manages the owner's boards.
 type BoardService struct{ c *Client }
 
-// ListProjects lists the caller's boards.
 func (s *BoardService) ListProjects(ctx context.Context) ([]BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var resp struct {
+		Projects []BoardProject `json:"projects"`
+	}
+	if err := s.c.do(ctx, http.MethodGet, "/me/projects", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Projects, nil
 }
 
-// GetProject resolves a project by UUID or short id (case-insensitive).
 func (s *BoardService) GetProject(ctx context.Context, id string) (*BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var p BoardProject
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/projects/%s", id), nil, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
-// CreateProject creates a board (name + target workspace, R7/R8).
 func (s *BoardService) CreateProject(ctx context.Context, req BoardProjectInput) (*BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var p BoardProject
+	if err := s.c.do(ctx, http.MethodPost, "/me/projects", req, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
-// UpdateProject patches a project (tags replace — send the full set).
 func (s *BoardService) UpdateProject(ctx context.Context, id string, req BoardProjectInput) (*BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var p BoardProject
+	if err := s.c.do(ctx, http.MethodPatch, fmt.Sprintf("/me/projects/%s", id), req, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
-// ArchiveProject is reversible storage (stops all claims into the project).
 func (s *BoardService) ArchiveProject(ctx context.Context, id string) (*BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var p BoardProject
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/archive", id), struct{}{}, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
-// UnarchiveProject restores active.
 func (s *BoardService) UnarchiveProject(ctx context.Context, id string) (*BoardProject, error) {
-	return nil, ErrBoardNotImplemented
+	var p BoardProject
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/unarchive", id), struct{}{}, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
-// ListProjectTasks lists a project's tasks, optionally filtered by one
-// of the six stages.
 func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage string) ([]BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	path := fmt.Sprintf("/me/projects/%s/tasks", projectID)
+	if stage != "" {
+		path += "?stage=" + url.QueryEscape(stage)
+	}
+	var resp struct {
+		Tasks []BoardTask `json:"tasks"`
+	}
+	if err := s.c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Tasks, nil
 }
 
-// CreateEpic creates a draft epic in a project.
 func (s *BoardService) CreateEpic(ctx context.Context, projectID string, req BoardEpicInput) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/epics", projectID), req, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
-// GetEpic resolves an epic with derived progress.
 func (s *BoardService) GetEpic(ctx context.Context, id string) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/epics/%s", id), nil, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
-// UpdateEpic patches an epic (outcome is the steering wheel).
 func (s *BoardService) UpdateEpic(ctx context.Context, id string, req BoardEpicInput) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodPatch, fmt.Sprintf("/me/epics/%s", id), req, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
-// EpicActivate starts feeding work to workers.
+func (s *BoardService) epicLifecycle(ctx context.Context, id, verb string) (*BoardEpic, error) {
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/%s", id, verb), struct{}{}, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 func (s *BoardService) EpicActivate(ctx context.Context, id string) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	return s.epicLifecycle(ctx, id, "activate")
 }
 
-// EpicPause stops new claims, never interrupts in-flight leases.
 func (s *BoardService) EpicPause(ctx context.Context, id string) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	return s.epicLifecycle(ctx, id, "pause")
 }
 
-// EpicArchive is reversible storage.
 func (s *BoardService) EpicArchive(ctx context.Context, id string) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	return s.epicLifecycle(ctx, id, "archive")
 }
 
-// EpicUnarchive always restores active (the resumable default).
 func (s *BoardService) EpicUnarchive(ctx context.Context, id string) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	return s.epicLifecycle(ctx, id, "unarchive")
 }
 
-// CancelEpic cascades to tasks; the epic lands paused (no cancelled
-// epic value exists, ruling R2).
 func (s *BoardService) CancelEpic(ctx context.Context, id string, req BoardCancelInput) (*BoardEpic, error) {
-	return nil, ErrBoardNotImplemented
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/cancel", id), req, &e); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
-// CreateTask creates a backlog task in an epic.
 func (s *BoardService) CreateTask(ctx context.Context, epicID string, req BoardTaskInput) (*BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	var t BoardTask
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/tasks", epicID), req, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// GetTask resolves a task (with blocked-by derivation).
 func (s *BoardService) GetTask(ctx context.Context, id string) (*BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	var t BoardTask
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/tasks/%s", id), nil, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// UpdateTask patches a task (criteria check-off rides here).
 func (s *BoardService) UpdateTask(ctx context.Context, id string, req BoardTaskInput) (*BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	var t BoardTask
+	if err := s.c.do(ctx, http.MethodPatch, fmt.Sprintf("/me/tasks/%s", id), req, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// MoveStage is the server-arbitrated stage write.
 func (s *BoardService) MoveStage(ctx context.Context, id string, req BoardMoveStageInput) (*BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	var t BoardTask
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/move-stage", id), req, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// StartTask is the manual one-off dispatch (task_start).
 func (s *BoardService) StartTask(ctx context.Context, id string, req BoardCancelInput) (*BoardClaim, error) {
-	return nil, ErrBoardNotImplemented
+	var cl BoardClaim
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/start", id), req, &cl); err != nil {
+		return nil, err
+	}
+	return &cl, nil
 }
 
-// CancelTask is the terminal write (revokes lease, stages dependents).
 func (s *BoardService) CancelTask(ctx context.Context, id string, req BoardCancelInput) (*BoardTask, error) {
-	return nil, ErrBoardNotImplemented
+	var t BoardTask
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/cancel", id), req, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// AddDependency adds a structural edge, rendering the re-derived task.
 func (s *BoardService) AddDependency(ctx context.Context, id string, req BoardDependencyInput) (*BoardDependencyMutation, error) {
-	return nil, ErrBoardNotImplemented
+	var m BoardDependencyMutation
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/dependencies", id), req, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
-// RemoveDependency removes an edge, rendering the re-derived task.
 func (s *BoardService) RemoveDependency(ctx context.Context, id, dependsOn string) (*BoardDependencyMutation, error) {
-	return nil, ErrBoardNotImplemented
+	var m BoardDependencyMutation
+	if err := s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/me/tasks/%s/dependencies/%s", id, dependsOn), nil, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }

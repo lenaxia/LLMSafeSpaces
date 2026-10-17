@@ -39,6 +39,8 @@ tags:
     description: Workflow definitions, runs, and node runs (Epic 64)
   - name: triggers
     description: Workflow/routine triggers — cron and webhook sources (Epic 64)
+  - name: board
+    description: Task Board — projects, epics, tasks, structural dependencies (design 0067; user-level only, ruling R7)
   - name: passkeys
     description: WebAuthn passkey ceremonies and account credential management (Epic 59)
   - name: usage
@@ -4276,6 +4278,666 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  # --- Task Board (design 0067 §4.3a, #1699): user-level only (ruling R7) ---
+  /me/projects:
+    get:
+      tags: [board]
+      summary: List the caller's board projects
+      description: |
+        User-level boards (ruling R7 — no org scope). Unpaginated, oldest
+        first.
+      operationId: listBoardProjects
+      responses:
+        "200":
+          description: Project list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [board]
+      summary: Create a board project
+      description: |
+        A project is the swimlane: one target workspace the owning user
+        can access (ruling R8 — single workspace per project; parallel
+        work = sibling projects), a worker-slot budget, and tags. The
+        response's `short_id` (`prj-` + 8 chars, design 0066) addresses
+        the project on every surface (case-insensitive; UUID also
+        accepted).
+      operationId: createBoardProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardProjectCreateRequest"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Target workspace not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/projects/{id}:
+    get:
+      tags: [board]
+      summary: Get a board project
+      description: |
+        Resolves by UUID or short id (`prj-…`, case-insensitive). A
+        foreign project renders the same plain 404 a miss renders —
+        ownership is the perimeter (ruling R7).
+      operationId: getBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+    patch:
+      tags: [board]
+      summary: Update a board project (partial — omitted fields keep existing values)
+      description: |
+        A rename cascades the materialized display inheritance
+        (project_name on epics/tasks) in one transaction. NOTE: `tags`
+        REPLACE the set when provided — send the full set. Retargeting
+        requires a workspace the owning user can access (403 otherwise).
+      operationId: updateBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardProjectUpdateRequest"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/projects/{id}/archive:
+    post:
+      tags: [board]
+      summary: Archive a board project (reversible storage)
+      description: |
+        Stops ALL claims into the project (the dispatch engine's project
+        predicate); in-flight leases run their course.
+      operationId: archiveBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Archived project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/projects/{id}/unarchive:
+    post:
+      tags: [board]
+      summary: Unarchive a board project (restores active)
+      operationId: unarchiveBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Active project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/projects/{id}/epics:
+    post:
+      tags: [board]
+      summary: Create an epic in a project
+      description: |
+        Epics default to `draft` (ruling R2): a draft epic feeds no work
+        until activated. Epic `priority` is display/filter-only in v1 —
+        the ready set orders by TASK priority. NOTE: a project listing
+        endpoint is deliberately absent in v1 (engine seam gap, tracked
+        on #1699).
+      operationId: createBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardEpicCreateRequest"
+      responses:
+        "201":
+          description: Epic created (draft)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/projects/{id}/tasks:
+    get:
+      tags: [board]
+      summary: List a project's tasks
+      description: |
+        Ordered by (priority, created_at). `stage` filters by one of the
+        six stages (ruling R2's binding set); any other value is a 400.
+      operationId: listBoardProjectTasks
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+        - name: stage
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks]
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/epics/{id}:
+    get:
+      tags: [board]
+      summary: Get an epic (with derived progress)
+      description: |
+        Progress is DERIVED here, never stored (ruling R2): done over
+        (total − cancelled); `progress_derived: false` renders
+        no-progress ("—"), never 0/0.
+      operationId: getBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      responses:
+        "200":
+          description: Epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+    patch:
+      tags: [board]
+      summary: Update an epic (partial — omitted fields keep existing values)
+      description: |
+        `outcome` is the human's steering wheel (ruling R2). A title
+        rename cascades tasks.epic_name in one transaction. NOTE: `tags`
+        REPLACE the set when provided — send the full set.
+      operationId: updateBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardEpicUpdateRequest"
+      responses:
+        "200":
+          description: Updated epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/epics/{id}/activate:
+    post:
+      tags: [board]
+      summary: Activate an epic (start feeding work to fresh workers)
+      description: |
+        Allowed from draft/paused/completed/archived. The immediate
+        completion re-check applies to draft/paused/archived-origin
+        activations; the completed→active re-open is exempt (stays
+        active until follow-up work lands).
+      operationId: activateBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      responses:
+        "200":
+          description: Active epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/pause:
+    post:
+      tags: [board]
+      summary: Pause an epic (stop new claims; in-flight leases run)
+      operationId: pauseBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      responses:
+        "200":
+          description: Paused epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/archive:
+    post:
+      tags: [board]
+      summary: Archive an epic (reversible storage)
+      operationId: archiveBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      responses:
+        "200":
+          description: Archived epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/unarchive:
+    post:
+      tags: [board]
+      summary: Unarchive an epic (always restores active — the resumable default)
+      operationId: unarchiveBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      responses:
+        "200":
+          description: Active epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/cancel:
+    post:
+      tags: [board]
+      summary: Cancel an epic (terminal cascade)
+      description: |
+        Non-terminal tasks become cancelled (already-done rows stay
+        done); the epic itself lands `paused` — the epic enum has no
+        cancelled value (ruling R2's set is binding; a cancelled epic is
+        paused-with-cancelled-tasks).
+      operationId: cancelBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardCancelRequest"
+      responses:
+        "200":
+          description: Cancelled (paused) epic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/tasks:
+    post:
+      tags: [board]
+      summary: Create a backlog task in an epic
+      description: |
+        `description` (markdown) seeds the fresh worker's charter; the
+        `acceptanceCriteria` list defines Done (ALL met + evidence,
+        ruling R2) and never blocks. Task `tags` may carry the explicit
+        PR-drift anchor `pr:N` (owner ruling OR4 — the ONLY anchor form;
+        pattern `^pr:[1-9][0-9]*$`, e.g. `pr:1234`; the reconciler never
+        free-text-guesses or scrapes URLs).
+      operationId: createBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardTaskCreateRequest"
+      responses:
+        "201":
+          description: Task created (backlog)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/tasks/{id}:
+    get:
+      tags: [board]
+      summary: Get a task (with blocked-by derivation)
+      operationId: getBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+    patch:
+      tags: [board]
+      summary: Update a task (partial — omitted fields keep existing values)
+      description: |
+        Criteria check-off rides here via `setCriteriaMet` (0-based
+        index; the reviewer's Done preparation). Priority changes are
+        ordinary writes — the dispatcher reads priority fresh each
+        claim. NOTE: `tags` and `acceptanceCriteria` REPLACE when
+        present; omitted fields keep existing values.
+      operationId: updateBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardTaskUpdateRequest"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+  /me/tasks/{id}/move-stage:
+    post:
+      tags: [board]
+      summary: Move a task's stage (server-arbitrated)
+      description: |
+        The optimistic-UI write: a drag that loses a race (task claimed,
+        cancelled, or lease-held) returns the guard error (409) and the
+        UI snaps back. Stages: backlog → in_progress → in_review → done
+        plus pending_input; the enumerated transitions are the machine's
+        (backlog leaves by claim, not by drag). `done` requires ALL
+        acceptance criteria met AND `evidenceUrl` (ruling R2). The
+        pending_input exit (any origin) is manager-surface-only and is
+        the ONE write that resets `attempts`.
+      operationId: moveBoardTaskStage
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardMoveStageRequest"
+      responses:
+        "200":
+          description: Resulting task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/start:
+    post:
+      tags: [board]
+      summary: Start a task manually (task_start — claim + fresh spawn)
+      description: |
+        The manual one-off dispatch: the engine claims the task (the
+        attempts increment + claim token) and spawns a fresh-charter
+        worker into the project's target workspace (ruling R9 — no
+        caller-supplied worker identity exists on any surface).
+        Explicitly allowed in draft epics (that is the point of the
+        manual path); paused/completed/archived epics and archived
+        projects refuse it. `escalated: true` in the response means the
+        attempts cap withheld the grant and the task waits in
+        pending_input instead.
+      operationId: startBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
+      responses:
+        "200":
+          description: The dispatch outcome (claim envelope)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardClaim"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/cancel:
+    post:
+      tags: [board]
+      summary: Cancel a task (terminal)
+      description: |
+        Revokes the lease + claim token and aborts the worker;
+        non-terminal dependents are staged to pending_input with origin
+        `dependency_abandoned` (ruling R4c). Cancelled is
+        immutable-terminal — idempotent on already-cancelled rows.
+      operationId: cancelBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardCancelRequest"
+      responses:
+        "200":
+          description: Cancelled task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/dependencies:
+    post:
+      tags: [board]
+      summary: Add a dependency edge (the only blocking mechanism)
+      description: |
+        Structural N-ary task→task edge within one project (cross-epic
+        allowed, cross-project rejected; rulings R3/R4). Cycle, self,
+        and cross-project violations render 409 with did-you-mean
+        suggestions (R4a). Renders the re-derived task — `is_blocked`
+        and `blocked_by` converge in the same read; a task is ready iff
+        backlog AND every dependency target is done.
+      operationId: addBoardDependency
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardDependencyRequest"
+      responses:
+        "200":
+          description: The re-derived task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDependencyMutation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/dependencies/{dependsOnId}:
+    delete:
+      tags: [board]
+      summary: Remove a dependency edge
+      description: |
+        One of the pending_input resolutions: removing an abandoned
+        prerequisite's edge unblocks the row (the human re-queue stays a
+        move-stage write).
+      operationId: removeBoardDependency
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+        - $ref: "#/components/parameters/BoardDependsOnId"
+      responses:
+        "200":
+          description: The re-derived task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDependencyMutation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   # --- Org-scope workflows & triggers (Epic 64) ---
   /orgs/{id}/workflows:
     get:
@@ -8283,6 +8945,42 @@ components:
       description: Trigger ID
       schema:
         type: string
+    BoardProjectId:
+      name: id
+      in: path
+      required: true
+      description: Board project ID — UUID or short id (`prj-` + 8 chars, case-insensitive; design 0066)
+      schema:
+        type: string
+        pattern: "^(prj-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
+        example: prj-a1b2c3d4
+    BoardEpicId:
+      name: id
+      in: path
+      required: true
+      description: Board epic ID — UUID or short id (`epc-` + 8 chars, case-insensitive)
+      schema:
+        type: string
+        pattern: "^(epc-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
+        example: epc-b1c2d3e4
+    BoardTaskId:
+      name: id
+      in: path
+      required: true
+      description: Board task ID — UUID or short id (`tsk-` + 8 chars, case-insensitive)
+      schema:
+        type: string
+        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
+        example: tsk-c1d2e3f4
+    BoardDependsOnId:
+      name: dependsOnId
+      in: path
+      required: true
+      description: The dependency target task — UUID or short id (`tsk-…`)
+      schema:
+        type: string
+        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
+        example: tsk-d1e2f3g4
   responses:
     BadRequest:
       description: Invalid request
@@ -8335,6 +9033,47 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    BoardNotFound:
+      description: |
+        Board item not found (resolution failure). Carries up to 3
+        in-scope did-you-mean `suggestions` per design 0066 (top-3,
+        edit distance ≤ 2, never across authorization boundaries — a
+        foreign row renders the same plain 404 a miss renders).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: string
+                    maxItems: 3
+                    example: ["tsk-cccc3333", "tsk-dddd4444"]
+    BoardConflict:
+      description: |
+        Board guard rejection (409 class). `code` names the guard:
+        stage_transition, done_guard, claim_token, manager_surface_only,
+        epic_state, project_state, dependency (self/cycle/cross_project
+        — carries suggestions per R4a).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - type: object
+                required: [code]
+                properties:
+                  code:
+                    type: string
+                    enum: [stage_transition, done_guard, claim_token, manager_surface_only, epic_state, project_state, dependency, self, cycle, cross_project]
+                  suggestions:
+                    type: array
+                    items:
+                      type: string
+                    maxItems: 3
   securitySchemes:
     bearerAuth:
       type: http
@@ -11001,3 +11740,410 @@ components:
         orgId:
           type: string
           nullable: true
+    # --- Task Board (design 0067, #1699). Row encoding is the engine's
+    # canonical JSON (snake_case short_id — identical to the internal
+    # automation seam's rendering; the parity matrix pins it). ---
+    BoardProject:
+      type: object
+      required: [id, short_id, user_id, name, worker_slots, tags, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          pattern: "^prj-[0-9a-z]{8}$"
+          description: The prj- short id (design 0066 mint; per-owner uniqueness, case-insensitive resolution)
+        user_id:
+          type: string
+          description: The owning user (ruling R7 — user-level only; no org boards)
+        name:
+          type: string
+        target_workspace_id:
+          type: string
+          format: uuid
+          description: The single target workspace (ruling R8) — any workspace the owning user can access
+        worker_slots:
+          type: integer
+          minimum: 1
+          description: Max concurrent in-flight claims (the engine's p CTE cap)
+        slot_cooldown_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Provider-throttle cooldown — pauses NEW claims into the project
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, archived]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BoardEpic:
+      type: object
+      required: [id, project_id, short_id, title, outcome, status, priority, tags, created_at, updated_at, progress_done, progress_total, progress_derived]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          pattern: "^epc-[0-9a-z]{8}$"
+        title:
+          type: string
+        outcome:
+          type: string
+          description: The human's steering wheel (ruling R2) — what this epic exists to achieve
+        status:
+          type: string
+          enum: [draft, active, paused, completed, archived]
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+          description: Display/filter-only in v1 — the ready set orders by TASK priority
+        project_name:
+          type: string
+          description: Materialized display inheritance (rename = one UPDATE per carrying table)
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        progress_done:
+          type: integer
+          description: DERIVED at read time (ruling R2 — never stored); done tasks
+        progress_total:
+          type: integer
+          description: DERIVED; total − cancelled (zero denominator renders no-progress)
+        progress_derived:
+          type: boolean
+          description: false = no-progress ("—") — a task-less or all-cancelled epic, never 0/0
+    BoardAcceptanceCriterion:
+      type: object
+      required: [text, met]
+      properties:
+        text:
+          type: string
+          description: Checkable, LLM-verifiable criterion — the criteria DEFINE Done (ruling R2), they never block (ruling R3 scope guard)
+        met:
+          type: boolean
+    BoardTask:
+      type: object
+      required: [id, project_id, epic_id, short_id, title, description, stage, priority, tags, acceptance_criteria, is_blocked, attempts, stage_entered_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        epic_id:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+          pattern: "^tsk-[0-9a-z]{8}$"
+        title:
+          type: string
+        description:
+          type: string
+          description: Markdown — seeds the fresh worker's charter (ruling R2)
+        stage:
+          type: string
+          enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+        pending_origin:
+          type: string
+          nullable: true
+          enum: [worker, escalated, dependency_abandoned, drift_review]
+          description: Set entering pending_input, cleared on exit (§4.1's four origins)
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+        project_name:
+          type: string
+        epic_name:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+            description: |
+              Free-form. One reserved form: a `pr:N` tag (see
+              BoardPrAnchor) is the PR-drift anchor the reconciler's RC2
+              pass consumes — explicit tag ONLY (owner ruling OR4).
+        acceptance_criteria:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardAcceptanceCriterion"
+        is_blocked:
+          type: boolean
+          description: Derived from board_dependencies (rulings R3/R4) — blocked iff ANY dependency target is not done; converges in-transaction on edge and stage writes
+        blocked_by:
+          type: array
+          items:
+            type: string
+          description: The non-done dependency short ids (the reverse-edge view's data)
+        assignee_session:
+          type: string
+          description: The fresh worker's identity (set by the guarded spawn-stamp; empty in the claim→spawn interim)
+        claim_token:
+          type: string
+          format: uuid
+          description: Set while claimed — the in-flight guard (empty for the owner's reads of unclaimed rows)
+        lease_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_progress_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Message-level progress watermark (#1685 semantics — elapsed time is not liveness)
+        attempts:
+          type: integer
+          minimum: 0
+          description: Claims granted (the claim statement is the ONLY increment; the human pending_input exit is the ONE reset)
+        cooldown_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Provider-throttle cooldown on this task
+        stage_entered_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BoardPrAnchor:
+      type: string
+      pattern: "^pr:[1-9][0-9]*$"
+      example: pr:1234
+      description: |
+        The PR-drift anchor tag (owner ruling OR4): the EXPLICIT `pr:N`
+        tag form ONLY — v1 is normative on the conservative subset the
+        engine implements. The reconciler's RC2 pass polls anchored PRs
+        for tasks in in_review (merged → Done guard applies; closed-
+        unmerged → the bounce re-claim). No free-text guessing, no URL
+        scraping; the structured-field anchor form is deferred
+        (additive, non-breaking) until a consuming lane demands it.
+    BoardClaim:
+      type: object
+      required: [task_id, short_id, project_id, epic_id, escalated]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        short_id:
+          type: string
+        project_id:
+          type: string
+          format: uuid
+        epic_id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+          description: The project's target workspace — the spawn's destination (ruling R9)
+        claim_token:
+          type: string
+          description: Empty on escalation (grant withheld)
+        assignee:
+          type: string
+        lease_expires_at:
+          type: string
+          format: date-time
+        escalated:
+          type: boolean
+          description: true = attempts cap reached; the task waits in pending_input (origin escalated) instead
+        task:
+          $ref: "#/components/schemas/BoardTask"
+    BoardDependencyMutation:
+      type: object
+      required: [task]
+      properties:
+        task:
+          $ref: "#/components/schemas/BoardTask"
+    BoardRequestId:
+      type: string
+      format: uuid
+      description: |
+        Idempotency key (outbox clientMessageID discipline): generate one
+        UUID per logical operation and REUSE it on retry — a replay
+        returns 200-with-original, never an error. Omitted = a unique id
+        minted server-side (replay protection degrades to that caller).
+    BoardProjectCreateRequest:
+      type: object
+      required: [name, targetWorkspaceId]
+      properties:
+        name:
+          type: string
+        targetWorkspaceId:
+          type: string
+          format: uuid
+          description: Must be a workspace the owning user can access (rulings R7/R8)
+        workerSlots:
+          type: integer
+          minimum: 1
+          default: 2
+        tags:
+          type: array
+          items:
+            type: string
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardProjectUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Omitted keeps existing; a rename cascades the materialized display inheritance
+        targetWorkspaceId:
+          type: string
+          format: uuid
+        workerSlots:
+          type: integer
+          minimum: 1
+        tags:
+          type: array
+          items:
+            type: string
+          description: REPLACES the set when provided — send the full set
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardEpicCreateRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        outcome:
+          type: string
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+          default: P2
+        tags:
+          type: array
+          items:
+            type: string
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardEpicUpdateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        outcome:
+          type: string
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+        tags:
+          type: array
+          items:
+            type: string
+          description: REPLACES the set when provided — send the full set
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardTaskCreateRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          description: Markdown — seeds the worker charter
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+          default: P2
+        tags:
+          type: array
+          items:
+            type: string
+            description: May carry the BoardPrAnchor form (owner ruling OR4)
+          example: ["pr:1234"]
+        acceptanceCriteria:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardAcceptanceCriterion"
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardTaskUpdateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [P0, P1, P2, P3]
+        tags:
+          type: array
+          items:
+            type: string
+          description: REPLACES the set when present; omitted keeps existing
+        acceptanceCriteria:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardAcceptanceCriterion"
+          description: REPLACES the list when present; omitted keeps existing
+        setCriteriaMet:
+          type: integer
+          minimum: 0
+          description: Checks off the criterion at this 0-based index (the reviewer's Done preparation)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardMoveStageRequest:
+      type: object
+      required: [toStage]
+      properties:
+        toStage:
+          type: string
+          enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+        evidenceUrl:
+          type: string
+          description: The artifact link for THIS transition — required on → done (ruling R2)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardCancelRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardRequestIdOnly:
+      type: object
+      properties:
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardDependencyRequest:
+      type: object
+      required: [dependsOn]
+      properties:
+        dependsOn:
+          type: string
+          description: The dependency target task — UUID or short id (`tsk-…`)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"

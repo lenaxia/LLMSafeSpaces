@@ -722,6 +722,12 @@ describe("userPrompts", () => {
   // ─── #1699: Task Board (design 0067 §4.3a) ─────────────────────────────────
 
   describe("board", () => {
+    let client: LLMSafeSpaces;
+
+    beforeEach(() => {
+      client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    });
+
     it("creates a project and lists boards", async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", short_id: "prj-aaaa1111", status: "active" }, 201));
       const proj = await client.board.createProject({ name: "B", targetWorkspaceId: "ws-1", tags: ["t"] });

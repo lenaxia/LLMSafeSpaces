@@ -9,6 +9,21 @@ import {
 } from "./errors.js";
 import type {
   ActivateWorkspaceResponse,
+  BoardProject,
+  BoardProjectCreateRequest,
+  BoardProjectUpdateRequest,
+  BoardEpic,
+  BoardEpicCreateRequest,
+  BoardEpicUpdateRequest,
+  BoardTask,
+  BoardTaskCreateRequest,
+  BoardTaskUpdateRequest,
+  BoardClaim,
+  BoardDependencyMutation,
+  BoardDependencyRequest,
+  BoardCancelRequest,
+  BoardMoveStageRequest,
+  BoardRequestIdOnly,
   ActiveSessionsResponse,
   APIKey,
   AuthResponse,
@@ -71,6 +86,7 @@ export class LLMSafeSpaces {
   public readonly agentRoles: AgentRolesAPI;
   public readonly workflows: WorkflowsAPI;
   public readonly triggers: TriggersAPI;
+  public readonly board: BoardAPI;
   public readonly mcpServers: McpServersAPI;
   public readonly userPrompts: UserPromptsAPI;
   public readonly adminMcpServers: AdminMcpServersAPI;
@@ -99,6 +115,7 @@ export class LLMSafeSpaces {
     this.agentRoles = new AgentRolesAPI(this);
     this.workflows = new WorkflowsAPI(this);
     this.triggers = new TriggersAPI(this);
+    this.board = new BoardAPI(this);
     this.mcpServers = new McpServersAPI(this);
     this.userPrompts = new UserPromptsAPI(this);
     this.adminMcpServers = new AdminMcpServersAPI(this);
@@ -845,6 +862,105 @@ class WorkflowsAPI {
 
   cancelRun(runId: string) {
     return this.client.request<void>("POST", `/me/runs/${runId}/cancel`);
+  }
+}
+
+
+/** Task Board (design 0067, #1699): user-level manager surface. */
+class BoardAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  listProjects() {
+    return this.client.request<{ projects: BoardProject[] }>("GET", "/me/projects");
+  }
+
+  createProject(req: BoardProjectCreateRequest) {
+    return this.client.request<BoardProject>("POST", "/me/projects", req);
+  }
+
+  getProject(id: string) {
+    return this.client.request<BoardProject>("GET", `/me/projects/${id}`);
+  }
+
+  updateProject(id: string, req: BoardProjectUpdateRequest) {
+    return this.client.request<BoardProject>("PATCH", `/me/projects/${id}`, req);
+  }
+
+  archiveProject(id: string) {
+    return this.client.request<BoardProject>("POST", `/me/projects/${id}/archive`, {});
+  }
+
+  unarchiveProject(id: string) {
+    return this.client.request<BoardProject>("POST", `/me/projects/${id}/unarchive`, {});
+  }
+
+  listProjectTasks(projectId: string, stage?: string) {
+    const q = stage ? `?stage=${encodeURIComponent(stage)}` : "";
+    return this.client.request<{ tasks: BoardTask[] }>("GET", `/me/projects/${projectId}/tasks${q}`);
+  }
+
+  createEpic(projectId: string, req: BoardEpicCreateRequest) {
+    return this.client.request<BoardEpic>("POST", `/me/projects/${projectId}/epics`, req);
+  }
+
+  getEpic(id: string) {
+    return this.client.request<BoardEpic>("GET", `/me/epics/${id}`);
+  }
+
+  updateEpic(id: string, req: BoardEpicUpdateRequest) {
+    return this.client.request<BoardEpic>("PATCH", `/me/epics/${id}`, req);
+  }
+
+  activateEpic(id: string) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, {});
+  }
+
+  pauseEpic(id: string) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/pause`, {});
+  }
+
+  archiveEpic(id: string) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/archive`, {});
+  }
+
+  unarchiveEpic(id: string) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/unarchive`, {});
+  }
+
+  cancelEpic(id: string, req: BoardCancelRequest) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/cancel`, req);
+  }
+
+  createTask(epicId: string, req: BoardTaskCreateRequest) {
+    return this.client.request<BoardTask>("POST", `/me/epics/${epicId}/tasks`, req);
+  }
+
+  getTask(id: string) {
+    return this.client.request<BoardTask>("GET", `/me/tasks/${id}`);
+  }
+
+  updateTask(id: string, req: BoardTaskUpdateRequest) {
+    return this.client.request<BoardTask>("PATCH", `/me/tasks/${id}`, req);
+  }
+
+  moveStage(id: string, req: BoardMoveStageRequest) {
+    return this.client.request<BoardTask>("POST", `/me/tasks/${id}/move-stage`, req);
+  }
+
+  startTask(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardClaim>("POST", `/me/tasks/${id}/start`, req);
+  }
+
+  cancelTask(id: string, req: BoardCancelRequest) {
+    return this.client.request<BoardTask>("POST", `/me/tasks/${id}/cancel`, req);
+  }
+
+  addDependency(id: string, req: BoardDependencyRequest) {
+    return this.client.request<BoardDependencyMutation>("POST", `/me/tasks/${id}/dependencies`, req);
+  }
+
+  removeDependency(id: string, dependsOn: string) {
+    return this.client.request<BoardDependencyMutation>("DELETE", `/me/tasks/${id}/dependencies/${dependsOn}`);
   }
 }
 

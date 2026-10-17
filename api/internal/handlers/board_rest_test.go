@@ -318,63 +318,67 @@ func TestBoardREST_ActorStamping(t *testing.T) {
 	cases := []struct {
 		name string
 		call string
+		code int
 		do   func(r *gin.Engine) *httptest.ResponseRecorder
 	}{
-		{"create_project", "create_project", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"create_project", "create_project", http.StatusCreated, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects", `{"name":"Board","targetWorkspaceId":"ws-1","requestId":"req-1"}`)
 		}},
-		{"update_project", "update_project", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"update_project", "update_project", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/projects/prj-aaaa1111", `{"name":"Renamed","requestId":"req-2"}`)
 		}},
-		{"archive_project", "archive_project", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"archive_project", "archive_project", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", `{}`)
 		}},
-		{"unarchive_project", "unarchive_project", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"unarchive_project", "unarchive_project", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/unarchive", `{}`)
 		}},
-		{"create_epic", "create_epic", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"create_epic", "create_epic", http.StatusCreated, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E1","requestId":"req-3"}`)
 		}},
-		{"update_epic", "update_epic", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"update_epic", "update_epic", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/epics/epc-bbbb2222", `{"outcome":"ship it","requestId":"req-4"}`)
 		}},
-		{"epic_activate", "epic_activate", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"epic_activate", "epic_activate", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/activate", `{}`)
 		}},
-		{"epic_pause", "epic_pause", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"epic_pause", "epic_pause", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/pause", `{}`)
 		}},
-		{"cancel_epic", "cancel_epic", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"cancel_epic", "cancel_epic", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/cancel", `{"reason":"done elsewhere"}`)
 		}},
-		{"create_task", "create_task", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"create_task", "create_task", http.StatusCreated, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T1","requestId":"req-5"}`)
 		}},
-		{"update_task", "update_task", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"update_task", "update_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"priority":"P1","requestId":"req-6"}`)
 		}},
-		{"move_stage", "move_stage", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"move_stage", "move_stage", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"in_review","requestId":"req-7"}`)
 		}},
-		{"task_start", "task_start", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"task_start", "task_start", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", `{"requestId":"req-8"}`)
 		}},
-		{"cancel_task", "cancel_task", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"cancel_task", "cancel_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/cancel", `{"reason":"obsolete"}`)
 		}},
-		{"add_dependency", "add_dependency", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"add_dependency", "add_dependency", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":"req-9"}`)
 		}},
-		{"remove_dependency", "remove_dependency", func(r *gin.Engine) *httptest.ResponseRecorder {
+		{"remove_dependency", "remove_dependency", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-dddd4444", ``)
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newFakeBoardManager()
+			// The dependency renders re-read the task row; the epic/task
+			// creates render their fresh rows — give the fake one of each.
+			svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
 			r := newBoardRESTRouter(t, svc)
 			w := tc.do(r)
-			require.Equal(t, http.StatusOK, w.Code, tc.name+": "+w.Body.String())
+			require.Equal(t, tc.code, w.Code, tc.name+": "+w.Body.String())
 			assert.Equal(t, 1, svc.calls[tc.call], tc.name)
 			assert.Equal(t, "user-1", svc.lastActor.UserID, tc.name)
 			assert.Equal(t, board.ActorUser, svc.lastActor.Kind, tc.name)
@@ -407,10 +411,14 @@ func TestBoardREST_ReadsAreOwnerScoped(t *testing.T) {
 	svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog}}
 	r := newBoardRESTRouter(t, svc)
 
-	for path, call := range map[string]string{
-		"/api/v1/me/projects/prj-aaaa1111": "get_project",
-		"/api/v1/me/epics/epc-bbbb2222":    "get_epic",
-		"/api/v1/me/tasks/tsk-cccc3333":    "get_task",
+	// NOTE: epic/task reads resolve ownership THROUGH the project row
+	// (one extra get_project each), so per-path call counts are asserted
+	// AFTER the loop — map iteration order must not matter (race-mode
+	// flake caught on the first run).
+	for _, path := range []string{
+		"/api/v1/me/projects/prj-aaaa1111",
+		"/api/v1/me/epics/epc-bbbb2222",
+		"/api/v1/me/tasks/tsk-cccc3333",
 	} {
 		w := doBoardREST(t, r, http.MethodGet, path, "")
 		assert.Equal(t, http.StatusNotFound, w.Code, path)
@@ -418,8 +426,10 @@ func TestBoardREST_ReadsAreOwnerScoped(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body), path)
 		assert.NotContains(t, w.Body.String(), "someone-else", path)
 		assert.Empty(t, body["suggestions"], path+" — foreign rows never carry did-you-mean suggestions")
-		assert.Equal(t, 1, svc.calls[call], path)
 	}
+	assert.Equal(t, 1, svc.calls["get_epic"], "epic read")
+	assert.Equal(t, 1, svc.calls["get_task"], "task read")
+	assert.Equal(t, 3, svc.calls["get_project"], "project read directly + once per epic/task ownership check")
 
 	// The task listing under a foreign project is equally closed.
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks", "")

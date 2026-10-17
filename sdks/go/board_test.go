@@ -136,7 +136,7 @@ func TestBoard_TaskAndOR4Anchor(t *testing.T) {
 				t.Errorf("move-stage body: %+v", body)
 			}
 		}
-		_, _ = w.Write([]byte(`{"id":"t1","short_id":"tsk-cccc3333","stage":"done","tags":["pr:1234"],"is_blocked":false,"attempts":1,"acceptance_criteria":[{"text":"c","met":true}]}`))
+		_, _ = w.Write([]byte(`{"id":"t1","short_id":"tsk-cccc3333","stage":"done","tags":["pr:1234"],"is_blocked":false,"attempts":1,"acceptance_criteria":[{"text":"c","met":false}]}`))
 	})
 	ctx := context.Background()
 
