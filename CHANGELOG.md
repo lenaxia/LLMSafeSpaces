@@ -8,34 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
-## [0.38.0] - 2026-10-17
+### Added — Task Board dispatch engine + reconciler (Lane 1)
 
-### Fixed — Light color scheme contrast (user-facing)
-
-- **The "message from session X" provenance badge is readable in the
-  light color scheme again** (#1716): the badge rendered inside the
-  user chat bubble — an inverted surface (dark navy bubble, near-white
-  text) — while borrowing muted-surface colors, so in light mode its
-  background composed to nearly the same gray as its text
-  (**1.05:1** — invisible; dark mode was merely sub-AA at 3.9:1). The
-  badge now borrows the bubble's own ink (≥10:1 in both schemes).
-  Same release, wider light-scheme WCAG AA fixes: secondary/muted text
-  (`muted-foreground`) on muted surfaces 4.34→4.88:1, error text
-  (`destructive`) on white 3.76→6.43:1 and on the red error-banner
-  tint 3.29→~5.5:1, destructive buttons 3.60→6.15:1, and the
-  assistant-bubble timestamp 2.58→4.88:1. The dark palette is
-  unchanged (pinned byte-identical by test). Remaining lower-priority
-  light-scheme pairs are enumerated in #1717.
-- **The failed-send queue pill is readable again** (#1716 r1): the
-  "queued message failed" pill in the chat composer diluted its text
-  (opacity-70/80) over a red tint — 3.06–3.58:1 in light and as low as
-  **1.46:1 in dark** (nearly invisible — worse than the sentinel).
-  Dark-scheme ink is now `red-400` (5.8:1) and the opacity dilution is
-  gone (light 4.59:1; the strikethrough alone already marks the unsent
-  text). A new browser-level e2e gate also reads the sentinel badge's
-  real computed colors in Chromium (light and dark) and enforces WCAG
-  AA ≥4.5:1, catching future drift between the design tokens and what
-  the browser actually renders.
+- **The board backend runs dark: Postgres-arbitrated dispatch, leases,
+  fairness, and a self-healing reconciler with zero external surface**
+  (#1698, design 0067 / #1696): migration `000036_task_board` (projects →
+  epics → tasks per rulings R1-R9: structural `board_dependencies` as the
+  only blocking mechanism with an acyclic-DFS write guard, terminal-stage
+  immutability trigger, claim/lease/attempts columns with the
+  claim-provenance flag, partial ready-set/reclaim indexes, the
+  `board_events` idempotency log, and the reconciler watermark). The
+  dispatch engine (`pkg/board`) is one atomic claim statement — the p CTE
+  locks the least-served candidate-eligible project in the caller's
+  workspace (a candidate-less project can never win the lock and starve
+  others), the candidate CTE orders (priority, vft, created_at) under DRR
+  quanta, the grant is the ONLY attempts increment, escalation withholds
+  the grant at claim N+1, and two-level round rollover is bounded. Every
+  write landing a row in progress sets/re-arms the lease in the same
+  statement; heartbeats extend only on progress evidence (#1685); the 429
+  path requeues without attempt penalty and cools both the task and the
+  project's slots. The reconciler (RC1-RC5) reclaims expired leases
+  exactly once under concurrent sweeps, converges PR-merge drift (the
+  Done guard never bypassed; closed-unmerged re-claims), recomputes
+  blocked state, completes epics event-fed, and never writes terminal
+  rows — with deterministic event ids so a crash between sweeps replays
+  to the same state. All self-healing invariants pinned red-first as
+  real-Postgres kill-tests (concurrent claims single-winner; reconciler
+  killed mid-operation leaves no orphans; expired leases reclaimed
+  exactly once). The internal automation seam
+  (`/internal/v1/automation/board/*`) carries the fresh worker's
+  heartbeat/throttle/move-stage/read actions behind the pod-identity
+  resolve; platform-deploy knobs per ruling R6 ride the helm → env →
+  config chain (`board.*` values). REST/SDKs, MCP projections, and the
+  frontend are #1699's lanes.
 
 ### Fixed — AI command fallback from the platform delivery bot
 
