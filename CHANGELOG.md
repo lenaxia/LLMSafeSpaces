@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board REST API + openapi + 4 SDKs (Lane 2)
+
+- **The board has its product contract tier** (#1699, design 0067 §4.3a;
+  engine #1698/#1719 unchanged underneath): the REST projection at
+  `/api/v1/me/projects|epics|tasks` — 25 operations, user-level only
+  (ruling R7), item addressing by `prj-/epc-/tsk-` short id or UUID
+  (case-insensitive, did-you-mean 404s where the engine scopes them).
+  Projects CRUD + archive/unarchive; epics create/update with DERIVED
+  progress (never stored, ruling R2), activate/pause/archive/unarchive
+  and cancel (epic cancel lands paused — the enum has no cancel value);
+  tasks create/update (criteria check-off rides the PATCH), the
+  server-arbitrated `move-stage` (done = ALL criteria met + evidence),
+  manual `start` (task_start: claim + fresh spawn, draft-epic-allowed),
+  terminal `cancel`, and structural `dependencies` add/remove (the only
+  blocking mechanism, rulings R3/R4; violations are 409 + did-you-mean).
+  The adapter renders the engine's rows verbatim and maps error classes
+  identically to the internal worker seam (the parity-matrix REST
+  column). `sdks/openapi.yaml` grows the board tag with schemas,
+  pattern-constrained short-id params, 404+suggestions /
+  409+guard-code shapes, and the OR4 ruling encoded: the PR-drift
+  anchor is the EXPLICIT `pr:N` tag form only
+  (`BoardPrAnchor`, pattern `^pr:[1-9][0-9]*$`) — no free-text guessing,
+  no URL scraping; the structured-field form is deferred additive. The
+  four SDKs (TypeScript, Python, Go, Java) gain full board surfaces,
+  wire-level tested; `s-board-crud` canaries join all three canary
+  suites and a 40-arm hurl contract suite pins happy + unhappy + authz
+  per endpoint. Deliberately absent pending engine seams (flagged on
+  #1699): epic listing, board search, board health.
+
 ### Added — Task Board dispatch engine + reconciler (Lane 1)
 
 - **The board backend runs dark: Postgres-arbitrated dispatch, leases,
@@ -1066,8 +1095,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mapped-doc validation pair, and signed webhook deliveries — payload
   as top-level run input on the happy leg, redacted validation_error
   fire (no instance echo) on the unhappy leg.
-
-## [0.33.2] - 2026-09-17
 
 ## [0.33.2] - 2026-09-18
 
