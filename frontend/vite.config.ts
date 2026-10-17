@@ -68,12 +68,28 @@ export default defineConfig({
             options: { cacheName: "env-config", expiration: { maxEntries: 1 } },
           },
           {
+            // #1694: the lazy mermaid chunk family (dynamic import() only,
+            // never core) — content-hashed like shiki grammars, so
+            // CacheFirst is safe, but on its OWN budget: sharing the
+            // shiki-chunks 350-entry budget would let heavy diagram usage
+            // evict grammar chunks (and vice versa).
+            urlPattern: ({ url }: { url: URL }) =>
+              url.pathname.startsWith("/assets/") &&
+              url.pathname.endsWith(".js") &&
+              /\/mermaid[^/]*\.js$/.test(url.pathname),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "mermaid-chunks",
+              expiration: { maxEntries: 20, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
+          },
+          {
             // Shiki grammar and theme chunks — content-addressed, CacheFirst safe.
             // Excludes core chunks that are covered by the precache manifest above.
             // The regex is defined in src/lib/shiki-chunks.ts (CORE_CHUNK_PATTERN)
             // and kept in sync here — see that file for the unit tests.
             // NOTE: vite-plugin-pwa serializes this function body into sw.js at build
-            // time; it does NOT bundle imports. The regex must be inline here.
+            // time; it does not bundle imports. The regex must be inline here.
             urlPattern: ({ url }: { url: URL }) =>
               url.pathname.startsWith("/assets/") &&
               url.pathname.endsWith(".js") &&

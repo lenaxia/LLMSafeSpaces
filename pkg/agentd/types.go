@@ -365,7 +365,20 @@ type StatuszResponse struct {
 	// hung-and-alive; the API escalates to the owner, never executes).
 	OldestBusySeconds int            `json:"oldest_busy_seconds"`
 	BusyAges          map[string]int `json:"busy_ages,omitempty"`
-	Context           *ContextUsage  `json:"context,omitempty"`
+	// LastProgressSeconds (#1685, owner ruling): seconds since the most
+	// recent MESSAGE-LEVEL progress event — an LLM-completed message
+	// (final message.updated upsert carrying info.time.completed) or a
+	// user-sent message — on the longest-quiet BUSY session. The D6
+	// escalation's evidence input: busy-age alone fired on healthy
+	// 30-60+ min turns; an alert now additionally requires this silence
+	// window (30 min default). Stream chunks, tool execution, and
+	// heartbeats do NOT reset it. 0 when no busy session or no message
+	// has been observed (agentd restart mid-turn, or a pre-#1685
+	// agentd that never emits the field — the mixed-fleet blackout,
+	// disclosed in the CHANGELOG) — the gate reads 0 as "evidence
+	// unavailable" and does not alert (fails toward silence).
+	LastProgressSeconds int           `json:"last_progress_seconds,omitempty"`
+	Context             *ContextUsage `json:"context,omitempty"`
 	// MemoryPressure is true when memory usage exceeds the warning
 	// threshold (85% of cgroup limit). Set by agentd's periodic memory
 	// check (US-44.5). The controller reads this to set the

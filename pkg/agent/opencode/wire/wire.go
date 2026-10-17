@@ -58,6 +58,67 @@ func IsPartUpdated(eventType string) bool {
 	return eventType == "message.part.updated" || isSuffixed(eventType, "message.part.updated")
 }
 
+// ParseMessageLevelProgress classifies a message.updated event as
+// MESSAGE-LEVEL progress per the #1685 owner ruling: progress means a
+// message was COMPLETED by the LLM or SENT by the user. The completion
+// anchor is info.time.completed — present on final message.updated
+// upserts and absent on mid-flight ones in every golden fixture (all
+// four testdata captures; pinned by
+// TestGoldenFixture_MessageLevelProgress_CompletionAnchor). Ruling R1
+// (rework r3): the previous len(info.Cost)==0 discriminator was inert
+// on the real wire — "cost" rides EVERY upsert as a JSON number
+// (including the in-flight pre-streaming creation upsert, where it is
+// 0), so it separated nothing and every assistant upsert stamped. Cost
+// shape is deliberately not consulted here; note this is a deliberate
+// divergence from the ABI translator's MESSAGE_END discriminator
+// (translate_abi.go:192, msg.GetCost() != nil), which the projection's
+// upsert stitching tolerates but the evidence clock must not: billing
+// and hung-evidence answer different questions. Stream chunks
+// (message.part.*), tool events, and heartbeats are NOT progress and
+// must not reset the no-message clock. Suffix-tolerant like every
+// event-type matcher here. Returns the owning session ID and whether
+// the event counts; ("", false) for everything else.
+func ParseMessageLevelProgress(eventType string, props json.RawMessage) (string, bool) {
+	if eventType != "message.updated" && !isSuffixed(eventType, "message.updated") {
+		return "", false
+	}
+	if len(props) == 0 {
+		return "", false
+	}
+	var p struct {
+		SessionID string          `json:"sessionID"`
+		Info      json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return "", false
+	}
+	var info struct {
+		Role string `json:"role"`
+		Time struct {
+			Completed json.RawMessage `json:"completed"`
+		} `json:"time"`
+	}
+	_ = json.Unmarshal(p.Info, &info)
+	if info.Role != "user" && !messageCompleted(info.Time.Completed) {
+		// Non-user message without the completion anchor: the
+		// in-flight creation/re-upsert shape (time.created only) — not
+		// completion, not progress.
+		return "", false
+	}
+	if p.SessionID == "" {
+		return "", false
+	}
+	return p.SessionID, true
+}
+
+// messageCompleted reports whether a non-user message.updated carries
+// the completion anchor: info.time.completed present and non-null (a
+// JSON null decodes to RawMessage("null") — len 4 — and is not a
+// completion).
+func messageCompleted(completed json.RawMessage) bool {
+	return len(completed) > 0 && !bytes.Equal(bytes.TrimSpace(completed), []byte("null"))
+}
+
 // IsStepEnded reports whether eventType is the legacy per-step usage event
 // (pre-1.18.10). The legacy name is unversioned.
 func IsStepEnded(eventType string) bool {

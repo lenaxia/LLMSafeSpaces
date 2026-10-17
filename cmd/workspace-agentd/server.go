@@ -217,6 +217,27 @@ func buildStatuszHandler(
 			}
 		}
 
+		// #1685 (owner ruling): the message-level evidence clock — the
+		// longest a BUSY session has gone without a new message from
+		// either side (LLM-completed or user-sent; chunks/tools do not
+		// stamp). Computed over the SAME authority-filtered busy set as
+		// the ages above (status and evidence from one view). 0 when no
+		// busy session or no message stamp exists — the API gate reads 0
+		// as "evidence unavailable" and does not alert (fails toward
+		// silence: the ruling's direction is fewer false alerts).
+		lastProgress := 0
+		messageAges := tracker.lastMessageAges()
+		for id := range busyAges {
+			if v, known := truth[id]; known && !v.Busy {
+				continue
+			}
+			if age, known := messageAges[id]; known {
+				if secs := int(age.Seconds()); secs > lastProgress {
+					lastProgress = secs
+				}
+			}
+		}
+
 		// Context usage: per-session ContextUsed from SSE prompt tokens.
 		// Top-level TotalTokens = model context limit (same for all sessions).
 		// UsedTokens is not meaningful as an aggregate; set to 0.
@@ -276,6 +297,7 @@ func buildStatuszHandler(
 			RelayFreeModels:     RelayFreeModelsState(),
 			OldestBusySeconds:   oldest,
 			BusyAges:            ages,
+			LastProgressSeconds: lastProgress,
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
 			Warnings:            modelResolutionWarnings(modelWarnPath),

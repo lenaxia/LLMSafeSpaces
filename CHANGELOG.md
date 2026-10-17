@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — AI command fallback from the platform delivery bot
+
+- **The AI Commands caller gate no longer silently skips commands from
+  the platform's delivery app bot** (#1710, P1): `.github/workflows/
+  ai-comment.yml`'s authorization `if:` admitted only
+  OWNER/MEMBER/COLLABORATOR associations, but app bots
+  (`agentic-actor-coder[bot]`) structurally carry `author_association:
+  NONE` — they are neither owners nor collaborators — so every AI
+  command they posted clean-skipped (conclusion `skipped`, zero
+  PR-visible trace). During the 2026-10-16 event-delivery outage
+  (#1704/#1707) this made the orchestrator's `/review` fallback on
+  #1708 a silent no-op twice (runs 38836736982, 38850671818) — exactly
+  the recovery path meant to cover lost `pull_request` events. The gate
+  now carries the ai-workflows v0.2.16 caller-contract trusted-bot
+  allowlist arm: an exact-login, opt-in list (sole entry:
+  `agentic-actor-coder[bot]`), never a blanket association-`NONE` pass —
+  each entry is a deliberate trust decision. The list is ONE shared
+  definition: workflow-invariant pins (`tests/ghaworkflows/
+  gha_callers_test.go`) fail on a dropped arm from any
+  `author_association` gate, drift between gate copies, or a
+  non-exact-bot-login entry (e.g. `*`). **Operator-relevant:** the
+  outage fallback (app-bot `/review` re-fire) is functional again.
+
+### Changed — hung-session alerting
+
+- **The 'busy 15 min may be hung' nudge now requires message-level
+  evidence** (#1685, owner ruling): a `session_hung` alert fires only when
+  a session is busy past the 15-min floor AND no new messages from either
+  side — an LLM-COMPLETED message (final `message.updated` upsert carrying
+  `info.time.completed`) or a user-sent message — have arrived for 30 min.
+  Busy-age alone no longer escalates: this fleet's healthy turns regularly
+  run 30-60+ min with long tool executions, and the elapsed-time nudge had
+  become noise (the owner's canonical no-alert case: last message 20 min
+  ago + a long tool running is a HEALTHY long turn). `statusz` gains
+  `last_progress_seconds` (additive, omitempty; 0 = evidence unavailable →
+  no alert); the SSE alert payload carries it; the banner states the
+  evidence workspace-scoped ("no new messages for X min while sessions
+  stayed busy", with a busy-minutes fallback for older APIs); alert
+  resolution fires when EITHER window clears. Persisted alerts, MCP, and
+  SDK surfaces are unchanged in shape (audited).
+- **OPERATOR DISCLOSURE — legacy-fleet hung-alert blackout during mixed
+  rollout (#1685, ruling R4):** a pre-#1685 agentd never emits
+  `last_progress_seconds`, so the API decodes 0 ("evidence unavailable")
+  and such workspaces NEVER raise `session_hung` — the D6 safety net is
+  silently off for them until their agentd rolls forward. This is the
+  sanctioned fail-toward-silence direction (a false negative is
+  human-recoverable; the false positive was the dogfooded noise the issue
+  filed), but the disablement is deliberate and disclosed, not an
+  accident of `omitempty`. The evidence clock is also in-memory: an
+  agentd restart mid-turn self-heals at the next message event (same
+  direction).
+
 ### Fixed — workspace UX
 
 - **Disk-space banner surfacing** (#1686, owner dogfooding): the

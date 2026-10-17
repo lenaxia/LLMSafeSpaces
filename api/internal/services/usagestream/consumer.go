@@ -26,6 +26,7 @@ package usagestream
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -165,6 +166,12 @@ type gate struct {
 	// consult past). OR'd into busyNow so a silent-but-derived-busy
 	// tool run holds the gate and the final idle is never missed.
 	derived map[string]bool
+	// bridged is the last busy truth EMITTED to the bridge per session
+	// (#1666): the reconcile baseline. Event legs record here; the
+	// reconnect/resync seed diffs the freshly-folded truth against it
+	// so busy state lost across a silent stream death (the stream is
+	// replay-less) is re-emitted, not semantically lost.
+	bridged map[string]bool
 	// seededFold marks the connection's first fold publication (the
 	// snapshot frame) as not-yet-applied — the reconnect reconcile
 	// rebuilds derived from it.
@@ -193,7 +200,7 @@ func (c *Consumer) Open(workspaceID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &gate{cancel: cancel, done: make(chan struct{}), ctx: ctx, idleSince: time.Now(), derived: map[string]bool{}}
+	g := &gate{cancel: cancel, done: make(chan struct{}), ctx: ctx, idleSince: time.Now(), derived: map[string]bool{}, bridged: map[string]bool{}}
 	c.gates[workspaceID] = g
 	hook := c.cfg.OnGateChange
 	c.mu.Unlock()
@@ -363,8 +370,8 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 			break
 		}
 	}
+	var corrections []bridgeCorrection
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if !g.seededFold {
 		// Reconnect reconcile (#1602): the connection's first
 		// publication is the snapshot frame — the authority's current
@@ -377,16 +384,18 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		g.seededFold = true
 		rebuilt := map[string]bool{}
 		for sid, s := range st.Sessions {
-			derived := s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_BUSY ||
-				s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_COMPACTING
-			if b := s.GetBusy(); b != nil {
-				derived = b.GetBusy()
-			}
-			if derived {
+			if sessionSeedBusy(s) {
 				rebuilt[sid] = true
 			}
 		}
 		g.derived = rebuilt
+		// #1666: the fold knows, the bridge may not — the stream is
+		// replay-less, so the reconnect seed is the ONLY chance to
+		// correct a busy frame lost across a silent stream death (the
+		// backend twin of #1646). Diff the freshly-seeded truth
+		// against the last bridged emission per session and collect
+		// corrections; the emissions run after the unlock, in order.
+		corrections = c.reconcileBridgeLocked(g, st.Sessions)
 	}
 	if !busy {
 		for _, v := range g.derived {
@@ -402,6 +411,53 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 	} else if g.idleSince.IsZero() {
 		g.idleSince = time.Now()
 	}
+	g.mu.Unlock()
+	for _, corr := range corrections {
+		c.cfg.Bridge.SessionStatus(workspaceID, corr.sessionID, corr.busy)
+	}
+}
+
+// bridgeCorrection is one reconcile emission: the session whose bridged
+// truth disagrees with the fold, and the fold's answer.
+type bridgeCorrection struct {
+	sessionID string
+	busy      bool
+}
+
+// reconcileBridgeLocked diffs the freshly-seeded fold against the last
+// bridged emission per session and returns the corrections in session
+// order (deterministic across map iteration). Called with g.mu held;
+// recordings happen under the same lock hold that decides, so each
+// disagreement yields exactly one emission (idempotent across
+// reconnects — an agreeing fold returns nothing, the quiet periods stay
+// quiet). Sessions ABSENT from the fold get no emission: the reconcile
+// asserts only truths the authority answered.
+func (c *Consumer) reconcileBridgeLocked(g *gate, sessions map[string]*abiv1.SessionSnapshot) []bridgeCorrection {
+	if c.cfg.Bridge == nil {
+		return nil
+	}
+	var corrections []bridgeCorrection
+	for sid, s := range sessions {
+		fold := sessionSeedBusy(s)
+		if g.bridged[sid] != fold {
+			g.bridged[sid] = fold
+			corrections = append(corrections, bridgeCorrection{sessionID: sid, busy: fold})
+		}
+	}
+	sort.Slice(corrections, func(i, j int) bool { return corrections[i].sessionID < corrections[j].sessionID })
+	return corrections
+}
+
+// sessionSeedBusy is the fold's busy truth for one snapshot session —
+// the same seed rule the derived baseline rebuild uses (#1602): the
+// authority's BusyComponents verbatim when present, else the busy-aware
+// raw status.
+func sessionSeedBusy(s *abiv1.SessionSnapshot) bool {
+	if b := s.GetBusy(); b != nil {
+		return b.GetBusy()
+	}
+	return s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_BUSY ||
+		s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_COMPACTING
 }
 
 func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq uint64) {
@@ -459,6 +515,10 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 				busy = derived
 			}
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
+			// #1666: the emission is the reconcile baseline — record it.
+			g.mu.Lock()
+			g.bridged[evt.GetSessionId()] = busy
+			g.mu.Unlock()
 		}
 	// Busy-flip candidates that fire NO status event (a tool part
 	// starting after the harness's idle, an errored turn, a message
@@ -475,6 +535,10 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		g.mu.Unlock()
 		if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok && derived != prev {
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), derived)
+			// #1666: the emission is the reconcile baseline — record it.
+			g.mu.Lock()
+			g.bridged[evt.GetSessionId()] = derived
+			g.mu.Unlock()
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if c.cfg.Bridge != nil && evt.GetInput() != nil {
