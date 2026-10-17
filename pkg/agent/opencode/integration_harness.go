@@ -15,6 +15,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -224,7 +225,10 @@ func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *o
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			select {
-			case <-done:
+			case err := <-done:
+				if err != nil && !errors.Is(err, os.ErrProcessDone) {
+					t.Logf("opencode harness: process exited with error during cleanup: %v", err)
+				}
 			case <-time.After(5 * time.Second):
 				_ = cmd.Process.Kill()
 			}
