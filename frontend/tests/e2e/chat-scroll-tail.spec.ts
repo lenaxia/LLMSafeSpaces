@@ -355,5 +355,22 @@ test.describe("#1720 chat auto-tail vs user scroll during streaming", () => {
     await expect(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
     await expect(page.getByText("Resume tailing")).toBeVisible();
     await expect(page.getByText("Jump to bottom")).toHaveCount(0);
+
+    // r2: the acceptance for THIS composition — click resume → jumps
+    // AND follows again (the r1 gap: the observer never attached for a
+    // stream that started while disarmed, so the click jumped but the
+    // stream was not followed).
+    const beforeResume = await scrollState(page);
+    await page.getByRole("button", { name: "Scroll to bottom" }).click();
+    await page.waitForTimeout(120);
+    let after = await scrollState(page);
+    expect(await atBottom(after)).toBe(true);
+    expect(after.scrollTop).toBeGreaterThan(beforeResume.scrollTop);
+
+    await emitDeltas(page, 30, 4, "post-resume");
+    await page.waitForTimeout(300);
+    after = await scrollState(page);
+    expect(await atBottom(after)).toBe(true);
+    await expect(page.getByRole("button", { name: "Scroll to bottom" })).toHaveCount(0);
   });
 });

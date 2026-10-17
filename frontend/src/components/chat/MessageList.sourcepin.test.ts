@@ -77,7 +77,7 @@ describe("#1720 source-shape pins (scroll controller)", () => {
   it("S5: no near-bottom arm of the tail flag while a stream is active (loop guard)", () => {
     // The handler may only arm when NOT streaming: pin the
     // `!streamingRef.current` condition on the arm branch.
-    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/);
+    const handlerMatch = source.match(/const checkIfAtBottom = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[\]\);/);
     expect(handlerMatch).not.toBeNull();
     const handler = handlerMatch![0];
     const armSites = handler.match(/stickToBottom\.current = true/g) ?? [];
