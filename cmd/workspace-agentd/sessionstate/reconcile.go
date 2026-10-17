@@ -285,7 +285,16 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 			return stats
 		}
 		seed, inStore := seeds[sid]
-		turnEnded := !inStore || seed.Status == abiv1.SessionStatus_SESSION_STATUS_IDLE || seed.Status == abiv1.SessionStatus_SESSION_STATUS_ERROR
+		// #1722's settle signal is EXPLICIT: the turn is observably
+		// finished only when the store evidence says so AND the
+		// harness's live registry holds no live turn (seed.LiveBusy).
+		// The LIST status the evidence reads is idle-biased (opencode's
+		// session records survive the turn; the wiring hard-defaults
+		// unknown shapes to idle), so a silent long tool run must not
+		// settle mid-turn — the registry is the live truth.
+		turnEnded := !inStore || seed.Status == abiv1.SessionStatus_SESSION_STATUS_IDLE ||
+			seed.Status == abiv1.SessionStatus_SESSION_STATUS_ERROR
+		turnEnded = turnEnded && !seed.LiveBusy
 
 		rows := a.ledger.rowsForSweep(sid)
 		need := make([]string, 0, len(rows))
@@ -368,6 +377,17 @@ func (a *Authority) recordReconcile(stats ReconcileStats) {
 // live turn the evidence never saw — it survives the pass. Returns 1 when
 // the view was cleared. The a.mu hold is tiny (no I/O) — projection
 // reads/writes only.
+//
+// #1722: the clear is an ORDERED PUBLICATION, not a silent mutation. The
+// abort case's clear burst (session.error + session.status idle +
+// session.idle, ~30ms on the wire) rides the tracker's replay-less /event
+// subscription; lost to a recycle gap it never reaches the projection,
+// and this pass is then the ONLY holder of the settle — mutating without
+// fanout left every downstream bridge (the API consumer publishing
+// session.status SSE to the user stream) unaware, so the busy badge
+// stuck forever. The transition now crosses applyLocked: seq-assigned,
+// folded (same state change as before), and fanned out so subscribers
+// converge exactly as they would on the harness's own idle event.
 func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStatus, seqAtEvidence uint64) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -375,15 +395,11 @@ func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStat
 	if !ok || !rec.busy || rec.lastBusySeq > seqAtEvidence {
 		return 0
 	}
-	rec.busy = false
-	rec.status = evStatus
-	rec.inFly = nil
-	// Empty map, NOT nil (r2's crash finding): a nil here panics the
-	// next declared-timeout upsert on the surviving record
-	// (assignment to entry in nil map) — the evidence-clear path is
-	// everyday (the lost-idle-event class), and the panic kills the
-	// sidecar (Ingest's recover wall covers the parser only).
-	rec.toolDeadlines = map[string]time.Time{}
+	a.applyLocked(&abiv1.Event{
+		SessionId: sid,
+		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:    evStatus,
+	})
 	return 1
 }
 
