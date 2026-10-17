@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board dispatch engine + reconciler (Lane 1)
+
+- **The board backend runs dark: Postgres-arbitrated dispatch, leases,
+  fairness, and a self-healing reconciler with zero external surface**
+  (#1698, design 0067 / #1696): migration `000036_task_board` (projects →
+  epics → tasks per rulings R1-R9: structural `board_dependencies` as the
+  only blocking mechanism with an acyclic-DFS write guard, terminal-stage
+  immutability trigger, claim/lease/attempts columns with the
+  claim-provenance flag, partial ready-set/reclaim indexes, the
+  `board_events` idempotency log, and the reconciler watermark). The
+  dispatch engine (`pkg/board`) is one atomic claim statement — the p CTE
+  locks the least-served candidate-eligible project in the caller's
+  workspace (a candidate-less project can never win the lock and starve
+  others), the candidate CTE orders (priority, vft, created_at) under DRR
+  quanta, the grant is the ONLY attempts increment, escalation withholds
+  the grant at claim N+1, and two-level round rollover is bounded. Every
+  write landing a row in progress sets/re-arms the lease in the same
+  statement; heartbeats extend only on progress evidence (#1685); the 429
+  path requeues without attempt penalty and cools both the task and the
+  project's slots. The reconciler (RC1-RC5) reclaims expired leases
+  exactly once under concurrent sweeps, converges PR-merge drift (the
+  Done guard never bypassed; closed-unmerged re-claims), recomputes
+  blocked state, completes epics event-fed, and never writes terminal
+  rows — with deterministic event ids so a crash between sweeps replays
+  to the same state. All self-healing invariants pinned red-first as
+  real-Postgres kill-tests (concurrent claims single-winner; reconciler
+  killed mid-operation leaves no orphans; expired leases reclaimed
+  exactly once). The internal automation seam
+  (`/internal/v1/automation/board/*`) carries the fresh worker's
+  heartbeat/throttle/move-stage/read actions behind the pod-identity
+  resolve; platform-deploy knobs per ruling R6 ride the helm → env →
+  config chain (`board.*` values). REST/SDKs, MCP projections, and the
+  frontend are #1699's lanes.
 ### Fixed — Chat streaming auto-tail vs user scroll (#1720)
 
 - **Scrolling away during a streaming response no longer snaps back to
@@ -148,6 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updated in lockstep (`CreateOrgRequest.sso`, new `InitialOrgSsoConfig`
   schema, 503 response). The platform-admin creation UI collects the IdP
   fields inline in the same step.
+
 ## [0.37.0] - 2026-10-11
 
 ### Added — auth completion

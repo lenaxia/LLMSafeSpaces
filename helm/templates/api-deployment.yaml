@@ -145,6 +145,23 @@ spec:
             - name: LLMSAFESPACES_RELAYONLYKEYDELIVERY_FALLBACK_MODE
               value: {{ .Values.relayOnlyKeyDelivery.fallbackMode | default "migration" | quote }}
             {{- end }}
+            # Task Board engine (design 0067, ruling R6): platform-deploy
+            # knobs — the helm → env → api/internal/config chain. dig
+            # (not `default`) so an EXPLICIT board.enabled=false is
+            # honored — the kill-switch must render "false" (r2-S3; the
+            # relayOnlyKeyDelivery.api.enabled false-honoring precedent).
+            - name: LLMSAFESPACES_BOARD_ENABLED
+              value: {{ dig "enabled" true .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_ATTEMPTSCAP
+              value: {{ dig "attemptsCap" 3 .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_LEASESECONDS
+              value: {{ dig "leaseSeconds" 900 .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
+              value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_DRRQUANTUM
+              value: {{ dig "drrQuantum" 1 .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_SWEEPSECONDS
+              value: {{ dig "sweepSeconds" 30 .Values.board | quote }}
             - name: LLMSAFESPACES_KUBERNETES_PODNAME
               valueFrom:
                 fieldRef:

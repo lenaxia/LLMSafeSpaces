@@ -1316,6 +1316,19 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 	w.DELETE("/:id", h.WorkflowDelete)
 	w.POST("/:id/runs", h.WorkflowRun)
 	w.GET("/:id/runs", h.WorkflowRuns)
+
+	// Board worker seam (design 0067 §4.3c): the fresh worker's
+	// board_heartbeat / board_report_throttle / board_move_stage /
+	// board_read speak these routes with the pod SA token. Manager
+	// projections are Lanes 2-3 (#1699); claim_next is engine-internal
+	// (R9: claim-then-spawn) and never routes.
+	if h.HasBoard() {
+		b := router.Group("/internal/v1/automation/board")
+		b.GET("/tasks/:id", h.BoardTaskGet)
+		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
+		b.POST("/tasks/throttle", h.BoardReportThrottle)
+		b.POST("/tasks/move-stage", h.BoardMoveStage)
+	}
 }
 
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig) {
