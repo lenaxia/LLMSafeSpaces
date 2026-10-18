@@ -47,7 +47,7 @@ async function setupBase(page: Page, opts: { rows?: SessRow[]; archiveStatus?: n
 
   // Stateful session list: GET reflects the current rows; the archive
   // PUT mutates them (server-persisted state).
-  await page.route(`${API}/workspaces/${WS}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WS}/sessions?*`, (r: Route) => {
     if (r.request().method() === "GET") {
       r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(
         rows.map((row) => ({ id: row.id, title: row.title, status: "idle", hasUnread: false, messageCount: 2, ...(row.archived ? { archived: true } : {}) })),

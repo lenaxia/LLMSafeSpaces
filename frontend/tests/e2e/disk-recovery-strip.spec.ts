@@ -44,7 +44,7 @@ async function setupChat(page: Page, disk: { used: number; total: number }) {
       diskTotalBytes: disk.total,
     }) }));
 
-  await page.route(`${API}/workspaces/${WS}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WS}/sessions?*`, (r: Route) => {
     if (r.request().method() === "GET") {
       r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
         { id: SESS, title: "Disk session", status: "idle", hasUnread: false, messageCount: 1 },

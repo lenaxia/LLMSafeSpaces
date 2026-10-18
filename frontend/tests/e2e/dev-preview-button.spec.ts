@@ -52,7 +52,7 @@ async function setupAPIMocks(page: Page, messages: unknown[], apiBaseUrl = "/api
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ resumed: WORKSPACE_ID }) }));
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/models`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], currentModel: "" }) }));
-  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions?*`, (r: Route) => {
     if (r.request().method() === "POST") {
       void r.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: SESSION_ID }) });
       return;
