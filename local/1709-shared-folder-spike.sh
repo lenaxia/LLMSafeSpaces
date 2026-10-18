@@ -353,6 +353,11 @@ EXPECTED_BYTES_90=$(( EXPECTED_BYTES * 9 / 10 ))
 sect "LEG_0_storage_sanity"
 S0_STATUS=FAIL
 
+# The namespace must exist BEFORE leg 0 — it was previously created in
+# leg A's apply, so leg 0's probes died NotFound (run 39083785719's
+# s0-rwo-describe.txt: namespaces "spike1709" not found).
+${K} create namespace "${NS}" --dry-run=client -o yaml | ${K} apply -f - >/dev/null
+
 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -423,10 +428,20 @@ if ${KC} wait --for=condition=ready pod/rwx-probe --timeout=1200s >/dev/null 2>&
     ok "leg0: Longhorn RWX share + runc works ($(elapsed "$RWX0_T0" "$(now_s)")s to ready)"
 else
     res "s0_rwx_runc=FAIL"
-    # decisive dumps: share-manager logs BY NAME + engine CRs
-    for SM_POD in $(${K} -n longhorn-system get pods -o name 2>/dev/null | grep share-manager | head -2); do
-        ${K} -n longhorn-system logs "${SM_POD#pod/}" --tail=60 >"$OUT/s0-$(basename "${SM_POD#pod/}").log" 2>&1 || true
+    # decisive dumps: the share-manager pod lives only ~40s of every ~2m
+    # backoff cycle (probe kill → recreate), so poll for up to 6 minutes
+    # and grab BOTH the live and --previous container logs the moment a
+    # pod object exists (every prior dump landed in a gap).
+    for i in $(seq 1 36); do
+        SM_NAME=$(${K} -n longhorn-system get pods -o name 2>/dev/null | grep share-manager | head -1 | sed 's|^pod/||')
+        [ -n "$SM_NAME" ] && break
+        sleep 10
     done
+    if [ -n "${SM_NAME:-}" ]; then
+        ${K} -n longhorn-system logs "${SM_NAME}" --tail=80 >"$OUT/s0-share-manager-live.log" 2>&1 || true
+        ${K} -n longhorn-system logs "${SM_NAME}" --previous --tail=80 >"$OUT/s0-share-manager-prev.log" 2>&1 || true
+        ${K} -n longhorn-system get pod "${SM_NAME}" -o yaml >"$OUT/s0-share-manager-pod.yaml" 2>&1 || true
+    fi
     ${K} -n longhorn-system get engines.longhorn.io -o wide >"$OUT/s0-engines.txt" 2>&1 || true
     ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/s0-replicas.txt" 2>&1 || true
     lh_dump_state
