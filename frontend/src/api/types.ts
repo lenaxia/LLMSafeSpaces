@@ -298,6 +298,13 @@ export interface ApiError {
    * (502/503) do not set it — read `error` for those.
    */
   message?: string;
+  /**
+   * Did-you-mean candidates (#1702, design 0067 via 0066's shape): the
+   * board's 404 resolution failures and dependency-write 409s carry
+   * top-3 suggestions naming near-miss items. Rendered as clickable
+   * chips by the Board UI.
+   */
+  suggestions?: string[];
 }
 
 // --- Workspace SSE event types ---
