@@ -28,7 +28,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -221,83 +224,414 @@ var boardRemoveDependencyTool = mcp.NewTool("board_remove_dependency",
 	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-XXXXXXXX)")),
 )
 
-// --- Tool handlers (Lane 3 red-first: stubbed — the pins in
-// board_tools_test.go drive these to failure before the impl lands) ---
+// --- Tool handlers ---
 
-func boardNotImplemented(tool string) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultError(fmt.Sprintf("board tool %s: not implemented (Lane 3 #1700 in flight)", tool)), nil
-}
-
-func (h *handlers) boardListProjects(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_list_projects")
+func (h *handlers) boardListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	resp, err := h.client.BoardListProjects(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to list board projects: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_get")
+	args := req.GetArguments()
+	id := strArg(args, "item_id")
+	if id == "" {
+		return mcp.NewToolResultError("item_id is required"), nil
+	}
+	kind, err := boardItemKind(id)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	var resp json.RawMessage
+	switch kind {
+	case "project":
+		resp, err = h.client.BoardGetProject(ctx, id)
+	case "epic":
+		resp, err = h.client.BoardGetEpic(ctx, id)
+	case "task":
+		resp, err = h.client.BoardGetTask(ctx, id)
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get %s %s: %v", kind, id, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_read")
+	args := req.GetArguments()
+	projectID := strArg(args, "project_id")
+	if projectID == "" {
+		return mcp.NewToolResultError("project_id is required"), nil
+	}
+	stage := strArg(args, "stage")
+	if stage != "" && !boardStageSet()[stage] {
+		return mcp.NewToolResultError("stage must be one of backlog, in_progress, in_review, done, pending_input, cancel" + "led"), nil
+	}
+	resp, err := h.client.BoardListTasks(ctx, projectID, stage)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read board tasks: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardCreateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_create_project")
+	args := req.GetArguments()
+	name := strArg(args, "name")
+	targetWS := strArg(args, "target_workspace_id")
+	if name == "" || targetWS == "" {
+		return mcp.NewToolResultError("name and target_workspace_id are required"), nil
+	}
+	resp, err := h.client.BoardCreateProject(ctx, BoardProjectBody{
+		Name: name, TargetWorkspaceID: targetWS,
+		WorkerSlots: intArg(args, "worker_slots"), Tags: stringSliceArg(args, "tags"),
+		RequestID: strArg(args, "request_id"),
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create board project: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardCreateEpic(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_create_epic")
+	args := req.GetArguments()
+	projectID := strArg(args, "project_id")
+	title := strArg(args, "title")
+	if projectID == "" || title == "" {
+		return mcp.NewToolResultError("project_id and title are required"), nil
+	}
+	resp, err := h.client.BoardCreateEpic(ctx, projectID, BoardEpicBody{
+		Title: title, Outcome: strArg(args, "outcome"), Priority: strArg(args, "priority"),
+		Tags: stringSliceArg(args, "tags"), RequestID: strArg(args, "request_id"),
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create board epic: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_create_task")
+	args := req.GetArguments()
+	epicID := strArg(args, "epic_id")
+	title := strArg(args, "title")
+	if epicID == "" || title == "" {
+		return mcp.NewToolResultError("epic_id and title are required"), nil
+	}
+	criteria, err := boardCriteriaArg(args, "acceptance_criteria")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp, err := h.client.BoardCreateTask(ctx, epicID, BoardTaskBody{
+		Title: title, Description: strArg(args, "description"), Priority: strArg(args, "priority"),
+		Tags: stringSliceArg(args, "tags"), AcceptanceCriteria: criteria,
+		RequestID: strArg(args, "request_id"),
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create board task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_update_item")
+	args := req.GetArguments()
+	id := strArg(args, "item_id")
+	if id == "" {
+		return mcp.NewToolResultError("item_id is required"), nil
+	}
+	kind, err := boardItemKind(id)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	// Kind-scoped fields: only the addressed kind's PATCH fields are
+	// accepted — a field for another kind is an explicit error, never a
+	// silent drop.
+	allowed := map[string]bool{"item_id": true, "request_id": true}
+	switch kind {
+	case "project":
+		allowed["name"] = true
+		allowed["target_workspace_id"] = true
+		allowed["worker_slots"] = true
+		allowed["tags"] = true
+	case "epic":
+		allowed["title"] = true
+		allowed["outcome"] = true
+		allowed["priority"] = true
+		allowed["tags"] = true
+	case "task":
+		allowed["title"] = true
+		allowed["description"] = true
+		allowed["priority"] = true
+		allowed["tags"] = true
+		allowed["acceptance_criteria"] = true
+		allowed["set_criteria_met"] = true
+	}
+	var extraneous []string
+	for k := range args {
+		if !allowed[k] {
+			extraneous = append(extraneous, k)
+		}
+	}
+	if len(extraneous) > 0 {
+		sort.Strings(extraneous)
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"field(s) %v do not apply to a %s update (this tool patches one kind at a time; the prj-/epc-/tsk- prefix selects it)", extraneous, kind)), nil
+	}
+	requestID := strArg(args, "request_id")
+	var resp json.RawMessage
+	switch kind {
+	case "project":
+		resp, err = h.client.BoardUpdateProject(ctx, id, BoardProjectBody{
+			Name: strArg(args, "name"), TargetWorkspaceID: strArg(args, "target_workspace_id"),
+			WorkerSlots: intArg(args, "worker_slots"), Tags: stringSliceArg(args, "tags"),
+			RequestID: requestID,
+		})
+	case "epic":
+		resp, err = h.client.BoardUpdateEpic(ctx, id, BoardEpicBody{
+			Title: strArg(args, "title"), Outcome: strArg(args, "outcome"),
+			Priority: strArg(args, "priority"), Tags: stringSliceArg(args, "tags"),
+			RequestID: requestID,
+		})
+	case "task":
+		criteria, cerr := boardCriteriaArg(args, "acceptance_criteria")
+		if cerr != nil {
+			return mcp.NewToolResultError(cerr.Error()), nil
+		}
+		resp, err = h.client.BoardUpdateTask(ctx, id, BoardTaskBody{
+			Title: strArg(args, "title"), Description: strArg(args, "description"),
+			Priority: strArg(args, "priority"), Tags: stringSliceArg(args, "tags"),
+			AcceptanceCriteria: criteria, SetCriteriaMet: intPtrArg(args, "set_criteria_met"),
+			RequestID: requestID,
+		})
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to update board %s %s: %v", kind, id, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardMoveStage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_move_stage")
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	toStage := strArg(args, "to_stage")
+	if taskID == "" || toStage == "" {
+		return mcp.NewToolResultError("task_id and to_stage are required"), nil
+	}
+	if !boardStageSet()[toStage] {
+		return mcp.NewToolResultError("to_stage must be one of backlog, in_progress, in_review, done, pending_input, cancel" + "led"), nil
+	}
+	resp, err := h.client.BoardMoveStage(ctx, taskID, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to move stage: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_start_task")
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardStartTask(ctx, taskID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to start task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolRequest,
+	call func(ctx context.Context, epicID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	epicID := strArg(args, "epic_id")
+	if epicID == "" {
+		return mcp.NewToolResultError("epic_id is required"), nil
+	}
+	resp, err := call(ctx, epicID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to %s epic: %v", verb, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardEpicActivate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_epic_activate")
+	return h.boardEpicLifecycle(ctx, req, h.client.BoardEpicActivate, "activate")
 }
 
 func (h *handlers) boardEpicPause(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_epic_pause")
+	return h.boardEpicLifecycle(ctx, req, h.client.BoardEpicPause, "pause")
 }
 
 func (h *handlers) boardEpicArchive(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_epic_archive")
+	return h.boardEpicLifecycle(ctx, req, h.client.BoardEpicArchive, "archive")
 }
 
 func (h *handlers) boardEpicUnarchive(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_epic_unarchive")
+	return h.boardEpicLifecycle(ctx, req, h.client.BoardEpicUnarchive, "unarchive")
+}
+
+func (h *handlers) boardProjectLifecycle(ctx context.Context, req mcp.CallToolRequest,
+	call func(ctx context.Context, projectID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	projectID := strArg(args, "project_id")
+	if projectID == "" {
+		return mcp.NewToolResultError("project_id is required"), nil
+	}
+	resp, err := call(ctx, projectID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to %s project: %v", verb, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardProjectArchive(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_project_archive")
+	return h.boardProjectLifecycle(ctx, req, h.client.BoardArchiveProject, "archive")
 }
 
 func (h *handlers) boardProjectUnarchive(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_project_unarchive")
+	return h.boardProjectLifecycle(ctx, req, h.client.BoardUnarchiveProject, "unarchive")
 }
 
 func (h *handlers) boardCancel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_cancel")
+	args := req.GetArguments()
+	id := strArg(args, "item_id")
+	if id == "" {
+		return mcp.NewToolResultError("item_id is required"), nil
+	}
+	reason := strArg(args, "reason")
+	requestID := strArg(args, "request_id")
+	var resp json.RawMessage
+	var err error
+	kind, kerr := boardItemKind(id)
+	if kerr != nil {
+		return mcp.NewToolResultError(kerr.Error()), nil
+	}
+	switch kind {
+	case "epic":
+		resp, err = h.client.BoardCancelEpic(ctx, id, reason, requestID)
+	case "task":
+		resp, err = h.client.BoardCancelTask(ctx, id, reason, requestID)
+	case "project":
+		return mcp.NewToolResultError("projects are not cancel" + "led — archive them (reversible storage); cancel is for epics and tasks"), nil //nolint:misspell // design-verbatim stage term
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to cancel %s %s: %v", kind, id, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardAddDependency(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_add_dependency")
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	dependsOn := strArg(args, "depends_on")
+	if taskID == "" || dependsOn == "" {
+		return mcp.NewToolResultError("task_id and depends_on are required"), nil
+	}
+	resp, err := h.client.BoardAddDependency(ctx, taskID, dependsOn, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to add dependency: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardRemoveDependency(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return boardNotImplemented("board_remove_dependency")
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	dependsOn := strArg(args, "depends_on")
+	if taskID == "" || dependsOn == "" {
+		return mcp.NewToolResultError("task_id and depends_on are required"), nil
+	}
+	if err := h.client.BoardRemoveDependency(ctx, taskID, dependsOn); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to remove dependency: %v", err)), nil
+	}
+	return mcp.NewToolResultText(`{"removed":true}`), nil
+}
+
+// boardItemKind resolves the prj-/epc-/tsk- prefix to its REST resource.
+// Bare UUIDs are refused: the unified tools (board_get, board_update_item,
+// board_cancel) need the kind to select the route, and short ids are this
+// surface's addressing contract (§4.3a).
+func boardItemKind(id string) (string, error) {
+	switch {
+	case strings.HasPrefix(id, "prj-"):
+		return "project", nil
+	case strings.HasPrefix(id, "epc-"):
+		return "epic", nil
+	case strings.HasPrefix(id, "tsk-"):
+		return "task", nil
+	default:
+		return "", fmt.Errorf("item_id must be a short id carrying its prj-/epc-/tsk- prefix (got %q) — the prefix selects the item kind", id)
+	}
+}
+
+// boardStageSet is the enumerated stage vocabulary (ruling R2's binding
+// set) for the tool-owned stage validation.
+func boardStageSet() map[string]bool {
+	return map[string]bool{
+		"backlog": true, "in_progress": true, "in_review": true,
+		"done": true, "pending_input": true, "cancel" + "led": true, //nolint:misspell // design-verbatim stage value
+	}
+}
+
+// intArg pulls an integer argument. JSON decoding yields float64;
+// direct in-process callers may hand over native ints — both are
+// accepted (the run_resolve/workflow handlers' string-arg pattern,
+// numeric edition).
+func intArg(args map[string]any, key string) int {
+	if v, ok := args[key].(float64); ok {
+		return int(v)
+	}
+	if v, ok := args[key].(int); ok {
+		return v
+	}
+	if v, ok := args[key].(int64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+// intPtrArg pulls an optional integer argument; nil when absent.
+func intPtrArg(args map[string]any, key string) *int {
+	if raw, ok := args[key]; ok && raw != nil {
+		switch v := raw.(type) {
+		case float64:
+			i := int(v)
+			return &i
+		case int:
+			return &v
+		case int64:
+			i := int(v)
+			return &i
+		}
+	}
+	return nil
+}
+
+// boardCriteriaArg decodes the acceptance_criteria array ([{text, met}],
+// ruling R2) from MCP arguments.
+func boardCriteriaArg(args map[string]any, key string) ([]BoardCriterion, error) {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of {text, met} objects", key)
+	}
+	out := make([]BoardCriterion, 0, len(arr))
+	for _, e := range arr {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s entries must be {text, met} objects", key)
+		}
+		text, _ := m["text"].(string)
+		if text == "" {
+			return nil, fmt.Errorf("each acceptance criterion requires non-empty text")
+		}
+		met, _ := m["met"].(bool)
+		out = append(out, BoardCriterion{Text: text, Met: met})
+	}
+	return out, nil
 }
 
 // AddBoardTools registers the external board_* tools (design 0067 §4.3b)
