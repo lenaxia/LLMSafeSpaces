@@ -265,11 +265,10 @@ func TestLonghornLib_Shape(t *testing.T) {
 func TestLonghornLib_PrereqsContent(t *testing.T) {
 	src := mustReadSpike(t, lhLibScript)
 	for _, marker := range []string{
-		`require_root() {`,
+		`payload exec identity`,
 		`aborting before provisioning`,
 		`pgrep -x iscsid`,
 		`can not connect to iSCSI daemon`,
-		`failed as measured user $(id -un)`,
 		`systemd-tmpfiles --create`,
 		`/etc/iscsi/initiatorname.iscsi`,
 	} {
@@ -282,22 +281,73 @@ func TestLonghornLib_PrereqsContent(t *testing.T) {
 	}
 }
 
-// Exec-fed instrumentation guards (N-R18-3): the disk budget must reject
-// non-numeric probe results as EXEC failures (not "disk too small"),
-// and the iscsid liveness row must distinguish exec failure from dead.
+// Exec-fed instrumentation guards (N-R18-3/N-R20-6): the disk budget
+// must reject non-numeric probe results as EXEC failures (not "disk
+// too small"), and the iscsid liveness row must tri-state
+// alive/dead/EXEC_FAILED by the probe's exit code.
 func TestSharedFolderSpike_ExecFedInstrumentation(t *testing.T) {
 	src := mustReadSpike(t, spikeScript)
 	for _, marker := range []string{
 		`node_free_gb=EXEC_FAILED`,
 		`not a disk-size verdict`,
 		`env_iscsid_alive=EXEC_FAILED`,
+		`a_cache_drop=drop_failed`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("exec-fed instrumentation unguarded (N-R18-3): missing %q", marker)
+			t.Fatalf("exec-fed instrumentation unguarded: missing %q", marker)
 		}
 	}
 	if strings.Contains(src, "docker exec -u 0") {
 		t.Fatal("spike script still uses -u 0 execs (r18: never delivers root on this pool)")
+	}
+}
+
+// Payload-parse pin (reviews N-R23-1/N-R24-1): the prereqs payload must
+// be heredoc-fed (`bash -s`), never single-quote-wrapped (`bash -c '…'`)
+// — an apostrophe in a payload comment closed the string mid-script and
+// silently rerouted everything after it to the CI RUNNER, fabricating the
+// entire "runner-identity / exec-drift" record across rounds 13–23 while
+// `bash -n` stayed green (quotes balance file-wide). The pin extracts
+// the heredoc payload and syntax-checks it STANDALONE, closing the class.
+func TestLonghornLib_PayloadParsesStandalone(t *testing.T) {
+	src := mustReadSpike(t, lhLibScript)
+	if strings.Contains(src, "bash -c '") {
+		t.Fatal("single-quote-wrapped payload (the N-R24-1 truncation class) — use a quoted heredoc feeding bash -s")
+	}
+	const begin = "<<'LH_PREREQS_EOF'\n"
+	const end = "LH_PREREQS_EOF\n"
+	i := strings.Index(src, begin)
+	if i < 0 {
+		t.Fatal("prereqs heredoc missing")
+	}
+	j := strings.Index(src[i+len(begin):], end)
+	if j < 0 {
+		t.Fatal("prereqs heredoc unterminated")
+	}
+	payload := src[i+len(begin) : i+len(begin)+j]
+	if n := strings.Count(payload, "\n"); n < 40 {
+		t.Fatalf("prereqs payload truncated (%d lines, want the full ~90) — the truncation class this pin exists for", n)
+	}
+	bash := requireBashSpike(t)
+	if out, err := exec.Command(bash, "-n").CombinedOutput(); err != nil {
+		_ = out
+	} else {
+		cmd := exec.Command(bash, "-n")
+		cmd.Stdin = strings.NewReader(payload)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("prereqs payload fails standalone bash -n (the N-R24-1 class): %s", out)
+		}
+	}
+	// the payload must carry its identity gate and iscsid machinery
+	for _, marker := range []string{
+		`payload exec identity`,
+		`aborting before provisioning`,
+		`pgrep -x iscsid`,
+		`can not connect to iSCSI daemon`,
+	} {
+		if !strings.Contains(payload, marker) {
+			t.Fatalf("prereqs payload missing marker %q", marker)
+		}
 	}
 }
 

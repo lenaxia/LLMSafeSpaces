@@ -29,79 +29,48 @@ LONGHORN_CHART_VERSION="${LONGHORN_CHART_VERSION:-1.12.1}"
 
 longhorn_node_prereqs() { # node
     local node="$1"
-    # Single-exec identity gate (reviews N-R20-2/N-R21-1): the pool's
-    # exec identities drift PER-EXEC — in runs 39153616101/39156123150
-    # a one-shot probe exec measured uid=0 and PASSED while the payload
-    # exec seconds later landed as uid=1001(runner) with zero caps (the
-    # runner-image identity; kindest/node has no `runner` user) and
-    # EACCES'd. A separate probe is a TOCTOU the drift walks straight
-    # through — so the identity check lives INSIDE the payload bash -c,
-    # aborting in-node before any provisioning, and the payload ALWAYS
-    # prints its measured identity for the run record.
-    docker exec "$node" bash -c '
+    # Payload delivery: heredoc-fed `bash -s`. The earlier single-quoted
+    # single-quote-wrapped bash -c form was killed by APOSTROPHES IN COMMENTS
+    # ("iscsid's" closed the string mid-payload — reviews N-R23-1/
+    # N-R24-1: everything after line 67 executed on the CI RUNNER, not
+    # the node, which fabricated the entire "runner-identity / exec
+    # drift" record; `bash -n` was structurally blind because quotes
+    # balance file-wide). A quoted heredoc cannot be closed by anything
+    # but its delimiter; the payload-parse pin in
+    # local/shared_folder_spike_script_test.go keeps this class dead.
+    docker exec -i "$node" bash -s <<'LH_PREREQS_EOF'
       set -e
-      # Identity is measured at EVERY privileged group, not once: run
-      # 39170878196 measured root at t=0 and runner@1001 six seconds
-      # later WITHIN one payload invocation — impossible for a single
-      # process, so the drift sits below bash (an exec wrapper or
-      # shim re-routing). Each gate prints the executing process
-      # parentage so the next run adjudicates WHERE each command landed.
-      ident() { echo "longhorn.sh: [ident] $(id -un) uid=$(id -u) $(ps -o pid=,ppid=,comm= -p $$)"; }
-      require_root() {
-        ident
-        if [ "$(id -u)" != "0" ]; then
-          echo "longhorn.sh: payload segment is NOT root (measured $(id -un) uid=$(id -u)) — aborting before provisioning"
-          exit 1
-        fi
-      }
-      require_root
-      set -e
-      require_root  # before: apt
+      # Identity gate: measured inside the payload, aborting in-node
+      # before any provisioning. The gate is belt-and-braces for a
+      # correctly-delivered payload; it cannot detect delivery faults
+      # (only the parse pin can).
+      echo "longhorn.sh: payload exec identity: user=$(id -un) uid=$(id -u) host=$(hostname)"
+      if [ "$(id -u)" != "0" ]; then
+        echo "longhorn.sh: payload exec is NOT root (measured $(id -un) uid=$(id -u)) - aborting before provisioning"
+        exit 1
+      fi
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
       apt-get install -y -qq open-iscsi nfs-common util-linux >/dev/null
       modprobe iscsi_tcp 2>/dev/null || true
-      # iscsid MUST actually run AND its IPC must be reachable — Longhorn
+      # iscsid must actually run AND its IPC must be reachable - Longhorn
       # v1 engines drive the iSCSI initiator by nsenter-ing into the
       # namespaces OF ISCSID ITSELF (/host/proc/<pid>/ns/*) and running
-      # iscsiadm there; iscsiadm talks to iscsid over iscsid's private
-      # AF_UNIX socket and needs /run/lock/iscsi on the filesystem. In
-      # a live kind node the open-iscsi deb's tmpfiles never ran
+      # iscsiadm there; iscsiadm talks to iscsid over its private
+      # AF_UNIX socket and needs /run/lock/iscsi on the filesystem. In a
+      # live kind node the open-iscsi packaging tmpfiles never ran
       # (/run/lock/iscsi missing) and the unit did not start it (run
-      # 39097290981; the "system scope bus" string in that artifact is
-      # systemctl's own dbus noise, not the iscsiadm IPC). Finish the
-      # packaging's job, start iscsid both ways, then SMOKE-TEST the
-      # exact command shape the engine uses — abort loud if iscsiadm
-      # still cannot reach the daemon.
-      require_root  # before: tmpfiles
+      # 39097290981; the "system scope bus" string in that artifact was
+      # systemctl dbus noise, not the iscsiadm IPC). Finish the
+      # packaging work, start iscsid both ways, then smoke-test the
+      # exact command shape the engine uses.
       systemd-tmpfiles --create 2>/dev/null || true
-      # Diagnose EACCES-on-/etc-as-root (runs 39103144189/39104752680/
-      # 39106627792): name the mechanism (ro mount / immutable / MAC)
-      # before attempting the write.
-      echo "longhorn.sh: /etc diagnostics — mount, attrs, caps:"
-      grep -E " /etc | / " /proc/mounts | head -3 || true
-      lsattr -d /etc 2>/dev/null || true
-      grep -E "^Cap(Eff|Prm)" /proc/self/status || true
-      id || true
-      mkdir -p /run/lock/iscsi
-      require_root  # before: etc-write
-      if ! mkdir -p /etc/iscsi 2>/tmp/mkdir-etc.err; then
-        echo "longhorn.sh: mkdir /etc/iscsi failed as measured user $(id -un) uid=$(id -u) CapEff=$(awk '/^CapEff/{print $2}' /proc/self/status): $(cat /tmp/mkdir-etc.err)"
-        echo "longhorn.sh: the node filesystem is not writable by this exec identity — Longhorn v1 engines cannot be provisioned here"
-        exit 1
-      fi
-      # open-iscsi can report installed-from-cache without its conffile
-      # tree present (run 39103144189 died writing initiatorname into a
-      # missing /etc/iscsi) — verify the binary, reinstall if absent.
-      require_root  # before: iscsid
+      mkdir -p /run/lock/iscsi /etc/iscsi
       if ! command -v iscsid >/dev/null 2>&1; then
-        echo "longhorn.sh: iscsid binary missing after install — reinstalling"
+        echo "longhorn.sh: iscsid binary missing after install - reinstalling"
         apt-get install --reinstall -y -qq open-iscsi >/dev/null 2>&1 || apt-get install -y -qq open-iscsi >/dev/null
         command -v iscsid >/dev/null 2>&1 || { echo "longhorn.sh: open-iscsi will not install"; exit 1; }
       fi
-      # initiatorname.iscsi is normally written by the deb postinst; in a
-      # live container node the postinst skips it and iscsid exits at
-      # once ("could not read initiatorname") — create it if missing.
       if [ ! -s /etc/iscsi/initiatorname.iscsi ]; then
         echo "InitiatorName=iqn.2026-10.org.kind.$(hostname)-spike" > /etc/iscsi/initiatorname.iscsi
         echo "longhorn.sh: wrote missing /etc/iscsi/initiatorname.iscsi"
@@ -111,12 +80,12 @@ longhorn_node_prereqs() { # node
       systemctl start iscsid 2>/dev/null || true
       systemctl start open-iscsi 2>/dev/null || true
       if ! pgrep -x iscsid >/dev/null 2>&1; then
-        echo "longhorn.sh: iscsid unit did not start it — launching directly"
+        echo "longhorn.sh: iscsid unit did not start it - launching directly"
         iscsid >/tmp/iscsid-direct.log 2>&1 || true
         sleep 1
       fi
       if ! pgrep -x iscsid >/dev/null 2>&1; then
-        echo "longhorn.sh: iscsid FAILED to start — diagnostic output follows"
+        echo "longhorn.sh: iscsid FAILED to start - diagnostic output follows"
         systemctl status iscsid --no-pager -l 2>&1 | tail -15 || true
         cat /tmp/iscsid-direct.log 2>/dev/null || true
         echo "--- foreground attempt (5s debug run)"
@@ -126,37 +95,33 @@ longhorn_node_prereqs() { # node
       fi
       echo "longhorn.sh: iscsid running ($(pgrep -x iscsid | head -1))"
       # Smoke test: "can not connect to iSCSI daemon" = IPC broken;
-      # anything else (e.g. no portals found / connection refused to the
-      # probe target) means the daemon channel works.
+      # anything else means the daemon channel works.
       DISC=$(iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1 || true)
       if echo "$DISC" | grep -q "can not connect to iSCSI daemon"; then
         echo "longhorn.sh: iscsiadm cannot reach iscsid even with it running:"
         echo "$DISC"
         exit 1
       fi
-      echo "longhorn.sh: iscsiadm→iscsid IPC verified"
-      mkdir -p /var/lib/longhorn
-      # O_DIRECT probe — Longhorn v1 engines need it, and nested
+      echo "longhorn.sh: iscsiadm to iscsid IPC verified"
+      # O_DIRECT probe - Longhorn v1 engines need it, and nested
       # overlayfs (kind-in-dind is overlay-on-overlay) may not support
       # it: engines would hang in "starting" with replicas running.
-      # Longhorn'"'"'s own kind CI mounts a real ext4 loopback at
-      # /var/lib/longhorn for exactly this; we do the same when the
-      # probe fails.
-      require_root  # before: odirect
+      # Mount a real ext4 loopback when the probe fails.
+      mkdir -p /var/lib/longhorn
       if dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct 2>/dev/null; then
         echo "longhorn.sh: O_DIRECT ok on /var/lib/longhorn (no loopback needed)"
         rm -f /var/lib/longhorn/.odirect-probe
         exit 0
       fi
       rm -f /var/lib/longhorn/.odirect-probe
-      echo "longhorn.sh: O_DIRECT UNSUPPORTED on overlay — building ext4 loopback at /var/lib/longhorn"
+      echo "longhorn.sh: O_DIRECT UNSUPPORTED on overlay - building ext4 loopback at /var/lib/longhorn"
       truncate -s 100G /var/lib/longhorn.img
       mkfs.ext4 -q -F /var/lib/longhorn.img
       mount -o loop /var/lib/longhorn.img /var/lib/longhorn
       dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct
       rm -f /var/lib/longhorn/.odirect-probe
       echo "longhorn.sh: ext4 loopback mounted; O_DIRECT verified"
-    '
+LH_PREREQS_EOF
 }
 
 longhorn_default_node() {
