@@ -281,6 +281,7 @@ lh_dump_state() {
     ${K} -n longhorn-system get volumes.longhorn.io -o yaml >"$OUT/lh-volumes.yaml" 2>&1 || true
     ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/lh-replicas.txt" 2>&1 || true
     ${K} -n longhorn-system logs daemonset/longhorn-manager --tail=100 >"$OUT/lh-manager.log" 2>&1 || true
+    ${K} -n longhorn-system logs -l longhorn.io/component=instance-manager --tail=250 >"$OUT/lh-instance-manager.log" 2>&1 || true
     ${K} -n longhorn-system logs -l longhorn.io/component=share-manager --tail=80 >"$OUT/lh-share.log" 2>&1 || true
     ${K} -n longhorn-system describe pod -l longhorn.io/component=share-manager >"$OUT/lh-share-describe.txt" 2>&1 || true
     ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true

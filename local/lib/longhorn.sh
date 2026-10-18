@@ -35,6 +35,26 @@ longhorn_node_prereqs() { # node
       apt-get update -qq >/dev/null
       apt-get install -y -qq open-iscsi nfs-common util-linux >/dev/null
       systemctl enable --now iscsid >/dev/null 2>&1 || true
+      mkdir -p /var/lib/longhorn
+      # O_DIRECT probe — Longhorn v1 engines need it, and nested
+      # overlayfs (kind-in-dind is overlay-on-overlay) typically does
+      # NOT support it: engines then hang in "starting" forever with
+      # replicas running (runs 39079884685/39089893139). Longhorn'"'"'s
+      # own kind CI mounts a real ext4 loopback at /var/lib/longhorn for
+      # exactly this; we do the same when the probe fails.
+      if dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct 2>/dev/null; then
+        echo "longhorn.sh: O_DIRECT ok on /var/lib/longhorn (no loopback needed)"
+        rm -f /var/lib/longhorn/.odirect-probe
+        exit 0
+      fi
+      rm -f /var/lib/longhorn/.odirect-probe
+      echo "longhorn.sh: O_DIRECT UNSUPPORTED on overlay — building ext4 loopback at /var/lib/longhorn"
+      truncate -s 100G /var/lib/longhorn.img
+      mkfs.ext4 -q -F /var/lib/longhorn.img
+      mount -o loop /var/lib/longhorn.img /var/lib/longhorn
+      dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct
+      rm -f /var/lib/longhorn/.odirect-probe
+      echo "longhorn.sh: ext4 loopback mounted; O_DIRECT verified"
     '
 }
 
