@@ -34,14 +34,35 @@ longhorn_node_prereqs() { # node
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
       apt-get install -y -qq open-iscsi nfs-common util-linux >/dev/null
-      systemctl enable --now iscsid >/dev/null 2>&1 || true
+      modprobe iscsi_tcp 2>/dev/null || true
+      # iscsid MUST actually run — Longhorn v1 engines drive the iSCSI
+      # initiator via `nsenter ... iscsiadm`, and iscsiadm talks to iscsid
+      # over its socket; without iscsid every engine hangs in "starting"
+      # with "Failed to connect to system scope bus via local transport:
+      # No data available" (run 39093640739 evidence). The original
+      # `systemctl enable --now iscsid || true` silently left it dead in
+      # kind nodes — start it via BOTH the unit names and directly, then
+      # VERIFY or abort loud.
+      systemctl enable --now iscsid 2>/dev/null || true
+      systemctl start iscsid 2>/dev/null || true
+      systemctl start open-iscsi 2>/dev/null || true
+      if ! pgrep -x iscsid >/dev/null 2>&1; then
+        echo "longhorn.sh: iscsid unit did not start it — launching directly"
+        iscsid 2>/dev/null || true
+        sleep 1
+      fi
+      if ! pgrep -x iscsid >/dev/null 2>&1; then
+        echo "longhorn.sh: iscsid FAILED to start — Longhorn v1 engines cannot attach in this node"
+        exit 1
+      fi
+      echo "longhorn.sh: iscsid running ($(pgrep -x iscsid | head -1))"
       mkdir -p /var/lib/longhorn
       # O_DIRECT probe — Longhorn v1 engines need it, and nested
-      # overlayfs (kind-in-dind is overlay-on-overlay) typically does
-      # NOT support it: engines then hang in "starting" forever with
-      # replicas running (runs 39079884685/39089893139). Longhorn'"'"'s
-      # own kind CI mounts a real ext4 loopback at /var/lib/longhorn for
-      # exactly this; we do the same when the probe fails.
+      # overlayfs (kind-in-dind is overlay-on-overlay) may not support
+      # it: engines would hang in "starting" with replicas running.
+      # Longhorn'"'"'s own kind CI mounts a real ext4 loopback at
+      # /var/lib/longhorn for exactly this; we do the same when the
+      # probe fails.
       if dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct 2>/dev/null; then
         echo "longhorn.sh: O_DIRECT ok on /var/lib/longhorn (no loopback needed)"
         rm -f /var/lib/longhorn/.odirect-probe
