@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-18
 **Session:** w34 design lane (charter: design doc for #1709 + the three spike deliverables that gate it).
-**Status:** In progress — spike kit hardened through 24 completed runs; design doc drafted with evidence-gated claims; green-run evidence pending (the open blocker is the pool's exec-identity contract, resolved this round by reverting to bare `docker exec` + a measured-identity gate — it sits BEFORE gVisor, so leg A has no verdict yet).
+**Status:** Complete per the 2026-10-18 owner ruling (#1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak — the 24-run ledger is the recorded justification; the design doc's PENDING protocol carries the deferral; the PR is driven to APPROVED on that basis. 25 completed runs total (the last one: the identity gate firing by design in 15 s with an honest diagnosis).
 
 ---
 
@@ -42,6 +42,6 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 
 ## Next Steps
 
-1. Land one CLEAN gated run (bare exec + identity gate): legs 0/A answer whether the pool can host Longhorn v1 at all; if engines still hang with iscsid provably alive, the nsenter→iscsiadm dind-nesting limit is confirmed and the owner decision (a)/(b)/(c) on #1709 becomes hard.
-2. On a green run: commit `results.txt` + leg logs; fill every `[R:...]`; flip PR out of draft; iterate review to APPROVED; never self-merge.
-3. Report the leg-A verdict (either way) on #1709 the moment it exists.
+1. Drive PR #1711 to APPROVED on the deferral basis (ruling cited in the doc Status); relay any reviewer objection to the deferral shape to the orchestrator — the ruling is citable.
+2. Hand off to the implementation lane: first real-cluster soak runs the committed kit, commits results.txt + leg logs into `design/evidence/shared-folder-spike/`, fills every `[R:...]` in 0068, then flips `sharedFolder.enabled=true`.
+3. Report the leg-A verdict (either way) on #1709 the moment the soak produces it.
