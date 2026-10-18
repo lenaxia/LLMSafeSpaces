@@ -48,17 +48,30 @@ longhorn_node_prereqs() { # node
       # still cannot reach the daemon.
       systemd-tmpfiles --create 2>/dev/null || true
       mkdir -p /run/lock/iscsi
+      # initiatorname.iscsi is normally written by the deb postinst; in a
+      # live container node the postinst skips it and iscsid exits at
+      # once ("could not read initiatorname") — create it if missing.
+      if [ ! -s /etc/iscsi/initiatorname.iscsi ]; then
+        echo "InitiatorName=iqn.2026-10.org.kind.$(hostname)-spike" > /etc/iscsi/initiatorname.iscsi
+        echo "longhorn.sh: wrote missing /etc/iscsi/initiatorname.iscsi"
+      fi
+      systemctl daemon-reload 2>/dev/null || true
       systemctl enable --now iscsid 2>/dev/null || true
       systemctl start iscsid 2>/dev/null || true
       systemctl start open-iscsi 2>/dev/null || true
       systemctl restart dbus 2>/dev/null || true
       if ! pgrep -x iscsid >/dev/null 2>&1; then
         echo "longhorn.sh: iscsid unit did not start it — launching directly"
-        iscsid 2>/dev/null || true
+        iscsid >/tmp/iscsid-direct.log 2>&1 || true
         sleep 1
       fi
       if ! pgrep -x iscsid >/dev/null 2>&1; then
-        echo "longhorn.sh: iscsid FAILED to start — Longhorn v1 engines cannot attach in this node"
+        echo "longhorn.sh: iscsid FAILED to start — diagnostic output follows"
+        systemctl status iscsid --no-pager -l 2>&1 | tail -15 || true
+        cat /tmp/iscsid-direct.log 2>/dev/null || true
+        echo "--- foreground attempt (5s debug run)"
+        timeout 5 iscsid -f -d 4 2>&1 | tail -15 || true
+        echo "longhorn.sh: Longhorn v1 engines cannot attach in this node"
         exit 1
       fi
       echo "longhorn.sh: iscsid running ($(pgrep -x iscsid | head -1))"
