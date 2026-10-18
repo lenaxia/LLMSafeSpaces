@@ -40,12 +40,23 @@ longhorn_node_prereqs() { # node
     # prints its measured identity for the run record.
     docker exec "$node" bash -c '
       set -e
-      echo "longhorn.sh: payload exec identity: user=$(id -un) uid=$(id -u) CapEff=$(awk "/^CapEff/{print \$2}" /proc/self/status) host=$(hostname)"
-      if [ "$(id -u)" != "0" ]; then
-        echo "longhorn.sh: payload exec is NOT root (measured $(id -un) uid=$(id -u)) — aborting before provisioning"
-        exit 1
-      fi
+      # Identity is measured at EVERY privileged group, not once: run
+      # 39170878196 measured root at t=0 and runner@1001 six seconds
+      # later WITHIN one payload invocation — impossible for a single
+      # process, so the drift sits below bash (an exec wrapper or
+      # shim re-routing). Each gate prints the executing process
+      # parentage so the next run adjudicates WHERE each command landed.
+      ident() { echo "longhorn.sh: [ident] $(id -un) uid=$(id -u) $(ps -o pid=,ppid=,comm= -p $$)"; }
+      require_root() {
+        ident
+        if [ "$(id -u)" != "0" ]; then
+          echo "longhorn.sh: payload segment is NOT root (measured $(id -un) uid=$(id -u)) — aborting before provisioning"
+          exit 1
+        fi
+      }
+      require_root
       set -e
+      require_root  # before: apt
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
       apt-get install -y -qq open-iscsi nfs-common util-linux >/dev/null
@@ -62,6 +73,7 @@ longhorn_node_prereqs() { # node
       # packaging's job, start iscsid both ways, then SMOKE-TEST the
       # exact command shape the engine uses — abort loud if iscsiadm
       # still cannot reach the daemon.
+      require_root  # before: tmpfiles
       systemd-tmpfiles --create 2>/dev/null || true
       # Diagnose EACCES-on-/etc-as-root (runs 39103144189/39104752680/
       # 39106627792): name the mechanism (ro mount / immutable / MAC)
@@ -72,6 +84,7 @@ longhorn_node_prereqs() { # node
       grep -E "^Cap(Eff|Prm)" /proc/self/status || true
       id || true
       mkdir -p /run/lock/iscsi
+      require_root  # before: etc-write
       if ! mkdir -p /etc/iscsi 2>/tmp/mkdir-etc.err; then
         echo "longhorn.sh: mkdir /etc/iscsi failed as measured user $(id -un) uid=$(id -u) CapEff=$(awk '/^CapEff/{print $2}' /proc/self/status): $(cat /tmp/mkdir-etc.err)"
         echo "longhorn.sh: the node filesystem is not writable by this exec identity — Longhorn v1 engines cannot be provisioned here"
@@ -80,6 +93,7 @@ longhorn_node_prereqs() { # node
       # open-iscsi can report installed-from-cache without its conffile
       # tree present (run 39103144189 died writing initiatorname into a
       # missing /etc/iscsi) — verify the binary, reinstall if absent.
+      require_root  # before: iscsid
       if ! command -v iscsid >/dev/null 2>&1; then
         echo "longhorn.sh: iscsid binary missing after install — reinstalling"
         apt-get install --reinstall -y -qq open-iscsi >/dev/null 2>&1 || apt-get install -y -qq open-iscsi >/dev/null
@@ -128,6 +142,7 @@ longhorn_node_prereqs() { # node
       # Longhorn'"'"'s own kind CI mounts a real ext4 loopback at
       # /var/lib/longhorn for exactly this; we do the same when the
       # probe fails.
+      require_root  # before: odirect
       if dd if=/dev/zero of=/var/lib/longhorn/.odirect-probe bs=1M count=1 oflag=direct 2>/dev/null; then
         echo "longhorn.sh: O_DIRECT ok on /var/lib/longhorn (no loopback needed)"
         rm -f /var/lib/longhorn/.odirect-probe
