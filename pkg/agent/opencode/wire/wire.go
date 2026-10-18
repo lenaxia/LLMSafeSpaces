@@ -119,6 +119,105 @@ func messageCompleted(completed json.RawMessage) bool {
 	return len(completed) > 0 && !bytes.Equal(bytes.TrimSpace(completed), []byte("null"))
 }
 
+// SessionErrorNameUserAbort is the abort error name on the session.error
+// event — wire-proven by the #1722 probe (real opencode 1.18.10 +
+// 1.18.15): a user-initiated abort emits
+// session.error {name: "MessageAbortedError"} BEFORE the idle burst.
+// A mid-generation provider-stream cut emits NO session.error at all —
+// the assistant message completes with finish "unknown" instead
+// (probe 2026-10-18, #1732). That asymmetry is the abort-classification
+// discriminator: the abort marker is an EVENT, infra loss is a FINISH.
+const SessionErrorNameUserAbort = "MessageAbortedError"
+
+// SessionError is the parsed session.error event payload.
+type SessionError struct {
+	SessionID string
+	Name      string
+	Message   string
+}
+
+// ParseSessionError parses a session.error event into its session ID
+// and error identity. Suffix-tolerant like every event-type matcher
+// here. Returns ok=false for every other event shape.
+func ParseSessionError(eventType string, props json.RawMessage) (SessionError, bool) {
+	if eventType != "session.error" && !isSuffixed(eventType, "session.error") {
+		return SessionError{}, false
+	}
+	if len(props) == 0 {
+		return SessionError{}, false
+	}
+	var p struct {
+		SessionID string `json:"sessionID"`
+		Name      string `json:"name"`
+		Data      struct {
+			Message string `json:"message"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return SessionError{}, false
+	}
+	if p.SessionID == "" {
+		return SessionError{}, false
+	}
+	msg := p.Data.Message
+	if msg == "" {
+		msg = p.Message
+	}
+	return SessionError{SessionID: p.SessionID, Name: p.Name, Message: msg}, true
+}
+
+// TurnFinishUnknown is the assistant finish value meaning the provider
+// stream ENDED WITHOUT a finish marker — the wire shape of an
+// interrupted generation (mid-stream connection cut, #1732 probe):
+// opencode completes the assistant message with
+// {"finish": "unknown", "time": {"completed": ...}} and emits a clean
+// idle transition, NO session.error. "stop" is the clean end; "length"
+// is the context-window end; both are normal.
+const TurnFinishUnknown = "unknown"
+
+// AssistantTurnEnd is the terminal classification of one assistant
+// turn: the final message.updated upsert carrying the completion anchor
+// (per ParseMessageLevelProgress's anchor rule) plus the finish value.
+type AssistantTurnEnd struct {
+	SessionID string
+	Finish    string
+}
+
+// ParseAssistantTurnEnd parses the TERMINAL upsert of an assistant turn
+// (role "assistant", info.time.completed present). Returns ok=false
+// for user messages, mid-flight upserts, and every other event shape.
+func ParseAssistantTurnEnd(eventType string, props json.RawMessage) (AssistantTurnEnd, bool) {
+	if eventType != "message.updated" && !isSuffixed(eventType, "message.updated") {
+		return AssistantTurnEnd{}, false
+	}
+	if len(props) == 0 {
+		return AssistantTurnEnd{}, false
+	}
+	var p struct {
+		SessionID string          `json:"sessionID"`
+		Info      json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return AssistantTurnEnd{}, false
+	}
+	if p.SessionID == "" {
+		return AssistantTurnEnd{}, false
+	}
+	var info struct {
+		Role   string `json:"role"`
+		Finish string `json:"finish"`
+		Time   struct {
+			Completed json.RawMessage `json:"completed"`
+		} `json:"time"`
+	}
+	_ = json.Unmarshal(p.Info, &info)
+	if info.Role != "assistant" || !messageCompleted(info.Time.Completed) {
+		return AssistantTurnEnd{}, false
+	}
+	return AssistantTurnEnd{SessionID: p.SessionID, Finish: info.Finish}, true
+}
+
 // IsStepEnded reports whether eventType is the legacy per-step usage event
 // (pre-1.18.10). The legacy name is unversioned.
 func IsStepEnded(eventType string) bool {

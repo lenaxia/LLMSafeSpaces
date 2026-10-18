@@ -62,6 +62,13 @@ type opsMetrics struct {
 	uploadStagingCredential *prometheus.GaugeVec
 	uploadBytesTotal        *prometheus.CounterVec
 	uploadDestOutcomes      *prometheus.CounterVec
+	// turnResumes counts #1732 roll-classified auto-resumes: an
+	// assistant turn ended finish=unknown with NO session.error (the
+	// wire-proven infra-loss discriminator) and the supervisor re-prompted
+	// the session once. Sustained growth on one workspace during a deploy
+	// window is the drain doing its job's remainder; sustained growth
+	// outside deploy windows points at a flaky provider path.
+	turnResumes *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -152,7 +159,19 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_agentd_upload_dest_outcomes_total",
 			Help: "Supervisor-side destination outcomes by code (dest_disk_full, integrity mismatches, dest_margin_consumed) — counted by agentd from the upload_apply ack (design 0060 §4.6)",
 		}, []string{"workspace_id", "code"}),
+		turnResumes: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_agentd_turn_resumes_total",
+			Help: "Roll-classified turn auto-resumes (#1732): an assistant turn ended finish=unknown with no session.error (infra-loss wire shape) and the supervisor re-prompted the session once",
+		}, []string{"workspace_id"}),
 	}
+}
+
+// RecordTurnResume counts one fired turn auto-resume (#1732).
+func (m *opsMetrics) RecordTurnResume(workspaceID string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.turnResumes.WithLabelValues(workspaceID).Add(1)
 }
 
 // RecordTrackerBusyReset adds n healed sessions to the busy-reset
