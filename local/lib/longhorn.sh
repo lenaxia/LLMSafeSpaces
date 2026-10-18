@@ -35,17 +35,23 @@ longhorn_node_prereqs() { # node
       apt-get update -qq >/dev/null
       apt-get install -y -qq open-iscsi nfs-common util-linux >/dev/null
       modprobe iscsi_tcp 2>/dev/null || true
-      # iscsid MUST actually run — Longhorn v1 engines drive the iSCSI
-      # initiator via `nsenter ... iscsiadm`, and iscsiadm talks to iscsid
-      # over its socket; without iscsid every engine hangs in "starting"
-      # with "Failed to connect to system scope bus via local transport:
-      # No data available" (run 39093640739 evidence). The original
-      # `systemctl enable --now iscsid || true` silently left it dead in
-      # kind nodes — start it via BOTH the unit names and directly, then
-      # VERIFY or abort loud.
+      # iscsid MUST actually run AND its IPC must be reachable — Longhorn
+      # v1 engines drive the iSCSI initiator by nsenter-ing into the
+      # namespaces OF ISCSID ITSELF (/host/proc/<pid>/ns/*) and running
+      # iscsiadm there; iscsiadm reaches iscsid over the system bus and
+      # needs /run/lock/iscsi. In a live kind node the open-iscsi deb's
+      # tmpfiles never ran (/run/lock/iscsi missing) and the unit did
+      # not start it (run 39097290981: "Could not open /run/lock/iscsi"
+      # + "Failed to connect to system scope bus"). Finish the
+      # packaging's job, start iscsid both ways, then SMOKE-TEST the
+      # exact command shape the engine uses — abort loud if iscsiadm
+      # still cannot reach the daemon.
+      systemd-tmpfiles --create 2>/dev/null || true
+      mkdir -p /run/lock/iscsi
       systemctl enable --now iscsid 2>/dev/null || true
       systemctl start iscsid 2>/dev/null || true
       systemctl start open-iscsi 2>/dev/null || true
+      systemctl restart dbus 2>/dev/null || true
       if ! pgrep -x iscsid >/dev/null 2>&1; then
         echo "longhorn.sh: iscsid unit did not start it — launching directly"
         iscsid 2>/dev/null || true
@@ -56,6 +62,16 @@ longhorn_node_prereqs() { # node
         exit 1
       fi
       echo "longhorn.sh: iscsid running ($(pgrep -x iscsid | head -1))"
+      # Smoke test: "can not connect to iSCSI daemon" = IPC broken;
+      # anything else (e.g. no portals found / connection refused to the
+      # probe target) means the daemon channel works.
+      DISC=$(iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1 || true)
+      if echo "$DISC" | grep -q "can not connect to iSCSI daemon"; then
+        echo "longhorn.sh: iscsiadm cannot reach iscsid even with it running:"
+        echo "$DISC"
+        exit 1
+      fi
+      echo "longhorn.sh: iscsiadm→iscsid IPC verified"
       mkdir -p /var/lib/longhorn
       # O_DIRECT probe — Longhorn v1 engines need it, and nested
       # overlayfs (kind-in-dind is overlay-on-overlay) may not support
