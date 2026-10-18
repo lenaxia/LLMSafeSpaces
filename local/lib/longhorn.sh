@@ -29,7 +29,7 @@ LONGHORN_CHART_VERSION="${LONGHORN_CHART_VERSION:-1.12.1}"
 
 longhorn_node_prereqs() { # node
     local node="$1"
-    docker exec "$node" bash -c '
+    docker exec -u 0 "$node" bash -c '
       set -e
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null

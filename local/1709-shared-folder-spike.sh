@@ -352,7 +352,7 @@ done
 # (prod incident note, talos-ops-prod storageclass-2r.yaml). FOUR copies
 # of the dataset touch node disk: SeaweedFS data + seed staging scratch +
 # 2 Longhorn replicas (review N-C). Keep all four inside half of free.
-FREE_KB=$(docker exec "$NODE" df -k --output=avail / 2>/dev/null | tail -1 | tr -d ' ')
+FREE_KB=$(docker exec -u 0 "$NODE" df -k --output=avail / 2>/dev/null | tail -1 | tr -d ' ')
 FREE_GB=$((FREE_KB / 1024 / 1024))
 FIT_GB=$(( FREE_GB / 2 / 4 ))
 if (( AUTO_GB > FIT_GB )); then
@@ -644,11 +644,11 @@ if [ "$A_READY" = "1" ]; then
     fi
 
     # A4 sequential throughput through the gofer (write ws-a / read ws-b)
-    docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
+    docker exec -u 0 "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
     TP_T0=$(now_s)
     ${KC} exec ws-a -- sh -c 'dd if=/dev/zero of=/shared/tp.bin bs=1M count=1024 2>/dev/null' >/dev/null 2>&1
     TP_T1=$(now_s)
-    docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
+    docker exec -u 0 "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
     ${KC} exec ws-b -- sh -c 'dd if=/shared/tp.bin of=/dev/null bs=1M 2>/dev/null' >/dev/null 2>&1
     TP_T2=$(now_s)
     res "a_dd_write_gvisor_mbs=$(mbps "$(elapsed "$TP_T0" "$TP_T1")" 1)" # 1 GiB
@@ -662,7 +662,7 @@ else
     die "workspace-shaped gVisor pods never Ready on RWX — LEG A FAILS"
     ${KC} describe pod ws-a ws-b >"$OUT/a-pod-describe.txt" 2>&1 || true
     ${KC} get events --sort-by=.lastTimestamp >"$OUT/a-events.txt" 2>&1 || true
-    docker exec "$NODE" sh -c 'mount | grep -i nfs || true' >"$OUT/a-node-mounts.txt" 2>&1 || true
+    docker exec -u 0 "$NODE" sh -c 'mount | grep -i nfs || true' >"$OUT/a-node-mounts.txt" 2>&1 || true
     capture_share_manager a
     res "a_share_manager_capture=${SM_CAPTURE:-never-found}"
     lh_dump_state
