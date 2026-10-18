@@ -166,6 +166,40 @@ openai_compatible
 
 `source_type` is `cron` (with `source_config` JSON `{"expr","tz"}`) or `webhook` (with `{}`).
 
+### Task Board (design 0067)
+
+The owner's manager surface (ruling R7 — user-level only): every tool
+rides the authenticated `/api/v1/me` board routes, so guard outcomes,
+idempotent replay (`request_id` — reuse ONE id per logical operation
+across retries), and the read perimeter match the REST/SDK contract
+exactly. Worker-only actions (heartbeat, throttle report, claiming) are
+deliberately absent — they live on the in-workspace agent registry, and
+external actors hold no claim tokens.
+
+| Tool | Required args | Description |
+|------|---------------|-------------|
+| `board_list_projects` | _(none)_ | List the authenticated user's board projects |
+| `board_get` | `item_id` | Get one item by short id — the `prj-`/`epc-`/`tsk-` prefix selects the kind (project, epic with derived progress, task with blocked-by derivation) |
+| `board_read` | `project_id` | Read a project's tasks. Optional: `stage` (one of `backlog`, `in_progress`, `in_review`, `done`, `pending_input`, `cancelled`) |
+| `board_create_project` | `name`, `target_workspace_id` | Create a board project (one target workspace per project — ruling R8). Optional: `worker_slots` (default 2), `tags`, `request_id` |
+| `board_create_epic` | `project_id`, `title` | Create a DRAFT epic. Optional: `outcome` (the steering wheel), `priority` (`P0`–`P3`, default `P2`), `tags`, `request_id` |
+| `board_create_task` | `epic_id`, `title` | Create a backlog task; `description` (markdown) seeds the fresh worker's charter. Optional: `priority`, `tags` (may carry one `pr:N` anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), `acceptance_criteria` (`[{text, met}]` — Done = ALL met + evidence), `request_id` |
+| `board_update_item` | `item_id` | Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Project: `name`, `target_workspace_id`, `worker_slots`, `tags`. Epic: `title`, `outcome`, `priority`, `tags`. Task: `title`, `description`, `priority`, `tags`, `acceptance_criteria`, `set_criteria_met` (0-based index check-off). Optional: `request_id` |
+| `board_move_stage` | `task_id`, `to_stage` | Server-arbitrated stage move; `done` requires all acceptance criteria met + `evidence_url`. Optional: `evidence_url`, `request_id` |
+| `board_start_task` | `task_id` | Manual one-off dispatch (claim + fresh-charter worker spawn); allowed in draft epics, refused for paused/completed/archived epics and archived projects. Optional: `request_id` |
+| `board_epic_activate` | `epic_id` | Activate an epic (start feeding work); re-opens a completed epic |
+| `board_epic_pause` | `epic_id` | Pause an epic (stop new claims; in-flight leases run on) |
+| `board_epic_archive` | `epic_id` | Archive an epic (reversible storage) |
+| `board_epic_unarchive` | `epic_id` | Unarchive an epic (always restores active) |
+| `board_project_archive` | `project_id` | Archive a project (stops all claims into it) |
+| `board_project_unarchive` | `project_id` | Unarchive a project (restores active) |
+| `board_cancel` | `item_id` | Terminal cancel of an epic or task (`epc-`/`tsk-`): revokes lease + token, aborts the worker, cascades per design §4.2. Optional: `reason`, `request_id` |
+| `board_add_dependency` | `task_id`, `depends_on` | Add a structural dependency edge (within a project; cycles rejected with did-you-mean suggestions). Optional: `request_id` |
+| `board_remove_dependency` | `task_id`, `depends_on` | Remove a dependency edge |
+
+Board search and health projections join `board_read` when the engine
+seams land (#1699); epic listing rides `board_get` per epic today.
+
 ## How MCP maps to workspace sessions
 
 The MCP server is a stateless adapter over the REST API. There is no MCP-side session state — every tool call translates to one or more HTTP requests against the API:
