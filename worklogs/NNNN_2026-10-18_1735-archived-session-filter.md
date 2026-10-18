@@ -1,0 +1,137 @@
+# Worklog: #1735 — session_list / session_metadata default to non-archived; archived only via explicit include_archived flag
+
+**Date:** 2026-10-18
+**Session:** worker lane for #1735 (parallel with lanes 1700/1701/1702/1709/1729)
+**Status:** Complete (PR pending review)
+**Branch:** `feat/1735-archived-session-filter`
+
+---
+
+## Objective
+
+Close #1735: archived sessions grow unboundedly in long-lived
+orchestration workspaces (60+ after a week of lanes) and every listing
+ships the full dead set — burning agent context on every send (the
+orchestrator's discipline requires a fresh list before each message),
+slowing the API, and making ID emission errors MORE likely precisely
+because the payload is huge. Archived sessions are read-only history —
+make them opt-in, not ambient noise, on BOTH surfaces the issue names:
+the agentd MCP tools (session_list, session_metadata) and the underlying
+API session-listing endpoint they shadow (GET /api/v1/workspaces/:id/sessions).
+Single-ID lookups of archived sessions must keep resolving; the per-entry
+`archived` field stays; archive/unarchive flows untouched.
+
+## Design decisions
+
+1. **Param name: `include_archived`** (boolean, default false) — one
+   name on every surface: MCP session_list, MCP session_metadata, the
+   REST query param, the Go/Python SDKs, the frontend wrapper.
+   `session_metadata` already had `all_sessions` (a scope selector);
+   `include_archived` reads as its additive filter complement and says
+   the direction it flips.
+2. **agentd filter is advisory, platform-sourced.** The archived set is
+   the same #1627 source the metadata annotation already uses
+   (`GET /internal/v1/session-archived`, 15s TTL cache). On ANY
+   platform fetch failure the filter degrades to a no-op — listing
+   everything rather than failing or silently shrinking (the #1627 §4
+   posture: the platform fact must never fail the tool). Pinned.
+3. **session_list keeps its raw-shape contract.** The verbatim
+   pass-through is that tool's output contract, so the default filter
+   drops entries via `json.RawMessage` — surviving elements are
+   re-served byte-exact (unknown fields intact), and a body where
+   nothing matches the archived set is returned untouched (no
+   re-marshal at all). `include_archived:true` short-circuits to the
+   verbatim body.
+4. **session_metadata filters the AGGREGATE only.** The `match`
+   predicate: single-ID scope (explicit session_id, injected
+   current-session, or the busy-fallback resolution) is NEVER
+   filtered — an archived session still resolves by ID with its
+   `archived:true` marker; the scope=="" aggregate (all_sessions)
+   defaults to non-archived, `include_archived` adds them back.
+5. **API filter is response-shape only.** Router-level, after the
+   existing backfill/reconcile/statusz-overlay block — index
+   reconciliation still sees every row (ghost-row reaping must not
+   depend on a query param), and per-session routes resolve archived
+   sessions regardless. Service/mocks signatures untouched.
+6. **Not changed (deliberately):** `session_read` (history stays
+   addressable), the 409 archived guard, `PUT .../archived`,
+   `GET /sessions/active` (statusz ground truth), the standalone
+   `pkg/mcp` server (no session-list tool), seam `SessionList` /
+   `SessionListRaw` (harness-owned, no archived concept), canary
+   scenarios (they list freshly-created live sessions only).
+
+## Implementation
+
+- `cmd/workspace-agentd/mcp_server.go` — session_list +
+  session_metadata schemas gain `include_archived` (descriptions
+  rewritten: default-exclusion is now part of the agent's only docs);
+  dispatcher parses the flag for both; `mcpSessionList` gains the
+  param and routes to the filter.
+- `cmd/workspace-agentd/mcp_tools.go` — `filterArchivedFromSessionList`
+  (byte-exact drop, fail-open); `mcpSessionMetadata` gains the param,
+  aggregate-only filtering in `match`.
+- `api/internal/server/router.go` — GET /sessions: filter unless
+  `?include_archived=true`.
+- `sdks/openapi.yaml` — listSessions documents the param + the
+  response-shape-only semantics.
+- SDKs: Go `SessionsService.List(ctx, wsID, includeArchived ...bool)`
+  (variadic matches the file's existing style); Python sync+async
+  `list(ws_id, *, include_archived=False)`.
+
+## Caller migration (the issue's grep-and-migrate acceptance)
+
+- **Frontend** (`frontend/src/api/workspaces.ts` + Sidebar + ChatPage
+  ×2): the sidebar renders the Archived group from the sessions query,
+  so those callers opt in explicitly
+  (`getSessions(id, { includeArchived: true })`). The
+  SessionActivityProvider's SSE archived/unarchived patches ride the
+  same query key — unchanged, now fed by the opted-in fetch.
+- **#1627 test pins**: `TestMCPSessionMetadata_ArchivedAnnotation` (+
+  its cache second-call) asserts the archived ENTRY is served with its
+  marker — migrated to `include_archived:true` with a comment saying
+  why. The PlatformUnreachable degrade pin keeps the default (no flag)
+  — that IS the pin.
+- **Canary scenarios**: verified they only list live freshly-created
+  sessions — no migration needed.
+- Internal Go callers of the listing service: only the router route
+  (checked); reconciliation/engine paths go through the index service
+  and seam directly, not the filtered surface.
+
+## Tests (red-first)
+
+Red commit `374096ce` (pre-implementation evidence in its message):
+dispatcher-level pins compile against the old surface and fail —
+`TestSessionList_DefaultExcludesArchived` and
+`TestSessionMetadata_AllSessions_DefaultExcludesArchived` (3 sessions
+served, 2 expected, archived `ses_4` present in both); API
+`TestListWorkspaceSessions_DefaultExcludesArchived` +
+`_ExplicitFalseExcludesArchived` fail the same way; the include flag
+was ignored.
+
+Green additions in the impl commit: opt-in directions (both tools),
+`TestSessionMetadata_ArchivedSingleIDResolves` (explicit archived id →
+1 entry, `archived:true`), handler-level defaults/opt-in,
+`TestMCPSessionList_PlatformUnreachable_ListsAll` (advisory fail-open),
+`TestMCPSessionList_FilterPreservesElementBytes` (deterministic
+cache-seeded unit: survivors byte-exact, unknown fields intact), API
+param tests (default / `=true` / explicit `=false`), dispatcher pins
+that `include_archived` is actually read on both tools.
+
+Verification runs: agentd package full (`ok, 324s`), `-run 'TestSession|TestMCPSession' -count=5` (only
+the PRE-EXISTING `TestSessionStateWatchdog_ReconcilesLedger` count-flake fails — verified failing
+on pristine origin/main with `-count=3` via stash; single-count green; not this lane's scope,
+recorded here per the standing rules), api server/workspace/sessionindex/handlers all `ok`,
+sdks/go build+tests `ok`, python `138 passed`, frontend Sidebar/ChatPage/SessionActivityProvider
+suites `177 passed` total.
+
+## Notes for reviewers
+
+- The filter lives agentd-side and router-side, NOT in
+  `sessionindex.ListByWorkspace` — the internal consumers of the index
+  (ArchivedSet endpoint, reconciliation, routine mirrors) need the full
+  row set by construction; changing the shared service signature would
+  force mock churn and risk the reaper's correctness for a
+  response-shape concern.
+- Design 0066 (short session IDs, #1691) remains the structural fix
+  for the ID-fragility half of the incident class this issue cites;
+  this lane shrinks the payload the fragile IDs ride in.
