@@ -24,6 +24,14 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39079884685 | fail @ leg A | share-manager ganesha probe loop persists; full longhorn dumps captured |
 | 39083785719 | fail @ legs 0+A | leg-0 probes hit a namespace that didn't exist yet (harness bug, fixed); RWX share still not converging |
 | 39087698763 | cancelled | superseded by the r3-remediation push (concurrency cancel) |
+| 39089893139 | fail @ leg 0 | capture landed: replicas RUNNING, engines hang in `starting`; share-manager healthy, waiting for attach |
+| 39093640739 | fail @ leg 0 | instance-manager logs name it: engines fail `nsenter ... iscsiadm` — iscsiadm cannot reach iscsid |
+| 39097290981 | fail @ leg 0 | iscsid alive at t=0, engines still fail — /run/lock/iscsi missing (deb tmpfiles never ran in the live node) |
+| 39101239324 | fail @ prereqs | iscsid would not start at all (direct-launch stderr swallowed) |
+| 39103144189 | fail @ prereqs | `mkdir /etc/iscsi: Permission denied` as root inside the kind node |
+| 39104752680 | fail @ prereqs | same EACCES with `docker exec -u 0` pinned — host-level constraint |
+| 39106627792 | fail @ prereqs | same EACCES (third consecutive) |
+| 39108718318 | fail @ kind create | `etcdserver: request timed out` — failure now above every line the branch touches |
 | (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.

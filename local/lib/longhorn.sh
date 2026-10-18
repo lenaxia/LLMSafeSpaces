@@ -38,11 +38,12 @@ longhorn_node_prereqs() { # node
       # iscsid MUST actually run AND its IPC must be reachable — Longhorn
       # v1 engines drive the iSCSI initiator by nsenter-ing into the
       # namespaces OF ISCSID ITSELF (/host/proc/<pid>/ns/*) and running
-      # iscsiadm there; iscsiadm reaches iscsid over the system bus and
-      # needs /run/lock/iscsi. In a live kind node the open-iscsi deb's
-      # tmpfiles never ran (/run/lock/iscsi missing) and the unit did
-      # not start it (run 39097290981: "Could not open /run/lock/iscsi"
-      # + "Failed to connect to system scope bus"). Finish the
+      # iscsiadm there; iscsiadm talks to iscsid over iscsid's private
+      # AF_UNIX socket and needs /run/lock/iscsi on the filesystem. In
+      # a live kind node the open-iscsi deb's tmpfiles never ran
+      # (/run/lock/iscsi missing) and the unit did not start it (run
+      # 39097290981; the "system scope bus" string in that artifact is
+      # systemctl's own dbus noise, not the iscsiadm IPC). Finish the
       # packaging's job, start iscsid both ways, then SMOKE-TEST the
       # exact command shape the engine uses — abort loud if iscsiadm
       # still cannot reach the daemon.
@@ -57,12 +58,9 @@ longhorn_node_prereqs() { # node
       id || true
       mkdir -p /run/lock/iscsi
       if ! mkdir -p /etc/iscsi 2>/tmp/mkdir-etc.err; then
-        echo "longhorn.sh: mkdir /etc/iscsi failed: $(cat /tmp/mkdir-etc.err)"
-        echo "longhorn.sh: falling back to tmpfs-mounted /etc/iscsi (iscsid conffile dir)"
-        mount -t tmpfs tmpfs /etc/iscsi 2>/dev/null || {
-          echo "longhorn.sh: cannot provide /etc/iscsi — Longhorn v1 engines cannot attach in this node"
-          exit 1
-        }
+        echo "longhorn.sh: mkdir /etc/iscsi failed as $(id -un): $(cat /tmp/mkdir-etc.err)"
+        echo "longhorn.sh: /etc is not writable by root in this node (host-level constraint) — Longhorn v1 engines cannot be provisioned here"
+        exit 1
       fi
       # open-iscsi can report installed-from-cache without its conffile
       # tree present (run 39103144189 died writing initiatorname into a
@@ -83,7 +81,6 @@ longhorn_node_prereqs() { # node
       systemctl enable --now iscsid 2>/dev/null || true
       systemctl start iscsid 2>/dev/null || true
       systemctl start open-iscsi 2>/dev/null || true
-      systemctl restart dbus 2>/dev/null || true
       if ! pgrep -x iscsid >/dev/null 2>&1; then
         echo "longhorn.sh: iscsid unit did not start it — launching directly"
         iscsid >/tmp/iscsid-direct.log 2>&1 || true

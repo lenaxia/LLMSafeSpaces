@@ -30,7 +30,7 @@
 #
 # Results: /tmp/spike1709/results.txt (KEY=VALUE + verifier verdicts),
 # full leg logs under /tmp/spike1709/. Exit contract: non-zero iff ANY
-# leg fails (A, B, or C) — a green workflow check means all three legs
+# leg fails (0, A, B, or C) — a green workflow check means every leg
 # produced evidence.
 #
 # Self-test: `selftest` exercises the journal parser on synthetic
@@ -299,10 +299,10 @@ capture_share_manager() { # prefix
             if [ "$phase" != "Terminating" ]; then SM_NAME="$name"; break; fi
             [ -z "$SM_NAME" ] && SM_NAME="$name"   # fall back to a corpse
         done < <(${K} -n longhorn-system get pods --no-headers 2>/dev/null | awk '$1 ~ /share-manager/ {print $1"\t"$3}' | head -3)
-        [ -n "$SM_NAME" ] && case "$(${K} -n longhorn-system get pod "$SM_NAME" -o jsonpath='{.status.phase}' 2>/dev/null)" in
-            Terminating) SM_NAME="";;
-            *) break;;
-        esac
+        # NOTE: a terminating pod's .status.phase stays "Running" — the
+        # Terminating signal lives in kubectl's STATUS column, which the
+        # awk latch above already filters on. No phase re-check here.
+        [ -n "$SM_NAME" ] && break
         sleep 10
     done
     if [ -n "${SM_NAME:-}" ]; then
@@ -335,6 +335,10 @@ res "kind_nodes=$(${K} get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 res "node=${NODE}"
 res "kind_node_image=$(docker inspect --format='{{.Config.Image}}' "$NODE" 2>/dev/null || echo unknown)"
 res "longhorn_chart=$(helm list -n longhorn-system -o json 2>/dev/null | jq -r '.[0].chart' 2>/dev/null || echo unknown)"
+# iscsid liveness AT RUN TIME (not just provision time) — run 39097290981
+# had it alive at t=0 and engines failing "can not connect to iSCSI
+# daemon" 30 minutes later; the window must be visible in results.
+res "env_iscsid_alive=$(docker exec -u 0 "$NODE" pgrep -x iscsid 2>/dev/null | head -1 || echo dead)"
 
 # RuntimeClass preflight — every runtimeClassName referenced below must
 # be registered BEFORE any pod is created (review N-A: a missing runc
@@ -489,6 +493,8 @@ if [ "$S0_STATUS" != "PASS" ]; then
     # are recorded SKIPPED and the run exits non-zero (the ~35 min of
     # leg waits are not paid).
     res "a_status=SKIPPED_LEG0_FAILED"
+    res "b_status=SKIPPED_LEG0_FAILED"
+    res "c_status=SKIPPED_LEG0_FAILED"
     res "leg_a=SKIPPED_LEG0_FAILED"
     res "leg_b=SKIPPED_LEG0_FAILED"
     res "leg_c=SKIPPED_LEG0_FAILED"
@@ -952,6 +958,7 @@ sect "LEG_C_snapshot_ro"
 C_STATUS=FAIL
 if [ "$B_STATUS" != "PASS" ]; then
     res "c_status=SKIPPED_B_FAILED"
+    C_STATUS=SKIPPED_B_FAILED
 else
     # C1 live append writer: `REC%08d|<b64>` lines appended WHOLE to the
     # journal (grouped redirect — the run-1 writer leaked everything but
@@ -1134,7 +1141,9 @@ EOF
         ${KC} delete pod ws-writer --ignore-not-found >/dev/null 2>&1 || true
     fi
 fi
-res "c_status=${C_STATUS}"
+if [ "${C_STATUS}" != "SKIPPED_B_FAILED" ]; then
+    res "c_status=${C_STATUS}"
+fi
 
 # ---------------------------------------------------------------------------
 sect "SUMMARY"

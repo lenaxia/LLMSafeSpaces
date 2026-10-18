@@ -25,6 +25,9 @@ on:
     paths:
       - local/1709-shared-folder-spike.sh
       - local/lib/longhorn.sh
+      - local/lib/gvisor.sh
+      - local/kind-cluster.yaml
+      - local/shared_folder_spike_script_test.go
       - .github/workflows/shared-folder-spike.yml
 
 concurrency:
@@ -56,7 +59,7 @@ jobs:
           command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
           # Pre-pull on the RUNNER validates the digests resolve LOUD
           # (fails here, not 20 minutes into a leg); the node itself is
-          # warmed by the dedicated kind-load step below. NOTE:
+          # warmed by the dedicated ctr-pull step below. NOTE:
           # minio/minio is delisted from Docker Hub (hub API
           # object-not-found; runs 38864577660/38865021006) — the S3
           # tier is SeaweedFS 4.48 (prod's pin).
@@ -75,7 +78,12 @@ jobs:
           } | tee /tmp/spike1709/run-env.txt
 
       - name: Create kind cluster
-        run: kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+        # etcd on the shared dind runner flakes at overlay-apply
+        # (run 39108718318: "etcdserver: request timed out", 1m13s) —
+        # retry once before treating it as environmental.
+        run: |
+          kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME \
+            || { echo "kind create failed once — retrying after cleanup"; kind delete cluster --name $CLUSTER_NAME || true; sleep 20; kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME; }
 
       - name: Provision gVisor (runsc) on the kind node
         run: |
@@ -156,9 +164,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: shared-folder-spike-${{ github.run_id }}
-          path: |
-            /tmp/spike1709/**
-            /tmp/spike1709-df.txt
+          path: /tmp/spike1709/**
           retention-days: 90
           if-no-files-found: warn
 
