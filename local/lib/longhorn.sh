@@ -47,7 +47,15 @@ longhorn_node_prereqs() { # node
       # exact command shape the engine uses — abort loud if iscsiadm
       # still cannot reach the daemon.
       systemd-tmpfiles --create 2>/dev/null || true
-      mkdir -p /run/lock/iscsi
+      mkdir -p /run/lock/iscsi /etc/iscsi
+      # open-iscsi can report installed-from-cache without its conffile
+      # tree present (run 39103144189 died writing initiatorname into a
+      # missing /etc/iscsi) — verify the binary, reinstall if absent.
+      if ! command -v iscsid >/dev/null 2>&1; then
+        echo "longhorn.sh: iscsid binary missing after install — reinstalling"
+        apt-get install --reinstall -y -qq open-iscsi >/dev/null 2>&1 || apt-get install -y -qq open-iscsi >/dev/null
+        command -v iscsid >/dev/null 2>&1 || { echo "longhorn.sh: open-iscsi will not install"; exit 1; }
+      fi
       # initiatorname.iscsi is normally written by the deb postinst; in a
       # live container node the postinst skips it and iscsid exits at
       # once ("could not read initiatorname") — create it if missing.
