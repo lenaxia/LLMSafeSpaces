@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../components/ui/Button";
@@ -15,13 +15,15 @@ import { TaskDialog } from "../components/board/TaskDialog";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { KanbanSquare, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-import { boardApi, type BoardEpic, type BoardTask } from "../api/board";
+import { boardApi, type BoardEpic, type BoardTask, type BoardEventPayload } from "../api/board";
+import { subscribeBoardEvents } from "../lib/boardFeed";
 import { workspacesApi } from "../api/workspaces";
 import { ApiClientError } from "../api/client";
 import {
   MAIN_STAGES,
   SIDE_STAGES,
   STAGE_LABELS,
+  isManagerDragAllowed,
   doneReadiness,
   describeBoardError,
   suggestBoardItems,
@@ -46,6 +48,11 @@ interface OptimisticDrag {
   fromStage: string;
   toStage: string;
 }
+
+/** In-flight optimistic moves keyed by short id — concurrent drags are
+ * independent slots (r1: the single-slot shape made a second drag
+ * visually snap the first back regardless of its server outcome). */
+type OptimisticMap = Record<string, OptimisticDrag>;
 
 export function BoardPage() {
   const queryClient = useQueryClient();
@@ -168,9 +175,25 @@ export function BoardPage() {
   }, [tasks, focusEpic, tagFilter, search]);
 
   // --- Optimistic drag (§4.6: optimistic, server-arbitrated snap-back) -----------
-  const [optimistic, setOptimistic] = useState<OptimisticDrag | null>(null);
+  const [optimistic, setOptimistic] = useState<OptimisticMap>({});
   const [dragError, setDragError] = useState<DescribedBoardError | null>(null);
   const [refusedShortId, setRefusedShortId] = useState<string | null>(null);
+  // The dragged card's CURRENT stage — drives the affordance mirror
+  // (§4.8/§4.1): cells the manager-surface map does not enumerate render
+  // as non-landing (no highlight), while the DROP itself still attempts
+  // and renders the engine's honest 409 (the server is the arbiter).
+  const [draggingStage, setDraggingStage] = useState<string | null>(null);
+  // task_start in flight (per card).
+  const [startingShortId, setStartingShortId] = useState<string | null>(null);
+  // Page-level notices (r1: openEpicDrawer/task_start failures have no
+  // dialog to render inside).
+  const [pageError, setPageError] = useState<DescribedBoardError | null>(null);
+  const [pageNotice, setPageNotice] = useState<string | null>(null);
+  // Epic lifecycle failure — renders inside the drawer (r1).
+  const [drawerError, setDrawerError] = useState<DescribedBoardError | null>(null);
+  // §4.8 activity feed buffer: board.event payloads (display-only; the
+  // snapshot refetch remains the authoritative update path).
+  const [boardActivity, setBoardActivity] = useState<BoardEventPayload[]>([]);
   // The done-evidence prompt: dropping onto Done asks for the evidence
   // URL first (required on → done, R2); the server's done_guard still
   // arbitrates criteria.
@@ -186,7 +209,7 @@ export function BoardPage() {
     async (task: BoardTask, toStage: string, evidence?: string) => {
       setDragError(null);
       setRefusedShortId(null);
-      setOptimistic({ shortId: task.short_id, fromStage: task.stage, toStage });
+      setOptimistic((prev) => ({ ...prev, [task.short_id]: { shortId: task.short_id, fromStage: task.stage, toStage } }));
       try {
         await moveStageMutation.mutateAsync({ shortId: task.short_id, toStage, evidence });
         // Authoritative row: invalidate the board read model (the SSE
@@ -197,7 +220,11 @@ export function BoardPage() {
         setDragError(toBoardError(err));
         setRefusedShortId(task.short_id);
       } finally {
-        setOptimistic(null);
+        setOptimistic((prev) => {
+          const next = { ...prev };
+          delete next[task.short_id];
+          return next;
+        });
       }
     },
     [moveStageMutation, queryClient],
@@ -224,7 +251,8 @@ export function BoardPage() {
 
   const stageOf = useCallback(
     (t: BoardTask): BoardStage => {
-      if (optimistic?.shortId === t.short_id) return optimistic.toStage as BoardStage;
+      const opt = optimistic[t.short_id];
+      if (opt) return opt.toStage as BoardStage;
       return t.stage as BoardStage;
     },
     [optimistic],
@@ -277,7 +305,7 @@ export function BoardPage() {
   });
 
   const submitTask = useCallback(
-    async (fields: { title: string; description: string; priority: string; tags: string[]; acceptanceCriteria: Array<{ text: string; met: boolean }> }) => {
+    async (fields: { title: string; description: string; priority: string; tags: string[]; acceptanceCriteria: Array<{ text: string; met: boolean }> }): Promise<boolean> => {
       setDialogError(null);
       try {
         if (taskDialog?.mode === "create") {
@@ -286,9 +314,10 @@ export function BoardPage() {
           await boardApi.updateTask(taskDialog.task.short_id, fields);
         }
         await queryClient.invalidateQueries({ queryKey: ["board"] });
+        return true;
       } catch (err) {
         setDialogError(toBoardError(err));
-        throw err;
+        return false;
       }
     },
     [taskDialog, queryClient],
@@ -298,21 +327,53 @@ export function BoardPage() {
     mutationFn: async ({ epic, action }: { epic: BoardEpic; action: "activate" | "pause" }) =>
       action === "activate" ? boardApi.activateEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id) : boardApi.pauseEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id),
     onSuccess: (epic) => {
+      setDrawerError(null);
       setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
       setEpicDrawer(epic);
       void queryClient.invalidateQueries({ queryKey: ["board"] });
     },
+    // r1: a failed activate/pause is a rendered notice, never a swallow.
+    onError: (err) => setDrawerError(toBoardError(err)),
   });
 
+  // task_start (§4.2): the manual one-off dispatch — the designed UI exit
+  // for backlog rows. Renders the engine's Claim honestly (escalated =
+  // the attempts cap withheld the grant).
+  const startTaskMutation = useMutation({
+    mutationFn: (task: BoardTask) => boardApi.startTask(task.short_id),
+    onSuccess: async (claim, task) => {
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
+      setPageNotice(
+        claim.escalated
+          ? `${task.short_id}: attempts cap reached — escalated to Pending Input (no grant).`
+          : `${task.short_id}: fresh worker dispatched into the project's target workspace.`,
+      );
+    },
+    onError: (err) => setPageError(toBoardError(err)),
+    onSettled: (_d, _e, task) => setStartingShortId((cur) => (cur === task.short_id ? null : cur)),
+  });
+
+  // §4.8 activity feed: subscribe to the root stream's board.event fan-
+  // out (boardFeed). Display-only — the ["board"] invalidation in the
+  // same branch stays the authoritative update path.
+  useEffect(() => {
+    return subscribeBoardEvents((evt) => {
+      setBoardActivity((prev) => [evt, ...prev].slice(0, 50));
+    });
+  }, []);
+
   // Open the epic drawer with the authoritative row (derived progress).
+  // Failures render at PAGE level (r1: they previously landed in
+  // dialogError, invisible with no TaskDialog open).
   const openEpicDrawer = useCallback(
     async (epicId: string) => {
       try {
         const epic = await boardApi.getEpic(epicId);
         setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+        setDrawerError(null);
         setEpicDrawer(epic);
       } catch (err) {
-        setDialogError(toBoardError(err));
+        setPageError(toBoardError(err));
       }
     },
     [],
@@ -414,9 +475,16 @@ export function BoardPage() {
             </button>
           ))}
         </div>
-        {(searchMiss || dragError) && (
+        {(searchMiss || dragError || pageError || pageNotice) && (
           <div className="flex flex-col gap-1">
             {dragError && <BoardErrorNotice error={dragError} title="Move refused — card snapped back" onDismiss={() => setDragError(null)} />}
+            {pageError && <BoardErrorNotice error={pageError} onDismiss={() => setPageError(null)} />}
+            {pageNotice && (
+              <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs" data-testid="board-notice">
+                <span>{pageNotice}</span>
+                <button type="button" onClick={() => setPageNotice(null)} aria-label="Dismiss notice" className="text-muted-foreground hover:text-foreground">×</button>
+              </div>
+            )}
             {searchMiss && (
               <div className="rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs" data-testid="board-search-miss">
                 <span>No match for “{search}”.</span>
@@ -477,8 +545,16 @@ export function BoardPage() {
                       stageOf={stageOf}
                       optimistic={optimistic}
                       refusedShortId={refusedShortId}
+                      draggingStage={draggingStage}
                       onDrop={handleDrop(stage)}
                       onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+                      onCardDragStart={(t) => setDraggingStage(t.stage)}
+                      onCardDragEnd={() => setDraggingStage(null)}
+                      onCardStart={(t) => {
+                        setStartingShortId(t.short_id);
+                        startTaskMutation.mutate(t);
+                      }}
+                      startingShortId={startingShortId}
                     />
                   ))}
                 </div>
@@ -504,8 +580,16 @@ export function BoardPage() {
                           stageOf={stageOf}
                           optimistic={optimistic}
                           refusedShortId={refusedShortId}
+                          draggingStage={draggingStage}
                           onDrop={handleDrop(stage)}
                           onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+                          onCardDragStart={(t) => setDraggingStage(t.stage)}
+                          onCardDragEnd={() => setDraggingStage(null)}
+                          onCardStart={(t) => {
+                            setStartingShortId(t.short_id);
+                            startTaskMutation.mutate(t);
+                          }}
+                          startingShortId={startingShortId}
                         />
                       ))}
                     </div>
@@ -652,13 +736,15 @@ export function BoardPage() {
         onDismissError={() => setDialogError(null)}
         onAddDependency={
           taskDialogTask
-            ? async (dependsOn) => {
+            ? async (dependsOn): Promise<boolean> => {
                 setDialogError(null);
                 try {
                   await boardApi.addDependency(taskDialogTask.short_id, dependsOn);
                   await queryClient.invalidateQueries({ queryKey: ["board"] });
+                  return true;
                 } catch (err) {
                   setDialogError(toBoardError(err));
+                  return false;
                 }
               }
             : undefined
@@ -678,14 +764,15 @@ export function BoardPage() {
         }
         onCancel={
           taskDialogTask
-            ? async () => {
+            ? async (): Promise<boolean> => {
                 setDialogError(null);
                 try {
                   await boardApi.cancelTask(taskDialogTask.short_id);
                   await queryClient.invalidateQueries({ queryKey: ["board"] });
+                  return true;
                 } catch (err) {
                   setDialogError(toBoardError(err));
-                  throw err;
+                  return false;
                 }
               }
             : undefined
@@ -696,12 +783,26 @@ export function BoardPage() {
       <EpicDrawer
         open={epicDrawer !== null}
         onOpenChange={(open) => {
-          if (!open) setEpicDrawer(null);
+          if (!open) {
+            setEpicDrawer(null);
+            setDrawerError(null);
+          }
         }}
         epic={epicDrawer}
         project={epicDrawer ? projects.find((p) => p.id === epicDrawer.project_id) ?? null : null}
         slotsInUse={epicDrawer ? slotsInUse(epicDrawer.project_id) : 0}
         busy={lifecycleMutation.isPending}
+        error={drawerError}
+        onDismissError={() => setDrawerError(null)}
+        // §4.8: the SSE activity feed filtered to this epic's tasks
+        // (item_id is the task UUID the event carried).
+        activity={
+          epicDrawer
+            ? boardActivity.filter((evt) =>
+                evt.item_kind === "task" &&
+                tasks.some((t) => t.epic_id === epicDrawer.id && (t.id === evt.item_id || t.short_id === evt.payload?.short_id)))
+            : []
+        }
         onActivate={epicDrawer ? () => lifecycleMutation.mutate({ epic: epicDrawer, action: "activate" }) : undefined}
         onPause={epicDrawer ? () => lifecycleMutation.mutate({ epic: epicDrawer, action: "pause" }) : undefined}
         onNewTask={
@@ -784,22 +885,50 @@ interface StageCellProps {
   projectTasks: BoardTask[];
   allProjectTasks: BoardTask[];
   stageOf: (t: BoardTask) => BoardStage;
-  optimistic: OptimisticDrag | null;
+  optimistic: OptimisticMap;
   refusedShortId: string | null;
+  /** The in-flight drag's source stage — gates the affordance highlight
+   * (the manager-surface mirror); the drop still attempts (the engine
+   * arbitrates and its 409 renders). */
+  draggingStage: string | null;
   onDrop: (e: React.DragEvent) => void;
   onOpenCard: (t: BoardTask) => void;
+  onCardDragStart: (t: BoardTask) => void;
+  onCardDragEnd: () => void;
+  onCardStart: (t: BoardTask) => void;
+  startingShortId: string | null;
 }
 
-function StageCell({ stage, projectTasks, allProjectTasks, stageOf, optimistic, refusedShortId, onDrop, onOpenCard }: StageCellProps) {
+function StageCell({
+  stage,
+  projectTasks,
+  allProjectTasks,
+  stageOf,
+  optimistic,
+  refusedShortId,
+  draggingStage,
+  onDrop,
+  onOpenCard,
+  onCardDragStart,
+  onCardDragEnd,
+  onCardStart,
+  startingShortId,
+}: StageCellProps) {
   const [dragOver, setDragOver] = useState(false);
   const cards = projectTasks.filter((t) => stageOf(t) === stage);
+  // §4.8 affordance mirror (r1): cells the manager-surface map does not
+  // enumerate for the dragged source render as non-landing — no primary
+  // highlight, struck-through header — while the drop STILL attempts so
+  // the engine's guard outcome (409 + code) is what the user sees.
+  const landsHere = draggingStage === null || isManagerDragAllowed(draggingStage, stage);
   return (
     <div
       data-stage-drop={stage}
       data-testid={`stage-drop-${stage}`}
+      data-droppable={landsHere ? "true" : "false"}
       onDragOver={(e) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
+        e.dataTransfer.dropEffect = landsHere ? "move" : "copy";
         setDragOver(true);
       }}
       onDragLeave={() => setDragOver(false)}
@@ -809,12 +938,15 @@ function StageCell({ stage, projectTasks, allProjectTasks, stageOf, optimistic, 
       }}
       className={cn(
         "flex min-h-[6rem] flex-col gap-1.5 rounded-md bg-muted/30 p-1.5",
-        dragOver && "outline-2 outline-dashed outline-primary/50",
+        dragOver && landsHere && "outline-2 outline-dashed outline-primary/50",
+        dragOver && !landsHere && "outline-2 outline-dashed outline-muted-foreground/30",
       )}
       aria-label={`${STAGE_LABELS[stage]} column`}
     >
       <div className="flex items-center justify-between px-0.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{STAGE_LABELS[stage]}</span>
+        <span className={cn("text-[10px] font-medium uppercase tracking-wide text-muted-foreground", draggingStage !== null && !landsHere && "line-through opacity-60")}>
+          {STAGE_LABELS[stage]}
+        </span>
         <span className="text-[10px] text-muted-foreground">{cards.length}</span>
       </div>
       {cards.map((t) => (
@@ -822,9 +954,13 @@ function StageCell({ stage, projectTasks, allProjectTasks, stageOf, optimistic, 
           key={t.short_id}
           task={t}
           projectTasks={allProjectTasks}
-          pending={optimistic?.shortId === t.short_id}
+          pending={optimistic[t.short_id] !== undefined}
           refused={refusedShortId === t.short_id}
+          starting={startingShortId === t.short_id}
+          onStart={onCardStart}
           onOpen={onOpenCard}
+          onDragStart={onCardDragStart}
+          onDragEnd={onCardDragEnd}
         />
       ))}
       {cards.length === 0 && <span className="px-1 text-[10px] text-muted-foreground/60">—</span>}

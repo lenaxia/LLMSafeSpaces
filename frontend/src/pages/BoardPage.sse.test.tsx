@@ -125,6 +125,41 @@ describe("BoardPage — SSE live feed (§4.6, #1687 machinery reused)", () => {
     await waitFor(() => expect(screen.getByTestId("swimlane-prj-cccc3333")).toBeInTheDocument(), { timeout: 3000 });
   });
 
+  it("converges a RECLAIMED row to Backlog when the engine's reclaim event streams (lease lapse, the Lane-4 reclaim arm)", async () => {
+    render(<Harness qc={new QueryClient({ defaultOptions: { queries: { retry: false } } })} />);
+    const card = await screen.findByTestId("task-card-tsk-bbbb0002");
+    expect(card.getAttribute("data-stage")).toBe("in_progress");
+
+    // RC1 reclaimed the lapsed lease server-side (in_progress → backlog,
+    // token + assignee cleared); the event streams and the read model
+    // converges.
+    seedBoard(
+      defaultTasks().map((t) =>
+        t.short_id === "tsk-bbbb0002"
+          ? { ...t, stage: "backlog", assignee_session: undefined, claim_token: undefined, lease_expires_at: null }
+          : t,
+      ),
+    );
+
+    await act(async () => {
+      emitFrame?.(
+        `data: ${JSON.stringify({
+          type: "board.event",
+          project_id: "proj-uuid-a",
+          id: "evt-reclaim-1",
+          item_kind: "task",
+          item_id: "task-uuid-2",
+          action: "reclaim",
+          payload: { to_stage: "backlog" },
+        })}\n\n`,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-card-tsk-bbbb0002").getAttribute("data-stage")).toBe("backlog");
+    });
+  });
+
   it("leaves the board untouched by non-board events", async () => {
     render(<Harness qc={new QueryClient({ defaultOptions: { queries: { retry: false } } })} />);
     await screen.findByTestId("swimlane-prj-aaaa1111");

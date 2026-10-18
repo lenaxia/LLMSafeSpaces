@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getEnv } from "../env";
 import { createSSEConnection } from "../lib/sseConnection";
 import { wsLog } from "../lib/wsLog";
+import { emitBoardEvent } from "../lib/boardFeed";
+import type { BoardEventPayload } from "../api/board";
 
 const MIN_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
@@ -102,7 +104,10 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
             // events stream — invalidating the board read model refetches
             // the authoritative snapshot (rows are project-scoped lists;
             // the payload's item-level granularity saves no round trip).
+            // The payload also fans out to in-page consumers (the epic
+            // drawer's §4.8 activity feed) via boardFeed.
             wsLog("user_stream.board_event", "", `action=${(evt as { action?: string }).action}`);
+            emitBoardEvent(evt as BoardEventPayload);
             queryClient.invalidateQueries({ queryKey: ["board"] });
           }
 

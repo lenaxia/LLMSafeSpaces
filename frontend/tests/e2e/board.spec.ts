@@ -184,6 +184,28 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     void r.fulfill(j(t));
   });
 
+  await page.route(`${API}/me/tasks/*/cancel`, async (r: Route) => {
+    const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
+    const t = state.tasks.find((x) => x.short_id === shortId);
+    if (t) t.stage = "cancelled";
+    void r.fulfill(j(t ?? { error: "not found" }, t ? 200 : 404));
+  });
+  await page.route(`${API}/me/tasks/*/start`, async (r: Route) => {
+    const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
+    const t = state.tasks.find((x) => x.short_id === shortId);
+    if (!t) {
+      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
+      return;
+    }
+    t.stage = "in_progress";
+    t.attempts += 1;
+    void r.fulfill(j({
+      task_id: t.id, short_id: t.short_id, project_id: t.project_id, epic_id: t.epic_id,
+      workspace_id: WORKSPACE_ID, claim_token: "tok-e2e", lease_expires_at: "2026-10-18T23:30:00Z",
+      escalated: false,
+    }));
+  });
+
   // Platform stream — empty body then reconnects are fine.
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/session-events`, (r: Route) =>
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
@@ -333,5 +355,53 @@ test.describe("Task Board UI (#1702)", () => {
 
     await expect(page.getByTestId("tag-validation-errors")).toContainText("pr:0");
     await expect(page.getByTestId("task-save")).toBeDisabled();
+  });
+
+  test("cancel arm: terminal write lands the card in Cancelled (design §4.8 Lane-4 e2e arm)", async ({ page }) => {
+    const state = await openBoard(page);
+    expect(state.tasks.find((t) => t.short_id === "tsk-cccc0003")!.stage).toBe("in_review");
+
+    await page.getByTestId("task-card-tsk-cccc0003").click();
+    await page.getByTestId("cancel-task").click();
+
+    // The terminal write + invalidation: the dialog closes and the card
+    // appears in the collapsible Cancelled side column.
+    await expect(page.getByTestId("cancel-task")).toHaveCount(0, { timeout: 8000 });
+    await page.getByTestId("side-columns-toggle").first().click();
+    await expect(
+      page.locator('[data-swimlane="prj-aaaa1111"] [data-stage-drop="cancelled"]').getByTestId("task-card-tsk-cccc0003"),
+    ).toBeVisible({ timeout: 8000 });
+  });
+
+  test("reclaim arm: a streamed reclaim event converges the row to Backlog (lease lapse)", async ({ page }) => {
+    const state = await openBoard(page);
+    await expect(page.getByTestId("task-card-tsk-bbbb0002")).toHaveAttribute("data-stage", "in_progress");
+
+    // RC1 reclaimed the lapsed lease server-side; the board.event streams.
+    state.tasks.find((t) => t.short_id === "tsk-bbbb0002")!.stage = "backlog";
+    await page.evaluate(() => {
+      const emit = (window as unknown as { __user: (f: string) => void }).__user;
+      emit(`data: ${JSON.stringify({
+        type: "board.event",
+        project_id: "prj-aaaa1111",
+        id: "evt-e2e-reclaim",
+        item_kind: "task",
+        item_id: "uuid-tsk-bbbb0002",
+        action: "reclaim",
+        payload: { to_stage: "backlog" },
+      })}\n\n`);
+    });
+
+    await expect(page.getByTestId("task-card-tsk-bbbb0002")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
+  });
+
+  test("start arm: task_start dispatches a backlog card and renders the claim notice", async ({ page }) => {
+    const state = await openBoard(page);
+    expect(state.tasks.find((t) => t.short_id === "tsk-aaaa0001")!.stage).toBe("backlog");
+
+    await page.getByTestId("start-tsk-aaaa0001").click();
+
+    await expect(page.getByTestId("board-notice")).toContainText("fresh worker dispatched", { timeout: 8000 });
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-stage", "in_progress", { timeout: 8000 });
   });
 });
