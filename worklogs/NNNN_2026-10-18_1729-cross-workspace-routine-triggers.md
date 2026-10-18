@@ -198,3 +198,95 @@ This worklog + the CHANGELOG `[Unreleased]` entry.
   the implementation commit` — flagged in both commit messages; the
   impl commit replaced it with the real setter call (tests otherwise
   untouched between the two commits except the 4-value signature fix).
+
+---
+
+## Review round 1 (verdict on b8a9e643: CHANGES_REQUESTED) — remediation
+
+The reviewer's findings (all from the full verdict body; remedies
+pre-approved scope):
+
+1. **BLOCKER — org-scope gate dead (empirically proven by the
+   reviewer).** `create()` passed `ownerID` to `CheckOwnership`; on the
+   org REST route that is the ORG id, which can never match as a user →
+   every org-scope `targetWorkspaceId` create was an unexplained 403,
+   while app.go wired it and the PR/CHANGELOG claimed REST parity.
+   **Fix (org-aware arm):** the gate authorizes the ACTING user
+   (`c.GetString("userID")`) — the router has authenticated them and, on
+   the org route, verified their admin rights on the OWNING org; the
+   target question is THEIR creator/org-admin rights on the target.
+   User route and pod seam have actor == ownerID (unchanged answers).
+   **Red-proof run locally:** with the pre-r1 subject restored
+   (TEMP-RED), `TestTriggerOrg_CrossWorkspaceCreate_AuthorizesActingUser`
+   fails exactly as the reviewer proved (403 on the legitimate
+   creator-branch create); with the fix it passes (creator branch, admin
+   branch) and the no-rights case still 403s.
+2. **REST update silent-ignore.** The seam 400'd the create-only key but
+   the REST PATCH silently ignored it (200, nothing applied). **Fix:**
+   `update()` peeks the raw body pre-bind (capture-replay, the seam's
+   own pattern) and rejects any spelling of the key with the SAME
+   message — extracted to one shared constant (`errTriggerTargetCreateOnly`)
+   so the surfaces cannot drift.
+3. **Nit — dead third return** of `scopeTriggerCreateBody`: dropped
+   (signature back to 3 values); tests updated.
+4. **Nit — gate-vs-cron-validation ordering:** made a conscious,
+   documented choice — authz BEFORE payload validation (403/404 must not
+   depend on payload validity; validation detail must not reach callers
+   without target rights). Comment on the gate.
+5. **Test depth (the reviewer's missing list, all added):**
+   - org-scope cross-ws create (would have caught #1):
+     `TestTriggerOrg_CrossWorkspaceCreate_AuthorizesActingUser`
+     (creator branch, admin branch, no-rights 403; owner stays the org).
+   - gate fault branches:
+     `TestTriggerREST_CrossWorkspaceCreate_GateFaultBranches` —
+     ResolveWorkspace internal error → 500 "failed to check target
+     workspace"; CheckOwnership wrapped (non-APIError) fault → 500
+     "failed to authorize target workspace"; nothing persisted.
+   - DIRECT REST user route:
+     `TestTriggerREST_CrossWorkspaceCreate_GateArms` (201/404/403) —
+     the gate is no longer only exercised through the delegation.
+   - D5 fidelity: the fake now models current-org-membership on the
+     creator branch; `TestTriggerREST_CrossWorkspaceCreate_LapsedOrgMember`
+     pins the lapsed-creator 403.
+   - REST update rejection:
+     `TestTriggerREST_UpdateRejectsCreateOnlyTargetKey` (all spellings
+     400 + ordinary patches still apply).
+   - **e2e rows** in the #1410 style:
+     `local/issue-1729-cross-workspace-automation-e2e.sh` (API-only, no
+     pods, no LLM) — R1 happy create targets the NAMED workspace (+list
+     check), R2 disclosure 404, R3 authorization 403 + nothing-persisted,
+     R4 omitted-param compatibility, R5 workflowId+target 400 (real
+     workflow per the create contract), R6 the create-only 400 on the
+     REST update + ordinary-patch regression, R7 the org-route rows
+     (acting-user admin branch on an org-attributed workspace owned by
+     another user + fail-closed 403; SKIPs loudly where org creation is
+     platform-admin gated, mirroring the #1410 R8 skip). Registered in
+     e2e-nightly.yml (own port 18088); structural source pins in
+     `local/issue_1729_cross_workspace_e2e_script_test.go`
+     (bash -n, rows-and-assertions, workflow registration,
+     harness_start-first).
+
+### r1 verification (what I ran)
+
+- Red-proof of the org fix (TEMP-RED subject swap): org test FAILS with
+  the pre-r1 gate (403 on the legitimate create), passes with the fix.
+- `go test ./api/internal/handlers/ -count=1` → ok (~90s; an earlier
+  FAIL batch was my own error — two full-suite runs racing on shared
+  ports, not a code failure; single runs green before and after).
+- `go test ./local/ -run TestIssue1729 -count=1` → ok (4 structural
+  pins). `bash -n` clean.
+- `golangci-lint run ./api/... ` → 0 issues (full sweep before push).
+- The nightly e2e rows have NOT executed yet (they run on the nightly
+  kind cluster); the script is syntax-checked and structurally pinned
+  only. Not claimed as run.
+
+### r1 commits
+
+- `fix(api): #1729 r1 — org-scope target gate authorizes the acting user`
+  (also the ordering ruling comment)
+- `fix(api): #1729 r1 — REST update rejects the create-only targetWorkspaceId`
+  (shared const + pre-bind peek; includes the dead-return removal from
+  the same review)
+- `test(api): #1729 r1 — org-scope, REST-route, gate-fault, D5 pins`
+- `test(e2e): #1729 r1 — cross-workspace automation e2e rows`
+- `docs(worklog,changelog): #1729 r1 — verdict record`
