@@ -125,9 +125,21 @@ func (h *ProxyHandler) reconcilePass() {
 // the fold's own idle-drop closes after the settle window. Fail-closed:
 // a store error reads as "no live sessions" and retries next tick.
 func (h *ProxyHandler) rearmGatesForLiveSessions(activeWorkspaces []string) {
-	// SKELETON (#1732 pins commit): the pass structure is real; the
-	// re-arm action is inert and lands with the fix commit.
-	_ = activeWorkspaces
+	if !h.agentdTerminus || len(activeWorkspaces) == 0 {
+		return
+	}
+	store := h.state()
+	if store == nil {
+		return
+	}
+	for _, id := range activeWorkspaces {
+		if h.UsageStream().HasGate(id) {
+			continue
+		}
+		if store.ActiveSessionCount(context.Background(), id) > 0 {
+			h.UsageStream().Open(id)
+		}
+	}
 }
 
 // statuszPodIP resolves the pod to poll. The second return distinguishes

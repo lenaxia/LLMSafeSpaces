@@ -34,10 +34,11 @@ const (
 	defaultFallbackRate     = 0.5
 	defaultFallbackMaxConc  = 1
 	// defaultDrainGrace bounds how long SIGTERM waits for in-flight
-	// streams. SKELETON (#1732 pins commit): preserves the historical
-	// 10s window — the fix commit raises it to the #1078 BYO parity
-	// value (10m).
-	defaultDrainGrace = 10 * time.Second
+	// streams. Generations stream for minutes; the BYO plane sizes this
+	// exact tradeoff at 10m (#1078: a cap, not a delay). The fleet
+	// plane's historical 10s window hard-cut every generation older
+	// than 10s on each deploy (#1732's halt leg).
+	defaultDrainGrace = 10 * time.Minute
 )
 
 type routerConfig struct {

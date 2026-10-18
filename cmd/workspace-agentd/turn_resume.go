@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
 )
 
@@ -182,10 +184,34 @@ func (s *turnResumeSupervisor) eligibleLocked(st *turnResumeSession, now time.Ti
 	return len(st.resumes) < ResumeHourlyCap
 }
 
-// resume fires the single bounded re-prompt. SKELETON (#1732 pins
-// commit): the classification and gates are real; the action is inert
-// and lands with the fix commit.
+// resume fires the single bounded re-prompt: the fixed audit text via
+// the prompter (OpenCodeClient.ResumeTurn — admit-and-schedule). The
+// ledger is stamped ONLY on a successful prompt, so a wedged harness
+// (prompt refused) stays eligible and the next interrupted turn retries
+// within the same bounds.
 func (s *turnResumeSupervisor) resume(sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.prompt.ResumeTurn(ctx, sessionID, TurnResumeText); err != nil {
+		log.Warn("turn auto-resume prompt failed (roll-classified loss; bounded retry on the next interrupted turn)",
+			zap.String("sessionID", sessionID), zap.Error(err))
+		return
+	}
+	s.noteTurnResume(sessionID)
+}
+
+// noteTurnResume records a fired resume (the ledger the eligibility
+// gates consume).
+func (s *turnResumeSupervisor) noteTurnResume(sessionID string) {
+	s.mu.Lock()
+	st := s.stateFor(sessionID)
+	now := s.now()
+	st.lastResumeAt = now
+	st.resumes = append(st.resumes, now)
+	s.mu.Unlock()
+	log.Info("turn auto-resume fired (roll-classified loss)",
+		zap.String("sessionID", sessionID))
+	pkgOpsMetrics.RecordTurnResume(workspaceIDFromEnv())
 }
 
 func (s *turnResumeSupervisor) stateFor(sessionID string) *turnResumeSession {
