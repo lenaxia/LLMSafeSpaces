@@ -254,17 +254,19 @@ func TestLonghornLib_Shape(t *testing.T) {
 	}
 }
 
-// Prereqs content pin (N-ISC-2 + reviews N-R18-1/N-R18-2): the node
-// provisioning block must gate on MEASURED exec identity before doing
-// anything, verify iscsid (pgrep + IPC smoke test), and abort loud with
-// the measured identity on filesystem failures — never a hardcoded
-// identity claim. This block consumed six first-contact runs; it ships
-// pinned.
+// Prereqs content pin (N-ISC-2 + reviews N-R18-1/N-R18-2/N-R22-3): the
+// node provisioning block must gate on MEASURED exec identity inside the
+// payload itself (single-exec gate — one-shot probes are a TOCTOU the
+// identity drift walks through), re-check before each privileged group
+// (the mutation is observed MID-EXEC too), verify iscsid (pgrep + IPC
+// smoke test), and abort loud with the measured identity on filesystem
+// failures — never a hardcoded identity claim. This block consumed
+// seven rounds; it ships pinned to its current shape.
 func TestLonghornLib_PrereqsContent(t *testing.T) {
 	src := mustReadSpike(t, lhLibScript)
 	for _, marker := range []string{
-		`exec_uid=$(docker exec "$node" id -u 2>/dev/null || true)`,
-		`pool exec contract broken`,
+		`require_root() {`,
+		`aborting before provisioning`,
 		`pgrep -x iscsid`,
 		`can not connect to iSCSI daemon`,
 		`failed as measured user $(id -un)`,
@@ -272,11 +274,11 @@ func TestLonghornLib_PrereqsContent(t *testing.T) {
 		`/etc/iscsi/initiatorname.iscsi`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("longhorn.sh prereqs missing marker %q (the six-round unpinned block)", marker)
+			t.Fatalf("longhorn.sh prereqs missing marker %q (the seven-round unpinned block)", marker)
 		}
 	}
 	if strings.Contains(src, "docker exec -u 0") {
-		t.Fatal("-u 0 execs never deliver root on this pool (r18: uid=1001(runner), the runner-image shape) — bare exec + identity gate is the contract")
+		t.Fatal("-u 0 execs never deliver root on this pool (r18: uid=1001(runner), the runner-image shape) — bare exec + in-payload identity gate is the contract")
 	}
 }
 
