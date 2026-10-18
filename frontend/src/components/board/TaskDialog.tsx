@@ -19,17 +19,23 @@ interface TaskDialogProps {
   task?: BoardTask | null;
   /** Same-project rows for dependency picking (deps are within-project, R4). */
   projectTasks: BoardTask[];
+  /** Resolves true on success (the dialog closes); false/throw on
+   * failure (the dialog STAYS open — the parent has rendered the error
+   * into `error`; this contract pins that behaviour and prevents the
+   * unhandled-rejection smell of a bare rethrow). */
   onSubmit: (fields: {
     title: string;
     description: string;
     priority: string;
     tags: string[];
     acceptanceCriteria: BoardAcceptanceCriterion[];
-  }) => Promise<void>;
-  /** Dependency writes are their own calls (409+suggestions shape). */
-  onAddDependency?: (dependsOn: string) => Promise<void>;
+  }) => Promise<boolean>;
+  /** Dependency writes are their own calls (409+suggestions shape).
+   * Resolves true on success; a throw means the typed input is KEPT
+   * (r1: the failed id is recoverable, not cleared). */
+  onAddDependency?: (dependsOn: string) => Promise<boolean>;
   onRemoveDependency?: (dependsOnShortId: string) => Promise<void>;
-  onCancel?: () => Promise<void>;
+  onCancel?: () => Promise<boolean>;
   /** Rendered inline when a submit/dependency call fails. */
   error?: DescribedBoardError | null;
   onDismissError?: () => void;
@@ -91,14 +97,17 @@ export function TaskDialog({
     if (!title.trim() || tagErrors.length > 0) return;
     setSubmitting(true);
     try {
-      await onSubmit({
+      const ok = await onSubmit({
         title: title.trim(),
         description,
         priority,
         tags,
         acceptanceCriteria: criteria,
       });
-      onOpenChange(false);
+      if (ok) onOpenChange(false);
+    } catch {
+      // The parent's error surface (the in-dialog notice) owns the
+      // message; the dialog stays open with the fields intact.
     } finally {
       setSubmitting(false);
     }
@@ -279,8 +288,12 @@ export function TaskDialog({
                       onClick={async () => {
                         const v = depInput.trim();
                         if (!v) return;
-                        await onAddDependency(v);
-                        setDepInput("");
+                        try {
+                          const ok = await onAddDependency(v);
+                          if (ok) setDepInput("");
+                        } catch {
+                          // keep the typed id — the notice shows why it failed
+                        }
                       }}
                       data-testid="add-dependency"
                     >
@@ -302,9 +315,14 @@ export function TaskDialog({
               <Button
                 variant="destructive"
                 size="sm"
+                data-testid="cancel-task"
                 onClick={async () => {
-                  await onCancel();
-                  onOpenChange(false);
+                  try {
+                    const ok = await onCancel();
+                    if (ok) onOpenChange(false);
+                  } catch {
+                    // stay open — the notice carries the guard outcome
+                  }
                 }}
               >
                 Cancel task

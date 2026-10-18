@@ -32,7 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`^pr:[1-9][0-9]*$`, submit-blocking).
 - Cards carry the mono short id, priority chip, tags, the structural
   blocked badge (🔗 N with live dependency stage chips, R3), the
-  evidence-backed assignee busy indicator, and the attempts counter.
+  evidence-backed assignee busy indicator, and the attempts counter with
+  its escalation preview (⚠ at the R6 documented cap default — the engine
+  stays the authority).
+- **task_start affordance on backlog cards** (the designed UI exit —
+  backlog stage moves are not machine-enumerated): manual one-off
+  dispatch rendering the engine's Claim honestly, escalation notice
+  included.
+- **Epic drawer activity feed** (§4.8): live board.event activity
+  filtered to the epic's tasks via an in-page fan-out from the single
+  user SSE connection (`lib/boardFeed.ts`).
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
