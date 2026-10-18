@@ -16,6 +16,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -88,14 +89,15 @@ func newCrossWSAutomationRouter(t *testing.T, authorizer *fakeWorkspaceAuthorize
 	gin.SetMode(gin.TestMode)
 	trigStore := newMockTriggerStore()
 	wfStore := newMockWorkflowStore()
+	th := NewUserTriggersHandler(trigStore, nil, &mockEncryptor{})
+	th.SetWorkspaceOwnershipAuthorizer(authorizer)
 	h := &PodAutomationHandler{
 		tokenReviewer:     automationReviewer(),
 		lookup:            automationLookup(),
-		triggers:          NewUserTriggersHandler(trigStore, nil, &mockEncryptor{}),
+		triggers:          th,
 		workflows:         NewUserWorkflowsHandler(wfStore, nil),
 		expectedNamespace: testRenameNamespace,
 	}
-	_ = authorizer // wiring lands with the implementation commit
 	r := gin.New()
 	r.POST("/internal/v1/automation/triggers", h.TriggerCreate)
 	r.PUT("/internal/v1/automation/triggers/:id", h.TriggerUpdate)
@@ -264,8 +266,111 @@ func TestPodAutomation_CrossWorkspaceRoutineCreate_ParamOmittedUnchanged(t *test
 	// The seam's delegated body for a param-less create is pinned
 	// byte-for-byte (sorted-key marshal + the stamp): #1729 must not
 	// perturb the #1412 wire shape.
-	out, wfID, err := scopeTriggerCreateBody([]byte(crossWSCreateBody), "ws-1")
+	out, wfID, _, err := scopeTriggerCreateBody([]byte(crossWSCreateBody), "ws-1")
 	require.NoError(t, err)
 	assert.Empty(t, wfID)
 	assert.JSONEq(t, `{"name":"cross-ws-routine","prompt":"run in the target workspace","sourceConfig":{"expr":"5 * * * *"},"sourceType":"cron","workspaceId":"ws-1"}`, string(out))
+}
+
+// capturingAudit records trigger.create metadata for the #1729 audit pin.
+type capturingAudit struct {
+	metas []map[string]any
+}
+
+func (m *capturingAudit) LogAuditEvent(_ context.Context, _, _, action, _ string, _ *string, meta map[string]any) error {
+	if action == "trigger.create" {
+		m.metas = append(m.metas, meta)
+	}
+	return nil
+}
+func (m *capturingAudit) LogOrgEvent(_ context.Context, _, _, _, _ string, _ map[string]any) error {
+	return nil
+}
+
+// The creation event records BOTH ends: the creating-session workspace
+// (the pod's) and the routine's target workspace.
+func TestPodAutomation_CrossWorkspaceRoutineCreate_AuditRecordsBothWorkspaces(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	trigStore := newMockTriggerStore()
+	audit := &capturingAudit{}
+	th := NewUserTriggersHandler(trigStore, nil, &mockEncryptor{})
+	th.SetAudit(audit)
+	th.SetWorkspaceOwnershipAuthorizer(crossWSAuthorizer())
+	h := &PodAutomationHandler{
+		tokenReviewer:     automationReviewer(),
+		lookup:            automationLookup(),
+		triggers:          th,
+		workflows:         NewUserWorkflowsHandler(newMockWorkflowStore(), nil),
+		expectedNamespace: testRenameNamespace,
+	}
+	r := gin.New()
+	r.POST("/internal/v1/automation/triggers", h.TriggerCreate)
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"targetWorkspaceId":"ws-2",
+		"name":"audited-cross-ws",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	require.Len(t, audit.metas, 1, "exactly one trigger.create event")
+	meta := audit.metas[0]
+	assert.Equal(t, "ws-2", meta["targetWorkspaceId"], "audit names the routine's target workspace")
+	assert.Equal(t, "ws-1", meta["creatingWorkspaceId"], "audit names the creating-session workspace")
+}
+
+// Fail closed: a targetWorkspaceId create on a handler built WITHOUT the
+// ownership gate answers 500 — never a silent existence-only create.
+func TestPodAutomation_CrossWorkspaceRoutineCreate_UnwiredFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	trigStore := newMockTriggerStore()
+	h := &PodAutomationHandler{
+		tokenReviewer:     automationReviewer(),
+		lookup:            automationLookup(),
+		triggers:          NewUserTriggersHandler(trigStore, nil, &mockEncryptor{}),
+		workflows:         NewUserWorkflowsHandler(newMockWorkflowStore(), nil),
+		expectedNamespace: testRenameNamespace,
+	}
+	r := gin.New()
+	r.POST("/internal/v1/automation/triggers", h.TriggerCreate)
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"targetWorkspaceId":"ws-2",
+		"name":"unwired",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"prompt":"p"
+	}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code, "unwired ownership gate must fail closed: %s", w.Body.String())
+	assert.Empty(t, trigStore.triggers)
+}
+
+// Update patches carrying targetWorkspaceId (any spelling) are rejected
+// loudly — the key is create-only, and a silent ignore would tell the
+// caller a retarget happened that did not (#1426 keeps updates scoped).
+func TestPodAutomation_CrossWorkspaceRoutineUpdate_TargetKeyRejected(t *testing.T) {
+	r, trigStore, _ := newCrossWSAutomationRouter(t, crossWSAuthorizer())
+	id := "trig-x"
+	wsID := "ws-2"
+	trigStore.triggers[id] = &wf.TriggerRow{
+		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7",
+		Name: "x", Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"5 * * * *"}`), WorkspaceID: &wsID,
+	}
+
+	for _, body := range []string{
+		`{"targetWorkspaceId":"ws-1"}`,
+		`{"targetWorkspaceId":""}`,
+		`{"TargetWorkspaceId":"ws-1"}`,
+		`{"target_workspace_id":"ws-1"}`,
+	} {
+		w := doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok", body)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "update must reject the create-only key: %s → %s", body, w.Body.String())
+		assert.Contains(t, w.Body.String(), "create-only")
+	}
+	assert.Equal(t, "ws-2", *trigStore.triggers[id].WorkspaceID, "rejected patch must not move the target")
 }

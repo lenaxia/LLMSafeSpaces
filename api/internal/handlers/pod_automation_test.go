@@ -237,14 +237,14 @@ func TestPodAutomation_DelegatedRotate(t *testing.T) {
 }
 
 func TestScopeTriggerCreateBody(t *testing.T) {
-	out, wfID, err := scopeTriggerCreateBody([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
+	out, wfID, _, err := scopeTriggerCreateBody([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
 	require.NoError(t, err)
 	assert.Empty(t, wfID, "routine body carries no workflow target")
 	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "DTO spelling forced to this pod's workspace")
 	assert.NotContains(t, string(out), "ws-OTHER")
 	assert.Contains(t, string(out), `"prompt":"p"`, "sibling fields preserved verbatim")
 
-	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":"wf-9","prompt":"p","workspaceID":"ws-CALLER","workspaceId":"ws-CALLER2"}`), "ws-1")
+	out, wfID, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":"wf-9","prompt":"p","workspaceID":"ws-CALLER","workspaceId":"ws-CALLER2"}`), "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "wf-9", wfID, "workflow target surfaced for the scoping check")
 	assert.Contains(t, string(out), `"workflowId":"wf-9"`, "workflow target preserved")
@@ -252,7 +252,7 @@ func TestScopeTriggerCreateBody(t *testing.T) {
 	assert.NotContains(t, string(out), `"workspaceID"`, "resolver spelling must not leak into the delegated body (case-insensitive DTO bind)")
 	assert.NotContains(t, string(out), "ws-CALLER", "caller-supplied workspace values never survive")
 
-	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-9","prompt":"p"}`), "ws-1")
+	out, wfID, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-9","prompt":"p"}`), "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, "wf-9", wfID, "snake_case alias normalized onto the DTO spelling")
 	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
@@ -261,35 +261,35 @@ func TestScopeTriggerCreateBody(t *testing.T) {
 	// Case-variant workspace key: the decoder binds DTO fields
 	// case-insensitively and map keys marshal sorted, so a surviving
 	// variant would override the forced stamp (review finding on #1412).
-	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workspaceid":"ws-EVIL","prompt":"p"}`), "ws-1")
+	out, wfID, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workspaceid":"ws-EVIL","prompt":"p"}`), "ws-1")
 	require.NoError(t, err)
 	assert.Empty(t, wfID)
 	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant caller key stripped, stamp survives")
 	assert.NotContains(t, string(out), "ws-EVIL")
 
 	// Contradictory alias duplicates are an explicit error, not a pick.
-	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-1","workflowId":"wf-2"}`), "ws-1")
+	_, _, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-1","workflowId":"wf-2"}`), "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "different values")
 
 	// Non-string workflowId surfaces its specific error.
-	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":123}`), "ws-1")
+	_, _, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":123}`), "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workflowId must be a string")
 
 	// A JSON null body unmarshals to a nil map WITHOUT error — the guard
 	// must reject it before the stamp writes into the nil map (panic
 	// class; round-2 review finding).
-	_, _, err = scopeTriggerCreateBody([]byte(`null`), "ws-1")
+	_, _, _, err = scopeTriggerCreateBody([]byte(`null`), "ws-1")
 	require.Error(t, err, "null body must not reach the stamp (nil-map panic)")
 	assert.Contains(t, err.Error(), "trigger body must be a JSON object")
 
 	// An empty object is a valid (if minimal) body — no panic, stamped.
-	out, _, err = scopeTriggerCreateBody([]byte(`{}`), "ws-1")
+	out, _, _, err = scopeTriggerCreateBody([]byte(`{}`), "ws-1")
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
 
-	_, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
+	_, _, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
 	assert.Error(t, err, "non-object bodies are an explicit error, not a silent skip")
 }
 

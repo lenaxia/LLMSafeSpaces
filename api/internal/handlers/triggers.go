@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -59,6 +60,13 @@ type triggerEncryptor interface {
 // One constant: the two paths must never diverge.
 const errTriggerMemoryCaptureConstraint = "memoryMode 'last_result' requires captureMode 'full'"
 
+// creatingWorkspaceCtxKey carries the CREATING pod's workspace id
+// through the pod-automation delegation, set by the seam before the
+// create call (#1729 audit: a cross-workspace routine trigger's
+// creation event records both the creating-session workspace and the
+// routine's target workspace).
+const creatingWorkspaceCtxKey = "creatingWorkspaceID"
+
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
 	store        triggerStore
@@ -66,11 +74,32 @@ type TriggersHandler struct {
 	audit        workflowAuditLogger
 	encrypt      triggerEncryptor
 	wsExistencer workspaceExistencer
+	// wsOwnership backs the #1729 targetWorkspaceId create contract
+	// (creator-or-org-admin rights on the target workspace).
+	wsOwnership workspaceOwnershipAuthorizer
 }
 
 // SetWorkspaceExistencer wires the target-workspace existence check for
 // the parent-id contract (deferred injection; nil skips).
 func (h *TriggersHandler) SetWorkspaceExistencer(w workspaceExistencer) { h.wsExistencer = w }
+
+// workspaceOwnershipAuthorizer is #1729's cross-workspace routine-target
+// gate. ResolveWorkspace answers a typed NotFound for ids that do not
+// exist (the disclosure policy's 404 half); CheckOwnership answers
+// Forbidden unless the user is the workspace creator or an org admin on
+// it (the 403 half). Implemented by (*workspace.Service); deferred
+// injection mirrors wsExistencer.
+type workspaceOwnershipAuthorizer interface {
+	ResolveWorkspace(ctx context.Context, workspaceID string) (*types.WorkspaceMetadata, error)
+	CheckOwnership(ctx context.Context, userID string, meta *types.WorkspaceMetadata) error
+}
+
+// SetWorkspaceOwnershipAuthorizer wires the #1729 targetWorkspaceId
+// gate (deferred injection; a targetWorkspaceId create without it fails
+// closed with 500).
+func (h *TriggersHandler) SetWorkspaceOwnershipAuthorizer(a workspaceOwnershipAuthorizer) {
+	h.wsOwnership = a
+}
 
 // NewUserTriggersHandler constructs a handler for user-scope triggers.
 func NewUserTriggersHandler(store triggerStore, quota workflowQuotaChecker, encrypt triggerEncryptor) *TriggersHandler {
@@ -203,13 +232,63 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		return
 	}
 
-	if req.WorkflowID == "" && req.WorkspaceID == "" {
+	if req.WorkflowID == "" && req.WorkspaceID == "" && req.TargetWorkspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "either workflowId or workspaceId is required"})
 		return
 	}
 	if req.WorkflowID != "" && req.WorkspaceID != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and workspaceId"})
 		return
+	}
+
+	// #1729: targetWorkspaceId routes the routine into ANOTHER
+	// workspace (that workspace's tool surface and pod identity),
+	// authorized against the trigger OWNER's rights on the target —
+	// creator or org admin, the CheckOwnership semantics. Nonexistent
+	// targets answer 404 (the cross-workspace disclosure policy — no
+	// existence signal beyond the not-found every caller already gets),
+	// unauthorized ones 403. Mutually exclusive with both other target
+	// keys; omitted keeps workspaceId semantics (the automation seam's
+	// forced stamp) byte-identical.
+	targetWorkspaceID := ""
+	if req.TargetWorkspaceID != "" {
+		if req.WorkflowID != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and targetWorkspaceId"})
+			return
+		}
+		if req.WorkspaceID != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workspaceId and targetWorkspaceId"})
+			return
+		}
+		if h.wsOwnership == nil {
+			// Fail closed: the capability exists only with the ownership
+			// gate wired (deferred injection like wsExistencer — an
+			// unwired handler must never fall back to existence-only).
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "cross-workspace targeting is not configured"})
+			return
+		}
+		meta, rerr := h.wsOwnership.ResolveWorkspace(c.Request.Context(), req.TargetWorkspaceID)
+		if rerr != nil {
+			var apiErr *apierrors.APIError
+			if errors.As(rerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if oerr := h.wsOwnership.CheckOwnership(c.Request.Context(), ownerID, meta); oerr != nil {
+			var apiErr *apierrors.APIError
+			if errors.As(oerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeForbidden {
+				c.JSON(http.StatusForbidden, gin.H{"error": "no owner or admin rights on target workspace"})
+				return
+			}
+			// A wrapped org-store fault is infrastructure, not a denial —
+			// 500, and never a create.
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize target workspace"})
+			return
+		}
+		targetWorkspaceID = req.TargetWorkspaceID
 	}
 
 	// Input mapping (0059): V1–V6 on the create view.
@@ -250,7 +329,9 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	triggerID := uuid.New().String()
 
 	var wsID *string
-	if req.WorkspaceID != "" {
+	if targetWorkspaceID != "" {
+		wsID = &targetWorkspaceID
+	} else if req.WorkspaceID != "" {
 		wsID = &req.WorkspaceID
 	}
 	var wfID *string
@@ -368,7 +449,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	}
 
 	resp := triggerRowToResponse(row)
-	h.logCreate(c, ownerType, ownerID, c.GetString("userID"), triggerID, req.Name)
+	h.logCreate(c, ownerType, ownerID, c.GetString("userID"), triggerID, req.Name, wsID)
 	if req.SourceType == types.TriggerSourceWebhook {
 		c.JSON(http.StatusCreated, gin.H{
 			"trigger":    resp,
@@ -794,11 +875,21 @@ func (h *TriggersHandler) checkQuota(c *gin.Context, ownerType, ownerID string) 
 
 // --- audit ---
 
-func (h *TriggersHandler) logCreate(c *gin.Context, ownerType, ownerID, actorID, triggerID, name string) {
+func (h *TriggersHandler) logCreate(c *gin.Context, ownerType, ownerID, actorID, triggerID, name string, workspaceID *string) {
 	if h.audit == nil {
 		return
 	}
 	meta := map[string]any{"name": name, "ownerType": ownerType}
+	// #1729: creation events record BOTH ends of a routine trigger's
+	// targeting — the workspace the routine RUNS IN, and (when created
+	// through the automation surface) the creating pod's workspace the
+	// seam stamps into the gin context.
+	if workspaceID != nil {
+		meta["targetWorkspaceId"] = *workspaceID
+	}
+	if creating := c.GetString(creatingWorkspaceCtxKey); creating != "" {
+		meta["creatingWorkspaceId"] = creating
+	}
 	if ownerType == types.WorkflowOwnerOrg {
 		_ = h.audit.LogOrgEvent(c.Request.Context(), ownerID, actorID, "trigger.create", triggerID, meta)
 	} else {
