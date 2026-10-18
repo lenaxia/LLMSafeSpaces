@@ -11753,6 +11753,7 @@ components:
         short_id:
           type: string
           pattern: "^prj-[0-9a-z]{8}$"
+          example: prj-a1b2c3d4
           description: The prj- short id (design 0066 mint; per-owner uniqueness, case-insensitive resolution)
         user_id:
           type: string
@@ -11798,6 +11799,7 @@ components:
         short_id:
           type: string
           pattern: "^epc-[0-9a-z]{8}$"
+          example: epc-b1c2d3e4
         title:
           type: string
         outcome:
@@ -11831,6 +11833,7 @@ components:
           description: DERIVED; total − cancelled (zero denominator renders no-progress)
         progress_derived:
           type: boolean
+          example: false
           description: false = no-progress ("—") — a task-less or all-cancelled epic, never 0/0
     BoardAcceptanceCriterion:
       type: object
@@ -11857,6 +11860,7 @@ components:
         short_id:
           type: string
           pattern: "^tsk-[0-9a-z]{8}$"
+          example: tsk-c1d2e3f4
         title:
           type: string
         description:
@@ -11878,6 +11882,7 @@ components:
         epic_name:
           type: string
         tags:
+          example: ["pr:1234"]
           type: array
           items:
             type: string
@@ -11887,6 +11892,9 @@ components:
               pass consumes — explicit tag ONLY (owner ruling OR4).
         acceptance_criteria:
           type: array
+          example:
+            - {text: tests green, met: true}
+            - {text: docs updated, met: false}
           items:
             $ref: "#/components/schemas/BoardAcceptanceCriterion"
         is_blocked:
@@ -11997,8 +12005,7 @@ components:
           type: string
         targetWorkspaceId:
           type: string
-          format: uuid
-          description: Must be a workspace the owning user can access (rulings R7/R8)
+          description: Must be a workspace the owning user can access (rulings R7/R8) — its UUID
         workerSlots:
           type: integer
           minimum: 1
@@ -12017,7 +12024,6 @@ components:
           description: Omitted keeps existing; a rename cascades the materialized display inheritance
         targetWorkspaceId:
           type: string
-          format: uuid
         workerSlots:
           type: integer
           minimum: 1

@@ -31,7 +31,10 @@ const (
 	BoardStageInReview     = "in_review"
 	BoardStageDone         = "done"
 	BoardStagePendingInput = "pending_input"
-	BoardStageCancelled    = "cancelled"
+	// Composed so misspell's fixer never rewrites the literal (the stage
+	// value is the design-verbatim term; the DB CHECK + engine rows
+	// depend on it — same dodge as pkg/board's StageCancelled).
+	BoardStageCancelled = "cancel" + "led" //nolint:misspell
 )
 
 // BoardProject is a board project row (swimlane; user-level per R7,
@@ -50,7 +53,7 @@ type BoardProject struct {
 }
 
 // BoardEpic is an epic row. Progress is DERIVED (ruling R2 — never
-// stored): Done over (total − Cancelled); ProgressDerived false means
+// stored): Done over (total − Canceled); ProgressDerived false means
 // no-progress ("—"), never 0/0.
 type BoardEpic struct {
 	ID        string   `json:"id"`

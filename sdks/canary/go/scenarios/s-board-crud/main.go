@@ -185,8 +185,8 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 
 	// P11: cancel task (terminal) + cancel epic (→ paused)
-	if cancelled, err := c.Board.CancelTask(ctx, taskBSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task: no error") {
-		run.Assert(cancelled.Stage == ll.BoardStageCancelled, "cancel-task: terminal stage", cancelled.Stage)
+	if canceled, err := c.Board.CancelTask(ctx, taskBSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task: no error") {
+		run.Assert(canceled.Stage == ll.BoardStageCancelled, "cancel-task: terminal stage", canceled.Stage)
 	}
 	if ce, err := c.Board.CancelEpic(ctx, epicSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task-epic: no error") {
 		run.Assert(ce.Status == ll.BoardEpicPaused, "cancel-epic: paused", ce.Status)

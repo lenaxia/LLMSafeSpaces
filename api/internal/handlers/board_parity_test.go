@@ -21,6 +21,7 @@ package handlers
 // a matrix row without an endpoint reddens it too.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -393,3 +394,146 @@ func TestBoardParity_WorkerOnlyAbsentOnREST(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, w.Code, path)
 	}
 }
+
+// --- §6 cell-case kinds beyond allow/deny: idempotent replay + audit ---
+
+// replayExceptions names the mutating actions whose requestId does NOT
+// reach an event writer TODAY, so the replay case skips them BY NAME
+// (a conscious, reviewable list — not silent coverage loss):
+//   - archive_project/unarchive_project/epic_activate/epic_pause/
+//     epic_archive/epic_unarchive: the engine's lifecycle writers
+//     discard the requestID parameter (pkg/board service.go:309/:462 —
+//     flagged on PR #1728 as an engine follow-up; no pkg/board edit
+//     from this lane).
+//   - remove_dependency: DELETE carries no body at the REST tier (the
+//     engine seam itself would thread one).
+//
+// When the engine follow-up lands, entries come OFF this list and the
+// replay case covers them.
+var replayExceptions = map[string]string{
+	"archive_project":   "engine lifecycle writer discards requestId (service.go:309)",
+	"unarchive_project": "engine lifecycle writer discards requestId (service.go:309)",
+	"epic_activate":     "engine lifecycle writer discards requestId (service.go:462)",
+	"epic_pause":        "engine lifecycle writer discards requestId (service.go:462)",
+	"epic_archive":      "engine lifecycle writer discards requestId (service.go:462)",
+	"epic_unarchive":    "engine lifecycle writer discards requestId (service.go:462)",
+	"remove_dependency": "DELETE carries no body at the REST tier",
+}
+
+// boardReadActions are the non-mutating rows (no replay/audit arms).
+func boardReadActions() map[string]bool {
+	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true}
+}
+
+// TestBoardParity_IdempotentReplay: the clientMessageID discipline at
+// the REST tier — a mutating action re-invoked with the SAME requestId
+// renders 200-with-original, never an error, and the adapter delivers
+// the identical key on both calls (SDK clients reuse one key per
+// logical operation). The fake resolves replays the way the engine's
+// event writer does (Duplicate{AcceptedID} → 200-with-original), so a
+// handler that translated a replay into an error class would redden.
+func TestBoardParity_IdempotentReplay(t *testing.T) {
+	for _, row := range boardParityMatrix {
+		if row.rest.kind != "live" || boardReadActions()[row.action] {
+			continue
+		}
+		t.Run(row.action, func(t *testing.T) {
+			if reason, skipped := replayExceptions[row.action]; skipped {
+				t.Skipf("requestId does not reach an event writer today: %s", reason)
+			}
+			svc := newFakeBoardManager()
+			svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+			svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+			r := newBoardRESTRouter(t, svc)
+
+			const key = "11111111-2222-3333-4444-555555555555"
+			w1 := boardParityRESTCallReqID(t, r, row.action, key)
+			require.Less(t, w1.Code, 300, "first call: %s", w1.Body.String())
+			require.Equal(t, key, svc.lastRequestID, "first call delivers the caller's key")
+			w2 := boardParityRESTCallReqID(t, r, row.action, key)
+			require.Equal(t, w1.Code, w2.Code, "replay renders the original outcome's status (2xx-with-original — 201 stays 201), never an error: %s", w2.Body.String())
+			require.Equal(t, key, svc.lastRequestID, "replay delivers the SAME key")
+			assert.Equal(t, w1.Body.String(), w2.Body.String(), "replay returns the original outcome verbatim")
+		})
+	}
+}
+
+// TestBoardParity_AuditRowInputs: one audit trail, four surfaces — the
+// board_events.actor inputs (kind, user, surface) are stamped by the
+// adapter on every mutating action; the shared action (move_stage)
+// delivers kind=user + the acting user on BOTH the REST and agent
+// surfaces (workers delegate as the owning user, R7), differing only in
+// the surface marker.
+func TestBoardParity_AuditRowInputs(t *testing.T) {
+	for _, row := range boardParityMatrix {
+		if row.rest.kind != "live" || boardReadActions()[row.action] {
+			continue
+		}
+		t.Run(row.action, func(t *testing.T) {
+			svc := newFakeBoardManager()
+			svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+			svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+			r := newBoardRESTRouter(t, svc)
+			_ = boardParityRESTCall(t, r, row.action)
+			assert.Equal(t, board.ActorUser, svc.lastActor.Kind, row.action)
+			assert.NotEmpty(t, svc.lastActor.UserID, row.action)
+			assert.Equal(t, board.SurfaceREST, svc.lastActor.Surface, row.action)
+			assert.Empty(t, svc.lastActor.ClaimToken, row.action+" — manager surface holds no token")
+		})
+	}
+
+	// Shared action across surfaces: identical audit inputs modulo the
+	// surface marker (the §4.3 identical-guard/audit shape).
+	agentSvc := newFakeBoardService()
+	aw := doBoard(t, newBoardAutomationRouter(t, agentSvc), http.MethodPost, "/internal/v1/automation/board/tasks/move-stage",
+		`{"workspaceID":"ws-1","shortId":"tsk-cccc3333","claimToken":"tok","toStage":"in_review"}`)
+	require.Equal(t, http.StatusOK, aw.Code, aw.Body.String())
+
+	restSvc := newFakeBoardManager()
+	restSvc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+	rw := doBoardREST(t, newBoardRESTRouter(t, restSvc), http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"in_review"}`)
+	require.Equal(t, http.StatusOK, rw.Code, rw.Body.String())
+
+	assert.Equal(t, agentSvc.lastActor.Kind, restSvc.lastActor.Kind, "move_stage: same actor kind on both surfaces")
+	assert.Equal(t, board.ActorUser, agentSvc.lastActor.Kind, "workers delegate as the owning user (R7)")
+	assert.NotEmpty(t, agentSvc.lastActor.UserID, "agent surface resolves the delegating user")
+	assert.NotEmpty(t, restSvc.lastActor.UserID, "REST surface stamps the JWT user")
+	assert.Equal(t, board.SurfaceAgent, agentSvc.lastActor.Surface)
+	assert.Equal(t, board.SurfaceREST, restSvc.lastActor.Surface)
+}
+
+// boardParityRESTCallReqID issues the representative request with a
+// requestId woven into the body (the replay/audit arms' driver).
+func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := fmt.Sprintf(`{"requestId":%q}`, requestID)
+	switch action {
+	case "create_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects", `{"name":"B","targetWorkspaceId":"ws-1","requestId":`+q(requestID)+`}`)
+	case "update_project":
+		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/projects/prj-aaaa1111", `{"name":"x","requestId":`+q(requestID)+`}`)
+	case "create_epic":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E","requestId":`+q(requestID)+`}`)
+	case "update_epic":
+		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/epics/epc-bbbb2222", `{"outcome":"o","requestId":`+q(requestID)+`}`)
+	case "cancel_epic":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/cancel", `{"reason":"r","requestId":`+q(requestID)+`}`)
+	case "create_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T","requestId":`+q(requestID)+`}`)
+	case "update_task":
+		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"title":"x","requestId":`+q(requestID)+`}`)
+	case "add_dependency":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
+	case "move_stage":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
+	case "task_start":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
+	case "cancel_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/cancel", `{"reason":"r","requestId":`+q(requestID)+`}`)
+	default:
+		t.Fatalf("no replay-driver call for action %q", action)
+		return nil
+	}
+}
+
+func q(s string) string { return `"` + s + `"` }

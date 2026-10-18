@@ -587,3 +587,30 @@ func TestBoardREST_DependencyRendersTask(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, 1, svc.calls["remove_dependency"])
 }
+
+// TestBoardREST_StartTaskChunkedEmptyBody: the r2 binding fix's
+// regression pin — a chunked empty body (ContentLength -1, zero bytes)
+// is an ABSENT request, not a malformed one. The pre-fix code path
+// (`ContentLength != 0` → bind → EOF → 400) fails this test; the fix
+// accepts EOF-on-empty and still 400s genuinely malformed JSON.
+func TestBoardREST_StartTaskChunkedEmptyBody(t *testing.T) {
+	svc := newFakeBoardManager()
+	r := newBoardRESTRouter(t, svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", nil)
+	req.Header.Set("Content-Type", "application/json")
+	// Chunked transfer-encoding: net/http reports ContentLength -1; the
+	// body is zero bytes. The adapter must treat it as absent.
+	req.ContentLength = -1
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "chunked empty body binds as an absent request: "+w.Body.String())
+	assert.Equal(t, 1, svc.calls["task_start"])
+
+	// Malformed JSON still 400s (the fix must not swallow real errors).
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", strings.NewReader("{not json"))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusBadRequest, w2.Code)
+}
