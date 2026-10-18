@@ -338,12 +338,18 @@ res "longhorn_chart=$(helm list -n longhorn-system -o json 2>/dev/null | jq -r '
 # iscsid liveness AT RUN TIME (not just provision time) — run 39097290981
 # had it alive at t=0 and engines failing "can not connect to iSCSI
 # daemon" 30 minutes later; the window must be visible in results.
-# iscsid liveness — an exec failure must not report "dead" (N-R18-3)
-if docker exec "$NODE" true >/dev/null 2>&1; then
-    res "env_iscsid_alive=$(docker exec "$NODE" pgrep -x iscsid 2>/dev/null | head -1 || echo dead)"
+# iscsid liveness — BOTH execs are separately guarded (N-R20-6a): a
+# probe-pass/measure-fail sequence must read EXEC_FAILED, not "dead".
+if ISC_PID=$(docker exec "$NODE" pgrep -x iscsid 2>/dev/null | head -1); [ -n "$ISC_PID" ]; then
+    res "env_iscsid_alive=${ISC_PID}"
+elif docker exec "$NODE" true >/dev/null 2>&1; then
+    res "env_iscsid_alive=dead"
 else
     res "env_iscsid_alive=EXEC_FAILED"
 fi
+# Per-exec identity drift made explicit in the record (N-R20-2): this
+# probe exec's identity, beside whatever the prereqs payload measured.
+res "env_exec_identity_spike_probe=$(docker exec "$NODE" id -u 2>/dev/null || echo exec-failed)@$(docker exec "$NODE" hostname 2>/dev/null || echo unknown)"
 
 # RuntimeClass preflight — every runtimeClassName referenced below must
 # be registered BEFORE any pod is created (review N-A: a missing runc
@@ -662,15 +668,22 @@ if [ "$A_READY" = "1" ]; then
     fi
 
     # A4 sequential throughput through the gofer (write ws-a / read ws-b)
-    docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
+    CACHE_SUFFIX=""
+    if docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1; then
+        res "a_cache_drop=ok"
+    else
+        res "a_cache_drop=FAILED"
+        CACHE_SUFFIX="_hotcache"
+        warn "cache drop exec failed — throughput rows carry the _hotcache suffix"
+    fi
     TP_T0=$(now_s)
     ${KC} exec ws-a -- sh -c 'dd if=/dev/zero of=/shared/tp.bin bs=1M count=1024 2>/dev/null' >/dev/null 2>&1
     TP_T1=$(now_s)
-    docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
+    docker exec "$NODE" sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || res "a_cache_drop_mid=FAILED"
     ${KC} exec ws-b -- sh -c 'dd if=/shared/tp.bin of=/dev/null bs=1M 2>/dev/null' >/dev/null 2>&1
     TP_T2=$(now_s)
-    res "a_dd_write_gvisor_mbs=$(mbps "$(elapsed "$TP_T0" "$TP_T1")" 1)" # 1 GiB
-    res "a_dd_read_gvisor_mbs=$(mbps "$(elapsed "$TP_T1" "$TP_T2")" 1)"
+    res "a_dd_write_gvisor_mbs${CACHE_SUFFIX}=$(mbps "$(elapsed "$TP_T0" "$TP_T1")" 1)" # 1 GiB
+    res "a_dd_read_gvisor_mbs${CACHE_SUFFIX}=$(mbps "$(elapsed "$TP_T1" "$TP_T2")" 1)"
     ok "leg A throughput recorded"
 
     # A_STATUS aggregates the leg's sub-verdicts

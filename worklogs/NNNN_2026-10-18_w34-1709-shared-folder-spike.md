@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-18
 **Session:** w34 design lane (charter: design doc for #1709 + the three spike deliverables that gate it).
-**Status:** Complete per the 2026-10-18 owner ruling (#1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak — the 24-run ledger is the recorded justification; the design doc's PENDING protocol carries the deferral; the PR is driven to APPROVED on that basis. 25 completed runs total (the last one: the identity gate firing by design in 15 s with an honest diagnosis).
+**Status:** Complete per the 2026-10-18 owner ruling (#1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak — the run ledger (see the evidence README; row set is the record, not a count) is the recorded justification; the design doc's PENDING protocol carries the deferral; the PR is driven to APPROVED on that basis.
 
 ---
 
@@ -15,7 +15,7 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 - Spike kit: `local/1709-shared-folder-spike.sh` (legs 0/A/B/C + selftest + render modes), `local/lib/longhorn.sh` (Longhorn-in-kind provisioning), `.github/workflows/shared-folder-spike.yml` (PR-triggered dispatch-equivalent, paths-filtered, concurrency-deduped).
 - Design doc 0068 drafted: parked-PVC lifecycle state machine (Hydrating/Ready/Parking/Parked + the issue's four edge cases), pre-warm/Ready-gating, snapshot→RO→rclone sync at 15-min cadence, `user-shared` StorageClass (prod `longhorn-2r` parameter set), quota-as-PVC-size (platform/per-user/org-aggregate), S3 layout + retention/versioning, user-level ownership seam (boards 0067 §authz), rejected alternatives verbatim, OR-1..OR-5 open-rulings menu, rollout sequencing. All result claims are `[R:...]` rows explicitly gated on committed evidence.
 - Review remediation across rounds 1–8 (C1–C4, N1, N-A/N-B/N-C, R1–R6): heredoc parse-fatal class dead (`\$i` single-escape + dash -n gate), journal writer whole-record appends, 4-way leg exit contract, share-manager wait after consumers, runc RuntimeClass + preflight, fail-fast job waits, real chart key, node image pre-warm via ctr, posture-claim scoping, digest pins, 4× disk budget.
-- Run ledger driven to 23 ledgered entries (24 completed runs); every failure root-caused or captured for diagnosis (see Blockers).
+- Run ledger maintained row-per-run through the lane; every failure root-caused or captured for diagnosis (see Blockers; earlier drafts of this entry carried three inaccurate rows and two run omissions — reconciled in the r21 pass against the GitHub API and run logs).
 
 ## Key Decisions
 
@@ -33,8 +33,8 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 
 - `bash local/1709-shared-folder-spike.sh selftest` — journal-parser fixtures (clean/torn-tail/gap/dupe/empty) + 4-way exit-contract helper. PASS locally.
 - `bash local/1709-shared-folder-spike.sh render <dir>` + `dash -n` on every emitted body. PASS locally (non-vacuous: anchor + loop-construct + live-script drift pins in the Go test).
-- `go test ./local/ -run 'TestSharedFolderSpike|TestLonghornLib'` — 12 companion pins (bash -n ×2, rendered dash -n + content + drift, `\$\$` dead signature, selftest, exit contract, fail-sentinel normalization, leg-0 shape incl. namespace ordering + scoped deletes, writer redirect, RuntimeClass preflight, hydration size gate, longhorn lib keys/params, workflow shape incl. ctr ref qualification). PASS.
-- Spike runs: 24 on the pool (ledger in `design/evidence/shared-folder-spike/README.md`); zero green leg executions yet — the open blocker above.
+- `go test ./local/ -run 'TestSharedFolderSpike|TestLonghornLib'` — 14 companion pins (bash -n ×2, rendered dash -n + content + drift, `\$\$` dead signature, selftest, exit contract, fail-sentinel normalization, leg-0 shape incl. namespace ordering + scoped deletes, writer redirect, RuntimeClass preflight, hydration size gate, longhorn lib keys/params, workflow shape incl. ctr ref qualification). PASS.
+- Spike runs: every run ledgered in `design/evidence/shared-folder-spike/README.md` (row set is the record); zero green leg executions — the blocker above.
 
 ## Files Modified
 

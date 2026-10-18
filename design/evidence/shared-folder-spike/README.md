@@ -20,7 +20,7 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 38889584710 | fail @ chart fetch | transient GitHub 500 on the release-asset tgz — 3-attempt retry |
 | 38892896347 | cancelled | first run to clear all provisioning; runner reclaimed mid-legs |
 | 39075635564 | fail @ pre-warm | kind load + digest refs = multi-arch import trap — ctr pull on node |
-| 39077711422 | cancelled | superseded mid-run by the test-fix push (concurrency cancel) |
+| 39077711422 | failure @ pre-warm | the bare (unqualified) ctr ref — dummy:// parse death; superseded the same hour by the qualified-ref fix |
 | 39077806519 | fail @ pre-warm | ctr needs docker.io-qualified refs (bare repo@digest → dummy://) |
 | 39079884685 | fail @ leg A | share-manager ganesha probe loop persists; full longhorn dumps captured |
 | 39083785719 | fail @ legs 0+A | leg-0 probes hit a namespace that didn't exist yet (harness bug, fixed); RWX share still not converging |
@@ -29,13 +29,16 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39093640739 | fail @ leg 0 | instance-manager logs name it: engines fail `nsenter ... iscsiadm` — iscsiadm cannot reach iscsid |
 | 39097290981 | fail @ leg 0 | iscsid alive at t=0, engines still fail — /run/lock/iscsi missing (deb tmpfiles never ran in the live node) |
 | 39101239324 | fail @ prereqs | iscsid would not start at all (direct-launch stderr swallowed) |
-| 39103144189 | fail @ prereqs | `mkdir /etc/iscsi: Permission denied` as root inside the kind node |
-| 39104752680 | fail @ prereqs | same EACCES with `docker exec -u 0` pinned — host-level constraint |
-| 39106627792 | fail @ prereqs | same EACCES (third consecutive) |
+| 39103144189 | fail @ prereqs | ENOENT at the initiatorname write (`/etc/iscsi/initiatorname.iscsi: No such file or directory`) — /etc/iscsi absent, no identity captured |
+| 39104752680 | fail @ prereqs | EACCES on `/etc/iscsi` under BARE exec (the `-u 0` pin landed only after this run) — first appearance of the per-exec identity drift |
+| 39106627792 | fail @ prereqs | EACCES on `/etc/iscsi` again (`-u 0` pinned this run) — second appearance |
 | 39108718318 | fail @ kind create | `etcdserver: request timed out` — failure now above every line the branch touches |
-| 39149620957 | fail @ prereqs | `docker exec -u 0` measured `uid=1001(runner)`, `CapEff=0` — the runner-image identity shape, i.e. the `-u 0` exec never landed in the node at all (kindest/node has no `runner` user); bare `docker exec` (gvisor.sh's form) delivered root-in-node in the SAME run. r18's resolution: revert to bare exec + a measured-identity gate. The "TERMINAL DIAGNOSIS" this row first carried (host-level SELinux wall) was the -u 0 artifact, not the environment's true shape |
+| 39149620957 | fail @ prereqs | `-u 0` payload exec measured `uid=1001(runner)`, `CapEff=0` (the runner-image identity — kindest/node has no `runner` user); gvisor.sh's bare execs succeeded in the same run. This row first carried a "TERMINAL SELinux wall" diagnosis and then a "bare-exec dichotomy" — both falsified by the runs below; the true mechanism is per-exec identity drift |
+| 39151999858 | fail @ prereqs | same shape: payload exec `runner`, EACCES at /etc/iscsi (round-19 head) |
+| 39153616101 | fail @ prereqs (15 s) | the r18 one-shot identity gate's probe exec measured uid=0 and PASSED; the PAYLOAD exec seconds later measured `runner uid=1001 CapEff=0` and EACCES'd — the gate is a TOCTOU the per-exec drift walks through (fixed after: single-exec gate, identity check inside the payload) |
+| 39156123150 | fail @ prereqs | identical shape (gate probe uid=0 → payload runner, EACCES) — second demonstration of the TOCTOU |
 | 39153616101 | fail @ prereqs (15 s, by design) | the r18 identity gate measured BARE exec as `runner uid=1001 CapEff=0` too — the pool's exec-identity drift is global, not a `-u 0` artifact alone; complete honest diagnosis, no misattribution |
-| — | — | **OWNER RULING (2026-10-18, #1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak.** No green spike run will be attempted on this pool; the ledger above (24 completed runs) is the recorded justification. `results.txt` + leg logs land in this directory from that soak and fill every `[R:...]` in design 0068 |
+| — | — | **OWNER RULING (2026-10-18, #1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak.** No green spike run will be attempted on this pool; the ledger above is the recorded justification (every row above is the complete set of runs on this pool at the time of each commit — pushes touching the spike paths structurally fire one more run; rows are appended as runs complete). `results.txt` + leg logs land in this directory from that soak and fill every `[R:...]` in design 0068. **Record accuracy note (review r21): leg A was REACHED and failed repeatedly on the storage path** (RWX volumes never attached — pods never started, runsc never exercised); it never produced a valid runsc×RWX verdict, which is the deferral's actual basis — not "leg A was never reached" |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
 - **Longhorn:** chart **1.12.1** — the production cluster's version; node prereqs `open-iscsi` + `nfs-common` via `local/lib/longhorn.sh`; StorageClass `user-shared` (prod `longhorn-2r` parameter set, 2 replicas); snapshot-controller 5.3.0 (piraeus chart — prod's pin); VolumeSnapshotClass `user-shared-snap`.

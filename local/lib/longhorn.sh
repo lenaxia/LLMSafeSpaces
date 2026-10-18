@@ -29,24 +29,22 @@ LONGHORN_CHART_VERSION="${LONGHORN_CHART_VERSION:-1.12.1}"
 
 longhorn_node_prereqs() { # node
     local node="$1"
-    # Exec-identity gate (review N-R18-2): bare `docker exec` is the
-    # pool-proven form — local/lib/gvisor.sh:33 has delivered root-in-node
-    # with it on every run (runsc installs, containerd config edits,
-    # RuntimeClass registrations). The `-u 0` variant used rounds 15-18
-    # never once delivered root here: its execs landed as
-    # uid=1001(runner) with zero caps — the RUNNER image's identity
-    # shape (kindest/node has no `runner` user), i.e. not inside the
-    # node at all. Gate on MEASURED identity before doing anything, and
-    # fail loud with daemon/target context if it is not root.
-    local exec_uid
-    exec_uid=$(docker exec "$node" id -u 2>/dev/null || true)
-    if [ "$exec_uid" != "0" ]; then
-        echo "longhorn.sh: docker exec into ${node} measured uid=${exec_uid:-exec-failed} (want 0) — pool exec contract broken"
-        docker version 2>/dev/null | head -8 || true
-        docker info --format 'security={{.SecurityOptions}} driver={{.Driver}}' 2>/dev/null || true
-        return 1
-    fi
+    # Single-exec identity gate (reviews N-R20-2/N-R21-1): the pool's
+    # exec identities drift PER-EXEC — in runs 39153616101/39156123150
+    # a one-shot probe exec measured uid=0 and PASSED while the payload
+    # exec seconds later landed as uid=1001(runner) with zero caps (the
+    # runner-image identity; kindest/node has no `runner` user) and
+    # EACCES'd. A separate probe is a TOCTOU the drift walks straight
+    # through — so the identity check lives INSIDE the payload bash -c,
+    # aborting in-node before any provisioning, and the payload ALWAYS
+    # prints its measured identity for the run record.
     docker exec "$node" bash -c '
+      set -e
+      echo "longhorn.sh: payload exec identity: user=$(id -un) uid=$(id -u) CapEff=$(awk "/^CapEff/{print \$2}" /proc/self/status) host=$(hostname)"
+      if [ "$(id -u)" != "0" ]; then
+        echo "longhorn.sh: payload exec is NOT root (measured $(id -un) uid=$(id -u)) — aborting before provisioning"
+        exit 1
+      fi
       set -e
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
