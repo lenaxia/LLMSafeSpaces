@@ -50,7 +50,7 @@ func (h *ProxyHandler) Start() error {
 		// #1316: wire the ledger probe BEFORE the watcher starts — an
 		// Active event in the seed window must find it armed, and the
 		// write must happen-before any goroutine that reads it.
-		if h.outbox != nil && h.agentdTerminus {
+		if h.outbox != nil && h.agentdTerminus.Load() {
 			h.outbox.SetLedgerProbe(h.outboxLedgerProbe)
 		}
 
@@ -244,7 +244,7 @@ func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 // Parameters:
 //   - enabled: route outboxDeliver through the ABI delivery ledger.
 func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
-	h.agentdTerminus = enabled
+	h.agentdTerminus.Store(enabled)
 }
 
 // SetAgentdPortForTest redirects the ABI-surface port at a test stub
@@ -285,7 +285,7 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	// an archived session; airtight read-only beats delivery semantics
 	// (a landed message's ledger row stays findable by the sweeper
 	// paths — this worker never re-drives it).
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		if err := h.archivedDeliveryRefusal(ctx, workspaceID, sessionID); err != nil {
 			return err
 		}
@@ -463,7 +463,7 @@ func (h *ProxyHandler) outboxOnDelivered(workspaceID, sessionID string, e outbox
 	// US-69.11: a confirmed delivery means a turn may start — arm the
 	// busy-gated usage stream so billing + the state bridge see it. The
 	// gate drops itself after the idle settle window.
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		h.UsageStream().Open(workspaceID)
 	}
 	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)

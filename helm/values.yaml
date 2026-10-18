@@ -555,6 +555,15 @@ controller:
       service:
         type: ClusterIP
         port: 8080
+      # #1732 roll-drain knobs (#1078 BYO-parity semantics): on SIGTERM
+      # the router drains in-flight provider streams for drainGrace (a
+      # cap, not a delay) before exiting; the pod is kept alive
+      # terminationGracePeriodSeconds so the drain can complete. A
+      # rolling deploy lets minute-long generations FINISH on the old
+      # pod instead of being hard-cut (the 2026-10-17 v0.38.0 incident's
+      # halt leg). Keep TGS strictly greater than drainGrace.
+      drainGrace: "10m"
+      terminationGracePeriodSeconds: 630
       resources:
         requests:
           cpu: 50m

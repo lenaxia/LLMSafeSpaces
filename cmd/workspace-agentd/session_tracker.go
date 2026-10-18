@@ -91,6 +91,12 @@ type sessionStatusTracker struct {
 	// dialect parsing (Epic 69 US-69.2 — the sessionstate authority's
 	// ingestion hook). Never blocks: the authority buffers internally.
 	onRawEvent func([]byte)
+	// onTurnEvent, when non-nil, receives every raw SSE payload's
+	// (type, properties) for turn-level classification (#1732: the
+	// turn-resume supervisor's feed — abort markers vs interrupted-turn
+	// finishes). Called synchronously in processEvent; the supervisor's
+	// own resume action is bounded (admit-and-schedule prompt).
+	onTurnEvent func(eventType string, props []byte)
 }
 
 func newSessionStatusTracker() *sessionStatusTracker {
@@ -474,6 +480,18 @@ func (t *sessionStatusTracker) processEvent(data string) {
 	// derivation it always was.
 	if t.onRawEvent != nil {
 		t.onRawEvent([]byte(data))
+	}
+	// #1732: the turn-level classifier feed (abort markers, interrupted
+	// finishes) — before the flat-envelope early-returns below, same as
+	// onRawEvent.
+	if t.onTurnEvent != nil {
+		var head struct {
+			Type       string          `json:"type"`
+			Properties json.RawMessage `json:"properties"`
+		}
+		if json.Unmarshal([]byte(data), &head) == nil {
+			t.onTurnEvent(head.Type, head.Properties)
+		}
 	}
 	// Parse flat envelope first (cheap). Only try nested if flat fails.
 	var evt struct {

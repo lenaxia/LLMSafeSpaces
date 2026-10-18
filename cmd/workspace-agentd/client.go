@@ -4,12 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -33,6 +35,39 @@ func (c *OpenCodeClient) doRequest(ctx context.Context, path string) (*http.Resp
 	}
 	req.SetBasicAuth(agentd.AuthUsername, c.password)
 	return c.client.Do(req)
+}
+
+// ResumeTurn re-prompts a session whose turn was interrupted by a
+// roll-classified infrastructure loss (#1732): POST /session/:id/message
+// with a plain text part — the same user-message wire shape the adapter
+// uses (admit-and-schedule on the harness side). The fixed audit text
+// (TurnResumeText) makes every auto-resume identifiable in the
+// transcript.
+func (c *OpenCodeClient) ResumeTurn(ctx context.Context, sessionID, text string) error {
+	body, err := json.Marshal(map[string]any{
+		"parts": []map[string]string{{"type": "text", "text": text}},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		getAgentAddr()+"/session/"+sessionID+"/message", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("POST /session/%s/message returned %d: %s", sessionID, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // decodeStrict decodes exactly ONE JSON value and requires the stream

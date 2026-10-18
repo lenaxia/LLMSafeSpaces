@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
+
+- **Fleet relay-router drains in-flight generations on deploys** instead
+  of hard-cutting them after 10s (the v0.38.0 incident's halt leg):
+  SIGTERM now drains within `DRAIN_GRACE` (default 10m, the #1078 BYO
+  parity sizing), and the chart adds preStop + `terminationGracePeriodSeconds: 630`
+  (`controller.inferenceRelay.router.{drainGrace,terminationGracePeriodSeconds}`).
+- **Roll-classified turn auto-resume (agentd)**: a provider stream cut
+  mid-generation (assistant `finish: unknown`, no `session.error` —
+  wire-proven distinct from user abort's `MessageAbortedError`) fires
+  ONE bounded re-prompt per interrupted turn (audit-tagged, cooldown +
+  hourly cap, `AGENTD_TURN_AUTO_RESUME=0` kill-switch,
+  `workspace_agentd_turn_resumes_total`). User aborts never resume.
+- **Usage-gate re-arm after an api roll**: the api's state reconciler
+  (immediate first pass + 60s tick) re-arms busy-gated pod streams for
+  Active workspaces with live sessions in the roll-surviving ws_state
+  store — the platform's persistent subscriptions (billing + user-stream
+  state bridge) return without new client activity. D1-B holds: idle
+  workspaces still open nothing on a deploy.
+- Runbook: post-roll re-establishment verification table in
+  `helm/MONITORING-OPERATIONAL.md`.
 
 ## [0.38.1] - 2026-10-18
 

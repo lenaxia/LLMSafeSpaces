@@ -160,7 +160,7 @@ func TestStreamEvents_ArmsUsageGateOnOpen(t *testing.T) {
 	t.Cleanup(injectUsageStream(consumer))
 	// Gate arming on /events open rides the agentd-terminus path
 	// (US-69.8 flag; production app wiring enables it).
-	env.handler.agentdTerminus = true
+	env.handler.agentdTerminus.Store(true)
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()

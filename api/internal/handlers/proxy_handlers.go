@@ -40,7 +40,7 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 	// workspace id — agentd cannot know it.
 	var s *session.Session
 	var err error
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		s, err = h.actCreateSession(c.Request.Context(), wid, "")
 		if err != nil {
 			h.logger.Error("CreateSession: Act failed", err, "workspaceID", wid)
@@ -160,7 +160,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	var msg *session.Message
 	var sendErr error
 	sendLog := "SendMessage: adapter failed"
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		sendLog = "SendMessage: Act failed"
 		msg, sendErr = h.actSend(c.Request.Context(), wid, sid, text, modelOverride)
 	} else {
@@ -722,7 +722,7 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	// the adapter call.
 	var err error
 	abortLog := "AbortSession: adapter abort failed"
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		abortLog = "AbortSession: Act abort failed"
 		err = h.actAbort(c.Request.Context(), wid, sid)
 	} else {
@@ -763,7 +763,7 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 		// TestDeleteSession_AdapterErrorLogged) and ops tooling keys on
 		// the regime discriminator.
 		delLog := "DeleteSession: adapter failed"
-		if h.agentdTerminus {
+		if h.agentdTerminus.Load() {
 			delLog = "DeleteSession: Act failed"
 		}
 		h.logger.Error(delLog, err,
@@ -783,7 +783,7 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 // error mapping.
 func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessionID string) error {
 	var err error
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		err = h.actDeleteSession(ctx, workspaceID, sessionID)
 	} else {
 		err = h.adapter.DeleteSession(ctx, "", workspaceID, sessionID)
@@ -854,7 +854,7 @@ func (h *ProxyHandler) RenameSessionInAgent(ctx context.Context, workspaceID, se
 
 	// #1372 (S1): the write rides Act in the authority regime; flag-off
 	// keeps the typed adapter method.
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		return h.actRenameSession(ctx, workspaceID, sessionID, title)
 	}
 	return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
@@ -1035,7 +1035,7 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 	var msg *session.Message
 	var err error
 	syncLog := "syncSend: adapter failed"
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		syncLog = "syncSend: Act failed"
 		msg, err = h.actSend(c.Request.Context(), wid, sid, text, modelOverride)
 	} else {

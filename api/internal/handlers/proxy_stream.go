@@ -67,7 +67,7 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 	c.Writer.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		h.UsageStream().Open(workspaceID)
 	}
 

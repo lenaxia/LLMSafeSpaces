@@ -215,6 +215,27 @@ Discriminating telemetry when a rollout is suspected of killing sessions
 
 ---
 
+## Post-roll event-stream re-establishment (#1732)
+
+Every api / relay-router roll severs long-lived connections by
+construction. Post-#1732 the platform self-heals both halves — verify it
+did:
+
+| What to verify | Query / signal | Healthy shape |
+|---|---|---|
+| In-flight generations survived the relay-router roll | router logs `draining (grace …)` → `drained`; no provider cut errors from workspace pods around the roll | old pod drained within `controller.inferenceRelay.router.drainGrace` (default 10m); `terminationGracePeriodSeconds` (630) never SIGKILLs mid-drain |
+| Interrupted turns auto-resumed (the cuts no drain can save) | `workspace_agentd_turn_resumes_total{workspace_id}` (agentd admin :4098/metrics, PodMonitor-scraped) | brief bump during the roll window, flat after — sustained growth outside rolls = a flaky provider path, investigate |
+| Usage gates re-armed on the new api pod | `llmsafespaces_usage_stream_gates{workspace_id}` on the NEW api pod | returns within ~1 reconcile pass (startup pass or 60s tick) for every workspace with live sessions; idle workspaces stay 0 (D1-B — a roll must not fan-in) |
+| Pod contract streams re-established | `llmsafespaces_contract_stream_upstreams{workspace_id}` on the new api pod | returns alongside the gates (the 2026-10-17 incident: 33-min gap) |
+| Client event streams re-established | `http_requests_total{path="/api/v1/events"}` on the new api pod | browser/SDK clients reconnect on their own backoff (frontend `sseConnection` carries retry + Last-Event-ID replay); zero NEW connections over 10+ min with open UIs = client-side regression, not the #1732 class |
+
+If gates stay down for a workspace whose `ws_state_active_sessions` (redis)
+shows live sessions past two reconcile ticks, the re-arm path is broken —
+check the api logs for `usagestream` resolve failures (pod-IP /
+password), not the reconciler.
+
+---
+
 ## Future improvements (not blocking)
 
 - Helm hook for automatic stale-dashboard purge (declined for now — see "Why we don't auto-fix this" above)

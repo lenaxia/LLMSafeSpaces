@@ -237,6 +237,17 @@ func (c *Consumer) Gates() int {
 	return len(c.gates)
 }
 
+// HasGate reports whether the workspace's gate is currently armed —
+// the re-arm reconciler's idempotence check (#1732: after an API roll
+// the new pod re-arms gates for workspaces with live sessions; ones
+// already armed are left alone).
+func (c *Consumer) HasGate(workspaceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.gates[workspaceID]
+	return ok
+}
+
 // CloseAll drops every gate (shutdown). Terminal: later Opens are
 // no-ops, and any gate goroutine that slips past the close (a caller
 // mid-Open) terminates on its next loop iteration.
