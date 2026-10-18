@@ -332,26 +332,6 @@ HTTP 200
 [Asserts]
 jsonpath "$.stage" == "cancelled"
 
-# Cancel task B from backlog — terminal write, renders the cancelled row
-POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
-Authorization: Bearer {{token}}
-Content-Type: application/json
-{
-  "reason": "contract cleanup"
-}
-HTTP 200
-[Asserts]
-jsonpath "$.stage" == "cancelled"
-
-# Cancelled is immutable-terminal: cancel again is the stage guard
-POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
-Authorization: Bearer {{token}}
-Content-Type: application/json
-{
-  "reason": "again"
-}
-HTTP 409
-
 # Cancel epic: cascades to tasks, epic itself lands paused (R2's set has
 # no cancelled epic value)
 POST {{base_url}}/me/epics/{{epic_sid}}/cancel

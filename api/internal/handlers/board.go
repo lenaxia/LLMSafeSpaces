@@ -23,6 +23,8 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -464,8 +466,12 @@ func (h *BoardHandler) MoveStageTask(c *gin.Context) {
 // attempts cap withheld the grant).
 func (h *BoardHandler) StartTask(c *gin.Context) {
 	var req boardCancelRequest
-	if c.Request.ContentLength != 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+	// An absent body is fine (both requestId fields optional); a
+	// present-but-empty one (chunked transfer, ContentLength -1, or a
+	// bare 0-length body) is equally fine — only malformed JSON is a
+	// 400. Binding EOF on an empty body must never 400 (r1-4).
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
 			return
 		}

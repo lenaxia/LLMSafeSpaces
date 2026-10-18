@@ -36,6 +36,7 @@ type fakeBoardService struct {
 	calls         map[string]int
 
 	heartbeatErr error
+	moveErr      error // board_parity_test.go: the shared-action guard-class arms
 	getErr       error
 	getTask      *board.Task
 }
@@ -62,6 +63,9 @@ func (f *fakeBoardService) ReportThrottle(_ context.Context, actor board.Actor, 
 func (f *fakeBoardService) MoveStage(_ context.Context, actor board.Actor, taskID, shortIDOrID, toStage, _, _ string) (*board.Task, error) {
 	f.calls["move_stage"]++
 	f.lastActor, f.lastTaskRef, f.lastShortID, f.lastToStage = actor, taskID, shortIDOrID, toStage
+	if f.moveErr != nil {
+		return nil, f.moveErr
+	}
 	return &board.Task{ID: taskID, Stage: toStage}, nil
 }
 

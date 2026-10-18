@@ -83,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The board has its product contract tier** (#1699, design 0067 §4.3a;
   engine #1698/#1719 unchanged underneath): the REST projection at
-  `/api/v1/me/projects|epics|tasks` — 25 operations, user-level only
+  `/api/v1/me/projects|epics|tasks` — 23 operations, user-level only
   (ruling R7), item addressing by `prj-/epc-/tsk-` short id or UUID
   (case-insensitive, did-you-mean 404s where the engine scopes them).
   Projects CRUD + archive/unarchive; epics create/update with DERIVED
@@ -104,8 +104,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no URL scraping; the structured-field form is deferred additive. The
   four SDKs (TypeScript, Python, Go, Java) gain full board surfaces,
   wire-level tested; `s-board-crud` canaries join all three canary
-  suites and a 40-arm hurl contract suite pins happy + unhappy + authz
-  per endpoint. Deliberately absent pending engine seams (flagged on
+  suites and a 34-arm hurl contract suite pin happy + unhappy + authz
+  per endpoint (CI-registered — the live-API suites run in CI, not
+  locally); the §4.3/§6 parity-matrix harness pins the REST column
+  live, the agent seam live, the external-MCP column pending Lane 3
+  (absence enforced by source-scan), and the declared asymmetries as
+  absent-cells. Deliberately absent pending engine seams (flagged on
   #1699): epic listing, board search, board health.
 
 ### Added — Task Board dispatch engine + reconciler (Lane 1)
