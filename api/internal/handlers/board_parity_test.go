@@ -6,12 +6,17 @@ package handlers
 // board_parity_test.go — the design 0067 §4.3/§6 parity matrix, Lane 2
 // shape: rows = every §4.2 action; columns = REST / external platform
 // MCP / agent-internal MCP. The REST column is LIVE (allow + deny arms
-// per action), the agent column is LIVE against the Lane 1 internal
-// automation seam (worker actions present; manager rows
-// absent-by-design; guard-class parity on the shared action), and the
-// external MCP column is PINNED ABSENT until Lane 3 registers board
-// tools (a source-scan fails loudly the moment a board_* tool appears,
-// forcing its matrix cell to be exercised — parity by construction).
+// per action), the agent column is LIVE on BOTH of its tiers — the
+// Lane 1 internal automation seam (worker actions present; manager
+// rows absent-by-design; guard-class parity on the shared action) and,
+// since #1701, the agentd REGISTRY itself (the board_* tools the
+// in-workspace worker sees in tools/list: exactly the four worker
+// tools, claim_next and every manager row pinned ABSENT at the
+// registry tier — the absence was enforced at the seam route table
+// only before #1701 registered the tools) — and the external MCP
+// column is PINNED ABSENT until Lane 3 registers board tools (a
+// source-scan fails loudly the moment a board_* tool appears, forcing
+// its matrix cell to be exercised — parity by construction).
 //
 // Construction guarantees (the "CI fails on any action lacking full
 // surface coverage" clause): reflection pins EVERY exported method of
@@ -55,6 +60,12 @@ type parityRow struct {
 	externalMCP parityCell
 	agent       parityCell
 
+	// agentTool names the agentd registry tool for a live agent cell
+	// (#1701): the tool the in-workspace worker sees in tools/list. An
+	// absent agent cell names none — scanAgentdForBoardTools enforces
+	// both directions against cmd/workspace-agentd's source.
+	agentTool string
+
 	// denyClass, when set, is the representative guard the REST allow/
 	// deny arms drive (the fake service returns it; the arm asserts the
 	// mapped HTTP class).
@@ -86,7 +97,8 @@ var boardParityMatrix = []parityRow{
 	{action: "update_project", restMethods: []string{"UpdateProject"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	{action: "archive_project", restMethods: []string{"ArchiveProject"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	{action: "unarchive_project", restMethods: []string{"UnarchiveProject"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
-	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "GetEpic", "GetTask"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: liveCell},
+	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "GetEpic", "GetTask"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: liveCell,
+		agentTool: "board_read"}, // v1 item form (GetTaskInWorkspace); list/search/health ride the #1699 engine seams
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	{action: "update_epic", restMethods: []string{"UpdateEpic"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	{action: "epic_activate", restMethods: []string{"ActivateEpic"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell,
@@ -102,16 +114,23 @@ var boardParityMatrix = []parityRow{
 		denyErr: &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	{action: "remove_dependency", restMethods: []string{"RemoveDependency"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	{action: "move_stage", restMethods: []string{"MoveStageTask"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: liveCell,
-		denyErr: &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
+		agentTool: "board_move_stage",
+		denyErr:   &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
 	{action: "task_start", restMethods: []string{"StartTask"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell, // owner surface only (§4.3b)
 		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "paused epics refuse task_start"}, denyCode: http.StatusConflict},
 	{action: "cancel_task", restMethods: []string{"CancelTask"}, rest: liveCell, externalMCP: pendingLane3Cell, agent: absentCell},
 	// Worker-only rows: absent on REST BY DESIGN (no owner surface
 	// delivers them — §4.7); deny-or-absent on external MCP until Lane 3
 	// records which; live on the agent seam (claim-token guarded).
-	{action: "heartbeat", restMethods: nil, rest: absentCell, externalMCP: pendingLane3Cell, agent: liveCell},
-	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: pendingLane3Cell, agent: liveCell},
+	{action: "heartbeat", restMethods: nil, rest: absentCell, externalMCP: pendingLane3Cell, agent: liveCell,
+		agentTool: "board_heartbeat"},
+	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: pendingLane3Cell, agent: liveCell,
+		agentTool: "board_report_throttle"},
 	// Engine-internal since R9 — absent on ALL surfaces, permanently.
+	// Since #1701 the agent surface's absence is enforced at BOTH tiers:
+	// the seam route table (TestBoardParity_AgentColumn) and the agentd
+	// registry scan (TestBoardParity_AgentRegistryColumn) — a
+	// board_claim_next tool registered in agentd reddens here.
 	{action: "claim_next", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: absentCell},
 }
 
@@ -318,6 +337,88 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 			assert.Contains(t, rw.Body.String(), tc.codeJSON, "REST surface code")
 		})
 	}
+}
+
+// TestBoardParity_AgentRegistryColumn: #1701's tier of the agent column —
+// the agentd REGISTRY (cmd/workspace-agentd's mcpToolCatalog + the
+// callMCPTool dispatcher), the tool surface the in-workspace worker
+// actually sees. Construction guarantee, the scanMCPPkgForBoardTools
+// discipline applied to the agent tier: the board_* tools registered in
+// agentd are EXACTLY the matrix's live agent cells' tools — a tool
+// added to agentd without a matrix row reddens here (an unregistered
+// live cell reddens too), and the declared absences are enforced AT the
+// registry: claim_next (engine-internal, R9 — absent on all surfaces,
+// permanently) and every manager row have NO registered tool.
+func TestBoardParity_AgentRegistryColumn(t *testing.T) {
+	catalog, dispatch := scanAgentdForBoardTools(t)
+
+	want := map[string]bool{}
+	for _, row := range boardParityMatrix {
+		if row.agent.kind == "live" {
+			require.NotEmpty(t, row.agentTool, "action %s: live agent cell must name its registry tool", row.action)
+			want[row.agentTool] = true
+		} else {
+			require.Empty(t, row.agentTool, "action %s: absent agent cell must name no registry tool", row.action)
+		}
+	}
+	assert.Equal(t, want, catalog,
+		"agentd's board_* registry must be exactly the matrix's live agent tools (manager rows and claim_next absent BY DESIGN, §4.3c/R9)")
+
+	for tool := range catalog {
+		assert.True(t, dispatch[tool], "registry tool %s has no dispatcher case — the catalog would be a brochure", tool)
+	}
+	assert.NotEmpty(t, dispatch, "the board dispatcher wiring must exist")
+}
+
+// scanAgentdForBoardTools extracts (catalog, dispatch) board_* tool
+// name sets from cmd/workspace-agentd's source: catalog names from
+// mcpTool entries (`Name: "board_…"`), dispatch names from switch case
+// clauses. Both directions feed the parity construction guarantee.
+func scanAgentdForBoardTools(t *testing.T) (catalog, dispatch map[string]bool) {
+	t.Helper()
+	dir := filepath.Join("..", "..", "..", "cmd", "workspace-agentd")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err, "cmd/workspace-agentd not found — repo layout changed?")
+	catalog, dispatch = map[string]bool{}, map[string]bool{}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(b), "\n") {
+			trimmed := strings.TrimSpace(line)
+			for _, name := range quotedBoardNames(trimmed) {
+				if strings.HasPrefix(trimmed, "Name:") {
+					catalog[name] = true
+				}
+				if strings.HasPrefix(trimmed, "case ") {
+					dispatch[name] = true
+				}
+			}
+		}
+	}
+	return catalog, dispatch
+}
+
+// quotedBoardNames returns every "board_…" string literal on the line.
+func quotedBoardNames(line string) []string {
+	var out []string
+	for i := 0; i < len(line); i++ {
+		if line[i] != '"' {
+			continue
+		}
+		rest := line[i+1:]
+		end := strings.IndexByte(rest, '"')
+		if end < 0 {
+			break
+		}
+		if strings.HasPrefix(rest[:end], "board_") {
+			out = append(out, rest[:end])
+		}
+		i += end + 1
+	}
+	return out
 }
 
 // TestBoardParity_ExternalMCPColumn: Lane 3 has not registered board
