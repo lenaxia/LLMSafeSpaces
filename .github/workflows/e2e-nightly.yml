@@ -468,11 +468,27 @@ jobs:
         # workflow-targeted triggers point at a nonexistent DAG.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
-          CTX: kind-${{ env.CLUSTER_NAME }}
+          CTX: ${{ env.CTX }}
           NS: ${{ env.NS }}
           PORTFWD_PORT: 18086
           R4_WAIT_S: 150
         run: bash local/issue-1410-1412-automation-e2e.sh
+
+      - name: Run cross-workspace routine-trigger e2e rows (#1729)
+        # API-only rows for the owner-scoped targetWorkspaceId gate:
+        # cross-workspace create targets the NAMED workspace (R1),
+        # nonexistent target 404 (R2), another user's workspace 403 with
+        # nothing persisted (R3), plain workspaceId create unchanged
+        # (R4), workflowId+targetWorkspaceId 400 (R5), the create-only
+        # 400 on the REST update surface (R6), and the org-route rows
+        # authorizing the ACTING user (R7 — SKIPs where org creation is
+        # platform-admin gated). No LLM model — nothing fires.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: ${{ env.CTX }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18088
+        run: bash local/issue-1729-cross-workspace-automation-e2e.sh
 
       - name: Run routine session-index e2e rows (#1452)
         # Preserved routine sessions must be discoverable in the platform
