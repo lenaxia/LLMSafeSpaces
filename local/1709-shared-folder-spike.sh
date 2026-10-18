@@ -341,6 +341,103 @@ EXPECTED_BYTES=$(( AUTO_GB * 1024 * 1024 * 1024 ))
 EXPECTED_BYTES_90=$(( EXPECTED_BYTES * 9 / 10 ))
 
 # ---------------------------------------------------------------------------
+# Leg 0 — storage sanity WITHOUT gVisor: separates environment from
+# architecture. If Longhorn's base path (RWO+runc) or the RWX share path
+# (RWX+runc) is broken on this runner, leg A's FAIL is a runner-class
+# finding, NOT a runsc×RWX verdict (runs 39079884685 et al: share-manager
+# crash-loops its ganesha readiness probe before the engine ever starts;
+# the manager meanwhile logs "No share-manager pod yet" against a pod the
+# events show existing). Leg 0 captures the share-manager container logs
+# BY NAME (label selectors missed the pod in prior dumps).
+# ---------------------------------------------------------------------------
+sect "LEG_0_storage_sanity"
+S0_STATUS=FAIL
+
+cat <<EOF | ${K} apply -f - >/dev/null
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: rwo-test, namespace: ${NS}}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 2Gi}}
+  storageClassName: user-shared
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: rwo-probe, namespace: ${NS}, labels: {spike: "1709"}}
+spec:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  containers:
+  - name: ws
+    image: ${DEBIAN_IMG}
+    command: ["/bin/sh", "-c"]
+    args: ["sleep 1800"]
+    volumeMounts: [{name: v, mountPath: /data}]
+  volumes:
+  - name: v
+    persistentVolumeClaim: {claimName: rwo-test}
+  restartPolicy: Never
+EOF
+if ${KC} wait --for=condition=ready pod/rwo-probe --timeout=600s >/dev/null 2>&1 \
+   && ${KC} exec rwo-probe -- sh -c 'dd if=/dev/urandom of=/data/x bs=1M count=8 2>/dev/null && sha256sum /data/x' >"$OUT/s0-rwo.txt" 2>&1; then
+    res "s0_rwo_runc=PASS"
+    ok "leg0: Longhorn RWO + runc write/read works"
+else
+    res "s0_rwo_runc=FAIL"
+    ${KC} describe pod rwo-probe >"$OUT/s0-rwo-describe.txt" 2>&1 || true
+    lh_dump_state
+fi
+
+cat <<EOF | ${K} apply -f - >/dev/null
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: rwx-test, namespace: ${NS}}
+spec:
+  accessModes: [ReadWriteMany]
+  resources: {requests: {storage: 2Gi}}
+  storageClassName: user-shared
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: rwx-probe, namespace: ${NS}, labels: {spike: "1709"}}
+spec:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  containers:
+  - name: ws
+    image: ${DEBIAN_IMG}
+    command: ["/bin/sh", "-c"]
+    args: ["sleep 1800"]
+    volumeMounts: [{name: v, mountPath: /data}]
+  volumes:
+  - name: v
+    persistentVolumeClaim: {claimName: rwx-test}
+  restartPolicy: Never
+EOF
+RWX0_T0=$(now_s)
+if ${KC} wait --for=condition=ready pod/rwx-probe --timeout=1200s >/dev/null 2>&1 \
+   && ${KC} exec rwx-probe -- sh -c 'dd if=/dev/urandom of=/data/x bs=1M count=8 2>/dev/null && sha256sum /data/x' >"$OUT/s0-rwx.txt" 2>&1; then
+    res "s0_rwx_runc=PASS"
+    res "s0_rwx_attach_s=$(elapsed "$RWX0_T0" "$(now_s)")"
+    ok "leg0: Longhorn RWX share + runc works ($(elapsed "$RWX0_T0" "$(now_s)")s to ready)"
+else
+    res "s0_rwx_runc=FAIL"
+    # decisive dumps: share-manager logs BY NAME + engine CRs
+    for SM_POD in $(${K} -n longhorn-system get pods -o name 2>/dev/null | grep share-manager | head -2); do
+        ${K} -n longhorn-system logs "${SM_POD#pod/}" --tail=60 >"$OUT/s0-$(basename "${SM_POD#pod/}").log" 2>&1 || true
+    done
+    ${K} -n longhorn-system get engines.longhorn.io -o wide >"$OUT/s0-engines.txt" 2>&1 || true
+    ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/s0-replicas.txt" 2>&1 || true
+    lh_dump_state
+fi
+
+${K} delete pod rwo-probe rwx-probe --ignore-not-found >/dev/null 2>&1 || true
+${K} delete pvc rwo-test rwx-test --ignore-not-found >/dev/null 2>&1 || true
+if ! sed -n '/### LEG_0/,/### LEG_A/p' "$RESULTS" | grep -q "=FAIL"; then S0_STATUS=PASS; fi
+res "s0_status=${S0_STATUS}"
+
+# ---------------------------------------------------------------------------
 # Leg A — runsc × Longhorn RWX in workspace-shaped pods
 # ---------------------------------------------------------------------------
 sect "LEG_A_runsc_rwx"
