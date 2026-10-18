@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(nothing yet)
+
+## [0.38.1] - 2026-10-18
+
 ### Fixed — Platform-upgrade blast-radius contract pinned + rollout kill-tests (#1724)
 
 - **The v0.38.0 incident's suspected mechanism is refuted and the real
