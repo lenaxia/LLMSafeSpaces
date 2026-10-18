@@ -58,7 +58,7 @@ Two gVisor'd pods (`runtimeClassName: gvisor`, full posture above) mount ONE `Re
 | uid mapping — file written by ws-a reads back `1000:1000` from both | **[R:a_uid_mapping]** | [R:a_stat_from_a_ws_a] / [R:a_stat_from_a_ws_b] |
 | Sequential 1 GiB dd write / read through the gofer | **[R:a_dd_write_gvisor_mbs]** / **[R:a_dd_read_gvisor_mbs]** MB/s | [R:a_dd_write_gvisor_mbs] |
 
-Verdict: the **descendant of design 0051's V9 question** answers the same way the V9 leg did — the runsc mount path holds for the Longhorn share-manager (NFS-backed) export exactly as it held for the per-workspace RWO PVC, including fsGroup propagation (`1000:1000` from both pods — the `OnRootMismatch` policy avoids the recursive-chown cost the workspace PVC already documented).
+Verdict (evidence-gated, per this doc's Status protocol): if the `[R:a_*]` rows above read PASS, the **descendant of design 0051's V9 question** is answered the same way the V9 leg answered — the runsc mount path holds for the Longhorn share-manager (NFS-backed) export exactly as it held for the per-workspace RWO PVC, including fsGroup propagation (`1000:1000` from both pods — the `OnRootMismatch` policy avoids the recursive-chown cost the workspace PVC already documented). If any row reads FAIL, leg A is the charter's architecture stop.
 
 ### 3.3 Leg B — hydration throughput (parallel rclone S3→Longhorn RWX): **[R:b_status]**
 
@@ -76,7 +76,7 @@ Dataset **[R:b_dataset_gb]** GiB seeded to S3 ([R:b_seed_s]s), hydrated into the
 
 ### 3.4 Leg C — snapshot → RO mount in a gVisor'd sync pod: **[R:c_status]**
 
-A live writer appends self-verifying records (`REC%08d|base64(4KiB random)|`) to `/shared/journal.bin` **while** the VolumeSnapshot is taken; the restore PVC is then mounted **readOnly** by a gVisor'd sync pod (full posture) which (a) proves the mount is read-only by attempting a write, (b) verifies every dataset file against the seed manifest, (c) parses the journal for gaps/dupes (crash consistency: torn tail acceptable, gaps not), and (d) rclone-syncs the RO view to S3:
+A live writer appends self-verifying records (`REC%08d|base64(4KiB random)` — one pipe, the parser's field separator) to `/shared/journal.bin` **while** the VolumeSnapshot is taken; the restore PVC is then mounted **readOnly** by a gVisor'd sync pod (full posture) which (a) proves the mount is read-only by attempting a write, (b) verifies every dataset file against the seed manifest, (c) parses the journal for gaps/dupes (crash consistency: torn tail acceptable, gaps not), and (d) rclone-syncs the RO view to S3:
 
 | Step | Result | Row |
 |---|---|---|
@@ -88,7 +88,7 @@ A live writer appends self-verifying records (`REC%08d|base64(4KiB random)|`) to
 | rclone RO-view → S3 push (the 15-min-cadence operation at full volume) | **[R:c_sync_pod_s]**s total incl. verify | [R:c_sync_pod_s] |
 | Snapshot chain after cleanup | **[R:c_lh_snapshots_after_cleanup]** remaining | [R:c_lh_snapshots_after_cleanup] |
 
-Verdict: the sync path is exactly as cheap as the settled architecture assumed — the snapshot itself is COW-instant, the CSI restore is the measurable cost, and the whole cycle at the spike's volume fits comfortably inside a 15-minute cadence with single-digit-percent duty cycle.
+Verdict (evidence-gated): if the `[R:c_*]` rows above read PASS, the sync path is as cheap as the settled architecture assumed — the snapshot itself COW-instant, the CSI restore the measurable cost, the whole cycle at the spike's volume inside a 15-minute cadence at single-digit-percent duty cycle (the numbers above ARE the claim; if any row reads FAIL or PENDING, no cadence claim is made).
 
 ### 3.5 Spike-disclosed environment finding — Docker Hub delisting of minio/minio
 

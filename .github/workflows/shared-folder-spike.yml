@@ -66,10 +66,13 @@ jobs:
 
       - name: Record runner environment
         run: |
-          echo "cpu: $(nproc)"
-          echo "mem: $(free -h | awk '/^Mem:/{print $2}')"
-          df -h / | tee /tmp/spike1709-df.txt
-          docker info --format 'docker={{.ServerVersion}} ncpu={{.NCPU}}' || true
+          mkdir -p /tmp/spike1709
+          {
+            echo "cpu: $(nproc)"
+            echo "mem: $(free -h | awk '/^Mem:/{print $2}')"
+            df -h / | tail -1
+            docker info --format 'docker={{.ServerVersion}} ncpu={{.NCPU}}' 2>/dev/null || true
+          } | tee /tmp/spike1709/run-env.txt
 
       - name: Create kind cluster
         run: kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME

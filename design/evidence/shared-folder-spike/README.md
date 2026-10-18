@@ -19,6 +19,11 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 38873829660 | fail @ legs A+B | replicaSoftAntiAffinity default hard-affine (single node) + Seaweed IAM plain action names |
 | 38889584710 | fail @ chart fetch | transient GitHub 500 on the release-asset tgz — 3-attempt retry |
 | 38892896347 | cancelled | first run to clear all provisioning; runner reclaimed mid-legs |
+| 39075635564 | fail @ pre-warm | kind load + digest refs = multi-arch import trap — ctr pull on node |
+| 39077806519 | fail @ pre-warm | ctr needs docker.io-qualified refs (bare repo@digest → dummy://) |
+| 39079884685 | fail @ leg A | share-manager ganesha probe loop persists; full longhorn dumps captured |
+| 39083785719 | fail @ legs 0+A | leg-0 probes hit a namespace that didn't exist yet (harness bug, fixed); RWX share still not converging |
+| 39087698763 | cancelled | superseded by the r3-remediation push (concurrency cancel) |
 | (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
@@ -30,8 +35,8 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 
 ## Files
 
-- `results.txt` — structured KEY=VALUE rows for all three legs (the design doc cites these as `[R:KEY]`).
-- `run-env.txt` — runner environment record (CPU/mem/disk/docker).
+- `results.txt` — structured KEY=VALUE rows for legs 0/A/B/C (the design doc cites these as `[R:KEY]`). 0 files exist until the green run lands — every row is PENDING until then.
+- `run-env.txt` — runner environment record (CPU/mem/disk/docker), written by the workflow's env step.
 - `c-sync.log` — leg C sync pod: RO-mount check, manifest verify output, journal torn-tail parse, rclone push.
 - `spike.log` — leg progress log (the script's own tee).
 - Failed-run artifacts kept for the record: `run38865021006/` (minio delisting), `run38865864638/` (VSC-before-CRD ordering), `run38866952477/` (this run).

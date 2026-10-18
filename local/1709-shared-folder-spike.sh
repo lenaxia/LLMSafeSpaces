@@ -66,7 +66,7 @@ S3_IMG="chrislusf/seaweedfs@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99a
 # "JOURNAL_RECS=<n> JOURNAL_GAPS=<g> JOURNAL_DUPES=<d>". Verdict is the
 # caller's: gaps/dupes > 0 = corruption; a torn FINAL line is acceptable
 # under crash consistency; zero parsed records = vacuous = FAIL.
-# Records: `REC%08d|<base64 4KiB>|` one per line; seq strictly +1.
+# Records: `REC%08d|<base64 4KiB>` one per line; seq strictly +1.
 journal_parse() {
     awk -F'|' '
         NF==2 && $1 ~ /^REC[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$/ {
@@ -102,8 +102,8 @@ journal_verdict() { # <journal-file>
     return 0
 }
 
-# Exit-contract helper: green iff ALL three legs PASS.
-leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ]; }
+# Exit-contract helper: green iff ALL FOUR leg statuses (0/A/B/C) PASS.
+leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ] && [ "$4" = "PASS" ]; }
 
 # ---------------------------------------------------------------------------
 # selftest — journal-parser fixtures + exit-contract helper. Driven by
@@ -133,10 +133,11 @@ selftest() {
     out=$(journal_verdict "$dir/empty.j"); rc=$?
     { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: empty journal must FAIL"; fail=1; }
 
-    leg_exit PASS PASS PASS || { echo "selftest: all-PASS must exit 0"; fail=1; }
-    leg_exit PASS FAIL PASS && { echo "selftest: leg-B FAIL must exit non-zero"; fail=1; }
-    leg_exit PASS PASS FAIL && { echo "selftest: leg-C FAIL must exit non-zero"; fail=1; }
-    leg_exit FAIL PASS PASS && { echo "selftest: leg-A FAIL must exit non-zero"; fail=1; }
+    leg_exit PASS PASS PASS PASS || { echo "selftest: all-PASS must exit 0"; fail=1; }
+    leg_exit PASS PASS FAIL PASS && { echo "selftest: leg-B FAIL must exit non-zero"; fail=1; }
+    leg_exit PASS PASS PASS FAIL && { echo "selftest: leg-C FAIL must exit non-zero"; fail=1; }
+    leg_exit PASS FAIL PASS PASS && { echo "selftest: leg-A FAIL must exit non-zero"; fail=1; }
+    leg_exit FAIL PASS PASS PASS && { echo "selftest: leg-0 FAIL must exit non-zero"; fail=1; }
 
     rm -rf "$dir"
     if [ "$fail" = "0" ]; then echo "SELFTEST=PASS"; return 0; fi
@@ -191,7 +192,7 @@ rclone size /shared || true
 REOF
     } >"$dir/hydrate.sh"
 
-    { echo "# spike-script: writer" <<'REOF'
+    { echo "# spike-script: writer"; cat <<'REOF'
 i=0
 while [ $i -lt 100000 ]; do
   { printf 'REC%08d|' "$i"; dd if=/dev/urandom bs=4096 count=1 2>/dev/null | base64 -w0; printf '\n'; } >> /shared/journal.bin
@@ -200,7 +201,7 @@ done
 REOF
     } >"$dir/writer.sh"
 
-    { echo "# spike-script: sync" <<'REOF'
+    { echo "# spike-script: sync"; cat <<'REOF'
 set -e
 echo "-- RO mount check"
 if touch /shared/.rw-probe 2>/dev/null; then echo "RO_CHECK=FAIL (mount writable)"; exit 1; else echo "RO_CHECK=PASS"; fi
@@ -285,6 +286,34 @@ lh_dump_state() {
     ${K} -n longhorn-system get events --sort-by=.lastTimestamp >"$OUT/lh-events.txt" 2>&1 || true
 }
 
+# capture_share_manager <prefix>: poll up to 6 min for a non-Terminating
+# share-manager pod (prefer it over a Terminating corpse from a prior
+# attach cycle); capture live + previous logs and the pod object. Sets
+# SM_CAPTURE=captured|never-found.
+capture_share_manager() { # prefix
+    local prefix="$1" i name phase
+    SM_NAME=""
+    for i in $(seq 1 36); do
+        while IFS=$'\t' read -r name phase; do
+            if [ "$phase" != "Terminating" ]; then SM_NAME="$name"; break; fi
+            [ -z "$SM_NAME" ] && SM_NAME="$name"   # fall back to a corpse
+        done < <(${K} -n longhorn-system get pods --no-headers 2>/dev/null | awk '$1 ~ /share-manager/ {print $1"\t"$3}' | head -3)
+        [ -n "$SM_NAME" ] && case "$(${K} -n longhorn-system get pod "$SM_NAME" -o jsonpath='{.status.phase}' 2>/dev/null)" in
+            Terminating) SM_NAME="";;
+            *) break;;
+        esac
+        sleep 10
+    done
+    if [ -n "${SM_NAME:-}" ]; then
+        ${K} -n longhorn-system logs "${SM_NAME}" --tail=80 >"$OUT/${prefix}-share-manager-live.log" 2>&1 || true
+        ${K} -n longhorn-system logs "${SM_NAME}" --previous --tail=80 >"$OUT/${prefix}-share-manager-prev.log" 2>&1 || true
+        ${K} -n longhorn-system get pod "${SM_NAME}" -o yaml >"$OUT/${prefix}-share-manager-pod.yaml" 2>&1 || true
+        SM_CAPTURE="captured(${SM_NAME})"
+    else
+        SM_CAPTURE="never-found"
+    fi
+}
+
 rclone_env_yaml() { # the env pairs every rclone pod needs
     cat <<EOF
         - {name: RCLONE_CONFIG_SPIKE_TYPE, value: s3}
@@ -356,7 +385,10 @@ S0_STATUS=FAIL
 # The namespace must exist BEFORE leg 0 — it was previously created in
 # leg A's apply, so leg 0's probes died NotFound (run 39083785719's
 # s0-rwo-describe.txt: namespaces "spike1709" not found).
-${K} create namespace "${NS}" --dry-run=client -o yaml | ${K} apply -f - >/dev/null
+if ! ${K} create namespace "${NS}" --dry-run=client -o yaml | ${K} apply -f - >/dev/null; then
+    die "namespace pre-create failed (dead context?) — aborting before any waits"
+    exit 1
+fi
 
 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
@@ -430,25 +462,18 @@ else
     res "s0_rwx_runc=FAIL"
     # decisive dumps: the share-manager pod lives only ~40s of every ~2m
     # backoff cycle (probe kill → recreate), so poll for up to 6 minutes
-    # and grab BOTH the live and --previous container logs the moment a
-    # pod object exists (every prior dump landed in a gap).
-    for i in $(seq 1 36); do
-        SM_NAME=$(${K} -n longhorn-system get pods -o name 2>/dev/null | grep share-manager | head -1 | sed 's|^pod/||')
-        [ -n "$SM_NAME" ] && break
-        sleep 10
-    done
-    if [ -n "${SM_NAME:-}" ]; then
-        ${K} -n longhorn-system logs "${SM_NAME}" --tail=80 >"$OUT/s0-share-manager-live.log" 2>&1 || true
-        ${K} -n longhorn-system logs "${SM_NAME}" --previous --tail=80 >"$OUT/s0-share-manager-prev.log" 2>&1 || true
-        ${K} -n longhorn-system get pod "${SM_NAME}" -o yaml >"$OUT/s0-share-manager-pod.yaml" 2>&1 || true
-    fi
+    # for a NON-TERMINATING pod and grab BOTH the live and --previous
+    # container logs (every prior dump landed in a gap or latched a
+    # Terminating corpse).
+    capture_share_manager s0
+    res "s0_share_manager_capture=${SM_CAPTURE:-never-found}"
     ${K} -n longhorn-system get engines.longhorn.io -o wide >"$OUT/s0-engines.txt" 2>&1 || true
     ${K} -n longhorn-system get replicas.longhorn.io -o wide >"$OUT/s0-replicas.txt" 2>&1 || true
     lh_dump_state
 fi
 
-${K} delete pod rwo-probe rwx-probe --ignore-not-found >/dev/null 2>&1 || true
-${K} delete pvc rwo-test rwx-test --ignore-not-found >/dev/null 2>&1 || true
+${KC} delete pod rwo-probe rwx-probe --ignore-not-found >/dev/null 2>&1 || true
+${KC} delete pvc rwo-test rwx-test --ignore-not-found >/dev/null 2>&1 || true
 if ! sed -n '/### LEG_0/,/### LEG_A/p' "$RESULTS" | grep -q "=FAIL"; then S0_STATUS=PASS; fi
 res "s0_status=${S0_STATUS}"
 
@@ -457,6 +482,19 @@ res "s0_status=${S0_STATUS}"
 # ---------------------------------------------------------------------------
 sect "LEG_A_runsc_rwx"
 A_STATUS=FAIL
+if [ "$S0_STATUS" != "PASS" ]; then
+    # Leg-0 failure gates the run (N-R8-3): the storage path is broken in
+    # this environment — legs A-C could only re-demonstrate it, so they
+    # are recorded SKIPPED and the run exits non-zero (the ~35 min of
+    # leg waits are not paid).
+    res "a_status=SKIPPED_LEG0_FAILED"
+    res "leg_a=SKIPPED_LEG0_FAILED"
+    res "leg_b=SKIPPED_LEG0_FAILED"
+    res "leg_c=SKIPPED_LEG0_FAILED"
+    res "finished_at=$(date -u +%FT%TZ)"
+    log "spike complete — S0=${S0_STATUS} (legs A/B/C skipped: storage path broken)"
+    exit 1
+fi
 
 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
@@ -624,6 +662,8 @@ else
     ${KC} describe pod ws-a ws-b >"$OUT/a-pod-describe.txt" 2>&1 || true
     ${KC} get events --sort-by=.lastTimestamp >"$OUT/a-events.txt" 2>&1 || true
     docker exec "$NODE" sh -c 'mount | grep -i nfs || true' >"$OUT/a-node-mounts.txt" 2>&1 || true
+    capture_share_manager a
+    res "a_share_manager_capture=${SM_CAPTURE:-never-found}"
     lh_dump_state
 fi
 res "a_status=${A_STATUS}"
@@ -695,7 +735,7 @@ else
     # failure must not fail a successful seed).
     SEED_BIG=$(( AUTO_GB * 8 ))
     SEED_SMALL=$(( AUTO_GB * 32 ))
-    ${K} delete job seed --ignore-not-found >/dev/null 2>&1
+    ${KC} delete job seed --ignore-not-found >/dev/null 2>&1
     cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
@@ -808,7 +848,7 @@ EOF
 
         # B1 cold hydration under gVisor, transfers sweep
         for T in $TRANSFERS; do
-            ${K} delete job hyd-gvisor-t${T} --ignore-not-found >/dev/null 2>&1
+            ${KC} delete job hyd-gvisor-t${T} --ignore-not-found >/dev/null 2>&1
             clean_shared
             hyd_job_yaml "hyd-gvisor-t${T}" gvisor "$T" | ${K} apply -f - >/dev/null
             TH0=$(now_s)
@@ -824,7 +864,7 @@ EOF
         done
 
         # B2 runc comparison (same sweep's last T; the gofer-tax delta)
-        ${K} delete job hyd-runc --ignore-not-found >/dev/null 2>&1
+        ${KC} delete job hyd-runc --ignore-not-found >/dev/null 2>&1
         clean_shared
         LAST_T="$(echo $TRANSFERS | awk '{print $NF}')"
         hyd_job_yaml hyd-runc runc "$LAST_T" | ${K} apply -f - >/dev/null
@@ -841,7 +881,7 @@ EOF
 
         # B3 no-change resync (steady-state park→rehydrate of unchanged
         # data = metadata scan cost). Same dataset stays in place.
-        ${K} delete job hyd-nochange --ignore-not-found >/dev/null 2>&1
+        ${KC} delete job hyd-nochange --ignore-not-found >/dev/null 2>&1
         hyd_job_yaml hyd-nochange gvisor "$LAST_T" | ${K} apply -f - >/dev/null
         TI0=$(now_s)
         if wait_job hyd-nochange 3600; then
@@ -852,7 +892,7 @@ EOF
         fi
 
         # B4 1 GiB delta: upload 8 new 128 MiB objects to S3, resync
-        ${K} delete job delta-seed --ignore-not-found >/dev/null 2>&1
+        ${KC} delete job delta-seed --ignore-not-found >/dev/null 2>&1
         cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
@@ -886,7 +926,7 @@ $(rclone_env_yaml)
         emptyDir: {}
 EOF
         if wait_job delta-seed 1800; then
-            ${K} delete job hyd-delta --ignore-not-found >/dev/null 2>&1
+            ${KC} delete job hyd-delta --ignore-not-found >/dev/null 2>&1
             hyd_job_yaml hyd-delta gvisor "$LAST_T" | ${K} apply -f - >/dev/null
             TD0=$(now_s)
             if wait_job hyd-delta 3600; then
@@ -896,7 +936,7 @@ EOF
                 res "b_resync_1gib_delta_s=FAIL"
             fi
         else
-            res "b_resync_1gib_delta_s=DELTA_SEED_FAIL"
+            res "b_resync_1gib_delta_s=FAIL (delta-seed job failed)"
         fi
         # B_STATUS aggregates the leg's sub-verdicts
         if ! sed -n '/### LEG_B/,/### LEG_C/p' "$RESULTS" | grep -q "=FAIL"; then B_STATUS=PASS; fi
@@ -912,11 +952,11 @@ C_STATUS=FAIL
 if [ "$B_STATUS" != "PASS" ]; then
     res "c_status=SKIPPED_B_FAILED"
 else
-    # C1 live append writer: `REC%08d|<b64>|` lines appended WHOLE to the
+    # C1 live append writer: `REC%08d|<b64>` lines appended WHOLE to the
     # journal (grouped redirect — the run-1 writer leaked everything but
     # the newline to pod stdout and the journal recorded blank lines,
     # making the crash-consistency gate vacuous).
-    ${K} delete pod ws-writer --ignore-not-found >/dev/null 2>&1
+    ${KC} delete pod ws-writer --ignore-not-found >/dev/null 2>&1
     cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
 kind: Pod
@@ -1005,7 +1045,7 @@ EOF
                 # journal parse (gaps/dupes FAIL) + rclone push of the
                 # RO view. Every check exits non-zero on failure — a
                 # green Job means every gate passed (review N-B/C3).
-                ${K} delete job sync --ignore-not-found >/dev/null 2>&1
+                ${KC} delete job sync --ignore-not-found >/dev/null 2>&1
                 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
@@ -1081,8 +1121,8 @@ EOF
                 fi
 
                 # C5 cleanup + snapshot-chain verification
-                ${K} delete pvc spike-restore --ignore-not-found >/dev/null 2>&1
-                ${K} delete volumesnapshot spike-snap --ignore-not-found >/dev/null 2>&1
+                ${KC} delete pvc spike-restore --ignore-not-found >/dev/null 2>&1
+                ${KC} delete volumesnapshot spike-snap --ignore-not-found >/dev/null 2>&1
                 sleep 15
                 res "c_lh_snapshots_after_cleanup=$(${K} -n longhorn-system get snapshots.longhorn.io -o json 2>/dev/null | jq -r '.items | length' 2>/dev/null || echo unknown)"
             else
@@ -1090,7 +1130,7 @@ EOF
                 ${KC} describe pvc spike-restore >"$OUT/c-restore.txt" 2>&1 || true
             fi
         fi
-        ${K} delete pod ws-writer --ignore-not-found >/dev/null 2>&1 || true
+        ${KC} delete pod ws-writer --ignore-not-found >/dev/null 2>&1 || true
     fi
 fi
 res "c_status=${C_STATUS}"
@@ -1104,6 +1144,6 @@ res "finished_at=$(date -u +%FT%TZ)"
 log "spike complete — A=${A_STATUS} B=${B_STATUS} C=${C_STATUS} (results: ${RESULTS})"
 
 # Exit contract: ANY failed leg ⇒ non-zero (a green workflow check means
-# all three legs produced evidence — review C4).
-leg_exit "$A_STATUS" "$B_STATUS" "$C_STATUS" || exit 1
+# legs 0/A/B/C ALL produced evidence — reviews C4 + N-R8-3).
+leg_exit "$S0_STATUS" "$A_STATUS" "$B_STATUS" "$C_STATUS" || exit 1
 exit 0

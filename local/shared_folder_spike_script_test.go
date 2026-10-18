@@ -79,9 +79,12 @@ func TestSharedFolderSpike_NoDollarDollarEscape(t *testing.T) {
 	}
 }
 
-// Every generated pod/job script must parse under /bin/sh (dash) — the
-// parse gate that would have caught C1 pre-push. render emits the same
-// block bodies the live heredocs produce at default env.
+// Every generated pod/job script must parse under /bin/sh (dash) AND be
+// non-vacuous (≥5 lines + its anchor + its load-bearing construct) —
+// the parse gate that would have caught C1 pre-push, made drift-proof
+// by pinning that each rendered body's distinctive lines exist verbatim
+// in the live script (N-R5-1: render once emitted 1-line files because
+// the heredoc attached to `echo`, and the gate passed vacuously).
 func TestSharedFolderSpike_RenderedScriptsParseUnderDash(t *testing.T) {
 	bash := requireBashSpike(t)
 	dir := t.TempDir()
@@ -89,21 +92,42 @@ func TestSharedFolderSpike_RenderedScriptsParseUnderDash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render failed: %s", out)
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) < 4 {
-		t.Fatalf("render emitted %d scripts, want >= 4 (seed/hydrate/writer/sync): %s", len(entries), out)
-	}
 	sh, err := exec.LookPath("dash")
 	if err != nil {
 		t.Skip("dash not available (debian/rclone images ship it as /bin/sh; CI runners have it)")
 	}
-	for _, e := range entries {
-		path := filepath.Join(dir, e.Name())
-		if out, err := exec.Command(sh, "-n", path).CombinedOutput(); err != nil {
-			t.Errorf("dash -n %s failed (the C1 class): %s", e.Name(), out)
+	src := mustReadSpike(t, spikeScript)
+	shape := map[string]string{ // file → load-bearing construct it MUST contain
+		"seed.sh":    "while [ $i -lt",
+		"hydrate.sh": `rclone size --json /shared`,
+		"writer.sh":  "} >> /shared/journal.bin",
+		"sync.sh":    "JOURNAL_VERDICT=PASS",
+	}
+	if len(shape) != 4 {
+		t.Fatal("shape table edited — keep in lockstep with the render set")
+	}
+	for name, marker := range shape {
+		path := filepath.Join(dir, name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("render did not emit %s: %s", name, out)
+		}
+		if n := strings.Count(string(body), "\n"); n < 5 {
+			t.Errorf("%s rendered trivially (%d lines) — the N-R5-1 vacuous-gate class", name, n)
+		}
+		if !strings.Contains(string(body), "# spike-script:") {
+			t.Errorf("%s missing its anchor comment", name)
+		}
+		if !strings.Contains(string(body), marker) {
+			t.Errorf("%s missing its load-bearing construct %q", name, marker)
+		}
+		if !strings.Contains(src, marker) {
+			t.Errorf("live↔render drift: %q is in the render but NOT in the live script", marker)
+		}
+		if cmd := exec.Command(sh, "-n", path); true {
+			if o, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("dash -n %s failed (the C1 class): %s", name, o)
+			}
 		}
 	}
 }
@@ -122,16 +146,49 @@ func TestSharedFolderSpike_Selftest(t *testing.T) {
 	}
 }
 
-// Exit contract: the script's final gate must consult ALL THREE legs
-// (review C4: a leg-B/C FAIL silently exiting 0 made the workflow check
-// green without evidence).
+// Exit contract: the script's final gate must consult ALL FOUR leg
+// statuses (reviews C4 + N-R8-3 — a leg-B/C/0 FAIL silently exiting 0
+// made the workflow check green without evidence).
 func TestSharedFolderSpike_ExitContractCoversAllLegs(t *testing.T) {
 	src := mustReadSpike(t, spikeScript)
-	if !strings.Contains(src, `leg_exit "$A_STATUS" "$B_STATUS" "$C_STATUS" || exit 1`) {
-		t.Fatal("final exit gate must be leg_exit over A/B/C — any FAIL exits non-zero")
+	if !strings.Contains(src, `leg_exit "$S0_STATUS" "$A_STATUS" "$B_STATUS" "$C_STATUS" || exit 1`) {
+		t.Fatal("final exit gate must be leg_exit over 0/A/B/C — any FAIL exits non-zero")
 	}
-	if !strings.Contains(src, `leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ]; }`) {
-		t.Fatal("leg_exit helper must require PASS from all three legs")
+	if !strings.Contains(src, `leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ] && [ "$4" = "PASS" ]; }`) {
+		t.Fatal("leg_exit helper must require PASS from all four legs")
+	}
+	if !strings.Contains(src, `a_status=SKIPPED_LEG0_FAILED`) {
+		t.Fatal("leg-0 FAIL must skip legs A-C with a recorded row, not re-demonstrate the failure")
+	}
+}
+
+// FAIL-sentinel normalization (N-R5-2): every failure sentinel the legs
+// write must literally end in =FAIL so the per-leg aggregations (which
+// grep "=FAIL") cannot silently PASS over it.
+func TestSharedFolderSpike_FailSentinelsNormalize(t *testing.T) {
+	src := mustReadSpike(t, spikeScript)
+	if strings.Contains(src, "DELTA_SEED_FAIL") {
+		t.Fatal("DELTA_SEED_FAIL escapes the =FAIL aggregation (ninth-round finding) — sentinels must end in =FAIL")
+	}
+	if !strings.Contains(src, `=FAIL (delta-seed job failed)`) {
+		t.Fatal("the delta-seed failure row must be a =FAIL sentinel")
+	}
+}
+
+// Leg-0 shape (N-R8-1/2/3 regressions): namespace pre-created before the
+// first leg-0 apply, every delete namespace-scoped, S0 consumed.
+func TestSharedFolderSpike_Leg0Shape(t *testing.T) {
+	src := mustReadSpike(t, spikeScript)
+	preCreate := strings.Index(src, `create namespace "${NS}"`)
+	firstUse := strings.Index(src, "name: rwo-test")
+	if preCreate < 0 || firstUse < 0 || preCreate > firstUse {
+		t.Fatal("namespace pre-create must precede leg 0's first cluster-side use")
+	}
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "${K} delete") && !strings.Contains(trimmed, " -n ") {
+			t.Fatalf("bare namespace-less delete (N-R8-2 class): %s", trimmed)
+		}
 	}
 }
 
@@ -201,9 +258,10 @@ func TestLonghornLib_Shape(t *testing.T) {
 }
 
 // Workflow pins: the runc RuntimeClass must be applied beside gvisor
-// (N-A), and the node must be image-pre-warmed (ctr pull by digest on
-// the node — kind load's save/import path dies on multi-arch digest
-// refs, the run-39075635564 lesson).
+// (N-A), the node must be image-pre-warmed via ctr, and EVERY ctr ref
+// must carry a registry host (N-R6-2: the bare `debian@sha256:...` form
+// resolves via dummy:// and killed run 39077806519 — mutation-verified
+// as untested last round).
 func TestSharedFolderSpike_WorkflowShape(t *testing.T) {
 	src := mustReadSpike(t, spikeWF)
 	for _, marker := range []string{
@@ -213,6 +271,14 @@ func TestSharedFolderSpike_WorkflowShape(t *testing.T) {
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("workflow missing marker %q", marker)
+		}
+	}
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, `"`) && strings.Contains(trimmed, "@sha256:") {
+			if !strings.Contains(trimmed, `docker.io/`) {
+				t.Fatalf("ctr ref without registry host (N-R6-2 class): %s", trimmed)
+			}
 		}
 	}
 }

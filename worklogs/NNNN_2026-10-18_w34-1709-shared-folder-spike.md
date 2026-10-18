@@ -1,0 +1,47 @@
+# Worklog: #1709 — /shared parked-PVC spike (kit + run ledger) and design doc 0068
+
+**Date:** 2026-10-18
+**Session:** w34 design lane (charter: design doc for #1709 + the three spike deliverables that gate it).
+**Status:** In progress — spike kit hardened through 15 runs; design doc drafted with evidence-gated claims; green-run evidence pending (the open blocker is a Longhorn-on-slow-dind share-manager failure, documented below — it sits BEFORE gVisor, so leg A has no verdict yet).
+
+---
+
+## Objective
+
+Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RWX warm volume per user + S3 park), gated on the issue's three spike questions: (a) runsc × Longhorn RWX in a workspace-shaped pod, (b) 100 GB hydration throughput via parallel rclone, (c) snapshot→RO-mount in a gVisor'd pod. Design + spike only — no production implementation; scripts under `local/`, evidence under `design/evidence/shared-folder-spike/`, workflow on the `lenaxia-dind-runner` pool (kind + runsc + Longhorn 1.12.1 + snapshot-controller 5.3.0 — prod's pins; SeaweedFS 4.48 as the synthetic S3 tier).
+
+## Work Completed
+
+- Spike kit: `local/1709-shared-folder-spike.sh` (legs 0/A/B/C + selftest + render modes), `local/lib/longhorn.sh` (Longhorn-in-kind provisioning), `.github/workflows/shared-folder-spike.yml` (PR-triggered dispatch-equivalent, paths-filtered, concurrency-deduped).
+- Design doc 0068 drafted: parked-PVC lifecycle state machine (Hydrating/Ready/Parking/Parked + the issue's four edge cases), pre-warm/Ready-gating, snapshot→RO→rclone sync at 15-min cadence, `user-shared` StorageClass (prod `longhorn-2r` parameter set), quota-as-PVC-size (platform/per-user/org-aggregate), S3 layout + retention/versioning, user-level ownership seam (boards 0067 §authz), rejected alternatives verbatim, OR-1..OR-5 open-rulings menu, rollout sequencing. All result claims are `[R:...]` rows explicitly gated on committed evidence.
+- Review remediation across rounds 1–8 (C1–C4, N1, N-A/N-B/N-C, R1–R6): heredoc parse-fatal class dead (`\$i` single-escape + dash -n gate), journal writer whole-record appends, 4-way leg exit contract, share-manager wait after consumers, runc RuntimeClass + preflight, fail-fast job waits, real chart key, node image pre-warm via ctr, posture-claim scoping, digest pins, 4× disk budget.
+- Run ledger driven to 15 entries; every failure root-caused or captured for diagnosis (see Blockers).
+
+## Key Decisions
+
+- **SeaweedFS 4.48 as the spike's S3 tier** (not MinIO): minio/minio is delisted from Docker Hub — fresh pulls fail everywhere; the prod-pinned SeaweedFS is pullable and is a real S3 implementation. Design consequence recorded: no platform component may assume docker.io/minio/*.
+- **Seaweed IAM actions are plain names** (`Admin`, `Read`, …); scoped/regex forms match nothing → blanket 403s.
+- **Longhorn-on-single-node needs `replica-soft-anti-affinity=true`** (chart default hard-affines a volume's replicas to distinct nodes — unsatisfiable on one node; RWX volume faults with a ganesha probe crash-loop). Now in the operator-doc section of 0068.
+- **kind load + digest refs is a trap** (multi-arch manifest import dies on missing platform blobs — the pool's own 2026-09-07 class); node pre-warm uses `ctr -n k8s.io images pull --platform linux/amd64` with docker.io-qualified refs.
+- **Leg 0 (RWO/RWX sanity under runc) gates the run**: a storage-path failure in the environment is NOT a runsc×RWX verdict — legs A–C skip with recorded rows and the run exits non-zero.
+
+## Blockers
+
+- **OPEN: Longhorn RWX does not converge on the slow dind runner.** The share-manager pod crash-loops its ganesha readiness probe (~20 s after start, `/var/run/ganesha.pid` never appears); replicas stay stopped; the manager alternates "No share-manager pod yet" with "Skipping pod creation … backoff 2m0s". Both replicas DO schedule (soft anti-affinity fix verified). This sits entirely BEFORE gVisor — leg A has no verdict. Next diagnostic step (in the pushed kit): the by-name share-manager container-log capture (live + `--previous`) across the 2-minute backoff cycle — every prior dump landed in a gap or latched a Terminating corpse.
+
+## Tests Run
+
+- `bash local/1709-shared-folder-spike.sh selftest` — journal-parser fixtures (clean/torn-tail/gap/dupe/empty) + 4-way exit-contract helper. PASS locally.
+- `bash local/1709-shared-folder-spike.sh render <dir>` + `dash -n` on every emitted body. PASS locally (non-vacuous: anchor + loop-construct + live-script drift pins in the Go test).
+- `go test ./local/ -run 'TestSharedFolderSpike|TestLonghornLib'` — 12 companion pins (bash -n ×2, rendered dash -n + content + drift, `\$\$` dead signature, selftest, exit contract, fail-sentinel normalization, leg-0 shape incl. namespace ordering + scoped deletes, writer redirect, RuntimeClass preflight, hydration size gate, longhorn lib keys/params, workflow shape incl. ctr ref qualification). PASS.
+- Spike runs: 15 on the pool (ledger in `design/evidence/shared-folder-spike/README.md`); zero green leg executions yet — the open blocker above.
+
+## Files Modified
+
+- `local/1709-shared-folder-spike.sh` (new), `local/lib/longhorn.sh` (new), `local/shared_folder_spike_script_test.go` (new), `.github/workflows/shared-folder-spike.yml` (new), `design/0068_2026-10-16_shared-folder-parked-pvc.md` (new), `design/evidence/shared-folder-spike/README.md` (new), this worklog.
+
+## Next Steps
+
+1. Land the share-manager log capture → root-cause (or environment-workaround) the RWX blocker; legs 0/A gate the rest.
+2. One green run; commit `results.txt` + leg logs; fill every `[R:...]`; flip PR out of draft; iterate review to APPROVED; never self-merge.
+3. Report the leg-A verdict (either way) on #1709 the moment it exists.
