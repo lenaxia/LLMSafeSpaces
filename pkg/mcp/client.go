@@ -1152,13 +1152,20 @@ func (c *HTTPClient) BoardMoveStage(ctx context.Context, taskID, toStage, eviden
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/move-stage", body)
 }
 
+// boardStartBody is the optional body for POST /me/tasks/:id/start —
+// its own type (r1: not boardCancelBody's) so the two DTOs cannot
+// silently diverge when one grows a field.
+type boardStartBody struct {
+	RequestID string `json:"requestId,omitempty"`
+}
+
 func (c *HTTPClient) BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
 	var body any
 	if requestID != "" {
-		body = boardCancelBody{RequestID: requestID}
+		body = boardStartBody{RequestID: requestID}
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/start", body)
 }
@@ -1180,6 +1187,12 @@ func (c *HTTPClient) BoardAddDependency(ctx context.Context, taskID, dependsOn, 
 
 func (c *HTTPClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error {
 	if err := validateID(taskID, "task_id"); err != nil {
+		return err
+	}
+	// r1: dependsOn is path-interpolated too — the same per-ID gate every
+	// sibling applies (a malformed id must answer the clean validation
+	// error, never a mangled request or a foreign-route 404).
+	if err := validateID(dependsOn, "depends_on"); err != nil {
 		return err
 	}
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/me/tasks/"+taskID+"/dependencies/"+dependsOn, nil, nil)

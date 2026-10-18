@@ -127,6 +127,42 @@ documents `^pr:[1-9][0-9]*$` as the only consumed form.
   `gofmt`/`goimports`/`golangci-lint` (new-only) — clean via the
   pre-commit gates.
 
+## Round 1 remediation (CHANGES_REQUESTED on PR #1737, reviewer-pre-specified)
+
+The organic verdict (review run 39174263533, commit `95df9bf6`) blocked
+on: the §6 per-cell replay + audit arms missing on the external column,
+the `BoardRemoveDependency` `dependsOn` path-interpolation skipping
+`validateID`, and the CHANGELOG overclaiming replay coverage. The first
+review run (39172618124) had failed on reviewer-side model availability
+("No deployments available" — infra, not the diff); the docs-parity CI
+fix push (synchronize event) naturally re-fired it. Remediated in ONE
+commit set:
+
+1. **`validateID` on `dependsOn`** (`BoardRemoveDependency`) — the clean
+   validation error before any request; pinned by
+   `TestHTTPClient_BoardRemoveDependency_ValidatesPathIDs` (malformed
+   `?`/`#`/`..`/whitespace/empty ids never issue HTTP). Also split
+   `boardStartBody` off `boardCancelBody` (the reviewer's minor
+   semantic-mismatch note).
+2. **`TestBoardParity_ExternalMCPIdempotentReplay`** — the REST replay
+   driver mirrored through the tool path (same `replayExceptions` skip
+   list): two same-key calls render the original outcome verbatim, the
+   key delivered on both.
+3. **`TestBoardParity_ExternalMCPAuditRow`** — pins the recorded
+   deviation itself: external-arriving mutating actions audit as
+   (kind=user, owner identity, `SurfaceREST`, no claim token). The
+   deviation is now durably tracked as issue #1740.
+4. **`TestBoardParity_ExternalMCPReadVariants`** — `board_read`'s stage
+   filter rides the wire (query encoding pinned at the client tier too,
+   `TestHTTPClient_BoardListTasks_EncodesStageFilter`) and `board_get`
+   resolves every kind through the real router.
+5. **CHANGELOG** reworded to exactly what is pinned (replay + audit
+   included post-remediation).
+
+Advisory (not taken, recorded): `intArg` silently coerces wrong-typed
+numerics to absent — the pre-existing `strArg` helper pattern; noted by
+the reviewer as advisory-only.
+
 ## Coordination notes
 
 - No `pkg/board` edits (ListEpics/search/health engine follow-ups stay
