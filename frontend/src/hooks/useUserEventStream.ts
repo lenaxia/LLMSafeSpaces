@@ -97,6 +97,13 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
             wsLog("user_stream.resync", "");
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
+          } else if (evt.type === "board.event") {
+            // #1702 (design 0067 §4.6): board rows update as the engine's
+            // events stream — invalidating the board read model refetches
+            // the authoritative snapshot (rows are project-scoped lists;
+            // the payload's item-level granularity saves no round trip).
+            wsLog("user_stream.board_event", "", `action=${(evt as { action?: string }).action}`);
+            queryClient.invalidateQueries({ queryKey: ["board"] });
           }
 
           onEventRef.current?.(data);
@@ -119,6 +126,10 @@ export function useUserEventStream(options?: { onEvent?: (event: unknown) => voi
             queryClient.invalidateQueries({ queryKey: ["sessions"] });
             queryClient.invalidateQueries({ queryKey: ["workspaces"] });
             queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
+            // #1702 (§4.6 ii): the board store RESEEDS on reconnect — a
+            // board_read snapshot refetch replaces anything the dead
+            // stream missed (optimistic rows snap to server truth).
+            queryClient.invalidateQueries({ queryKey: ["board"] });
           } else {
             wsLog("user_stream.connected", "");
             // First connect: no wipe exists (wipeAt stays 0), so the
