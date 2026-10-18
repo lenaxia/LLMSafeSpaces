@@ -27,7 +27,7 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 
 ## Blockers
 
-- **OPEN: Longhorn RWX does not converge on the slow dind runner.** The share-manager pod crash-loops its ganesha readiness probe (~20 s after start, `/var/run/ganesha.pid` never appears); replicas stay stopped; the manager alternates "No share-manager pod yet" with "Skipping pod creation … backoff 2m0s". Both replicas DO schedule (soft anti-affinity fix verified). This sits entirely BEFORE gVisor — leg A has no verdict. Next diagnostic step (in the pushed kit): the by-name share-manager container-log capture (live + `--previous`) across the 2-minute backoff cycle — every prior dump landed in a gap or latched a Terminating corpse.
+- **TERMINAL (environment, run 39149620957's diagnostics):** the shared dind runner's docker wrapper strips `docker exec -u 0` — node-side execs land as `uid=1001(runner)` with `CapEff: 0000000000000000` on an SELinux-labeled overlay, so root-level kind-node provisioning (open-iscsi, /etc writes, iscsid) is IMPOSSIBLE on this runner class; earlier runs that succeeded rode a different (since-drifted) runner configuration. Above that, Longhorn v1 engines additionally require the nsenter→iscsiadm initiator path that nested dind does not provide. The wall sits entirely BEFORE gVisor — leg A has no verdict. Owner decision requested on #1709: (a) non-nested runner lane, (b) real-cluster spike, or (c) evidence-deferred merge with the first real-cluster soak as the gating evidence.
 
 ## Tests Run
 

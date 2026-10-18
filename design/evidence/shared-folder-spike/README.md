@@ -32,7 +32,8 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39104752680 | fail @ prereqs | same EACCES with `docker exec -u 0` pinned — host-level constraint |
 | 39106627792 | fail @ prereqs | same EACCES (third consecutive) |
 | 39108718318 | fail @ kind create | `etcdserver: request timed out` — failure now above every line the branch touches |
-| (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 |
+| 39149620957 | fail @ prereqs | **TERMINAL DIAGNOSIS**: `docker exec -u 0` lands as `uid=1001(runner)` with `CapEff: 0000000000000000` on an SELinux (`seclabel`) overlay — the runner's docker wrapper strips the uid and drops all capabilities; root-level node provisioning is impossible on this runner class |
+| (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 — requires the owner's environment decision (#1709: non-nested runner / real cluster / evidence-deferred) |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
 - **Longhorn:** chart **1.12.1** — the production cluster's version; node prereqs `open-iscsi` + `nfs-common` via `local/lib/longhorn.sh`; StorageClass `user-shared` (prod `longhorn-2r` parameter set, 2 replicas); snapshot-controller 5.3.0 (piraeus chart — prod's pin); VolumeSnapshotClass `user-shared-snap`.
