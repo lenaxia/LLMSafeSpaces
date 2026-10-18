@@ -11,12 +11,14 @@ package handlers
 // Authz is enforced by the router's middleware chain.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -66,6 +68,30 @@ const errTriggerMemoryCaptureConstraint = "memoryMode 'last_result' requires cap
 // creation event records both the creating-session workspace and the
 // routine's target workspace).
 const creatingWorkspaceCtxKey = "creatingWorkspaceID"
+
+// errTriggerTargetCreateOnly is the update-path rejection for the
+// #1729 create-only routine-target key — ONE message shared by the
+// automation seam and the REST update surface so the two cannot drift.
+const errTriggerTargetCreateOnly = `targetWorkspaceId is create-only: routine retargeting stays scoped to this workspace — delete and recreate the trigger`
+
+// hasCreateOnlyTargetKey reports whether a trigger UPDATE body carries
+// the create-only targetWorkspaceId key in any spelling the seam folds
+// (case variants + the snake alias). The REST update surface rejects
+// what it cannot apply (r1 review finding: silently ignoring the key
+// told the caller a retarget happened that did not — exactly the
+// failure mode the automation seam rejects).
+func hasCreateOnlyTargetKey(raw []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return false
+	}
+	for k := range fields {
+		if strings.EqualFold(k, "targetWorkspaceId") || k == "target_workspace_id" {
+			return true
+		}
+	}
+	return false
+}
 
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
@@ -250,6 +276,21 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	// unauthorized ones 403. Mutually exclusive with both other target
 	// keys; omitted keeps workspaceId semantics (the automation seam's
 	// forced stamp) byte-identical.
+	//
+	// Ordering (r1 review ruling): the gate runs BEFORE payload
+	// validation (cron expr, input mapping) on purpose — a 403/404 must
+	// not depend on payload validity, and validation detail must not
+	// reach a caller without target rights. Fail-fast, least-privilege.
+	//
+	// r1: CheckOwnership speaks USER ids. On the org route ownerID is
+	// the ORG id — passing it made every org-scope targetWorkspaceId
+	// create an unexplained 403 (the gate can never match an org id as
+	// a user). The ACTING user is the right subject: the router has
+	// already authenticated them, and on the org route verified their
+	// admin rights on the trigger's OWNING org; the target-workspace
+	// question is about THEIR creator/org-admin rights on the target.
+	// The user route and the pod seam have actor == ownerID, so this
+	// only changes the org route's answer.
 	targetWorkspaceID := ""
 	if req.TargetWorkspaceID != "" {
 		if req.WorkflowID != "" {
@@ -277,7 +318,11 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
 			return
 		}
-		if oerr := h.wsOwnership.CheckOwnership(c.Request.Context(), ownerID, meta); oerr != nil {
+		actor := c.GetString("userID")
+		if actor == "" {
+			actor = ownerID // user route/pod seam always carry userID; defense only
+		}
+		if oerr := h.wsOwnership.CheckOwnership(c.Request.Context(), actor, meta); oerr != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(oerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeForbidden {
 				c.JSON(http.StatusForbidden, gin.H{"error": "no owner or admin rights on target workspace"})
@@ -492,6 +537,21 @@ func (h *TriggersHandler) validateUpdateMapping(c *gin.Context, ownerType, owner
 }
 
 func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID string) {
+	// #1729 r1: peek the raw body for the create-only target key BEFORE
+	// the bind consumes it — UpdateTriggerRequest has no field for it,
+	// so the decoder would silently drop the patch and answer 200 with
+	// nothing applied (the exact silent-ignore the seam rejects).
+	raw, rerr := io.ReadAll(c.Request.Body)
+	if rerr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	c.Request.ContentLength = int64(len(raw))
+	if hasCreateOnlyTargetKey(raw) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errTriggerTargetCreateOnly})
+		return
+	}
 	var req types.UpdateTriggerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

@@ -322,29 +322,31 @@ func normalizeTriggerTargetKeys(replay []byte) (*triggerTargetKeys, error) {
 // All other fields pass through as raw JSON — no re-formatting, no
 // float64 round-trips. Non-object bodies are an error (the seam always
 // sends an object).
-func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, workflowID, targetWorkspaceID string, err error) {
+func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
 	keys, err := normalizeTriggerTargetKeys(replay)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	if keys.workflowID != "" && keys.targetWorkspaceID != "" {
-		return nil, "", "", fmt.Errorf("cannot set both workflowId and targetWorkspaceId")
+		return nil, "", fmt.Errorf("cannot set both workflowId and targetWorkspaceId")
 	}
 	if keys.workflowID != "" {
 		out, err := json.Marshal(keys.fields)
-		return out, keys.workflowID, "", err
+		return out, keys.workflowID, err
 	}
 	if keys.targetWorkspaceID != "" {
+		// r1 review: the caller does not need the target back — the
+		// delegated create re-derives it from the body the DTO binds.
 		out, err := json.Marshal(keys.fields)
-		return out, "", keys.targetWorkspaceID, err
+		return out, "", err
 	}
 	stamped, err := json.Marshal(workspaceID)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	keys.fields["workspaceId"] = stamped
 	out, err := json.Marshal(keys.fields)
-	return out, "", "", err
+	return out, "", err
 }
 
 // scopeTriggerUpdateBody applies the same scoping rule to a trigger
@@ -374,7 +376,7 @@ func scopeTriggerUpdateBody(replay []byte, workspaceID string) (body []byte, wor
 		return nil, "", err
 	}
 	if keys.hasTargetWSKey {
-		return nil, "", fmt.Errorf("targetWorkspaceId is create-only: routine retargeting stays scoped to this workspace — delete and recreate the trigger")
+		return nil, "", errors.New(errTriggerTargetCreateOnly)
 	}
 	switch {
 	case keys.hasWorkflowKey && keys.workflowID != "":
@@ -440,7 +442,7 @@ func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	forced, workflowID, _, err := scopeTriggerCreateBody(raw, ws)
+	forced, workflowID, err := scopeTriggerCreateBody(raw, ws)
 	if err != nil {
 		// Surface the specific scoping error (non-string workflowId,
 		// contradictory aliases, non-object body) — a generic message
