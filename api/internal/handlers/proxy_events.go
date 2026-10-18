@@ -156,7 +156,7 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			// admissions resolve. Gated on the terminus regime (the
 			// probe is wired iff the ledger is the delivery truth
 			// source) — deliberately independent of the adapter gate.
-			if h.outbox != nil && h.agentdTerminus {
+			if h.outbox != nil && h.agentdTerminus.Load() {
 				wsName := workspace.Name
 				go func() {
 					sctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 30*time.Second)

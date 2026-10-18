@@ -102,7 +102,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	}
 	// 4a (#1302 S1): writes go through agentd Act — the API makes zero
 	// mutating harness calls in the authority regime.
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
 		if !resolvable {
 			if unknownSet {
@@ -165,7 +165,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	}
 	// 4a D1: question reject is the dismiss exit — reply="reject" rides
 	// the action vocabulary; agentd routes question-reject-first.
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
 		if !resolvable {
 			if unknownSet {
@@ -263,7 +263,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	}
 	// 4a (#1302 S1 + D2): the permission vocabulary and the deny
 	// feedback ride AnswerInputAction.reply/message through Act.
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
 		if !resolvable {
 			if unknownSet {

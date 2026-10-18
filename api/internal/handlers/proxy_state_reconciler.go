@@ -125,7 +125,7 @@ func (h *ProxyHandler) reconcilePass() {
 // the fold's own idle-drop closes after the settle window. Fail-closed:
 // a store error reads as "no live sessions" and retries next tick.
 func (h *ProxyHandler) rearmGatesForLiveSessions(activeWorkspaces []string) {
-	if !h.agentdTerminus || len(activeWorkspaces) == 0 {
+	if !h.agentdTerminus.Load() || len(activeWorkspaces) == 0 {
 		return
 	}
 	store := h.state()

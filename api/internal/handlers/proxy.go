@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -93,8 +94,12 @@ type ProxyHandler struct {
 	// completes at admission instead of turn completion.
 	v2Delivery bool
 	// agentdTerminus (US-69.8): the outbox delivers via the pod's ABI
-	// delivery ledger instead of the adapter + verify oracle.
-	agentdTerminus bool
+	// delivery ledger instead of the adapter + verify oracle. Atomic:
+	// the state reconciler's #1732 re-arm pass reads it from its own
+	// goroutine while tests flip it after Start() (the field predates
+	// any background reader; #1732 added the first — keeping the flag
+	// lock-free beats threading it through every reader).
+	agentdTerminus atomic.Bool
 
 	// Usage billing sinks (SetUsageBilling; guarded by usageBillingMu).
 	usageBillingMu sync.Mutex

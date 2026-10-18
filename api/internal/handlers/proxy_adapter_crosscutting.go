@@ -148,7 +148,7 @@ func (h *ProxyHandler) postAdapterSuccess(c *gin.Context, workspace *v1.Workspac
 // workspace (adapter write ops may start a turn — billing and the state
 // bridge must see it; the gate drops itself after the idle window).
 func (h *ProxyHandler) adapterEnsureSSEWatch(workspaceID string) {
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		h.UsageStream().Open(workspaceID)
 	}
 }
