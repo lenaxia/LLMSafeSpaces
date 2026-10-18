@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board frontend UI: kanban/swimlanes, drag, scope switcher, SSE feed (#1702, design 0067 Lane 4)
+
+- **BoardPage at `/board`** (nav beside Workflows/Triggers): kanban with
+  columns = stages (Pending Input + Cancelled as collapsible side
+  columns) and swimlanes = projects, over the #1699 REST surface
+  (`/api/v1/me/projects|epics|tasks`, wire shapes verbatim).
+- **Drag = server-arbitrated `move_stage`**: optimistic move with
+  snap-back; the engine's 409 guard codes (`done_guard`,
+  `stage_transition`, `claim_token`, …) render verbatim; a → done drop
+  collects the evidence URL and previews unmet acceptance criteria
+  without vetoing (ruling R2's Done guard stays the server's call).
+- **Scope switcher**: project focus, epic chips (derived from task rows —
+  display inheritance, R2), tag filters, and short-id/title search with
+  did-you-mean suggestions (0066 shape).
+- **SSE live feed on the #1687-hardened user stream**: `board.event`
+  payloads invalidate the board read model; reconnect reseeds it; a 30s
+  reconciliation belt backs the stream (design §4.6 ii).
+- **Create/edit surfaces**: project (one target workspace, R8), epic
+  (outcome = the steering wheel), task (criteria editor with reviewer
+  check-off, structural dependency add/remove rendering the 409+code
+  and 404+suggestions shapes with clickable suggestion chips, R3/R4),
+  all with client-side OR4 `pr:N` anchor validation
+  (`^pr:[1-9][0-9]*$`, submit-blocking).
+- Cards carry the mono short id, priority chip, tags, the structural
+  blocked badge (🔗 N with live dependency stage chips, R3), the
+  evidence-backed assignee busy indicator, and the attempts counter.
+
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
 - **Fleet relay-router drains in-flight generations on deploys** instead
