@@ -36,7 +36,7 @@ async function setupShellMocks(page: Page) {
   });
   await page.route(`${API}/workspaces/${WS}/status`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ phase: "Active", credentialState: { available: true }, agentHealth: { status: "healthy", agentVersion: "1.0.0" }, sessions: [] }) }));
-  await page.route(`${API}/workspaces/${WS}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WS}/sessions?*`, (r: Route) => {
     if (r.request().method() !== "GET") { r.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: SESS }) }); return; }
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
