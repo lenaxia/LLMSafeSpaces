@@ -378,7 +378,7 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 		// makes zero mutating harness calls in the authority regime);
 		// D1's reply="reject" is exactly the dismiss vocabulary. The
 		// adapter path survives flag-off (D4).
-		if h.agentdTerminus {
+		if h.agentdTerminus.Load() {
 			if !h.actAnswerInput(c, workspaceID, sessionID, askID, map[string]any{"reply": "reject"}) {
 				return
 			}

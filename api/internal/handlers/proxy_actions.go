@@ -42,7 +42,7 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 		return
 	}
 
-	if !h.agentdTerminus {
+	if !h.agentdTerminus.Load() {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": gin.H{
 			"code":       "not_supported",
 			"capability": "abi.actions",

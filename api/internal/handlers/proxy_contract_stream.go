@@ -93,7 +93,7 @@ func (h *ProxyHandler) SetContractStreamManagerForTest(m *contractstream.Manager
 func (h *ProxyHandler) ContractEvents(c *gin.Context) {
 	workspaceID := c.Param("id")
 
-	if !h.agentdTerminus {
+	if !h.agentdTerminus.Load() {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": gin.H{
 			"code":       "not_supported",
 			"capability": "abi.contract_stream",

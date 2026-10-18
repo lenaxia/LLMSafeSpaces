@@ -200,6 +200,13 @@ func runSidecarCommand(_ []string) int {
 		deps.ledgerInFlight = sidecarAuthority.InFlightDeliveries
 	}
 
+	// #1732 leg A2 (the sidecar twin of main.go's wiring): the
+	// turn-resume supervisor on the sidecar's own tracker. Same
+	// kill-switch, same bounds.
+	if os.Getenv("AGENTD_TURN_AUTO_RESUME") != "0" {
+		deps.sseTracker.onTurnEvent = newTurnResumeSupervisor(client).Observe
+	}
+
 	// Same loop set as single-container mode: SSE tracking, pressure
 	// monitor, ops ticker, fillGaps, health watchdog (+reaper loop,
 	// which is a no-op — the sidecar spawns no children and never

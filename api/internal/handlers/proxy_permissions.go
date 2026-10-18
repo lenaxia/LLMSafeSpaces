@@ -58,7 +58,7 @@ func (h *ProxyHandler) autoApprovePermission(workspaceID, requestID string) {
 		}
 	}
 
-	if h.agentdTerminus {
+	if h.agentdTerminus.Load() {
 		sessionID, resolvable, _ := h.inputRequestSession(ctx, workspaceID, requestID)
 		if !resolvable {
 			// Non-authoritative skip: the pending set is unreadable or

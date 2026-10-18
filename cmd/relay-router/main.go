@@ -5,7 +5,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +33,12 @@ const (
 	defaultDetectorInterval = 30 * time.Second
 	defaultFallbackRate     = 0.5
 	defaultFallbackMaxConc  = 1
+	// defaultDrainGrace bounds how long SIGTERM waits for in-flight
+	// streams. Generations stream for minutes; the BYO plane sizes this
+	// exact tradeoff at 10m (#1078: a cap, not a delay). The fleet
+	// plane's historical 10s window hard-cut every generation older
+	// than 10s on each deploy (#1732's halt leg).
+	defaultDrainGrace = 10 * time.Minute
 )
 
 type routerConfig struct {
@@ -46,6 +55,7 @@ type routerConfig struct {
 	detectorInterval time.Duration
 	fallbackRate     float64
 	fallbackMaxConc  int
+	drainGrace       time.Duration
 }
 
 func loadRouterConfig() routerConfig {
@@ -66,6 +76,7 @@ func loadRouterConfig() routerConfig {
 		detectorInterval: getEnvDuration("DETECTOR_INTERVAL", defaultDetectorInterval),
 		fallbackRate:     getEnvFloat("FALLBACK_RATE", defaultFallbackRate),
 		fallbackMaxConc:  getEnvInt("FALLBACK_MAX_CONCURRENT", defaultFallbackMaxConc),
+		drainGrace:       getEnvDuration("DRAIN_GRACE", defaultDrainGrace),
 	}
 }
 
@@ -135,23 +146,57 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigCh
-		log.Println("relay-router: shutting down...")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		_ = server.Shutdown(shutdownCtx)
-		cancel()
-	}()
-
-	log.Printf("relay-router: listening on %s, upstream=%s", cfg.listenAddr, cfg.upstreamURL)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	// #1732: the serve/drain lifecycle lives in serveFleetOn so the
+	// drain semantics are pinnable the way the BYO plane's are
+	// (TestDrainWiringThroughServeBYO). SIGTERM drains in-flight
+	// streams within cfg.drainGrace — a cap, not a delay (#1078
+	// semantics; the 10s hard cut was the #1732 halt leg).
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", cfg.listenAddr)
+	if err != nil {
+		log.Fatalf("relay-router: listen %s: %v", cfg.listenAddr, err)
+	}
+	if err := serveFleetOn(ctx, cfg, server, ln); err != nil {
 		log.Fatalf("relay-router: %v", err)
 	}
 	log.Println("relay-router: stopped")
+}
+
+// serveFleetOn serves on ln until a signal or ctx cancellation (SIGTERM
+// at runtime), then drains in-flight streams within the grace bound —
+// the fleet twin of serveBYOOn's lifecycle. The drain is a CAP, not a
+// delay: Shutdown waits for in-flight (streaming) responses to finish;
+// generations routinely stream for minutes, which is exactly what the
+// grace window buys during a rolling deploy.
+func serveFleetOn(ctx context.Context, cfg routerConfig, server *http.Server, ln net.Listener) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("relay-router: listening on %s, upstream=%s", ln.Addr(), cfg.upstreamURL)
+		errCh <- server.Serve(ln)
+	}()
+
+	select {
+	case <-sigCh:
+	case <-ctx.Done():
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+
+	log.Println("relay-router: shutting down...")
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.drainGrace)
+	defer drainCancel()
+	if err := server.Shutdown(drainCtx); err != nil { //nolint:contextcheck // the drain context must outlive the canceled parent (SIGTERM) — in-flight streams finish within the grace bound
+		return fmt.Errorf("relay-router: drain: %w", err)
+	}
+	log.Println("relay-router: drained")
+	return nil
 }
 
 func pollPeerConfig(ctx context.Context, path string, interval time.Duration, fleet *relayFleet) {

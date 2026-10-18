@@ -229,6 +229,15 @@ func main() {
 		sseTracker.onRawEvent = stateAuthority.Ingest
 	}
 
+	// #1732 leg A2: the turn-resume supervisor — roll-classified loss
+	// (assistant finish "unknown", no session.error) fires ONE bounded
+	// re-prompt; user aborts (MessageAbortedError) never resume. The
+	// kill-switch exists for a loud rollback if the classification ever
+	// misfires in production (AGENTD_TURN_AUTO_RESUME=0).
+	if os.Getenv("AGENTD_TURN_AUTO_RESUME") != "0" {
+		sseTracker.onTurnEvent = newTurnResumeSupervisor(client).Observe
+	}
+
 	// Hoisted before the supervisor: the generation hook (every child
 	// start) re-arms the health cache's unhealthy-episode clock (#1632
 	// r1) — the cache must be the SAME instance deps serves. The env
