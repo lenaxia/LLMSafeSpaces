@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — external platform MCP server tools for the Task Board (#1700)
+
+- **18 customer-facing `board_*` tools on the platform MCP server**
+  (design 0067 §4.3b): project/epic/task create + update, lifecycle
+  (epic activate/pause/archive/unarchive, project archive/unarchive),
+  `board_move_stage`, `board_start_task` (manual dispatch), `board_cancel`,
+  `board_add_dependency`/`board_remove_dependency`, and the read tools
+  (`board_list_projects`, `board_get`, `board_read`). The tools ride the
+  owner's REST projection (`/api/v1/me/*`, ruling R7), so guard outcomes,
+  idempotent replay, and the read perimeter are identical to the REST
+  column by construction — now pinned live in the board parity matrix,
+  whose external-MCP column flips from pending to live (worker-only rows
+  — heartbeat/report_throttle, and engine-internal claim — pinned absent
+  by design; external actors hold no claim tokens).
+
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
 - **Fleet relay-router drains in-flight generations on deploys** instead
