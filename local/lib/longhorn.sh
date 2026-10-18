@@ -47,7 +47,23 @@ longhorn_node_prereqs() { # node
       # exact command shape the engine uses — abort loud if iscsiadm
       # still cannot reach the daemon.
       systemd-tmpfiles --create 2>/dev/null || true
-      mkdir -p /run/lock/iscsi /etc/iscsi
+      # Diagnose EACCES-on-/etc-as-root (runs 39103144189/39104752680/
+      # 39106627792): name the mechanism (ro mount / immutable / MAC)
+      # before attempting the write.
+      echo "longhorn.sh: /etc diagnostics — mount, attrs, caps:"
+      grep -E " /etc | / " /proc/mounts | head -3 || true
+      lsattr -d /etc 2>/dev/null || true
+      grep -E "^Cap(Eff|Prm)" /proc/self/status || true
+      id || true
+      mkdir -p /run/lock/iscsi
+      if ! mkdir -p /etc/iscsi 2>/tmp/mkdir-etc.err; then
+        echo "longhorn.sh: mkdir /etc/iscsi failed: $(cat /tmp/mkdir-etc.err)"
+        echo "longhorn.sh: falling back to tmpfs-mounted /etc/iscsi (iscsid conffile dir)"
+        mount -t tmpfs tmpfs /etc/iscsi 2>/dev/null || {
+          echo "longhorn.sh: cannot provide /etc/iscsi — Longhorn v1 engines cannot attach in this node"
+          exit 1
+        }
+      fi
       # open-iscsi can report installed-from-cache without its conffile
       # tree present (run 39103144189 died writing initiatorname into a
       # missing /etc/iscsi) — verify the binary, reinstall if absent.
