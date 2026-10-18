@@ -279,7 +279,7 @@ export function ChatPage() {
   // the sessions list refetches (e.g. after mark-seen invalidates the query).
   const { data: lastSeenAt } = useQuery({
     queryKey: ["sessions", workspaceId],
-    queryFn: () => workspacesApi.getSessions(workspaceId!),
+    queryFn: () => workspacesApi.getSessions(workspaceId!, { includeArchived: true }),
     enabled: !!workspaceId && !!sessionId,
     select: (sessions) => sessions.find((s) => s.id === sessionId)?.lastSeenAt,
     staleTime: 30_000,
@@ -294,7 +294,7 @@ export function ChatPage() {
   // to avoid TanStack Query's structural-sharing optimisation dropping updates.
   const { data: sessionsListData } = useQuery({
     queryKey: ["sessions", workspaceId],
-    queryFn: () => workspacesApi.getSessions(workspaceId!),
+    queryFn: () => workspacesApi.getSessions(workspaceId!, { includeArchived: true }),
     enabled: !!workspaceId,
     staleTime: Infinity,
     notifyOnChangeProps: ["data"],

@@ -573,8 +573,11 @@ class _SessionsAPI:
             **self._c._request("POST", f"/workspaces/{workspace_id}/sessions/new")
         )
 
-    def list(self, workspace_id: str) -> list[dict[str, Any]]:
-        return self._c._request("GET", f"/workspaces/{workspace_id}/sessions")
+    def list(self, workspace_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        """#1735: archived sessions are opt-in — excluded by default;
+        pass include_archived=True to include them."""
+        query = "?include_archived=true" if include_archived else ""
+        return self._c._request("GET", f"/workspaces/{workspace_id}/sessions{query}")
 
     def send_message(
         self, workspace_id: str, session_id: str, content: str

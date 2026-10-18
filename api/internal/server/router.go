@@ -1623,6 +1623,22 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 				}
 			}
 		}
+		// #1735: archived sessions are opt-in on the listing — the
+		// default response excludes them (they are read-only history,
+		// and long-lived workspaces accumulate an unbounded archived
+		// set); include_archived=true restores the full list. The
+		// filter is response-shape only — the reconciliation above
+		// still sees every row, and single-session lookups resolve
+		// archived sessions regardless.
+		if c.Query("include_archived") != "true" {
+			kept := sessions[:0]
+			for _, s := range sessions {
+				if !s.Archived {
+					kept = append(kept, s)
+				}
+			}
+			sessions = kept
+		}
 		c.JSON(http.StatusOK, sessions)
 	})
 

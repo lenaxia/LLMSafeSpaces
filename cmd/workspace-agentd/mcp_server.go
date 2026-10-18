@@ -102,10 +102,12 @@ func mcpToolCatalog() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "session_list",
-			Description: "List past agent sessions (conversations) from this workspace. This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session. Archive status is NOT included here — use session_metadata (its entries carry archived) when you need to know which sessions are archived.",
+			Description: "List past agent sessions (conversations) from this workspace — NON-ARCHIVED sessions by default (archived history is opt-in: pass include_archived:true to add it back). This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session. Archive status is NOT included here — use session_metadata (its entries carry archived) when you need to know which sessions are archived.",
 			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				"type": "object",
+				"properties": map[string]any{
+					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; an unreachable platform degrades to listing everything (the filter is advisory)"},
+				},
 			},
 		},
 		{
@@ -377,12 +379,13 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_metadata",
-			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session; with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY session's metadata (the old default behavior). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. Output is aggregate metadata only — read message CONTENT with session_read.",
+			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. Output is aggregate metadata only — read message CONTENT with session_read.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id":   map[string]any{"type": "string", "description": "One session's metadata (from session_list). Omitted = your current session only (the default); use all_sessions:true for every session"},
-					"all_sessions": map[string]any{"type": "boolean", "description": "true = metadata for EVERY session in the workspace (the pre-change default). Default false = current session only"},
+					"session_id":       map[string]any{"type": "string", "description": "One session's metadata (from session_list). Omitted = your current session only (the default); use all_sessions:true for every session. An archived session still resolves by ID"},
+					"all_sessions":     map[string]any{"type": "boolean", "description": "true = metadata for every NON-ARCHIVED session in the workspace. Default false = current session only"},
+					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions appear in the all_sessions listing too (the pre-#1735 behavior). Default false = they are excluded from the aggregate; single-session session_id lookups are never filtered"},
 				},
 				"required": []string{},
 			},
@@ -590,7 +593,13 @@ func mcpHandler(password string) http.HandlerFunc {
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
 	switch name {
 	case "session_list":
-		return mcpSessionList(ctx, password)
+		// #1735: archived sessions are opt-in on the listing — the
+		// filter is advisory (platform fact), defaulting to excluded.
+		includeArchived := false
+		if raw, ok := args["include_archived"].(bool); ok {
+			includeArchived = raw
+		}
+		return mcpSessionList(ctx, password, includeArchived)
 	case "session_read":
 		sessionID, _ := args["session_id"].(string)
 		if sessionID == "" {
@@ -678,7 +687,14 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		if raw, ok := args["all_sessions"].(bool); ok {
 			allSessions = raw
 		}
-		return mcpSessionMetadata(ctx, password, sessionID, injected, allSessions)
+		// #1735: the aggregate defaults to non-archived sessions;
+		// include_archived is the explicit opt-in. Single-ID scopes
+		// are never filtered (handler-side rule).
+		includeArchived := false
+		if raw, ok := args["include_archived"].(bool); ok {
+			includeArchived = raw
+		}
+		return mcpSessionMetadata(ctx, password, sessionID, injected, allSessions, includeArchived)
 	case "session_archive":
 		sessionID, _ := args["session_id"].(string)
 		// The schema says "REQUIRED DIRECTION … no default — pass it
@@ -753,12 +769,20 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	}
 }
 
-func mcpSessionList(ctx context.Context, password string) (string, error) {
+// mcpSessionList serves the raw seam inventory. #1735: archived
+// sessions are opt-in — the DEFAULT drops entries whose id is in the
+// platform's archived set; include_archived:true keeps the verbatim
+// pass-through (the raw shape is that tool's output contract, so
+// surviving entries are re-served byte-exact, never rewritten).
+func mcpSessionList(ctx context.Context, password string, includeArchived bool) (string, error) {
 	body, err := seamClientWithPassword(password).SessionListRaw(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
-	return string(body), nil
+	if includeArchived {
+		return string(body), nil
+	}
+	return filterArchivedFromSessionList(ctx, body), nil
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {

@@ -367,7 +367,7 @@ func TestMCPSessionList_RejectsNon200(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 	defer agentAddrAtomic.Store(old)
 
-	_, err := mcpSessionList(context.Background(), "test-pw")
+	_, err := mcpSessionList(context.Background(), "test-pw", false)
 	assert.Error(t, err, "non-200 status must return error")
 }
 
@@ -399,7 +399,7 @@ func TestMCPSessionList_HappyPath(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 	defer agentAddrAtomic.Store(old)
 
-	body, err := mcpSessionList(context.Background(), "test-pw")
+	body, err := mcpSessionList(context.Background(), "test-pw", false)
 	assert.NoError(t, err)
 	assert.Contains(t, body, "ses_1")
 }
@@ -467,7 +467,7 @@ func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 
 	var got error
 	assert.NotPanics(t, func() {
-		_, got = mcpSessionList(context.Background(), "test-pw")
+		_, got = mcpSessionList(context.Background(), "test-pw", false)
 	})
 	assert.Error(t, got, "malformed agent addr must return an error")
 	assert.Contains(t, got.Error(), "failed to list sessions")

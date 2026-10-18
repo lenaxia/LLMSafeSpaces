@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,4 +141,71 @@ func TestSessionMetadata_ArchivedSingleIDResolves(t *testing.T) {
 	require.Len(t, res.Sessions, 1, "an explicit archived session_id resolves — no flag needed")
 	assert.Equal(t, archived, res.Sessions[0].SessionID)
 	assert.True(t, res.Sessions[0].Archived)
+}
+
+// --- handler-level pins (direct signatures) -----------------------------
+
+func TestMCPSessionList_HandlerDefaultsAndOptIn(t *testing.T) {
+	_, _, archived := setupArchivedFilterEnv(t)
+
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, false)
+	require.NoError(t, err)
+	assert.NotContains(t, sessionIDs(t, out), archived)
+
+	out, err = mcpSessionList(context.Background(), mcpTestPassword, true)
+	require.NoError(t, err)
+	assert.Contains(t, sessionIDs(t, out), archived)
+}
+
+// The advisory posture (#1627 §4): a platform fetch failure must never
+// fail or silently shrink the listing — with no archived set in hand
+// the filter degrades to a no-op.
+func TestMCPSessionList_PlatformUnreachable_ListsAll(t *testing.T) {
+	f := newFakeAgent()
+	f.newSession("one")
+	f.newSession("two")
+	withAgentServer(t, f.handler(t))
+	setupMetadataEnv(t, nil)
+	t.Setenv("LLMSAFESPACE_API_URL", "http://127.0.0.1:1")
+
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, false)
+	require.NoError(t, err, "the archived filter is advisory — an unreachable platform must not fail session_list")
+	assert.Len(t, sessionIDs(t, out), 2)
+}
+
+// Byte-exact preservation: the default filter must DROP archived
+// entries without rewriting the survivors (the raw shape is the tool's
+// output contract). Deterministic unit seam — the archived set is
+// pre-seeded into the package cache (no platform fetch to race).
+func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal = map[string]bool{"ses_dead": true}
+	archivedSetCacheAt = time.Now()
+	archivedSetCacheMu.Unlock()
+
+	body := `[` + strings.Join([]string{
+		`{"id":"ses_live_1","title":"a","unknownField":{"nested":[1,2]}}`,
+		`{"id":"ses_dead","title":"b"}`,
+		`{"id":"ses_live_2","title":"c","time":{"created":1789274402332}}`,
+	}, ",") + `]`
+
+	filtered := filterArchivedFromSessionList(context.Background(), []byte(body))
+	rawFiltered := splitJSONArray(t, filtered)
+	assert.Equal(t, []string{
+		`{"id":"ses_live_1","title":"a","unknownField":{"nested":[1,2]}}`,
+		`{"id":"ses_live_2","title":"c","time":{"created":1789274402332}}`,
+	}, rawFiltered, "the filtered body is the verbatim body minus the archived element, byte-exact — unknown fields intact")
+}
+
+// splitJSONArray splits a JSON array body into its raw element texts
+// (whitespace-trimmed fragments between top-level commas).
+func splitJSONArray(t *testing.T, body string) []string {
+	t.Helper()
+	var elems []json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(body), &elems))
+	out := make([]string, 0, len(elems))
+	for _, e := range elems {
+		out = append(out, string(e))
+	}
+	return out
 }

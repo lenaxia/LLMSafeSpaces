@@ -161,7 +161,7 @@ func TestMCPSessionMetadata_DefaultIsCurrentSessionOnly(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	setupMetadataEnv(t, nil)
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", s1, false)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", s1, false, false)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -177,7 +177,7 @@ func TestMCPSessionMetadata_AllSessionsOptIn(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	setupMetadataEnv(t, nil)
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, false)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -194,7 +194,7 @@ func TestMCPSessionMetadata_NoInjectionFallsBackToBusySession(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	setupMetadataEnv(t, nil)
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", false)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", false, false)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -209,7 +209,7 @@ func TestMCPSessionMetadata_NoInjectionNoBusy_IsExplicitError(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	setupMetadataEnv(t, nil)
 
-	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", false)
+	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "session_id")
 }
@@ -221,7 +221,7 @@ func TestMCPSessionMetadata_ExplicitSessionIDWins(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	setupMetadataEnv(t, nil)
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, s1, "ses-injected", false)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, s1, "ses-injected", false, false)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -248,7 +248,10 @@ func TestMCPSessionMetadata_ArchivedAnnotation(t *testing.T) {
 	defer platform.Close()
 	setupMetadataEnv(t, platform)
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
+	// #1735 caller migration: this pin asserts the archived ENTRY is
+	// served with its marker — an all_sessions aggregate that needs
+	// archived rows must now opt in explicitly.
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, true)
 	require.NoError(t, err)
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
@@ -261,7 +264,7 @@ func TestMCPSessionMetadata_ArchivedAnnotation(t *testing.T) {
 	assert.NotContains(t, byID[s2], "archived", "not-archived sessions OMIT the field (ABSENT = not archived)")
 
 	// Cache pin: a second call inside the TTL must not re-fetch.
-	out2, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
+	out2, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, true)
 	require.NoError(t, err)
 	assert.NotEmpty(t, out2)
 	mu.Lock()
@@ -282,7 +285,7 @@ func TestMCPSessionMetadata_PlatformUnreachableDegradesSilently(t *testing.T) {
 	archivedSetCacheVal, archivedSetCacheAt = nil, time.Time{}
 	archivedSetCacheMu.Unlock()
 
-	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true)
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, false)
 	require.NoError(t, err, "a platform fetch failure must never fail the metadata tool")
 	assert.NotContains(t, out, "127.0.0.1", "fetch failure must not leak the origin either")
 }
