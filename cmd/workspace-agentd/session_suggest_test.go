@@ -210,7 +210,7 @@ func TestSessionRead_MistypedID_SuggestsLiveID(t *testing.T) {
 
 func TestSessionMetadata_MistypedID_SuggestsLiveID(t *testing.T) {
 	withIncidentAgent(t)
-	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, incidentDropFinal, "", false)
+	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, incidentDropFinal, "", false, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), incidentID)
 	assert.Contains(t, err.Error(), "did you mean")
