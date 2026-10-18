@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)
+
+- **`trigger_create` (agentd automation surface) accepts an optional
+  `targetWorkspaceId` for routine triggers.** The routine then runs IN
+  the target workspace, with that workspace's tool surface and pod
+  identity — the deploy-resume choreography (one orchestrator session
+  waking several workspaces) no longer needs manual per-workspace
+  setup. Authorization is against the trigger OWNER's rights on the
+  target via the workspace service's ownership check (creator or org
+  admin): 403 without rights, 404 for a target that does not exist
+  (the cross-workspace disclosure policy). Omitting the param keeps
+  the previous behavior exactly — the creating pod's workspace is
+  force-stamped (#1412), delegated body byte-identical. The
+  `trigger.create` audit event now records both ends
+  (`targetWorkspaceId` + `creatingWorkspaceId` when created from a
+  workspace). Workflow-targeting rules are unchanged
+  (`workflowId` + `targetWorkspaceId` is rejected), the key is
+  create-only (`trigger_update` rejects it — #1426 keeps retargeting
+  scoped), and an unwired ownership gate fails closed (500). The user
+  REST API's `CreateTriggerRequest` carries the same optional field
+  under the same gate.
 
 ## [0.38.1] - 2026-10-18
 
