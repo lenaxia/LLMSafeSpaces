@@ -657,19 +657,7 @@ func boardParityExtCall(t *testing.T, cl *mcpgoclient.Client, action string) (*m
 	t.Helper()
 	tool, args, ok := boardParityExtToolArgs(action)
 	require.True(t, ok, "no representative external tool call for action %q — the matrix row is mis-declared", action)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	res, err := cl.CallTool(ctx, mcpgo.CallToolRequest{
-		Params: mcpgo.CallToolParams{Name: tool, Arguments: args},
-	})
-	require.NoError(t, err, "tool %s", tool)
-	text := ""
-	if len(res.Content) > 0 {
-		if tc, ok := res.Content[0].(mcpgo.TextContent); ok {
-			text = tc.Text
-		}
-	}
-	return res, text
+	return boardParityExtToolCall(t, cl, tool, args)
 }
 
 // externalMCPTestServer builds the external MCP server (registration
@@ -911,6 +899,125 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		t.Fatalf("no replay-driver call for action %q", action)
 		return nil
 	}
+}
+
+// TestBoardParity_ExternalMCPIdempotentReplay (r1): the §6 per-cell
+// contract's replay arm on the external column — the same driver as
+// the REST column's TestBoardParity_IdempotentReplay, driven through
+// the tool path (in-process MCP client → HTTPClient → the real REST
+// router). A mutating tool re-invoked with the SAME request_id renders
+// the original outcome, never an error, and the key reaches the event
+// writer's seam on BOTH calls — an HTTPClient regression that drops or
+// mangles requestId per-method reddens here, through the real wiring.
+func TestBoardParity_ExternalMCPIdempotentReplay(t *testing.T) {
+	for _, row := range boardParityMatrix {
+		if row.externalMCP.kind != "live" || boardReadActions()[row.action] {
+			continue
+		}
+		t.Run(row.action, func(t *testing.T) {
+			if reason, skipped := replayExceptions[row.action]; skipped {
+				t.Skipf("requestId does not reach an event writer today: %s", reason)
+			}
+			svc := newFakeBoardManager()
+			svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+			svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+			cl, _ := newExternalMCPFixture(t, svc)
+
+			const key = "11111111-2222-3333-4444-555555555555"
+			res1, text1 := boardParityExtCallReqID(t, cl, row.action, key)
+			assert.False(t, res1.IsError, "first call: %s", text1)
+			assert.Equal(t, key, svc.lastRequestID, "first call delivers the caller's key")
+			res2, text2 := boardParityExtCallReqID(t, cl, row.action, key)
+			assert.False(t, res2.IsError, "replay renders the original outcome's success (200-with-original), never an error: %s", text2)
+			assert.Equal(t, key, svc.lastRequestID, "replay delivers the SAME key")
+			assert.Equal(t, text1, text2, "replay returns the original outcome verbatim")
+		})
+	}
+}
+
+// TestBoardParity_ExternalMCPAuditRow (r1): the §6 audit arm on the
+// external column — a mutating tool driven through the real wiring
+// stamps the SAME audit inputs the REST column stamps (workers
+// delegate as the owning user, R7; manager surfaces hold no claim
+// token). The audit row's surface marker is the REST projection's
+// ("rest") BY CONSTRUCTION: the external tools ride the owner's REST
+// routes (the recorded #1700 architecture decision; the
+// SurfaceExternalMCP reservation is tracked in the follow-up issue
+// referenced from the worklog). This pin holds the deviation honest —
+// if the stamping ever changes, this reddens and the record moves.
+func TestBoardParity_ExternalMCPAuditRow(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+	cl, _ := newExternalMCPFixture(t, svc)
+	res, text := boardParityExtCall(t, cl, "move_stage")
+	assert.False(t, res.IsError, text)
+
+	assert.Equal(t, board.ActorUser, svc.lastActor.Kind, "external-arriving actions audit as the owning user (R7 delegation shape)")
+	assert.NotEmpty(t, svc.lastActor.UserID, "the authenticated owner's identity reaches the audit row")
+	assert.Equal(t, board.SurfaceREST, svc.lastActor.Surface,
+		"the REST tier the tools ride stamps the surface — the recorded deviation (see worklog + follow-up issue)")
+	assert.Empty(t, svc.lastActor.ClaimToken, "manager surfaces hold no claim token (§4.2's in-flight guard)")
+}
+
+// TestBoardParity_ExternalMCPReadVariants (r1): the read tools' full
+// wire coverage — board_read's stage filter (query encoding through
+// HTTPClient), and board_get on every kind (prj-/epc-/tsk- resolution
+// through the real router).
+func TestBoardParity_ExternalMCPReadVariants(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	svc.epics = []board.Epic{{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Status: board.EpicActive}}
+	svc.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+	cl, _ := newExternalMCPFixture(t, svc)
+
+	// board_read with the stage filter: the query parameter survives
+	// the tool → client → router hop (the listing seam sees it).
+	res, text := boardParityExtToolCall(t, cl, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": "backlog"})
+	assert.False(t, res.IsError, text)
+	assert.Equal(t, 1, svc.calls["list_tasks"], "board_read reaches the listing seam")
+
+	// board_get on epic and task kinds: the prefix dispatch resolves
+	// through the real router (ownership through the project row).
+	res, text = boardParityExtToolCall(t, cl, "board_get", map[string]any{"item_id": "epc-bbbb2222"})
+	assert.False(t, res.IsError, "epic kind: %s", text)
+	assert.Equal(t, 1, svc.calls["get_epic"])
+	res, text = boardParityExtToolCall(t, cl, "board_get", map[string]any{"item_id": "tsk-cccc3333"})
+	assert.False(t, res.IsError, "task kind: %s", text)
+	assert.Equal(t, 1, svc.calls["get_task"])
+}
+
+// boardParityExtToolCall issues one raw tool call through the
+// in-process MCP client.
+func boardParityExtToolCall(t *testing.T, cl *mcpgoclient.Client, tool string, args map[string]any) (*mcpgo.CallToolResult, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := cl.CallTool(ctx, mcpgo.CallToolRequest{
+		Params: mcpgo.CallToolParams{Name: tool, Arguments: args},
+	})
+	require.NoError(t, err, "tool %s", tool)
+	text := ""
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(mcpgo.TextContent); ok {
+			text = tc.Text
+		}
+	}
+	return res, text
+}
+
+// boardParityExtCallReqID issues the action's representative tool call
+// with a request_id woven into the arguments (the replay arm's driver).
+func boardParityExtCallReqID(t *testing.T, cl *mcpgoclient.Client, action, requestID string) (*mcpgo.CallToolResult, string) {
+	t.Helper()
+	_, args, ok := boardParityExtToolArgs(action)
+	require.True(t, ok, "no representative external tool call for action %q", action)
+	if args == nil {
+		args = map[string]any{}
+	}
+	args["request_id"] = requestID
+	tool, _, _ := boardParityExtToolArgs(action)
+	return boardParityExtToolCall(t, cl, tool, args)
 }
 
 func q(s string) string { return `"` + s + `"` }

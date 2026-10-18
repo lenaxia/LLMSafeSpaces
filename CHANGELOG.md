@@ -41,11 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `board_add_dependency`/`board_remove_dependency`, and the read tools
   (`board_list_projects`, `board_get`, `board_read`). The tools ride the
   owner's REST projection (`/api/v1/me/*`, ruling R7), so guard outcomes,
-  idempotent replay, and the read perimeter are identical to the REST
-  column by construction — now pinned live in the board parity matrix,
-  whose external-MCP column flips from pending to live (worker-only rows
-  — heartbeat/report_throttle, and engine-internal claim — pinned absent
-  by design; external actors hold no claim tokens).
+  idempotent replay (same `request_id` → original outcome, through the
+  tool path), audit-row stamping, and the read perimeter (foreign rows =
+  plain 404) are identical to the REST column by construction — each
+  pinned live in the board parity matrix's external column, which flips
+  from pending to live (worker-only rows — heartbeat/report_throttle, and
+  engine-internal claim — pinned absent by design; external actors hold
+  no claim tokens).
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
