@@ -449,11 +449,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var ssoHandler *handlers.SSOHandler
 	var loginDiscoveryHandler *handlers.LoginDiscoveryHandler
 	var passkeyHandler *handlers.PasskeyHandler
-	var asyncAudit *secrets.AsyncAuditLogger // populated when secrets are enabled; drained on Shutdown
-	var secretsPool *pgxpool.Pool            // closed on Shutdown
-	var boardPool *pgxpool.Pool              // closed on Shutdown (board engine)
-	var boardReconciler *board.Reconciler    // started in Run
-	var dekCacheClient *redis.Client         // closed on Shutdown
+	var asyncAudit *secrets.AsyncAuditLogger    // populated when secrets are enabled; drained on Shutdown
+	var secretsPool *pgxpool.Pool               // closed on Shutdown
+	var boardPool *pgxpool.Pool                 // closed on Shutdown (board engine)
+	var boardReconciler *board.Reconciler       // started in Run
+	var boardRESTHandler *handlers.BoardHandler // #1699: REST projection (nil = engine off → routes unregistered)
+	var dekCacheClient *redis.Client            // closed on Shutdown
 	{
 		// US-50.2: construct per-purpose RootKeyProviders before the earliest
 		// consumer (the Redis DEK cache below). Each purpose yields an
@@ -1559,6 +1560,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			if podAutomationHandler != nil {
 				podAutomationHandler.SetBoardService(boardSvc)
 			}
+			// REST projection (design 0067 §4.3a, #1699 Lane 2): a thin
+			// adapter over the same canonical service — the manager
+			// surface at /api/v1/me/projects|epics|tasks (user-level,
+			// ruling R7; worker actions stay on the internal seam).
+			boardRESTHandler = handlers.NewBoardHandler(boardSvc)
 			log.Info("board engine enabled (dispatch drive + reconciler; Lane 1 internal seam)",
 				"attemptsCap", engineCfg.AttemptsCap, "leaseSeconds", cfg.Board.LeaseSeconds,
 				"drrQuantum", engineCfg.DRRQuantum, "sweepSeconds", cfg.Board.SweepSeconds)
@@ -1641,6 +1647,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		UserTriggersHandler:             userTriggersHandler,
 		OrgTriggersHandler:              orgTriggersHandler,
 		WebhookReceiverHandler:          webhookReceiverHandler,
+		BoardHandler:                    boardRESTHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
 		OrgSubdomainBaseDomain:          cfg.OrgSubdomainRouting.BaseDomain,

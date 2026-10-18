@@ -500,6 +500,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		UserTriggersHandler:             &handlers.TriggersHandler{},
 		OrgTriggersHandler:              &handlers.TriggersHandler{},
 		WebhookReceiverHandler:          &handlers.WebhookReceiverHandler{},
+		BoardHandler:                    &handlers.BoardHandler{},
 	}
 	// proxyHandler also has a conditional wiring guard (sessions,
 	// events, message, prompt, abort routes). Pass a zero-value stub

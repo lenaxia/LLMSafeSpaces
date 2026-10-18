@@ -718,4 +718,114 @@ describe("userPrompts", () => {
     await expect(client.userPrompts.delete("p1")).resolves.toBeUndefined();
     expect(mockFetch.mock.calls[3][1].method).toBe("DELETE");
   });
+
+  // ─── #1699: Task Board (design 0067 §4.3a) ─────────────────────────────────
+
+  describe("board", () => {
+    let client: LLMSafeSpaces;
+
+    beforeEach(() => {
+      client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    });
+
+    it("creates a project and lists boards", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", short_id: "prj-aaaa1111", status: "active" }, 201));
+      const proj = await client.board.createProject({ name: "B", targetWorkspaceId: "ws-1", tags: ["t"] });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects");
+      expect((mockFetch.mock.calls[0][1] as any).body).toContain('"targetWorkspaceId":"ws-1"');
+      expect(proj.short_id).toBe("prj-aaaa1111");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ projects: [{ id: "p1", short_id: "prj-aaaa1111" }] }));
+      const list = await client.board.listProjects();
+      expect(list.projects).toHaveLength(1);
+    });
+
+    it("patches, archives, and unarchives a project", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", name: "renamed" }));
+      const upd = await client.board.updateProject("prj-aaaa1111", { name: "renamed" });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111");
+      expect((mockFetch.mock.calls[0][1] as any).method).toBe("PATCH");
+      expect(upd.name).toBe("renamed");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", status: "archived" }));
+      const arch = await client.board.archiveProject("prj-aaaa1111");
+      expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/archive");
+      expect(arch.status).toBe("archived");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", status: "active" }));
+      const un = await client.board.unarchiveProject("prj-aaaa1111");
+      expect(un.status).toBe("active");
+    });
+
+    it("creates epics with lifecycle and derived progress", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", short_id: "epc-bbbb2222", status: "draft" }, 201));
+      const epic = await client.board.createEpic("prj-aaaa1111", { title: "E1", outcome: "o" });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/epics");
+      expect(epic.status).toBe("draft");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active", progress_derived: true, progress_done: 1, progress_total: 2 }));
+      const act = await client.board.activateEpic("epc-bbbb2222");
+      expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/activate");
+      expect(act.progress_derived).toBe(true);
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
+      await client.board.pauseEpic("epc-bbbb2222");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
+      const ce = await client.board.cancelEpic("epc-bbbb2222", { reason: "r" });
+      expect(mockFetch.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/cancel");
+      expect(ce.status).toBe("paused");
+    });
+
+    it("creates tasks with the OR4 pr:N anchor tag form", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", short_id: "tsk-cccc3333", stage: "backlog", tags: ["pr:1234"] }, 201));
+      const task = await client.board.createTask("epc-bbbb2222", {
+        title: "T",
+        tags: ["pr:1234"],
+        acceptanceCriteria: [{ text: "c", met: false }],
+      });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/tasks");
+      expect(task.tags?.[0]).toMatch(/^pr:[1-9][0-9]*$/);
+    });
+
+    it("manages dependencies and renders the re-derived task", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ task: { id: "t1", is_blocked: true, blocked_by: ["tsk-aaaa0000"] } }));
+      const dep = await client.board.addDependency("tsk-cccc3333", { dependsOn: "tsk-aaaa0000" });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/dependencies");
+      expect(dep.task?.is_blocked).toBe(true);
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ task: { id: "t1", is_blocked: false } }));
+      const rem = await client.board.removeDependency("tsk-cccc3333", "tsk-aaaa0000");
+      expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000");
+      expect(rem.task?.is_blocked).toBe(false);
+    });
+
+    it("moves stage, starts, cancels, and patches criteria", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "done" }));
+      const moved = await client.board.moveStage("tsk-cccc3333", { toStage: "done", evidenceUrl: "https://git/pr/1" });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/move-stage");
+      expect((mockFetch.mock.calls[0][1] as any).body).toContain('"toStage":"done"');
+      expect(moved.stage).toBe("done");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ task_id: "t1", claim_token: "tok-1", escalated: false }));
+      const claim = await client.board.startTask("tsk-cccc3333");
+      expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/start");
+      expect(claim.claim_token).toBe("tok-1");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "cancelled" }));
+      const cancelled = await client.board.cancelTask("tsk-cccc3333", { reason: "r" });
+      expect(cancelled.stage).toBe("cancelled");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", acceptance_criteria: [{ text: "c", met: true }] }));
+      const patched = await client.board.updateTask("tsk-cccc3333", { setCriteriaMet: 0 });
+      expect((mockFetch.mock.calls[3][1] as any).body).toContain('"setCriteriaMet":0');
+      expect(patched.acceptance_criteria?.[0]?.met).toBe(true);
+    });
+
+    it("lists project tasks with the stage filter", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ tasks: [{ id: "t1", stage: "backlog" }] }));
+      const res = await client.board.listProjectTasks("prj-aaaa1111", "backlog");
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/tasks?stage=backlog");
+      expect(res.tasks).toHaveLength(1);
+    });
+  });
 });

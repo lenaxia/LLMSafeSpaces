@@ -286,6 +286,12 @@ type RouterConfig struct {
 	OrgTriggersHandler     *handlers.TriggersHandler
 	WebhookReceiverHandler *handlers.WebhookReceiverHandler
 
+	// BoardHandler is the Task Board's REST projection (design 0067
+	// §4.3a, #1699): /api/v1/me/projects|epics|tasks, user-level only
+	// (ruling R7). Nil when the board engine is not wired (cfg.Board
+	// disabled) — the route group gates on it.
+	BoardHandler *handlers.BoardHandler
+
 	// FaultInjectionRules, when non-empty, installs the deterministic
 	// fault-injection middleware (Epic 70 US-70.0). Populated at app
 	// wire-up from LLMSAFESPACES_FAULT_INJECTION — a malformed value fails
@@ -2121,6 +2127,48 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		g.DELETE("/:id", cfg.UserTriggersHandler.UserDelete)
 		g.GET("/:id/fires", cfg.UserTriggersHandler.UserListFires)
 		g.POST("/:id/rotate-secret", cfg.UserTriggersHandler.UserRotateWebhookSecret)
+	}
+
+	// Task Board REST routes (design 0067 §4.3a, #1699 Lane 2):
+	// user-level only (ruling R7 — no org routes, no scope switcher);
+	// item addressing by short id (prj-/epc-/tsk-, case-insensitive) or
+	// UUID. Registered only when the board engine is wired (nil handler
+	// = feature off, matching the internal automation seam's gating).
+	// Deliberately absent: epic listing, board search, board health —
+	// board_read projections with no engine seam yet (flagged on #1699).
+	if cfg.BoardHandler != nil {
+		b := cfg.BoardHandler
+		p := router.Group("/api/v1/me/projects")
+		p.Use(services.GetAuth().AuthMiddleware())
+		p.GET("", b.ListProjects)
+		p.POST("", b.CreateProject)
+		p.GET("/:id", b.GetProject)
+		p.PATCH("/:id", b.UpdateProject)
+		p.POST("/:id/archive", b.ArchiveProject)
+		p.POST("/:id/unarchive", b.UnarchiveProject)
+		p.GET("/:id/tasks", b.ListProjectTasks)
+		p.POST("/:id/epics", b.CreateEpic)
+
+		e := router.Group("/api/v1/me/epics")
+		e.Use(services.GetAuth().AuthMiddleware())
+		e.GET("/:id", b.GetEpic)
+		e.PATCH("/:id", b.UpdateEpic)
+		e.POST("/:id/activate", b.ActivateEpic)
+		e.POST("/:id/pause", b.PauseEpic)
+		e.POST("/:id/archive", b.ArchiveEpic)
+		e.POST("/:id/unarchive", b.UnarchiveEpic)
+		e.POST("/:id/cancel", b.CancelEpic)
+		e.POST("/:id/tasks", b.CreateEpicTask)
+
+		k := router.Group("/api/v1/me/tasks")
+		k.Use(services.GetAuth().AuthMiddleware())
+		k.GET("/:id", b.GetTask)
+		k.PATCH("/:id", b.UpdateTask)
+		k.POST("/:id/move-stage", b.MoveStageTask)
+		k.POST("/:id/start", b.StartTask)
+		k.POST("/:id/cancel", b.CancelTask)
+		k.POST("/:id/dependencies", b.AddDependency)
+		k.DELETE("/:id/dependencies/:dependsOnId", b.RemoveDependency)
 	}
 
 	// Org-scope trigger routes.
