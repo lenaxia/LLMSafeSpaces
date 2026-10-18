@@ -852,8 +852,10 @@ func (c *Client) TriggerList(ctx context.Context, saToken, workspaceID string) (
 		fmt.Sprintf("/internal/v1/automation/triggers?workspaceID=%s", workspaceID), saToken, nil)
 }
 
-// TriggerCreate creates a trigger; the platform forces workspaceId to
-// this pod's workspace (the automation scoping rule).
+// TriggerCreate creates a trigger. Routine bodies are workspace-stamped
+// to this pod's workspace (the automation scoping rule) UNLESS the body
+// carries targetWorkspaceId (#1729) — that key passes through verbatim
+// for the platform's owner-rights gate on the named target workspace.
 func (c *Client) TriggerCreate(ctx context.Context, saToken, workspaceID string, trigger json.RawMessage) (*AutomationResponse, error) {
 	body, err := withWorkspaceID(trigger, workspaceID)
 	if err != nil {
