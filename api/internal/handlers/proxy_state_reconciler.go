@@ -120,10 +120,13 @@ func (h *ProxyHandler) reconcilePass() {
 // api-roll recovery leg). The store is Redis-backed in production and
 // SURVIVES an api roll — the new pod reads the old pod's session truth.
 // D1-B is preserved by construction: idle workspaces carry no
-// active-session records, so the re-arm opens nothing for them; a stray
-// record (a session that ended inside the 30-min TTL) opens a gate that
-// the fold's own idle-drop closes after the settle window. Fail-closed:
-// a store error reads as "no live sessions" and retries next tick.
+// active-session records, so the re-arm opens nothing for them. A stray
+// record (a session that ended inside the 30-min TTL) produces bounded
+// churn — open → idle-drop → re-open on each 60s tick until the record
+// expires — never more than ~30 short-lived connects per workspace
+// (review r1: bounded, self-limiting, cheaper than a second sweep).
+// Fail-closed: a store error reads as "no live sessions" and retries
+// next tick.
 func (h *ProxyHandler) rearmGatesForLiveSessions(activeWorkspaces []string) {
 	if !h.agentdTerminus.Load() || len(activeWorkspaces) == 0 {
 		return

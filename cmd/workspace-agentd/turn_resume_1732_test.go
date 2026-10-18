@@ -21,10 +21,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,6 +142,66 @@ func Test1732_TurnResume_HourlyBudgetBoundsHotLoop(t *testing.T) {
 func Test1732_TurnResume_NilPrompterDisabled(t *testing.T) {
 	s := newTurnResumeSupervisor(nil)
 	require.NotPanics(t, func() { turnEventFeed(t, s, evCut1732) })
+}
+
+// Test1732_TurnResume_PromptFailureKeepsSessionRetryable is the
+// unhappy-path gate for the resume-action layer (r1 blocking finding):
+// the ledger stamps ONLY on a successful prompt — a FAILED resume must
+// consume no budget, no cooldown, and no metric, so a wedged harness
+// stays eligible and the next interrupted turn retries. A refactor that
+// stamped the ledger before the error check would silently convert a
+// wedged harness into "already resumed, never retried" — the precise
+// failure class #1732 exists to fix — and fail this pin.
+//
+// Documented bound (review r1, Robustness): failed resumes consume no
+// budget and carry no backoff of their own; repeated attempts are
+// bounded only by interrupted-turn cadence (each retry needs a fresh
+// finish-unknown, i.e. a fresh turn that streamed and died).
+func Test1732_TurnResume_PromptFailureKeepsSessionRetryable(t *testing.T) {
+	// Deterministic metric label: RecordTurnResume maps the pod's
+	// WORKSPACE_ID through to the counter label ("" → "unknown").
+	t.Setenv("WORKSPACE_ID", "")
+	resumeMetric := func() float64 {
+		return testutil.ToFloat64(pkgOpsMetrics.turnResumes.WithLabelValues("unknown"))
+	}
+
+	p := &fakeResumePrompter{err: errors.New("harness wedged: connection refused")}
+	s := newTurnResumeSupervisor(p)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+
+	metricBefore := resumeMetric()
+	turnEventFeed(t, s, evUserMsg1732, evCut1732)
+	require.Equal(t, 1, p.count("ses_a"), "sanity: the resume prompt was attempted")
+
+	// (a) No ledger stamp: neither the cooldown clock nor the budget
+	// ledger moved — the failed attempt consumed nothing.
+	s.mu.Lock()
+	st := s.stateFor("ses_a")
+	ledgerEmpty := st.lastResumeAt.IsZero() && len(st.resumes) == 0
+	s.mu.Unlock()
+	require.True(t, ledgerEmpty, "a failed prompt must not stamp the resume ledger (no cooldown, no budget)")
+
+	// (b) No metric increment: only FIRED resumes count.
+	assert.Equal(t, metricBefore, resumeMetric(), "a failed prompt must not increment workspace_agentd_turn_resumes_total")
+
+	// (c) Still eligible: the harness recovers, the NEXT interrupted
+	// turn retries WITHOUT waiting out the 10-minute cooldown — well
+	// under it.
+	now = now.Add(2 * time.Second)
+	p.err = nil
+	turnEventFeed(t, s, evCut1732)
+	assert.Equal(t, 2, p.count("ses_a"),
+		"the failed resume consumed no budget — the next interrupted turn must re-fire immediately (the retryability property)")
+
+	// The successful retry stamps the ledger AND the metric.
+	assert.Greater(t, resumeMetric(), metricBefore,
+		"the fired resume increments workspace_agentd_turn_resumes_total{workspace_id}")
+	s.mu.Lock()
+	st = s.stateFor("ses_a")
+	stamped := !st.lastResumeAt.IsZero() && len(st.resumes) == 1
+	s.mu.Unlock()
+	assert.True(t, stamped, "the successful retry stamps the ledger exactly once")
 }
 
 func Test1732_TurnResume_HumanTakeoverCancelsPendingEligibility(t *testing.T) {

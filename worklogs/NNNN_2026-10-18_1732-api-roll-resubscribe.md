@@ -181,3 +181,35 @@ heuristics — the harness already tells the two apart on the wire.
 - `cmd/workspace-agentd/{session_tracker,client,main,sidecar_mode,ops_metrics}.go` — feed, prompt, wiring, metric
 - `api/internal/handlers/proxy_state_reconciler.go`, `api/internal/services/usagestream/consumer.go` — re-arm + HasGate
 - 6 pin/test files + runbook row in `helm/MONITORING-OPERATIONAL.md`
+
+## Review rounds
+
+**r0 (commit `b0672af4`):** CI's full-suite race detector caught the
+reconciler goroutine's new read of `h.agentdTerminus` racing the test
+rigs' post-`Start()` `SetAgentdTerminus` writes (the field predates any
+background reader; the re-arm pass added the first). Fixed by
+converting the flag to `atomic.Bool` (mechanical Load/Store, 24 read
+sites + the setter + one test write; semantics and test-visibility
+unchanged). Verified: `go test ./api/internal/handlers/ -count=1 -race`
+full suite green (144s) in this lane; the reviewer independently
+reproduced the race red-on-parent and green-on-head.
+
+**r1 (the review's one blocking finding):** the resume-action layer's
+failure branch — the deliberate "ledger stamps ONLY on a successful
+prompt" property that keeps a wedged harness retryable — shipped with
+zero coverage (`fakeResumePrompter.err` was never set by any test).
+Added `Test1732_TurnResume_PromptFailureKeepsSessionRetryable`: a
+failing prompt must (a) stamp no ledger (no cooldown, no budget), (b)
+not increment `workspace_agentd_turn_resumes_total`, and (c) leave the
+session eligible so the NEXT interrupted turn re-fires without waiting
+the cooldown — with the successful retry then stamping both the ledger
+and the metric (also closing the reviewer's non-blocking metric-coverage
+gap; `WORKSPACE_ID` is pinned via t.Setenv for a deterministic label).
+Also addressed the flagged non-blocking comment items: the rearm doc
+now states the bounded stray-record churn honestly (open → idle-drop →
+re-open per 60s tick, ≤~30 short-lived connects until the 30-min TTL
+expires), and the integration test's self-contradictory mid-edit
+comment is rewritten to state the actual timing contract. Non-blocking
+residuals acknowledged and left as recorded by the reviewer (the
+unobserved-abort false-resume window is the classifier's one honest
+blind spot — narrow, bounded, kill-switchable).

@@ -174,19 +174,20 @@ func TestIntegration1732_RollClassifiedLossAutoResumes(t *testing.T) {
 	mock.cut.Store(true)
 	prompt("say something")
 
-	// The supervisor must fire the ONE bounded re-prompt — and since the
-	// provider is still in cut mode for that resumed turn, it gets cut
-	// again (a second finish-unknown), which the budget's cooldown must
-	// NOT re-resume. Heal the provider right after the first cut landed
-	// so the resumed turn (if any) completes: actually — heal
-	// immediately after the FIRST cut is SERVED so the resume lands on a
-	// healthy provider (the roll has completed).
+	// The roll completes: heal the provider the moment the FIRST cut is
+	// served, so the supervisor's re-prompt lands on the healthy path
+	// (the new router pod serving fresh generations).
 	require.Eventually(t, func() bool { return mock.cuts.Load() >= 1 },
 		20*time.Second, 100*time.Millisecond, "the cut turn never reached the provider")
 	mock.cut.Store(false) // the roll is over: new pod, healthy path
 
 	// PIN 1 — the auto-resume fired: a provider request carrying the
-	// fixed resume text arrived, and it completed cleanly.
+	// fixed resume text arrived, and it completed cleanly. Timing
+	// contract: the provider is healed (cut mode off) the moment the
+	// FIRST cut is served — the roll is over, so the supervisor's
+	// re-prompt lands on the healthy path; if the resumed turn were cut
+	// again, the budget's cooldown would hold it (the unit pins cover
+	// that arm).
 	var sawResume bool
 	require.Eventually(t, func() bool {
 		for _, b := range mock.requests() {
