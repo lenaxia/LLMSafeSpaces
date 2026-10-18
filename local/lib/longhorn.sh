@@ -29,7 +29,24 @@ LONGHORN_CHART_VERSION="${LONGHORN_CHART_VERSION:-1.12.1}"
 
 longhorn_node_prereqs() { # node
     local node="$1"
-    docker exec -u 0 "$node" bash -c '
+    # Exec-identity gate (review N-R18-2): bare `docker exec` is the
+    # pool-proven form — local/lib/gvisor.sh:33 has delivered root-in-node
+    # with it on every run (runsc installs, containerd config edits,
+    # RuntimeClass registrations). The `-u 0` variant used rounds 15-18
+    # never once delivered root here: its execs landed as
+    # uid=1001(runner) with zero caps — the RUNNER image's identity
+    # shape (kindest/node has no `runner` user), i.e. not inside the
+    # node at all. Gate on MEASURED identity before doing anything, and
+    # fail loud with daemon/target context if it is not root.
+    local exec_uid
+    exec_uid=$(docker exec "$node" id -u 2>/dev/null || true)
+    if [ "$exec_uid" != "0" ]; then
+        echo "longhorn.sh: docker exec into ${node} measured uid=${exec_uid:-exec-failed} (want 0) — pool exec contract broken"
+        docker version 2>/dev/null | head -8 || true
+        docker info --format 'security={{.SecurityOptions}} driver={{.Driver}}' 2>/dev/null || true
+        return 1
+    fi
+    docker exec "$node" bash -c '
       set -e
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
@@ -58,8 +75,8 @@ longhorn_node_prereqs() { # node
       id || true
       mkdir -p /run/lock/iscsi
       if ! mkdir -p /etc/iscsi 2>/tmp/mkdir-etc.err; then
-        echo "longhorn.sh: mkdir /etc/iscsi failed as $(id -un): $(cat /tmp/mkdir-etc.err)"
-        echo "longhorn.sh: /etc is not writable by root in this node (host-level constraint) — Longhorn v1 engines cannot be provisioned here"
+        echo "longhorn.sh: mkdir /etc/iscsi failed as measured user $(id -un) uid=$(id -u) CapEff=$(awk '/^CapEff/{print $2}' /proc/self/status): $(cat /tmp/mkdir-etc.err)"
+        echo "longhorn.sh: the node filesystem is not writable by this exec identity — Longhorn v1 engines cannot be provisioned here"
         exit 1
       fi
       # open-iscsi can report installed-from-cache without its conffile

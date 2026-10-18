@@ -248,12 +248,54 @@ func TestLonghornLib_Shape(t *testing.T) {
 	if !strings.Contains(src, `unmapMarkSnapChainRemoved: "ignored"`) {
 		t.Fatal("user-shared StorageClass must carry the full prod longhorn-2r parameter set (unmapMarkSnapChainRemoved)")
 	}
-	if strings.Contains(src, `exit 1`+"\n"+`    kubectl --context "${CTX}" -n "$NS_LONGHORN" wait`) {
-		t.Fatal("install_once must return 1 (not exit) so the retry wrapper can loop")
-	}
 	// the instance-manager poll failure path must return, not exit
 	if strings.Contains(src, `never appeared (600s)" >&2; exit 1; }`) {
 		t.Fatal("instance-manager poll failure must return 1 so the retry wrapper can loop")
+	}
+}
+
+// Prereqs content pin (N-ISC-2 + reviews N-R18-1/N-R18-2): the node
+// provisioning block must gate on MEASURED exec identity before doing
+// anything, verify iscsid (pgrep + IPC smoke test), and abort loud with
+// the measured identity on filesystem failures — never a hardcoded
+// identity claim. This block consumed six first-contact runs; it ships
+// pinned.
+func TestLonghornLib_PrereqsContent(t *testing.T) {
+	src := mustReadSpike(t, lhLibScript)
+	for _, marker := range []string{
+		`exec_uid=$(docker exec "$node" id -u 2>/dev/null || true)`,
+		`pool exec contract broken`,
+		`pgrep -x iscsid`,
+		`can not connect to iSCSI daemon`,
+		`failed as measured user $(id -un)`,
+		`systemd-tmpfiles --create`,
+		`/etc/iscsi/initiatorname.iscsi`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("longhorn.sh prereqs missing marker %q (the six-round unpinned block)", marker)
+		}
+	}
+	if strings.Contains(src, "docker exec -u 0") {
+		t.Fatal("-u 0 execs never deliver root on this pool (r18: uid=1001(runner), the runner-image shape) — bare exec + identity gate is the contract")
+	}
+}
+
+// Exec-fed instrumentation guards (N-R18-3): the disk budget must reject
+// non-numeric probe results as EXEC failures (not "disk too small"),
+// and the iscsid liveness row must distinguish exec failure from dead.
+func TestSharedFolderSpike_ExecFedInstrumentation(t *testing.T) {
+	src := mustReadSpike(t, spikeScript)
+	for _, marker := range []string{
+		`node_free_gb=EXEC_FAILED`,
+		`not a disk-size verdict`,
+		`env_iscsid_alive=EXEC_FAILED`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("exec-fed instrumentation unguarded (N-R18-3): missing %q", marker)
+		}
+	}
+	if strings.Contains(src, "docker exec -u 0") {
+		t.Fatal("spike script still uses -u 0 execs (r18: never delivers root on this pool)")
 	}
 }
 

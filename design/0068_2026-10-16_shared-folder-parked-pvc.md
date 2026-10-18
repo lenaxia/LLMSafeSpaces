@@ -177,7 +177,7 @@ The cadence loop is SharedVolume-reconciler-owned (`RequeueAfter: cadenceSeconds
 
 rclone runs in the workspace posture with an env-only config (no config file, no SA token — credentials via the existing secret-delivery seam: a dedicated `sharedfolder-sync` credential minted by the controller into the job's env through the same Secret path agentd credentials ride today). Job success updates `lastSyncAt`; failure leaves the previous watermark and requeues with backoff — a missed cadence never deletes user data.
 
-**Cadence = RPO knob** (ruling 6): 15 min default; chart value `sharedFolder.syncCadenceSeconds` (§11). The whole cycle measured at [R:c_sync_pod_s]s for [R:b_dataset_gb] GiB — the duty cycle stays single-digit percent at the default cadence even at 100 GB (§3.3 extrapolation), so the sync pod is a Job, not a resident workload.
+**Cadence = RPO knob** (ruling 6): 15 min default; chart value `sharedFolder.syncCadenceSeconds` (§11). The whole cycle measured at [R:c_sync_pod_s]s for [R:b_dataset_gb] GiB; if those rows read PASS, §3.3's extrapolation bounds the duty cycle at the default cadence (single-digit percent at 100 GB) and the sync pod stays a Job, not a resident workload — if they read PENDING or FAIL, no duty-cycle claim is made (§3.4's gate).
 
 ### 4.6 Park — TTL, final sync, discard
 

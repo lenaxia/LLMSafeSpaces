@@ -20,6 +20,7 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 38889584710 | fail @ chart fetch | transient GitHub 500 on the release-asset tgz — 3-attempt retry |
 | 38892896347 | cancelled | first run to clear all provisioning; runner reclaimed mid-legs |
 | 39075635564 | fail @ pre-warm | kind load + digest refs = multi-arch import trap — ctr pull on node |
+| 39077711422 | cancelled | superseded mid-run by the test-fix push (concurrency cancel) |
 | 39077806519 | fail @ pre-warm | ctr needs docker.io-qualified refs (bare repo@digest → dummy://) |
 | 39079884685 | fail @ leg A | share-manager ganesha probe loop persists; full longhorn dumps captured |
 | 39083785719 | fail @ legs 0+A | leg-0 probes hit a namespace that didn't exist yet (harness bug, fixed); RWX share still not converging |
@@ -32,7 +33,7 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39104752680 | fail @ prereqs | same EACCES with `docker exec -u 0` pinned — host-level constraint |
 | 39106627792 | fail @ prereqs | same EACCES (third consecutive) |
 | 39108718318 | fail @ kind create | `etcdserver: request timed out` — failure now above every line the branch touches |
-| 39149620957 | fail @ prereqs | **TERMINAL DIAGNOSIS**: `docker exec -u 0` lands as `uid=1001(runner)` with `CapEff: 0000000000000000` on an SELinux (`seclabel`) overlay — the runner's docker wrapper strips the uid and drops all capabilities; root-level node provisioning is impossible on this runner class |
+| 39149620957 | fail @ prereqs | `docker exec -u 0` measured `uid=1001(runner)`, `CapEff=0` — the runner-image identity shape, i.e. the `-u 0` exec never landed in the node at all (kindest/node has no `runner` user); bare `docker exec` (gvisor.sh's form) delivered root-in-node in the SAME run. r18's resolution: revert to bare exec + a measured-identity gate. The "TERMINAL DIAGNOSIS" this row first carried (host-level SELinux wall) was the -u 0 artifact, not the environment's true shape |
 | (green run) | — | results.txt + leg logs land here and fill every [R:...] in design 0068 — requires the owner's environment decision (#1709: non-nested runner / real cluster / evidence-deferred) |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
@@ -48,7 +49,6 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 - `run-env.txt` — runner environment record (CPU/mem/disk/docker), written by the workflow's env step.
 - `c-sync.log` — leg C sync pod: RO-mount check, manifest verify output, journal torn-tail parse, rclone push.
 - `spike.log` — leg progress log (the script's own tee).
-- Failed-run artifacts kept for the record: `run38865021006/` (minio delisting), `run38865864638/` (VSC-before-CRD ordering), `run38866952477/` (this run).
 
 ## Reproducing
 

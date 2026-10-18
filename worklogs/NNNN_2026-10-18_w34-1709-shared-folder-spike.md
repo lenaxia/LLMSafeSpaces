@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-18
 **Session:** w34 design lane (charter: design doc for #1709 + the three spike deliverables that gate it).
-**Status:** In progress — spike kit hardened through 15 runs; design doc drafted with evidence-gated claims; green-run evidence pending (the open blocker is a Longhorn-on-slow-dind share-manager failure, documented below — it sits BEFORE gVisor, so leg A has no verdict yet).
+**Status:** In progress — spike kit hardened through 24 completed runs; design doc drafted with evidence-gated claims; green-run evidence pending (the open blocker is the pool's exec-identity contract, resolved this round by reverting to bare `docker exec` + a measured-identity gate — it sits BEFORE gVisor, so leg A has no verdict yet).
 
 ---
 
@@ -15,7 +15,7 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 - Spike kit: `local/1709-shared-folder-spike.sh` (legs 0/A/B/C + selftest + render modes), `local/lib/longhorn.sh` (Longhorn-in-kind provisioning), `.github/workflows/shared-folder-spike.yml` (PR-triggered dispatch-equivalent, paths-filtered, concurrency-deduped).
 - Design doc 0068 drafted: parked-PVC lifecycle state machine (Hydrating/Ready/Parking/Parked + the issue's four edge cases), pre-warm/Ready-gating, snapshot→RO→rclone sync at 15-min cadence, `user-shared` StorageClass (prod `longhorn-2r` parameter set), quota-as-PVC-size (platform/per-user/org-aggregate), S3 layout + retention/versioning, user-level ownership seam (boards 0067 §authz), rejected alternatives verbatim, OR-1..OR-5 open-rulings menu, rollout sequencing. All result claims are `[R:...]` rows explicitly gated on committed evidence.
 - Review remediation across rounds 1–8 (C1–C4, N1, N-A/N-B/N-C, R1–R6): heredoc parse-fatal class dead (`\$i` single-escape + dash -n gate), journal writer whole-record appends, 4-way leg exit contract, share-manager wait after consumers, runc RuntimeClass + preflight, fail-fast job waits, real chart key, node image pre-warm via ctr, posture-claim scoping, digest pins, 4× disk budget.
-- Run ledger driven to 15 entries; every failure root-caused or captured for diagnosis (see Blockers).
+- Run ledger driven to 23 ledgered entries (24 completed runs); every failure root-caused or captured for diagnosis (see Blockers).
 
 ## Key Decisions
 
@@ -27,14 +27,14 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 
 ## Blockers
 
-- **TERMINAL (environment, run 39149620957's diagnostics):** the shared dind runner's docker wrapper strips `docker exec -u 0` — node-side execs land as `uid=1001(runner)` with `CapEff: 0000000000000000` on an SELinux-labeled overlay, so root-level kind-node provisioning (open-iscsi, /etc writes, iscsid) is IMPOSSIBLE on this runner class; earlier runs that succeeded rode a different (since-drifted) runner configuration. Above that, Longhorn v1 engines additionally require the nsenter→iscsiadm initiator path that nested dind does not provide. The wall sits entirely BEFORE gVisor — leg A has no verdict. Owner decision requested on #1709: (a) non-nested runner lane, (b) real-cluster spike, or (c) evidence-deferred merge with the first real-cluster soak as the gating evidence.
+- **RESOLVED THIS ROUND (r18's analysis of runs 39101239324-39149620957):** the four consecutive prereq EACCES failures were SELF-INFLICTED — the round-15 `-u 0` pin never delivers root on this pool (its execs land as `uid=1001(runner)`, the runner-image identity — kindest/node has no `runner` user — i.e. not inside the node at all), while the bare `docker exec` gvisor.sh has used EVERY run delivers root-in-node reliably. Reverted to bare exec with a measured-identity gate (`docker exec <node> id -u` probed and gated before any provisioning). Whether Longhorn v1 engines additionally hit the nsenter→iscsiadm dind-nesting limit remains UNANSWERED — the earlier engine-`starting` hangs were observed with iscsid provably alive, but under prereqs that never completed cleanly; the first gated clean run will answer it. The wall still sits BEFORE gVisor — leg A has no verdict. Owner decision still requested on #1709: (a) non-nested runner lane, (b) real-cluster spike, or (c) evidence-deferred merge — but (a) may now be unnecessary if the bare-exec revert lets the pool answer.
 
 ## Tests Run
 
 - `bash local/1709-shared-folder-spike.sh selftest` — journal-parser fixtures (clean/torn-tail/gap/dupe/empty) + 4-way exit-contract helper. PASS locally.
 - `bash local/1709-shared-folder-spike.sh render <dir>` + `dash -n` on every emitted body. PASS locally (non-vacuous: anchor + loop-construct + live-script drift pins in the Go test).
 - `go test ./local/ -run 'TestSharedFolderSpike|TestLonghornLib'` — 12 companion pins (bash -n ×2, rendered dash -n + content + drift, `\$\$` dead signature, selftest, exit contract, fail-sentinel normalization, leg-0 shape incl. namespace ordering + scoped deletes, writer redirect, RuntimeClass preflight, hydration size gate, longhorn lib keys/params, workflow shape incl. ctr ref qualification). PASS.
-- Spike runs: 15 on the pool (ledger in `design/evidence/shared-folder-spike/README.md`); zero green leg executions yet — the open blocker above.
+- Spike runs: 24 on the pool (ledger in `design/evidence/shared-folder-spike/README.md`); zero green leg executions yet — the open blocker above.
 
 ## Files Modified
 
@@ -42,6 +42,6 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 
 ## Next Steps
 
-1. Land the share-manager log capture → root-cause (or environment-workaround) the RWX blocker; legs 0/A gate the rest.
-2. One green run; commit `results.txt` + leg logs; fill every `[R:...]`; flip PR out of draft; iterate review to APPROVED; never self-merge.
+1. Land one CLEAN gated run (bare exec + identity gate): legs 0/A answer whether the pool can host Longhorn v1 at all; if engines still hang with iscsid provably alive, the nsenter→iscsiadm dind-nesting limit is confirmed and the owner decision (a)/(b)/(c) on #1709 becomes hard.
+2. On a green run: commit `results.txt` + leg logs; fill every `[R:...]`; flip PR out of draft; iterate review to APPROVED; never self-merge.
 3. Report the leg-A verdict (either way) on #1709 the moment it exists.
