@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — archived sessions are opt-in on session listings (#1735)
+
+- **agentd MCP `session_list` and `session_metadata` default to
+  non-archived sessions** (long-lived orchestration workspaces
+  accumulate an unbounded archived set — 60+ after a week — that every
+  listing shipped as ambient context noise). `include_archived:true`
+  is the explicit opt-in on both tools; a single-ID `session_metadata`
+  lookup of an archived session still resolves (the filter applies to
+  listings/aggregates only), the per-entry `archived` marker stays,
+  and the filter is advisory — an unreachable platform degrades to the
+  unfiltered list, never a failed tool.
+- **API `GET /workspaces/{id}/sessions` excludes archived rows by
+  default**; `?include_archived=true` restores the full list. The
+  filter is response-shape only — index reconciliation and
+  single-session routes still see every row. Documented in
+  `sdks/openapi.yaml`; the Go and Python SDKs expose the flag.
+- Callers migrated: the frontend sessions queries (Sidebar + ChatPage,
+  which render the Archived group) opt in explicitly; the #1627
+  metadata annotation test pin opts in explicitly.
+
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
 - **Fleet relay-router drains in-flight generations on deploys** instead
