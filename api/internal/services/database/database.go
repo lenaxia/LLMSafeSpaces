@@ -1111,7 +1111,8 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		        (last_message_at IS NOT NULL
 		         AND (last_seen_at IS NULL OR last_message_at > last_seen_at)) AS has_unread,
 		        context_used,
-		        archived
+		        archived,
+		        short_id
 		 FROM session_index WHERE workspace_id = $1
 		 ORDER BY last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
 	if err != nil {
@@ -1127,11 +1128,15 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		var lastMsg sql.NullTime
 		var lastSeen sql.NullTime
 		var contextUsed sql.NullInt64
-		if err := rows.Scan(&item.ID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived); err != nil {
+		var shortID sql.NullString
+		if err := rows.Scan(&item.ID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID); err != nil {
 			return nil, err
 		}
 		if title.Valid {
 			item.Title = title.String
+		}
+		if shortID.Valid {
+			item.ShortID = shortID.String
 		}
 		if parentID.Valid {
 			item.ParentID = parentID.String

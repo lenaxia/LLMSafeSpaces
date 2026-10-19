@@ -269,3 +269,8 @@ func TestSetSessionArchived_NotIndexed_NotFoundPropagates(t *testing.T) {
 	assert.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, 404, apiErr.StatusCode())
 }
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
+	return ""
+}

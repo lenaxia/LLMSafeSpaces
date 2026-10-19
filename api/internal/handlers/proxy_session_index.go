@@ -33,10 +33,25 @@ const (
 )
 
 func writeSessionGoneBody(c *gin.Context, message string) {
-	c.JSON(http.StatusGone, gin.H{
+	writeSessionGoneBodyWithSuggestions(c, message, nil)
+}
+
+// writeSessionGoneBodyWithSuggestions is the #1667-generalized gone
+// body (design 0066 §4.6): the typed 410 keeps its code + message
+// contract (the frontend discriminator) and gains the structured
+// did-you-mean payload additively — a truncated or mistyped id that
+// matches nothing at the agent now names its near neighbors instead
+// of answering silence. Suggestions are omitted (not empty) when
+// nothing scores: the payload is information, not a shape.
+func writeSessionGoneBodyWithSuggestions(c *gin.Context, message string, suggestions []any) {
+	body := gin.H{
 		"code":  "session_gone",
 		"error": message,
-	})
+	}
+	if len(suggestions) > 0 {
+		body["suggestions"] = suggestions
+	}
+	c.JSON(http.StatusGone, body)
 }
 
 // reapSessionIfGone classifies an adapter error from a session-scoped
@@ -54,6 +69,10 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 	if !errors.Is(err, agent.ErrSessionNotFound) {
 		return false
 	}
+	// Design 0066 §4.6 (the #1667 generalization to the API surface):
+	// the agent's definitive not-found verdict is exactly the 404-class
+	// outcome suggestions attach to — never to authz/transport/5xx.
+	suggestions := h.sessionSuggestions(c, workspaceID, sessionID)
 	if h.sessionIndex != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		rows, listErr := h.sessionIndex.ListByWorkspace(ctx, workspaceID)
@@ -71,13 +90,13 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
 					writeSessionGoneBody(c, sessionGoneUncertain)
 				} else {
-					writeSessionGoneBody(c, sessionGoneReaped)
+					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
 				}
 			} else {
 				h.logger.Warn("session_gone: history-bearing row kept for operator review",
 					"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
 					"messageCount", row.MessageCount)
-				writeSessionGoneBody(c, sessionGoneKept)
+				writeSessionGoneBodyWithSuggestions(c, sessionGoneKept, suggestions)
 			}
 			cancel()
 			return true
@@ -86,7 +105,7 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 	}
 	// No confirmed reap (nil index, lookup error, or row not indexed):
 	// never claim removal — the convergence pass will converge it.
-	writeSessionGoneBody(c, sessionGoneUncertain)
+	writeSessionGoneBodyWithSuggestions(c, sessionGoneUncertain, suggestions)
 	return true
 }
 
@@ -192,7 +211,42 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			"workspaceID", workspaceID, "sessionID", id)
 	}
 
+	h.backfillShortIDs(ctx, workspaceID, rows)
 	h.rebuildMessageCounts(ctx, workspaceID, rows, presentSet)
+}
+
+// shortIDBackfillBudget bounds the short-id mint pass (design 0066
+// §4.2): steady state is zero NULL rows; the budget only paces the
+// one-time rollout catch-up so a single reconcile pass never turns
+// into a workspace-wide write storm.
+const shortIDBackfillBudget = 25
+
+// backfillShortIDs is the design 0066 convergence sweep's short-id
+// half: rows whose short_id is still NULL (predating the rollout, or a
+// registration path that raced/failed) are registered — mint-and-
+// persist exactly once, idempotently; the LRU makes the steady state
+// a pure row scan with no writes.
+func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string, rows []types.SessionListItem) {
+	if h.sessionIndex == nil {
+		return
+	}
+	minted := 0
+	for _, row := range rows {
+		if row.ShortID != "" {
+			continue
+		}
+		if minted >= shortIDBackfillBudget {
+			break
+		}
+		if h.sessionIndex.Register(ctx, workspaceID, row.ID, "opencode") != "" {
+			minted++
+		}
+	}
+	if minted > 0 {
+		sessionindex.ReconcileOutcome("short_id_backfilled")
+		h.logger.Info("session reconcile: backfilled short ids",
+			"workspaceID", workspaceID, "count", minted)
+	}
 }
 
 // reconcileCountBudget bounds the count-rebuild walks per pass (#1481).
@@ -262,6 +316,28 @@ func (h *ProxyHandler) SetSessionIndex(si interfaces.SessionIndexService) {
 	h.sessionIndex = si
 }
 
+// SetSessionRefs wires design 0066's resolution/suggestion surface (the
+// database service). Nil (or never called) disables the layer.
+func (h *ProxyHandler) SetSessionRefs(r sessionindex.RefResolver) {
+	h.sessionRefs = r
+}
+
+// sessionSuggestions computes the did-you-mean payload for a failed
+// session ref on this workspace — best-effort, bounded (§4.6), nil on
+// any degradation. Used by the 404-class verdict paths only.
+func (h *ProxyHandler) sessionSuggestions(c *gin.Context, workspaceID, ref string) []any {
+	if h.sessionRefs == nil {
+		return nil
+	}
+	userID, _ := extractAuth(c)
+	out := sessionindex.SuggestionsFor(c.Request.Context(), h.sessionRefs, userID, workspaceID, ref)
+	anyOut := make([]any, 0, len(out))
+	for _, s := range out {
+		anyOut = append(anyOut, s)
+	}
+	return anyOut
+}
+
 func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -276,6 +352,11 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 // persistSessionMeta writes the title and parentID to the session index
 // from the Adapter's typed session.Session.
 func (h *ProxyHandler) persistSessionMeta(ctx context.Context, workspaceID, sessionID, title, parentID string) {
+	// Design 0066 registration seam: title/parent upserts are row-
+	// creating shapes — register first (idempotent, LRU-guarded).
+	if h.sessionIndex != nil {
+		h.sessionIndex.Register(ctx, workspaceID, sessionID, "")
+	}
 	if title != "" {
 		if err := h.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
 			h.logger.Error("Failed to persist session title", err, "workspaceID", workspaceID, "sessionID", sessionID)
@@ -323,6 +404,8 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 		if s.ID == "" || s.ParentID == "" {
 			continue
 		}
+		// Design 0066 registration seam (parent-mirror backfill path).
+		h.sessionIndex.Register(ctx, workspaceID, s.ID, "")
 		if err := h.sessionIndex.UpsertParent(ctx, workspaceID, s.ID, s.ParentID); err != nil {
 			h.logger.Debug("Backfill: upsert parent failed", "workspaceID", workspaceID, "sessionID", s.ID, "error", err)
 			continue

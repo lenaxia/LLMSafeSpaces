@@ -23,12 +23,18 @@ type mockServices struct {
 	auth      *imocks.MockAuthMiddlewareService
 	metrics   *imocks.MockMetricsService
 	workspace *imocks.MockWorkspaceService
+	database  *imocks.MockDatabaseService
 }
 
-func (s *mockServices) GetAuth() interfaces.AuthService         { return s.auth }
-func (s *mockServices) GetDatabase() interfaces.DatabaseService { return nil }
-func (s *mockServices) GetCache() interfaces.CacheService       { return nil }
-func (s *mockServices) GetMetrics() interfaces.MetricsService   { return s.metrics }
+func (s *mockServices) GetAuth() interfaces.AuthService { return s.auth }
+func (s *mockServices) GetDatabase() interfaces.DatabaseService {
+	if s.database != nil {
+		return s.database
+	}
+	return nil
+}
+func (s *mockServices) GetCache() interfaces.CacheService     { return nil }
+func (s *mockServices) GetMetrics() interfaces.MetricsService { return s.metrics }
 func (s *mockServices) GetWorkspace() interfaces.WorkspaceService {
 	return s.workspace
 }

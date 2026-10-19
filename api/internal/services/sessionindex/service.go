@@ -4,6 +4,7 @@
 package sessionindex
 
 import (
+	"container/list"
 	"context"
 	"sync"
 	"time"
@@ -48,6 +49,90 @@ type Service struct {
 	queue  chan recordEvent
 	closeC chan struct{}
 	wg     sync.WaitGroup
+
+	// registerLRU is the known-registered (workspace, session) cache
+	// (design 0066 §4.2): the hot per-message row-creating paths call
+	// Register before every upsert; after first sight the pair is
+	// LRU-resident and the seam costs one map lookup. Bounded; a miss
+	// is never a correctness event (registration is idempotent).
+	registerMu  sync.Mutex
+	registerLRU *list.List // front = most recent
+	registerMap map[string]*list.Element
+	registerCap int
+}
+
+// registeredPair is one LRU entry.
+type registeredPair struct {
+	key     string
+	shortID string
+}
+
+// registerLRUCap bounds the known-registered set. Far above any sane
+// workspace's live-session cardinality; small enough that the memory
+// is noise.
+const registerLRUCap = 8192
+
+func (s *Service) knownRegistered(workspaceID, sessionID string) (string, bool) {
+	key := workspaceID + "\x00" + sessionID
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+	if el, ok := s.registerMap[key]; ok {
+		s.registerLRU.MoveToFront(el)
+		return el.Value.(*registeredPair).shortID, true
+	}
+	return "", false
+}
+
+func (s *Service) markRegistered(workspaceID, sessionID, shortID string) {
+	key := workspaceID + "\x00" + sessionID
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+	if s.registerMap == nil {
+		s.registerMap = map[string]*list.Element{}
+		s.registerLRU = list.New()
+		s.registerCap = registerLRUCap
+	}
+	if el, ok := s.registerMap[key]; ok {
+		el.Value.(*registeredPair).shortID = shortID
+		s.registerLRU.MoveToFront(el)
+		return
+	}
+	el := s.registerLRU.PushFront(&registeredPair{key: key, shortID: shortID})
+	s.registerMap[key] = el
+	for s.registerLRU.Len() > s.registerCap {
+		oldest := s.registerLRU.Back()
+		if oldest == nil {
+			break
+		}
+		s.registerLRU.Remove(oldest)
+		delete(s.registerMap, oldest.Value.(*registeredPair).key)
+	}
+}
+
+// Register is the registration seam's wrapper (design 0066 §4.2):
+// EnsureSessionRegistered behind the known-registered LRU, best-effort
+// by contract — a failed registration degrades to a short-id-less row
+// that the convergence sweep backfills; it must never fail the
+// caller's actual write. Returns the short id, "" when degraded.
+func (s *Service) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
+	if s.db == nil || workspaceID == "" || sessionID == "" {
+		return ""
+	}
+	if shortID, ok := s.knownRegistered(workspaceID, sessionID); ok {
+		return shortID
+	}
+	regCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	shortID, err := s.db.EnsureSessionRegistered(regCtx, workspaceID, sessionID, harnessType)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("session_index: short-id registration failed; backfill sweep will converge",
+				"workspaceID", workspaceID, "sessionID", sessionID, "error", err.Error())
+		}
+		return ""
+	}
+	s.markRegistered(workspaceID, sessionID, shortID)
+	return shortID
 }
 
 type recordEvent struct {

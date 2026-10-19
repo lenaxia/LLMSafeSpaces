@@ -178,6 +178,17 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		if sid != "" {
 			h.removeActiveSession(c.Request.Context(), wid, sid)
 		}
+		// Design 0066 §4.6: the agent's definitive not-found verdict
+		// gets the structured 404 + did-you-mean payload — the API
+		// half of the #1667 generalization (a bare 502 trained
+		// callers to retry typos).
+		if errors.Is(sendErr, agent.ErrSessionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":       "session not found",
+				"suggestions": h.sessionSuggestions(c, wid, sid),
+			})
+			return
+		}
 		if isTextOnlyWedgeSendErr(sendErr) {
 			writeTextOnlyWedgeBody(c)
 			return

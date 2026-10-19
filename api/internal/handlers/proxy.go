@@ -20,6 +20,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -77,7 +78,11 @@ type ProxyHandler struct {
 	phaseSource interface {
 		GetAllKnownPhases() map[string]string
 	}
-	sessionIndex   interfaces.SessionIndexService
+	sessionIndex interfaces.SessionIndexService
+	// sessionRefs is design 0066's resolution/suggestion read surface
+	// (nil = resolution disabled: every ref passes through and 404s
+	// stay suggestion-free — the pre-rollout behavior byte-for-byte).
+	sessionRefs    sessionindex.RefResolver
 	userBroker     *eventbroker.UserEventBroker
 	sessionParents *sessionParentCache
 

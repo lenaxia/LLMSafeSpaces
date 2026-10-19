@@ -250,6 +250,40 @@ func (m *MockDatabaseService) IsSessionArchived(ctx context.Context, workspaceID
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockDatabaseService) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	args := m.Called(ctx, workspaceID, sessionID, harnessType)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockDatabaseService) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	args := m.Called(ctx, workspaceID, shortID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockDatabaseService) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	args := m.Called(ctx, workspaceID, alias)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]types.SessionListItem), args.Error(1)
+}
+
+func (m *MockDatabaseService) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
+}
+
+func (m *MockDatabaseService) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
+	args := m.Called(ctx, workspaceIDs, ref)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]types.SessionListItem), args.Error(1)
+}
+
 func (m *MockDatabaseService) ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error) {
 	args := m.Called(ctx)
 	if args.Get(0) == nil {

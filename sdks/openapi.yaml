@@ -692,6 +692,19 @@ paths:
           description: >
             true = archived sessions are included (the pre-#1735
             behavior). Default false = archived sessions are excluded.
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Optional design 0066 search filter over the same list the
+            caller can already fetch (composed with include_archived's
+            visibility): case-insensitive title substring, short-id
+            prefix (normalized), legacy-id prefix. Absent q returns
+            the unfiltered list byte-identically. An empty result for
+            a q that looks id/title-like answers 404 with a structured
+            suggestions payload instead of an empty array.
       responses:
         "200":
           description: Session list
@@ -9604,6 +9617,14 @@ components:
           type: string
         resumed:
           type: boolean
+        shortId:
+          type: string
+          description: >
+            The platform-minted short address of the session (design
+            0066): prefix + 8 chars, per-workspace unique, resolved
+            case-insensitively by every id-taking surface. Absent when
+            the registration seam is momentarily unavailable — the
+            harness sessionId above remains the stable fallback.
     SessionListItem:
       type: object
       properties:
@@ -9628,6 +9649,13 @@ components:
             stays viewable; unarchiving restores chat instantly).
             ABSENT means not archived — the field is omitempty on the
             wire for backward compatibility.
+        shortId:
+          type: string
+          description: >
+            The platform-minted short address (design 0066): prefix +
+            8 chars, per-workspace unique, case-insensitive at
+            resolution. ABSENT for rows the rollout backfill has not
+            yet reached — every existing consumer keys on id.
     SessionAlert:
       type: object
       required: [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]

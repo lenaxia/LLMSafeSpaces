@@ -69,10 +69,20 @@ type SessionListItem struct {
 	HasUnread     bool       `json:"hasUnread"`
 	ContextUsed   *int64     `json:"contextUsed,omitempty"`
 	Origin        string     `json:"origin,omitempty"` // manual | routine | workflow | api
+	// ShortID is the platform-minted short address (design 0066,
+	// #1691): prefix + 8 chars, per-workspace unique, case-insensitive
+	// at resolution. omitempty — rows predating the rollout (and any
+	// the backfill sweep has not yet reached) carry none, and every
+	// existing consumer keys on ID.
+	ShortID string `json:"shortId,omitempty"`
 	// Archived is the platform-level read-only marker (#1627). ABSENT
 	// means NOT archived — the flag is omitempty for backward
 	// compatibility with every existing client.
 	Archived bool `json:"archived,omitempty"`
+	// Workspace carries the owning workspace id on cross-workspace
+	// suggestion candidates only (design 0066 §4.6) — internal, never
+	// serialized on the per-workspace list this type serves.
+	Workspace string `json:"-"`
 }
 
 // ActiveSessionsResponse is returned by GET /workspaces/:id/sessions/active.
@@ -110,6 +120,11 @@ type EnsureSessionResponse struct {
 	WorkspacePhase string `json:"workspacePhase"`
 	SessionID      string `json:"sessionId"`
 	Resumed        bool   `json:"resumed"`
+	// ShortID is the platform-minted short address of the session
+	// (design 0066, #1691). omitempty: absent when the registration
+	// seam is unavailable (nil session index) — the harness id above
+	// remains the stable fallback in that degraded window.
+	ShortID string `json:"shortId,omitempty"`
 }
 
 type CredentialStateResult struct {
