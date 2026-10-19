@@ -8,6 +8,7 @@ package database
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -186,4 +187,35 @@ func upperString(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// TestIntegration_FindSessionsByAlias_NewestFirst pins the alias
+// ORDER BY against real Postgres (review r2 finding C): the ambiguity
+// payload's newest-first truncation contract is DB-enforced, not
+// accidental return order.
+func TestIntegration_FindSessionsByAlias_NewestFirst(t *testing.T) {
+	svc, h := newIntegrationService(t)
+	ctx := h.NewContext()
+	wsID := "int-ws-1691-alias"
+	title := "Dup Title " + h.ID()
+
+	old := time.Now().Add(-48 * time.Hour).UTC()
+	mid := time.Now().Add(-2 * time.Hour).UTC()
+	newT := time.Now().Add(-5 * time.Minute).UTC()
+	for _, seed := range []struct {
+		ses string
+		at  time.Time
+	}{{"ses_old", old}, {"ses_mid", mid}, {"ses_new", newT}} {
+		_, err := h.Pool().Exec(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, title, last_message_at) VALUES ($1, $2, $3, $4)`,
+			wsID, seed.ses, title, seed.at)
+		require.NoError(t, err)
+	}
+
+	rows, err := svc.FindSessionsByAlias(ctx, wsID, "  "+title+"  ")
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	assert.Equal(t, "ses_new", rows[0].ID, "newest first is the contract")
+	assert.Equal(t, "ses_mid", rows[1].ID)
+	assert.Equal(t, "ses_old", rows[2].ID)
 }

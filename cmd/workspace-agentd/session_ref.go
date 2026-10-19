@@ -25,7 +25,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -86,11 +85,6 @@ func bootPullSessionShortIDs(ctx context.Context) {
 	defer cancel()
 	pullSessionShortIDs(pullCtx)
 }
-
-// seamIDPattern mirrors the seam's session-id charset
-// (^([A-Za-z0-9_-]{1,128})$) — a ref matching it can be handed to the
-// seam verbatim; anything else can only ever have been a name.
-var seamIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // errSessionRef is the structured resolution failure returned to tool
 // callers: the message carries the did-you-mean clause (the #1667
@@ -159,7 +153,7 @@ func resolveSessionRef(ctx context.Context, password, ref string) (string, error
 		// accept anyway (spaces, dots, …) fail HERE with the clause —
 		// a name was meant, and the caller gets the did-you-mean
 		// instead of a client-side charset error.
-		if seamIDPattern.MatchString(ref) {
+		if shortid.IsSeamIDForm(ref) {
 			return ref, nil
 		}
 		return "", &errSessionRef{msg: fmt.Sprintf(

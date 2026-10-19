@@ -170,7 +170,11 @@ func TestFindSessionsByAlias_AmbiguityVisible(t *testing.T) {
 	// Two sessions share the title (the fleet's live alias-collision
 	// case): BOTH rows must come back — the resolution layer refuses,
 	// the suggestion layer disambiguates.
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, short_id, last_message_at FROM session_index WHERE workspace_id = $1 AND lower(btrim(title)) = $2`)).
+	// ANCHORED (review r2 finding C): sqlmock matches by substring, so
+	// the expectation must carry the ORDER BY explicitly — deleting it
+	// from the query must FAIL this pin (the deterministic newest-first
+	// truncation contract).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, short_id, last_message_at FROM session_index WHERE workspace_id = $1 AND lower(btrim(title)) = $2 ORDER BY last_message_at DESC NULLS LAST, session_id ASC`)).
 		WithArgs(regWS, "worker: #1691").
 		WillReturnRows(sqlmock.NewRows([]string{"session_id", "title", "short_id", "last_message_at"}).
 			AddRow("ses_a", "Worker: #1691", "oc-11111111", nil).

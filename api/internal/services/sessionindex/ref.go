@@ -60,6 +60,10 @@ type RefResolution struct {
 	ShortID string
 	// UnresolvedAlias: an alias-form ref that matched nothing.
 	UnresolvedAlias bool
+	// DegradedLookup: the resolution PASSED THROUGH only because the
+	// alias lookup errored (transient DB failure). Callers that WRITE
+	// must refuse seam-invalid refs under this flag (finding B).
+	DegradedLookup bool
 	// AmbiguousAlias: an alias-form ref matching >1 current title —
 	// NEVER auto-resolved (ruling 8); AliasMatches carries the rows
 	// for the did-you-mean payload.
@@ -108,10 +112,14 @@ func ResolveSessionRef(ctx context.Context, r RefResolver, workspaceID, ref stri
 	// Alias-form: must resolve or refuse — EXCEPT on a DB error,
 	// which degrades to passthrough exactly like the short-id branch
 	// (review r1 finding 5: a 5xx must never masquerade as a miss and
-	// answer a 404-with-suggestions; the seam keeps the verdict).
+	// answer a 404-with-suggestions). The outcome is FLAGGED so
+	// downstream surfaces can refuse writes for refs the seam could
+	// never accept as ids (review r2 finding B: a passthrough title
+	// must never reach the registration seam and mint a ghost row
+	// keyed by title text).
 	matches, err := r.FindSessionsByAlias(ctx, workspaceID, ref)
 	if err != nil {
-		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
+		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough, DegradedLookup: true}
 	}
 	if len(matches) == 0 {
 		return RefResolution{UnresolvedAlias: true}
@@ -149,7 +157,7 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 				ShortID:    row.ShortID,
 				Title:      row.Title,
 				Workspace:  workspaceID,
-				LastActive: lastActiveOf(row),
+				LastActive: LastActiveOf(row),
 			})
 		}
 		out = sessionref.Rank(ref, cands)
@@ -157,7 +165,6 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 	if len(out) > 0 || userID == "" {
 		return out
 	}
-	own := len(out)
 	ids, err := r.ListWorkspaceIDsByOwner(cctx, userID)
 	if err != nil || len(ids) == 0 {
 		return out
@@ -179,30 +186,32 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 				SessionID: row.ID,
 				Workspace: row.Workspace,
 			}
-			if t := lastActiveOf(row); !t.IsZero() {
+			if t := LastActiveOf(row); !t.IsZero() {
 				utc := t.UTC()
 				s.LastActive = &utc
 			}
 			out = append(out, s)
 		}
 	}
-	// Ruling 8: "Top-3, always" — including the cross-workspace
-	// tail (review r1 finding 4). The cross matches are exact hits, so
-	// their order is last-active DESC (the payload's deterministic
-	// tiebreak), then workspace/session id as the final stable key;
-	// own-workspace ranked suggestions always outrank the tail.
+	// The cross-workspace tail is exact hits, so its order is
+	// last-active DESC (the payload's deterministic tiebreak), then
+	// workspace/session id as the final stable key — ALWAYS, not only
+	// when the cap engages (review r2 finding A: with 1–3 matches the
+	// DB return order is unspecified; this sort is the single source
+	// of determinism). Ruling 8's "Top-3, always" then caps the whole
+	// payload (review r1 finding 4).
+	cross := out
+	sort.SliceStable(cross, func(i, j int) bool {
+		a, b := cross[i], cross[j]
+		if !sameTime(a.LastActive, b.LastActive) {
+			return later(a.LastActive, b.LastActive)
+		}
+		if a.Workspace != b.Workspace {
+			return a.Workspace < b.Workspace
+		}
+		return a.SessionID < b.SessionID
+	})
 	if len(out) > sessionref.MaxSuggestions {
-		cross := out[own:]
-		sort.SliceStable(cross, func(i, j int) bool {
-			a, b := cross[i], cross[j]
-			if !sameTime(a.LastActive, b.LastActive) {
-				return later(a.LastActive, b.LastActive)
-			}
-			if a.Workspace != b.Workspace {
-				return a.Workspace < b.Workspace
-			}
-			return a.SessionID < b.SessionID
-		})
 		out = out[:sessionref.MaxSuggestions]
 	}
 	return out
@@ -227,9 +236,10 @@ func later(a, b *time.Time) bool {
 	return a.After(*b)
 }
 
-// lastActiveOf picks a row's freshest activity timestamp (never zero
-// when either exists) for ranking + payload.
-func lastActiveOf(row types.SessionListItem) time.Time {
+// LastActiveOf picks a row's freshest activity timestamp (never zero
+// when either exists) for ranking + payload. Shared with the edge
+// middleware so every payload path uses one semantics.
+func LastActiveOf(row types.SessionListItem) time.Time {
 	switch {
 	case row.LastMessageAt != nil && row.LastSeenAt != nil:
 		if row.LastMessageAt.After(*row.LastSeenAt) {

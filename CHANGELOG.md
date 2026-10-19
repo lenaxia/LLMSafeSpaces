@@ -194,7 +194,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lanes address sessions through today, the ABI fields only carry the
   same ids as data, and both orders converge on the design's Phase C
   road — the ABI regen lands with the SDK/OpenAPI flip that consumes
-  it.
+  it. Two tracked follow-ups: design 0066 §4.3(c) push-on-mint along
+  agentpush (the replica converges via boot + on-miss pulls in the
+  meantime — the design's own "advisory, nothing is ever unaddressable"
+  discipline), and the send surface's bare-502 on id-form misses — a
+  deliberate exception to ruling 8's everywhere-suggests intent forced
+  by the #1340 covenant (the session-not-found classification stays on
+  the read routes), to be revisited with a typed verdict from the
+  harness.
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 

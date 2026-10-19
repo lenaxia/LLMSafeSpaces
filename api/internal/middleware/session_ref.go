@@ -6,12 +6,12 @@ package middleware
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/pkg/sessionref"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -45,6 +45,15 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 		}
 		res := sessionindex.ResolveSessionRef(c.Request.Context(), resolver, workspaceID, ref)
 		switch {
+		case res.DegradedLookup && !shortid.IsSeamIDForm(ref):
+			// The alias lookup errored AND the ref could never be a
+			// seam id (a title/slug). Passing it downstream would let
+			// the write paths register a ghost row keyed by title text
+			// (review r2 finding B); claiming a miss would violate
+			// 5xx-never-suggests. Answer the honest availability 503.
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": "session resolution temporarily unavailable — retry",
+			})
 		case res.MatchedBy != sessionindex.MatchPassthrough || res.CanonicalID != "":
 			// Accepted (short/alias) or id-form passthrough: rewrite
 			// the route param to the canonical harness id. For legacy
@@ -100,33 +109,13 @@ func aliasSuggestions(workspaceID string, rows []types.SessionListItem) []sessio
 			SessionID: row.ID,
 			Workspace: workspaceID,
 		}
-		if t := lastActiveOfRow(row); !t.IsZero() {
+		if t := sessionindex.LastActiveOf(row); !t.IsZero() {
 			utc := t.UTC()
 			s.LastActive = &utc
 		}
 		out = append(out, s)
 	}
 	return out
-}
-
-// lastActiveOfRow picks a row's freshest activity timestamp — the
-// same semantics the ranked payload paths use (review r1: the
-// ambiguity payload's lastActive must not diverge from every other
-// surface's).
-func lastActiveOfRow(row types.SessionListItem) time.Time {
-	switch {
-	case row.LastMessageAt != nil && row.LastSeenAt != nil:
-		if row.LastMessageAt.After(*row.LastSeenAt) {
-			return *row.LastMessageAt
-		}
-		return *row.LastSeenAt
-	case row.LastMessageAt != nil:
-		return *row.LastMessageAt
-	case row.LastSeenAt != nil:
-		return *row.LastSeenAt
-	default:
-		return time.Time{}
-	}
 }
 
 func pluralSessions(n int) string {

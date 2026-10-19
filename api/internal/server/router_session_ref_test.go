@@ -271,3 +271,36 @@ type types_Suggestion struct {
 	Workspace  string     `json:"workspace"`
 	LastActive *time.Time `json:"lastActive"`
 }
+
+// Review r2 finding B's pins: a DEGRADED alias lookup (DB error) never
+// lets title text reach the write paths — seam-invalid refs answer the
+// honest availability 503 (no suggestions, no ghost-row mint), while
+// seam-charset-valid refs keep the passthrough degrade.
+func TestSessionRef_DegradedAliasLookup_SeamInvalidRefAnswers503(t *testing.T) {
+	router, ws, db := newRouterFixtureWithDB(t)
+
+	// The alias lookup errors (transient DB failure)…
+	db.On("FindSessionsByAlias", mock.Anything, "ws-1", "swift heron follow-ups").
+		Return(nil, assert.AnError).Once()
+	// …and NO write may happen: MarkSessionSeen is never expected.
+
+	rec := doJSON(t, router, http.MethodPut,
+		"/api/v1/workspaces/ws-1/sessions/swift%20heron%20follow-ups/seen")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	assert.NotContains(t, rec.Body.String(), "suggestions", "a 5xx never suggests")
+	ws.AssertNotCalled(t, "MarkSessionSeen", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestSessionRef_DegradedAliasLookup_CharsetValidRefStillPassesThrough(t *testing.T) {
+	router, ws, db := newRouterFixtureWithDB(t)
+
+	// Degraded lookup on a seam-charset-valid ref (the "ses-two"
+	// class): passthrough must survive — the seam keeps the verdict.
+	db.On("FindSessionsByAlias", mock.Anything, "ws-1", "ses-two").
+		Return(nil, assert.AnError).Once()
+	ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", "ses-two").Return(nil).Once()
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/ses-two/seen")
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	ws.AssertExpectations(t)
+}

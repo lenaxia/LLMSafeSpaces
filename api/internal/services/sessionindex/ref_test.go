@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/pkg/sessionref"
+
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -182,7 +184,7 @@ func TestSuggestionsFor_CrossWorkspaceTopThreeCap(t *testing.T) {
 		},
 	}
 	got := SuggestionsFor(context.Background(), r, "user-1", "ws-own", "oc-00000000")
-	require.Len(t, got, MaxSuggestionsLocal, "ruling 8: top-3, ALWAYS — including the cross-workspace tail")
+	require.Len(t, got, sessionref.MaxSuggestions, "ruling 8: top-3, ALWAYS — including the cross-workspace tail")
 	if got[0].SessionID != "ses_new" || got[1].SessionID != "ses_mid" || got[2].SessionID != "ses_old" {
 		t.Fatalf("cross-workspace order must be last-active DESC: %s, %s, %s",
 			got[0].SessionID, got[1].SessionID, got[2].SessionID)
@@ -197,6 +199,9 @@ func TestResolveSessionRef_AliasLookupErrorDegradesToPassthrough(t *testing.T) {
 	res := ResolveSessionRef(context.Background(), r, "ws", "some-title")
 	if res.MatchedBy != MatchPassthrough || res.CanonicalID != "some-title" {
 		t.Fatalf("alias lookup error must degrade to passthrough: %+v", res)
+	}
+	if !res.DegradedLookup {
+		t.Fatal("the degrade must be flagged so write surfaces can guard (r2 finding B)")
 	}
 }
 
@@ -218,8 +223,29 @@ func (e *erroringAliasResolver) FindRefCandidatesAcrossWorkspaces(_ context.Cont
 	return nil, nil
 }
 
-// MaxSuggestionsLocal mirrors the payload cap for assertions.
-const MaxSuggestionsLocal = 3
+// Review r2 finding A's pin: the cross-workspace tail is ordered
+// last-active DESC even when the cap does NOT engage (1–3 matches —
+// the common case; the sort must be the source of determinism, not
+// DB return order).
+func TestSuggestionsFor_CrossWorkspaceOrderingWithoutCap(t *testing.T) {
+	now := time.Now()
+	stale := now.Add(-5 * 24 * time.Hour)
+	r := &fakeRefResolver{
+		ownerWS: []string{"ws-own", "w1", "w2"},
+		crossWS: []types.SessionListItem{
+			// Deliberately seeded STALE-first so DB order and contract
+			// order differ.
+			{ID: "ses_stale", ShortID: "oc-33333333", Workspace: "w1", Title: "deploy", LastMessageAt: &stale},
+			{ID: "ses_fresh", ShortID: "oc-11111111", Workspace: "w2", Title: "deploy", LastMessageAt: &now},
+		},
+	}
+	got := SuggestionsFor(context.Background(), r, "user-1", "ws-own", "oc-00000000")
+	require.Len(t, got, 2)
+	if got[0].SessionID != "ses_fresh" || got[1].SessionID != "ses_stale" {
+		t.Fatalf("≤3 cross-workspace matches must still list newest first: %s, %s",
+			got[0].SessionID, got[1].SessionID)
+	}
+}
 
 func TestSuggestionsFor_NoUserNoCrossWorkspace(t *testing.T) {
 	r := &fakeRefResolver{ownerWS: []string{"ws-other"}, crossWS: []types.SessionListItem{{ID: "ses_x"}}}

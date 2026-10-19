@@ -104,6 +104,26 @@ func IsLegacyIDForm(s string) bool {
 	return strings.HasPrefix(strings.TrimSpace(s), "ses_")
 }
 
+// IsSeamIDForm reports whether the ref matches the harness seam's id
+// charset (^([A-Za-z0-9_-]{1,128})$) — a ref matching it can be handed
+// to the seam verbatim; anything else can only ever have been a name.
+// Shared by the API edge middleware and the agentd tools so the
+// degraded-lookup write guard (design 0066, review r2 finding B) uses
+// ONE definition.
+func IsSeamIDForm(s string) bool {
+	if len(s) < 1 || len(s) > 128 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // IsIDForm reports whether the ref is id-shaped at all (short or
 // legacy). A ref that is not id-shaped can only be an alias (title or
 // slug) — resolution surfaces use this to decide between pass-through
