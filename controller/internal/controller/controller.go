@@ -80,6 +80,7 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		AgentdImage:               agentdDelivery.Image,
 		AgentdBinarySHA256AMD64:   agentdDelivery.BinarySHA256AMD64,
 		AgentdBinarySHA256ARM64:   agentdDelivery.BinarySHA256ARM64,
+		AgentdUpdatePolicyDefault: agentdDelivery.UpdatePolicyDefault,
 		OpencodeImage:             opencodeDelivery.Image,
 		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
 		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,

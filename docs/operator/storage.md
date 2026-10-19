@@ -110,6 +110,22 @@ Notes:
 - **GOPATH deliberately stays on the PVC** (`/workspace/.local/share/go`): the module cache is re-downloadable but network-expensive and valuable across suspend/resume; the disk-recovery lever covers it under pressure.
 - **Exceeding 8Gi evicts the pod** (kubelet emptyDir SizeLimit enforcement) — the correct failure mode for a cache that dies with the pod anyway.
 - npm/pip/playwright caches still live under their `$HOME` conventions on the PVC; the disk-recovery allowlist (#1753) remains the sweep for those.
+## Platform-delivered volumes (agentd / opencode overlays)
+
+Besides the five mounts above, every workspace pod carries read-only
+**image volumes** delivering platform binaries on platform cadence:
+`/agentd` (always, #863) and `/opencode` (design 0053 §4.2) — digest-
+pinned, never PVC-backed, wiped with the pod. They are invisible to user
+data sizing and are NOT part of the storage layout's persistence
+contract. Their upgrade behavior is a POLICY, not a side effect: under
+the default `agentdDelivery.updatePolicy: OnRefresh` (#1746) a digest
+bump never rolls running pods — the desired digest is recorded on the
+Workspace status (`agentdPendingDigest`) and applies at the next natural
+pod recreation. See [agentd-delivery.md](agentd-delivery.md) for the
+policy matrix, the `forceRoll` escape hatch, and the N-1 seam-compat
+discipline.
+
+---
 
 ## StorageClass selection
 
