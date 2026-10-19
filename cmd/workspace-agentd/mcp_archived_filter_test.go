@@ -181,6 +181,7 @@ func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
 	archivedSetCacheMu.Lock()
 	archivedSetCacheVal = map[string]bool{"ses_dead": true}
 	archivedSetCacheAt = time.Now()
+	archivedSetCacheFetchedAt = time.Now() // fresh fetch — the filter's gate
 	archivedSetCacheMu.Unlock()
 
 	body := `[` + strings.Join([]string{
@@ -208,4 +209,69 @@ func splitJSONArray(t *testing.T, body string) []string {
 		out = append(out, string(e))
 	}
 	return out
+}
+
+// seedArchivedCache installs a deterministic archived-set cache state
+// (fresh- or stale-fetched) without racing a platform fetch.
+func seedArchivedCache(t *testing.T, set map[string]bool, fetchedAt time.Time) {
+	t.Helper()
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal = set
+	archivedSetCacheAt = time.Now() // retry throttle: warm — no fetch attempt
+	archivedSetCacheFetchedAt = fetchedAt
+	archivedSetCacheMu.Unlock()
+}
+
+// Review r1 finding 1: the warm-cache outage shape. The retry throttle
+// (At) is re-stamped by failed refresh attempts, but the last
+// SUCCESSFUL fetch is beyond the TTL — a stale-forever set must NOT
+// keep filtering rows through an outage (the documented degrade is the
+// unfiltered list, bounded by one cache window).
+func TestMCPSessionList_WarmCacheOutage_DegradesToUnfiltered(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	f.newSession("two")
+	withAgentServer(t, f.handler(t))
+	setupMetadataEnv(t, nil)
+	t.Setenv("LLMSAFESPACE_API_URL", "http://127.0.0.1:1")
+	seedArchivedCache(t, map[string]bool{s1: true}, time.Now().Add(-2*archivedSetCacheTTL))
+
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, false)
+	require.NoError(t, err)
+	ids := sessionIDs(t, out)
+	assert.Len(t, ids, 2, "a set fetched beyond the TTL no longer filters — the outage degrade is the unfiltered list")
+	assert.Contains(t, ids, s1)
+}
+
+// The within-window complement: a last-known set whose successful fetch
+// is inside the TTL still filters (bounded staleness — the same window
+// the #1627 annotation serves).
+func TestMCPSessionList_WarmCacheWithinTTL_StillFilters(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	f.newSession("two")
+	withAgentServer(t, f.handler(t))
+	setupMetadataEnv(t, nil)
+	seedArchivedCache(t, map[string]bool{s1: true}, time.Now().Add(-archivedSetCacheTTL/2))
+
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, false)
+	require.NoError(t, err)
+	ids := sessionIDs(t, out)
+	assert.Len(t, ids, 1, "a fresh set (within the TTL) filters — the degrade only applies past the window")
+	assert.NotContains(t, ids, s1)
+}
+
+// Malformed / non-array bodies pass through unfiltered — the filter
+// must never rewrite or break the raw list contract on a parse failure
+// (the implemented-but-previously-unpinned fail-open path).
+func TestMCPSessionList_MalformedBody_PassesThrough(t *testing.T) {
+	seedArchivedCache(t, map[string]bool{"ses_dead": true}, time.Now())
+	for _, body := range []string{
+		`{"not":"an array"}`,
+		`{"error":"internal shape"}`,
+		`[`,
+	} {
+		assert.Equal(t, body, filterArchivedFromSessionList(context.Background(), []byte(body)),
+			"a non-array body must pass through byte-identical")
+	}
 }

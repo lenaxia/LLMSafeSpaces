@@ -101,6 +101,14 @@ describe("Sidebar — archived sessions group (#1627)", () => {
     renderSidebar();
     await waitFor(() => expect(screen.getByText("Live work")).toBeTruthy());
 
+    // #1735: the Archived group renders from the opted-in fetch — the
+    // sidebar MUST pass { includeArchived: true } (dropping it would
+    // silently empty the group once the API default excludes archived).
+    expect(workspacesApi.getSessions).toHaveBeenCalledWith(
+      "ws-1",
+      { includeArchived: true },
+    );
+
     const group = screen.getByTestId("archived-group");
     expect(group).toBeTruthy();
     expect(screen.getByText("1")).toBeTruthy();

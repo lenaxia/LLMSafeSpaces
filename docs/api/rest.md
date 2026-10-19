@@ -122,13 +122,13 @@ Sessions are conversation handles inside a workspace. The management endpoints l
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/workspaces/:id/sessions` | List sessions (with backfill from the agent) |
+| `GET` | `/workspaces/:id/sessions` | List sessions — non-archived by default; `?include_archived=true` opts in (#1735) |
 | `POST` | `/workspaces/:id/sessions/new` | Ensure an active session exists |
 | `PUT` | `/workspaces/:id/sessions/:sessionId/title` | Rename a session |
 | `PUT` | `/workspaces/:id/sessions/:sessionId/seen` | Mark a session as seen |
 | `GET` | `/workspaces/:id/sessions/active` | List active session IDs + max capacity |
 
-The list endpoint backfills `parent_session_id` from the agent one-shot per process lifetime, and overlays the live active-session set so the returned sessions reflect which are currently running.
+The list endpoint backfills `parent_session_id` from the agent one-shot per process lifetime, and overlays the live active-session set so the returned sessions reflect which are currently running. Since #1735 archived sessions are opt-in: the default response excludes them (read-only history, not ambient noise) and `?include_archived=true` restores the full list. The filter is response-shape only — index reconciliation still sees every row, and single-session lookups resolve archived sessions regardless.
 
 ### Sessions proxied to opencode
 

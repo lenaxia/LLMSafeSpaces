@@ -16,16 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the explicit opt-in on both tools; a single-ID `session_metadata`
   lookup of an archived session still resolves (the filter applies to
   listings/aggregates only), the per-entry `archived` marker stays,
-  and the filter is advisory — an unreachable platform degrades to the
-  unfiltered list, never a failed tool.
+  and the filter is freshness-gated and advisory — a platform outage
+  degrades it to the unfiltered list within one cache window (~15s;
+  the last-known set never filters past its freshness), never a failed
+  tool.
 - **API `GET /workspaces/{id}/sessions` excludes archived rows by
   default**; `?include_archived=true` restores the full list. The
   filter is response-shape only — index reconciliation and
   single-session routes still see every row. Documented in
-  `sdks/openapi.yaml`; the Go and Python SDKs expose the flag.
+  `sdks/openapi.yaml` and `docs/api/rest.md`; the Go, Python
+  (sync+async), and TypeScript SDKs expose the flag.
 - Callers migrated: the frontend sessions queries (Sidebar + ChatPage,
-  which render the Archived group) opt in explicitly; the #1627
-  metadata annotation test pin opts in explicitly.
+  which render the Archived group) opt in explicitly (pinned); the
+  e2e route mocks match the opted-in query; the #1627 metadata
+  annotation test pin opts in explicitly.
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
