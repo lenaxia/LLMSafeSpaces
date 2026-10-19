@@ -395,7 +395,19 @@ res "env_exec_identity_spike_probe=$(docker exec "$NODE" id -u 2>/dev/null || ec
 ISC_PROBE_RC=0
 docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ISC_PROBE_RC=$?
 if [ "$ISC_PROBE_RC" = "0" ]; then
+    # The ALIVE path carries the SAME adjudicable evidence as the
+    # revival path (r31 R31-1.1: the criterion run — alive at legs —
+    # must not produce the one verdict that matters with zero capture).
+    IPC_EXEC_RC=0
+    IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null) || IPC_EXEC_RC=$?
+    # tr BEFORE head: raw iscsiadm output carries newlines that would
+    # split the results row (r31 R31-2 — corrupted the first two live
+    # executions of the capture row).
     res "env_iscsid_at_legs=alive"
+    res "env_iscsi_ipc_exec_rc=${IPC_EXEC_RC} ipc_out_trunc=$(printf '%s' "$IPC_OUT" | tr '\n' ' ' | head -c 120)"
+    if [ "$IPC_EXEC_RC" != "0" ] && [ "$IPC_EXEC_RC" != "1" ] && [ "$IPC_EXEC_RC" != "2" ] || [ -z "$IPC_OUT" ]; then
+        warn "alive-path IPC capture unmeasurable (exec rc ${IPC_EXEC_RC}) — recorded above"
+    fi
 elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then
     # rc 1 = MEASURED dead; rc >= 2 (binary missing, exec-adjacent
     # failure) with a healthy exec context is EXEC_FAILED, not dead —
@@ -418,7 +430,7 @@ elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then
     # runs' yes-ipc-verified is unadjudicable because IPC_OUT was never
     # recorded; with this row the integrity of every future verdict is
     # checkable against the raw capture).
-    res "env_iscsi_ipc_exec_rc=${IPC_EXEC_RC} ipc_out_trunc=$(printf '%s' "$IPC_OUT" | head -c 120)"
+    res "env_iscsi_ipc_exec_rc=${IPC_EXEC_RC} ipc_out_trunc=$(printf '%s' "$IPC_OUT" | tr '\n' ' ' | head -c 120)"
     if [ "$REVIVAL_VERDICT" = "VERIFIED" ]; then
         res "env_iscsid_revived=yes-ipc-verified"
         ok "iscsid revived at leg time (IPC verified)"
@@ -511,6 +523,16 @@ if ! ${K} create namespace "${NS}" --dry-run=client -o yaml | ${K} apply -f - >/
     die "namespace pre-create failed (dead context?) — aborting before any waits"
     exit 1
 fi
+
+# Attach-window iscsid re-measure (r31 R31-1.2: the 39190530387 shape
+# — verified at gate time, daemon dead 30 minutes later at the engines —
+# must be separable; record the daemon + IPC state AT leg 0's attach
+# waits, the moment the engine probes begin).
+ATTACH_RC=0
+docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ATTACH_RC=$?
+AIPC_RC=0
+AIPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null) || AIPC_RC=$?
+res "attach_window_iscsid_rc=${ATTACH_RC} ipc_exec_rc=${AIPC_RC} ipc_out_trunc=$(printf '%s' "$AIPC_OUT" | tr '\n' ' ' | head -c 120)"
 
 cat <<EOF | ${K} apply -f - >/dev/null
 apiVersion: v1
