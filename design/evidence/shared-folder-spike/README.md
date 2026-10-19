@@ -52,8 +52,9 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39200512597 | fail @ gate | same honest tri-state (`EXEC_FAILED` at revival); the raw-capture row present — though the truncation kept newlines and split the row (fixed r31) |
 | 39203311203 | fail @ gate | same shape; the row-split corruption reproduced (2-for-2, r31 R31-2) |
 | 39207836177 | fail @ gate | the r31 gate code's first live exercise: prereqs green in-node as root, iscsid dead at legs, revival FAILED (gate-abort path) |
-| 39290712212 | fail @ gate | same shape (green prereqs, dead at legs, revival failed — gate-abort); the 8th post-quoting-fix run with green prereqs. NOTE: run-count claims live HERE (the row set), not in enumerations elsewhere — rows land with the next push after completion |
 | 39211105790 | fail @ gate | same abort shape (revival failed) — and the standing observation: **no run has ever recorded `env_iscsid_at_legs=alive`**; the criterion run the deferral record defines remains unmet |
+| 39290712212 | fail @ gate | same shape (green prereqs, dead at legs, revival failed — gate-abort); the 8th post-quoting-fix run with green prereqs. NOTE: run-count claims live HERE (the row set), not in enumerations elsewhere — rows land with the next push after completion |
+| 39295245957 | fail @ gate | green prereqs (root in-node, iscsid running, IPC verified); dead at legs; revival failed — gate-abort |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
 - **gVisor:** runsc + containerd-shim-runsc-v1 from the latest gVisor release bundle, sha512-verified, via `local/lib/gvisor.sh` (the US-70 pool recipe); RuntimeClass `gvisor`.
 - **Longhorn:** chart **1.12.1** — the production cluster's version; node prereqs `open-iscsi` + `nfs-common` via `local/lib/longhorn.sh`; StorageClass `user-shared` (prod `longhorn-2r` parameter set, 2 replicas); snapshot-controller 5.3.0 (piraeus chart — prod's pin); VolumeSnapshotClass `user-shared-snap`.
