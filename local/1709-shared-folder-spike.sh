@@ -414,6 +414,11 @@ elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then
     IPC_EXEC_RC=0
     IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null) || IPC_EXEC_RC=$?
     REVIVAL_VERDICT=$(revival_verdict "$REVIVE_RC" "$IPC_EXEC_RC" "$IPC_OUT")
+    # The capture itself is part of the record (r30 R30-1: the r28-era
+    # runs' yes-ipc-verified is unadjudicable because IPC_OUT was never
+    # recorded; with this row the integrity of every future verdict is
+    # checkable against the raw capture).
+    res "env_iscsi_ipc_exec_rc=${IPC_EXEC_RC} ipc_out_trunc=$(printf '%s' "$IPC_OUT" | head -c 120)"
     if [ "$REVIVAL_VERDICT" = "VERIFIED" ]; then
         res "env_iscsid_revived=yes-ipc-verified"
         ok "iscsid revived at leg time (IPC verified)"

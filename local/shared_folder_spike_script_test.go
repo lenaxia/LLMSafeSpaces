@@ -395,6 +395,12 @@ func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
 		// the rc==1 measured-dead guard (r29 NF-3: deleting it must
 		// fail this pin — the bi-state regression stays dead)
 		`elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then`,
+		// the CALL-SITE markers (r30 R30-2: the gate must USE the pure
+		// function with the measured exec rc — reverting to the r28
+		// vacuous shape keeps these absent and fails this pin)
+		`IPC_EXEC_RC=0`,
+		`REVIVAL_VERDICT=$(revival_verdict "$REVIVE_RC" "$IPC_EXEC_RC" "$IPC_OUT")`,
+		`env_iscsi_ipc_exec_rc=`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)
