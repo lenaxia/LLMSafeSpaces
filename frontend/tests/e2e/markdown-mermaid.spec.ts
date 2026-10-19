@@ -40,7 +40,7 @@ async function setupAPIMocks(page: Page, messages: unknown[]) {
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/models`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], currentModel: "" }) }));
 
-  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions`, async (r: Route) => {
+  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions?*`, async (r: Route) => {
     if (r.request().method() === "POST") {
       await r.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: SESSION_ID, sessionId: SESSION_ID }) });
       return;

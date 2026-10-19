@@ -674,9 +674,24 @@ paths:
     get:
       tags: [sessions]
       summary: List workspace sessions
+      description: >
+        #1735: archived sessions are opt-in on listings — the default
+        response excludes them (read-only history, not ambient noise);
+        include_archived=true includes them. The filter is
+        response-shape only: index reconciliation still sees every row
+        and single-session lookups resolve archived sessions regardless.
       operationId: listSessions
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
+        - name: include_archived
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: >
+            true = archived sessions are included (the pre-#1735
+            behavior). Default false = archived sessions are excluded.
       responses:
         "200":
           description: Session list

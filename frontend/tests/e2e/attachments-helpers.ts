@@ -59,7 +59,7 @@ export async function mockAuthAndWorkspace(page: Page, opts: { settings?: Record
       body: JSON.stringify({ phase: "Active", sessions: [{ id: SES_ID, status: "idle" }] }),
     });
   });
-  await page.route(`${API}/workspaces/${WS_ID}/sessions`, async (route: Route) => {
+  await page.route(`${API}/workspaces/${WS_ID}/sessions?*`, async (route: Route) => {
     await route.fulfill({
       status: 200, contentType: "application/json",
       body: JSON.stringify([{ id: SES_ID, title: "e2e session", messageCount: 0, status: "idle", hasUnread: false }]),

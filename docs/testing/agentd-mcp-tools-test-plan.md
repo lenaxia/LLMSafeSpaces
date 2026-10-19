@@ -89,6 +89,7 @@ Every shape below was exercised against the real binary in the live workspace po
 | `create_session` happy (returns before turn completes; delivery observed)/empty prompt/title optional (omitted when empty)/create-fail | fire-and-forget timing pin |
 | `get_datetime` shape | UTC + user-local (browser/argument/pod source) + offset + IANA zone (absent when unknown), RFC3339 round-trip |
 | `session_metadata` (all-sessions shape + per-session)/context fill %/busy flags/workspace id present/**secrecy: no env, no password, no token material, no internal URLs in output** | the security contract |
+| `session_list` / `session_metadata(all_sessions)` archived filter (#1735) | default excludes archived (counts match on a mixed workspace); `include_archived:true` opt-in restores them; single-ID metadata lookup of an archived session still resolves; filter preserves surviving raw elements byte-exact; platform-unreachable degrades to unfiltered (advisory) |
 | `compact` idle (synchronous 200)/busy (returns immediately, POST detached, completes after idle — proven via channel)/summary-model default = session model/non-2xx | run-at-boundary semantics |
 | Description-guidance subtests for every tool | descriptions are the only docs agents see (existing convention) |
 

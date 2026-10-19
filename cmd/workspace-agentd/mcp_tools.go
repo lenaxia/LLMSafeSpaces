@@ -737,9 +737,10 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 // convention). On fetch failure the last known set is served stale —
 // the annotation is advisory and must never fail the tool.
 var (
-	archivedSetCacheMu  sync.Mutex
-	archivedSetCacheVal map[string]bool
-	archivedSetCacheAt  time.Time
+	archivedSetCacheMu        sync.Mutex
+	archivedSetCacheVal       map[string]bool
+	archivedSetCacheAt        time.Time // retry throttle — stamped on every refresh ATTEMPT
+	archivedSetCacheFetchedAt time.Time // last SUCCESSFUL fetch — the #1735 filter's freshness window
 )
 
 const archivedSetCacheTTL = 15 * time.Second
@@ -758,8 +759,24 @@ func archivedSessionSet(ctx context.Context) map[string]bool {
 	archivedSetCacheAt = time.Now()
 	if fetched != nil {
 		archivedSetCacheVal = fetched
+		archivedSetCacheFetchedAt = time.Now()
 	}
 	archivedSetCacheMu.Unlock()
+	return archivedSetCacheVal
+}
+
+// filterableArchivedSet is the #1735 freshness-gated read: the listing
+// filters may only rely on data whose last SUCCESSFUL fetch is within
+// the TTL. During a platform outage the #1627 annotation keeps serving
+// the last-known set (staleness there is cosmetic), but a filter must
+// not silently hide rows on stale-forever data — past the window it
+// returns nil (no-op filter: everything lists). Review r1 finding 1.
+func filterableArchivedSet() map[string]bool {
+	archivedSetCacheMu.Lock()
+	defer archivedSetCacheMu.Unlock()
+	if archivedSetCacheFetchedAt.IsZero() || time.Since(archivedSetCacheFetchedAt) >= archivedSetCacheTTL {
+		return nil
+	}
 	return archivedSetCacheVal
 }
 
@@ -785,6 +802,52 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 	return set
 }
 
+// filterArchivedFromSessionList drops entries whose id is in the
+// platform's archived set (#1735: archived sessions are opt-in on the
+// listing surfaces). Byte-exact element preservation — each surviving
+// element's bytes are spliced from the original body (raw-element
+// concatenation, NOT a re-marshal: json.Marshal would compact and
+// HTML-escape, rewriting titles containing &<>; review r2 finding 1);
+// only the inter-element separators normalize to ",". On ANY parse
+// failure the original body is returned unfiltered. Same advisory
+// posture as the metadata annotation (#1627 §4): the platform fact
+// must never fail the tool, and an empty/stale archived set
+// short-circuits untouched.
+func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
+	archivedSessionSet(ctx) // shared-cache refresh/throttle (annotation source)
+	archivedSet := filterableArchivedSet()
+	if len(archivedSet) == 0 {
+		return string(body)
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(body, &elems); err != nil {
+		return string(body)
+	}
+	out := make([]byte, 0, len(body))
+	out = append(out, '[')
+	dropped := 0
+	wrote := 0
+	for _, e := range elems {
+		var id struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(e, &id); err == nil && archivedSet[id.ID] {
+			dropped++
+			continue
+		}
+		if wrote > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, e...)
+		wrote++
+	}
+	if dropped == 0 {
+		return string(body)
+	}
+	out = append(out, ']')
+	return string(out)
+}
+
 // mcpSessionMetadata aggregates read-only workspace + session vitals:
 // per-session title/model/age/tokens/message-count/context fill, busy
 // flags, and the workspace's own identity.
@@ -794,13 +857,18 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 // plugin-injected lsp_injected_session when present, else the single
 // busy session (the calling session — the compact fallback for pods
 // without a working plugin). all_sessions=true preserves the OLD
-// every-session behavior explicitly.
+// every-session behavior explicitly — minus archived sessions, which
+// are opt-in (#1735): the aggregate listing defaults to non-archived;
+// include_archived adds them back. Single-ID scopes (explicit or
+// resolved) are NEVER filtered — an archived session still resolves by
+// id (read-only history stays addressable; the filter applies to
+// listings/aggregates only).
 //
 // Security posture: every field is either already exposed by
 // session_list/session_read (strictly more sensitive surfaces behind
 // the same Basic gate) or is public pod identity (WORKSPACE_ID). No
 // env values, credentials, tokens, or platform internals are included.
-func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSession string, allSessions bool) (string, error) {
+func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSession string, allSessions, includeArchived bool) (string, error) {
 	client := seamClientWithPassword(password)
 	sessionID = strings.TrimSpace(sessionID)
 	injectedSession = strings.TrimSpace(injectedSession)
@@ -830,7 +898,14 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 	archivedSet := archivedSessionSet(ctx)
 
 	match := func(s opencode.SessionSummary) bool {
-		return scope == "" || s.ID == scope
+		if scope != "" {
+			return s.ID == scope
+		}
+		// #1735: the aggregate (scope=="") defaults to non-archived;
+		// include_archived is the explicit opt-in. Single-ID scopes
+		// never reach this branch. The filter set is freshness-gated —
+		// a stale set (platform outage past the TTL) no-ops (r1 f1).
+		return includeArchived || !filterableArchivedSet()[s.ID]
 	}
 	type sessionMeta struct {
 		ID            string  `json:"session_id"`

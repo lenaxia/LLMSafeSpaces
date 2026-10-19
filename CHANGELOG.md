@@ -56,6 +56,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a pod never resolves another workspace's tasks — the real token
   buys nothing), and the pending_input self-exit refusal (a valid token
   does not unlock a manager-surface exit).
+### Changed — archived sessions are opt-in on session listings (#1735)
+
+- **agentd MCP `session_list` and `session_metadata` default to
+  non-archived sessions** (long-lived orchestration workspaces
+  accumulate an unbounded archived set — 60+ after a week — that every
+  listing shipped as ambient context noise). `include_archived:true`
+  is the explicit opt-in on both tools; a single-ID `session_metadata`
+  lookup of an archived session still resolves (the filter applies to
+  listings/aggregates only), the per-entry `archived` marker stays,
+  and the filter is freshness-gated and advisory — a platform outage
+  degrades it to the unfiltered list within one cache window (~15s;
+  the last-known set never filters past its freshness), never a failed
+  tool.
+- **API `GET /workspaces/{id}/sessions` excludes archived rows by
+  default**; `?include_archived=true` restores the full list. The
+  filter is response-shape only — index reconciliation and
+  single-session routes still see every row. Documented in
+  `sdks/openapi.yaml` and `docs/api/rest.md`; the Go, Python
+  (sync+async), and TypeScript SDKs expose the flag.
+- Callers migrated: the frontend sessions queries (Sidebar + ChatPage,
+  which render the Archived group) opt in explicitly (pinned); the
+  e2e route mocks match the opted-in query; the #1627 metadata
+  annotation test pin opts in explicitly.
 ### Added — external platform MCP server tools for the Task Board (#1700)
 
 - **18 customer-facing `board_*` tools on the platform MCP server**

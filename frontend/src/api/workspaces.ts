@@ -81,7 +81,13 @@ export const workspacesApi = {
   suspend: (id: string) => api.post<void>(`/workspaces/${id}/suspend`),
   refreshCompute: (id: string) =>
     api.post<{ restartGeneration: number }>(`/workspaces/${id}/refresh-compute`),
-  getSessions: (id: string) => api.get<SessionListItem[]>(`/workspaces/${id}/sessions`),
+  // #1735: archived sessions are opt-in on the API listing — the
+  // sidebar renders an Archived group, so its callers pass
+  // { includeArchived: true } explicitly.
+  getSessions: (id: string, opts?: { includeArchived?: boolean }) =>
+    api.get<SessionListItem[]>(
+      `/workspaces/${id}/sessions${opts?.includeArchived ? "?include_archived=true" : ""}`
+    ),
   // D6 (#998): persisted hung-session alerts (24h retention server-side).
   getAlerts: (id: string) =>
     api.get<{ alerts: SessionAlert[] }>(`/workspaces/${id}/alerts`).then((r) => r.alerts ?? []),

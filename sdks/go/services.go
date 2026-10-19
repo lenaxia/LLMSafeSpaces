@@ -199,9 +199,16 @@ func (s *SessionsService) Abort(ctx context.Context, workspaceID, sessionID stri
 	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/abort", workspaceID, sessionID), nil, nil)
 }
 
-func (s *SessionsService) List(ctx context.Context, workspaceID string) ([]SessionListItem, error) {
+// List returns the workspace's sessions. #1735: archived sessions are
+// opt-in — excluded by default; pass includeArchived=true to include
+// them.
+func (s *SessionsService) List(ctx context.Context, workspaceID string, includeArchived ...bool) ([]SessionListItem, error) {
+	path := "/workspaces/" + workspaceID + "/sessions"
+	if len(includeArchived) > 0 && includeArchived[0] {
+		path += "?include_archived=true"
+	}
 	var result []SessionListItem
-	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/sessions", nil, &result)
+	err := s.c.do(ctx, "GET", path, nil, &result)
 	return result, err
 }
 

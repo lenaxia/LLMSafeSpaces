@@ -81,7 +81,7 @@ async function setupAPIMocks(page: Page, opts?: { sessionEventsFirstBody?: strin
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/status`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ phase: "Active", credentialState: { available: true }, agentHealth: { status: "healthy", agentVersion: "1.0.0" }, sessions: [{ id: SESSION_ID, status: "busy" }] }) });
   });
-  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions`, async (route: Route) => {
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ id: SESSION_ID, title: "Abort Test", messageCount: 2, status: "busy" }]) });
   });
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/*/message*`, async (route: Route) => {

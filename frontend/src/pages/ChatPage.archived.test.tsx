@@ -114,6 +114,13 @@ describe("ChatPage — archived sessions are read-only (#1627)", () => {
     expect(screen.getByText(/archived and read-only/i)).toBeInTheDocument();
     expect(screen.getByText(/Unarchive it/i)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Type a message...")).not.toBeInTheDocument();
+
+    // #1735: the sessions query feeds the shared sidebar cache (and its
+    // Archived group) — the opted-in fetch is load-bearing here too.
+    expect(workspacesApi.getSessions).toHaveBeenCalledWith(
+      "ws-1",
+      { includeArchived: true },
+    );
   });
 
   it("keeps the composer for a live session (archived absent)", async () => {

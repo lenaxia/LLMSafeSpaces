@@ -37,7 +37,7 @@ async function setupBase(page: Page, opts: { sessAStatus?: "active" | "idle"; al
   });
   await page.route(`${API}/workspaces/${WS_A}/status`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ phase: "Active", credentialState: { available: true }, agentHealth: { status: "healthy", agentVersion: "1.0" }, sessions: [] }) }));
-  await page.route(`${API}/workspaces/${WS_A}/sessions`, (r: Route) =>
+  await page.route(`${API}/workspaces/${WS_A}/sessions?*`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
       { id: SESS_A1, title: "Task Alpha", status: sessAStatus, hasUnread: false, messageCount: 2, lastSeenAt: "2026-06-10T10:00:00Z" },
     ])}));

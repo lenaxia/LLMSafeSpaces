@@ -92,7 +92,7 @@ async function stubWorkspace(page: Page, opts: { eventsStub?: boolean } = {}) {
       body: `data: ${JSON.stringify({ type: "workspace.phase", phase: "Active" })}\n\n`,
     });
   });
-  await page.route(`${API}/workspaces/${WS}/sessions`, async (route: Route) => {
+  await page.route(`${API}/workspaces/${WS}/sessions?*`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
   await page.route(`${API}/workspaces/${WS}/models`, async (route: Route) => {
