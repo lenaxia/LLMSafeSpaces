@@ -36,7 +36,7 @@ func TestGetWorkspaceStatus_AgentdDigestFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result.AgentdEffectiveDigest,
 		"the effective digest surfaces — what the running pod was built with")
-	assert.Equal(t, "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", result.AgentdPendingDigest,
+	assert.Equal(t, "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", result.AgentdPendingDigest,
 		"the pending digest surfaces — 'applies on next refresh'")
 }
 

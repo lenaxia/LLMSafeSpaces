@@ -124,7 +124,68 @@ meantime verify against their own pod-spec pins, so a mixed-version fleet
 is safe — each pod's supervisor only ever trusts its own immutable spec.
 
 To force a single workspace onto the new agentd immediately: suspend and
-resume it (or bump `spec.restartGeneration`).
+resume it (or bump `spec.restartGeneration`) — or see `forceRoll` below.
+
+## Update policy: `OnRefresh` vs `Rolling` (#1746)
+
+**Ruling (2026-10-19): a platform upgrade must not roll workspace pods.
+The user owns when their sessions are interrupted.** Whether a desired
+digest change applies to a RUNNING pod is a policy, resolved per
+workspace as:
+
+1. `spec.agentdDelivery.updatePolicy` on the Workspace (operator-set via
+   kubectl, like `spec.runtimeClass`; the user API does not expose it),
+2. else the instance default `controller.agentdDelivery.updatePolicy`
+   (Helm) → `--agentd-update-policy`,
+3. else **`OnRefresh`** — the product posture.
+
+| Policy | Digest bump on a running pod | Sessions |
+|---|---|---|
+| `OnRefresh` (default) | **No touch.** Desired digest recorded on status (`agentdPendingDigest`); applies at the next natural pod recreation — compute refresh (`restartGeneration` bump), suspend/resume, or any controller-initiated recreation. | Never interrupted by the platform. |
+| `Rolling` | Pod recreated on digest drift, **drain-aware** (#761): deferred behind busy sessions until idle or stalled (60m progress bound). | Polite: one workspace at a time, waits for in-flight turns. |
+| `agentdDelivery.forceRoll: true` (any policy) | **Immediate** roll on drift; the session drain is BYPASSED — in-flight turns are cut. The security-critical escape hatch (e.g. a compromised agentd binary). Level-triggered: no drift = no-op. **Clear it after use** — a stale `true` also cuts sessions on the NEXT digest bump. | Cut immediately; the operator setting it declares that consent. |
+
+```yaml
+# Instance-wide pin (helm values) — only needed to pin Rolling:
+controller:
+  agentdDelivery:
+    updatePolicy: Rolling
+
+# Per-workspace override / escape hatch (kubectl patch):
+kubectl patch workspace my-ws --type=merge -p \
+  '{"spec":{"agentdDelivery":{"updatePolicy":"Rolling"}}}'
+kubectl patch workspace my-ws --type=merge -p \
+  '{"spec":{"agentdDelivery":{"forceRoll":true}}}'
+```
+
+### Drift visibility
+
+The Workspace status carries two fields (also surfaced by the API's
+`GET /workspaces/{id}/status` for the dashboard):
+
+- `status.agentdEffectiveDigest` — the digest (`sha256:…`) the current
+  pod was **built with** (empty in legacy baked-in mode),
+- `status.agentdPendingDigest` — the **desired** digest while it differs
+  from effective and no roll has converged yet: "agentd X pending —
+  applies on next refresh". Empty when converged.
+
+Drift compares the **digest portion only** — a repo/tag re-pin of the
+same digest is not drift, so Renovate tag bumps never churn the fleet.
+
+### N-1 compatibility
+
+Under `OnRefresh`, a platform upgrade leaves running pods on agentd N-1
+against API N until their next recreation (a suspended workspace can lag
+indefinitely — it rebuilds with the current digest at resume). The
+worker-tool seam (`/internal/v1/automation/board/*`: `board_heartbeat`,
+`board_report_throttle`, `board_move_stage`, `board_read`) is therefore
+pinned as a **tested skew matrix**, not an assumption: the wire form of
+every still-supported agentd release is frozen in
+`pkg/board/worker_compat.go`, replayed against the current API
+(`api/internal/handlers/board_worker_compat_1746_test.go`) and matched
+by the live client (`pkg/agent/opencode/loopback_board_wire_1746_test.go`).
+A wire-form change must land as a NEW frozen set (or a `/internal/v2`
+route) — never a silent mutation of v1.
 
 ## Behavior on verification failure
 

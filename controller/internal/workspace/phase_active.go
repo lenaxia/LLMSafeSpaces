@@ -221,6 +221,16 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{}, nil
 	}
 
+	// #1746 agentdDelivery.updatePolicy: digest-drift bookkeeping and,
+	// when the policy asks for it (Rolling / forceRoll), the roll. Runs
+	// after the arch-drift recycle so a pending natural recreation is
+	// not double-triggered, and before the integrity detectors (a
+	// stale-digest roll may itself fix a verify failure). Under the
+	// default OnRefresh this only records the drift status.
+	if result, handled, err := r.reconcileAgentdDelivery(ctx, workspace, pod); handled {
+		return result, err
+	}
+
 	// #863: agentd integrity check runs BEFORE the crashloop recovery
 	// branch. A verify failure (exit 81/82) cannot be fixed by restarting
 	// the pod — the same digest pin reproduces the same mismatch — so

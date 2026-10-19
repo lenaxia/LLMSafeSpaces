@@ -296,6 +296,16 @@ spec:
             - --agentd-binary-sha256-arm64={{ . }}
             {{- end }}
             {{- end }}
+            {{- /* #1746 agentdDelivery.updatePolicy: rendered ONLY when
+                    explicitly set (empty = the controller's OnRefresh
+                    default) — keeps the Renovate single-coordinate form
+                    rendering exactly one --agentd-* flag. */}}
+            {{- if and .Values.controller.agentdDelivery.updatePolicy (ne .Values.controller.agentdDelivery.updatePolicy "Rolling") (ne .Values.controller.agentdDelivery.updatePolicy "OnRefresh") }}
+            {{- fail (printf "controller.agentdDelivery.updatePolicy must be Rolling or OnRefresh, got %q" .Values.controller.agentdDelivery.updatePolicy) }}
+            {{- end }}
+            {{- with .Values.controller.agentdDelivery.updatePolicy }}
+            - --agentd-update-policy={{ . }}
+            {{- end }}
             {{- /* Design 0053 §4.2: opencode overlay delivery (image
                     volume). Same guards as agentdDelivery: hashes are
                     per-image overrides (both or neither — one-sided

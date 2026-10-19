@@ -183,9 +183,11 @@ func TestAgentdUpdatePolicy_OnRefresh_AppliesAtNaturalRecreation(t *testing.T) {
 	require.Equal(t, digestPortionB, getWs(t, r, ws.Name).Status.AgentdPendingDigest)
 
 	// User refresh (compute refresh): generation bump while busy → the
-	// #761 drain defers BOTH the recycle and the agentd update.
-	ws.Spec.RestartGeneration = 2
-	require.NoError(t, r.Update(context.Background(), ws))
+	// #761 drain defers BOTH the recycle and the agentd update. (Fresh
+	// GET first: the reconcile above bumped the stored RV.)
+	fresh := getWs(t, r, ws.Name)
+	fresh.Spec.RestartGeneration = 2
+	require.NoError(t, r.Update(context.Background(), fresh))
 	_, err = r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
 	require.NoError(t, err)
 	require.True(t, podExists(t, r, pod.Name), "busy turn: the refresh's recycle defers (the agentd update rides it)")
@@ -287,10 +289,12 @@ func TestAgentdUpdatePolicy_InstanceDefaultRolling(t *testing.T) {
 
 	// Spec OnRefresh overrides the instance default: no roll on the
 	// next drift observation (pod survives the deferred window intact
-	// until the spec says otherwise).
+	// until the spec says otherwise). Fresh GET: the deferred reconcile
+	// above bumped the stored RV.
 	stub.set(idleStatusz())
-	ws.Spec.AgentdDelivery = &v1.AgentdDeliverySpec{UpdatePolicy: v1.AgentdUpdatePolicyOnRefresh}
-	require.NoError(t, r.Update(context.Background(), ws))
+	fresh := getWs(t, r, ws.Name)
+	fresh.Spec.AgentdDelivery = &v1.AgentdDeliverySpec{UpdatePolicy: v1.AgentdUpdatePolicyOnRefresh}
+	require.NoError(t, r.Update(context.Background(), fresh))
 	_, err = r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
 	require.NoError(t, err)
 	assert.True(t, podExists(t, r, pod.Name),
@@ -351,7 +355,11 @@ func TestAgentdUpdatePolicy_ForceRoll_NoDriftIsNoop(t *testing.T) {
 	ws, pod, pwSec, _ := makePolicyWorkspace(t, "ws-policy-forceroll-noop", false)
 	ws.Spec.AgentdDelivery = &v1.AgentdDeliverySpec{ForceRoll: true}
 	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
-	// No applyOverlayB: desired == the pod's digest A.
+	// Desired == effective (digest A): no drift for forceRoll to act on.
+	// (The default test reconciler pins a DIFFERENT image; align it.)
+	r.AgentdImage = upgradeDigestA
+	r.AgentdBinarySHA256AMD64 = upgradePinAmd64A
+	r.AgentdBinarySHA256ARM64 = upgradePinAmd64A
 
 	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
 	require.NoError(t, err)
