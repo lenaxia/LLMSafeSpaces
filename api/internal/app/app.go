@@ -646,6 +646,20 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgWorkflowsHandler.SetWorkspaceExistencer(wfStore)
 		userTriggersHandler.SetWorkspaceExistencer(wfStore)
 		orgTriggersHandler.SetWorkspaceExistencer(wfStore)
+		// #1729: the targetWorkspaceId routine-target gate — the
+		// workspace service's ResolveWorkspace + CheckOwnership pair
+		// (creator or org admin on the target; 404 for ids that do not
+		// exist). Same deferred-injection discipline; the concrete type
+		// assertion is guaranteed by services.New today and the setter
+		// stays nil-safe (a targetWorkspaceId create then fails closed
+		// with 500 rather than skipping the ownership gate).
+		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+			userTriggersHandler.SetWorkspaceOwnershipAuthorizer(wsSvc)
+			orgTriggersHandler.SetWorkspaceOwnershipAuthorizer(wsSvc)
+		} else {
+			log.Error("automation cross-workspace wiring: workspace service is not the concrete type; targetWorkspaceId creates will fail closed",
+				errors.New("svc.Workspace type assertion failed"))
+		}
 		webhookReceiverHandler = handlers.NewWebhookReceiverHandler(wfStore, providerCredsProv, 1<<20)
 		webhookReceiverHandler.SetRateChecker(svc.GetRateLimiter(), 10, 20)
 

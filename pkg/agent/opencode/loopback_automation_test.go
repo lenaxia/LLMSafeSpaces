@@ -134,6 +134,17 @@ func TestSeam_AutomationCreateStampsWorkspaceID(t *testing.T) {
 	assert.NotContains(t, rec.body, "ws-OTHER")
 }
 
+// #1729: a targetWorkspaceId in the trigger body rides the wire VERBATIM
+// alongside the resolver stamp — the platform's ownership gate on the
+// named target reads it; the loop layer must neither strip nor rewrite it.
+func TestSeam_AutomationCreatePassesThroughTargetWorkspaceId(t *testing.T) {
+	c, rec := newAutomationServer(t, 201, `{"id":"tr-10"}`)
+	_, err := c.TriggerCreate(ctx(), "sa-token", "ws-7", json.RawMessage(`{"name":"x","sourceType":"cron","sourceConfig":{"expr":"5 * * * *"},"prompt":"p","targetWorkspaceId":"ws-2"}`))
+	require.NoError(t, err)
+	assert.Contains(t, rec.body, `"workspaceID":"ws-7"`, "resolver stamp still present")
+	assert.Contains(t, rec.body, `"targetWorkspaceId":"ws-2"`, "cross-workspace target passes through verbatim")
+}
+
 func TestSeam_AutomationErrorSurfacesBody(t *testing.T) {
 	c, _ := newAutomationServer(t, 400, `{"error":"invalid cron source config: bad schedule"}`)
 	_, err := c.TriggerCreate(ctx(), "sa-token", "ws-1", json.RawMessage(`{}`))

@@ -387,23 +387,32 @@ type TriggerResponse struct {
 // For webhook sources, an accompanying webhooks row (with secret_cipher) is created.
 // If workflow_id is set → fires a DAG. Otherwise → routine (agent turn in workspace).
 type CreateTriggerRequest struct {
-	Name             string          `json:"name" binding:"required"`
-	Description      string          `json:"description,omitempty"`
-	Enabled          *bool           `json:"enabled,omitempty"`
-	SourceType       string          `json:"sourceType" binding:"required"`
-	SourceConfig     json.RawMessage `json:"sourceConfig" binding:"required"`
-	WorkspaceID      string          `json:"workspaceId,omitempty"`
-	WorkflowID       string          `json:"workflowId,omitempty"`
-	Prompt           string          `json:"prompt,omitempty"`
-	Agent            string          `json:"agent,omitempty"`
-	ScriptPath       string          `json:"scriptPath,omitempty"`
-	ScriptArgs       []string        `json:"scriptArgs,omitempty"`
-	ScriptEnv        json.RawMessage `json:"scriptEnv,omitempty"`
-	MemoryMode       string          `json:"memoryMode,omitempty"`
-	MemoryMaxRuns    *int            `json:"memoryMaxRuns,omitempty"`
-	CaptureMode      string          `json:"captureMode,omitempty"`
-	PreserveSession  string          `json:"preserveSession,omitempty"`
-	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
+	Name         string          `json:"name" binding:"required"`
+	Description  string          `json:"description,omitempty"`
+	Enabled      *bool           `json:"enabled,omitempty"`
+	SourceType   string          `json:"sourceType" binding:"required"`
+	SourceConfig json.RawMessage `json:"sourceConfig" binding:"required"`
+	WorkspaceID  string          `json:"workspaceId,omitempty"`
+	WorkflowID   string          `json:"workflowId,omitempty"`
+	// TargetWorkspaceId (#1729) names ANOTHER workspace the routine
+	// should run in, with that workspace's tool surface and pod
+	// identity. Authorized against the trigger OWNER's rights on the
+	// target (workspace creator or org admin — the CheckOwnership
+	// semantics): 404 for a target that does not exist, 403 without
+	// rights. Mutually exclusive with workflowId and workspaceId.
+	// Omitted → the automation surface keeps force-stamping the creating
+	// pod's workspace (#1412), byte-identical.
+	TargetWorkspaceID string          `json:"targetWorkspaceId,omitempty"`
+	Prompt            string          `json:"prompt,omitempty"`
+	Agent             string          `json:"agent,omitempty"`
+	ScriptPath        string          `json:"scriptPath,omitempty"`
+	ScriptArgs        []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv         json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode        string          `json:"memoryMode,omitempty"`
+	MemoryMaxRuns     *int            `json:"memoryMaxRuns,omitempty"`
+	CaptureMode       string          `json:"captureMode,omitempty"`
+	PreserveSession   string          `json:"preserveSession,omitempty"`
+	AutoDisableAfter  *int            `json:"autoDisableAfter,omitempty"`
 	// Input mapping (0059): InputFrom selects what a fired run's input is
 	// (envelope default | body | mapped); Input is the optional static
 	// input document (DAG-mode only — V1). The JSON literal null means
