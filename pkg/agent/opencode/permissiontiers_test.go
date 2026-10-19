@@ -82,8 +82,8 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 	}{
 		{"/tmp/build-dir/x", "allow", "pre-allow /tmp"},
 		{"/tmp", "allow", "BARE /tmp: the PVC mount root itself is default-allow (#1759 — without the bare key only children match)"},
-		{"/home/sandbox/.cache/mise/x", "allow", "pre-allow .cache"},
-		{"/home/sandbox/.config/opencode/x", "allow", "pre-allow .config"},
+		{"/home/sandbox/.cache/mise/x", "allow", "#1759 root allow covers .cache (the pre-#1759 subpath pre-allow is superseded)"},
+		{"/home/sandbox/.config/opencode/x", "allow", "#1759 root allow covers .config"},
 		{"/workspace", "allow", "#1759: the workspace PVC mount root default-allow (bare key)"},
 		{"/workspace/src/main.go", "allow", "#1759: the workspace PVC root read-write by default"},
 		{"/sys/fs/cgroup/memory.current", "allow", "cgroup carve-out beats the /sys deny (alphabetical: '*' < 'f')"},
@@ -164,9 +164,8 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/home/sandbox", "/home/*"},
 		{"/sys/fs/cgroup/*", "/sys/*"},
 		{"/sys/fs/cgroup", "/sys/*"},
-		{"/home/sandbox/.cache/*", "/home/sandbox/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
-		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/.local/*"},
+		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/*"},
 	}
 	for _, c := range carves {
 		require.Contains(t, platformPermissionTiers, c.carve)

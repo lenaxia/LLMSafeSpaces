@@ -24,22 +24,28 @@ import (
 // and deterministic. The tier set is constructed so that every carve-out
 // sorts AFTER the deny it carves:
 //
-//	"/home/*" (deny)      < "/home/sandbox/*" (ask)   — '*' (0x2A) < 's'
+//	"/home/*" (deny)      < "/home/sandbox/*" (allow #1759) — '*' (0x2A) < 's'
 //	"/sys/*"  (deny)      < "/sys/fs/cgroup/*" (allow)
-//	"/home/sandbox/*" ask < "/home/sandbox/.ssh…" denies — '*' < '.'
+//	"/home/sandbox/*" allow < "/home/sandbox/.ssh…" denies — '*' (0x2A) < '.' (0x2E)
 //
-// TIER MAP (per the 2026-09-19 ruling, amended):
+// TIER MAP (per the 2026-09-19 ruling, amended 2026-10-19 by #1759):
 //
+//   - DEFAULT-ALLOW (#1759, the PVC mount points): /workspace, /tmp,
+//     /home/sandbox — the three subPath mounts of the one workspace
+//     PVC are the agent's own filesystem by design; read-write, no
+//     prompts. Every credential deny under the home root still wins
+//     (each sorts after "/home/sandbox/*": '*' 0x2A < '.' 0x2E). The
+//     pre-#1759 subpath pre-allows (.cache/.config/.local) are
+//     superseded by the root allow and removed — dead rules in a
+//     security floor are noise.
 //   - PRE-ALLOW (kernel-ro verified live for the artifact/cgroup paths —
 //     the mount is the boundary; the rule only stops prompts):
-//     /tmp, /home/sandbox/.cache, /home/sandbox/.local,
-//     /home/sandbox/.config, /sys/fs/cgroup (carved out of the /sys
-//     deny), /opencode.
+//     /sys/fs/cgroup (carved out of the /sys deny), /opencode.
 //   - ASK (ambient, no rule): everything not matched — /sandbox-cfg,
-//     /agentd-config, /sandbox-runtime, /home/sandbox itself, and the
-//     credential SYMLINK NAMES rt/ssh + rt/git-credentials (git/ssh
-//     tooling consumes them out-of-band, ungated by permissions; the
-//     ambient ask catches a curious agent typing the name).
+//     /agentd-config, /sandbox-runtime, and the credential SYMLINK
+//     NAMES rt/ssh + rt/git-credentials (git/ssh tooling consumes them
+//     out-of-band, ungated by permissions; the ambient ask catches a
+//     curious agent typing the name).
 //   - HARD-DENY: /etc /proc /sys /dev /run /root /var /home (parent);
 //     the home credential names /home/sandbox/.ssh, .secrets,
 //     .git-credentials, .local/opencode/auth.json (bash-typed
@@ -50,10 +56,12 @@ import (
 //     access).
 //
 // Design 0060 Part D transcribes the pre-allow set as
-// "caches/config/workspace" — there is deliberately NO /workspace
-// entry: /workspace is the opencode project root, which
-// external_directory does not govern at all (residual 1 below); the
-// workspace subsumes into that exemption, not into a tier.
+// "caches/config/workspace". #1759 makes the workspace/home/tmp roots
+// first-class allow keys: the harness still exempts the PROJECT ROOT
+// from external_directory governance (residual 1) — the /workspace
+// entries govern bash-typed and tool-resolved paths in the merged
+// permission model and keep the config self-describing about which
+// filesystem is the agent's.
 //
 // RESIDUALS (documented, not solved — PR + ruling):
 //  1. bash-typed reads of PROJECT-RELATIVE credential paths
@@ -86,22 +94,19 @@ var platformPermissionTiers = map[string]string{
 	"/sys/*":  "deny",
 	"/var/*":  "deny",
 
-	// --- /home carve: the workspace home back to ambient ask. BOTH keys
-	// are needed: the /* variant governs children; the bare key governs
-	// the directory itself (the ported matcher treats a wildcardless
-	// pattern as an exact match, so ^/home/.*$ would otherwise deny the
-	// bare path with the /home/* deny — r0 finding 3). The bare key
-	// sorts after "/home/*" ('*' 0x2A < 's') — the ask wins.
-	"/home/sandbox":   "ask",
-	"/home/sandbox/*": "ask",
+	// --- /home carve (#1759): the home PVC root is DEFAULT-ALLOW. BOTH
+	// keys are needed: the /* variant governs children; the bare key
+	// governs the directory itself (the ported matcher treats a
+	// wildcardless pattern as an exact match, so ^/home/.*$ would
+	// otherwise deny the bare path with the /home/* deny — r0 finding
+	// 3). The bare key sorts after "/home/*" ('*' 0x2A < 's') — the
+	// allow wins over the parent deny.
+	"/home/sandbox":   "allow",
+	"/home/sandbox/*": "allow",
 
-	// --- pre-allows under the home carve (each sorts after the ask) ---
-	"/home/sandbox/.cache/*":  "allow",
-	"/home/sandbox/.config/*": "allow",
-	"/home/sandbox/.local/*":  "allow",
-
-	// --- credential-name denies (bash-typed tripwire; sort after the
-	//     .local/.cache/.config allows they live alongside) ---
+	// --- credential-name denies (bash-typed tripwire; each sorts after
+	//     the "/home/sandbox/*" allow: '*' 0x2A < '.' 0x2E — the deny
+	//     is the LAST matching rule for every credential path) ---
 	"/home/sandbox/.git-credentials":          "deny",
 	"/home/sandbox/.git-credentials/*":        "deny",
 	"/home/sandbox/.local/opencode/auth.json": "deny",
@@ -120,7 +125,19 @@ var platformPermissionTiers = map[string]string{
 
 	// --- standalone pre-allows ---
 	"/opencode/*": "allow",
-	"/tmp/*":      "allow",
+
+	// --- #1759: the tmp PVC mount root, read-write by default. BOTH
+	//     keys (bare + children), same rule as the other roots. ---
+	"/tmp":   "allow",
+	"/tmp/*": "allow",
+
+	// --- #1759: the workspace PVC mount root, read-write by default.
+	//     BOTH keys. The harness additionally exempts the project root
+	//     from external_directory governance (residual 1) — these
+	//     entries govern bash-typed/tool-resolved paths in the merged
+	//     permission model. ---
+	"/workspace":   "allow",
+	"/workspace/*": "allow",
 
 	// --- resolved secret targets (canonical matching for file tools).
 	//     rt/ssh and rt/git-credentials are deliberately ABSENT: ambient
