@@ -139,6 +139,13 @@ workspace as:
    (Helm) → `--agentd-update-policy`,
 3. else **`OnRefresh`** — the product posture.
 
+`updatePolicy` carries NO CRD default on purpose: an `agentdDelivery`
+object written WITHOUT it — e.g. the `forceRoll`-only patch below —
+keeps inheriting the instance default. A schema default would silently
+stamp `OnRefresh` on that partial write and pin the workspace away from
+an instance-wide `Rolling` forever (r2 review finding; pinned by
+`agentd_delivery_crd_semantics_test.go`).
+
 | Policy | Digest bump on a running pod | Sessions |
 |---|---|---|
 | `OnRefresh` (default) | **No touch.** Desired digest recorded on status (`agentdPendingDigest`); applies at the next natural pod recreation — compute refresh (`restartGeneration` bump), suspend/resume, or any controller-initiated recreation. | Never interrupted by the platform. |

@@ -367,6 +367,54 @@ func TestAgentdUpdatePolicy_ForceRoll_NoDriftIsNoop(t *testing.T) {
 	assert.Equal(t, v1.WorkspacePhaseActive, getWs(t, r, ws.Name).Status.Phase)
 }
 
+// TestAgentdUpdatePolicy_Rolling_RollWinsOverVerifyFailure (r2
+// Finding 2): pins the LOAD-BEARING hook ordering — the policy pass runs
+// BEFORE detectAgentdVerificationFailure, so a Rolling workspace whose
+// pod's agentd last died in the verify-failure ladder (exit 81) ROLLS
+// (the new digest may itself fix the verify failure) instead of parking
+// on the level-triggered detector, which would defer forever (a digest
+// mismatch cannot be fixed by restarting; the detector re-reports every
+// reconcile). Moving the hook below the detectors leaves every other
+// pin green while Rolling silently stops rolling on exactly the pods
+// that need it most — this pin reddens.
+func TestAgentdUpdatePolicy_Rolling_RollWinsOverVerifyFailure(t *testing.T) {
+	ws, pod, pwSec, _ := makePolicyWorkspace(t, "ws-policy-rolling-verifyfail", false)
+	ws.Spec.AgentdDelivery = &v1.AgentdDeliverySpec{UpdatePolicy: v1.AgentdUpdatePolicyRolling}
+	// The pod's agentd container last terminated in the verify ladder
+	// (exit 81 — sha256 mismatch), the exact case the detector exists
+	// for; pod otherwise Running.
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "workspace", Ready: true,
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{ExitCode: 81, Message: "agentd sha256 mismatch"},
+		},
+	}}
+	rte := &v1.RuntimeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "python-3.11"},
+		Spec:       v1.RuntimeEnvironmentSpec{Image: "ghcr.io/test/python:3.11", Language: "python", Version: "3.11"},
+	}
+	pvc := makeBoundPVC("workspace-"+ws.Name, "default", ws.UID)
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec, rte, pvc)
+	applyOverlayB(r)
+
+	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+
+	assert.False(t, podExists(t, r, pod.Name),
+		"the Rolling roll must proceed despite the verify-failure exit — the new digest may fix it; the detector's park would defer forever")
+	updated := getWs(t, r, ws.Name)
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase,
+		"the roll transitions to Creating, not the agentd-verify slow requeue")
+
+	rebuilt := &corev1.Pod{}
+	require.Eventually(t, func() bool {
+		_, _ = r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+		return r.Get(context.Background(), types.NamespacedName{Name: pod.Name, Namespace: "default"}, rebuilt) == nil
+	}, 5*time.Second, 100*time.Millisecond, "handleCreating must rebuild the pod")
+	assert.Equal(t, upgradeDigestB, agentdVolumeRef(rebuilt),
+		"the rebuilt pod carries the fixing digest")
+}
+
 // --- effective-digest bookkeeping on plain builds ------------------------------
 
 // TestAgentdUpdatePolicy_EffectiveDigestRecordedOnBuild: a fresh

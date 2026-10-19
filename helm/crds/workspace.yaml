@@ -169,15 +169,14 @@ spec:
                   description: "Tri-state request flag (US-23.3). nil=unspecified/acknowledged; true=request suspend; false=request resume from Suspended. No default — the nil state must be reachable so the controller doesn't auto-resume."
                 agentdDelivery:
                   type: object
-                  description: "Per-workspace agentd overlay delivery policy override (#1746). Absent = the controller's instance-level default (--agentd-update-policy / controller.agentdDelivery.updatePolicy, OnRefresh unless pinned)."
+                  description: "Per-workspace agentd overlay delivery policy override (#1746). Absent = the controller's instance-level default (--agentd-update-policy / controller.agentdDelivery.updatePolicy, OnRefresh unless pinned). updatePolicy deliberately carries NO default: an agentdDelivery object written without it (e.g. a forceRoll-only patch) inherits the instance default — a schema default would materialize on such partial writes and silently pin the workspace."
                   properties:
                     updatePolicy:
                       type: string
                       enum:
                         - Rolling
                         - OnRefresh
-                      default: OnRefresh
-                      description: "Rolling: the controller recreates the pod on agentd digest drift, drain-aware (#761). OnRefresh (product default): running pods are untouched; the desired digest is recorded on status (agentdPendingDigest) and applies at the next natural pod recreation (compute refresh, suspend/resume, other)."
+                      description: "Rolling: the controller recreates the pod on agentd digest drift, drain-aware (#761). OnRefresh (product default): running pods are untouched; the desired digest is recorded on status (agentdPendingDigest) and applies at the next natural pod recreation (compute refresh, suspend/resume, other). Empty = inherit the instance-level default."
                     forceRoll:
                       type: boolean
                       default: false

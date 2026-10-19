@@ -47,3 +47,12 @@ Implement the owner ruling (2026-10-19): platform upgrades must not roll workspa
 - The instance-level "critical-release marker" (issue design bullet 3, "optionally") is NOT implemented — forceRoll is the delivered per-workspace hatch; an instance-wide critical marker is additive follow-up design if the owner wants it.
 - session-register joins the compat matrix when #1691 lands (issue notes it); the frozen-set structure is ready for the append.
 - Dashboard rendering of "agentd X pending — applies on next refresh" is the API field's consumer; no frontend change in this PR (the field is the contract).
+
+## r2 (review round 2, PR #1754 CHANGES_REQUESTED → fixes)
+
+Two blocking findings, both fixed:
+
+1. **CRD `default: OnRefresh` defeated the inheritance chain (Finding 1).** Kubernetes defaulting fills defaults for properties of a PRESENT object, so any write materializing `spec.agentdDelivery` without an explicit policy — including this PR's own documented forceRoll kubectl patch — got `updatePolicy: OnRefresh` stamped server-side; from then on `resolveAgentdUpdatePolicy` never consulted the instance flag (silently, permanently, surviving the forceRoll clear). My design-decision 4 above ("absent objects stay absent") was half right — absent FIELDS WITHIN a present object do default; fake-client tests cannot see this (no CRD defaulting). Fix: dropped the default from the kubebuilder marker and the chart CRD (empty = inherit, resolved in code — the one place the whole chain is visible); red-first pin `agentd_delivery_crd_semantics_test.go` committed failing first (commit 4f16f3e0), then the fix; docs state the no-default contract. `forceRoll`'s `default: false` is kept — false is the zero value, a materialized false is behaviorally identical to absent.
+2. **Load-bearing hook ordering unpinned (Missing test 1).** The policy pass runs BEFORE `detectAgentdVerificationFailure` so a Rolling workspace with a verify-failing pod (exit 81) rolls (the new digest may fix it) instead of parking forever on the level-triggered detector. Added `TestAgentdUpdatePolicy_Rolling_RollWinsOverVerifyFailure`; mutation-validated (hook moved below the detectors → the pin FAILS with "the Rolling roll must proceed despite the verify-failure exit"; reverted, green).
+
+Non-blocking notes acknowledged in the review reply: forceRoll's event/metric fire before the status write (re-fires per 409 retry — mirrors the existing `noteForcedRecycle` shape, left convention-consistent); the CHANGELOG header URL drive-by edit reverted to the original bytes.

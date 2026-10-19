@@ -123,10 +123,14 @@ const (
 // default OnRefresh); this object overrides it per workspace.
 type AgentdDeliverySpec struct {
 	// UpdatePolicy selects when a desired agentd digest change applies
-	// to a RUNNING pod. Empty = the controller's instance-level default
-	// (OnRefresh unless the operator pinned Rolling).
+	// to a RUNNING pod. NO schema default (r2 Finding 1): kubernetes
+	// defaulting would materialize a value on partial writes of
+	// agentdDelivery (e.g. a forceRoll-only patch), silently pinning
+	// the workspace away from the instance flag. Empty = the
+	// controller's instance-level default (--agentd-update-policy,
+	// OnRefresh unless pinned) — resolved in the controller, the one
+	// place the whole chain is visible.
 	// +kubebuilder:validation:Enum=Rolling;OnRefresh
-	// +kubebuilder:default=OnRefresh
 	UpdatePolicy AgentdUpdatePolicy `json:"updatePolicy,omitempty"`
 
 	// ForceRoll is the per-workspace escape hatch for security-critical
