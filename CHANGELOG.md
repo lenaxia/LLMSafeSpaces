@@ -131,6 +131,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine-internal claim — pinned absent by design; external actors hold
   no claim tokens).
 
+### Added — harness-abstracted short session IDs + alias layer + did-you-mean (#1691, design 0066)
+
+- **Sessions gain a platform-minted short address** (`oc-ab12cd34`:
+  harness prefix + 8 chars over `[0-9a-z]`, per-workspace unique,
+  case-insensitive at resolution) beside the 30-char harness id:
+  migration `000037` (nullable `session_index.short_id` + partial
+  unique index `(workspace_id, short_id)`), the single registration
+  seam `EnsureSessionRegistered` (crypto/rand mint in Go, check-and-
+  retry on the unique index, NULL-backfill) wired into all six
+  row-creating index paths + `POST /sessions/new` + the reconcile
+  walk's bounded backfill sweep. The harness id becomes an internal
+  detail at the edges; internal joins stay keyed on it (additive only).
+- **The keyword alias layer (design 0066 ruling 5)**: a session's
+  current title — and, in the agentd tools, its harness slug
+  (`sunny-wolf`) — is a first-class resolvable alias, unambiguous-only
+  within the workspace. Aliases resolve at request time against the
+  live name holders; they are never persisted as references. Every
+  id-taking API route (message/history/get/abort/delete/queue/title/
+  seen/archived/admin force-abort) and every id-taking agentd MCP tool
+  (send_message target + origin, session_read, session_metadata,
+  rename, abort, archive, delete, compact) accepts short ids and
+  unambiguous aliases; a shared precedence (short id > legacy id
+  byte-identical > alias) never rewrites legacy ids and never probes
+  them first — full-ID addressing is byte-identical with zero added
+  round trips, and truncated ids never silently resolve (#1663).
+- **Did-you-mean on every resolution surface** (the #1667
+  generalization): one shared deterministic ranking (bounded
+  Levenshtein over short + legacy ids for id-form input;
+  word-boundary prefix / token overlap over titles + slugs for
+  alias-form input; last-active DESC tiebreak; top-3) serves the API's
+  structured `404/410 + suggestions:[{title, shortId, sessionId,
+  workspace, lastActive}]` payloads (send 404s, the typed
+  session_gone 410, the archived 404, admin force-abort, alias
+  ambiguity) and the agentd clause (candidates = replica short ids +
+  harness ids + titles + slugs). Workspace-scoped first; only when
+  nothing scores and the requester is known does one bounded
+  exact-match query cover their OTHER authorized workspaces.
+  Ambiguity is never auto-resolved; authz/transport/5xx never suggest.
+- **The agentd replica + control plane**: `/sandbox-runtime/
+  session-shortids.json` (memory-backed class, 0600, atomic rename)
+  populated by boot pull, TTL-limited on-miss pulls, and
+  create_session's register round trip over the new pod-identity
+  endpoints (`GET /internal/v1/session-registry`, `POST
+  /internal/v1/session-register`); agentd never mints. create_session
+  returns `short_id` (omitted on control-plane timeout, self-heals);
+  session_list decorates rows with `shortId` and stays byte-verbatim
+  when the replica is empty; `GET /sessions` gains the additive `q`
+  filter (title substring / short-id prefix / legacy-id prefix; an
+  empty id-like miss answers the suggestions payload; no `q` ⇒ the
+  bare array byte-identical); `SessionListItem`/`EnsureSessionResponse`
+  carry `shortId` (omitempty); OpenAPI additive updates.
+- **Out of this PR** (sequenced per design 0066 M2/M3): the ABI
+  `short_id` fields (`Session` 13 / `ActionResult` 12) + regen and the
+  frontend URL flip — the REST/tools surfaces above are the addressing
+  layer those consume.
+
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
 - **Fleet relay-router drains in-flight generations on deploys** instead
