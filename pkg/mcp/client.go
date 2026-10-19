@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,10 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
+
+// errBoardSeamPending marks the #1699 read-seam client stubs (red-first:
+// the wire implementations land with the engine seams).
+var errBoardSeamPending = errors.New("board: seam pending (#1699)")
 
 const (
 	// maxResponseBody limits API response reads to 10MB to prevent OOM.
@@ -104,6 +109,9 @@ type APIClient interface {
 	BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
 	BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
 	BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error)
+	BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error)
+	BoardHealth(ctx context.Context) (json.RawMessage, error)
 	BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error)
 	BoardGetEpic(ctx context.Context, epicID string) (json.RawMessage, error)
 	BoardUpdateEpic(ctx context.Context, epicID string, body BoardEpicBody) (json.RawMessage, error)
@@ -1076,6 +1084,28 @@ func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string
 		path += "?stage=" + url.QueryEscape(stage)
 	}
 	return c.doRaw(ctx, http.MethodGet, path, nil)
+}
+
+// BoardSearchQuery is the board search projection's filter set (§4.8's
+// search box): all fields except Q optional.
+type BoardSearchQuery struct {
+	Q       string
+	Project string
+	Epic    string
+	Stage   string
+	Tags    []string
+}
+
+func (c *HTTPClient) BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error) {
+	return nil, errBoardSeamPending
+}
+
+func (c *HTTPClient) BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error) {
+	return nil, errBoardSeamPending
+}
+
+func (c *HTTPClient) BoardHealth(ctx context.Context) (json.RawMessage, error) {
+	return nil, errBoardSeamPending
 }
 
 func (c *HTTPClient) BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error) {

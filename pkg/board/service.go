@@ -20,6 +20,12 @@ import (
 // Option configures a Service (functional options, constructed at boot).
 type Option func(*Service)
 
+// WithEventPublisher installs the §4.6 post-commit event projection
+// (SSE fan-out). See EventPublisher.
+func WithEventPublisher(pub EventPublisher) Option {
+	return func(s *Service) { s.publisher = pub }
+}
+
 // WithFailpoint installs the fault seam (kill-tests).
 func WithFailpoint(fp Failpoint) Option {
 	return func(s *Service) { s.failpoint = fp }
@@ -61,6 +67,21 @@ type Service struct {
 	aborter    WorkerAborter
 	drift      PRDriftSource
 	pending    PendingInputSource
+	publisher  EventPublisher
+}
+
+// SetEventPublisher installs or replaces the §4.6 event projection at
+// wiring time (before first use); nil disables publishing.
+func (s *Service) SetEventPublisher(pub EventPublisher) { s.publisher = pub }
+
+// publishCommitted fans a committed board event to the installed
+// publisher. Called strictly AFTER the writing transaction commits
+// (persist-then-publish, §4.6 i). Fail-open by construction: a nil
+// publisher is a no-op and the write already succeeded.
+func (s *Service) publishCommitted(evt Event) {
+	if s.publisher != nil {
+		s.publisher(evt)
+	}
 }
 
 // NewService constructs the BoardService.

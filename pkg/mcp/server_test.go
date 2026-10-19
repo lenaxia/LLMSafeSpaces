@@ -222,6 +222,21 @@ func (m *MockAPIClient) BoardListTasks(ctx context.Context, projectID, stage str
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
+func (m *MockAPIClient) BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error) {
+	args := m.Called(ctx, projectID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error) {
+	args := m.Called(ctx, query)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardHealth(ctx context.Context) (json.RawMessage, error) {
+	args := m.Called(ctx)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
 func (m *MockAPIClient) BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error) {
 	args := m.Called(ctx, projectID, body)
 	return json.RawMessage(args.String(0)), args.Error(1)

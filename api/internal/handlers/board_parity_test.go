@@ -116,9 +116,9 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_project_archive"}, agent: absentCell},
 	{action: "unarchive_project", restMethods: []string{"UnarchiveProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_unarchive"}, agent: absentCell},
-	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "GetEpic", "GetTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read"}, agent: liveCell,
-		agentTool: "board_read"}, // v1 item form (GetTaskInWorkspace); list/search/health ride the #1699 engine seams
+	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
+		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: absentCell},
 	{action: "update_epic", restMethods: []string{"UpdateEpic"}, rest: liveCell,
@@ -764,28 +764,12 @@ func TestBoardParity_WorkerOnlyAbsentOnREST(t *testing.T) {
 
 // --- §6 cell-case kinds beyond allow/deny: idempotent replay + audit ---
 
-// replayExceptions names the mutating actions whose requestId does NOT
-// reach an event writer TODAY, so the replay case skips them BY NAME
-// (a conscious, reviewable list — not silent coverage loss):
-//   - archive_project/unarchive_project/epic_activate/epic_pause/
-//     epic_archive/epic_unarchive: the engine's lifecycle writers
-//     discard the requestID parameter (pkg/board service.go:309/:462 —
-//     flagged on PR #1728 as an engine follow-up; no pkg/board edit
-//     from this lane).
-//   - remove_dependency: DELETE carries no body at the REST tier (the
-//     engine seam itself would thread one).
-//
-// When the engine follow-up lands, entries come OFF this list and the
-// replay case covers them.
-var replayExceptions = map[string]string{
-	"archive_project":   "engine lifecycle writer discards requestId (service.go:309)",
-	"unarchive_project": "engine lifecycle writer discards requestId (service.go:309)",
-	"epic_activate":     "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_pause":        "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_archive":      "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_unarchive":    "engine lifecycle writer discards requestId (service.go:462)",
-	"remove_dependency": "DELETE carries no body at the REST tier",
-}
+// replayExceptions is EMPTY: every mutating action's requestId reaches
+// an event writer — the #1728-flagged engine gap (lifecycle writers
+// discarding the parameter) and remove_dependency's query-param form
+// landed with #1699. A future gap reintroduces a named entry here so
+// the replay case skips consciously, never silently.
+var replayExceptions = map[string]string{}
 
 // boardReadActions are the non-mutating rows (no replay/audit arms).
 func boardReadActions() map[string]bool {

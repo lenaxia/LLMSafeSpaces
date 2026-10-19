@@ -117,6 +117,14 @@ func decodeEventPayload(b []byte) map[string]any {
 	return m
 }
 
+// EventPublisher receives committed board events (design §4.6: SSE is a
+// read projection of board_events — persist first, publish after the
+// commit). Installed at wiring time (app.go → the user event broker);
+// nil means no projection (engine dark / broker absent — writes succeed
+// unaffected). Publishers must not block: the SSE reseed belt (#1646/
+// #1687) is the consumer's safety net, not publisher retry logic.
+type EventPublisher func(Event)
+
 // insertEventTx writes an event row inside an open transaction with a
 // caller-chosen deterministic id (engine/reconciler writes). ON CONFLICT
 // DO NOTHING: a replayed deterministic id is inert convergence.

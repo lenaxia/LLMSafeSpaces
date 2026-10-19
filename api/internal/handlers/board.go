@@ -54,6 +54,9 @@ type boardManager interface {
 
 	GetTask(ctx context.Context, taskID, shortIDOrID string) (*board.Task, error)
 	ListTasks(ctx context.Context, projectID string, stage string) ([]board.Task, error)
+	ListEpics(ctx context.Context, projectID string) ([]board.Epic, error)
+	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
+	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
 	CreateTask(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
@@ -258,6 +261,59 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 		tasks = []board.Task{}
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+// ListProjectEpics lists a project's epics with derived progress (the
+// #1699 engine seam).
+func (h *BoardHandler) ListProjectEpics(c *gin.Context) {
+	p, ok := h.ownerProject(c, c.Param("id"))
+	if !ok {
+		return
+	}
+	epics, err := h.board.ListEpics(c.Request.Context(), p.ID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	if epics == nil {
+		epics = []board.Epic{}
+	}
+	c.JSON(http.StatusOK, gin.H{"epics": epics})
+}
+
+// BoardSearch searches the caller's board (short ID exact or title
+// match, §4.8's search box); zero-hit near-misses carry did-you-mean
+// suggestions. The perimeter lives in the seam (foreign rows never
+// match, never suggest).
+func (h *BoardHandler) BoardSearch(c *gin.Context) {
+	q := c.Query("q")
+	stage := c.Query("stage")
+	if stage != "" && !boardStages()[stage] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input, " + board.StageCancelled})
+		return
+	}
+	res, err := h.board.SearchTasks(c.Request.Context(), c.GetString("userID"), q, board.SearchFilters{
+		Project: c.Query("project"),
+		Epic:    c.Query("epic"),
+		Stage:   stage,
+		Tags:    c.QueryArray("tag"),
+	})
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// BoardHealth renders the caller's board health snapshot (§4.8's health
+// panel).
+func (h *BoardHandler) BoardHealth(c *gin.Context) {
+	h_, err := h.board.BoardHealth(c.Request.Context(), c.GetString("userID"))
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, h_)
 }
 
 // CreateEpic creates a draft epic in a project (ruling R2's default).

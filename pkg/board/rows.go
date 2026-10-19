@@ -127,6 +127,78 @@ type Claim struct {
 	Task      *Task `json:"task,omitempty"`
 }
 
+// SearchFilters scopes a board search (design §4.8's search box: project
+// focus, epic chips, tag filters, stage column). All fields optional; the
+// query is required.
+type SearchFilters struct {
+	Project string // short id or UUID (project focus)
+	Epic    string // short id or UUID (epic chip)
+	Stage   string
+	Tags    []string
+}
+
+// SearchResult is the search projection: matching task rows plus 0066-shape
+// did-you-mean suggestions, populated only on zero-hit near-misses
+// (suggest-only, never crossing the authorization perimeter).
+type SearchResult struct {
+	Results     []Task   `json:"results"`
+	Suggestions []string `json:"suggestions"`
+}
+
+// HealthLease is one in-flight claim on the health panel (§4.8).
+type HealthLease struct {
+	TaskID          string    `json:"task_id"`
+	ShortID         string    `json:"short_id"`
+	Title           string    `json:"title"`
+	ProjectID       string    `json:"project_id"`
+	AssigneeSession string    `json:"assignee_session,omitempty"`
+	LeaseExpiresAt  time.Time `json:"lease_expires_at"`
+}
+
+// HealthTaskCooldown is one throttled task's cooldown (§4.4 throttle path).
+type HealthTaskCooldown struct {
+	TaskID        string    `json:"task_id"`
+	ShortID       string    `json:"short_id"`
+	ProjectID     string    `json:"project_id"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+}
+
+// HealthProjectCooldown is one project's worker-slot cooldown (new claims
+// paused while in-flight leases run their course).
+type HealthProjectCooldown struct {
+	ProjectID     string    `json:"project_id"`
+	ShortID       string    `json:"short_id"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+}
+
+// HealthReclaim is one recent lease reclaim, sourced from board_events
+// (the reconciler's deterministic-id rows).
+type HealthReclaim struct {
+	TaskID string    `json:"task_id"`
+	At     time.Time `json:"at"`
+}
+
+// HealthProjectSlots reports per-project worker budget in use (the epic
+// drawer's slots-in-use figure).
+type HealthProjectSlots struct {
+	ProjectID   string `json:"project_id"`
+	ShortID     string `json:"short_id"`
+	WorkerSlots int    `json:"worker_slots"`
+	InUse       int    `json:"in_use"`
+}
+
+// Health is the board health snapshot (design §4.2 board_read(health) /
+// §4.8's health panel): active leases + expiry, recent reclaims, task and
+// project-slot cooldowns, pending_input by origin, per-project slots.
+type Health struct {
+	ActiveLeases         []HealthLease           `json:"active_leases"`
+	TaskCooldowns        []HealthTaskCooldown    `json:"task_cooldowns"`
+	ProjectCooldowns     []HealthProjectCooldown `json:"project_cooldowns"`
+	PendingInputByOrigin map[string]int          `json:"pending_input_by_origin"`
+	RecentReclaims       []HealthReclaim         `json:"recent_reclaims"`
+	ProjectSlots         []HealthProjectSlots    `json:"project_slots"`
+}
+
 // HeartbeatResult reports the evidence gate's decision: a heartbeat with no
 // progress evidence does not extend the lease (#1685: elapsed time is not
 // liveness).

@@ -92,6 +92,26 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 	return out, rows.Err()
 }
 
+// ListEpics lists a project's epics with derived progress (ruling R2 —
+// never stored; a zero denominator renders no-progress).
+func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, error) {
+	return nil, ErrNotImplemented
+}
+
+// SearchTasks searches the owner's board: short-ID (case-insensitive,
+// exact) or title match, scoped by the caller's authorization perimeter —
+// foreign rows never match and never suggest. Zero-hit near-misses carry
+// 0066-shape did-you-mean suggestions (top-3).
+func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters SearchFilters) (*SearchResult, error) {
+	return nil, ErrNotImplemented
+}
+
+// BoardHealth renders the owner's board health snapshot (§4.2
+// board_read(health) / §4.8's health panel).
+func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, error) {
+	return nil, ErrNotImplemented
+}
+
 // rowScan adapts pgx.Rows to the pgx.Row interface (single-row scans over
 // iteration cursors).
 type rowScan struct{ rows pgx.Rows }

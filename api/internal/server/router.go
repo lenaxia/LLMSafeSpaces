@@ -2158,8 +2158,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 	// item addressing by short id (prj-/epc-/tsk-, case-insensitive) or
 	// UUID. Registered only when the board engine is wired (nil handler
 	// = feature off, matching the internal automation seam's gating).
-	// Deliberately absent: epic listing, board search, board health —
-	// board_read projections with no engine seam yet (flagged on #1699).
+	// Board-wide search + health ride the /me/board group (#1699 seams).
 	if cfg.BoardHandler != nil {
 		b := cfg.BoardHandler
 		p := router.Group("/api/v1/me/projects")
@@ -2172,6 +2171,12 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		p.POST("/:id/unarchive", b.UnarchiveProject)
 		p.GET("/:id/tasks", b.ListProjectTasks)
 		p.POST("/:id/epics", b.CreateEpic)
+		p.GET("/:id/epics", b.ListProjectEpics)
+
+		bb := router.Group("/api/v1/me/board")
+		bb.Use(services.GetAuth().AuthMiddleware())
+		bb.GET("/search", b.BoardSearch)
+		bb.GET("/health", b.BoardHealth)
 
 		e := router.Group("/api/v1/me/epics")
 		e.Use(services.GetAuth().AuthMiddleware())

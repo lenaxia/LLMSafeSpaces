@@ -62,6 +62,10 @@ func NewReconciler(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Reconc
 	return &Reconciler{svc: NewService(pool, cfg, opts...)}
 }
 
+// SetEventPublisher installs the §4.6 event projection on the underlying
+// service (reconciler writes publish through it).
+func (r *Reconciler) SetEventPublisher(pub EventPublisher) { r.svc.SetEventPublisher(pub) }
+
 // SweepResultDetail carries per-phase counters (SweepResult is the public
 // summary; phases append here).
 

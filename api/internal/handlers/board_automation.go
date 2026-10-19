@@ -183,6 +183,8 @@ func renderBoardError(c *gin.Context, err error) {
 		switch e.Code {
 		case board.GuardWorkspaceBinding, board.GuardAuthz:
 			c.JSON(http.StatusForbidden, gin.H{"error": e.Error(), "code": e.Code})
+		case board.GuardInput:
+			c.JSON(http.StatusBadRequest, gin.H{"error": e.Error(), "code": e.Code})
 		default:
 			c.JSON(http.StatusConflict, gin.H{"error": e.Error(), "code": e.Code})
 		}
