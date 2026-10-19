@@ -1210,3 +1210,23 @@ def test_board_task_or4_anchor_and_actions():
     assert claim["claim_token"] == "tok-1" and claim["escalated"] is False
     assert client.board.cancel_task("tsk-cccc3333", reason="r")["stage"] == "cancelled"
     assert len(client.board.list_project_tasks("prj-aaaa1111", stage="backlog")) == 1
+
+
+@respx.mock
+def test_sessions_list_include_archived_serialization_1735():
+    """#1735: default list carries NO include_archived param (server
+    default: exclude archived); the opt-in appends exactly
+    ?include_archived=true. A param-name typo would silently return the
+    filtered default."""
+    respx.get(f"{BASE}/workspaces/ws-1/sessions").respond(json=[])
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.list("ws-1")
+    client.sessions.list("ws-1", include_archived=True)
+
+    urls = [str(c.request.url) for c in respx.calls]
+    assert len(urls) == 2
+    assert urls[0].endswith("/sessions"), f"default must hit the bare path (no param): {urls[0]}"
+    assert urls[1].endswith(
+        "/sessions?include_archived=true"
+    ), f"opt-in must append ?include_archived=true: {urls[1]}"

@@ -40,7 +40,7 @@ async function stubShell(page: Page, opts: { contractBody?: string; userEvents?:
   await page.route(`${API}/orgs`, empty([]));
   await page.route(`${API}/image-factory/configs`, empty({ configs: [] }));
   await page.route(`${API}/admin/agent-roles`, empty([]));
-  await page.route(`${API}/workspaces/${WS}/sessions`, empty([]));
+  await page.route(`${API}/workspaces/${WS}/sessions?*`, empty([]));
   await page.route(`${API}/workspaces/${WS}/models`, empty({ models: [], currentModel: "", currentModelProviderID: "" }));
   await page.route(`${API}/workspaces/${WS}/sessions/${SES}/message*`, empty([]));
   await page.route(`${API}/workspaces/${WS}/sessions/${SES}`, empty({ id: SES, status: "idle" }));

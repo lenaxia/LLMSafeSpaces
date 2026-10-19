@@ -192,6 +192,28 @@ describe("LLMSafeSpaces Client", () => {
         expect.objectContaining({ method: "DELETE" }),
       );
     });
+
+    // #1735: archived sessions are opt-in — the default list carries NO
+    // include_archived param; the opt-in appends exactly
+    // ?include_archived=true (a param-name typo would silently return
+    // the filtered default).
+    it("lists sessions without the include_archived param by default", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([]));
+      await client.sessions.list("ws-1");
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:8080/api/v1/workspaces/ws-1/sessions",
+        expect.objectContaining({ method: "GET" }),
+      );
+    });
+
+    it("lists sessions with ?include_archived=true when opted in", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([]));
+      await client.sessions.list("ws-1", { includeArchived: true });
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:8080/api/v1/workspaces/ws-1/sessions?include_archived=true",
+        expect.objectContaining({ method: "GET" }),
+      );
+    });
   });
 
   describe("agentRoles (US-62.4 additions)", () => {

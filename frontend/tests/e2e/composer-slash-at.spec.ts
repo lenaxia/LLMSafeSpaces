@@ -38,7 +38,7 @@ async function setupAPIMocks(page: Page) {
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ phase: "Active", credentialState: { available: true }, agentHealth: { status: "healthy", agentVersion: "1.0.0" } }) }));
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/activate`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ resumed: WORKSPACE_ID }) }));
-  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions?*`, (r: Route) => {
     if (r.request().method() === "POST") {
       void r.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ sessionId: SESSION_ID, workspaceId: WORKSPACE_ID, workspacePhase: "Active", resumed: false }) });
       return;

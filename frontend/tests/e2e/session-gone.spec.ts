@@ -39,7 +39,7 @@ async function setupSessionGoneMocks(page: Page) {
   // Sessions list: the FIRST fetch still carries the ghost row (the
   // sidebar rendered it before the harness deletion); every refetch
   // after the gone-verdict invalidation omits it.
-  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions`, (r: Route) => {
+  await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions?*`, (r: Route) => {
     if (r.request().method() === "POST") {
       r.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: SESSION_ID, sessionId: SESSION_ID }) });
       return;

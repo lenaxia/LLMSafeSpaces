@@ -582,7 +582,9 @@ function WorkspaceSessionList({
   const { data: sessions, isLoading } = useQuery({
     queryKey: ["sessions", workspaceId],
     queryFn: async () => {
-      const result = await workspacesApi.getSessions(workspaceId);
+      // #1735: the sidebar renders the Archived group — it needs the
+      // archived rows, so it opts in explicitly.
+      const result = await workspacesApi.getSessions(workspaceId, { includeArchived: true });
       const origins = await workspaceWorkflowApi.sessionOrigins(workspaceId);
       if (origins.length > 0) {
         const originMap = new Map(origins.map((o) => [o.sessionId, o.origin]));
