@@ -33,7 +33,7 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/status`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ phase: "Active", credentialState: { available: true }, agentHealth: { status: "healthy", agentVersion: "1.0.0" }, sessions: [] }) });
   });
-  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions`, async (route: Route) => {
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -100,7 +100,7 @@ test.describe("Sidebar hierarchy", () => {
 
   test("orphans group is hidden when there are no orphans", async ({ page }) => {
     // Override the default mock with a list that has no orphans.
-    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions`, async (route: Route) => {
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
