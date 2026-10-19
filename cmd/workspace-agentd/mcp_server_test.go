@@ -1213,6 +1213,69 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, d, "error codes")             // failures are diagnosable
 		assert.Contains(t, d, "pair with trigger_fires") // trigger-fired runs cross-read
 	})
+
+	// #1701 (design 0067 §4.3c): the board worker tools' descriptions
+	// are contract — the claim-token discipline, the evidence-gated
+	// heartbeat, the manager-surface refusals, and the recovery path
+	// (a 409 claim_token means STOP, not retry) are load-bearing for a
+	// fresh worker that knows nothing but its charter envelope.
+	t.Run("board_heartbeat guidance", func(t *testing.T) {
+		d, ok := descs["board_heartbeat"]
+		require.True(t, ok, "board_heartbeat in tools/list")
+		for _, want := range []string{
+			"claim token from your charter envelope", // the in-flight guard's provenance
+			"new progress evidence",                  // #1685: evidence, not elapsed time
+			"does NOT extend",                        // the no-evidence outcome is named
+			"observedProgressAt",                     // the evidence field
+			"claim_token",                            // the 409 code that means the claim is gone
+			"re-read the task",                       // the recovery path
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("board_report_throttle guidance", func(t *testing.T) {
+		d, ok := descs["board_report_throttle"]
+		require.True(t, ok, "board_report_throttle in tools/list")
+		for _, want := range []string{
+			"429",                     // the provider-throttle trigger
+			"without attempt penalty", // the no-penalty invariant
+			"claim token",             // required — a throttle concerns a live claim
+			"backlog",                 // the task requeues; the worker is released
+			"NOT a self-exit",         // pending_input rows cannot throttle out
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("board_move_stage guidance", func(t *testing.T) {
+		d, ok := descs["board_move_stage"]
+		require.True(t, ok, "board_move_stage in tools/list")
+		for _, want := range []string{
+			"claim token",             // required on every in-flight write
+			"in_review",               // the worker's forward move (work done)
+			"evidenceUrl",             // the artifact link per transition
+			"pending_input",           // the manager-only exit is named
+			"refused on this surface", // workers never self-exit pending_input
+			"acceptance criteria",     // Done guard named (criteria + evidence)
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("board_read guidance", func(t *testing.T) {
+		d, ok := descs["board_read"]
+		require.True(t, ok, "board_read in tools/list")
+		for _, want := range []string{
+			"shortId",        // the tsk-… addressing from the charter
+			"taskId",         // the UUID alternative
+			"No claim token", // a read is not an in-flight write
+			"did-you-mean",   // 404 suggestions surface
+			"lease",          // the worker's own claim state is visible
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
 }
 
 // --- #1561: the parse boundary is strict (silent salvage ended) ---

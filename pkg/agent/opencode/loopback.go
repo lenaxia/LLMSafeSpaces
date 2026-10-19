@@ -893,6 +893,67 @@ func (c *Client) TriggerDelete(ctx context.Context, saToken, workspaceID, id str
 		fmt.Sprintf("/internal/v1/automation/triggers/%s?workspaceID=%s", id, workspaceID), saToken, nil)
 }
 
+// --- Task Board worker seam (design 0067 §4.3c, #1701) ----------------------
+
+// boardRefPattern guards board task references interpolated into
+// automation URLs: tsk-… short ids (design 0066's charset, case-tolerant
+// — resolution is case-insensitive server-side) and UUID task ids.
+// Nothing that could shape the path (separators, queries, traversal,
+// percent-encoding) survives the charset.
+var boardRefPattern = regexp.MustCompile(`^[0-9A-Za-z-]{1,64}$`)
+
+// validateBoardRef refuses a malformed board task reference pre-wire.
+func validateBoardRef(ref string) error {
+	if !boardRefPattern.MatchString(ref) {
+		return fmt.Errorf("invalid board task reference %q (expected tsk-… short id or task UUID)", ref)
+	}
+	return nil
+}
+
+// BoardTaskGet is board_read's item form (#1701): the worker's view of
+// one task — charter, criteria, blocked-by, lease — resolved
+// WORKSPACE-scoped server-side from the pod identity (r1-S1).
+func (c *Client) BoardTaskGet(ctx context.Context, saToken, workspaceID, taskRef string) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskRef); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s?workspaceID=%s", taskRef, workspaceID), saToken, nil)
+}
+
+// boardWorkerPost is the shared transport for the worker seam's three
+// POST routes: caller body verbatim + the resolver-spelling workspace
+// stamp (the in-body convention the seam's resolve() reads first).
+func (c *Client) boardWorkerPost(ctx context.Context, saToken, workspaceID, path string, body json.RawMessage) (*AutomationResponse, error) {
+	stamped, err := withWorkspaceID(body, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost, path, saToken, stamped)
+}
+
+// BoardHeartbeat is board_heartbeat: evidence-bearing lease renewal
+// (#1685 — extends only when the progress watermark moved). Requires
+// the task's live claim token; the platform arbitrates.
+func (c *Client) BoardHeartbeat(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/heartbeat", body)
+}
+
+// BoardReportThrottle is board_report_throttle: the 429 path — requeue
+// without attempt penalty + cooldown on the task and the project's
+// slots. Requires the task's live claim token; the platform arbitrates.
+func (c *Client) BoardReportThrottle(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/throttle", body)
+}
+
+// BoardMoveStage is board_move_stage (worker projection): token-guarded
+// stage writes; the pending_input exit is refused on this surface (a
+// delegated worker is not the human the exit exists for). The platform
+// arbitrates every stage-machine guard.
+func (c *Client) BoardMoveStage(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/move-stage", body)
+}
+
 // SessionArchive sets the platform-level archived marker on one session
 // of this pod's workspace (#1627) via the pod-identity internal API.
 func (c *Client) SessionArchive(ctx context.Context, saToken, workspaceID, sessionID string, archived bool) error {

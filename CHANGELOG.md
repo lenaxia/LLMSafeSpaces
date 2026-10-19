@@ -31,6 +31,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwired ownership gate fails closed (500). The user REST API's
   `CreateTriggerRequest` carries the same optional field under the
   same gate.
+### Added — agent-internal Task Board worker tools (#1701)
+
+- **The worker's board surface is live in the agentd MCP registry**
+  (design 0067 §4.3c): exactly four tools — `board_heartbeat`,
+  `board_report_throttle`, `board_move_stage`, `board_read` — riding
+  the `/internal/v1/automation/board/*` seam with the pod SA token,
+  bodies passed through verbatim ("the platform validates"). No claim
+  logic lives in agentd: claiming stays engine-side (R9
+  claim-then-spawn), manager actions stay on the owner's surfaces, and
+  the parity matrix's agent column now enforces BOTH tiers — the seam
+  route table and the agentd registry source (a `board_*` tool added
+  without a matrix row, or a manager/`claim_next` tool registered at
+  all, reddens `TestBoardParity_AgentRegistryColumn`).
+- **Claim-token semantics on the worker surface**: the tool schemas
+  mark `claimToken` required on every in-flight stage/lease write and
+  the dispatcher refuses a token-less call pre-wire; platform guard
+  classes (409 `claim_token`, 404 + did-you-mean) surface verbatim in
+  tool errors. Pinned end-to-end against a real BoardService at the
+  seam: token-less/wrong-token refusal, single-use (a forward exit
+  consumes the token) + expiry (a reclaimed claim's token is dead; the
+  re-claim mints a fresh one), attempts accounting (the claim is the
+  only increment; a live 429 rolls it back), the foreign-task 404-class
+  (a pod never resolves another workspace's tasks — the real token
+  buys nothing), and the pending_input self-exit refusal (a valid token
+  does not unlock a manager-surface exit).
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 

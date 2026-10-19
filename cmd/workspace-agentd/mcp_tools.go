@@ -1330,6 +1330,27 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 		res, err = client.WorkflowRun(ctx, saToken, workspaceID, toolArgID(body), input)
 	case "workflow_runs":
 		res, err = client.WorkflowRuns(ctx, saToken, workspaceID, toolArgID(body))
+	case "board_read":
+		// board_read's v1 shape is the item form (GetTaskInWorkspace):
+		// the worker's own task by shortId/UUID. The list/search/health
+		// projections ride the engine follow-ups (#1699) and grow INTO
+		// this tool when their seams land.
+		res, err = client.BoardTaskGet(ctx, saToken, workspaceID, boardTaskRef(body))
+	case "board_heartbeat":
+		if err := requireBoardClaimToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardHeartbeat(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+	case "board_report_throttle":
+		if err := requireBoardClaimToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardReportThrottle(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+	case "board_move_stage":
+		if err := requireBoardClaimToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardMoveStage(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)
 	}
@@ -1361,6 +1382,45 @@ func passThroughBody(body map[string]any, key string) json.RawMessage {
 func toolArgID(body map[string]any) string {
 	id, _ := body["id"].(string)
 	return id
+}
+
+// --- board worker tools (#1701, design 0067 §4.3c) ---------------------------
+
+// boardToolArgs unwraps the documented flat argument form, tolerating
+// the nested {"task": {...}} wrapper (passThroughBody's convention).
+func boardToolArgs(body map[string]any) map[string]any {
+	if nested, ok := body["task"].(map[string]any); ok {
+		return nested
+	}
+	return body
+}
+
+// boardTaskRef extracts the task reference for board_read's path:
+// taskId (UUID) preferred, shortId (tsk-…) fallback — the service's
+// own pick order. An empty ref reaches validateBoardRef, which refuses
+// it pre-wire.
+func boardTaskRef(body map[string]any) string {
+	args := boardToolArgs(body)
+	if id, _ := args["taskId"].(string); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	sid, _ := args["shortId"].(string)
+	return strings.TrimSpace(sid)
+}
+
+// requireBoardClaimToken enforces the claim-token discipline pre-wire:
+// every in-flight stage/lease write (heartbeat, throttle, move_stage)
+// carries the token the fresh worker received in its charter envelope.
+// The platform re-arbitrates the token against the live row (a stale
+// token 409s there — the authoritative guard); this is the shape
+// refusal, the session_archive-boolean discipline: a token-less call
+// never spends a wire round trip.
+func requireBoardClaimToken(name string, body map[string]any) error {
+	tok, _ := boardToolArgs(body)["claimToken"].(string)
+	if strings.TrimSpace(tok) == "" {
+		return fmt.Errorf("%s failed: claimToken is required — the in-flight guard from your charter envelope (reads need no token; every stage/lease write does)", name)
+	}
+	return nil
 }
 
 // patchWithoutID unwraps the tool's "patch" argument (routing and scoping

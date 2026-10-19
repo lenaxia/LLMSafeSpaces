@@ -309,6 +309,52 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{"id"}},
 		},
 		{
+			// Task Board worker tools (#1701, design 0067 §4.3c): the
+			// in-workspace surface for a FRESH worker (R9) driving its
+			// claimed task. Exactly four tools — claiming is engine-side
+			// (claim-then-spawn), manager actions live on the owner's
+			// surfaces, and the claim token (charter envelope) is the
+			// in-flight guard on every stage/lease write.
+			Name:        "board_read",
+			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (tsk-…, from your charter envelope) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"shortId": map[string]any{"type": "string", "description": "The task's short id (tsk-…, from your charter envelope); case-insensitive"},
+				"taskId":  map[string]any{"type": "string", "description": "The task's UUID (alternative to shortId; taskId wins when both are given)"},
+			}, "required": []string{}},
+		},
+		{
+			Name:        "board_heartbeat",
+			Description: "Renew your claimed task's lease — but ONLY with new progress evidence: pass observedProgressAt, your session's latest progress watermark (last message or tool activity, RFC 3339). Elapsed time is not liveness — a heartbeat with no NEW evidence does NOT extend the lease (a session streaming or tool-calling for an hour never trips; a silent one trips at one lease window). Requires the claim token from your charter envelope. A 409 with code claim_token means the claim is no longer yours (lease lapsed and was reclaimed, the task reached a terminal stage, or already moved) — STOP working the task and re-read the task with board_read; retrying the heartbeat cannot help.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
+				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress evidence (last message/tool activity). The lease extends only when this moved past the stored watermark"},
+				"shortId":            map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"taskId":             map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken"}},
+		},
+		{
+			Name:        "board_report_throttle",
+			Description: "Report a provider throttle (HTTP 429 / rate limit) hit while working your claimed task: the task returns to backlog with a cooldown and you are released — without attempt penalty (the attempt is rolled back; the task is re-served after the backoff, to a fresh worker). Also sets the project's slot cooldown, pausing NEW claims into the project while in-flight leases run out. Requires the claim token from your charter envelope; retryAfterSeconds is optional (the platform's default backoff applies when omitted). This concerns a LIVE claim only: a pending_input or already-lapsed row is refused (409 claim_token) — it is NOT a self-exit from pending_input. Call it as soon as you identify the failure as provider throttling, then stop; do not keep retrying the throttled operation.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken":        map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
+				"retryAfterSeconds": map[string]any{"type": "integer", "description": "Optional backoff from the provider's Retry-After; omitted = the platform's default throttle backoff"},
+				"shortId":           map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"taskId":            map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken"}},
+		},
+		{
+			Name:        "board_move_stage",
+			Description: "Move YOUR claimed task's stage — the worker's forward writes, guarded by the claim token from your charter envelope. Your moves: in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker. → done is the reviewer's move, not yours: it requires ALL acceptance criteria met + evidenceUrl, and the guard refuses otherwise. Exiting pending_input (any origin) is a human decision — refused on this surface; the reviewer/owner moves it through their surfaces. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the task with board_read. The task's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
+				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done) or in_progress (re-work); pending_input exits are human-only"},
+				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
+				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
+				"shortId":     map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"taskId":      map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken", "toStage"}},
+		},
+		{
 			Name:        "abort_session",
 			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; deleting is delete_session's job — abort never removes anything).",
 			InputSchema: map[string]any{
@@ -612,7 +658,10 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpAbortSession(ctx, password, sessionID)
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
 		"trigger_rotate_webhook_secret",
-		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs":
+		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
+		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage":
+		// #1701: the board worker tools ride the same automation seam
+		// (pod SA token, verbatim passthrough, platform-validated).
 		return mcpAutomation(ctx, name, args)
 	case "get_datetime":
 		timezoneArg, _ := args["timezone"].(string)
