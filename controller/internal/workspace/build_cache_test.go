@@ -4,6 +4,7 @@
 package workspace
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,10 +21,25 @@ import (
 // GOTMPDIR into /tmp, both PVC subPaths (every writable surface agents
 // get is PVC-backed; agents cannot self-relocate).
 //
-// These pins are the red-first contract: env + volume + mounts.
+// r2 hardening: the fixture carries InitScript so buildPod CREATES the
+// workspace-setup init (the security_test.go:108-110 precedent — a
+// bare newWorkspaceForSecurity pod has NO workspace-setup, and the
+// init-side assertions would run vacuously), and the test REQUIRES the
+// init's presence so the pin cannot silently degrade again.
 func TestGoCacheEconomy_RelocatedToEmptyDir(t *testing.T) {
-	pod := buildPodMandatory(t, reconcilerPinned(t))
+	ws := newWorkspaceForSecurity(t)
+	ws.Spec.InitScript = "true" // buildPod only creates workspace-setup with packages/initScript
+	pod, err := reconcilerPinned(t).buildPod(context.Background(), ws)
+	require.NoError(t, err)
 	main := mainContainerOf(t, pod)
+
+	setup := false
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name == "workspace-setup" {
+			setup = true
+		}
+	}
+	require.True(t, setup, "fixture must create the workspace-setup init (r2: without it the init-side assertions are vacuous)")
 
 	// ENV: GOCACHE/GOTMPDIR point at the emptyDir, not the PVC-backed
 	// defaults ($HOME/.cache/go-build, /tmp).
@@ -92,6 +108,9 @@ func TestGoCacheEconomy_SurvivesAgentdSidecarOverlay(t *testing.T) {
 	v, ok := envVar(main, "GOCACHE")
 	require.True(t, ok, "#1758: GOCACHE must survive the sidecar overlay on the main container")
 	assert.Equal(t, "/sandbox-cache/go-build", v.Value)
+	tmp, ok := envVar(main, "GOTMPDIR")
+	require.True(t, ok, "#1758: GOTMPDIR must survive the sidecar overlay too (r2 finding 5)")
+	assert.Equal(t, "/sandbox-cache/gotmp", tmp.Value)
 	for _, wantPath := range []string{"/sandbox-cache/go-build", "/sandbox-cache/gotmp"} {
 		found := false
 		for _, m := range main.VolumeMounts {

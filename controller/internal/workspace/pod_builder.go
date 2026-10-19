@@ -248,7 +248,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			SizeLimit: ptrQuantity("32Mi"),
 		}}},
 		// US-35.7: sandbox-runtime is RW tmpfs for credential OUTPUT files.
-		// agentd-config.json, secrets-env, and symlink targets for SSH/git/secrets/auth.json
+		// agent-config.json, secrets-env, and symlink targets for SSH/git/secrets/auth.json
 		// live here. Wiped on pod death regardless of how it dies (SIGTERM, SIGKILL,
 		// eviction) — no plaintext credential bytes persist on the PVC at rest.
 		{Name: "sandbox-runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{

@@ -119,6 +119,7 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 		"sandbox-runtime": false,
 		"pw-secret":       false,
 		"bootstrap-token": false,
+		"build-cache":     false, // #1758: the disk-backed Go cache emptyDir (8Gi SizeLimit)
 	}
 	for _, v := range pod.Spec.Volumes {
 		if _, ok := expectedVolumes[v.Name]; ok {
