@@ -360,6 +360,29 @@ controller:
     image: ""
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
+    # #1746 updatePolicy — when a desired agentd digest change (the
+    # image re-pin above) applies to RUNNING workspace pods:
+    #
+    #   OnRefresh (default, the product posture): never roll running
+    #     pods. The desired digest is recorded on each Workspace status
+    #     (agentdPendingDigest — surfaced by the API as "agentd X
+    #     pending, applies on next refresh") and applies at the next
+    #     natural pod recreation: user compute refresh, suspend/resume,
+    #     or any controller-initiated recreation. The user owns when
+    #     their sessions are interrupted. N-1 skew (old agentd talking
+    #     to the new API) is covered by the frozen-wire compat matrix
+    #     (pkg/board/worker_compat.go).
+    #   Rolling: the controller recreates pods on digest drift,
+    #     drain-aware (#761 — deferred behind busy sessions until idle
+    #     or stalled). For instances that prefer platform cadence.
+    #
+    # Per-workspace override: spec.agentdDelivery.updatePolicy on the
+    # Workspace CRD (operator-set, like runtimeClass). Security-critical
+    # escape hatch: spec.agentdDelivery.forceRoll on one workspace rolls
+    # it IMMEDIATELY on drift, drain bypassed (operator-declared consent).
+    # Empty value = OnRefresh (the controller flag default); set
+    # explicitly only to pin Rolling.
+    updatePolicy: ""
 
   # Design 0053 §4.2: opencode overlay delivery — the SAME mechanism as
   # agentdDelivery above, for the opencode binary: digest-pinned image

@@ -73,6 +73,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
+### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
+
+- **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default
+  `OnRefresh`) on the Workspace CRD + controller** (owner ruling
+  2026-10-19: the user owns when their sessions are interrupted). Under
+  `OnRefresh` a desired agentd digest change NEVER touches a running
+  pod: the desired digest is recorded on the Workspace status
+  (`agentdPendingDigest`) and applies at the next natural pod
+  recreation — user compute refresh (`restartGeneration` bump),
+  suspend/resume, or any controller-initiated recreation. `Rolling`
+  (per-workspace spec, or instance-wide via
+  `controller.agentdDelivery.updatePolicy` → `--agentd-update-policy`)
+  recreates pods on digest drift drain-aware per #761 (deferred behind
+  busy sessions until idle or stalled; `workspace_drain_deferred_total
+  {reason="agentd_update_roll"}`). Resolution order: spec → instance
+  flag → `OnRefresh`; a typo'd flag value fails controller startup and
+  the Helm render. Drift compares the digest PORTION only — a repo/tag
+  re-pin of the same digest never churns the fleet.
+- **`agentdDelivery.forceRoll` escape hatch** (spec, any policy): roll a
+  workspace IMMEDIATELY on digest drift, session drain BYPASSED — for
+  security-critical agentd fixes; the operator setting it declares the
+  consent to cut in-flight turns (the #1505 posture). Level-triggered:
+  no drift is a no-op; clear it after use. Emits the
+  `AgentdUpdateForcedRoll` event and
+  `workspace_drain_forced_total{reason="agentd_update_roll_forced"}`.
+  The new deletion site is classified in the #1724 deletion-path
+  inventory (`upgrade_rollout_kill_test.go`).
+- **Status drift visibility**: Workspace status carries
+  `agentdEffectiveDigest` (digest the current pod was built with) and
+  `agentdPendingDigest` (desired, unapplied — "applies on next
+  refresh"), exposed through `GET /workspaces/{id}/status`
+  (`agentdEffectiveDigest` / `agentdPendingDigest`) for the dashboard.
+- **N-1 compatibility discipline for the worker-tool seam**: the frozen
+  wire contract of `/internal/v1/automation/board/*`
+  (`board_heartbeat` / `board_report_throttle` / `board_move_stage` /
+  `board_read`, captured from agentd v0.39.0) lives in
+  `pkg/board/worker_compat.go` as a tested skew matrix — the frozen
+  sets replay verbatim against the CURRENT API
+  (`board_worker_compat_1746_test.go`) and the live agentd client must
+  emit exactly the newest set (`loopback_board_wire_1746_test.go`).
+  Wire changes are additive (a new frozen set or `/internal/v2`),
+  never v1 mutations.
+- Docs: `docs/operator/agentd-delivery.md` (policy matrix + escape
+  hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
+  volumes pointer), `docs/architecture/components.md` (controller policy
+  + the versioned board seam contract).
+### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
+
+- **The workspace pod's disk-recovery allowlist now covers the caches
+  that actually fill the PVC.** Nine classes covered ~2G of the
+  typical footprint while the biggest regenerables went unchecked —
+  the incident pod logged three ENOSPC episodes in a day (one broke a
+  Go test run at 100%) and needed four manual orchestrator sweeps for
+  97%→60% swings. New classes (with observed live sizes): playwright
+  browsers `~/.cache/ms-playwright` (641M), the session caches
+  `/tmp/opencode/{gocache,goocache,npm-cache}` (2.4G live; the new
+  `/tmp/opencode` root is a parent root — live session scratch and
+  GOBIN tools under it stay untouchable, only the three cache dirs are
+  entries), stale Go temp scratch `~/.cache/gotmp*` incl. `gotmp-w*`
+  worker dirs (the 120s corpse rule), the golangci-lint cache (103M),
+  npm's `_cacache`/`_npx` (260M; the existing `npm-cache` class is
+  NARROWED from the whole `~/.npm` root to `_cacache` — `npm cache
+  clean`'s own target), and the kubebuilder-envtest assets (163M) —
+  regenerable but under the protected `/workspace/.local` package-home
+  tree, allowlisted via an exact-directory root (the protected list
+  itself is untouched).
+- **Three safety gates make those classes reapable without pulling
+  them out from under a live process.** (1) An open-handle scan — one
+  `/proc/*/fd`+`exe`+`cwd` snapshot per sweep: any class (or prefix
+  child) with an open path under it is never a deletion candidate and
+  reports the new `in_use` status with its measured bytes visible. A
+  `/proc` that cannot be enumerated at all fails the scan closed
+  (everything `in_use`); individually unreadable tables (foreign-uid
+  processes, mid-execve transients, non-dumpable session helpers like
+  `(sd-pam)`) are skipped by documented policy — none exist inside the
+  workspace container's pid namespace where the engine runs (verified:
+  7/7 tables readable, one uid).
+  (2) Per-class size floors calibrated to the observed full-set sizes —
+  below the floor a tree is a partial download or debris and reports
+  `not_present` with the floor in the reason. (3) An optional
+  staleness gate on directory classes holds freshly-written (hot)
+  caches whole. The frontend strip renders the new classes and the
+  `in_use` verdict (pinned bytes shown, excluded from the reclaimable
+  total); the REST contract documents the classes and gates.
 
 ## [0.39.0] - 2026-10-19
 
