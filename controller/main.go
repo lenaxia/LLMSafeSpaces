@@ -217,6 +217,15 @@ func main() {
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
 			"supervise-opencode PID 1 in the workspace container. Requires --agentd-image. "+
 			"Default false (single-container mode, unchanged).")
+	var agentdUpdatePolicy string
+	flag.StringVar(&agentdUpdatePolicy, "agentd-update-policy", "",
+		"#1746: instance-level default for agentdDelivery.updatePolicy — when a desired "+
+			"agentd digest change applies to RUNNING workspace pods. OnRefresh (default): "+
+			"never roll running pods; the digest is recorded on status (agentdPendingDigest) "+
+			"and applies at the next natural pod recreation (compute refresh, suspend/resume, "+
+			"other) — the user owns when their sessions are interrupted. Rolling: roll pods on "+
+			"digest drift, drain-aware (#761). Per-workspace spec.agentdDelivery.updatePolicy "+
+			"overrides this default.")
 	uploadStagingFlag := registerUploadStagingFlag()
 	agentdHashAMD64, agentdHashARM64 := registerAgentdBinaryHashFlags()
 	var opencodeImage string
@@ -266,6 +275,12 @@ func main() {
 	}
 	if err := workspace.ValidateAgentdDelivery(agentdImage, *agentdHashAMD64, *agentdHashARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
+		os.Exit(1)
+	}
+	// #1746: validate the update-policy default at startup — a typo'd
+	// policy must fail boot, not silently fall back to OnRefresh.
+	if err := workspace.ValidateAgentdUpdatePolicy(agentdUpdatePolicy); err != nil {
+		setupLog.Error(err, "invalid agentd update policy")
 		os.Exit(1)
 	}
 	if agentdImage != "" && (*agentdHashAMD64 == "" || *agentdHashARM64 == "") {
@@ -437,9 +452,10 @@ func main() {
 	// Set up controllers
 	uploadStaging := mustParseUploadStagingFlag(*uploadStagingFlag)
 	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, uploadStaging, controller.AgentdDelivery{
-		Image:             agentdImage,
-		BinarySHA256AMD64: *agentdHashAMD64,
-		BinarySHA256ARM64: *agentdHashARM64,
+		Image:               agentdImage,
+		BinarySHA256AMD64:   *agentdHashAMD64,
+		BinarySHA256ARM64:   *agentdHashARM64,
+		UpdatePolicyDefault: v1.AgentdUpdatePolicy(agentdUpdatePolicy),
 	}, controller.OpencodeDelivery{
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,

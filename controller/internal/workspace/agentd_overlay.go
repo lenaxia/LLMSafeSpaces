@@ -111,12 +111,22 @@ type AgentdDeliveryConfig struct {
 	Image             string
 	BinarySHA256AMD64 string
 	BinarySHA256ARM64 string
+	// UpdatePolicyDefault is the #1746 instance-level default for
+	// agentdDelivery.updatePolicy (--agentd-update-policy). Empty =
+	// OnRefresh (the product posture). Per-workspace specs override it.
+	UpdatePolicyDefault v1.AgentdUpdatePolicy
 }
 
 // ValidateAgentdDelivery is the exported startup guard used by controller
 // main. Wraps validateAgentdDeliveryConfig.
 func ValidateAgentdDelivery(image, amd64, arm64 string) error {
 	return validateAgentdDeliveryConfig(image, amd64, arm64)
+}
+
+// ValidateAgentdUpdatePolicy is the exported startup guard for the
+// #1746 instance-level update-policy default (agentd_update_policy.go).
+func ValidateAgentdUpdatePolicy(v string) error {
+	return validateAgentdUpdatePolicyFlag(v)
 }
 
 // validateAgentdDeliveryConfig enforces the all-or-nothing contract at

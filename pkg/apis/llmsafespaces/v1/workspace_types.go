@@ -95,6 +95,52 @@ type WorkspaceCredentialRef struct {
 	SecretName string `json:"secretName"`
 }
 
+// AgentdUpdatePolicy (#1746): when a running workspace pod adopts a NEW
+// desired agentd overlay digest (platform upgrade re-pin).
+//
+//   - OnRefresh (default — the product posture): running pods are NOT
+//     touched. The desired digest is recorded on the Workspace status
+//     (agentdPendingDigest) and applies at the next natural pod
+//     recreation — user compute refresh (restartGeneration bump),
+//     suspend/resume, or any controller-initiated recreation for other
+//     reasons. The user owns when their sessions are interrupted.
+//   - Rolling: the controller proactively recreates the pod on digest
+//     drift, drain-aware per #761 (deferred behind busy sessions until
+//     idle or stalled). For instances that prefer platform cadence over
+//     session continuity.
+type AgentdUpdatePolicy string
+
+const (
+	AgentdUpdatePolicyOnRefresh AgentdUpdatePolicy = "OnRefresh"
+	AgentdUpdatePolicyRolling   AgentdUpdatePolicy = "Rolling"
+)
+
+// AgentdDeliverySpec is the per-workspace agentd overlay delivery policy
+// (#1746). Operator-facing: the user API does not expose it — it is set
+// on the Workspace CRD directly (kubectl), like spec.runtimeClass. The
+// instance-wide default comes from the controller's
+// --agentd-update-policy flag (Helm controller.agentdDelivery.updatePolicy,
+// default OnRefresh); this object overrides it per workspace.
+type AgentdDeliverySpec struct {
+	// UpdatePolicy selects when a desired agentd digest change applies
+	// to a RUNNING pod. Empty = the controller's instance-level default
+	// (OnRefresh unless the operator pinned Rolling).
+	// +kubebuilder:validation:Enum=Rolling;OnRefresh
+	// +kubebuilder:default=OnRefresh
+	UpdatePolicy AgentdUpdatePolicy `json:"updatePolicy,omitempty"`
+
+	// ForceRoll is the per-workspace escape hatch for security-critical
+	// agentd fixes: when true, a desired-digest drift reconciles the pod
+	// IMMEDIATELY regardless of updatePolicy — bypassing the session
+	// drain, cutting in-flight turns. The operator setting it declares
+	// that consent (same posture as the #1505 user-consented refresh).
+	// Level-triggered: with no digest drift it is a no-op; clear it back
+	// after the forced roll (a stale true means the NEXT digest bump
+	// also cuts sessions immediately).
+	// +kubebuilder:default=false
+	ForceRoll bool `json:"forceRoll,omitempty"`
+}
+
 // PodSecurityContext defines security context for the workspace pod.
 type PodSecurityContext struct {
 	RunAsUser  int64 `json:"runAsUser,omitempty"`
@@ -166,6 +212,12 @@ type WorkspaceSpec struct {
 
 	Resources         *ResourceRequirements `json:"resources,omitempty"`
 	RestartGeneration int64                 `json:"restartGeneration,omitempty"`
+
+	// AgentdDelivery overrides the instance's agentd update policy for
+	// this workspace (#1746). Nil/absent = controller default
+	// (--agentd-update-policy, OnRefresh unless pinned). See
+	// AgentdDeliverySpec.
+	AgentdDelivery *AgentdDeliverySpec `json:"agentdDelivery,omitempty"`
 
 	PodSecurityContext *PodSecurityContext `json:"podSecurityContext,omitempty"`
 
@@ -521,6 +573,22 @@ type WorkspaceStatus struct {
 	CredentialSecretHash      string       `json:"credentialSecretHash,omitempty"`
 	LastHealthCheckAt         *metav1.Time `json:"lastHealthCheckAt,omitempty"`
 	ConsecutiveHealthFailures int32        `json:"consecutiveHealthFailures,omitempty"`
+
+	// #1746 agentd delivery drift visibility. Controller-owned.
+	//
+	// AgentdEffectiveDigest is the agentd overlay image digest
+	// ("sha256:<64 hex>") the current pod was BUILT with (read from the
+	// pod's agentd image-volume reference at build time and on Active
+	// observation). Empty while no overlay pod has been built (legacy
+	// baked-in mode).
+	AgentdEffectiveDigest string `json:"agentdEffectiveDigest,omitempty"`
+	// AgentdPendingDigest is the DESIRED agentd digest, recorded
+	// whenever it differs from AgentdEffectiveDigest and no immediate
+	// roll is converged — under updatePolicy OnRefresh (or a Rolling /
+	// forceRoll roll still deferred behind busy sessions). Surfaced by
+	// the API as "agentd X pending — applies on next refresh". Cleared
+	// when a pod built with the desired digest is observed (converged).
+	AgentdPendingDigest string `json:"agentdPendingDigest,omitempty"`
 
 	// LastActivityAt is DEPRECATED (US-23.3). The authoritative value is
 	// now the metadata annotation llmsafespaces.dev/last-activity-at,
