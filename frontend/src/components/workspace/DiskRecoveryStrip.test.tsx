@@ -381,9 +381,10 @@ describe("DiskRecoveryStrip — #1744 classes and in_use rendering", () => {
 
     expect(await screen.findByText(/in use \(open file handles/)).toBeInTheDocument();
     expect(screen.getByText("Session Go build cache")).toBeInTheDocument();
-    expect(screen.getByText("2 KB")).toBeInTheDocument(); // the pinned 2400 B, toFixed(0)
-    // Only the would_free class counts toward Free-now (1000 B → "1 KB").
-    expect(screen.getByTestId("disk-recover-free-now")).toHaveTextContent(/1 KB/);
+    expect(screen.getByText("2 KB")).toBeInTheDocument(); // the pinned 2400 B (toFixed(0) over 1024)
+    // Only the would_free class counts toward Free-now — the pinned
+    // in_use 2400 B is excluded, so the button labels 1000 B, not 3 KB.
+    expect(screen.getByTestId("disk-recover-free-now")).toHaveTextContent(/1000 B/);
   });
 
   it("friendly labels for the #1744 regenerable classes", async () => {
