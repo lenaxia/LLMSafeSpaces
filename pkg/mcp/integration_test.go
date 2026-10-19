@@ -77,10 +77,10 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// 1. List tools - verify all are registered (12 + 1 run_resolve + 11 Epic 64
-	// + 1 workspace_file_upload = 25).
+	// + 1 workspace_file_upload + 18 board_* (#1700) = 43).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 25)
+	assert.Len(t, toolsResp.Tools, 43)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)

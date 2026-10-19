@@ -47,6 +47,11 @@ func NewServer(client APIClient, defaultTimeout time.Duration) *server.MCPServer
 	// Epic 64: workflow + trigger tools for external agents.
 	AddWorkflowTools(srv, h)
 
+	// Task Board (design 0067 §4.3b, #1700): external board_* tools for
+	// the owning user — manager actions riding the owner's REST
+	// projection; worker actions (heartbeat/throttle) stay agent-side.
+	AddBoardTools(srv, h)
+
 	return srv
 }
 

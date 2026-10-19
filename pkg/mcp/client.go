@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -90,6 +91,35 @@ type APIClient interface {
 	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error)
 	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error)
 	DeleteTrigger(ctx context.Context, triggerID string) error
+
+	// Task Board (design 0067 §4.3b, #1700): the external board_* tools
+	// ride the owner's REST projection (/api/v1/me/*, ruling R7) — the
+	// same handlers the REST column pins, so guard outcomes are
+	// identical by construction. No heartbeat/throttle/claim here:
+	// worker actions live on the agent registry only (§4.3c).
+	BoardListProjects(ctx context.Context) (json.RawMessage, error)
+	BoardGetProject(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardCreateProject(ctx context.Context, body BoardProjectBody) (json.RawMessage, error)
+	BoardUpdateProject(ctx context.Context, projectID string, body BoardProjectBody) (json.RawMessage, error)
+	BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error)
+	BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error)
+	BoardGetEpic(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardUpdateEpic(ctx context.Context, epicID string, body BoardEpicBody) (json.RawMessage, error)
+	BoardEpicActivate(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardEpicPause(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardEpicArchive(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardEpicUnarchive(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardCancelEpic(ctx context.Context, epicID, reason, requestID string) (json.RawMessage, error)
+	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
+	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
+	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
+	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
+	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardCancelTask(ctx context.Context, taskID, reason, requestID string) (json.RawMessage, error)
+	BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error)
+	BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error
 }
 
 // CreateWorkspaceReq is the request body for workspace creation.
@@ -931,4 +961,245 @@ func (c *HTTPClient) DeleteTrigger(ctx context.Context, triggerID string) error 
 func (c *HTTPClient) doRaw(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
 	_, raw, err := c.doRequestRaw(ctx, method, path, body)
 	return raw, err
+}
+
+// --- Task Board API methods (design 0067 §4.3b, #1700) ---
+//
+// The bodies mirror the REST projection's request DTOs verbatim
+// (camelCase keys, empty-means-keep on update, tags/criteria replace
+// when present) so the tools are wire-identical to the REST column.
+
+// BoardCriterion is one acceptance criterion (ruling R2: checkable,
+// LLM-verifiable; Done = ALL met + evidence).
+type BoardCriterion struct {
+	Text string `json:"text"`
+	Met  bool   `json:"met"`
+}
+
+// BoardProjectBody mirrors the REST boardProjectRequest.
+type BoardProjectBody struct {
+	Name              string   `json:"name,omitempty"`
+	TargetWorkspaceID string   `json:"targetWorkspaceId,omitempty"`
+	WorkerSlots       int      `json:"workerSlots,omitempty"`
+	Tags              []string `json:"tags,omitempty"`
+	RequestID         string   `json:"requestId,omitempty"`
+}
+
+// BoardEpicBody mirrors the REST boardEpicRequest.
+type BoardEpicBody struct {
+	Title     string   `json:"title,omitempty"`
+	Outcome   string   `json:"outcome,omitempty"`
+	Priority  string   `json:"priority,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	RequestID string   `json:"requestId,omitempty"`
+}
+
+// BoardTaskBody mirrors the REST boardTaskRequest. Tags is
+// presence-aware (r2): the REST binding turns `"tags":[]` into a
+// non-nil empty slice the engine reads as replace-with-clear, so the
+// MCP tier must carry the distinction too — nil keeps existing tags,
+// a pointer to an empty slice clears them. (Projects/epics differ:
+// the engine writes tags unconditionally there, so absence clears —
+// REST-identical either way.)
+type BoardTaskBody struct {
+	Title              string           `json:"title,omitempty"`
+	Description        string           `json:"description,omitempty"`
+	Priority           string           `json:"priority,omitempty"`
+	Tags               *[]string        `json:"tags,omitempty"`
+	AcceptanceCriteria []BoardCriterion `json:"acceptanceCriteria,omitempty"`
+	SetCriteriaMet     *int             `json:"setCriteriaMet,omitempty"`
+	RequestID          string           `json:"requestId,omitempty"`
+}
+
+// boardMoveStageBody mirrors the REST boardMoveStageRequest.
+type boardMoveStageBody struct {
+	ToStage     string `json:"toStage"`
+	EvidenceURL string `json:"evidenceUrl,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+}
+
+// boardCancelBody mirrors the REST boardCancelRequest.
+type boardCancelBody struct {
+	Reason    string `json:"reason,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// boardDependencyBody mirrors the REST boardDependencyRequest.
+type boardDependencyBody struct {
+	DependsOn string `json:"dependsOn"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+func (c *HTTPClient) BoardListProjects(ctx context.Context) (json.RawMessage, error) {
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/projects", nil)
+}
+
+func (c *HTTPClient) BoardGetProject(ctx context.Context, projectID string) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/projects/"+projectID, nil)
+}
+
+func (c *HTTPClient) BoardCreateProject(ctx context.Context, body BoardProjectBody) (json.RawMessage, error) {
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/projects", body)
+}
+
+func (c *HTTPClient) BoardUpdateProject(ctx context.Context, projectID string, body BoardProjectBody) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPatch, "/api/v1/me/projects/"+projectID, body)
+}
+
+func (c *HTTPClient) boardProjectLifecycle(ctx context.Context, projectID, verb string) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/projects/"+projectID+"/"+verb, nil)
+}
+
+func (c *HTTPClient) BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
+	return c.boardProjectLifecycle(ctx, projectID, "archive")
+}
+
+func (c *HTTPClient) BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
+	return c.boardProjectLifecycle(ctx, projectID, "unarchive")
+}
+
+func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	path := "/api/v1/me/projects/" + projectID + "/tasks"
+	if stage != "" {
+		path += "?stage=" + url.QueryEscape(stage)
+	}
+	return c.doRaw(ctx, http.MethodGet, path, nil)
+}
+
+func (c *HTTPClient) BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/projects/"+projectID+"/epics", body)
+}
+
+func (c *HTTPClient) BoardGetEpic(ctx context.Context, epicID string) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/epics/"+epicID, nil)
+}
+
+func (c *HTTPClient) BoardUpdateEpic(ctx context.Context, epicID string, body BoardEpicBody) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPatch, "/api/v1/me/epics/"+epicID, body)
+}
+
+func (c *HTTPClient) boardEpicLifecycle(ctx context.Context, epicID, verb string) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/"+verb, nil)
+}
+
+func (c *HTTPClient) BoardEpicActivate(ctx context.Context, epicID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "activate")
+}
+
+func (c *HTTPClient) BoardEpicPause(ctx context.Context, epicID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "pause")
+}
+
+func (c *HTTPClient) BoardEpicArchive(ctx context.Context, epicID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "archive")
+}
+
+func (c *HTTPClient) BoardEpicUnarchive(ctx context.Context, epicID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "unarchive")
+}
+
+func (c *HTTPClient) BoardCancelEpic(ctx context.Context, epicID, reason, requestID string) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/cancel", boardCancelBody{Reason: reason, RequestID: requestID})
+}
+
+func (c *HTTPClient) BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/tasks", body)
+}
+
+func (c *HTTPClient) BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID, nil)
+}
+
+func (c *HTTPClient) BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPatch, "/api/v1/me/tasks/"+taskID, body)
+}
+
+func (c *HTTPClient) BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	body := boardMoveStageBody{ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/move-stage", body)
+}
+
+// boardStartBody is the optional body for POST /me/tasks/:id/start —
+// its own type (r1: not boardCancelBody's) so the two DTOs cannot
+// silently diverge when one grows a field.
+type boardStartBody struct {
+	RequestID string `json:"requestId,omitempty"`
+}
+
+func (c *HTTPClient) BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	var body any
+	if requestID != "" {
+		body = boardStartBody{RequestID: requestID}
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/start", body)
+}
+
+func (c *HTTPClient) BoardCancelTask(ctx context.Context, taskID, reason, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/cancel", boardCancelBody{Reason: reason, RequestID: requestID})
+}
+
+func (c *HTTPClient) BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/dependencies",
+		boardDependencyBody{DependsOn: dependsOn, RequestID: requestID})
+}
+
+func (c *HTTPClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return err
+	}
+	// r1: dependsOn is path-interpolated too — the same per-ID gate every
+	// sibling applies (a malformed id must answer the clean validation
+	// error, never a mangled request or a foreign-route 404).
+	if err := validateID(dependsOn, "depends_on"); err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/me/tasks/"+taskID+"/dependencies/"+dependsOn, nil, nil)
 }

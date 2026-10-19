@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)
+
+- **`trigger_create` (agentd automation surface) accepts an optional
+  `targetWorkspaceId` for routine triggers.** The routine then runs IN
+  the target workspace, with that workspace's tool surface and pod
+  identity — the deploy-resume choreography (one orchestrator session
+  waking several workspaces) no longer needs manual per-workspace
+  setup. Authorization is against the trigger owner's rights on the
+  target via the workspace service's ownership check (creator or org
+  admin): 403 without rights, 404 for a target that does not exist
+  (the cross-workspace disclosure policy). On the org REST route the
+  gate authorizes the ACTING user's rights on the target (the org id
+  is not a user; pre-r1 that arm could only ever 403). Omitting the
+  param keeps the previous behavior exactly — the creating pod's
+  workspace is force-stamped (#1412), delegated body byte-identical.
+  The `trigger.create` audit event now records both ends
+  (`targetWorkspaceId` + `creatingWorkspaceId` when created from a
+  workspace). Workflow-targeting rules are unchanged
+  (`workflowId` + `targetWorkspaceId` is rejected), the key is
+  create-only (`trigger_update` and the REST PATCH surface both reject
+  it with one shared message — #1426 keeps retargeting scoped), and an
+  unwired ownership gate fails closed (500). The user REST API's
+  `CreateTriggerRequest` carries the same optional field under the
+  same gate.
 ### Added — agent-internal Task Board worker tools (#1701)
 
 - **The worker's board surface is live in the agentd MCP registry**
@@ -67,6 +91,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Epic drawer activity feed** (§4.8): live board.event activity
   filtered to the epic's tasks via an in-page fan-out from the single
   user SSE connection (`lib/boardFeed.ts`).
+### Added — external platform MCP server tools for the Task Board (#1700)
+
+- **18 customer-facing `board_*` tools on the platform MCP server**
+  (design 0067 §4.3b): project/epic/task create + update, lifecycle
+  (epic activate/pause/archive/unarchive, project archive/unarchive),
+  `board_move_stage`, `board_start_task` (manual dispatch), `board_cancel`,
+  `board_add_dependency`/`board_remove_dependency`, and the read tools
+  (`board_list_projects`, `board_get`, `board_read`). The tools ride the
+  owner's REST projection (`/api/v1/me/*`, ruling R7), so guard outcomes,
+  idempotent replay (same `request_id` → original outcome, through the
+  tool path), audit-row stamping, and the read perimeter (foreign rows =
+  plain 404) are identical to the REST column by construction — each
+  pinned live in the board parity matrix's external column, which flips
+  from pending to live (worker-only rows — heartbeat/report_throttle, and
+  engine-internal claim — pinned absent by design; external actors hold
+  no claim tokens).
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 
