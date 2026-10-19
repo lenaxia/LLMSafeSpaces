@@ -5,7 +5,7 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.39.0] - 2026-10-19
 
 ### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)
 
@@ -4982,7 +4982,7 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.2...HEAD
+[0.39.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.38.1...v0.39.0
 [0.14.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.0...v0.14.1
 [0.5.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...v0.5.1
