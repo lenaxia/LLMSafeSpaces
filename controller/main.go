@@ -217,15 +217,7 @@ func main() {
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
 			"supervise-opencode PID 1 in the workspace container. Requires --agentd-image. "+
 			"Default false (single-container mode, unchanged).")
-	var agentdUpdatePolicy string
-	flag.StringVar(&agentdUpdatePolicy, "agentd-update-policy", "",
-		"#1746: instance-level default for agentdDelivery.updatePolicy — when a desired "+
-			"agentd digest change applies to RUNNING workspace pods. OnRefresh (default): "+
-			"never roll running pods; the digest is recorded on status (agentdPendingDigest) "+
-			"and applies at the next natural pod recreation (compute refresh, suspend/resume, "+
-			"other) — the user owns when their sessions are interrupted. Rolling: roll pods on "+
-			"digest drift, drain-aware (#761). Per-workspace spec.agentdDelivery.updatePolicy "+
-			"overrides this default.")
+	agentdUpdatePolicy := registerAgentdUpdatePolicyFlag()
 	uploadStagingFlag := registerUploadStagingFlag()
 	agentdHashAMD64, agentdHashARM64 := registerAgentdBinaryHashFlags()
 	var opencodeImage string
@@ -279,7 +271,7 @@ func main() {
 	}
 	// #1746: validate the update-policy default at startup — a typo'd
 	// policy must fail boot, not silently fall back to OnRefresh.
-	if err := workspace.ValidateAgentdUpdatePolicy(agentdUpdatePolicy); err != nil {
+	if err := workspace.ValidateAgentdUpdatePolicy(*agentdUpdatePolicy); err != nil {
 		setupLog.Error(err, "invalid agentd update policy")
 		os.Exit(1)
 	}
@@ -455,7 +447,7 @@ func main() {
 		Image:               agentdImage,
 		BinarySHA256AMD64:   *agentdHashAMD64,
 		BinarySHA256ARM64:   *agentdHashARM64,
-		UpdatePolicyDefault: v1.AgentdUpdatePolicy(agentdUpdatePolicy),
+		UpdatePolicyDefault: v1.AgentdUpdatePolicy(*agentdUpdatePolicy),
 	}, controller.OpencodeDelivery{
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
@@ -659,4 +651,21 @@ func registerAgentdBinaryHashFlags() (amd64, arm64 *string) {
 			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
 			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
 	return amd64, arm64
+}
+
+// registerAgentdUpdatePolicyFlag registers --agentd-update-policy (#1746):
+// the instance-level default for agentdDelivery.updatePolicy. The
+// register-helper pattern (like the hash flags above) keeps main()'s
+// funlen budget intact.
+func registerAgentdUpdatePolicyFlag() *string {
+	v := new(string)
+	flag.StringVar(v, "agentd-update-policy", "",
+		"#1746: instance-level default for agentdDelivery.updatePolicy — when a desired "+
+			"agentd digest change applies to RUNNING workspace pods. OnRefresh (default): "+
+			"never roll running pods; the digest is recorded on status (agentdPendingDigest) "+
+			"and applies at the next natural pod recreation (compute refresh, suspend/resume, "+
+			"other) — the user owns when their sessions are interrupted. Rolling: roll pods on "+
+			"digest drift, drain-aware (#761). Per-workspace spec.agentdDelivery.updatePolicy "+
+			"overrides this default.")
+	return v
 }
