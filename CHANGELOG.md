@@ -5,6 +5,42 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
+
+- **The workspace pod's disk-recovery allowlist now covers the caches
+  that actually fill the PVC.** Nine classes covered ~2G of the
+  typical footprint while the biggest regenerables went unchecked —
+  the incident pod logged three ENOSPC episodes in a day (one broke a
+  Go test run at 100%) and needed four manual orchestrator sweeps for
+  97%→60% swings. New classes (with observed live sizes): playwright
+  browsers `~/.cache/ms-playwright` (641M), the session caches
+  `/tmp/opencode/{gocache,goocache,npm-cache}` (2.4G live; the new
+  `/tmp/opencode` root is a parent root — live session scratch and
+  GOBIN tools under it stay untouchable, only the three cache dirs are
+  entries), stale Go temp scratch `~/.cache/gotmp*` incl. `gotmp-w*`
+  worker dirs (the 120s corpse rule), the golangci-lint cache (103M),
+  npm's `_cacache`/`_npx` (260M; the existing `npm-cache` class is
+  NARROWED from the whole `~/.npm` root to `_cacache` — `npm cache
+  clean`'s own target), and the kubebuilder-envtest assets (163M) —
+  regenerable but under the protected `/workspace/.local` package-home
+  tree, allowlisted via an exact-directory root (the protected list
+  itself is untouched).
+- **Three safety gates make those classes reapable without pulling
+  them out from under a live process.** (1) An open-handle scan — one
+  `/proc/*/fd`+`exe`+`cwd` snapshot per sweep: any class (or prefix
+  child) with an open path under it is never a deletion candidate and
+  reports the new `in_use` status with its measured bytes visible; a
+  same-uid fd table that cannot be read fails the whole scan closed.
+  (2) Per-class size floors calibrated to the observed full-set sizes —
+  below the floor a tree is a partial download or debris and reports
+  `not_present` with the floor in the reason. (3) An optional
+  staleness gate on directory classes holds freshly-written (hot)
+  caches whole. The frontend strip renders the new classes and the
+  `in_use` verdict (pinned bytes shown, excluded from the reclaimable
+  total); the REST contract documents the classes and gates.
+
 ## [0.39.0] - 2026-10-19
 
 ### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)
