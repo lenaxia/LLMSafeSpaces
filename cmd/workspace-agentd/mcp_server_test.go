@@ -1100,11 +1100,18 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["trigger_create"]
 		require.True(t, ok, "trigger_create in tools/list")
 		for _, want := range []string{
-			"cron or webhook",                                // source vocabulary
-			"the platform forces this workspace",             // scoping invariant surfaced to the agent
-			"you cannot schedule work into other workspaces", // the explicit cannot
-			"autoDisableAfter",                               // failure-policy field named
-			"trigger_fires",                                  // where failures show up
+			"cron or webhook",                    // source vocabulary
+			"the platform forces this workspace", // default scoping invariant surfaced to the agent
+			// #1729 — the owner-scoped cross-workspace exception: the
+			// param, its rights check (403/404), where the routine
+			// runs, and the create-only rule.
+			"targetWorkspaceId (camelCase)",
+			"owns the target or administers its org",
+			"403 without them, 404 if the target does not exist",
+			"runs IN the target workspace with that workspace's identity",
+			"create-only",
+			"autoDisableAfter", // failure-policy field named
+			"trigger_fires",    // where failures show up
 			// #1415 drift pins — the description once invented a
 			// snake_case field and omitted validation semantics.
 			"workflowId (camelCase!)",   // DTO spelling (snake_case is silently dropped)

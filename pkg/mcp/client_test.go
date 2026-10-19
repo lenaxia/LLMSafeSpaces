@@ -956,3 +956,42 @@ func TestHTTPClient_ListCredentials_APIError(t *testing.T) {
 	_, err := c.ListCredentials(context.Background())
 	require.Error(t, err)
 }
+
+// ===== Task Board wire methods (#1700) =====
+
+// TestHTTPClient_BoardRemoveDependency_ValidatesPathIDs: both path
+// parameters clear the per-ID gate BEFORE any request is issued — a
+// malformed depends_on ("?", "#", "..", whitespace) answers the clean
+// validation error, never a mangled request or a foreign-route 404
+// (the r1 review finding: this was the one path-interpolated ID in the
+// board surface left unvalidated).
+func TestHTTPClient_BoardRemoveDependency_ValidatesPathIDs(t *testing.T) {
+	for _, bad := range []string{"tsk-has space", "tsk-?q", "tsk-#frag", "tsk-../other", ""} {
+		client, ts := newTestHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("no HTTP request may be issued for malformed ids — saw %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		err := client.BoardRemoveDependency(context.Background(), "tsk-cccc3333", bad)
+		require.Error(t, err, "depends_on %q", bad)
+		assert.Contains(t, err.Error(), "depends_on", "the error names the offending field: %v", err)
+		err = client.BoardRemoveDependency(context.Background(), bad, "tsk-dddd4444")
+		require.Error(t, err, "task_id %q", bad)
+		ts.Close()
+	}
+}
+
+// TestHTTPClient_BoardListTasks_EncodesStageFilter: the optional stage
+// filter rides as a query parameter, never a path segment.
+func TestHTTPClient_BoardListTasks_EncodesStageFilter(t *testing.T) {
+	var gotPath, gotQuery string
+	client, ts := newTestHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"tasks":[]}`))
+	}))
+	defer ts.Close()
+
+	_, err := client.BoardListTasks(context.Background(), "prj-aaaa1111", "in_progress")
+	require.NoError(t, err)
+	assert.Equal(t, "/api/v1/me/projects/prj-aaaa1111/tasks", gotPath)
+	assert.Equal(t, "stage=in_progress", gotQuery)
+}
