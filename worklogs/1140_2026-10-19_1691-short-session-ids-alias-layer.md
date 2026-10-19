@@ -152,3 +152,32 @@ full `cmd/workspace-agentd` + `go vet -tags=integration` green;
 corrected (all-six wiring, top-3, integration-in-CI now true; the
 send-404 claim withdrawn; the M2/M3 order inversion now commented in
 CHANGELOG + PR body).
+
+## r2 — review remediation (CHANGES_REQUESTED @ 9d07b0f8)
+
+The r1 verdict's own review confirmed all six r1 fixes line-by-line and
+raised three new validated findings + minor notes; remediated in one
+commit set (`832a586b`):
+
+- **A** — cross-workspace sort hoisted above the top-3 branch (runs
+  for every payload; DB order no longer load-bearing); ≤3 stale-first
+  fixture pinned. Vestigial `own` removed.
+- **B** — `DegradedLookup` flag on the alias-error passthrough; the
+  middleware 503s seam-invalid refs under the flag (no ghost-row mint,
+  no false 404); charset gate shared as `shortid.IsSeamIDForm`
+  (middleware + agentd, local pattern copy dropped). Router pins both
+  ways.
+- **C** — alias ORDER BY anchored in the sqlmock expectation
+  (deleting it now fails the pin) + real-Postgres newest-first pin.
+- Minor — `sessionref.MaxSuggestions` imported (no local mirror),
+  `sessionindex.LastActiveOf` exported (duplicate deleted), CHANGELOG
+  records the two tracked follow-ups (agentpush push-on-mint; send
+  surface's deliberate bare-502 exception per the #1340 covenant).
+
+Verification at `832a586b`: full `./api/... ./pkg/...` sweep (no
+FAILs), full `cmd/workspace-agentd` suite green (~337s), `go vet
+-tags=integration` clean, golangci 0 issues on all touched packages.
+One infra note: the shared /tmp PVC hit 99% mid-round (test-binary
+copy ENOSPC — other lanes' build temp); cleaning MY caches (gocache,
+logs, stale testbins) freed 2.6G and unblocked; other lanes' dirs
+untouched.
