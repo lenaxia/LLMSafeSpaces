@@ -194,3 +194,20 @@ own caches — rerun green), `api/internal/server` ok, `sdks/go` ok,
 python 139 passed, `sdks/typescript` 88 passed, frontend
 Sidebar.archived + ChatPage.archived 9 passed (with the new opt-in
 assertions).
+
+## PR #1743 (v2 recovery) — the API_PREFIX mock miss
+
+The orchestrator's close-and-reopen recovery (#1739 → #1743, full
+lineage cherry-picked onto current main) re-ran CI, and the fresh run
+exposed a miss in the e2e mock migration: the first sweep only patched
+`${API}`-prefixed route registrations; six specs route the same
+sessions list via `API_PREFIX = "**/api/v1"` and kept the bare-path
+pattern — the opted-in `?include_archived=true` fetch bypassed them,
+failing 8 specs (input-requests ×2, sidebar-hierarchy ×4,
+sidebar-kebab-viewport ×2; the earlier "full local suite green" claim
+was made against a stale local file set — this run reproduced the
+failures exactly). All 7 remaining registrations gained the `?*`
+suffix; the six specs (25 tests) and then the FULL playwright run went
+green locally: 207 passed, 13 skipped, 0 failed. Committed as
+`test(frontend): #1735 — patch the remaining e2e sessions mocks
+(API_PREFIX family)` on the v2 branch.
