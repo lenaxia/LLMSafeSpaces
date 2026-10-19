@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // #1744 safety: never delete anything with an open file handle. The
@@ -73,7 +74,7 @@ func scanOpenHandles() openHandles {
 		}
 		procDir := filepath.Join("/proc", d.Name())
 		own := pidOwnedBy(procDir, uid)
-		fds, ferr := os.ReadDir(filepath.Join(procDir, "fd"))
+		fds, ferr := readFDTableWithRetry(filepath.Join(procDir, "fd"))
 		if ferr != nil {
 			switch {
 			case errors.Is(ferr, fs.ErrNotExist):
@@ -91,6 +92,28 @@ func scanOpenHandles() openHandles {
 		collectLinkTarget(oh.paths, filepath.Join(procDir, "cwd"))
 	}
 	return oh
+}
+
+// fdReadRetryDelay spaces the retry attempts on a permission-denied
+// same-uid fd table. A same-uid pid caught MID-EXECVE transiently
+// denies /proc reads (the kernel marks the task non-dumpable for the
+// microseconds a new image/credentials install is in flight) —
+// reproduced on the pod with continuous /bin/true churn: hundreds of
+// EACCES hits, each self-resolving. A PERSISTENT denial (hidepid
+// mount, a dumpable=0 helper) is a genuine blind spot and still fails
+// the scan closed after the retries.
+var fdReadRetryDelay = 10 * time.Millisecond
+
+// readFDTableWithRetry reads a pid's fd table, retrying once on a
+// permission denial (the mid-execve transient above). Every other
+// error (including vanished pids) returns immediately.
+func readFDTableWithRetry(dir string) ([]fs.DirEntry, error) {
+	fds, err := os.ReadDir(dir)
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return fds, err
+	}
+	time.Sleep(fdReadRetryDelay)
+	return os.ReadDir(dir)
 }
 
 // collectLinkTarget resolves one /proc link into the open-path set.
