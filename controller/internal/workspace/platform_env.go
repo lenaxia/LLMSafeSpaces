@@ -55,6 +55,19 @@ func platformBaseEnv() []corev1.EnvVar {
 		{Name: "CARGO_HOME", Value: "/workspace/.local/share/cargo"},
 		{Name: "GEM_HOME", Value: "/workspace/.local/share/gem"},
 		{Name: "GOPATH", Value: "/workspace/.local/share/go"},
+		// #1758 (the #1744 maintainer addendum): the regenerable Go
+		// build-cache economy moves OFF the PVC. Go's defaults land
+		// GOCACHE in $HOME/.cache/go-build and GOTMPDIR in /tmp — both
+		// PVC subPaths (every writable surface agents get is PVC-backed;
+		// agents cannot self-relocate), which is the 55%→93%-in-minutes
+		// fill incident. Both point at the dedicated disk-backed
+		// build-cache emptyDir (pod_builder: 8Gi SizeLimit, dies with
+		// the pod — correct for caches). GOPATH stays PVC-mounted:
+		// GOMODCACHE re-downloads are network-expensive and durable
+		// across suspend/resume by design; its diskrecovery class
+		// covers pressure sweeps.
+		{Name: "GOCACHE", Value: "/sandbox-cache/go-build"},
+		{Name: "GOTMPDIR", Value: "/sandbox-cache/gotmp"},
 		{Name: "NPM_CONFIG_PREFIX", Value: "/workspace/.local"},
 		{Name: "PYTHONUSERBASE", Value: "/workspace/.local"},
 		{Name: "GIT_CONFIG_COUNT", Value: "1"},

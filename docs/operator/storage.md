@@ -7,6 +7,7 @@ This page covers how LLMSafeSpaces uses storage: the PVC layout mounted into eve
 - [Volume layout at a glance](#volume-layout-at-a-glance)
 - [PVC-backed mounts](#pvc-backed-mounts)
 - [tmpfs emptyDir mounts](#tmpfs-emptydir-mounts)
+- [Disk-backed emptyDir: the build cache (#1758)](#disk-backed-emptydir-the-build-cache-1758)
 - [StorageClass selection](#storageclass-selection)
 - [Sizing](#sizing)
 - [Backup and recovery](#backup-and-recovery)
@@ -18,7 +19,7 @@ This page covers how LLMSafeSpaces uses storage: the PVC layout mounted into eve
 
 ## Volume layout at a glance
 
-Every workspace pod has five volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death). This split is deliberate: it keeps plaintext credentials off the PVC at rest while keeping user data and caches durable.
+Every workspace pod has six volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death), and one is a disk-backed emptyDir for the regenerable build-cache economy (#1758 — also wiped on pod death, by design: caches are correct to lose). This split is deliberate: it keeps plaintext credentials off the PVC at rest, keeps user data durable, and keeps rebuildable caches OFF the PVC entirely.
 
 | Mount | Type | Persists? | Purpose |
 |---|---|---|---|
@@ -27,6 +28,7 @@ Every workspace pod has five volume mounts. Three are PVC-backed (persist across
 | `/tmp` | PVC (`subPath: tmp`) | **Yes** | init scripts, package caches |
 | `/sandbox-cfg` | emptyDir (`Medium: Memory`, 32Mi) | No | `secrets.json`, `workspace-config.json`, bootstrap password |
 | `/sandbox-runtime` | emptyDir (`Medium: Memory`, 96Mi, RW) | No | `agent-config.json`, `secrets-env`, `admin-prompt.md`, symlink targets |
+| `/sandbox-cache/{go-build,gotmp}` | emptyDir (disk, 8Gi `SizeLimit`) | No | `GOCACHE` / `GOTMPDIR` — the regenerable Go build-cache economy (#1758) |
 
 ```mermaid
 graph LR
@@ -65,7 +67,7 @@ Persistent home-directory content that should survive restarts:
 
 ### `/tmp`
 
-Used for init scripts and package caches. Note: `agent-config.json` and `secrets-env` were **moved off `/tmp`** to `/sandbox-runtime` (tmpfs) — both for at-rest data isolation and because the `credential-setup` init container's `/tmp` is read-only (`ReadOnlyRootFilesystem` with no writable emptyDir mounted).
+Used for init scripts and package caches. Note: `agent-config.json` and `secrets-env` were **moved off `/tmp`** to `/sandbox-runtime` (tmpfs) — both for at-rest data isolation and because the `credential-setup` init container's `/tmp` is read-only (`ReadOnlyRootFilesystem` with no writable emptyDir mounted). The Go build cache no longer lands here either: since #1758 `GOCACHE`/`GOTMPDIR` point at the disk-backed `/sandbox-cache` emptyDir (below), so concurrent Go lanes cannot fill the PVC with regenerable build artifacts (~5G/hour observed pre-#1758).
 
 ---
 
@@ -96,6 +98,18 @@ The symlink architecture is key: `$HOME`-relative credential paths are symlinks 
     User-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart because every resync-applied revision is persisted verbatim to the batch file (`/sandbox-cfg/secrets.json`, an emptyDir that survives container restarts and is wiped on pod death); the next boot's materialize re-applies it. The old reload-replay cache (`last-reload-secrets.json`) was demolished.
 
 ---
+
+## Disk-backed emptyDir: the build cache (#1758)
+
+`/sandbox-cache` is a DISK-backed emptyDir (8Gi `SizeLimit`, no `Medium`) holding the two subPath mounts `go-build` and `gotmp`. The pod env points `GOCACHE=/sandbox-cache/go-build` and `GOTMPDIR=/sandbox-cache/gotmp` there, so the entire regenerable Go build-cache economy — previously Go's `$HOME/.cache/go-build` and `/tmp` defaults, both PVC subPaths — dies with the pod instead of accumulating on the PVC (the #1744 evidence: 55%→93% in minutes under five concurrent Go lanes, ~5G/hour regrowth; the PVC is never resized).
+
+The subPath mounts guarantee both directories exist at container start (the `go` tool never creates `GOTMPDIR` itself), and the volume is mounted on every container that runs platform tooling — the main container and the `workspace-setup` init, whose read-only root filesystem would otherwise fail every `go install`.
+
+Notes:
+
+- **GOPATH deliberately stays on the PVC** (`/workspace/.local/share/go`): the module cache is re-downloadable but network-expensive and valuable across suspend/resume; the disk-recovery lever covers it under pressure.
+- **Exceeding 8Gi evicts the pod** (kubelet emptyDir SizeLimit enforcement) — the correct failure mode for a cache that dies with the pod anyway.
+- npm/pip/playwright caches still live under their `$HOME` conventions on the PVC; the disk-recovery allowlist (#1753) remains the sweep for those.
 
 ## StorageClass selection
 

@@ -46,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `in_use` verdict (pinned bytes shown, excluded from the reclaimable
   total); the REST contract documents the classes and gates.
 
+## [Unreleased]
+
+### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
+
+- **Workspace pods now carry a dedicated disk-backed emptyDir for the
+  regenerable Go caches.** `GOCACHE=/sandbox-cache/go-build` and
+  `GOTMPDIR=/sandbox-cache/gotmp` are injected with the platform env
+  block, and an 8Gi `SizeLimit` emptyDir (no `Medium` — capacity, not
+  RAM) backs both paths via subPath mounts on every container that runs
+  platform tooling (the main container and the `workspace-setup` init,
+  whose read-only root filesystem would otherwise fail `go install`).
+  Pre-#1758, Go's defaults landed the build cache in
+  `$HOME/.cache/go-build` and build temp in `/tmp` — both subPaths of
+  the workspace PVC, which is never resized — producing the #1744
+  incident economy (55%→93% in minutes under five concurrent Go lanes,
+  ~5G/hour regrowth; caches dying with the pod is the correct
+  lifecycle). `GOPATH` deliberately stays PVC-mounted: the module cache
+  is network-expensive to rebuild and valuable across suspend/resume
+  (the disk-recovery lever sweeps it under pressure). Storage docs
+  updated with the sixth volume and its trade-offs.
+
 ## [0.39.0] - 2026-10-19
 
 ### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)

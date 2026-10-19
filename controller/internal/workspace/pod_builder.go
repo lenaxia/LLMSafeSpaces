@@ -219,6 +219,13 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "workspace", MountPath: "/tmp", SubPath: "tmp"},
 			{Name: "workspace", MountPath: "/home/sandbox", SubPath: "home"},
+			// #1758: the regenerable Go cache economy. Disk-backed
+			// emptyDir (see the volume below) — GOCACHE/GOTMPDIR point
+			// here via platformBaseEnv. SubPath mounts so both dirs
+			// EXIST at container start: the go tool MkdirTemps INSIDE
+			// GOTMPDIR (parent must exist) and never creates it.
+			{Name: "build-cache", MountPath: "/sandbox-cache/go-build", SubPath: "go-build"},
+			{Name: "build-cache", MountPath: "/sandbox-cache/gotmp", SubPath: "gotmp"},
 		},
 		Resources: requirements,
 	}
@@ -241,12 +248,24 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			SizeLimit: ptrQuantity("32Mi"),
 		}}},
 		// US-35.7: sandbox-runtime is RW tmpfs for credential OUTPUT files.
-		// agent-config.json, secrets-env, and symlink targets for SSH/git/secrets/auth.json
+		// agentd-config.json, secrets-env, and symlink targets for SSH/git/secrets/auth.json
 		// live here. Wiped on pod death regardless of how it dies (SIGTERM, SIGKILL,
 		// eviction) — no plaintext credential bytes persist on the PVC at rest.
 		{Name: "sandbox-runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
 			Medium:    corev1.StorageMediumMemory,
 			SizeLimit: ptrQuantity("96Mi"),
+		}}},
+		// #1758 (the #1744 maintainer addendum): the regenerable Go
+		// cache economy. DISK-backed (no Medium) on purpose — build
+		// caches need capacity, not RAM; the credential tmpfs volumes
+		// above are the opposite trade. 8Gi SizeLimit bounds it per
+		// pod; exceeding it evicts the pod, which is the correct
+		// failure mode for a cache that dies with the pod anyway
+		// (GOCACHE=/sandbox-cache/go-build, GOTMPDIR=/sandbox-cache/
+		// gotmp via platformBaseEnv). This is what stops the
+		// 55%→93%-in-minutes PVC fill under concurrent Go lanes.
+		{Name: "build-cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: ptrQuantity("8Gi"),
 		}}},
 	}
 
@@ -740,6 +759,12 @@ func buildWorkspaceSetupInit(workspace *v1.Workspace, runtimeImage string) corev
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "workspace", MountPath: "/workspace", SubPath: "workspace"},
 			{Name: "workspace", MountPath: "/tmp", SubPath: "tmp"},
+			// #1758: the init's package installs (go install et al)
+			// hit GOCACHE too, and this container's root filesystem is
+			// READ-ONLY — without the mount the tool cannot create the
+			// cache dir and every Go package install fails.
+			{Name: "build-cache", MountPath: "/sandbox-cache/go-build", SubPath: "go-build"},
+			{Name: "build-cache", MountPath: "/sandbox-cache/gotmp", SubPath: "gotmp"},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			ReadOnlyRootFilesystem:   &trueVal,
