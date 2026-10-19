@@ -97,6 +97,23 @@ The symlink architecture is key: `$HOME`-relative credential paths are symlinks 
 
 ---
 
+## Platform-delivered volumes (agentd / opencode overlays)
+
+Besides the five mounts above, every workspace pod carries read-only
+**image volumes** delivering platform binaries on platform cadence:
+`/agentd` (always, #863) and `/opencode` (design 0053 §4.2) — digest-
+pinned, never PVC-backed, wiped with the pod. They are invisible to user
+data sizing and are NOT part of the storage layout's persistence
+contract. Their upgrade behavior is a POLICY, not a side effect: under
+the default `agentdDelivery.updatePolicy: OnRefresh` (#1746) a digest
+bump never rolls running pods — the desired digest is recorded on the
+Workspace status (`agentdPendingDigest`) and applies at the next natural
+pod recreation. See [agentd-delivery.md](agentd-delivery.md) for the
+policy matrix, the `forceRoll` escape hatch, and the N-1 seam-compat
+discipline.
+
+---
+
 ## StorageClass selection
 
 ### How the StorageClass is chosen

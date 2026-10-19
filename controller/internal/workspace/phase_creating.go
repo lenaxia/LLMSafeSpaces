@@ -140,6 +140,9 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		}
 		workspace.Status.PodName = pod.Name
 		workspace.Status.PodNamespace = pod.Namespace
+		// #1746: the build applied the currently desired agentd digest —
+		// stamp effective/pending before the status write below lands.
+		r.recordAgentdDigestOnBuild(workspace, pod)
 		if err := r.Status().Update(ctx, workspace); err != nil {
 			recordStatusUpdateConflictOnError("handleCreating_pod_built", err)
 			return ctrl.Result{}, err
