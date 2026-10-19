@@ -751,6 +751,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/SessionResolutionUnavailable"
   /workspaces/{id}/alerts:
     get:
       tags: [sessions]
@@ -855,6 +857,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/SessionResolutionUnavailable"
   # --- Sessions (agent adapter surface) ---
   /workspaces/{id}/sessions/{sessionId}/message:
     post:
@@ -1142,7 +1146,11 @@ paths:
         "502":
           description: The agent adapter failed to load the session
         "503":
-          description: Workspace is not active (suspended or transitioning)
+          description: >
+            Workspace is not active (suspended or transitioning), OR
+            session reference resolution is temporarily unavailable
+            (design 0066: an unresolvable title/slug-form reference
+            during a transient store error — retry; no suggestions).
         "429":
           description: Per-workspace connection limit reached (Retry-After header set)
     delete:
@@ -9030,6 +9038,18 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SessionResolutionUnavailable:
+      description: |
+        Session reference resolution is temporarily unavailable
+        (transient store error). Design 0066 (#1691): returned when a
+        title/slug-form session reference cannot be resolved because
+        the lookup failed AND the reference could never be a harness
+        session id — an honest availability answer (no suggestions,
+        no false not-found). Retry.
       content:
         application/json:
           schema:

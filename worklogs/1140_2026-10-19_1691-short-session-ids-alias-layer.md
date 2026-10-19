@@ -181,3 +181,24 @@ One infra note: the shared /tmp PVC hit 99% mid-round (test-binary
 copy ENOSPC — other lanes' build temp); cleaning MY caches (gocache,
 logs, stale testbins) freed 2.6G and unblocked; other lanes' dirs
 untouched.
+
+## r3 — documentation-accuracy remediation (CHANGES_REQUESTED @ 09ffbde7)
+
+The r2 verdict mutation-verified the code remediation complete (A/B/C
+each proven red/green by direct mutation) and blocked on the release
+facing record alone. One commit set:
+
+- CHANGELOG: the degrade sentence now states the r2 SHAPE-dependent
+  semantics (charset-valid refs pass through; seam-invalid refs answer
+  the new 503) and the 503 response class is documented.
+- OpenAPI: a reusable `SessionResolutionUnavailable` 503 response,
+  referenced on the title/archived operations and folded into the
+  GET-session 503 description (which already documented the
+  workspace-inactive 503).
+- PR body: head pin refreshed, the resolution paragraph's passthrough
+  claim corrected, and the "archived 404" claim reworded to what the
+  code does (the route's alias-miss/unindexed 404s carry suggestions;
+  the archived READ gate stays the typed 409 session_archived) — with
+  a companion pin for the /archived alias-miss 404.
+- The skeptical pass's cheap non-blocking nit landed too: a
+  table-driven `IsSeamIDForm` unit test (the `_`/128-byte edges).

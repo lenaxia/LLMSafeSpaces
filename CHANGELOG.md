@@ -169,8 +169,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Workspace-scoped first; only when nothing scores and the requester
   is known does one bounded exact-match query cover their OTHER
   authorized workspaces. Ambiguity is never auto-resolved;
-  authz/transport/5xx never suggest (a DB error degrades to
-  passthrough, never a 404). The #1340 session-not-found error
+  authz/transport/5xx never suggest. On a transient alias-lookup DB
+  error, resolution degrades by shape: seam-charset-valid refs pass
+  through unchanged (never a false 404), while refs the seam could
+  never accept as ids answer a new honest-availability **503**
+  ("session resolution temporarily unavailable") on the id-taking
+  routes — no suggestions, and no write ever sees title text as a
+  session id (no ghost-row mint). The #1340 session-not-found error
   mapping stays scoped to the session-READ routes exactly as its
   covenant documents.
 - **The agentd replica + control plane**: `/sandbox-runtime/

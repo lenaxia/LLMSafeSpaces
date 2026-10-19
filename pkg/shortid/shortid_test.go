@@ -127,3 +127,27 @@ func TestIsIDForm(t *testing.T) {
 		t.Error("alias-shaped refs must not be id-form")
 	}
 }
+
+func TestIsSeamIDForm_Table(t *testing.T) {
+	// The degraded-lookup write guard's charset contract (review r2:
+	// a tightening on '_' or the 128-byte boundary would otherwise
+	// pass every suite while silently shifting which refs 503).
+	yes := []string{
+		"ses-two", "ses_ed9183a46ffeRiNw2PddpL5dAA", "oc-ab12cd34",
+		"a", strings.Repeat("a", 128), "a-b_c9",
+	}
+	no := []string{
+		"", "has space", "swift heron follow-ups", "dot.id", "col:on",
+		"slash/id", "trailing ", " leading", strings.Repeat("a", 129),
+	}
+	for _, s := range yes {
+		if !IsSeamIDForm(s) {
+			t.Errorf("IsSeamIDForm(%q) = false; want true", s)
+		}
+	}
+	for _, s := range no {
+		if IsSeamIDForm(s) {
+			t.Errorf("IsSeamIDForm(%q) = true; want false", s)
+		}
+	}
+}

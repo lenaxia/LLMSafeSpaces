@@ -304,3 +304,27 @@ func TestSessionRef_DegradedAliasLookup_CharsetValidRefStillPassesThrough(t *tes
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	ws.AssertExpectations(t)
 }
+
+// Pins the /archived route's suggestions-bearing 404s (r3 docs fix's
+// companion): the middleware's alias-miss 404 (this test) and the
+// service's unindexed-session 404 — the archived READ gate itself is
+// the typed 409 session_archived with no suggestions, as documented.
+func TestArchivedRoute_AliasMissCarriesSuggestions(t *testing.T) {
+	router, _, db := newRouterFixtureWithDB(t)
+
+	db.On("FindSessionsByAlias", mock.Anything, "ws-1", "sunny-wolf").Return(nil, nil).Once()
+	db.On("ListSessionIndex", mock.Anything, "ws-1").Return([]types.SessionListItem{
+		{ID: refLiveID, ShortID: refShortID, Title: "Sunny Wolf — #1729 lane"},
+	}, nil).Once()
+	db.On("ListWorkspaceIDsByOwner", mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+
+	body := `{"archived":true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/workspaces/ws-1/sessions/sunny-wolf/archived", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"suggestions"`, "the archived route's alias-miss 404 carries the payload")
+}
