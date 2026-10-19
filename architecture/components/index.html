@@ -2696,6 +2696,7 @@
 <li><strong>Workspace reconciliation.</strong> The state machine: <code>Pending → Creating → Active → Suspending → Suspended → Resuming → Active</code>, plus <code>Terminating</code>/<code>Terminated</code>/<code>Failed</code> branches. See <a href="../lifecycle/">lifecycle</a>. Each phase is a separate handler (<code>phase_pending.go</code>, <code>phase_creating.go</code>, <code>phase_active.go</code>, <code>phase_suspend.go</code>, <code>phase_terminating.go</code>).</li>
 <li><strong>Pod, PVC, Secret, and NetworkPolicy creation.</strong> The reconciler builds the pod spec (init containers + main + agentd sidecar), creates the PVC owner-referenced to the Workspace, generates the workspace password Secret, and renders the per-workspace egress NetworkPolicy.</li>
 <li><strong>Health monitoring.</strong> Polls <code>workspace-agentd</code>'s <code>/v1/healthz</code> + <code>/v1/statusz</code>; three consecutive failures kill the pod and the recovery policy decides whether to recreate it. Enriches CRD status with disk/memory/CPU/session metrics scraped from agentd.</li>
+<li><strong>agentd update policy (#1746).</strong> The agentd overlay digest enters the pod spec only at build time. On a digest bump (platform upgrade), the controller resolves <code>agentdDelivery.updatePolicy</code> (spec → <code>--agentd-update-policy</code> → <code>OnRefresh</code>): <code>OnRefresh</code> never touches running pods — it records the drift on status (<code>agentdPendingDigest</code>, surfaced by the API as "applies on next refresh") and the digest lands at the next natural recreation (compute refresh, suspend/resume, other); <code>Rolling</code> rolls pods on drift through the #761 session drain; <code>agentdDelivery.forceRoll</code> rolls immediately, drain bypassed (operator-declared consent for security-critical fixes).</li>
 <li><strong>Auto-suspend.</strong> Watches <code>lastActivityAt</code>; if idle beyond <code>idleTimeoutSeconds</code> (default 86400s), transitions <code>Active → Suspending</code>. The final pre-suspend check reads the freshest activity to avoid racing an arriving request.</li>
 <li><strong>Org-level suspension (D20).</strong> When <code>OrgStatusClient</code> is wired, polls the API every 30s; if the workspace's org is suspended, transitions to <code>Suspending</code> (pod killed, PVC retained).</li>
 <li><strong>Recovery.</strong> Classifies failures (infrastructure / resource / process / configuration), applies exponential backoff, and enters "safe mode" after repeated same-class failures. See the recovery policy section in <a href="../lifecycle/">lifecycle</a>.</li>
@@ -2805,6 +2806,10 @@
 <td><code>agentd</code> admin port <code>:4098</code> for health/status/metrics. Three-strike failure → pod kill.</td>
 </tr>
 <tr>
+<td>agentd ↔ API (worker tools)</td>
+<td>Versioned HTTP routes <code>/internal/v1/automation/board/*</code> (<code>board_heartbeat</code>, <code>board_report_throttle</code>, <code>board_move_stage</code>, <code>board_read</code>) with the pod SA token. Under <code>updatePolicy: OnRefresh</code> a platform upgrade leaves running pods on agentd N-1 against API N until their next recreation, so the wire form is FROZEN per agentd release (<code>pkg/board/worker_compat.go</code>) and pinned from both sides — the frozen sets replay against the current API, and the live client must emit exactly the newest set. A breaking change is a new frozen set or a <code>/internal/v2</code> route, never a v1 mutation.</td>
+</tr>
+<tr>
 <td>API ↔ PostgreSQL</td>
 <td><code>pgx</code> parameterized queries (SQL injection mitigated).</td>
 </tr>
@@ -2837,7 +2842,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 19, 2026 17:09:17 UTC"><span class="timeago" datetime="2026-10-19T17:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 19, 2026 17:09:17 UTC">2026-10-19</span>
   </span>
 
     

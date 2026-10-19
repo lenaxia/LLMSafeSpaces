@@ -1207,6 +1207,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#update-policy-onrefresh-vs-rolling-1746" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update policy: OnRefresh vs Rolling (#1746)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update policy: OnRefresh vs Rolling (#1746)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drift-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drift visibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#n-1-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N-1 compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#behavior-on-verification-failure" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2274,6 +2313,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#update-policy-onrefresh-vs-rolling-1746" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update policy: OnRefresh vs Rolling (#1746)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update policy: OnRefresh vs Rolling (#1746)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drift-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drift visibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#n-1-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N-1 compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#behavior-on-verification-failure" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2428,7 +2506,87 @@ agentd the next time their pod is recreated.</p>
 meantime verify against their own pod-spec pins, so a mixed-version fleet
 is safe — each pod's supervisor only ever trusts its own immutable spec.</p>
 <p>To force a single workspace onto the new agentd immediately: suspend and
-resume it (or bump <code>spec.restartGeneration</code>).</p>
+resume it (or bump <code>spec.restartGeneration</code>) — or see <code>forceRoll</code> below.</p>
+<h2 id="update-policy-onrefresh-vs-rolling-1746">Update policy: <code>OnRefresh</code> vs <code>Rolling</code> (#1746)<a class="headerlink" href="#update-policy-onrefresh-vs-rolling-1746" title="Permanent link">&para;</a></h2>
+<p><strong>Ruling (2026-10-19): a platform upgrade must not roll workspace pods.
+The user owns when their sessions are interrupted.</strong> Whether a desired
+digest change applies to a RUNNING pod is a policy, resolved per
+workspace as:</p>
+<ol>
+<li><code>spec.agentdDelivery.updatePolicy</code> on the Workspace (operator-set via
+   kubectl, like <code>spec.runtimeClass</code>; the user API does not expose it),</li>
+<li>else the instance default <code>controller.agentdDelivery.updatePolicy</code>
+   (Helm) → <code>--agentd-update-policy</code>,</li>
+<li>else <strong><code>OnRefresh</code></strong> — the product posture.</li>
+</ol>
+<p><code>updatePolicy</code> carries NO CRD default on purpose: an <code>agentdDelivery</code>
+object written WITHOUT it — e.g. the <code>forceRoll</code>-only patch below —
+keeps inheriting the instance default. A schema default would silently
+stamp <code>OnRefresh</code> on that partial write and pin the workspace away from
+an instance-wide <code>Rolling</code> forever (r2 review finding; pinned by
+<code>agentd_delivery_crd_semantics_test.go</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Digest bump on a running pod</th>
+<th>Sessions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OnRefresh</code> (default)</td>
+<td><strong>No touch.</strong> Desired digest recorded on status (<code>agentdPendingDigest</code>); applies at the next natural pod recreation — compute refresh (<code>restartGeneration</code> bump), suspend/resume, or any controller-initiated recreation.</td>
+<td>Never interrupted by the platform.</td>
+</tr>
+<tr>
+<td><code>Rolling</code></td>
+<td>Pod recreated on digest drift, <strong>drain-aware</strong> (#761): deferred behind busy sessions until idle or stalled (60m progress bound).</td>
+<td>Polite: one workspace at a time, waits for in-flight turns.</td>
+</tr>
+<tr>
+<td><code>agentdDelivery.forceRoll: true</code> (any policy)</td>
+<td><strong>Immediate</strong> roll on drift; the session drain is BYPASSED — in-flight turns are cut. The security-critical escape hatch (e.g. a compromised agentd binary). Level-triggered: no drift = no-op. <strong>Clear it after use</strong> — a stale <code>true</code> also cuts sessions on the NEXT digest bump.</td>
+<td>Cut immediately; the operator setting it declares that consent.</td>
+</tr>
+</tbody>
+</table>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Instance-wide pin (helm values) — only needed to pin Rolling:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">controller</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">agentdDelivery</span><span class="p">:</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">updatePolicy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Rolling</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># Per-workspace override / escape hatch (kubectl patch):</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="l l-Scalar l-Scalar-Plain">kubectl patch workspace my-ws --type=merge -p \</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">'{"spec":{"agentdDelivery":{"updatePolicy":"Rolling"}}}'</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="l l-Scalar l-Scalar-Plain">kubectl patch workspace my-ws --type=merge -p \</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">'{"spec":{"agentdDelivery":{"forceRoll":true}}}'</span>
+</span></code></pre></div>
+<h3 id="drift-visibility">Drift visibility<a class="headerlink" href="#drift-visibility" title="Permanent link">&para;</a></h3>
+<p>The Workspace status carries two fields (also surfaced by the API's
+<code>GET /workspaces/{id}/status</code> for the dashboard):</p>
+<ul>
+<li><code>status.agentdEffectiveDigest</code> — the digest (<code>sha256:…</code>) the current
+  pod was <strong>built with</strong> (empty in legacy baked-in mode),</li>
+<li><code>status.agentdPendingDigest</code> — the <strong>desired</strong> digest while it differs
+  from effective and no roll has converged yet: "agentd X pending —
+  applies on next refresh". Empty when converged.</li>
+</ul>
+<p>Drift compares the <strong>digest portion only</strong> — a repo/tag re-pin of the
+same digest is not drift, so Renovate tag bumps never churn the fleet.</p>
+<h3 id="n-1-compatibility">N-1 compatibility<a class="headerlink" href="#n-1-compatibility" title="Permanent link">&para;</a></h3>
+<p>Under <code>OnRefresh</code>, a platform upgrade leaves running pods on agentd N-1
+against API N until their next recreation (a suspended workspace can lag
+indefinitely — it rebuilds with the current digest at resume). The
+worker-tool seam (<code>/internal/v1/automation/board/*</code>: <code>board_heartbeat</code>,
+<code>board_report_throttle</code>, <code>board_move_stage</code>, <code>board_read</code>) is therefore
+pinned as a <strong>tested skew matrix</strong>, not an assumption: the wire form of
+every still-supported agentd release is frozen in
+<code>pkg/board/worker_compat.go</code>, replayed against the current API
+(<code>api/internal/handlers/board_worker_compat_1746_test.go</code>) and matched
+by the live client (<code>pkg/agent/opencode/loopback_board_wire_1746_test.go</code>).
+A wire-form change must land as a NEW frozen set (or a <code>/internal/v2</code>
+route) — never a silent mutation of v1.</p>
 <h2 id="behavior-on-verification-failure">Behavior on verification failure<a class="headerlink" href="#behavior-on-verification-failure" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2518,7 +2676,7 @@ built until measured — see #863).</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 17, 2026 16:18:20 UTC"><span class="timeago" datetime="2026-09-17T16:18:20+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 17, 2026 16:18:20 UTC">2026-09-17</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 19, 2026 18:18:50 UTC"><span class="timeago" datetime="2026-10-19T18:18:50+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 19, 2026 18:18:50 UTC">2026-10-19</span>
   </span>
 
     
