@@ -61,4 +61,9 @@ func TestCIProcProbe(t *testing.T) {
 	} else {
 		t.Logf("yama ptrace_scope unreadable: %v", err)
 	}
+	// The probe FAILS when it found offenders so CI prints the logs
+	// above (go test only shows output for failing tests without -v).
+	if unreadable > 0 {
+		t.Fatalf("probe found %d unreadable same-uid table(s) — see logs", unreadable)
+	}
 }
