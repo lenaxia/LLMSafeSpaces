@@ -994,12 +994,18 @@ type BoardEpicBody struct {
 	RequestID string   `json:"requestId,omitempty"`
 }
 
-// BoardTaskBody mirrors the REST boardTaskRequest.
+// BoardTaskBody mirrors the REST boardTaskRequest. Tags is
+// presence-aware (r2): the REST binding turns `"tags":[]` into a
+// non-nil empty slice the engine reads as replace-with-clear, so the
+// MCP tier must carry the distinction too — nil keeps existing tags,
+// a pointer to an empty slice clears them. (Projects/epics differ:
+// the engine writes tags unconditionally there, so absence clears —
+// REST-identical either way.)
 type BoardTaskBody struct {
 	Title              string           `json:"title,omitempty"`
 	Description        string           `json:"description,omitempty"`
 	Priority           string           `json:"priority,omitempty"`
-	Tags               []string         `json:"tags,omitempty"`
+	Tags               *[]string        `json:"tags,omitempty"`
 	AcceptanceCriteria []BoardCriterion `json:"acceptanceCriteria,omitempty"`
 	SetCriteriaMet     *int             `json:"setCriteriaMet,omitempty"`
 	RequestID          string           `json:"requestId,omitempty"`

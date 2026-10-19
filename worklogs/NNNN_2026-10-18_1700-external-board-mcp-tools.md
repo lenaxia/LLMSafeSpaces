@@ -163,6 +163,44 @@ Advisory (not taken, recorded): `intArg` silently coerces wrong-typed
 numerics to absent — the pre-existing `strArg` helper pattern; noted by
 the reviewer as advisory-only.
 
+## Round 2 remediation (CHANGES_REQUESTED on PR #1741, reviewer-pre-specified)
+
+The v2 verdict (head `72b2d872`) blocked on three validated findings;
+remediated in ONE commit set on `feat/1700-external-board-tools-v2`
+(the v1 branch #1737 died of repeated synchronize event-loss — the
+orchestrator's close-and-reopen recovery cherry-picked the full lineage
+onto v2 over main-with-#1736; the parity-harness union preserved both
+lanes' pins, verified locally before this round):
+
+1. **Task tags-clear fidelity** (the real bug): `BoardTaskBody.Tags`
+   became presence-aware (`*[]string` + `stringSlicePtrArg`) so an
+   explicit `tags: []` survives to the wire ("tags":[] — the engine
+   clears) while omission stays nil (keep) — the exact distinction the
+   REST binding carries and r1's `stringSliceArg` collapsed. Pinned at
+   three tiers: `TestBoardTools_TaskTagsClear` (mock), 
+   `TestBoardTools_TaskTagsClearWire` (JSON serialization), and the
+   descriptions now state the per-kind truth (task: omitted keeps / []
+   clears; project/epic: written unconditionally, omitted CLEARS —
+   pre-existing engine behavior, REST-identical, now honestly
+   documented in tool + docs rows instead of the overpromising
+   "omitted fields keep existing values").
+2. **`board_move_stage` vocabulary**: split the shared six-stage enum —
+   `boardMoveTargets` (the stage machine's legal manager targets:
+   in_progress, in_review, done, pending_input, backlog) for the move
+   schema+validation vs `boardStages` (ruling R2's full six) for
+   `board_read`'s filter. `cancelled` is no longer advertised as a
+   move target (permanently-illegal per stage.go's map — cancel is its
+   own tool), and the description no longer implies a claim-only
+   backlog→in_progress manager write. Single-sourced (the stage const +
+   set builders; the r2 advisory about four-way duplication addressed).
+   Pinned by `TestBoardTools_AdapterStageValidation` (both tools' valid
+   + invalid branches, incl. the cancelled rejection).
+3. **Worklog pointer**: board_parity_test.go's header comment now names
+   this PR's own worklog file (NNNN_ sentinel) — "1135" belonged to
+   #1701's lane.
+4. Missing pins landed: `board_cancel` on `prj-` refusal
+   (`TestBoardTools_CancelProjectRefused`).
+
 ## Coordination notes
 
 - No `pkg/board` edits (ListEpics/search/health engine follow-ups stay

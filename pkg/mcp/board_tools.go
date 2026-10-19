@@ -39,8 +39,30 @@ import (
 
 // --- Tool definitions ---
 
+// --- Stage vocabularies (single source, r2) ---
+//
+// boardStageCancelled is the design-verbatim stage literal (ruling R2's
+// binding set; the DB CHECK depends on it) — composed so misspell's
+// fixer never rewrites it.
+const boardStageCancelled = "cancel" + "led" //nolint:misspell // design-verbatim stage value
+
+// boardStages is ruling R2's full six-stage binding set — the READ
+// filter's vocabulary (board_read's stage parameter; every stage is
+// listable, terminal ones included).
 var boardStages = []string{
-	"backlog", "in_progress", "in_review", "done", "pending_input", "cancel" + "led", //nolint:misspell // design-verbatim stage value
+	"backlog", "in_progress", "in_review", "done", "pending_input", boardStageCancelled,
+}
+
+// boardMoveTargets is the stage machine's legal manager move_stage
+// TARGET set (pkg/board stage.go's enumerated map, manager-surface
+// column): in_progress→{in_review, done, pending_input},
+// in_review→{in_progress, done, pending_input}, and the pending_input
+// human exits →{in_progress, backlog}. The boardStageCancelled terminal is NOT a move target
+// (cancel is its own terminal tool), and entering the pipeline FROM
+// backlog is claim-only (task_start/dispatch — no manager write
+// exists), so the schema must not advertise it.
+var boardMoveTargets = []string{
+	"in_progress", "in_review", "done", "pending_input", "backlog",
 }
 
 var boardPriorities = []string{"P0", "P1", "P2", "P3"}
@@ -76,7 +98,7 @@ var boardCreateProjectTool = mcp.NewTool("board_create_project",
 	mcp.WithString("target_workspace_id", mcp.Required(),
 		mcp.Description("The single target workspace (ruling R8 — parallel work = sibling projects)")),
 	mcp.WithInteger("worker_slots", mcp.Description("Max concurrent in-flight claims (default 2)")),
-	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (replace on update)")),
+	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (on update, omission CLEARS — send the full set to keep)")),
 	mcp.WithString("request_id",
 		mcp.Description("Idempotency key: reuse ONE id per logical operation across retries (clientMessageID discipline)")),
 )
@@ -102,7 +124,7 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
 	mcp.WithString("description", mcp.Description("Markdown; seeds the fresh worker's charter (R9)")),
 	mcp.WithString("priority", mcp.Enum(boardPriorities...), mcp.Description("P0-P3, default P2")),
-	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor)")),
+	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor; the full set — project/epic updates rewrite tags wholesale)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
 			"type": "object",
@@ -118,10 +140,12 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 
 var boardUpdateItemTool = mcp.NewTool("board_update_item",
 	mcp.WithDescription("Patch a board item by short id; only fields applying to the addressed kind are "+
-		"accepted (a field for another kind is an error, not a silent drop). Omitted fields keep existing "+
-		"values; tags and acceptance criteria REPLACE when present. set_criteria_met checks off the "+
-		"criterion at the 0-based index (the reviewer's Done preparation). The assignee is engine-set, "+
-		"never a patch field."),
+		"accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep "+
+		"existing values. TAGS semantics differ by kind (engine rules, REST-identical): on a task, omitted "+
+		"tags KEEP the existing set and an explicit [] CLEARS it; on a project or epic, tags are written "+
+		"unconditionally — OMITTING THEM CLEARS the set (send the full set to keep it). Acceptance criteria "+
+		"REPLACE when present. set_criteria_met checks off the criterion at the 0-based index (the "+
+		"reviewer's Done preparation). The assignee is engine-set, never a patch field."),
 	mcp.WithString("item_id", mcp.Required(),
 		mcp.Description("Short id: prj-XXXXXXXX (name/target_workspace_id/worker_slots/tags), "+
 			"epc-XXXXXXXX (title/outcome/priority/tags), tsk-XXXXXXXX (title/description/priority/tags/"+
@@ -133,7 +157,7 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 	mcp.WithString("outcome", mcp.Description("Epic outcome (epc- only)")),
 	mcp.WithString("description", mcp.Description("Task description markdown (tsk- only)")),
 	mcp.WithString("priority", mcp.Enum(boardPriorities...), mcp.Description("Epic/task priority (epc-/tsk- only)")),
-	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (all kinds; REPLACE when present)")),
+	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("tsk-: omitted keeps, [] clears; prj-/epc-: written unconditionally — omitted CLEARS (send the full set to keep)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
 			"type": "object",
@@ -151,11 +175,13 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 
 var boardMoveStageTool = mcp.NewTool("board_move_stage",
 	mcp.WithDescription("Move a task to another stage (server-arbitrated; a drag that loses a race "+
-		"returns the authoritative guard error). Forward: backlog→in_progress→in_review→done; the one "+
-		"backward move is in_review→in_progress. done requires ALL acceptance criteria met + evidence_url "+
-		"(ruling R2). The pending_input exit is a manager decision — allowed here by the owner."),
+		"returns the authoritative guard error). Legal manager moves: in_progress→{in_review, done, pending_input}, "+
+		"in_review→{in_progress (the review bounce), done, pending_input}, and the pending_input human exits "+
+		"→{in_progress, backlog}. Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
+		"write exists); the terminal stage is reached via board_cancel, never a stage move. done requires ALL acceptance "+
+		"criteria met + evidence_url (ruling R2)."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
-	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardStages...), mcp.Description("Target stage")),
+	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...), mcp.Description("Target stage")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link for THIS transition (required for done)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
@@ -267,7 +293,7 @@ func (h *handlers) boardRead(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 	stage := strArg(args, "stage")
 	if stage != "" && !boardStageSet()[stage] {
-		return mcp.NewToolResultError("stage must be one of backlog, in_progress, in_review, done, pending_input, cancel" + "led"), nil
+		return mcp.NewToolResultError("stage filter must be one of " + strings.Join(boardStages, ", ")), nil
 	}
 	resp, err := h.client.BoardListTasks(ctx, projectID, stage)
 	if err != nil {
@@ -324,7 +350,7 @@ func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest)
 	}
 	resp, err := h.client.BoardCreateTask(ctx, epicID, BoardTaskBody{
 		Title: title, Description: strArg(args, "description"), Priority: strArg(args, "priority"),
-		Tags: stringSliceArg(args, "tags"), AcceptanceCriteria: criteria,
+		Tags: stringSlicePtrArg(args, "tags"), AcceptanceCriteria: criteria,
 		RequestID: strArg(args, "request_id"),
 	})
 	if err != nil {
@@ -399,7 +425,7 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 		}
 		resp, err = h.client.BoardUpdateTask(ctx, id, BoardTaskBody{
 			Title: strArg(args, "title"), Description: strArg(args, "description"),
-			Priority: strArg(args, "priority"), Tags: stringSliceArg(args, "tags"),
+			Priority: strArg(args, "priority"), Tags: stringSlicePtrArg(args, "tags"),
 			AcceptanceCriteria: criteria, SetCriteriaMet: intPtrArg(args, "set_criteria_met"),
 			RequestID: requestID,
 		})
@@ -417,8 +443,9 @@ func (h *handlers) boardMoveStage(ctx context.Context, req mcp.CallToolRequest) 
 	if taskID == "" || toStage == "" {
 		return mcp.NewToolResultError("task_id and to_stage are required"), nil
 	}
-	if !boardStageSet()[toStage] {
-		return mcp.NewToolResultError("to_stage must be one of backlog, in_progress, in_review, done, pending_input, cancel" + "led"), nil
+	if !boardMoveTargetSet()[toStage] {
+		return mcp.NewToolResultError("to_stage must be a legal manager move target: " + strings.Join(boardMoveTargets, ", ") +
+			" (" + boardStageCancelled + " is board_cancel's terminal, and entering the pipeline from backlog is claim-only — board_start_task)"), nil
 	}
 	resp, err := h.client.BoardMoveStage(ctx, taskID, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
 	if err != nil {
@@ -512,7 +539,7 @@ func (h *handlers) boardCancel(ctx context.Context, req mcp.CallToolRequest) (*m
 	case "task":
 		resp, err = h.client.BoardCancelTask(ctx, id, reason, requestID)
 	case "project":
-		return mcp.NewToolResultError("projects are not cancel" + "led — archive them (reversible storage); cancel is for epics and tasks"), nil //nolint:misspell // design-verbatim stage term
+		return mcp.NewToolResultError("projects are not " + boardStageCancelled + " — archive them (reversible storage); " + boardStageCancelled + " is for epics and tasks"), nil
 	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to cancel %s %s: %v", kind, id, err)), nil
@@ -564,13 +591,47 @@ func boardItemKind(id string) (string, error) {
 	}
 }
 
-// boardStageSet is the enumerated stage vocabulary (ruling R2's binding
-// set) for the tool-owned stage validation.
+// boardStageSet is ruling R2's six-stage binding set as a set (the
+// board_read filter's vocabulary — built from boardStages, the single
+// source).
 func boardStageSet() map[string]bool {
-	return map[string]bool{
-		"backlog": true, "in_progress": true, "in_review": true,
-		"done": true, "pending_input": true, "cancel" + "led": true, //nolint:misspell // design-verbatim stage value
+	out := make(map[string]bool, len(boardStages))
+	for _, s := range boardStages {
+		out[s] = true
 	}
+	return out
+}
+
+// boardMoveTargetSet is the legal manager move_stage target set (built
+// from boardMoveTargets, the single source).
+func boardMoveTargetSet() map[string]bool {
+	out := make(map[string]bool, len(boardMoveTargets))
+	for _, s := range boardMoveTargets {
+		out[s] = true
+	}
+	return out
+}
+
+// stringSlicePtrArg is the presence-aware slice decoder (r2): a PRESENT
+// key yields a pointer to the (possibly empty) slice, an ABSENT key
+// yields nil. The REST binding carries exactly this distinction for
+// task tags — "tags":[] clears, omission keeps — so the wire must see
+// it too.
+func stringSlicePtrArg(args map[string]any, key string) *[]string {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		s, _ := v.(string)
+		out = append(out, s)
+	}
+	return &out
 }
 
 // intArg pulls an integer argument. JSON decoding yields float64;

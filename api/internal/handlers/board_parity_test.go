@@ -20,7 +20,9 @@ package handlers
 // by construction, asserted per row). Audit stamping happens at the
 // REST tier the tools ride (surface=rest); pkg/board's
 // SurfaceExternalMCP stays reserved for a direct seam if one ever
-// lands (recorded in worklog 1135).
+// lands (recorded in this PR's worklog,
+// worklogs/NNNN_2026-10-18_1700-external-board-mcp-tools.md §2 — the
+// NNNN_ sentinel before the post-merge numbering bot runs).
 //
 // Construction guarantees (the "CI fails on any action lacking full
 // surface coverage" clause): reflection pins EVERY exported method of

@@ -168,7 +168,7 @@ func boardAllowCases() []boardToolCase {
 				"tags": []any{"pr:123"}, "request_id": "req-t1"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{
-					Title: "T1", Description: "do it", Priority: "P0", Tags: []string{"pr:123"}, RequestID: "req-t1",
+					Title: "T1", Description: "do it", Priority: "P0", Tags: strPtr([]string{"pr:123"}), RequestID: "req-t1",
 				}).Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
@@ -494,7 +494,7 @@ func TestBoardTools_OR4AnchorPassthrough(t *testing.T) {
 		{"plain"},
 	} {
 		m := &MockAPIClient{}
-		m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{Title: "T", Tags: tags}).
+		m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{Title: "T", Tags: &tags}).
 			Return(`{"short_id":"tsk-cccc3333","tags":[]}`, nil).Once()
 		h := &handlers{client: m, timeout: 30 * time.Second}
 		args := map[string]any{"epic_id": "epc-bbbb2222", "title": "T", "tags": toAnySlice(tags)}
@@ -592,9 +592,94 @@ func toAnySlice(in []string) []any {
 	return out
 }
 
+func strPtr(s []string) *[]string { return &s }
+
 // fmt__error is a tiny alias so the table cases stay one-lined.
 func fmt__error(s string) error { return &simpleError{s} }
 
 type simpleError struct{ msg string }
 
 func (e *simpleError) Error() string { return e.msg }
+
+// TestBoardTools_TaskTagsClear (r2): the tags-clear fidelity pin — an
+// explicit empty tags array on a TASK update must reach the client as
+// a PRESENT empty slice (wire "tags":[] → the engine clears), while an
+// OMITTED tags key reaches it as nil (keep). This is the exact
+// distinction the REST binding carries and the r1 projection lost.
+func TestBoardTools_TaskTagsClear(t *testing.T) {
+	empty := []string{}
+	m := &MockAPIClient{}
+	m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{Tags: &empty}).
+		Return(`{"short_id":"tsk-cccc3333","tags":[]}`, nil).Once()
+	h := &handlers{client: m, timeout: 30 * time.Second}
+	res, err := callBoardTool(t, h, "board_update_item",
+		map[string]any{"item_id": "tsk-cccc3333", "tags": []any{}})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.IsError, "explicit [] must ride to the wire: %s", boardResultText(res))
+	m.AssertExpectations(t)
+
+	m2 := &MockAPIClient{}
+	m2.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{Title: "x"}).
+		Return(`{"short_id":"tsk-cccc3333"}`, nil).Once()
+	h2 := &handlers{client: m2, timeout: 30 * time.Second}
+	res2, err := callBoardTool(t, h2, "board_update_item",
+		map[string]any{"item_id": "tsk-cccc3333", "title": "x"})
+	require.NoError(t, err)
+	require.NotNil(t, res2)
+	assert.False(t, res2.IsError, boardResultText(res2))
+	m2.AssertExpectations(t) // no Tags pointer: omission keeps
+}
+
+// TestBoardTools_TaskTagsClearWire: the wire carries the distinction —
+// a present-empty tags pointer serializes "tags":[]; nil omits the key.
+func TestBoardTools_TaskTagsClearWire(t *testing.T) {
+	empty := []string{}
+	b, err := json.Marshal(BoardTaskBody{Tags: &empty})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"tags":[]`)
+	b, err = json.Marshal(BoardTaskBody{Title: "x"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), `"tags"`)
+}
+
+// TestBoardTools_AdapterStageValidation (r2): the adapter-owned stage
+// branches — board_read's filter takes the six-stage vocabulary;
+// board_move_stage's target takes the LEGAL manager move-target set
+// (the terminal stage is board_cancel's, not a stage move — the r2
+// finding: the schema must not steer clients into doomed calls).
+func TestBoardTools_AdapterStageValidation(t *testing.T) {
+	readOK := &MockAPIClient{}
+	readOK.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog").Return(`{"tasks":[]}`, nil).Once()
+	h := &handlers{client: readOK, timeout: 30 * time.Second}
+	res, _ := callBoardTool(t, h, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": "backlog"})
+	assert.False(t, res.IsError)
+	m := &MockAPIClient{} // no expectations: validation must precede any call
+	h2 := &handlers{client: m, timeout: 30 * time.Second}
+	res2, _ := callBoardTool(t, h2, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": "wip"})
+	assert.True(t, res2.IsError, "unknown read filter rejected at the tool tier")
+
+	mv := &MockAPIClient{}
+	mv.On("BoardMoveStage", mock.Anything, "tsk-cccc3333", "in_review", "", "").Return(`{}`, nil).Once()
+	h3 := &handlers{client: mv, timeout: 30 * time.Second}
+	res3, _ := callBoardTool(t, h3, "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": "in_review"})
+	assert.False(t, res3.IsError)
+	m2 := &MockAPIClient{}
+	h4 := &handlers{client: m2, timeout: 30 * time.Second}
+	for _, bad := range []string{boardStageCancelled, "not_a_stage"} {
+		res4, _ := callBoardTool(t, h4, "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": bad})
+		assert.True(t, res4.IsError, "to_stage=%s must be rejected (the terminal stage is board_cancel's)", bad)
+	}
+}
+
+// TestBoardTools_CancelProjectRefused (r2): board_cancel on a prj- id
+// explains the archive path — projects have no terminal-stage value (ruling
+// R2's epic/project vocabulary).
+func TestBoardTools_CancelProjectRefused(t *testing.T) {
+	m := &MockAPIClient{} // no expectations: no client call may fire
+	h := &handlers{client: m, timeout: 30 * time.Second}
+	res, _ := callBoardTool(t, h, "board_cancel", map[string]any{"item_id": "prj-aaaa1111"})
+	assert.True(t, res.IsError)
+	text := boardResultText(res)
+	assert.Contains(t, text, "archive", "the refusal points at the archive path")
+}
