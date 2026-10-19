@@ -26,6 +26,7 @@ import { PasskeySettings } from "./components/settings/PasskeySettings";
 import { WorkspaceImagesTab } from "./components/settings/WorkspaceImagesTab";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { TriggersPage } from "./pages/TriggersPage";
+import { BoardPage } from "./pages/BoardPage";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { OrgAdminLayout } from "./components/org-admin/OrgAdminLayout";
 import { OrgOverviewTab } from "./components/org-admin/OrgOverviewTab";
@@ -126,6 +127,7 @@ export const router = createBrowserRouter([
           { path: "/runs/:runId", element: <RunDetailPage /> },
           { path: "/triggers", element: <TriggersPage /> },
           { path: "/triggers/:triggerId", element: <TriggersPage /> },
+          { path: "/board", element: <BoardPage /> },
           {
             path: "/settings",
             element: <SettingsPage />,

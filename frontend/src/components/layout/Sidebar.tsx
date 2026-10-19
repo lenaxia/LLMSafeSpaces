@@ -33,6 +33,7 @@ import {
   Workflow,
   Zap,
   Archive,
+  KanbanSquare,
 } from "lucide-react";
 import { Spinner } from "../ui/Spinner";
 import { BusyIndicator } from "../ui/BusyIndicator";
@@ -220,6 +221,17 @@ export function Sidebar({ onNavigate }: Props) {
           >
             <Zap className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span>Triggers</span>
+          </button>
+          <button
+            onClick={() => { navigate("/board"); onNavigate?.(); }}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors",
+              "hover:bg-accent",
+              location.pathname.startsWith("/board") && "bg-accent text-accent-foreground",
+            )}
+          >
+            <KanbanSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Board</span>
           </button>
         </div>
         <div className="border-t border-border mx-2 my-1" />
