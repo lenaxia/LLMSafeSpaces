@@ -256,6 +256,59 @@ func TestTmpOpencodeCacheRootsDeclared(t *testing.T) {
 	}
 }
 
+// PIN (#1744 gate discipline): every #1744 class carries the safety
+// gates it was specified with — a per-class size floor, staleness on
+// the dir classes, and the corpse rule (>=120s) on the prefix class.
+// A class added without its gates reopens the reap-under-a-live-process
+// hole the issue documents.
+func TestIssue1744EntriesCarryGates(t *testing.T) {
+	m := ManifestFor("opencode")
+	dirs := map[string]bool{
+		"playwright-browsers":    true,
+		"tmp-opencode-gocache":   true,
+		"tmp-opencode-goocache":  true,
+		"tmp-opencode-npm-cache": true,
+		"golangci-lint-cache":    true,
+		"npm-cache":              true, // #1744 item 5 narrowing
+		"npm-npx":                true,
+		"kubebuilder-envtest":    true,
+	}
+	seen := map[string]bool{}
+	for _, e := range m.Entries {
+		if !dirs[e.Class] && e.Class != "gotmp-residue" {
+			continue
+		}
+		seen[e.Class] = true
+		if e.MinBytes <= 0 {
+			t.Errorf("class %s: MinBytes floor missing (got %d)", e.Class, e.MinBytes)
+		}
+		if e.Class == "gotmp-residue" {
+			if e.Kind != EntryPrefixStale || e.MinAgeSecs < 120 {
+				t.Errorf("gotmp-residue must be prefix_stale with the >=120s corpse rule, got kind=%s minAge=%d", e.Kind, e.MinAgeSecs)
+			}
+		} else if e.MinAgeSecs <= 0 {
+			t.Errorf("dir class %s: staleness gate missing (MinAgeSecs=%d)", e.Class, e.MinAgeSecs)
+		}
+	}
+	for c := range dirs {
+		if !seen[c] {
+			t.Errorf("class %s missing from the production manifest", c)
+		}
+	}
+	if !seen["gotmp-residue"] {
+		t.Error("class gotmp-residue missing from the production manifest")
+	}
+	// Negative gates are authoring bugs and must not validate.
+	bad := Entry{Class: "neg", Path: "/home/sandbox/.cache/go-build", Kind: EntryDir, MinAgeSecs: -1}
+	if err := validateEntry(m, bad); err == nil {
+		t.Error("negative MinAgeSecs must be refused at validation")
+	}
+	badBytes := Entry{Class: "negb", Path: "/home/sandbox/.cache/go-build", Kind: EntryDir, MinBytes: -1}
+	if err := validateEntry(m, badBytes); err == nil {
+		t.Error("negative MinBytes must be refused at validation")
+	}
+}
+
 // PIN (longest-root match): when roots nest, the most specific
 // declaration governs — a RootSelf root nested inside a RootParent
 // root is deletable itself (the parent rule would refuse it), and the

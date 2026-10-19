@@ -48,6 +48,10 @@ type Engine struct {
 	manifest Manifest
 	usage    UsageFunc
 	now      func() time.Time
+	// scanOpen snapshots the pod's open file handles once per sweep
+	// (#1744: never delete anything with an open handle). Seam-injected
+	// in tests.
+	scanOpen func() openHandles
 	volume   string // informational: the statfs target documented above
 
 	mu sync.Mutex
@@ -60,12 +64,16 @@ func NewEngine(m Manifest, usage UsageFunc) *Engine {
 		manifest: m,
 		usage:    usage,
 		now:      time.Now,
+		scanOpen: scanOpenHandles,
 		volume:   "/workspace",
 	}
 }
 
 // SetClock overrides the staleness clock (tests).
 func (e *Engine) SetClock(now func() time.Time) { e.now = now }
+
+// setOpenHandleScan overrides the open-handle snapshot source (tests).
+func (e *Engine) setOpenHandleScan(f func() openHandles) { e.scanOpen = f }
 
 // Recover runs one pass. Idempotent by construction: below-target
 // volumes are a measured no-op; already-deleted classes report
@@ -105,6 +113,11 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 		return report, nil
 	}
 
+	// One open-handle snapshot for the whole sweep (#1744: never
+	// delete anything with an open handle). Taken AFTER the
+	// below-target fast path so a healthy volume pays nothing.
+	oh := e.scanOpen()
+
 	// Measure every class (read-only), largest-first.
 	type candidate struct {
 		entry  Entry
@@ -120,7 +133,7 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 			report.Classes = append(report.Classes, cr)
 			continue
 		}
-		sizes, err := e.measure(ctx, entry)
+		sizes, held, err := e.measure(ctx, entry, oh)
 		var bytes int64
 		for _, ps := range sizes {
 			bytes += ps.bytes
@@ -136,13 +149,30 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 			}
 		}
 		cr.Bytes, cr.Entries = bytes, reclaimable
+		// A fully-held class (dir arm) reports the PINNED bytes as its
+		// measured figure — the operator's "why is the disk still full"
+		// answer is the whole point of surfacing in_use (#1744).
+		if held.count > 0 && len(sizes) == 0 {
+			cr.Bytes = held.bytes
+		}
 		switch {
 		case err != nil:
 			cr.Status = ClassError
 			cr.Reason = err.Error()
+		case held.count > 0 && reclaimable == 0:
+			cr.Status = ClassInUse
+			cr.Reason = held.reason
 		case reclaimable == 0:
 			cr.Status = ClassNotPresent
+		case bytes < entry.MinBytes:
+			// #1744 size floor: a tree below the floor is a partial
+			// download or debris, not the calibrated full set.
+			cr.Status = ClassNotPresent
+			cr.Reason = fmt.Sprintf("below size floor: %d bytes measured < %d floor", bytes, entry.MinBytes)
 		default:
+			if held.count > 0 {
+				cr.Reason = fmt.Sprintf("%d stale path(s) (%d bytes) %s — skipped", held.count, held.bytes, held.reason)
+			}
 			candidates = append(candidates, candidate{entry: entry, report: cr, paths: sizes})
 			continue
 		}
@@ -219,12 +249,27 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 	return report, nil
 }
 
+// heldShare is the measured-but-pinned portion of a class: paths this
+// sweep must not touch (#1744). For dir classes count is 0 or 1 and
+// bytes carries the whole tree; for prefix classes it accumulates the
+// held stale children.
+type heldShare struct {
+	count  int
+	bytes  int64
+	reason string
+}
+
 // measure computes the per-path reclaimable sizes for one entry. The
 // returned pathSize list is BOTH the measured figure AND the deletion
 // set — bytesFreed honesty (reviews r2/r3) rests on the two never
 // diverging. For prefix classes only stale children (mtime older than
-// MinAgeSecs) count, one pathSize each.
-func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
+// MinAgeSecs, no open handles) count, one pathSize each; held children
+// are excluded from the deletion set and reported in the heldShare.
+// Dir classes with a MinAgeSecs gate are held whole while their own
+// mtime is younger than the gate, and held whole on any open handle
+// under them (a tree cannot be half-RemoveAll'd).
+func (e *Engine) measure(ctx context.Context, entry Entry, oh openHandles) ([]pathSize, heldShare, error) {
+	var held heldShare
 	type ps = pathSize
 	if entry.Kind == EntryPrefixStale {
 		cutoff := e.now().Add(-time.Duration(entry.MinAgeSecs) * time.Second)
@@ -233,9 +278,9 @@ func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
 		dirents, derr := os.ReadDir(parent)
 		if derr != nil {
 			if os.IsNotExist(derr) {
-				return nil, nil
+				return nil, held, nil
 			}
-			return nil, derr
+			return nil, held, derr
 		}
 		var out []ps
 		for _, d := range dirents {
@@ -250,19 +295,38 @@ func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
 				continue // live build — never reap
 			}
 			p := filepath.Join(parent, d.Name())
+			if oh.holds(p) {
+				b, _ := walkSum(ctx, p)
+				held.count++
+				held.bytes += b
+				continue // open handle under it — never reap
+			}
 			b, _ := walkSum(ctx, p)
 			out = append(out, ps{path: p, bytes: b})
 		}
-		return out, nil
+		if held.count > 0 {
+			held.reason = "held by open file handles"
+			if oh.blocked() {
+				held.reason = oh.holdReason()
+			}
+		}
+		return out, held, nil
 	}
 
 	fi, err := os.Lstat(entry.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, held, nil
 		}
-		return nil, err
+		return nil, held, err
 	}
+	// #1744 hot-directory gate: a gated dir class whose own mtime is
+	// younger than MinAgeSecs is likely mid-population — held whole.
+	if entry.MinAgeSecs > 0 && fi.ModTime().After(e.now().Add(-time.Duration(entry.MinAgeSecs)*time.Second)) {
+		b, _ := walkSum(ctx, entry.Path)
+		return nil, heldShare{count: 1, bytes: b, reason: fmt.Sprintf("directory modified within %ds (hot — likely mid-install or in active use)", entry.MinAgeSecs)}, nil
+	}
+	target := entry.Path
 	if fi.Mode()&os.ModeSymlink != 0 {
 		// In-root symlinked cache (validateEntry already proved the
 		// resolved target stays inside the same root). Measure AND
@@ -272,20 +336,30 @@ func (e *Engine) measure(ctx context.Context, entry Entry) ([]pathSize, error) {
 		// inode and report the target's bytes as freed.
 		resolved, rerr := filepath.EvalSymlinks(entry.Path)
 		if rerr != nil {
-			return nil, nil
+			return nil, held, nil
 		}
 		// TOCTOU close (review r2 robustness): this FRESH resolution is
 		// what enters the deletion set — re-run the full boundary
 		// validation on it before it does. A retargeted link between
 		// validateEntry and here dies here, loudly.
 		if err := validateEntry(e.manifest, Entry{Class: entry.Class, Path: resolved, Kind: EntryDir}); err != nil {
-			return nil, err
+			return nil, held, err
 		}
-		b, _ := walkSum(ctx, resolved)
-		return []ps{{path: entry.Path}, {path: resolved, bytes: b}}, nil
+		target = resolved
 	}
-	b, _ := walkSum(ctx, entry.Path)
-	return []ps{{path: entry.Path, bytes: b}}, nil
+	if oh.holds(entry.Path) || oh.holds(target) {
+		b, _ := walkSum(ctx, target)
+		reason := "open file handles under the cache tree"
+		if oh.blocked() {
+			reason = oh.holdReason()
+		}
+		return nil, heldShare{count: 1, bytes: b, reason: reason}, nil
+	}
+	b, _ := walkSum(ctx, target)
+	if target != entry.Path {
+		return []ps{{path: entry.Path}, {path: target, bytes: b}}, held, nil
+	}
+	return []ps{{path: entry.Path, bytes: b}}, held, nil
 }
 
 // delete removes one class's measured paths and returns the measured

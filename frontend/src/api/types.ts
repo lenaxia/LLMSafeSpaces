@@ -135,7 +135,7 @@ export interface DiskRecoveryClassReport {
   bytes: number;
   bytesFreed: number;
   entries: number;
-  status: "freed" | "would_free" | "not_present" | "refused" | "error" | "skipped_target_met";
+  status: "freed" | "would_free" | "not_present" | "in_use" | "refused" | "error" | "skipped_target_met";
   reason?: string;
 }
 

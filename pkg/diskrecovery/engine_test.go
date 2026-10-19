@@ -659,6 +659,140 @@ func TestPrefixChildrenHeldByOpenHandlesExcluded(t *testing.T) {
 	}
 }
 
+// PIN (#1744 size floor): a measured class below its declared floor
+// is not a candidate — not_present with the floor in the reason (a
+// small tree is a partial download or debris, not the calibrated full
+// set); at/above the floor it reaps normally.
+func TestSizeFloorHoldsSmallClasses(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pw := filepath.Join(cacheRoot, "ms-playwright")
+	seedTree(t, pw, 1, 1000) // 1000 bytes << 1 MiB floor
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "playwright-browsers", Path: pw, Kind: EntryDir, MinBytes: 1 << 20},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassNotPresent || !strings.Contains(cr.Reason, "floor") {
+		t.Fatalf("below-floor class must be not_present with the floor reason, got %+v", cr)
+	}
+	if _, err := os.Stat(pw); err != nil {
+		t.Fatalf("below-floor tree must survive: %v", err)
+	}
+
+	// Grow past the floor (mtime gate is 0 here) → candidate again.
+	seedTree(t, filepath.Join(pw, "chromium-1"), 3, 500<<10)
+	rep2, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cr2 := rep2.Classes[0]; cr2.Status != ClassFreed {
+		t.Fatalf("above-floor class must free, got %+v", cr2)
+	}
+}
+
+// PIN (#1744 hot-directory gate): a dir entry with MinAgeSecs holds
+// the whole class while its own mtime is younger than the gate — a
+// fresh cache dir is likely mid-population — and reaps once it cools.
+func TestDirStalenessGateHoldsFreshCaches(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envtest := filepath.Join(cacheRoot, "kubebuilder-envtest")
+	want := seedTree(t, envtest, 2, 1000)
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "kubebuilder-envtest", Path: envtest, Kind: EntryDir, MinAgeSecs: 600},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+
+	// Freshly seeded: mtime is now → held.
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassInUse || !strings.Contains(cr.Reason, "hot") {
+		t.Fatalf("fresh gated dir must be in_use (hot), got %+v", cr)
+	}
+	if cr.Bytes != want {
+		t.Fatalf("hot class must still report the measured bytes %d, got %+v", want, cr)
+	}
+	if _, err := os.Stat(envtest); err != nil {
+		t.Fatalf("hot dir must survive: %v", err)
+	}
+
+	// Cool it past the gate → candidate.
+	old := time.Now().Add(-20 * time.Minute)
+	if err := os.Chtimes(envtest, old, old); err != nil {
+		t.Fatal(err)
+	}
+	rep2, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cr2 := rep2.Classes[0]; cr2.Status != ClassFreed || cr2.BytesFreed != want {
+		t.Fatalf("cooled dir must free, got %+v", cr2)
+	}
+}
+
+// PIN (#1744 fail-closed scan): an open-handle snapshot that could not
+// prove completeness (unreadable /proc, unreadable same-uid tables)
+// holds EVERY present class — an unmeasurable holder set must never
+// turn into an unguarded sweep.
+func TestHandleScanIncompleteFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(cacheRoot, "gocache")
+	seedTree(t, gocache, 1, 100)
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "tmp-opencode-gocache", Path: gocache, Kind: EntryDir},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+	e.setOpenHandleScan(func() openHandles {
+		return openHandles{paths: map[string]struct{}{}, available: true, unreadable: 1}
+	})
+
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassInUse || !strings.Contains(cr.Reason, "unreadable") {
+		t.Fatalf("incomplete scan must hold the class in_use with the reason, got %+v", cr)
+	}
+	if _, err := os.Stat(gocache); err != nil {
+		t.Fatalf("nothing may be deleted under an incomplete scan: %v", err)
+	}
+}
+
 // PIN (measure/delete agreement, review r1 F3): an in-root symlinked
 // cache must free its TARGET tree — RemoveAll on the literal link
 // alone would report the target's bytes as freed while the bytes stay
