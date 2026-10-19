@@ -207,10 +207,12 @@ failing 8 specs (input-requests ×2, sidebar-hierarchy ×4,
 sidebar-kebab-viewport ×2; the earlier "full local suite green" claim
 was made against a stale local file set — this run reproduced the
 failures exactly). All 7 remaining registrations gained the `?*`
-suffix; the six specs (25 tests) and then the FULL playwright run went
+suffix; the six specs (24 tests) and then the FULL playwright run went
 green locally: 207 passed, 13 skipped, 0 failed. Committed as
 `test(frontend): #1735 — patch the remaining e2e sessions mocks
-(API_PREFIX family)` on the v2 branch.
+(API_PREFIX family)` on the v2 branch. (r3 correction, per review: the
+CI run failed 8 TESTS across 3 spec files — input-requests ×2,
+sidebar-hierarchy ×4, sidebar-kebab-viewport ×2 — not "8 specs".)
 
 ## Review round 2 on #1743 (CHANGES_REQUESTED → remediated)
 
@@ -240,3 +242,12 @@ watchdog count-flake.
 r2 verification: agentd full suite ok (327s); `api/internal/server`
 ok; the #1735 test set green at `-count=2` (only the documented
 pre-existing watchdog count-flake fails).
+
+Round-2.5 note (the verdict on `6746cdcf` raced the r2 push): that
+review re-flagged Finding 1 against the pre-splice head — the r2
+commit `6b83ad7c` is the remediation (raw-byte splice + the &-bearing
+pin). Its two non-blocking items are taken in the follow-up commit:
+the worklog numeric corrections above, and comments at the two spec
+handlers whose POST branches the `?`-literal glob rendered dead
+(contract-stream, streaming) — documenting that `sessions?*` cannot
+match a bare query-less request (Playwright glob: `?` is literal).
