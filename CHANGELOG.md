@@ -26,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the disk-recovery lever sweeps it under pressure). Storage docs
   updated with the sixth volume and its trade-offs.
 
-
 ### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
 
 - **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default

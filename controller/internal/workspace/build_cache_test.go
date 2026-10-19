@@ -80,17 +80,25 @@ func TestGoCacheEconomy_RelocatedToEmptyDir(t *testing.T) {
 	}
 }
 
-// PIN (subPath existence): GOTMPDIR must pre-exist at pod start — the
-// go tool's temp dirs are MkdirTemp'd INSIDE it (parent must exist),
-// and emptyDir subPath mounts are the mechanism that guarantees both
-// cache roots exist without any init-side mkdir.
-func TestGoCacheEconomy_SubPathMountsGuaranteeDirs(t *testing.T) {
-	pod := buildPodMandatory(t, reconcilerPinned(t))
+// PIN (sidecar mode survives the overlay): applyAgentdSidecar mutates
+// the main container (env overlay, mounts) — the build-cache mounts and
+// GOCACHE/GOTMPDIR env must survive that mutation in sidecar mode too:
+// the supervisor (main container) is where the engine and the agent
+// tooling run.
+func TestGoCacheEconomy_SurvivesAgentdSidecarOverlay(t *testing.T) {
+	pod := buildPodMandatory(t, reconcilerWithAgentdSidecar(t))
 	main := mainContainerOf(t, pod)
-	for _, m := range main.VolumeMounts {
-		if m.Name != "build-cache" {
-			continue
+
+	v, ok := envVar(main, "GOCACHE")
+	require.True(t, ok, "#1758: GOCACHE must survive the sidecar overlay on the main container")
+	assert.Equal(t, "/sandbox-cache/go-build", v.Value)
+	for _, wantPath := range []string{"/sandbox-cache/go-build", "/sandbox-cache/gotmp"} {
+		found := false
+		for _, m := range main.VolumeMounts {
+			if m.Name == "build-cache" && m.MountPath == wantPath {
+				found = true
+			}
 		}
-		assert.NotEmpty(t, m.SubPath, "build-cache mounts must use subPaths so the dirs exist at start (GOTMPDIR is not created by the go tool)")
+		assert.True(t, found, "#1758: sidecar-mode main container must keep the %s mount", wantPath)
 	}
 }

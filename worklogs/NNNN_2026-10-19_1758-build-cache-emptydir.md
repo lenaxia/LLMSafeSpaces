@@ -16,9 +16,9 @@ The addendum's numbers (from the repeat-incident evening): 5 manual sweeps, 55%�
 
 ## Work Completed
 
-### (a) RED-first pins (commit 34c40acc)
+### (a) RED-first pins (commit 34c40acc) — CORRECTED in review r1
 
-`controller/internal/workspace/build_cache_test.go` — `TestGoCacheEconomy_RelocatedToEmptyDir` (env + volume + mounts) and `TestGoCacheEconomy_SubPathMountsGuaranteeDirs`. Verified RED against main @ 95c5782b: exactly these two fail (GOCACHE absent at build_cache_test.go:35; no build-cache volume); all pre-existing workspace pins green.
+`controller/internal/workspace/build_cache_test.go` — `TestGoCacheEconomy_RelocatedToEmptyDir` (env + volume + mounts). Verified RED against main @ 95c5782b: this ONE pin fails (GOCACHE absent at build_cache_test.go:35); all pre-existing workspace pins green. **Correction (review r1, verified by the reviewer's execution and admitted here): the commit's "the two new pins fail" claim was FALSE** — `TestGoCacheEconomy_SubPathMountsGuaranteeDirs` passed vacuously on main (zero `build-cache` mounts → zero assertions executed). The vacuous test is DELETED in the r1 remediation (its subPath assertion already lives, discriminating, inside the main pin) and replaced by the sidecar-mode pin below.
 
 ### (b) Implementation
 
@@ -33,6 +33,10 @@ The addendum's numbers (from the repeat-incident evening): 5 manual sweeps, 55%�
 - **Disk-backed, not Memory**: the addendum's explicit call — the credential tmpfs volumes are the opposite trade (capacity vs RAM).
 - **SizeLimit eviction is the correct failure mode**: exceeding 8Gi evicts the pod; a cache that dies with the pod anyway has no better bound. Documented.
 - **Naming**: `/sandbox-cache` + volume `build-cache` — matches the `/sandbox-*` platform namespace and leaves room for future cache relocations without a second volume.
+
+### (d) Review r1 remediation (commit on 02c5b51e)
+
+The verdict on 02c5b51e (verifier-executed) confirmed the seam correct and findings: (1) the standing ephemeral-storage decision record was silently contradicted — RESOLVED by explicit amendment, not by restoring per-pod limits: the storage.md warning block is rewritten as the #1758 amendment (per-volume 8Gi SizeLimit bounds exactly the new surface; a container ephemeral limit would re-blend logs + writable-layer noise into one spurious-eviction trigger; scan-based enforcement documented honestly — overshoot-tolerant by design, bound pinned by test); the "What writes to node-local ephemeral storage" table gains the /sandbox-cache row; the "only consumer is container logs" claims in storage.md and pod_builder.go updated. (2) The stale pkg/diskrecovery manifest header ("GOCACHE unset") now states the #1758 reality: HOME-side go-build/gotmp classes are legacy-debris sweepers. (3) The vacuous subPath test deleted (see the (a) correction); added the discriminating `TestGoCacheEconomy_SurvivesAgentdSidecarOverlay` (sidecar-mode main container keeps GOCACHE env + both mounts). (4) Docs surfaces: mermaid gains the emptyDir node, "five mounts" → six, `---` separator restored, kubelet SafeMakeDir/0777 mechanism cited instead of bare "guaranteed". (5) Style nits: CHANGELOG double-blank. The kind-level e2e (workspace create → go install on the volume) is offered as a follow-up ruling to the reviewer — the nightly kind harness is its own audited lane.
 
 ## Tests Run
 

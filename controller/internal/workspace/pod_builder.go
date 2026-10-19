@@ -529,10 +529,17 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 //   - ephemeral-storage is intentionally NOT set on the pod. The
 //     workspace's writable surfaces (PVC subPaths for /workspace,
 //     /home, /tmp; Memory-backed emptyDir for /sandbox-cfg) do not
-//     count toward node ephemeral storage. The only consumer is
-//     kubelet's container log files, which kubelet already rotates
-//     (~50 MiB per pod). A per-pod ephemeral limit added no
-//     protection beyond what kubelet's own log rotation provides.
+//     count toward node ephemeral storage. The node-disk consumers
+//     are kubelet's container log files (kubelet already rotates
+//     them, ~50 MiB per pod) and — since #1758 — the build-cache
+//     emptyDir, which carries its OWN per-volume 8Gi SizeLimit with
+//     eviction-based enforcement: bounding exactly that surface where
+//     the concern lives. A per-pod ephemeral limit would sweep logs
+//     and the bounded cache into one spurious-eviction trigger while
+//     adding no bound the SizeLimit doesn't already provide. The
+//     decision record (including the #1758 amendment) lives in
+//     docs/operator/storage.md "Why ephemeral-storage limits are not
+//     set".
 //   - Quantity parsing failures fall back to the default rather than
 //     panicking. The CRD pattern + (future) webhook caps protect
 //     against bad input; if both are bypassed (e.g. CRD validation
