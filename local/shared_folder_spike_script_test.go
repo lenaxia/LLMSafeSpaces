@@ -329,14 +329,10 @@ func TestLonghornLib_PayloadParsesStandalone(t *testing.T) {
 		t.Fatalf("prereqs payload truncated (%d lines, want the full ~90) — the truncation class this pin exists for", n)
 	}
 	bash := requireBashSpike(t)
-	if out, err := exec.Command(bash, "-n").CombinedOutput(); err != nil {
-		_ = out
-	} else {
-		cmd := exec.Command(bash, "-n")
-		cmd.Stdin = strings.NewReader(payload)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("prereqs payload fails standalone bash -n (the N-R24-1 class): %s", out)
-		}
+	cmd := exec.Command(bash, "-n")
+	cmd.Stdin = strings.NewReader(payload)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("prereqs payload fails standalone bash -n (the N-R24-1 class): %s", out)
 	}
 	// the payload must carry its identity gate and iscsid machinery
 	for _, marker := range []string{
@@ -361,7 +357,7 @@ func TestGvisorLib_PayloadParsesStandalone(t *testing.T) {
 	const open = "bash -c '"
 	i := strings.Index(src, open)
 	if i < 0 {
-		return // payload form changed upstream — nothing to pin
+		t.Skip("gvisor.sh no longer uses a single-quote-wrapped bash -c payload — extend extraction to its new form before relying on this pin")
 	}
 	rest := src[i+len(open):]
 	j := strings.Index(rest, "'\n")
@@ -386,9 +382,10 @@ func TestGvisorLib_PayloadParsesStandalone(t *testing.T) {
 func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
 	src := mustReadSpike(t, spikeScript)
 	for _, marker := range []string{
-		`env_iscsid_revived=`,
+		`env_iscsid_at_legs=`,
+		`env_iscsid_revived=yes-ipc-verified`,
 		`SKIPPED_ISCSID_DEAD`,
-		`iscsid died between prereqs and legs`,
+		`SKIPPED_EXEC_FAILED`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)

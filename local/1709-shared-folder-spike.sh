@@ -355,29 +355,54 @@ rm -f /tmp/iscsi-probe.$$
 # verifies delivery).
 res "env_exec_identity_spike_probe=$(docker exec "$NODE" id -u 2>/dev/null || echo exec-failed)@$(docker exec "$NODE" hostname 2>/dev/null || echo unknown)"
 
-# iscsid must be alive AT LEG TIME (r26: run 39178767180 measured
-# env_iscsid_alive=dead — the daemon died between green prereqs and the
-# legs; the engine failures then cannot be cleanly attributed to the
-# nesting limit while their initiator's daemon is down). Attempt one
-# revival, re-measure, and gate: legs do not run against a dead daemon.
-if ! docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1; then
+# iscsid must be alive AND IPC-reachable AT LEG TIME (r26: run
+# 39178767180 measured env_iscsid_alive=dead — the daemon died between
+# green prereqs and the legs; engine failures cannot be cleanly
+# attributed to the nesting limit while their initiator's daemon is
+# down). The probe is TRI-STATE (alive / measured-dead / EXEC_FAILED —
+# never "dead" for an unmeasured state, the script's own discipline),
+# revival re-verifies the IPC channel (a process that answers pgrep but
+# not iscsiadm is a false green that re-confounds the next run), and
+# the skip path writes the full verdict-row set the doc's [R:...] readers
+# expect (s0/a/b/c_status).
+ISC_PROBE_RC=0
+docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ISC_PROBE_RC=$?
+if [ "$ISC_PROBE_RC" = "0" ]; then
+    res "env_iscsid_at_legs=alive"
+elif docker exec "$NODE" true >/dev/null 2>&1; then
+    res "env_iscsid_at_legs=dead"
     warn "iscsid dead at leg time — attempting revival"
     docker exec "$NODE" sh -c 'systemctl start iscsid 2>/dev/null || iscsid >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
     sleep 3
-    if docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1; then
-        res "env_iscsid_revived=yes"
-        ok "iscsid revived at leg time"
+    if docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1        && ! docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' | grep -q "can not connect to iSCSI daemon"; then
+        res "env_iscsid_revived=yes-ipc-verified"
+        ok "iscsid revived at leg time (IPC verified)"
     else
         res "env_iscsid_revived=no"
         res "s0_status=FAIL"
         res "s0_iscsid_at_legs=dead-revival-failed"
+        res "a_status=SKIPPED_ISCSID_DEAD"
+        res "b_status=SKIPPED_ISCSID_DEAD"
+        res "c_status=SKIPPED_ISCSID_DEAD"
         res "leg_a=SKIPPED_ISCSID_DEAD"
         res "leg_b=SKIPPED_ISCSID_DEAD"
         res "leg_c=SKIPPED_ISCSID_DEAD"
         res "finished_at=$(date -u +%FT%TZ)"
-        log "spike aborted — iscsid died between prereqs and legs and could not be revived"
+        log "spike aborted — iscsid died between prereqs and legs and could not be revived to an IPC-answering state"
         exit 1
     fi
+else
+    res "env_iscsid_at_legs=EXEC_FAILED"
+    res "s0_status=FAIL"
+    res "a_status=SKIPPED_EXEC_FAILED"
+    res "b_status=SKIPPED_EXEC_FAILED"
+    res "c_status=SKIPPED_EXEC_FAILED"
+    res "leg_a=SKIPPED_EXEC_FAILED"
+    res "leg_b=SKIPPED_EXEC_FAILED"
+    res "leg_c=SKIPPED_EXEC_FAILED"
+    res "finished_at=$(date -u +%FT%TZ)"
+    log "spike aborted — node exec failed at the iscsid-at-leg-time probe"
+    exit 1
 fi
 
 # RuntimeClass preflight — every runtimeClassName referenced below must
