@@ -30,7 +30,7 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39097290981 | fail @ leg 0 | iscsid alive at t=0, engines still fail — /run/lock/iscsi missing (deb tmpfiles never ran in the live node) |
 | 39101239324 | fail @ prereqs | iscsid would not start at all (direct-launch stderr swallowed) |
 | 39103144189 | fail @ prereqs | ENOENT at the initiatorname write (`/etc/iscsi/initiatorname.iscsi: No such file or directory`) — /etc/iscsi absent, no identity captured |
-| 39104752680 | fail @ prereqs | EACCES on `/etc/iscsi` under BARE exec (the `-u 0` pin landed only after this run) — first appearance of the identity drift (mechanism undetermined; see the ruling row) |
+| 39104752680 | fail @ prereqs | (truncation artifact — on-runner tail; see the re-adjudication row below) EACCES on `/etc/iscsi` under bare exec |
 | 39106627792 | fail @ prereqs | EACCES on `/etc/iscsi` again (`-u 0` pinned this run) — second appearance |
 | 39108718318 | fail @ kind create | `etcdserver: request timed out` — failure now above every line the branch touches |
 | 39149620957 | fail @ prereqs | `-u 0` payload head in-node, post-apostrophe tail on the runner (truncation era — see the re-adjudication row). This row successively carried a "TERMINAL SELinux wall", a "bare-exec dichotomy", and an "undetermined-mechanism mutation" story — all withdrawn |
@@ -42,8 +42,9 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39172883458 | fail @ prereqs | (truncation artifact) `require_root: command not found` — the function was defined in the in-node head, called in the on-runner tail |
 | 39174791279 | fail @ prereqs | same truncation signature (r22 head) |
 | 39176835718 | fail @ prereqs | same truncation signature, exit 127 — the run that let the reviewer reproduce it byte-exact |
-| 39183552572 | cancelled | superseded by the r26-remediation push (concurrency cancel) |
 | 39185838712 | cancelled | superseded by the r27-remediation push (concurrency cancel) |
+| 39183552572 | cancelled | superseded by the r28-remediation push (concurrency cancel) |
+| 39190530387 | fail @ leg 0 | **THE DECISIVE ROW — clean adjudication**: prereqs green (root in-node, iscsid running, node-side IPC verified, O_DIRECT ok); iscsid died before legs and the leg-time gate REVIVED it with IPC re-verified (`env_iscsid_revived=yes-ipc-verified` — the gate's first live exercise); with the daemon provably alive and IPC-healthy from the node's own context, engines STILL hang at `starting` and the engine-side nsenter'd iscsiadm still fails `can not connect to iSCSI daemon` — the failure is IN THE NAMESPACED INITIATOR PATH, not the daemon, not node-side state. The Longhorn v1 engine path is genuinely broken under nested dind on this pool |
 | 39178767180 | fail @ leg 0 (iscsid dead at leg time) | quoting fixed; payload delivered whole in-node as root with prereqs green at t=0 (identity/iscsid/IPC/O_DIRECT verified in the log). **`env_iscsid_alive=dead` was measured before leg 0** — the daemon died between green prereqs and the legs, so the engine failures in THIS run are consistent with BOTH the dead daemon AND the nesting limit; attribution between them is not separable on this evidence (r26 reconciliation). The kit now revives + gates iscsid at leg time; the next clean run with `env_iscsid_at_legs=alive` (tri-stated, revival IPC-verified) is the one that can adjudicate the engine path alone |
 | — | — | **OWNER RULING (2026-10-18, #1709): leg evidence DEFERRED to the implementation lane's first real-cluster soak.** Corrected justification (see the re-adjudication row): the pool's genuine, measured limitation is the **Longhorn v1 engine `starting` hang** — engines never started while replicas ran and iscsid was provably alive (runs 39079884685/39089893139/39093640739, under prereqs that genuinely completed) — implicating the nsenter→iscsiadm initiator path under nested dind. The "runner-identity/exec-drift" story was the kit's own quoting bug and is withdrawn. **Leg A was reached and failed on that storage path** (RWX never attached; pods never started; runsc never exercised) — it never produced a valid runsc×RWX verdict, which is the deferral's actual basis. Rows are appended as structurally-fired runs complete; `results.txt` + leg logs land here from the soak and fill every `[R:...]` in design 0068. The quoting bug is fixed (heredoc-fed payload + parse pin); a green pool run is now PLAUSIBLE but unproven, and the ruling's deferral stands unless the owner revisits |
 - **Cluster:** kind v0.32.0, kindest/node v1.35.5, single node, `local/kind-cluster.yaml` (dind-nesting guards: `serviceSubnet 10.217.0.0/16`, iptables kube-proxy).
@@ -56,10 +57,10 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 
 ## Files
 
-- `results.txt` — structured KEY=VALUE rows for legs 0/A/B/C (the design doc cites these as `[R:KEY]`). 0 files exist until the green run lands — every row is PENDING until then.
-- `run-env.txt` — runner environment record (CPU/mem/disk/docker), written by the workflow's env step.
-- `c-sync.log` — leg C sync pod: RO-mount check, manifest verify output, journal torn-tail parse, rclone push.
-- `spike.log` — leg progress log (the script's own tee).
+- `results.txt` — structured KEY=VALUE rows for legs 0/A/B/C (the design doc cites these as `[R:KEY]`); lands from the implementation soak, per the ruling.
+- `run-env.txt` — runner environment record (CPU/mem/disk/docker), written by the workflow's env step on every fired run (uploaded with that run's artifacts; committed to the tree from the soak).
+- `c-sync.log` — leg C sync pod log; lands from the soak.
+- `spike.log` — leg progress log; lands from the soak.
 
 ## Reproducing
 

@@ -102,6 +102,25 @@ journal_verdict() { # <journal-file>
     return 0
 }
 
+# revival_verdict <pgrep_rc> <ipc_exec_rc> <ipc_out>: the leg-time
+# revival gate's pure verdict — VERIFIED / NOT_VERIFIED / EXEC_FAILED.
+# Tri-state discipline (r29 NF-1): a FAILED IPC capture exec (docker
+# daemon hiccup, rc 125/126/127, or empty output) is an UNMEASURED
+# state and must never read as verified; only a captured output whose
+# pattern misses the daemon-dead marker (with the process up) does.
+revival_verdict() { # pgrep_rc ipc_exec_rc ipc_out
+    if [ "$2" != "0" ] && [ "$2" != "1" ] && [ "$2" != "2" ]; then
+        echo "EXEC_FAILED"; return
+    fi
+    if [ -z "$3" ]; then
+        echo "EXEC_FAILED"; return
+    fi
+    if [ "$1" = "0" ] && ! printf '%s' "$3" | grep -q "can not connect to iSCSI daemon"; then
+        echo "VERIFIED"; return
+    fi
+    echo "NOT_VERIFIED"
+}
+
 # Exit-contract helper: green iff ALL FOUR leg statuses (0/A/B/C) PASS.
 leg_exit() { [ "$1" = "PASS" ] && [ "$2" = "PASS" ] && [ "$3" = "PASS" ] && [ "$4" = "PASS" ]; }
 
@@ -132,6 +151,14 @@ selftest() {
     { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: dupe journal must FAIL"; fail=1; }
     out=$(journal_verdict "$dir/empty.j"); rc=$?
     { [ "$rc" != "0" ] && [[ $out == *"JOURNAL_VERDICT=FAIL"* ]]; } || { echo "selftest: empty journal must FAIL"; fail=1; }
+
+    # revival_verdict tri-state semantics (r29 NF-1/NF-2)
+    [ "$(revival_verdict 0 0 'iscsiadm: connect to 127.0.0.1 refused')" = "VERIFIED" ] || { echo "selftest: healthy daemon must read VERIFIED"; fail=1; }
+    [ "$(revival_verdict 0 2 'iscsiadm: can not connect to iSCSI daemon (111)!')" = "NOT_VERIFIED" ] || { echo "selftest: zombie daemon (process up, IPC dead) must read NOT_VERIFIED"; fail=1; }
+    [ "$(revival_verdict 1 2 'x')" = "NOT_VERIFIED" ] || { echo "selftest: dead process must read NOT_VERIFIED"; fail=1; }
+    [ "$(revival_verdict 0 126 '')" = "EXEC_FAILED" ] || { echo "selftest: capture-exec failure must read EXEC_FAILED"; fail=1; }
+    [ "$(revival_verdict 0 125 'partial')" = "EXEC_FAILED" ] || { echo "selftest: docker-daemon failure rc must read EXEC_FAILED"; fail=1; }
+    [ "$(revival_verdict 0 0 '')" = "EXEC_FAILED" ] || { echo "selftest: empty capture must read EXEC_FAILED"; fail=1; }
 
     leg_exit PASS PASS PASS PASS || { echo "selftest: all-PASS must exit 0"; fail=1; }
     leg_exit PASS PASS FAIL PASS && { echo "selftest: leg-B FAIL must exit non-zero"; fail=1; }
@@ -384,12 +411,14 @@ elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then
     # is never load-bearing (r28 N-R28-1). Capture, then test.
     REVIVE_RC=0
     docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || REVIVE_RC=$?
-    IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null || true)
-    if [ "$REVIVE_RC" = "0" ] && ! printf '%s' "$IPC_OUT" | grep -q "can not connect to iSCSI daemon"; then
+    IPC_EXEC_RC=0
+    IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null) || IPC_EXEC_RC=$?
+    REVIVAL_VERDICT=$(revival_verdict "$REVIVE_RC" "$IPC_EXEC_RC" "$IPC_OUT")
+    if [ "$REVIVAL_VERDICT" = "VERIFIED" ]; then
         res "env_iscsid_revived=yes-ipc-verified"
         ok "iscsid revived at leg time (IPC verified)"
     else
-        res "env_iscsid_revived=no"
+        res "env_iscsid_revived=${REVIVAL_VERDICT}"
         res "s0_status=FAIL"
         res "s0_iscsid_at_legs=dead-revival-failed"
         res "a_status=SKIPPED_ISCSID_DEAD"

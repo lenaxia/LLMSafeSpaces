@@ -392,9 +392,9 @@ func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
 		`a_status=SKIPPED_EXEC_FAILED`,
 		`b_status=SKIPPED_EXEC_FAILED`,
 		`c_status=SKIPPED_EXEC_FAILED`,
-		// the IPC capture-then-test discipline (never `cmd | grep -q`
-		// under pipefail — r28 N-R28-1)
-		`IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null || true)`,
+		// the rc==1 measured-dead guard (r29 NF-3: deleting it must
+		// fail this pin — the bi-state regression stays dead)
+		`elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)
