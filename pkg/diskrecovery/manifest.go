@@ -213,8 +213,11 @@ var manifests = map[string]Manifest{
 			// Item 3's novel half: gotmp + gotmp-w* worker scratch under
 			// ~/.cache (go-build itself is the existing class above).
 			// The "gotmp" prefix matches the whole GOTMP-family naming
-			// convention; 120s matches the /tmp corpse rule.
-			{Class: "gotmp-residue", Path: "/home/sandbox/.cache/gotmp", Kind: EntryPrefixStale, MinAgeSecs: 120, MinBytes: 16 << 20},
+			// convention; 120s matches the /tmp corpse rule. Floor 0 on
+			// purpose (review r2): the observed corpses are EMPTY dirs
+			// (gotmp-1735) — inode hygiene is exactly this class's job,
+			// and the age gate + open-handle guard carry its safety.
+			{Class: "gotmp-residue", Path: "/home/sandbox/.cache/gotmp", Kind: EntryPrefixStale, MinAgeSecs: 120},
 			// Item 4: golangci-lint's build cache.
 			{Class: "golangci-lint-cache", Path: "/home/sandbox/.cache/golangci-lint", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 16 << 20},
 			// Item 5, second half: npx-installed packages.

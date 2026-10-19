@@ -116,6 +116,11 @@ func (e *Engine) Recover(ctx context.Context, req Request) (Report, error) {
 	// One open-handle snapshot for the whole sweep (#1744: never
 	// delete anything with an open handle). Taken AFTER the
 	// below-target fast path so a healthy volume pays nothing.
+	// Snapshot semantics (review r2): a handle opened AFTER this
+	// instant is invisible — the same inherent TOCTOU class as the
+	// measure→delete window below; the report's statfs before/after
+	// pair remains the accounting truth, and re-running recover once
+	// the holder closes is the documented remediation.
 	oh := e.scanOpen()
 
 	// Measure every class (read-only), largest-first.

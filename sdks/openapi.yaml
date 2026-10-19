@@ -9524,7 +9524,7 @@ components:
           type: integer
         status:
           type: string
-          enum: [freed, would_free, not_present, refused, error, skipped_target_met]
+          enum: [freed, would_free, not_present, in_use, refused, error, skipped_target_met]
         reason:
           type: string
     WorkspaceConditionResult:

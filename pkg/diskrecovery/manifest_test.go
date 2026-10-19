@@ -256,11 +256,13 @@ func TestTmpOpencodeCacheRootsDeclared(t *testing.T) {
 	}
 }
 
-// PIN (#1744 gate discipline): every #1744 class carries the safety
-// gates it was specified with — a per-class size floor, staleness on
-// the dir classes, and the corpse rule (>=120s) on the prefix class.
-// A class added without its gates reopens the reap-under-a-live-process
-// hole the issue documents.
+// PIN (#1744 gate discipline): every REGENERABLE-SET class carries the
+// safety gates it was specified with — a per-class size floor and
+// staleness on the dir classes. The residue classes (tmp-build-residue,
+// gotmp-residue) are floor-0 ON PURPOSE (review r2: the observed
+// corpses are empty dirs — inode hygiene is their job; the age gate +
+// open-handle guard carry their safety). A class added without its
+// gates reopens the reap-under-a-live-process hole the issue documents.
 func TestIssue1744EntriesCarryGates(t *testing.T) {
 	m := ManifestFor("opencode")
 	dirs := map[string]bool{
@@ -279,14 +281,17 @@ func TestIssue1744EntriesCarryGates(t *testing.T) {
 			continue
 		}
 		seen[e.Class] = true
-		if e.MinBytes <= 0 {
-			t.Errorf("class %s: MinBytes floor missing (got %d)", e.Class, e.MinBytes)
-		}
 		if e.Class == "gotmp-residue" {
 			if e.Kind != EntryPrefixStale || e.MinAgeSecs < 120 {
 				t.Errorf("gotmp-residue must be prefix_stale with the >=120s corpse rule, got kind=%s minAge=%d", e.Kind, e.MinAgeSecs)
 			}
-		} else if e.MinAgeSecs <= 0 {
+			if e.MinBytes != 0 {
+				t.Errorf("gotmp-residue must stay floor 0 (empty corpses are its evidence — review r2), got floor=%d", e.MinBytes)
+			}
+		} else if e.MinBytes <= 0 {
+			t.Errorf("class %s: MinBytes floor missing (got %d)", e.Class, e.MinBytes)
+		}
+		if e.Class != "gotmp-residue" && e.MinAgeSecs <= 0 {
 			t.Errorf("dir class %s: staleness gate missing (MinAgeSecs=%d)", e.Class, e.MinAgeSecs)
 		}
 	}
