@@ -22,7 +22,7 @@ package mcp
 //   - NON-DISCLOSURE: a foreign row's plain 404 body passes through
 //     exactly; the tool adds nothing (no owner identity, no suggestions).
 //   - KIND ROUTING: the unified tools (board_get/board_update_item/
-//     board_cancel) dispatch on the prj-/epc-/tsk- prefix; a bare UUID
+//     board_delete) dispatch on the prj-/epc-/tsk- prefix; a bare UUID
 //     is refused with the prefix rule; board_update_item rejects fields
 //     foreign to the addressed kind (no silent drops).
 //   - OR4 ANCHOR: tags ride verbatim — a well-formed pr:N anchor and a
@@ -51,7 +51,10 @@ var boardToolNames = []string{
 	"board_update_item", "board_move_stage", "board_start_task",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 	"board_project_archive", "board_project_unarchive",
-	"board_cancel", "board_add_dependency", "board_remove_dependency",
+	"board_project_pause", "board_project_resume",
+	"board_pause_task", "board_resume_task",
+	"board_delete", "board_import_plan",
+	"board_add_dependency", "board_remove_dependency",
 }
 
 // TestBoardTools_Registration: NewServer registers exactly the design's
@@ -154,21 +157,21 @@ func boardAllowCases() []boardToolCase {
 		},
 		{
 			name: "board_create_epic", tool: "board_create_epic",
-			args: map[string]any{"project_id": "prj-aaaa1111", "title": "E1", "outcome": "ship", "priority": "P1",
+			args: map[string]any{"project_id": "prj-aaaa1111", "title": "E1", "outcome": "ship",
 				"tags": []any{"beta"}, "request_id": "req-e1"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardCreateEpic", mock.Anything, "prj-aaaa1111", BoardEpicBody{
-					Title: "E1", Outcome: "ship", Priority: "P1", Tags: []string{"beta"}, RequestID: "req-e1",
+					Title: "E1", Outcome: "ship", Tags: []string{"beta"}, RequestID: "req-e1",
 				}).Return(`{"short_id":"epc-bbbb2222"}`, nil)
 			},
 		},
 		{
 			name: "board_create_task", tool: "board_create_task",
-			args: map[string]any{"epic_id": "epc-bbbb2222", "title": "T1", "description": "do it", "priority": "P0",
+			args: map[string]any{"epic_id": "epc-bbbb2222", "title": "T1", "description": "do it",
 				"tags": []any{"pr:123"}, "request_id": "req-t1"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{
-					Title: "T1", Description: "do it", Priority: "P0", Tags: strPtr([]string{"pr:123"}), RequestID: "req-t1",
+					Title: "T1", Description: "do it", Tags: strPtr([]string{"pr:123"}), RequestID: "req-t1",
 				}).Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
@@ -191,10 +194,10 @@ func boardAllowCases() []boardToolCase {
 		},
 		{
 			name: "board_update_task", tool: "board_update_item",
-			args: map[string]any{"item_id": "tsk-cccc3333", "priority": "P1", "set_criteria_met": 0},
+			args: map[string]any{"item_id": "tsk-cccc3333", "set_criteria_met": 0},
 			mock: func(m *MockAPIClient) {
 				zero := 0
-				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{Priority: "P1", SetCriteriaMet: &zero}).
+				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &zero}).
 					Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
@@ -217,7 +220,7 @@ func boardAllowCases() []boardToolCase {
 		{
 			name: "board_epic_activate", tool: "board_epic_activate", args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222").Return(`{"status":"active"}`, nil)
+				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", false).Return(`{"status":"active"}`, nil)
 			},
 		},
 		{
@@ -251,19 +254,60 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_cancel_task", tool: "board_cancel",
-			args: map[string]any{"item_id": "tsk-cccc3333", "reason": "obsolete", "request_id": "req-c1"},
+			name: "board_delete_task", tool: "board_delete",
+			args: map[string]any{"item_id": "tsk-cccc3333", "reconnect": true},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardCancelTask", mock.Anything, "tsk-cccc3333", "obsolete", "req-c1").
-					Return(`{"stage":"cancel"+"led"}`, nil) //nolint:misspell // design-verbatim stage value
+				m.On("BoardDeleteTask", mock.Anything, "tsk-cccc3333", true).
+					Return(`{"item_kind":"task","short_id":"tsk-cccc3333","reconnected":["tsk-eeee5555→tsk-aaaa1111"]}`, nil)
 			},
 		},
 		{
-			name: "board_cancel_epic", tool: "board_cancel",
-			args: map[string]any{"item_id": "epc-bbbb2222", "reason": "done elsewhere"},
+			name: "board_delete_epic", tool: "board_delete",
+			args: map[string]any{"item_id": "epc-bbbb2222", "force": true},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardCancelEpic", mock.Anything, "epc-bbbb2222", "done elsewhere", "").
-					Return(`{"status":"paused"}`, nil)
+				m.On("BoardDeleteEpic", mock.Anything, "epc-bbbb2222", true).
+					Return(`{"item_kind":"epic","short_id":"epc-bbbb2222"}`, nil)
+			},
+		},
+		{
+			name: "board_pause_task", tool: "board_pause_task",
+			args: map[string]any{"task_id": "tsk-cccc3333", "request_id": "req-p1"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardPauseTask", mock.Anything, "tsk-cccc3333", "req-p1").
+					Return(`{"paused":true}`, nil)
+			},
+		},
+		{
+			name: "board_resume_task", tool: "board_resume_task",
+			args: map[string]any{"task_id": "tsk-cccc3333"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardResumeTask", mock.Anything, "tsk-cccc3333", "").
+					Return(`{"paused":false}`, nil)
+			},
+		},
+		{
+			name: "board_project_pause", tool: "board_project_pause",
+			args: map[string]any{"project_id": "prj-aaaa1111"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardProjectPause", mock.Anything, "prj-aaaa1111").Return(`{"paused":true}`, nil)
+			},
+		},
+		{
+			name: "board_project_resume", tool: "board_project_resume",
+			args: map[string]any{"project_id": "prj-aaaa1111"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardProjectResume", mock.Anything, "prj-aaaa1111").Return(`{"paused":false}`, nil)
+			},
+		},
+		{
+			name: "board_import_plan", tool: "board_import_plan",
+			args: map[string]any{"project_id": "prj-aaaa1111", "epic_title": "E", "dry_run": true,
+				"tasks": []any{map[string]any{"key": "a", "title": "A"}}},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardImportPlan", mock.Anything, "prj-aaaa1111", BoardPlanBody{
+					EpicTitle: "E", DryRun: true,
+					Tasks: []BoardPlanTaskBody{{Key: "a", Title: "A"}},
+				}).Return(`{"dry_run":true}`, nil)
 			},
 		},
 		{
@@ -320,7 +364,7 @@ func TestBoardTools_RequiredArgs(t *testing.T) {
 		{"board_update_item_no_id", "board_update_item", map[string]any{"name": "x"}},
 		{"board_update_item_bare_uuid", "board_update_item", map[string]any{"item_id": "3fa85f64"}},
 		{"board_move_stage_no_stage", "board_move_stage", map[string]any{"task_id": "tsk-cccc3333"}},
-		{"board_cancel_no_id", "board_cancel", map[string]any{}},
+		{"board_delete_no_id", "board_delete", map[string]any{}},
 		{"board_add_dependency_no_depends", "board_add_dependency", map[string]any{"task_id": "tsk-cccc3333"}},
 		{"board_remove_dependency_no_depends", "board_remove_dependency", map[string]any{"task_id": "tsk-cccc3333"}},
 	}
@@ -374,7 +418,7 @@ func TestBoardTools_GuardPassThrough(t *testing.T) {
 			tool: "board_epic_activate",
 			args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mockFn: func(m *MockAPIClient) {
-				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222").
+				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", mock.Anything).
 					Return("", fmt__error("API error 403: {\"error\":\"board: guard authz: board actions belong to the owning user (ruling R7)\",\"code\":\"authz\"}"))
 			},
 			contains: []string{"403", "authz"},
@@ -562,8 +606,18 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardProjectArchive(ctx, makeReq(name, args))
 	case "board_project_unarchive":
 		return h.boardProjectUnarchive(ctx, makeReq(name, args))
-	case "board_cancel":
-		return h.boardCancel(ctx, makeReq(name, args))
+	case "board_delete":
+		return h.boardDelete(ctx, makeReq(name, args))
+	case "board_pause_task":
+		return h.boardPauseTask(ctx, makeReq(name, args))
+	case "board_resume_task":
+		return h.boardResumeTask(ctx, makeReq(name, args))
+	case "board_project_pause":
+		return h.boardProjectPause(ctx, makeReq(name, args))
+	case "board_project_resume":
+		return h.boardProjectResume(ctx, makeReq(name, args))
+	case "board_import_plan":
+		return h.boardImportPlan(ctx, makeReq(name, args))
 	case "board_add_dependency":
 		return h.boardAddDependency(ctx, makeReq(name, args))
 	case "board_remove_dependency":
@@ -672,13 +726,13 @@ func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	}
 }
 
-// TestBoardTools_CancelProjectRefused (r2): board_cancel on a prj- id
+// TestBoardTools_DeleteProjectRefused (r2): board_delete on a prj- id
 // explains the archive path — projects have no terminal-stage value (ruling
 // R2's epic/project vocabulary).
-func TestBoardTools_CancelProjectRefused(t *testing.T) {
+func TestBoardTools_DeleteProjectRefused(t *testing.T) {
 	m := &MockAPIClient{} // no expectations: no client call may fire
 	h := &handlers{client: m, timeout: 30 * time.Second}
-	res, _ := callBoardTool(t, h, "board_cancel", map[string]any{"item_id": "prj-aaaa1111"})
+	res, _ := callBoardTool(t, h, "board_delete", map[string]any{"item_id": "prj-aaaa1111"})
 	assert.True(t, res.IsError)
 	text := boardResultText(res)
 	assert.Contains(t, text, "archive", "the refusal points at the archive path")

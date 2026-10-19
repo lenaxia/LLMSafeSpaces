@@ -46,8 +46,8 @@ func (s *BoardSuite) TestKill_StageMachineGuards() {
 		{"done→backlog: done has no enumerated exit",
 			board.StageDone, board.StageBacklog, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
 		{"done→in_progress", board.StageDone, board.StageInProgress, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
-		{"in_progress→terminal via move_stage: cancel is its own action",
-			board.StageInProgress, board.StageCancelled, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
+		{"in_progress→backlog: no such backward move (#1747: no terminal stage exists)",
+			board.StageInProgress, board.StageBacklog, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
 		{"backlog→done skips the machine", board.StageBacklog, board.StageDone, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
 		{"backlog→pending_input", board.StageBacklog, board.StagePendingInput, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
 		{"in_review→backlog: no such backward move", board.StageInReview, board.StageBacklog, func(a board.Actor, _ string) board.Actor { return a }, board.GuardStage},
@@ -194,34 +194,11 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			s.Require().NoError(err)
 			s.True(c.Escalated)
 		}},
-		{"dependency-abandoned from live claim (deliberate exception)", want{"reclaim", board.PendingOriginDependencyAbandoned, true, true}, func(t *board.Task, ws string) {
-			// Park the prerequisite epic/task fixture: a sibling canceled
-			// task this task depends on, staged while claimed.
-			p := s.reloadProject(s.reloadTask(t.ID).ProjectID)
-			_ = p
-			c := s.claimOrFail(ws)
-			s.Require().Equal(t.ID, c.TaskID)
-			prereq := s.seedTask(s.reloadEpic(t.EpicID), "prereq-"+t.ShortID, nil, false)
-			s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), t.ID, "", prereq.ID, ""))
-			_, err := s.svc.CancelTask(context.Background(), s.owner(), prereq.ID, "", "abandon", "")
-			s.Require().NoError(err)
-		}},
-		{"dependency-abandoned from backlog/lapsed", want{"backlog", board.PendingOriginDependencyAbandoned, false, false}, func(t *board.Task, ws string) {
-			prereq := s.seedTask(s.reloadEpic(t.EpicID), "prereq-b-"+t.ShortID, nil, false)
-			s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), t.ID, "", prereq.ID, ""))
-			_, err := s.svc.CancelTask(context.Background(), s.owner(), prereq.ID, "", "abandon", "")
-			s.Require().NoError(err)
-		}},
-		{"dependency-abandoned from in_review", want{"reclaim", board.PendingOriginDependencyAbandoned, false, true}, func(t *board.Task, ws string) {
-			c := s.claimOrFail(ws)
-			s.Require().Equal(t.ID, c.TaskID)
-			_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), t.ID, "", board.StageInReview, "", "")
-			s.Require().NoError(err)
-			prereq := s.seedTask(s.reloadEpic(t.EpicID), "prereq-r-"+t.ShortID, nil, false)
-			s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), t.ID, "", prereq.ID, ""))
-			_, err = s.svc.CancelTask(context.Background(), s.owner(), prereq.ID, "", "abandon", "")
-			s.Require().NoError(err)
-		}},
+		// #1747 round 3: the dependency_abandoned origin's only creator
+		// (cancel's dependent cascade) is ELIMINATED — deleting a
+		// prerequisite removes the edge, so dependents UNBLOCK instead of
+		// staging pending. The origin remains in the vocabulary for
+		// historical rows only; no live provenance constructs it.
 		{"drift-review", want{"reclaim", board.PendingOriginDriftReview, false, true}, func(t *board.Task, ws string) {
 			c := s.claimOrFail(ws)
 			s.Require().Equal(t.ID, c.TaskID)
@@ -358,14 +335,16 @@ func (s *BoardSuite) TestKill_IdempotentReplayConverges() {
 		`SELECT count(*) FROM tasks WHERE title='dup-create'`).Scan(&n))
 	s.Equal(1, n, "one task per requestId")
 
-	// cancel replay.
+	// delete is idempotent-by-absence (#1747): the first delete removes
+	// the row (its event embeds the final-state snapshot); the replay
+	// resolves a gone row and 404s.
 	s.Require().NoError(s.svc.AddDependency(ctx, s.owner(), task.ID, "", created.ID, ""))
-	s.seedTask(e, "second", nil, true) // keep the epic non-terminal for cancel
-	_, err = s.svc.CancelTask(ctx, s.owner(), created.ID, "", "r", "req-3")
+	out, err := s.svc.DeleteTask(ctx, s.owner(), created.ID, "", false, "")
 	s.Require().NoError(err)
-	_, err = s.svc.CancelTask(ctx, s.owner(), created.ID, "", "r", "req-3")
-	s.Require().NoError(err)
-	s.Equal(1, s.countTransitions(created.ID, board.StageCancelled))
+	s.Equal(created.ShortID, out.ShortID)
+	s.Contains(out.OrphanedDependents, task.ShortID, "the dependent is listed (affected-party visibility)")
+	_, err = s.svc.DeleteTask(ctx, s.owner(), created.ID, "", false, "")
+	s.Require().Error(err, "a deleted task never resolves again")
 }
 
 // KILL-TEST 33 (ruling R4a): dependency guards — cycle rejection at write

@@ -304,3 +304,175 @@ func mcpToolsList(t *testing.T) map[string]map[string]any {
 	}
 	return out
 }
+
+// --- #1747 manager tools: wire contract + grant differentiation ---------------
+
+// TestMCPBoard_ManagerWireContract: each manager tool drives its seam
+// route with the pod SA token + the workspace/session stamps, and the
+// caller's fields pass through verbatim (the mcpAutomation discipline).
+func TestMCPBoard_ManagerWireContract(t *testing.T) {
+	t.Run("board_create_task wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-cccc3333"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		out, err := mcpAutomation(context.Background(), "board_create_task", map[string]any{
+			"epicId": "epc-bbbb2222", "title": "T1", "description": "do",
+			"dependsOn":            []any{"tsk-aaaa1111"},
+			"lsp_injected_session": "ses_workercaller1",
+		})
+		require.NoError(t, err)
+		assert.Contains(t, out, "tsk-cccc3333")
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks", rec.path)
+
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"T1"`, string(wire["title"]), "caller fields reach the wire verbatim")
+		assert.JSONEq(t, `"do"`, string(wire["description"]))
+		assert.NotEmpty(t, wire["dependsOn"], "inline dependsOn reaches the wire")
+		assert.JSONEq(t, `"ws-1"`, string(wire["workspaceID"]), "the workspace stamp")
+		assert.JSONEq(t, `"ses_workercaller1"`, string(wire["sessionId"]),
+			"the injected session identity rides the wire (audit attribution + the seam belt)")
+	})
+
+	t.Run("board_epic_activate wire (ack flag)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"epic":{"status":"active"}}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_epic_activate", map[string]any{
+			"epicId": "epc-bbbb2222", "acknowledgeInactiveDeps": true, "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "/internal/v1/automation/board/epics/epc-bbbb2222/activate", rec.path)
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `true`, string(wire["acknowledgeInactiveDeps"]))
+	})
+
+	t.Run("board_delete_task wire (reconnect query)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"item_kind":"task"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_delete_task", map[string]any{
+			"taskId": "tsk-cccc3333", "reconnect": true, "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, http.MethodDelete, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333", rec.path)
+		assert.Contains(t, rec.query, "workspaceID=ws-1")
+		assert.Contains(t, rec.query, "reconnect=true")
+		assert.Contains(t, rec.query, "sessionId=ses-1", "DELETE carries the session on the query")
+	})
+
+	t.Run("board_delete_epic wire (force query)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"item_kind":"epic"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_delete_epic", map[string]any{
+			"epicId": "epc-bbbb2222", "force": true, "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, http.MethodDelete, rec.method)
+		assert.Contains(t, rec.query, "force=true")
+	})
+
+	t.Run("board_import_plan wire (dry-run)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"dry_run":true}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_import_plan", map[string]any{
+			"projectId": "prj-aaaa1111", "epicTitle": "E", "dryRun": true,
+			"lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/import-plan", rec.path)
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `true`, string(wire["dryRun"]))
+	})
+
+	t.Run("board_pause_task / board_pause_project wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"paused":true}`)
+		setupRenameWorkspaceEnv(t, api)
+		_, err := mcpAutomation(context.Background(), "board_pause_task", map[string]any{
+			"taskId": "tsk-cccc3333", "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
+
+		_, err = mcpAutomation(context.Background(), "board_project_pause", map[string]any{
+			"projectId": "prj-aaaa1111", "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/pause", rec.path)
+	})
+}
+
+// TestMCPBoard_ManagerGrantGate (#1747 §5, tier 1): manager tools
+// REQUIRE a session identity (fail-closed) and REFUSE sessions recorded
+// as spawned board workers. Worker tools are unaffected.
+func TestMCPBoard_ManagerGrantGate(t *testing.T) {
+	t.Run("no session identity → fail-closed refusal pre-wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_create_task", map[string]any{
+			"epicId": "epc-bbbb2222", "title": "T1"})
+		require.Error(t, err, "an unidentified caller holds no manager grant")
+		assert.Contains(t, err.Error(), "#1747")
+		assert.Empty(t, rec.method, "no wire call may happen for a refused call")
+	})
+
+	t.Run("spawned-worker session → refused pre-wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_spawnedworker")
+
+		_, err := mcpAutomation(context.Background(), "board_epic_activate", map[string]any{
+			"epicId": "epc-bbbb2222", "lsp_injected_session": "ses_spawnedworker"})
+		require.Error(t, err, "a spawned worker never gains manager tools")
+		assert.Contains(t, err.Error(), "user-collaborator")
+		assert.Empty(t, rec.method)
+
+		// The declared fallback does not bypass the registry either.
+		_, err = mcpAutomation(context.Background(), "board_pause_task", map[string]any{
+			"taskId": "tsk-cccc3333", "sessionId": "ses_spawnedworker"})
+		require.Error(t, err)
+		assert.Empty(t, rec.method)
+	})
+
+	t.Run("injection wins over a declared worker id", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_create_epic", map[string]any{
+			"projectId": "prj-aaaa1111", "title": "E",
+			"sessionId": "ses_spawnedworker", "lsp_injected_session": "sessi-2feellha"})
+		require.NoError(t, err, "the harness-attested injection is authoritative (the send_message pattern)")
+		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/epics", rec.path)
+	})
+
+	t.Run("worker tools need no session (the in-flight surface is unchanged)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"extended":true}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), "board_heartbeat", map[string]any{
+			"shortId": "tsk-cccc3333", "claimToken": "tok", "observedProgressAt": "2026-10-19T12:00:00Z"})
+		require.NoError(t, err)
+		assert.NotEmpty(t, rec.method)
+	})
+}
+
+// TestMCPBoard_WorkerRegistry: the spawn-time registry is append-only
+// and file-backed (restart-safe), the restart-marker pattern.
+func TestMCPBoard_WorkerRegistry(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/workers.jsonl"
+	t.Setenv("LLMSAFESPACES_BOARD_WORKERS_PATH", path)
+
+	fresh := newBoardWorkerRegistry(path)
+	assert.False(t, fresh.isWorker("ses_a"), "empty registry")
+
+	fresh.record("ses_a")
+	fresh.record("ses_a") // idempotent
+	assert.True(t, fresh.isWorker("ses_a"))
+
+	// A NEW process hydrates from the same file.
+	rehydrated := newBoardWorkerRegistry(path)
+	assert.True(t, rehydrated.isWorker("ses_a"), "the record survives restarts")
+	assert.False(t, rehydrated.isWorker("ses_never"))
+}

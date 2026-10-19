@@ -1534,6 +1534,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				ThrottleBackoff: time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
 				DRRQuantum:      cfg.Board.DRRQuantum,
 				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
+				// #1747 backpressure caps + DAG blast-radius bounds.
+				UserClaimCap:    cfg.Board.UserClaimCap,
+				GlobalClaimCap:  cfg.Board.GlobalClaimCap,
+				MaxEdgesPerNode: cfg.Board.MaxEdgesPerNode,
+				MaxNodesPerEpic: cfg.Board.MaxNodesPerEpic,
 			}
 			// The §4.4 dispatch drive: with a spawn seam installed, the
 			// reconciler's sweep feeds claimable work to fresh workers
@@ -1550,6 +1555,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
 				)),
 				board.WithAsyncSpawn(),
+				// #1747: the worker-directive seams — delete's in-flight
+				// abort + pause-must-pause halt/resume delivery, both on
+				// the pkg/agent adapter's session routes (no new
+				// transport).
+				board.WithWorkerAborter(newBoardAborter(boardPool, agentAdapter)),
+				board.WithWorkerMessenger(newBoardMessenger(boardPool, agentAdapter)),
 			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions
 			// poke the queue; this consumer drives the affected project

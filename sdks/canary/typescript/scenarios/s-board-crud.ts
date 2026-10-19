@@ -48,7 +48,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P5: epic create (draft default) → activate → double-pause guard
     const [eOk, epic] = await r.assertNoError(
-      () => c.board.createEpic(projectSid, { title: 'E1', outcome: 'canary', priority: 'P1' }),
+      () => c.board.createEpic(projectSid, { title: 'E1', outcome: 'canary' }),
       'create-epic: no error',
     );
     if (!eOk || !epic) return;
@@ -65,7 +65,6 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () =>
         c.board.createTask(epicSid, {
           title: 'Task A',
-          priority: 'P0',
           tags: ['pr:1234'],
           acceptanceCriteria: [
             { text: 'c1', met: true },
@@ -121,12 +120,12 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P11: cancel task (terminal, idempotent) + cancel epic (→ paused)
     const [cOk, cancelled] = await r.assertNoError(
-      () => c.board.cancelTask(taskBSid, { reason: 'canary cleanup' }),
+      () => c.board.deleteTask(taskBSid),
       'cancel-task: no error',
     );
     if (cOk && cancelled) r.assert(cancelled.stage === 'cancelled', 'cancel-task: cancelled', cancelled.stage);
     const [ceOk, ce] = await r.assertNoError(
-      () => c.board.cancelEpic(epicSid, { reason: 'canary cleanup' }),
+      () => c.board.deleteEpic(epicSid, true),
       'cancel-epic: no error',
     );
     if (ceOk && ce) r.assert(ce.status === 'paused', 'cancel-epic: paused', ce.status);

@@ -1426,6 +1426,22 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 			return "", err
 		}
 		res, err = client.BoardMoveStage(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+
+	// --- Task Board MANAGER tools (#1747): the full manager set at
+	// project/epic/task level, workspace-scoped by the pod identity,
+	// session-gated (user-collaborator sessions only — spawned workers
+	// hold no manager grant; the fail-closed injection check is the
+	// first tier, the engine's live-assignee belt the second).
+	case "board_create_project", "board_update_project",
+		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
+		"board_create_epic", "board_update_epic",
+		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
+		"board_delete_epic",
+		"board_create_task", "board_update_task",
+		"board_add_dependency", "board_remove_dependency",
+		"board_delete_task", "board_pause_task", "board_resume_task",
+		"board_import_plan":
+		res, err = dispatchBoardManagerTool(ctx, client, name, body, saToken, workspaceID)
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)
 	}

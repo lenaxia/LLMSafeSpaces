@@ -141,12 +141,11 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	if err := s.failAt(ctx, fpRC3Pre); err != nil {
 		return res, err
 	}
-	repairs, abandoned, err := s.rc3Dependencies(ctx)
+	repairs, err := s.rc3Dependencies(ctx)
 	if err != nil {
 		return res, err
 	}
 	res.DepRepairs = repairs
-	res.AbandonedStaged = abandoned
 
 	// --- RC4 net: missed terminal events ---------------------------------
 	if err := s.failAt(ctx, fpRC4Pre); err != nil {
@@ -631,14 +630,17 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 
 // rc3Dependencies recomputes is_blocked from the edge table (non-terminal
 // rows only — terminal rows' is_blocked is meaningless and stable) and
-// stages the canceled-dependency transition class (skipping rows already
+// stages the cancel-dependent transition class (skipping rows already
 // pending: origin preserved, no oscillation).
-func (s *Service) rc3Dependencies(ctx context.Context) (repairs, abandoned int, err error) {
-	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
-
+// rc3Dependencies recomputes is_blocked from the edge table (RC3): a
+// task is blocked iff it holds a dependency whose prerequisite is not
+// done. With cancel eliminated (#1747 round 3) there is no such
+// class — deleted prerequisites' edges vanish with the row, so this
+// recompute is the WHOLE dependency-consistency story.
+func (s *Service) rc3Dependencies(ctx context.Context) (repairs int, err error) {
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -647,63 +649,19 @@ func (s *Service) rc3Dependencies(ctx context.Context) (repairs, abandoned int, 
 			SELECT 1 FROM board_dependencies d
 			JOIN tasks dep ON dep.id = d.depends_on_task_id
 			WHERE d.task_id = t.id AND dep.stage <> 'done')
-		WHERE t.stage <> 'cancelled'
+		WHERE t.stage <> 'done'
 		  AND t.is_blocked IS DISTINCT FROM EXISTS(
 			SELECT 1 FROM board_dependencies d
 			JOIN tasks dep ON dep.id = d.depends_on_task_id
 			WHERE d.task_id = t.id AND dep.stage <> 'done')`)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	repairs = int(tag.RowsAffected())
-
-	// Abandoned-edge class: dependents of canceled tasks that are still
-	// in a non-terminal, non-pending stage.
-	rows, err := tx.Query(ctx, `
-		SELECT d.task_id, t.stage, t.project_id FROM board_dependencies d
-		JOIN tasks dep ON dep.id = d.depends_on_task_id
-		JOIN tasks t ON t.id = d.task_id
-		WHERE dep.stage='cancelled'
-		  AND t.stage NOT IN ('cancelled','pending_input','done')
-		FOR UPDATE OF t SKIP LOCKED`)
-	if err != nil {
-		return 0, 0, err
-	}
-	type victim struct {
-		id, stage, project string
-	}
-	var victims []victim
-	for rows.Next() {
-		var v victim
-		if err := rows.Scan(&v.id, &v.stage, &v.project); err != nil {
-			rows.Close()
-			return 0, 0, err
-		}
-		victims = append(victims, v)
-	}
-	rows.Close()
-	for _, v := range victims {
-		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='dependency_abandoned'
-			WHERE id=$1 AND stage NOT IN ('cancelled','pending_input','done')`, v.id)
-		if err != nil {
-			return 0, 0, err
-		}
-		if tag.RowsAffected() > 0 {
-			if err := writeTransition(ctx, txQ{tx}, v.id, v.stage, StagePendingInput, "", sys); err != nil {
-				return 0, 0, err
-			}
-			if err := insertEventTx(ctx, tx, v.project, "reconciler:abandoned:"+v.id, "abandon_stage",
-				"task", v.id, sys, map[string]any{"task_id": v.id}); err != nil {
-				return 0, 0, err
-			}
-			abandoned++
-		}
-	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	return repairs, abandoned, nil
+	return repairs, nil
 }
 
 // rc4Net completes epics whose done-transition events were missed by the
@@ -777,11 +735,11 @@ func (r *Reconciler) Start(ctx context.Context) error {
 				continue
 			}
 			if res.Reclaims+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
-				res.AbandonedStaged+res.PendingStaged+res.Resumes+res.EpicCompletions > 0 {
+				res.PendingStaged+res.Resumes+res.EpicCompletions > 0 {
 				slog.InfoContext(ctx, "board: reconciler sweep",
 					"reclaims", res.Reclaims, "drift_done", res.DriftDone, "drift_review", res.DriftReview,
 					"drift_reentry", res.DriftReentry, "dep_repairs", res.DepRepairs,
-					"abandoned_staged", res.AbandonedStaged, "pending_staged", res.PendingStaged,
+					"pending_staged", res.PendingStaged,
 					"resumes", res.Resumes, "epic_completions", res.EpicCompletions)
 			}
 		}

@@ -1323,17 +1323,47 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 	w.POST("/:id/runs", h.WorkflowRun)
 	w.GET("/:id/runs", h.WorkflowRuns)
 
-	// Board worker seam (design 0067 §4.3c): the fresh worker's
+	// Board seam (design 0067 §4.3c, amended by #1747): the worker's
 	// board_heartbeat / board_report_throttle / board_move_stage /
-	// board_read speak these routes with the pod SA token. Manager
-	// projections are Lanes 2-3 (#1699); claim_next is engine-internal
-	// (R9: claim-then-spawn) and never routes.
+	// board_read speak these routes with the pod SA token — AND, since
+	// #1747, the FULL manager set at project/epic/task level (the
+	// collaboration-to-execution loop: an agent creates the epics/tasks,
+	// activates the epic, the engine's claim-then-spawn executes).
+	// claim_next is engine-internal (R9) and never routes; task_start is
+	// dropped from agent surfaces (round-3 #2). The resource-pressure
+	// route carries agentd's backpressure telemetry (#1747 round 3).
 	if h.HasBoard() {
 		b := router.Group("/internal/v1/automation/board")
 		b.GET("/tasks/:id", h.BoardTaskGet)
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
+
+		b.POST("/projects", h.BoardCreateProject)
+		b.PATCH("/projects/:id", h.BoardUpdateProject)
+		b.POST("/projects/:id/archive", h.BoardArchiveProject)
+		b.POST("/projects/:id/unarchive", h.BoardUnarchiveProject)
+		b.POST("/projects/:id/pause", h.BoardPauseProject)
+		b.POST("/projects/:id/resume", h.BoardResumeProject)
+		b.POST("/projects/:id/epics", h.BoardCreateEpic)
+		b.POST("/projects/:id/import-plan", h.BoardImportPlan)
+
+		b.PATCH("/epics/:id", h.BoardUpdateEpic)
+		b.POST("/epics/:id/activate", h.BoardEpicActivate)
+		b.POST("/epics/:id/pause", h.BoardEpicPause)
+		b.POST("/epics/:id/archive", h.BoardEpicArchive)
+		b.POST("/epics/:id/unarchive", h.BoardEpicUnarchive)
+		b.DELETE("/epics/:id", h.BoardDeleteEpic)
+		b.POST("/epics/:id/tasks", h.BoardCreateTask)
+
+		b.PATCH("/tasks/:id", h.BoardUpdateTask)
+		b.POST("/tasks/:id/pause", h.BoardPauseTask)
+		b.POST("/tasks/:id/resume", h.BoardResumeTask)
+		b.DELETE("/tasks/:id", h.BoardDeleteTask)
+		b.POST("/tasks/:id/dependencies", h.BoardAddDependency)
+		b.DELETE("/tasks/:id/dependencies/:dependsOnId", h.BoardRemoveDependency)
+
+		b.POST("/resource-pressure", h.BoardResourcePressure)
 	}
 }
 
@@ -2170,8 +2200,11 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		p.PATCH("/:id", b.UpdateProject)
 		p.POST("/:id/archive", b.ArchiveProject)
 		p.POST("/:id/unarchive", b.UnarchiveProject)
+		p.POST("/:id/pause", b.PauseProject)
+		p.POST("/:id/resume", b.ResumeProject)
 		p.GET("/:id/tasks", b.ListProjectTasks)
 		p.POST("/:id/epics", b.CreateEpic)
+		p.POST("/:id/import-plan", b.ImportPlan)
 
 		e := router.Group("/api/v1/me/epics")
 		e.Use(services.GetAuth().AuthMiddleware())
@@ -2181,7 +2214,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		e.POST("/:id/pause", b.PauseEpic)
 		e.POST("/:id/archive", b.ArchiveEpic)
 		e.POST("/:id/unarchive", b.UnarchiveEpic)
-		e.POST("/:id/cancel", b.CancelEpic)
+		e.DELETE("/:id", b.DeleteEpic)
 		e.POST("/:id/tasks", b.CreateEpicTask)
 
 		k := router.Group("/api/v1/me/tasks")
@@ -2190,7 +2223,9 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.PATCH("/:id", b.UpdateTask)
 		k.POST("/:id/move-stage", b.MoveStageTask)
 		k.POST("/:id/start", b.StartTask)
-		k.POST("/:id/cancel", b.CancelTask)
+		k.POST("/:id/pause", b.PauseTask)
+		k.POST("/:id/resume", b.ResumeTask)
+		k.DELETE("/:id", b.DeleteTask)
 		k.POST("/:id/dependencies", b.AddDependency)
 		k.DELETE("/:id/dependencies/:dependsOnId", b.RemoveDependency)
 	}

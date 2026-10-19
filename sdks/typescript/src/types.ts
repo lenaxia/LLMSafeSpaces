@@ -467,6 +467,8 @@ export interface BoardProject {
   slot_cooldown_until?: string | null;
   tags: string[];
   status: string;
+  paused: boolean;
+  backpressure?: string;
   created_at: string;
   updated_at: string;
 }
@@ -478,7 +480,6 @@ export interface BoardEpic {
   title: string;
   outcome: string;
   status: string;
-  priority: string;
   project_name?: string;
   tags: string[];
   created_at: string;
@@ -497,8 +498,10 @@ export interface BoardTask {
   title: string;
   description: string;
   stage: string;
+  paused: boolean;
+  waiting_on?: string;
+  backpressure?: string;
   pending_origin?: string | null;
-  priority: string;
   project_name?: string;
   epic_name?: string;
   tags: string[];
@@ -554,7 +557,6 @@ export interface BoardProjectUpdateRequest {
 export interface BoardEpicCreateRequest {
   title: string;
   outcome?: string;
-  priority?: string;
   tags?: string[];
   requestId?: string;
 }
@@ -562,7 +564,6 @@ export interface BoardEpicCreateRequest {
 export interface BoardEpicUpdateRequest {
   title?: string;
   outcome?: string;
-  priority?: string;
   /** REPLACES the set when provided — send the full set. */
   tags?: string[];
   requestId?: string;
@@ -571,7 +572,6 @@ export interface BoardEpicUpdateRequest {
 export interface BoardTaskCreateRequest {
   title: string;
   description?: string;
-  priority?: string;
   /** May carry the pr:N anchor tag (owner ruling OR4: pattern ^pr:[1-9][0-9]*$). */
   tags?: string[];
   acceptanceCriteria?: BoardAcceptanceCriterion[];
@@ -581,7 +581,6 @@ export interface BoardTaskCreateRequest {
 export interface BoardTaskUpdateRequest {
   title?: string;
   description?: string;
-  priority?: string;
   tags?: string[];
   acceptanceCriteria?: BoardAcceptanceCriterion[];
   /** Checks off the criterion at this 0-based index (Done preparation). */
@@ -595,9 +594,48 @@ export interface BoardMoveStageRequest {
   requestId?: string;
 }
 
-export interface BoardCancelRequest {
-  reason?: string;
+export interface BoardLifecycleRequest {
   requestId?: string;
+}
+
+/** #1747: the delete result — orphaned dependents listed; every removal
+ * keeps a full snapshot in the audit log. */
+export interface BoardDeleteResult {
+  item_kind: string;
+  id: string;
+  short_id: string;
+  cascade_tasks?: string[];
+  orphaned_dependents?: string[];
+  reconnected?: string[];
+}
+
+/** #1747: one plan node (dependsOn names other keys in the payload). */
+export interface BoardPlanTask {
+  key: string;
+  title: string;
+  description?: string;
+  tags?: string[];
+  acceptanceCriteria?: Array<{ text: string; met: boolean }>;
+  dependsOn?: string[];
+}
+
+export interface BoardPlanRequest {
+  epicTitle: string;
+  outcome?: string;
+  dryRun?: boolean;
+  tasks: BoardPlanTask[];
+  requestId?: string;
+}
+
+export interface BoardImportResult {
+  dry_run: boolean;
+  plan?: { valid: boolean; error?: string; warnings: string[]; initial_ready_set: string[] };
+  project_id: string;
+  epic_id?: string;
+  epic_short_id?: string;
+  task_keys?: Record<string, string>;
+  initial_ready_set?: string[];
+  warnings: string[];
 }
 
 export interface BoardDependencyRequest {

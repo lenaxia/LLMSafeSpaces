@@ -70,7 +70,7 @@ def run(r: Runner, cfg: Config) -> None:
 
         # P5: epic create (draft default) → activate → double-pause guard
         ok, epic = r.assert_no_error(
-            lambda: c.board.create_epic(project_sid, title="E1", outcome="canary", priority="P1"),
+            lambda: c.board.create_epic(project_sid, title="E1", outcome="canary"),
             "create-epic: no error",
         )
         if not ok or not epic:
@@ -90,7 +90,6 @@ def run(r: Runner, cfg: Config) -> None:
             lambda: c.board.create_task(
                 epic_sid,
                 title="Task A",
-                priority="P0",
                 tags=["pr:1234"],
                 acceptance_criteria=[{"text": "c1", "met": True}, {"text": "c2", "met": False}],
             ),
@@ -147,12 +146,12 @@ def run(r: Runner, cfg: Config) -> None:
 
         # P11: cancel task (terminal) + cancel epic (→ paused)
         ok, cancelled = r.assert_no_error(
-            lambda: c.board.cancel_task(task_b_sid, reason="canary cleanup"), "cancel-task: no error"
+            lambda: c.board.delete_task(task_b_sid), "delete-task: no error"
         )
         if ok and cancelled:
             r.assert_(cancelled.get("stage") == "cancelled", "cancel-task: cancelled", str(cancelled.get("stage")))
         ok, ce = r.assert_no_error(
-            lambda: c.board.cancel_epic(epic_sid, reason="canary cleanup"), "cancel-epic: no error"
+            lambda: c.board.delete_epic(epic_sid), "delete-epic: no error"
         )
         if ok and ce:
             r.assert_(ce.get("status") == "paused", "cancel-epic: paused", str(ce.get("status")))

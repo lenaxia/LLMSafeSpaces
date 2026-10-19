@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -952,6 +953,205 @@ func (c *Client) BoardReportThrottle(ctx context.Context, saToken, workspaceID s
 // arbitrates every stage-machine guard.
 func (c *Client) BoardMoveStage(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/move-stage", body)
+}
+
+// --- Task Board manager seam (#1747, design 0067 §4.3c as amended) -------------
+//
+// The manager half: the same pod-identity seam, the FULL manager set at
+// project/epic/task level. Bodies carry caller content verbatim + the
+// resolver stamps (workspaceID, sessionId); flags ride queries.
+
+// boardManagerBody stamps the manager resolver fields onto a caller body.
+func boardManagerBody(body json.RawMessage, workspaceID, sessionID string) (json.RawMessage, error) {
+	stamped, err := withWorkspaceID(body, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if sessionID == "" {
+		return stamped, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(stamped, &m); err != nil {
+		return nil, err
+	}
+	m["sessionId"] = sessionID
+	return json.Marshal(m)
+}
+
+// boardManagerPost issues a stamped POST to the board seam.
+func (c *Client) boardManagerPost(ctx context.Context, saToken, workspaceID, sessionID, path string, body json.RawMessage) (*AutomationResponse, error) {
+	stamped, err := boardManagerBody(body, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost, path, saToken, stamped)
+}
+
+// BoardManagerProjectAction serves the project lifecycle verbs
+// (archive/unarchive/pause/resume).
+func (c *Client) BoardManagerProjectAction(ctx context.Context, saToken, workspaceID, sessionID, projectID, verb string) (*AutomationResponse, error) {
+	if err := validateBoardRef(projectID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/projects/%s/%s", projectID, verb), json.RawMessage(`{}`))
+}
+
+// BoardCreateProject creates a board targeting THIS pod's workspace.
+func (c *Client) BoardCreateProject(ctx context.Context, saToken, workspaceID, sessionID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID, "/internal/v1/automation/board/projects", body)
+}
+
+// BoardUpdateProject patches a project.
+func (c *Client) BoardUpdateProject(ctx context.Context, saToken, workspaceID, sessionID, projectID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(projectID); err != nil {
+		return nil, err
+	}
+	stamped, err := boardManagerBody(body, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPatch,
+		fmt.Sprintf("/internal/v1/automation/board/projects/%s", projectID), saToken, stamped)
+}
+
+// BoardCreateEpic creates a draft epic in a project.
+func (c *Client) BoardCreateEpic(ctx context.Context, saToken, workspaceID, sessionID, projectID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(projectID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/projects/%s/epics", projectID), body)
+}
+
+// BoardImportPlan materializes (or dry-run validates) a full plan.
+func (c *Client) BoardImportPlan(ctx context.Context, saToken, workspaceID, sessionID, projectID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(projectID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/projects/%s/import-plan", projectID), body)
+}
+
+// BoardUpdateEpic patches an epic.
+func (c *Client) BoardUpdateEpic(ctx context.Context, saToken, workspaceID, sessionID, epicID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(epicID); err != nil {
+		return nil, err
+	}
+	stamped, err := boardManagerBody(body, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPatch,
+		fmt.Sprintf("/internal/v1/automation/board/epics/%s", epicID), saToken, stamped)
+}
+
+// BoardManagerEpicAction serves the epic lifecycle verbs
+// (activate/pause/archive/unarchive).
+func (c *Client) BoardManagerEpicAction(ctx context.Context, saToken, workspaceID, sessionID, epicID, verb string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(epicID); err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		body = json.RawMessage(`{}`)
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/epics/%s/%s", epicID, verb), body)
+}
+
+// BoardDeleteEpic cascades destructively (force rides the query).
+func (c *Client) BoardDeleteEpic(ctx context.Context, saToken, workspaceID, sessionID, epicID string, force bool) (*AutomationResponse, error) {
+	if err := validateBoardRef(epicID); err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf("?workspaceID=%s", workspaceID)
+	if force {
+		q += "&force=true"
+	}
+	if sessionID != "" {
+		q += "&sessionId=" + url.QueryEscape(sessionID)
+	}
+	return c.automationCall(ctx, http.MethodDelete,
+		fmt.Sprintf("/internal/v1/automation/board/epics/%s%s", epicID, q), saToken, nil)
+}
+
+// BoardCreateTask creates a backlog task (inline dependsOn allowed).
+func (c *Client) BoardCreateTask(ctx context.Context, saToken, workspaceID, sessionID, epicID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(epicID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/epics/%s/tasks", epicID), body)
+}
+
+// BoardUpdateTask patches a task.
+func (c *Client) BoardUpdateTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	stamped, err := boardManagerBody(body, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPatch,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s", taskID), saToken, stamped)
+}
+
+// BoardManagerTaskAction serves the task pause/resume verbs.
+func (c *Client) BoardManagerTaskAction(ctx context.Context, saToken, workspaceID, sessionID, taskID, verb string) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/%s", taskID, verb), json.RawMessage(`{}`))
+}
+
+// BoardDeleteTask destructively removes a task (reconnect rides the query).
+func (c *Client) BoardDeleteTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, reconnect bool) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf("?workspaceID=%s", workspaceID)
+	if reconnect {
+		q += "&reconnect=true"
+	}
+	if sessionID != "" {
+		q += "&sessionId=" + url.QueryEscape(sessionID)
+	}
+	return c.automationCall(ctx, http.MethodDelete,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s%s", taskID, q), saToken, nil)
+}
+
+// BoardAddDependency adds one dependency edge.
+func (c *Client) BoardAddDependency(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/dependencies", taskID), body)
+}
+
+// BoardRemoveDependency removes one dependency edge (DELETE; the
+// resolver stamps ride the query).
+func (c *Client) BoardRemoveDependency(ctx context.Context, saToken, workspaceID, sessionID, taskID, dependsOnID string) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	if err := validateBoardRef(dependsOnID); err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf("?workspaceID=%s", workspaceID)
+	if sessionID != "" {
+		q += "&sessionId=" + url.QueryEscape(sessionID)
+	}
+	return c.automationCall(ctx, http.MethodDelete,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/dependencies/%s%s", taskID, dependsOnID, q), saToken, nil)
+}
+
+// BoardResourcePressure pushes the pod's resource-pressure sample
+// (#1747 round 3 backpressure telemetry).
+func (c *Client) BoardResourcePressure(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/resource-pressure", body)
 }
 
 // SessionArchive sets the platform-level archived marker on one session

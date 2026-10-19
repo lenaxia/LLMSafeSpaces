@@ -11,15 +11,22 @@ import (
 
 // reads.go — the board_read projection (§4.2): a read model over the
 // materialized columns. Epic progress is DERIVED here, never stored
-// (ruling R2): Done over (total − StageCancelled); a zero denominator
-// renders no-progress, never 0/0.
+// (ruling R2): Done over total; a zero denominator renders no-progress,
+// never 0/0.
 
-// GetTask resolves a task (case-insensitive short ID or UUID).
+// GetTask resolves a task (case-insensitive short ID or UUID) and
+// attaches the derived informational fields (waiting_on, backpressure).
 func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Task, error) {
-	return s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	s.decorateTask(ctx, t, nil)
+	return t, nil
 }
 
-// ListTasks lists a project's tasks (optionally by stage).
+// ListTasks lists a project's tasks (optionally by stage) in creation
+// order — the FIFO claim order's read-side mirror (#1747).
 func (s *Service) ListTasks(ctx context.Context, projectID string, stage string) ([]Task, error) {
 	q := `SELECT ` + taskColumns + ` FROM tasks t WHERE t.project_id=$1`
 	args := []any{projectID}
@@ -27,7 +34,7 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage string)
 		q += ` AND t.stage=$2`
 		args = append(args, stage)
 	}
-	q += ` ORDER BY t.priority, t.created_at`
+	q += ` ORDER BY t.created_at, t.id`
 	rows, err := s.q().Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -39,12 +46,13 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage string)
 		if err != nil {
 			return nil, err
 		}
+		s.decorateTask(ctx, t, nil)
 		out = append(out, *t)
 	}
 	return out, rows.Err()
 }
 
-// GetEpic resolves an epic with derived progress.
+// GetEpic resolves an epic with derived progress + the backpressure note.
 func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
 	if err != nil {
@@ -53,6 +61,7 @@ func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epi
 	if err := s.deriveProgress(ctx, e); err != nil {
 		return nil, err
 	}
+	s.decorateEpic(ctx, e)
 	return e, nil
 }
 
@@ -60,7 +69,7 @@ func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	err := s.q().QueryRow(ctx, `
 		SELECT
 			count(*) FILTER (WHERE t.stage = 'done'),
-			count(*) FILTER (WHERE t.stage <> 'cancelled')
+			count(*)
 		FROM tasks t WHERE t.epic_id = $1`, e.ID).Scan(&e.ProgressDone, &e.ProgressTotal)
 	if err != nil {
 		return err
@@ -69,9 +78,14 @@ func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	return nil
 }
 
-// GetProject resolves a project.
+// GetProject resolves a project (+ the backpressure note).
 func (s *Service) GetProject(ctx context.Context, projectID, shortIDOrID string) (*Project, error) {
-	return s.store.resolveProject(ctx, s.q(), "", pick(projectID, shortIDOrID))
+	p, err := s.store.resolveProject(ctx, s.q(), "", pick(projectID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	s.decorateProject(p)
+	return p, nil
 }
 
 // ListProjects lists the owner's boards (user-level, ruling R7).
@@ -87,6 +101,7 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 		if err != nil {
 			return nil, err
 		}
+		s.decorateProject(p)
 		out = append(out, *p)
 	}
 	return out, rows.Err()

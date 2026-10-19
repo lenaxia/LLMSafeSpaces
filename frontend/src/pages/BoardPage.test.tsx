@@ -41,7 +41,7 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     }
   });
 
-  it("places cards in their stage columns (short id mono, title, priority)", async () => {
+  it("places cards in their stage columns (short id mono, title)", async () => {
     renderBoard();
     const card = await screen.findByTestId("task-card-tsk-aaaa0001");
     expect(card.closest('[data-stage-drop="backlog"]')).not.toBeNull();

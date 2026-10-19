@@ -4446,14 +4446,99 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+  /me/projects/{id}/pause:
+    post:
+      tags: [board]
+      summary: Pause a project (#1747 — the scheduling lever)
+      description: |
+        Blocks claiming for every task under the project (query
+        scoping), cascades HALT directives to its in-flight workers;
+        never interrupts leases.
+      operationId: pauseBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Paused project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/projects/{id}/resume:
+    post:
+      tags: [board]
+      summary: Resume a paused project
+      description: |
+        Clears the pause and cascades RESUME directives; lapsed leases
+        re-enter the FIFO pool.
+      operationId: resumeBoardProject
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Resumed project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/projects/{id}/import-plan:
+    post:
+      tags: [board]
+      summary: Import a plan atomically (#1747)
+      description: |
+        One epic + its tasks + dependency edges from a single payload,
+        all-or-nothing. `dryRun` validates WITHOUT writing — the render
+        (graph, warnings, initial ready set) is the user's
+        plan-approval moment. Tasks address each other by payload key.
+      operationId: importBoardPlan
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardPlanRequest"
+      responses:
+        "200":
+          description: Import result (write or dry-run render)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardImportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/projects/{id}/epics:
     post:
       tags: [board]
       summary: Create an epic in a project
       description: |
         Epics default to `draft` (ruling R2): a draft epic feeds no work
-        until activated. Epic `priority` is display/filter-only in v1 —
-        the ready set orders by TASK priority. NOTE: a project listing
+        until activated. NOTE: a project listing
         endpoint is deliberately absent in v1 (engine seam gap, tracked
         on #1699).
       operationId: createBoardEpic
@@ -4483,7 +4568,7 @@ paths:
       tags: [board]
       summary: List a project's tasks
       description: |
-        Ordered by (priority, created_at). `stage` filters by one of the
+        Ordered by (creation order — FIFO, the #1747 claim rule). `stage` filters by one of the
         six stages (ruling R2's binding set); any other value is a 400.
       operationId: listBoardProjectTasks
       parameters:
@@ -4566,6 +4651,43 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+    delete:
+      tags: [board]
+      summary: Delete an epic and its tasks (#1747 — cancel is eliminated)
+      description: |
+        Destructive: every task under the epic is removed with its own
+        full-snapshot audit event (delete removes the object, not the
+        history). REFUSES with 409 epic_state while any claim under the
+        epic is in-flight unless `force=true` (which aborts each worker
+        first). Orphaned dependents outside the epic lose their edges
+        (listed in the response; each carries an unblocked_by_delete
+        audit event).
+      operationId: deleteBoardEpic
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+        - name: force
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Abort in-flight workers and delete anyway (confirm with the owner first)
+      responses:
+        "200":
+          description: Delete result (cascade listing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDeleteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/epics/{id}/activate:
     post:
       tags: [board]
@@ -4659,40 +4781,6 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
-  /me/epics/{id}/cancel:
-    post:
-      tags: [board]
-      summary: Cancel an epic (terminal cascade)
-      description: |
-        Non-terminal tasks become cancelled (already-done rows stay
-        done); the epic itself lands `paused` — the epic enum has no
-        cancelled value (ruling R2's set is binding; a cancelled epic is
-        paused-with-cancelled-tasks).
-      operationId: cancelBoardEpic
-      parameters:
-        - $ref: "#/components/parameters/BoardEpicId"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BoardCancelRequest"
-      responses:
-        "200":
-          description: Cancelled (paused) epic
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardEpic"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/BoardNotFound"
-        "409":
-          $ref: "#/components/responses/BoardConflict"
   /me/epics/{id}/tasks:
     post:
       tags: [board]
@@ -4752,7 +4840,7 @@ paths:
       description: |
         Criteria check-off rides here via `setCriteriaMet` (0-based
         index; the reviewer's Done preparation). Priority changes are
-        ordinary writes — the dispatcher reads priority fresh each
+        ordinary writes
         claim. NOTE: `tags` and `acceptanceCriteria` REPLACE when
         present; omitted fields keep existing values.
       operationId: updateBoardTask
@@ -4857,32 +4945,90 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
-  /me/tasks/{id}/cancel:
-    post:
+    delete:
       tags: [board]
-      summary: Cancel a task (terminal)
+      summary: Delete a task (#1747 — cancel is eliminated)
       description: |
-        Revokes the lease + claim token and aborts the worker;
-        non-terminal dependents are staged to pending_input with origin
-        `dependency_abandoned` (ruling R4c). Cancelled is
-        immutable-terminal — idempotent on already-cancelled rows.
-      operationId: cancelBoardTask
+        Destructive: an idle row goes straight; an in-flight row is
+        cleanly aborted first. The audit event embeds the task's full
+        final-state snapshot. Dependent edges cascade away — orphaned
+        dependents are listed in the response and each carries an
+        unblocked_by_delete audit event (visible, never a refusal). NO
+        auto-reconnect: `reconnect=true` lets orphans inherit the
+        deleted node's direct upstream edges (deduplicated,
+        cycle-guarded) — default off.
+      operationId: deleteBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BoardCancelRequest"
+        - name: reconnect
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Orphans inherit the deleted node's direct upstream edges (default off)
       responses:
         "200":
-          description: Cancelled task row
+          description: Delete result (orphan listing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDeleteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/pause:
+    post:
+      tags: [board]
+      summary: Pause a task (#1747 — the scheduling lever)
+      description: |
+        Parks the row: claim candidacy off, forward stage-writes refused
+        (409 task_paused), a HALT directive lands on the in-flight
+        worker (turn boundary — never a mid-generation cut). The lease
+        keeps running (LAPSE accounting): a long pause naturally
+        reclaims; resume brings the row back.
+      operationId: pauseBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      responses:
+        "200":
+          description: Paused task
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardTask"
-        "400":
-          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/resume:
+    post:
+      tags: [board]
+      summary: Resume a paused task
+      description: |
+        Clears the flag and delivers the RESUME directive — the held
+        session continues if its lease survived; a lapsed one re-enters
+        the FIFO pool (a fresh worker claims it).
+      operationId: resumeBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      responses:
+        "200":
+          description: Resumed task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -11760,7 +11906,7 @@ components:
     # automation seam's rendering; the parity matrix pins it). ---
     BoardProject:
       type: object
-      required: [id, short_id, user_id, name, worker_slots, tags, status, created_at, updated_at]
+      required: [id, short_id, user_id, name, worker_slots, tags, status, paused, created_at, updated_at]
       properties:
         id:
           type: string
@@ -11787,7 +11933,12 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Provider-throttle cooldown — pauses NEW claims into the project
+        paused:
+          type: boolean
+          description: "#1747 — the scheduling lever: blocks claiming for every task under the project"
+        backpressure:
+          type: string
+          description: 'Informational — e.g. "backpressure: disk 92%" (#1747)'
         tags:
           type: array
           items:
@@ -11803,7 +11954,7 @@ components:
           format: date-time
     BoardEpic:
       type: object
-      required: [id, project_id, short_id, title, outcome, status, priority, tags, created_at, updated_at, progress_done, progress_total, progress_derived]
+      required: [id, project_id, short_id, title, outcome, status, tags, created_at, updated_at, progress_done, progress_total, progress_derived]
       properties:
         id:
           type: string
@@ -11823,10 +11974,6 @@ components:
         status:
           type: string
           enum: [draft, active, paused, completed, archived]
-        priority:
-          type: string
-          enum: [P0, P1, P2, P3]
-          description: Display/filter-only in v1 — the ready set orders by TASK priority
         project_name:
           type: string
           description: Materialized display inheritance (rename = one UPDATE per carrying table)
@@ -11861,7 +12008,7 @@ components:
           type: boolean
     BoardTask:
       type: object
-      required: [id, project_id, epic_id, short_id, title, description, stage, priority, tags, acceptance_criteria, is_blocked, attempts, stage_entered_at, created_at, updated_at]
+      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, stage_entered_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -11883,15 +12030,21 @@ components:
           description: Markdown — seeds the fresh worker's charter (ruling R2)
         stage:
           type: string
-          enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+          enum: [backlog, in_progress, in_review, done, pending_input]
         pending_origin:
           type: string
           nullable: true
           enum: [worker, escalated, dependency_abandoned, drift_review]
-          description: Set entering pending_input, cleared on exit (§4.1's four origins)
-        priority:
+          description: Set entering pending_input, cleared on exit (dependency_abandoned is historical — cancel is eliminated, #1747)
+        paused:
+          type: boolean
+          description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"
+        waiting_on:
           type: string
-          enum: [P0, P1, P2, P3]
+          description: Informational — "concurrency_limit" when the ready row waits on a cap (#1747)
+        backpressure:
+          type: string
+          description: 'Informational — e.g. "backpressure: disk 92%" (#1747)'
         project_name:
           type: string
         epic_name:
@@ -12057,10 +12210,6 @@ components:
           type: string
         outcome:
           type: string
-        priority:
-          type: string
-          enum: [P0, P1, P2, P3]
-          default: P2
         tags:
           type: array
           items:
@@ -12074,9 +12223,6 @@ components:
           type: string
         outcome:
           type: string
-        priority:
-          type: string
-          enum: [P0, P1, P2, P3]
         tags:
           type: array
           items:
@@ -12093,10 +12239,11 @@ components:
         description:
           type: string
           description: Markdown — seeds the worker charter
-        priority:
-          type: string
-          enum: [P0, P1, P2, P3]
-          default: P2
+        dependsOn:
+          type: array
+          items:
+            type: string
+          description: Prerequisite task short ids — edges added in the same write (#1747)
         tags:
           type: array
           items:
@@ -12116,9 +12263,6 @@ components:
           type: string
         description:
           type: string
-        priority:
-          type: string
-          enum: [P0, P1, P2, P3]
         tags:
           type: array
           items:
@@ -12141,19 +12285,118 @@ components:
       properties:
         toStage:
           type: string
-          enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+          enum: [backlog, in_progress, in_review, done, pending_input]
         evidenceUrl:
           type: string
           description: The artifact link for THIS transition — required on → done (ruling R2)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
-    BoardCancelRequest:
+    BoardDeleteResult:
       type: object
+      required: [item_kind, id, short_id]
       properties:
-        reason:
+        item_kind:
           type: string
+          enum: [task, epic]
+        id:
+          type: string
+        short_id:
+          type: string
+        cascade_tasks:
+          type: array
+          items:
+            type: string
+          description: Epic deletes — every removed task's short id (each with its own snapshot event)
+        orphaned_dependents:
+          type: array
+          items:
+            type: string
+          description: Dependents that lost an edge — listed for the deleter; each carries an unblocked_by_delete audit event
+        reconnected:
+          type: array
+          items:
+            type: string
+          description: With reconnect=true, the inherited "orphan→upstream" pairs
+    BoardPlanTask:
+      type: object
+      required: [key, title]
+      properties:
+        key:
+          type: string
+          description: Payload-local alias edges address
+        title:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        acceptanceCriteria:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardAcceptanceCriterion"
+        dependsOn:
+          type: array
+          items:
+            type: string
+          description: Other KEYS in this payload
+    BoardPlanRequest:
+      type: object
+      required: [epicTitle, tasks]
+      properties:
+        epicTitle:
+          type: string
+        outcome:
+          type: string
+        dryRun:
+          type: boolean
+          description: Validate + render only — nothing is written (the plan-approval moment)
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardPlanTask"
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
+    BoardImportResult:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+        plan:
+          type: object
+          properties:
+            valid:
+              type: boolean
+            error:
+              type: string
+            warnings:
+              type: array
+              items:
+                type: string
+            initial_ready_set:
+              type: array
+              items:
+                type: string
+        project_id:
+          type: string
+        epic_id:
+          type: string
+        epic_short_id:
+          type: string
+        task_keys:
+          type: object
+          additionalProperties:
+            type: string
+          description: payload key → minted short id
+        initial_ready_set:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
     BoardRequestIdOnly:
       type: object
       properties:

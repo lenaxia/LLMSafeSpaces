@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -166,6 +167,16 @@ func main() {
 	defer stop()
 	bgCtx, bgCancel := context.WithCancel(rootCtx)
 	var bgWg sync.WaitGroup
+
+	// #1747 round 3: the resource-pressure reporter — samples this
+	// pod's CPU/memory/disk (static thresholds + hysteresis) and pushes
+	// over the seam; the engine stops claiming into a pressured
+	// workspace. Best-effort throughout (the TTL heals silence).
+	bgWg.Add(1)
+	go func() {
+		defer bgWg.Done()
+		boardPressureLoop(bgCtx, slog.New(slog.NewJSONHandler(os.Stderr, nil)), 30*time.Second)
+	}()
 
 	password := readAgentPassword()
 	bootAgentPassword = password

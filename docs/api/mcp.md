@@ -180,25 +180,33 @@ external actors hold no claim tokens.
 |------|---------------|-------------|
 | `board_list_projects` | _(none)_ | List the authenticated user's board projects |
 | `board_get` | `item_id` | Get one item by short id — the `prj-`/`epc-`/`tsk-` prefix selects the kind (project, epic with derived progress, task with blocked-by derivation) |
-| `board_read` | `project_id` | Read a project's tasks. Optional: `stage` (one of `backlog`, `in_progress`, `in_review`, `done`, `pending_input`, `cancelled`) |
+| `board_read` | `project_id` | Read a project's tasks. Optional: `stage` (one of `backlog`, `in_progress`, `in_review`, `done`, `pending_input`) |
 | `board_create_project` | `name`, `target_workspace_id` | Create a board project (one target workspace per project — ruling R8). Optional: `worker_slots` (default 2), `tags`, `request_id` |
-| `board_create_epic` | `project_id`, `title` | Create a DRAFT epic. Optional: `outcome` (the steering wheel), `priority` (`P0`–`P3`, default `P2`), `tags`, `request_id` |
-| `board_create_task` | `epic_id`, `title` | Create a backlog task; `description` (markdown) seeds the fresh worker's charter. Optional: `priority`, `tags` (may carry one `pr:N` anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), `acceptance_criteria` (`[{text, met}]` — Done = ALL met + evidence), `request_id` |
-| `board_update_item` | `item_id` | Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep existing values. **Tags differ by kind** (engine rules, REST-identical): on a task, omitted `tags` keep the set and an explicit `[]` clears it; on a project/epic, tags are written unconditionally — omitting them clears (send the full set to keep). Project fields: `name`, `target_workspace_id`, `worker_slots`, `tags`. Epic: `title`, `outcome`, `priority`, `tags`. Task: `title`, `description`, `priority`, `tags`, `acceptance_criteria`, `set_criteria_met` (0-based index check-off). Optional: `request_id` |
-| `board_move_stage` | `task_id`, `to_stage` | Server-arbitrated stage move. Legal manager targets: `in_progress`, `in_review`, `done`, `pending_input`, and `backlog` (the pending_input human exits); entering from backlog is claim-only (`board_start_task`) and `cancelled` is `board_cancel`'s terminal — neither is a stage move. `done` requires all acceptance criteria met + `evidence_url`. Optional: `evidence_url`, `request_id` |
+| `board_create_epic` | `project_id`, `title` | Create a DRAFT epic. Optional: `outcome` (the steering wheel), `tags`, `request_id` |
+| `board_create_task` | `epic_id`, `title` | Create a backlog task; `description` (markdown) seeds the fresh worker's charter. Optional: `tags` (may carry one `pr:N` anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), `acceptance_criteria` (`[{text, met}]` — Done = ALL met + evidence), `depends_on` (prerequisite short ids — edges added in the same write, #1747), `request_id` |
+| `board_update_item` | `item_id` | Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep existing values. **Tags differ by kind** (engine rules, REST-identical): on a task, omitted `tags` keep the set and an explicit `[]` clears it; on a project/epic, tags are written unconditionally — omitting them clears (send the full set to keep). Project fields: `name`, `target_workspace_id`, `worker_slots`, `tags`. Epic: `title`, `outcome`, `tags`. Task: `title`, `description`, `tags`, `acceptance_criteria`, `set_criteria_met` (0-based index check-off). Optional: `request_id` |
+| `board_move_stage` | `task_id`, `to_stage` | Server-arbitrated stage move. Legal manager targets: `in_progress`, `in_review`, `done`, `pending_input`, and `backlog` (the pending_input human exits); entering from backlog is claim-only (`board_start_task`) and removal is `board_delete` — neither is a stage move. Forward moves refuse on a paused task (409 `task_paused`, #1747). `done` requires all acceptance criteria met + `evidence_url`. Optional: `evidence_url`, `request_id` |
 | `board_start_task` | `task_id` | Manual one-off dispatch (claim + fresh-charter worker spawn); allowed in draft epics, refused for paused/completed/archived epics and archived projects. Optional: `request_id` |
-| `board_epic_activate` | `epic_id` | Activate an epic (start feeding work); re-opens a completed epic |
-| `board_epic_pause` | `epic_id` | Pause an epic (stop new claims; in-flight leases run on) |
+| `board_epic_activate` | `epic_id` | Activate an epic (start feeding work); re-opens a completed epic. Refuses cross-epic dependencies into inactive epics unless acknowledged (`acknowledge_inactive_deps`); reports the initial ready set (#1747) |
+| `board_epic_pause` | `epic_id` | Pause an epic (stop new claims; halt directives cascade to in-flight workers — #1747 pause-must-pause) |
 | `board_epic_archive` | `epic_id` | Archive an epic (reversible storage) |
 | `board_epic_unarchive` | `epic_id` | Unarchive an epic (always restores active) |
 | `board_project_archive` | `project_id` | Archive a project (stops all claims into it) |
 | `board_project_unarchive` | `project_id` | Unarchive a project (restores active) |
-| `board_cancel` | `item_id` | Terminal cancel of an epic or task (`epc-`/`tsk-`): revokes lease + token, aborts the worker, cascades per design §4.2. Optional: `reason`, `request_id` |
-| `board_add_dependency` | `task_id`, `depends_on` | Add a structural dependency edge (within a project; cycles rejected with did-you-mean suggestions). Optional: `request_id` |
+| `board_project_pause` | `project_id` | Pause a project — the #1747 scheduling lever: blocks claiming for every task under it, halt cascade to in-flight workers |
+| `board_project_resume` | `project_id` | Resume a paused project (resume cascade; lapsed leases re-enter the FIFO pool) |
+| `board_pause_task` | `task_id` | Pause a task (#1747): claims off, forward writes refused (409 `task_paused`), HALT to the in-flight worker; the lease keeps running (lapse accounting). Optional: `request_id` |
+| `board_resume_task` | `task_id` | Resume a paused task (RESUME directive; a lapsed lease re-enters the FIFO pool). Optional: `request_id` |
+| `board_delete` | `item_id` | Destructive delete of a task or epic (#1747 — cancel is eliminated): the audit keeps a full final-state snapshot per removed row; orphaned dependents are listed and each carries an `unblocked_by_delete` audit event; no auto-reconnect (`reconnect=true` on tasks lets orphans inherit upstream edges). `force=true` required for an epic with claims in-flight. Optional: `force`, `reconnect` |
+| `board_import_plan` | `project_id`, `epic_title` | Materialize a full plan atomically (one epic + tasks + edges, all-or-nothing, #1747). `dry_run=true` validates and renders the graph + warnings + initial ready set — the plan-approval moment |
+| `board_add_dependency` | `task_id`, `depends_on` | Add a structural dependency edge (within a workspace — cross-epic allowed, never cross-workspace; cycles rejected with did-you-mean suggestions; duplicates are idempotent no-ops; per-node caps, #1747). Optional: `request_id` |
 | `board_remove_dependency` | `task_id`, `depends_on` | Remove a dependency edge |
 
 Board search and health projections join `board_read` when the engine
 seams land (#1699); epic listing rides `board_get` per epic today.
+Ordering is dependency-only FIFO (#1747): no priority field, no
+position field, no ordering tool exists — dependencies alone define the
+ready set and creation order serves it.
 
 ## How MCP maps to workspace sessions
 

@@ -57,15 +57,13 @@ var boardStages = []string{
 // TARGET set (pkg/board stage.go's enumerated map, manager-surface
 // column): in_progress→{in_review, done, pending_input},
 // in_review→{in_progress, done, pending_input}, and the pending_input
-// human exits →{in_progress, backlog}. The boardStageCancelled terminal is NOT a move target
-// (cancel is its own terminal tool), and entering the pipeline FROM
+// human exits →{in_progress, backlog}. Entering the pipeline FROM
 // backlog is claim-only (task_start/dispatch — no manager write
-// exists), so the schema must not advertise it.
+// exists), so the schema must not advertise it. #1747: the terminal
+// cancel stage is ELIMINATED (delete replaces cancel).
 var boardMoveTargets = []string{
 	"in_progress", "in_review", "done", "pending_input", "backlog",
 }
-
-var boardPriorities = []string{"P0", "P1", "P2", "P3"}
 
 var boardListProjectsTool = mcp.NewTool("board_list_projects",
 	mcp.WithDescription("List the authenticated user's board projects (ruling R7 — user-level only). "+
@@ -83,11 +81,11 @@ var boardGetTool = mcp.NewTool("board_get",
 )
 
 var boardReadTool = mcp.NewTool("board_read",
-	mcp.WithDescription("Read a project's tasks, optionally filtered by one of the six stages "+
-		"(backlog, in_progress, in_review, done, pending_input, cancel"+"led). "+ //nolint:misspell // design-verbatim
+	mcp.WithDescription("Read a project's tasks, optionally filtered by one of the five stages "+
+		"(backlog, in_progress, in_review, done, pending_input). "+
 		"Search and health projections join this tool when the engine seams land (#1699)."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
-	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the six stages)")),
+	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the five stages)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
@@ -109,8 +107,6 @@ var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Epic title")),
 	mcp.WithString("outcome", mcp.Description("What this epic exists to achieve (the steering wheel)")),
-	mcp.WithString("priority", mcp.Enum(boardPriorities...),
-		mcp.Description("P0-P3, default P2 (display/filter only — the ready set orders by task priority)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
@@ -119,11 +115,11 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 	mcp.WithDescription("Create a backlog task in an epic. The description (markdown) seeds the worker "+
 		"charter; acceptance criteria define Done (ALL met + evidence_url — ruling R2). Tags may carry "+
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
-		"the reconciler consumes; malformed anchors are inert tags, never guessed)."),
+		"the reconciler consumes; malformed anchors are inert tags, never guessed). depends_on adds "+
+		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
 	mcp.WithString("description", mcp.Description("Markdown; seeds the fresh worker's charter (R9)")),
-	mcp.WithString("priority", mcp.Enum(boardPriorities...), mcp.Description("P0-P3, default P2")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor; the full set — project/epic updates rewrite tags wholesale)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
@@ -135,6 +131,8 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 			"required": []string{"text"},
 		}),
 		mcp.Description("Checkable criteria [{text, met}] — Done = ALL met + evidence")),
+	mcp.WithArray("depends_on", mcp.WithStringItems(),
+		mcp.Description("Prerequisite task short ids — edges added in the same transaction (#1747)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -148,7 +146,7 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 		"reviewer's Done preparation). The assignee is engine-set, never a patch field."),
 	mcp.WithString("item_id", mcp.Required(),
 		mcp.Description("Short id: prj-XXXXXXXX (name/target_workspace_id/worker_slots/tags), "+
-			"epc-XXXXXXXX (title/outcome/priority/tags), tsk-XXXXXXXX (title/description/priority/tags/"+
+			"epc-XXXXXXXX (title/outcome/tags), tsk-XXXXXXXX (title/description/tags/"+
 			"acceptance_criteria/set_criteria_met)")),
 	mcp.WithString("name", mcp.Description("Project name (prj- only; rename cascades the display inheritance)")),
 	mcp.WithString("target_workspace_id", mcp.Description("Project target workspace (prj- only; must be accessible to the owner)")),
@@ -156,7 +154,6 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 	mcp.WithString("title", mcp.Description("Epic/task title (epc-/tsk- only)")),
 	mcp.WithString("outcome", mcp.Description("Epic outcome (epc- only)")),
 	mcp.WithString("description", mcp.Description("Task description markdown (tsk- only)")),
-	mcp.WithString("priority", mcp.Enum(boardPriorities...), mcp.Description("Epic/task priority (epc-/tsk- only)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("tsk-: omitted keeps, [] clears; prj-/epc-: written unconditionally — omitted CLEARS (send the full set to keep)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
@@ -178,8 +175,8 @@ var boardMoveStageTool = mcp.NewTool("board_move_stage",
 		"returns the authoritative guard error). Legal manager moves: in_progress→{in_review, done, pending_input}, "+
 		"in_review→{in_progress (the review bounce), done, pending_input}, and the pending_input human exits "+
 		"→{in_progress, backlog}. Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
-		"write exists); the terminal stage is reached via board_cancel, never a stage move. done requires ALL acceptance "+
-		"criteria met + evidence_url (ruling R2)."),
+		"write exists); removal is board_delete, never a stage move (#1747). done requires ALL acceptance "+
+		"criteria met + evidence_url (ruling R2). Forward moves refuse on a paused task (409 task_paused)."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
 	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...), mcp.Description("Target stage")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link for THIS transition (required for done)")),
@@ -196,12 +193,17 @@ var boardStartTaskTool = mcp.NewTool("board_start_task",
 
 var boardEpicActivateTool = mcp.NewTool("board_epic_activate",
 	mcp.WithDescription("Activate an epic: start feeding ready work to fresh workers. Re-opens a completed "+
-		"epic; unarchive always restores active."),
+		"epic; unarchive always restores active. #1747: refuses cross-epic dependencies into inactive epics "+
+		"unless acknowledged, reports the initial ready set, and cascades resume directives to held workers."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithBoolean("acknowledge_inactive_deps",
+		mcp.Description("Acknowledge cross-epic deps entering inactive epics (they stay blocking until those epics activate)")),
 )
 
 var boardEpicPauseTool = mcp.NewTool("board_epic_pause",
-	mcp.WithDescription("Pause an epic: stop NEW claims without interrupting in-flight leases."),
+	mcp.WithDescription("Pause an epic: stop NEW claims without interrupting in-flight leases — and "+
+		"cascade HALT directives to the epic's in-flight workers (#1747 pause-must-pause; they land at "+
+		"the current turn's boundary)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
 )
 
@@ -225,19 +227,76 @@ var boardProjectUnarchiveTool = mcp.NewTool("board_project_unarchive",
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
 )
 
-var boardCancelTool = mcp.NewTool("board_cancel",
-	mcp.WithDescription("Terminal cancel of an epic or task by short id. Revokes the lease + claim token, "+
-		"aborts the worker, cascades to descendants (epic) and stages non-terminal dependents to "+
-		"pending_input (\"dependency abandoned\"). The cancel"+"led stage is immutable-terminal: never resurrects."), //nolint:misspell
-	mcp.WithString("item_id", mcp.Required(), mcp.Description("Epic or task short id (epc-/tsk-)")),
-	mcp.WithString("reason", mcp.Description("Why (audit trail)")),
+var boardProjectPauseTool = mcp.NewTool("board_project_pause",
+	mcp.WithDescription("Pause a project (#1747 — the scheduling lever: 'pause this project so another "+
+		"moves forward'). Blocks claiming for every task under it (query scoping), cascades HALT directives "+
+		"to its in-flight workers; never interrupts leases. resume_project clears it."),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+)
+
+var boardProjectResumeTool = mcp.NewTool("board_project_resume",
+	mcp.WithDescription("Resume a paused project: clears the flag, cascades RESUME directives to held "+
+		"workers; lapsed leases re-enter the FIFO pool."),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+)
+
+var boardPauseTaskTool = mcp.NewTool("board_pause_task",
+	mcp.WithDescription("Pause a task (#1747): parks it — claim candidacy off, forward stage-writes "+
+		"refused (409 task_paused), HALT directive to the in-flight worker (lands at the turn boundary; "+
+		"the lease keeps running — LAPSE accounting, never frozen). Dependencies stay blocking."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+)
+
+var boardResumeTaskTool = mcp.NewTool("board_resume_task",
+	mcp.WithDescription("Resume a paused task: clears the flag, delivers the RESUME directive — the held "+
+		"session continues if its lease survived; a lapsed one re-enters the FIFO pool (fresh worker)."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+)
+
+var boardDeleteTool = mcp.NewTool("board_delete",
+	mcp.WithDescription("Destructive delete of a task or epic by short id (#1747: cancel is ELIMINATED — "+
+		"delete replaces it). The audit log keeps every removal: each deleted row's event embeds a full "+
+		"final-state snapshot. delete_task: idle rows go straight; an in-flight row gets a clean worker "+
+		"abort first; dependent edges cascade away — orphaned dependents are listed in the response and "+
+		"each gets an unblocked_by_delete audit event. NO auto-reconnect: reconnect=true (task only) lets "+
+		"orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded). "+
+		"delete_epic: cascades to its tasks and requires force=true while any claim is in-flight."),
+	mcp.WithString("item_id", mcp.Required(), mcp.Description("Task or epic short id (tsk-/epc-)")),
+	mcp.WithBoolean("force", mcp.Description("epic only: abort in-flight workers and delete anyway")),
+	mcp.WithBoolean("reconnect", mcp.Description("task only: orphans inherit the deleted node's upstream edges (default off)")),
+)
+
+var boardImportPlanTool = mcp.NewTool("board_import_plan",
+	mcp.WithDescription("Materialize an entire plan atomically (#1747): one epic + its tasks + dependency "+
+		"edges from a single payload, all-or-nothing. dry_run=true validates WITHOUT writing — the render "+
+		"(graph, warnings, initial ready set) is the user's plan-approval moment. Tasks address each other "+
+		"by payload key; edges live within the workspace."),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("epic_title", mcp.Required(), mcp.Description("The created epic's title")),
+	mcp.WithString("outcome", mcp.Description("The epic's outcome (steering wheel)")),
+	mcp.WithBoolean("dry_run", mcp.Description("Validate + render only — nothing is written")),
+	mcp.WithArray("tasks",
+		mcp.Items(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key":                 map[string]any{"type": "string"},
+				"title":               map[string]any{"type": "string"},
+				"description":         map[string]any{"type": "string"},
+				"tags":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"acceptance_criteria": map[string]any{"type": "array"},
+				"depends_on":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required": []string{"key", "title"},
+		}),
+		mcp.Description("Plan nodes: [{key, title, description, tags, acceptance_criteria, depends_on:[keys]}]")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardAddDependencyTool = mcp.NewTool("board_add_dependency",
-	mcp.WithDescription("Add a structural dependency edge (rulings R3/R4 — the ONLY blocking mechanism): "+
-		"N-ary task→task within a project (cross-epic allowed, never cross-project); cycles are rejected "+
-		"with did-you-mean suggestions (409). Unblocks when ALL targets are Done."),
+	mcp.WithDescription("Add a structural dependency edge (rulings R3/R4 as amended by #1747 — the ONLY "+
+		"blocking mechanism): N-ary task→task within a WORKSPACE (cross-epic allowed, never cross-"+
+		"workspace); cycles are rejected with did-you-mean suggestions (409); duplicate edges are "+
+		"idempotent no-ops; edges per node are capped (blast-radius bound). Unblocks when ALL targets are Done."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-XXXXXXXX)")),
 	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-XXXXXXXX)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
@@ -328,7 +387,7 @@ func (h *handlers) boardCreateEpic(ctx context.Context, req mcp.CallToolRequest)
 		return mcp.NewToolResultError("project_id and title are required"), nil
 	}
 	resp, err := h.client.BoardCreateEpic(ctx, projectID, BoardEpicBody{
-		Title: title, Outcome: strArg(args, "outcome"), Priority: strArg(args, "priority"),
+		Title: title, Outcome: strArg(args, "outcome"),
 		Tags: stringSliceArg(args, "tags"), RequestID: strArg(args, "request_id"),
 	})
 	if err != nil {
@@ -349,9 +408,9 @@ func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest)
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	resp, err := h.client.BoardCreateTask(ctx, epicID, BoardTaskBody{
-		Title: title, Description: strArg(args, "description"), Priority: strArg(args, "priority"),
+		Title: title, Description: strArg(args, "description"),
 		Tags: stringSlicePtrArg(args, "tags"), AcceptanceCriteria: criteria,
-		RequestID: strArg(args, "request_id"),
+		DependsOn: stringSliceArg(args, "depends_on"), RequestID: strArg(args, "request_id"),
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create board task: %v", err)), nil
@@ -382,12 +441,10 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 	case "epic":
 		allowed["title"] = true
 		allowed["outcome"] = true
-		allowed["priority"] = true
 		allowed["tags"] = true
 	case "task":
 		allowed["title"] = true
 		allowed["description"] = true
-		allowed["priority"] = true
 		allowed["tags"] = true
 		allowed["acceptance_criteria"] = true
 		allowed["set_criteria_met"] = true
@@ -415,7 +472,7 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 	case "epic":
 		resp, err = h.client.BoardUpdateEpic(ctx, id, BoardEpicBody{
 			Title: strArg(args, "title"), Outcome: strArg(args, "outcome"),
-			Priority: strArg(args, "priority"), Tags: stringSliceArg(args, "tags"),
+			Tags:      stringSliceArg(args, "tags"),
 			RequestID: requestID,
 		})
 	case "task":
@@ -425,7 +482,7 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 		}
 		resp, err = h.client.BoardUpdateTask(ctx, id, BoardTaskBody{
 			Title: strArg(args, "title"), Description: strArg(args, "description"),
-			Priority: strArg(args, "priority"), Tags: stringSlicePtrArg(args, "tags"),
+			Tags:               stringSlicePtrArg(args, "tags"),
 			AcceptanceCriteria: criteria, SetCriteriaMet: intPtrArg(args, "set_criteria_met"),
 			RequestID: requestID,
 		})
@@ -445,7 +502,7 @@ func (h *handlers) boardMoveStage(ctx context.Context, req mcp.CallToolRequest) 
 	}
 	if !boardMoveTargetSet()[toStage] {
 		return mcp.NewToolResultError("to_stage must be a legal manager move target: " + strings.Join(boardMoveTargets, ", ") +
-			" (" + boardStageCancelled + " is board_cancel's terminal, and entering the pipeline from backlog is claim-only — board_start_task)"), nil
+			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_task)"), nil
 	}
 	resp, err := h.client.BoardMoveStage(ctx, taskID, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
 	if err != nil {
@@ -482,7 +539,17 @@ func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolReque
 }
 
 func (h *handlers) boardEpicActivate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return h.boardEpicLifecycle(ctx, req, h.client.BoardEpicActivate, "activate")
+	args := req.GetArguments()
+	epicID := strArg(args, "epic_id")
+	if epicID == "" {
+		return mcp.NewToolResultError("epic_id is required"), nil
+	}
+	ack, _ := args["acknowledge_inactive_deps"].(bool)
+	resp, err := h.client.BoardEpicActivate(ctx, epicID, ack)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to activate epic: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
 }
 
 func (h *handlers) boardEpicPause(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -519,14 +586,48 @@ func (h *handlers) boardProjectUnarchive(ctx context.Context, req mcp.CallToolRe
 	return h.boardProjectLifecycle(ctx, req, h.client.BoardUnarchiveProject, "unarchive")
 }
 
-func (h *handlers) boardCancel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardProjectPause(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return h.boardProjectLifecycle(ctx, req, h.client.BoardProjectPause, "pause")
+}
+
+func (h *handlers) boardProjectResume(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return h.boardProjectLifecycle(ctx, req, h.client.BoardProjectResume, "resume")
+}
+
+func (h *handlers) boardPauseTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardPauseTask(ctx, taskID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to pause task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardResumeTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardResumeTask(ctx, taskID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to resume task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	id := strArg(args, "item_id")
 	if id == "" {
 		return mcp.NewToolResultError("item_id is required"), nil
 	}
-	reason := strArg(args, "reason")
-	requestID := strArg(args, "request_id")
+	force, _ := args["force"].(bool)
+	reconnect, _ := args["reconnect"].(bool)
 	var resp json.RawMessage
 	var err error
 	kind, kerr := boardItemKind(id)
@@ -535,14 +636,60 @@ func (h *handlers) boardCancel(ctx context.Context, req mcp.CallToolRequest) (*m
 	}
 	switch kind {
 	case "epic":
-		resp, err = h.client.BoardCancelEpic(ctx, id, reason, requestID)
+		resp, err = h.client.BoardDeleteEpic(ctx, id, force)
 	case "task":
-		resp, err = h.client.BoardCancelTask(ctx, id, reason, requestID)
+		resp, err = h.client.BoardDeleteTask(ctx, id, reconnect)
 	case "project":
-		return mcp.NewToolResultError("projects are not " + boardStageCancelled + " — archive them (reversible storage); " + boardStageCancelled + " is for epics and tasks"), nil
+		return mcp.NewToolResultError("projects are not deleted — archive them (reversible storage); delete is for epics and tasks"), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to cancel %s %s: %v", kind, id, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("failed to delete %s %s: %v", kind, id, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardImportPlan(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	projectID := strArg(args, "project_id")
+	epicTitle := strArg(args, "epic_title")
+	if projectID == "" || epicTitle == "" {
+		return mcp.NewToolResultError("project_id and epic_title are required"), nil
+	}
+	body := BoardPlanBody{EpicTitle: epicTitle, Outcome: strArg(args, "outcome"), RequestID: strArg(args, "request_id")}
+	body.DryRun, _ = args["dry_run"].(bool)
+	if raw, ok := args["tasks"].([]any); ok {
+		for _, e := range raw {
+			m, ok := e.(map[string]any)
+			if !ok {
+				return mcp.NewToolResultError("tasks entries must be objects"), nil
+			}
+			t := BoardPlanTaskBody{}
+			t.Key, _ = m["key"].(string)
+			t.Title, _ = m["title"].(string)
+			t.Description, _ = m["description"].(string)
+			if arr, ok := m["tags"].([]any); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						t.Tags = append(t.Tags, s)
+					}
+				}
+			}
+			if arr, ok := m["depends_on"].([]any); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						t.DependsOn = append(t.DependsOn, s)
+					}
+				}
+			}
+			if t.Key == "" || t.Title == "" {
+				return mcp.NewToolResultError("every plan task needs key and title"), nil
+			}
+			body.Tasks = append(body.Tasks, t)
+		}
+	}
+	resp, err := h.client.BoardImportPlan(ctx, projectID, body)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to import plan: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
@@ -714,7 +861,12 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardEpicUnarchiveTool, Handler: h.boardEpicUnarchive},
 		server.ServerTool{Tool: boardProjectArchiveTool, Handler: h.boardProjectArchive},
 		server.ServerTool{Tool: boardProjectUnarchiveTool, Handler: h.boardProjectUnarchive},
-		server.ServerTool{Tool: boardCancelTool, Handler: h.boardCancel},
+		server.ServerTool{Tool: boardProjectPauseTool, Handler: h.boardProjectPause},
+		server.ServerTool{Tool: boardProjectResumeTool, Handler: h.boardProjectResume},
+		server.ServerTool{Tool: boardPauseTaskTool, Handler: h.boardPauseTask},
+		server.ServerTool{Tool: boardResumeTaskTool, Handler: h.boardResumeTask},
+		server.ServerTool{Tool: boardDeleteTool, Handler: h.boardDelete},
+		server.ServerTool{Tool: boardImportPlanTool, Handler: h.boardImportPlan},
 		server.ServerTool{Tool: boardAddDependencyTool, Handler: h.boardAddDependency},
 		server.ServerTool{Tool: boardRemoveDependencyTool, Handler: h.boardRemoveDependency},
 	)

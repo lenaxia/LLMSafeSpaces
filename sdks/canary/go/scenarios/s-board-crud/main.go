@@ -99,7 +99,7 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	// P5: epic create (draft default) → activate → double-pause guard
 	epic, err := c.Board.CreateEpic(ctx, projectSid, ll.BoardEpicInput{
-		Title: "E1", Outcome: "canary", Priority: "P1",
+		Title: "E1", Outcome: "canary",
 	})
 	if !run.AssertNoError(err, "create-epic: no error") {
 		return
@@ -121,9 +121,9 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	// P6: task create with the OR4 pr:N anchor tag + criteria
 	taskA, err := c.Board.CreateTask(ctx, epicSid, ll.BoardTaskInput{
-		Title:    "Task A",
-		Priority: "P0",
-		Tags:     []string{"pr:1234"},
+		Title: "Task A",
+
+		Tags: []string{"pr:1234"},
 		AcceptanceCriteria: []ll.BoardAcceptanceCriterion{
 			{Text: "c1", Met: true},
 			{Text: "c2", Met: false},

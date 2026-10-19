@@ -74,7 +74,7 @@ class BoardServiceTest {
         try {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
-            var epic = client.board.epicActivate("epc-bbbb2222");
+            var epic = client.board.epicActivate("epc-bbbb2222", false);
             assertEquals("active", epic.get("status"));
             assertEquals(Boolean.TRUE, epic.get("progress_derived"));
         } finally {

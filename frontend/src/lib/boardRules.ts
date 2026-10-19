@@ -29,7 +29,6 @@ export const STAGE_IN_PROGRESS = "in_progress";
 export const STAGE_IN_REVIEW = "in_review";
 export const STAGE_DONE = "done";
 export const STAGE_PENDING_INPUT = "pending_input";
-export const STAGE_CANCELLED = "cancelled";
 
 export const BOARD_STAGES = [
   STAGE_BACKLOG,
@@ -37,7 +36,6 @@ export const BOARD_STAGES = [
   STAGE_IN_REVIEW,
   STAGE_DONE,
   STAGE_PENDING_INPUT,
-  STAGE_CANCELLED,
 ] as const;
 
 export type BoardStage = (typeof BOARD_STAGES)[number];
@@ -51,7 +49,7 @@ export const MAIN_STAGES: BoardStage[] = [
   STAGE_DONE,
 ];
 
-export const SIDE_STAGES: BoardStage[] = [STAGE_PENDING_INPUT, STAGE_CANCELLED];
+export const SIDE_STAGES: BoardStage[] = [STAGE_PENDING_INPUT];
 
 export const STAGE_LABELS: Record<BoardStage, string> = {
   [STAGE_BACKLOG]: "Backlog",
@@ -59,7 +57,6 @@ export const STAGE_LABELS: Record<BoardStage, string> = {
   [STAGE_IN_REVIEW]: "In Review",
   [STAGE_DONE]: "Done",
   [STAGE_PENDING_INPUT]: "Pending Input",
-  [STAGE_CANCELLED]: "Cancelled",
 };
 
 /** pending_origin (§4.1) — the health grouping's by-origin labels. */
@@ -226,12 +223,17 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   epic_state: "The epic's state refuses this action.",
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",
-  validation: "A field failed the engine's validation (priority, or a required name/title).",
+  validation: "A field failed the engine's validation (a required name/title, or a shape rule).",
+  // #1747 additions: the pause lever, backpressure caps, graph limits.
+  task_paused: "The task is paused — forward writes and claims wait for resume (#1747).",
+  concurrency_limit: "The per-user or per-instance concurrent-claim cap is saturated; the task stays ready and retries.",
+  graph_limit: "A DAG blast-radius cap was hit (edges per node, or tasks per epic) — split the plan.",
+  backpressure: "The workspace pod is under resource pressure; claiming pauses until it clears.",
   // DependencyError's codes (ruling R4a — the dependency-write 409 class
   // the server actually emits; GuardDependency is defined engine-side but
   // never returned, so it has no mirror here).
   cycle: "That dependency would create a cycle (ruling R4a).",
-  cross_project: "Dependencies stay within one project (ruling R4).",
+  cross_workspace: "Dependencies stay within one workspace (#1747).",
   self: "A task cannot depend on itself (ruling R4).",
 };
 
@@ -275,5 +277,3 @@ export function describeBoardError(err: {
 
 // --- Priorities ----------------------------------------------------------------
 
-export const BOARD_PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
-export type BoardPriority = (typeof BOARD_PRIORITIES)[number];

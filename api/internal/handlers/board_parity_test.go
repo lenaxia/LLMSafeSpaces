@@ -392,12 +392,12 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/projects/:id/resume",
 		"POST /internal/v1/automation/board/projects/:id/unarchive",
 		"POST /internal/v1/automation/board/resource-pressure",
-		"POST /internal/v1/automation/board/tasks/heartbeat",
-		"POST /internal/v1/automation/board/tasks/move-stage",
-		"POST /internal/v1/automation/board/tasks/throttle",
 		"POST /internal/v1/automation/board/tasks/:id/dependencies",
 		"POST /internal/v1/automation/board/tasks/:id/pause",
 		"POST /internal/v1/automation/board/tasks/:id/resume",
+		"POST /internal/v1/automation/board/tasks/heartbeat",
+		"POST /internal/v1/automation/board/tasks/move-stage",
+		"POST /internal/v1/automation/board/tasks/throttle",
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
@@ -444,7 +444,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 
 // routeMountExpr matches a gin route mount `x.VERB("path", ...)` (the
 // router's established one-route-per-line formatting).
-var routeMountExpr = regexp.MustCompile(`^[a-z]\.(GET|POST|PATCH|PUT|DELETE)\("([^"]+)"`)
+var routeMountExpr = regexp.MustCompile(`^[a-z]\.(GET|POST|PATCH|PUT|DELETE)\("([^"]*)"`)
 
 // seamBoardRoutes source-scans router.go's board seam registration (the
 // b.* mounts under the /internal/v1/automation/board group) and returns
@@ -927,24 +927,28 @@ func restBoardRoutes(t *testing.T) []string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "internal", "server", "router.go"))
 	require.NoError(t, err, "router.go not found — repo layout changed?")
-	vars := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k."}
-	curVar := ""
+	prefixes := []string{"/api/v1/me/projects", "/api/v1/me/epics", "/api/v1/me/tasks"}
+	groupVar := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k."}
+	curPrefix := ""
 	var out []string
 	for _, line := range strings.Split(string(src), "\n") {
 		trimmed := strings.TrimSpace(line)
-		for prefix, v := range vars {
-			if strings.Contains(line, `router.Group("`+prefix+`")`) {
-				curVar = v
+		for _, p := range prefixes {
+			if strings.Contains(line, "`"+p+"`") || strings.Contains(line, `"`+p+`"`) {
+				curPrefix = p
 			}
 		}
-		if curVar == "" {
+		if curPrefix == "" {
 			continue
 		}
 		m := routeMountExpr.FindStringSubmatch(trimmed)
-		if m == nil || !strings.HasPrefix(trimmed, curVar) {
+		if m == nil {
 			continue
 		}
-		out = append(out, strings.ToUpper(m[1])+" "+strings.TrimSuffix(curVar, ".")+m[2])
+		if !strings.HasPrefix(trimmed, groupVar[curPrefix]) {
+			continue // another group's mount (different variable prefix)
+		}
+		out = append(out, strings.ToUpper(m[1])+" "+curPrefix+m[2])
 	}
 	require.NotEmpty(t, out, "the REST board groups were not found in router.go — scan is broken, not the router")
 	sort.Strings(out)

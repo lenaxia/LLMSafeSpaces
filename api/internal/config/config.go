@@ -314,6 +314,10 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS (default 300 — 429 cooldown on the task AND the project's slots)
 	//   LLMSAFESPACES_BOARD_DRRQUANTUM          (default 1 — deficit-round-robin round allowance)
 	//   LLMSAFESPACES_BOARD_SWEEPSECONDS        (default 30 — reconciler cadence)
+	//   LLMSAFESPACES_BOARD_USERCLAIMCAP        (default 8 — #1747 per-user concurrent-claim cap)
+	//   LLMSAFESPACES_BOARD_GLOBALCLAIMCAP      (default 64 — #1747 per-instance concurrent-claim cap)
+	//   LLMSAFESPACES_BOARD_MAXEDGESPERNODE     (default 16 — #1747 DAG blast-radius bound)
+	//   LLMSAFESPACES_BOARD_MAXNODESPEREPIC     (default 64 — #1747 DAG blast-radius bound)
 	Board struct {
 		Enabled                bool `mapstructure:"enabled"`
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
@@ -321,6 +325,10 @@ type Config struct {
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
 		SweepSeconds           int  `mapstructure:"sweepSeconds"`
+		UserClaimCap           int  `mapstructure:"userClaimCap"`
+		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
 	} `mapstructure:"board"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -893,6 +901,18 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_SWEEPSECONDS"); ok {
 		config.Board.SweepSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_USERCLAIMCAP"); ok {
+		config.Board.UserClaimCap = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_GLOBALCLAIMCAP"); ok {
+		config.Board.GlobalClaimCap = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_MAXEDGESPERNODE"); ok {
+		config.Board.MaxEdgesPerNode = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_MAXNODESPEREPIC"); ok {
+		config.Board.MaxNodesPerEpic = n
 	}
 }
 
