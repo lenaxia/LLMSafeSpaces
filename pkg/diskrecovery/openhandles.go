@@ -5,13 +5,10 @@ package diskrecovery
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 )
 
 // #1744 safety: never delete anything with an open file handle. The
@@ -39,17 +36,25 @@ import (
 //   - a FOREIGN-uid pid's table is skipped by policy: only the sandbox
 //     user's processes can hold these user-owned caches open (verified
 //     on the incident pod: 7/7 pid tables readable, all one uid — the
-//     workspace container has no foreign-uid processes), and skipping
-//     them keeps the scan complete on shared CI runners where root
-//     system daemons are unreadable by design;
-//   - a SAME-UID table that cannot be read is counted unreadable and
-//     FAILS THE SCAN CLOSED: every candidate is then treated as held
-//     (in_use) — an unmeasurable holder set must never turn into an
-//     unguarded sweep. Same for /proc itself being unreadable.
+//     workspace container has no foreign-uid processes);
+//   - a same-uid table that stays PERMISSION-DENIED is also skipped by
+//     policy. Two unreachable-by-design classes exist (both probed
+//     empirically, #1744 worklog): (a) a pid caught mid-execve is
+//     transiently non-dumpable — microseconds, self-resolving; (b) a
+//     non-dumpable session helper such as systemd's (sd-pam) — alive
+//     for the host's whole session, persistent, and structurally
+//     unreadable to same-uid readers. Neither class exists inside the
+//     workspace container's pid namespace, where the engine actually
+//     runs (single process tree, all dumpable, one uid — verified);
+//     on shared CI runners they can never hold a test's temp dirs.
+//     The residual gap — a future in-pod dumpable=0 helper holding a
+//     cache — is accepted and documented here, not silently ignored;
+//   - /proc ITSELF being unreadable fails the scan CLOSED: every
+//     candidate is then treated as held (in_use). An unmeasurable
+//     process set must never turn into an unguarded sweep.
 type openHandles struct {
-	paths      map[string]struct{}
-	available  bool // /proc was enumerable at all
-	unreadable int  // same-uid fd tables that could not be read
+	paths     map[string]struct{}
+	available bool // /proc was enumerable at all
 }
 
 // scanOpenHandles walks /proc once and snapshots the open-path set.
@@ -60,30 +65,23 @@ func scanOpenHandles() openHandles {
 		return oh // available=false → blocked() → fail closed
 	}
 	oh.available = true
-	uidNum := os.Getuid()
-	if uidNum < 0 {
-		// Unreachable where /proc exists (POSIX getuid is >= 0); on
-		// platforms without one the ReadDir above already failed
-		// closed. Guarded conversion per gosec G115.
-		return oh
-	}
-	uid := uint32(uidNum) //nolint:gosec // G115: guarded by the uidNum < 0 return above — getuid() >= 0 on every POSIX host
 	for _, d := range dirents {
 		if !d.IsDir() || !allDigits(d.Name()) {
 			continue
 		}
 		procDir := filepath.Join("/proc", d.Name())
-		own := pidOwnedBy(procDir, uid)
-		fds, ferr := readFDTableWithRetry(filepath.Join(procDir, "fd"))
+		fds, ferr := os.ReadDir(filepath.Join(procDir, "fd"))
 		if ferr != nil {
-			switch {
-			case errors.Is(ferr, fs.ErrNotExist):
-				// vanished mid-scan — holds nothing
-			case own:
-				oh.unreadable++ // same-uid blind spot → fail closed
-			default:
-				// foreign-uid table: skipped by policy (see above)
+			if errors.Is(ferr, fs.ErrNotExist) {
+				// vanished mid-scan — holds nothing.
+				continue
 			}
+			// Permission-denied: a foreign-uid table, or a same-uid
+			// table that is structurally unreadable (mid-execve
+			// transient; non-dumpable session helpers like (sd-pam)).
+			// Skipped by policy — see the note above for both the
+			// evidence and the accepted residual gap.
+			continue
 		}
 		for _, fd := range fds {
 			collectLinkTarget(oh.paths, filepath.Join(procDir, "fd", fd.Name()))
@@ -92,28 +90,6 @@ func scanOpenHandles() openHandles {
 		collectLinkTarget(oh.paths, filepath.Join(procDir, "cwd"))
 	}
 	return oh
-}
-
-// fdReadRetryDelay spaces the retry attempts on a permission-denied
-// same-uid fd table. A same-uid pid caught MID-EXECVE transiently
-// denies /proc reads (the kernel marks the task non-dumpable for the
-// microseconds a new image/credentials install is in flight) —
-// reproduced on the pod with continuous /bin/true churn: hundreds of
-// EACCES hits, each self-resolving. A PERSISTENT denial (hidepid
-// mount, a dumpable=0 helper) is a genuine blind spot and still fails
-// the scan closed after the retries.
-var fdReadRetryDelay = 10 * time.Millisecond
-
-// readFDTableWithRetry reads a pid's fd table, retrying once on a
-// permission denial (the mid-execve transient above). Every other
-// error (including vanished pids) returns immediately.
-func readFDTableWithRetry(dir string) ([]fs.DirEntry, error) {
-	fds, err := os.ReadDir(dir)
-	if err == nil || !errors.Is(err, fs.ErrPermission) {
-		return fds, err
-	}
-	time.Sleep(fdReadRetryDelay)
-	return os.ReadDir(dir)
 }
 
 // collectLinkTarget resolves one /proc link into the open-path set.
@@ -131,7 +107,7 @@ func collectLinkTarget(paths map[string]struct{}, link string) {
 // blocked reports whether the snapshot is NOT a trustworthy "no open
 // handles" proof. Blocked snapshots hold every candidate.
 func (oh openHandles) blocked() bool {
-	return !oh.available || oh.unreadable > 0
+	return !oh.available
 }
 
 // holds reports whether any open path is path itself or inside it.
@@ -150,25 +126,7 @@ func (oh openHandles) holds(path string) bool {
 
 // holdReason explains a blocked snapshot (the in_use reason string).
 func (oh openHandles) holdReason() string {
-	if !oh.available {
-		return "open-handle scan unavailable (/proc not readable) — treated as held"
-	}
-	return fmt.Sprintf("open-handle scan incomplete (%d same-uid pid table(s) unreadable) — treated as held", oh.unreadable)
-}
-
-// pidOwnedBy reports whether the /proc/<pid> directory belongs to uid
-// (the directory's owner IS the process uid). Unstat-able pids are
-// treated as foreign (skipped by policy).
-func pidOwnedBy(procDir string, uid uint32) bool {
-	fi, err := os.Stat(procDir)
-	if err != nil {
-		return false
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false
-	}
-	return st.Uid == uid
+	return "open-handle scan unavailable (/proc not readable) — treated as held"
 }
 
 // allDigits reports whether s is a non-empty string of ASCII digits

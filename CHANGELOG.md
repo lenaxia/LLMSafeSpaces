@@ -31,8 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them out from under a live process.** (1) An open-handle scan — one
   `/proc/*/fd`+`exe`+`cwd` snapshot per sweep: any class (or prefix
   child) with an open path under it is never a deletion candidate and
-  reports the new `in_use` status with its measured bytes visible; a
-  same-uid fd table that cannot be read fails the whole scan closed.
+  reports the new `in_use` status with its measured bytes visible. A
+  `/proc` that cannot be enumerated at all fails the scan closed
+  (everything `in_use`); individually unreadable tables (foreign-uid
+  processes, mid-execve transients, non-dumpable session helpers like
+  `(sd-pam)`) are skipped by documented policy — none exist inside the
+  workspace container's pid namespace where the engine runs (verified:
+  7/7 tables readable, one uid).
   (2) Per-class size floors calibrated to the observed full-set sizes —
   below the floor a tree is a partial download or debris and reports
   `not_present` with the floor in the reason. (3) An optional

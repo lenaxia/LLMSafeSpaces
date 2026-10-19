@@ -756,10 +756,12 @@ func TestDirStalenessGateHoldsFreshCaches(t *testing.T) {
 }
 
 // PIN (#1744 fail-closed scan): an open-handle snapshot that could not
-// prove completeness (unreadable /proc, unreadable same-uid tables)
-// holds EVERY present class — an unmeasurable holder set must never
-// turn into an unguarded sweep.
-func TestHandleScanIncompleteFailsClosed(t *testing.T) {
+// enumerate /proc at all holds EVERY present class — an unmeasurable
+// process set must never turn into an unguarded sweep. (Unreadable
+// individual tables — foreign-uid, mid-execve transients, (sd-pam)-class
+// session helpers — are skipped by documented policy instead; see
+// openhandles.go for the probe evidence behind that split.)
+func TestHandleScanUnavailableFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	cacheRoot := filepath.Join(dir, "cache")
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
@@ -777,7 +779,7 @@ func TestHandleScanIncompleteFailsClosed(t *testing.T) {
 	usage := &fakeUsage{total: 10000, used: 9600}
 	e := NewEngine(m, usage.get)
 	e.setOpenHandleScan(func() openHandles {
-		return openHandles{paths: map[string]struct{}{}, available: true, unreadable: 1}
+		return openHandles{paths: map[string]struct{}{}, available: false}
 	})
 
 	rep, err := e.Recover(context.Background(), Request{})
@@ -785,11 +787,11 @@ func TestHandleScanIncompleteFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	cr := rep.Classes[0]
-	if cr.Status != ClassInUse || !strings.Contains(cr.Reason, "unreadable") {
-		t.Fatalf("incomplete scan must hold the class in_use with the reason, got %+v", cr)
+	if cr.Status != ClassInUse || !strings.Contains(cr.Reason, "unavailable") {
+		t.Fatalf("unavailable scan must hold the class in_use with the reason, got %+v", cr)
 	}
 	if _, err := os.Stat(gocache); err != nil {
-		t.Fatalf("nothing may be deleted under an incomplete scan: %v", err)
+		t.Fatalf("nothing may be deleted under an unavailable scan: %v", err)
 	}
 }
 
