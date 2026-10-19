@@ -86,6 +86,7 @@ The server advertises 24 tools, all workspace-centric — the sandbox layer is h
 | `workspace_create` | `runtime`, `name` | Create a new workspace with a persistent development environment |
 | `workspace_activate` | `workspace_id` | Activate a workspace (starts the agent). Required before creating sessions. |
 | `workspace_stop` | `workspace_id` | Stop a workspace (suspends the agent, preserves all files) |
+| `workspace_status` | `workspace_id` | Get a workspace's status: phase, conditions, agent health, and the supervisor restart history (restart count, last restart reason/verdict/time, suppressed restart count) |
 | `workspace_refresh_compute` | `workspace_id` | Re-sync resource defaults + latest image version and rebuild the pod |
 
 `runtime` is a string like `python:3.10`, `nodejs:18`, or `go:1.21`.
