@@ -9,6 +9,7 @@ import {
   renderBoard,
   seedBoard,
   defaultTasks,
+  mockListProjects,
   mockStartTask,
   mockCancelTask,
   mockActivateEpic,
@@ -277,6 +278,43 @@ describe("BoardPage r1 — cancel / lifecycle / start / feed / concurrency", () 
     const items = screen.getAllByTestId("epic-activity-item");
     expect(items.length).toBe(1);
     expect(items[0]!.textContent).toContain("tsk-aaaa0001");
+  });
+
+  // --- Read-path failures are not emptiness (r2) ------------------------------------
+
+  it("renders a load-error notice (not the empty state) when listProjects rejects", async () => {
+    mockListProjects.mockRejectedValue(new Error("network down"));
+    renderBoard();
+    const err = await screen.findByTestId("board-read-error");
+    expect(err.querySelector('[data-board-error]')?.textContent).toContain("network down");
+    expect(screen.queryByTestId("board-empty")).toBeNull();
+  });
+
+  it("renders a load-error notice when the tasks fetch rejects (projects fine)", async () => {
+    const { mockListProjectTasks } = await import("./boardTestUtils");
+    seedBoard();
+    mockListProjectTasks.mockRejectedValue(new Error("503 from tasks"));
+    renderBoard();
+    const err = await screen.findByTestId("board-read-error");
+    expect(err.querySelector('[data-board-error]')?.textContent).toContain("503 from tasks");
+    expect(screen.queryByTestId("board-empty")).toBeNull();
+  });
+
+  it("recovers via Retry (invalidates and re-renders rows)", async () => {
+    mockListProjects.mockRejectedValueOnce(new Error("network blip"));
+    seedBoard();
+    renderBoard();
+    await screen.findByTestId("board-read-error");
+    fireEvent.click(screen.getByTestId("board-retry"));
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    expect(screen.queryByTestId("board-read-error")).toBeNull();
+  });
+
+  it("keeps the empty state for a SUCCESSFUL read of zero projects", async () => {
+    mockListProjects.mockResolvedValue([]);
+    renderBoard();
+    await screen.findByTestId("board-empty");
+    expect(screen.queryByTestId("board-read-error")).toBeNull();
   });
 
   // --- openEpicDrawer failure at page level (r1) -----------------------------------

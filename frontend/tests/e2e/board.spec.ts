@@ -206,6 +206,14 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     }));
   });
 
+  await page.route(`${API}/me/tasks/*/dependencies`, (r: Route) => {
+    void r.fulfill(j({
+      error: "board: dependency cycle: tsk-aaaa0001 → tsk-cccc0003 → tsk-aaaa0001 (did you mean: [tsk-cccc0003]?)",
+      code: "cycle",
+      suggestions: ["tsk-cccc0003"],
+    }, 409));
+  });
+
   // Platform stream — empty body then reconnects are fine.
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/session-events`, (r: Route) =>
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
@@ -403,5 +411,63 @@ test.describe("Task Board UI (#1702)", () => {
 
     await expect(page.getByTestId("board-notice")).toContainText("fresh worker dispatched", { timeout: 8000 });
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-stage", "in_progress", { timeout: 8000 });
+  });
+
+  test("refusal arm: cancel 409 keeps the dialog open with the guard code rendered", async ({ page }) => {
+    const state = freshState();
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    // Override cancel to refuse (already-terminal race, engine class).
+    await page.route(`${API}/me/tasks/*/cancel`, (r: Route) =>
+      r.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "board: guard stage_transition: already terminal", code: "stage_transition" }) }));
+    await page.goto("/board");
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
+
+    await page.getByTestId("task-card-tsk-cccc0003").click();
+    await page.getByTestId("cancel-task").click();
+
+    const notice = page.locator("[data-board-error]");
+    await expect(notice).toHaveAttribute("data-board-error", "stage_transition", { timeout: 8000 });
+    // The dialog STAYS open (the fields survive for a retry).
+    await expect(page.getByTestId("cancel-task")).toBeVisible();
+    await expect(page.getByTestId("task-title")).toBeVisible();
+  });
+
+  test("refusal arm: dependency cycle 409 renders suggestions and the chip fills the input", async ({ page }) => {
+    const state = freshState();
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    await page.goto("/board");
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
+
+    await page.getByTestId("task-card-tsk-cccc0003").click();
+    const dep = page.getByTestId("dep-input");
+    await dep.fill("tsk-aaaa0001");
+    await page.getByTestId("add-dependency").click();
+
+    const notice = page.locator("[data-board-error]");
+    await expect(notice).toHaveAttribute("data-board-error", "cycle", { timeout: 8000 });
+    // The typed id is preserved and the suggestion chip fills the input.
+    await expect(dep).toHaveValue("tsk-aaaa0001");
+    const chip = page.getByTestId("board-error-suggestions").locator("button");
+    await expect(chip).toHaveText("tsk-cccc0003");
+    await chip.click();
+    await expect(dep).toHaveValue("tsk-cccc0003");
+  });
+
+  test("refusal arm: task_start refusal renders at page level with the guard code", async ({ page }) => {
+    const state = freshState();
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    await page.route(`${API}/me/tasks/*/start`, (r: Route) =>
+      r.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "board: guard epic_state: paused epics refuse task_start", code: "epic_state" }) }));
+    await page.goto("/board");
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
+
+    await page.getByTestId("start-tsk-aaaa0001").click();
+
+    const notice = page.locator("[data-board-error]");
+    await expect(notice).toHaveAttribute("data-board-error", "epic_state", { timeout: 8000 });
+    await expect(notice).toContainText("epic_state");
   });
 });

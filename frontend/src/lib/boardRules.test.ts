@@ -12,6 +12,8 @@ import {
   BOARD_STAGES,
   MAIN_STAGES,
   SIDE_STAGES,
+  BOARD_GUARD_MESSAGES,
+  BOARD_ERROR_CODES,
 } from "./boardRules";
 
 // ─── OR4: the pr:N anchor form ───────────────────────────────────────────────
@@ -159,6 +161,25 @@ describe("suggestBoardItems", () => {
 
   it("stays empty on far misses", () => {
     expect(suggestBoardItems("zzzzzzzzzzz", ITEMS)).toEqual([]);
+  });
+});
+
+// ─── Guard-code parity (r2: no dead keys, no missing live ones) ──────────────
+
+describe("BOARD_GUARD_MESSAGES parity with the backend's emittable codes", () => {
+  it("covers every backend-emittable code exactly (no dead keys, none missing)", () => {
+    expect(Object.keys(BOARD_GUARD_MESSAGES).sort()).toEqual([...BOARD_ERROR_CODES].sort());
+  });
+
+  it.each([...BOARD_ERROR_CODES])("has a non-empty hint for %s", (code) => {
+    expect(BOARD_GUARD_MESSAGES[code]?.length).toBeGreaterThan(0);
+  });
+
+  it("carries the DependencyError codes the server actually emits (R4a)", () => {
+    expect(BOARD_GUARD_MESSAGES.cycle).toBeDefined();
+    expect(BOARD_GUARD_MESSAGES.cross_project).toBeDefined();
+    expect(BOARD_GUARD_MESSAGES.self).toBeDefined();
+    expect(BOARD_GUARD_MESSAGES.dependency).toBeUndefined();
   });
 });
 

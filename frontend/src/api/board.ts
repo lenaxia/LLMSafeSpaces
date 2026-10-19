@@ -12,8 +12,6 @@
  */
 
 import { api } from "./client";
-import type { ApiError } from "./types";
-
 // --- Row shapes (pkg/board/rows.go, verbatim snake_case) ------------------------
 
 export interface BoardProject {
@@ -212,11 +210,3 @@ export const boardApi = {
     api.delete<{ task: BoardTask }>(`/me/tasks/${encodeURIComponent(idOrShort)}/dependencies/${encodeURIComponent(dependsOnId)}`),
 };
 
-/** Narrows an ApiClientError carrying a board error body (404+suggestions
- * / 409+code) for describeBoardError. */
-export function asBoardApiError(err: unknown): { message?: string; status?: number; body?: ApiError & { suggestions?: string[] } } | null {
-  if (err && typeof err === "object" && "status" in err && "body" in err) {
-    return err as { status: number; body: ApiError & { suggestions?: string[] } };
-  }
-  return null;
-}

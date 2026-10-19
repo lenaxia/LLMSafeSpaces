@@ -215,10 +215,34 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   manager_surface_only: "Pending-input exits are human decisions (manager surfaces only).",
   workspace_binding: "The caller's workspace is not this project's target.",
   epic_state: "The epic's state refuses this action.",
-  dependency: "The dependency edge was rejected (cycle, self, or cross-project).",
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",
+  // DependencyError's codes (ruling R4a — the dependency-write 409 class
+  // the server actually emits; GuardDependency is defined engine-side but
+  // never returned, so it has no mirror here).
+  cycle: "That dependency would create a cycle (ruling R4a).",
+  cross_project: "Dependencies stay within one project (ruling R4).",
+  self: "A task cannot depend on itself (ruling R4).",
 };
+
+/** Every error code the backend can emit on the board surface — the
+ * parity set BOARD_GUARD_MESSAGES must cover exactly (the r2 pin: a
+ * mirror file carries no dead keys and misses no live ones). Guard codes
+ * per pkg/board/board.go:177-187 minus the never-returned GuardDependency,
+ * plus DependencyError's three codes (board.go:192-200). */
+export const BOARD_ERROR_CODES: readonly string[] = [
+  "stage_transition",
+  "done_guard",
+  "claim_token",
+  "manager_surface_only",
+  "workspace_binding",
+  "epic_state",
+  "project_state",
+  "authz",
+  "cycle",
+  "cross_project",
+  "self",
+] as const;
 
 export interface DescribedBoardError {
   message: string;

@@ -1,8 +1,8 @@
 # Worklog: #1702 — Board frontend UI: kanban/swimlanes, drag, scope switcher, SSE feed
 
-**Date:** 2026-10-18 (r1: 2026-10-18/19)
+**Date:** 2026-10-18 (r1: 2026-10-18/19; r2: 2026-10-19)
 **Session:** Lane 4 of the Task Board (design 0067 §7): the BoardPage frontend projection over the #1699 REST surface — kanban/swimlanes with server-arbitrated drag, the project/epic scope switcher, the SSE live feed on the #1687-hardened user stream, and the create/edit surfaces incl. OR4 pr:N tag validation.
-**Status:** Complete — PR #1738 r1 remediation pushed, orchestrator merges on APPROVED
+**Status:** Complete — PR #1742 r2 remediation pushed (supersedes #1738, closed after synchronize event loss), orchestrator merges on APPROVED
 
 ---
 
@@ -60,6 +60,18 @@ The verdict's pre-specified remedies, all landed:
 8. **PR body corrected** — the two overclaims the verdict flagged are gone: the drag-affordance sentence now matches the wired implementation, and "Closes #1702" narrowed to an Addresses claim with the health-panel residue explicit.
 
 r1 verification: full vitest **2301/2301** (one flaky ChatPage timing test failed on ONE of three full runs — pre-existing load sensitivity, zero failures on the other two incl. the JSON-reporter run); tsc clean; eslint 0 errors (6 pre-existing generated-file warnings); Playwright `board.spec.ts` **9/9**.
+
+## r2 (CHANGES_REQUESTED remediation on PR #1742, one commit set)
+
+The verdict's four findings, all landed:
+
+1. **Read-path failures are not emptiness** — `projectsQuery`/`tasksQuery` gain an `isError` surface (`boardReadError`): a failed read renders a load-error notice + Retry button; the "No boards yet" empty state is reserved for a SUCCESSFUL read of zero projects. Four pins: projects-rejection, tasks-rejection, Retry recovery, empty-state-on-success-only.
+2. **E2e refusal arms** — cancel 409 (dialog stays open, code rendered), dependency cycle 409 (typed id preserved + suggestion chip fills the input), task_start epic_state 409 (page-level notice). 12 rows total.
+3. **Guard-code mirror parity** — `BOARD_GUARD_MESSAGES` drops the dead `dependency` key (GuardDependency is never returned by pkg/board) and gains the three DependencyError codes the server actually emits (`cycle`, `cross_project`, `self`); `BOARD_ERROR_CODES` exports the emittable set and a parity test pins exact key-set equality + non-empty hints (would have caught the drift).
+4. **Zero-debt** — dead `asBoardApiError` export removed.
+5. Hygiene: the one act() warning in `useUserEventStream.board.test.tsx` fixed (frames now emitted test-side inside act); per-file test counts corrected everywhere (boardRules 54 incl. it.each expansions, api/board 11, sse 4 — the earlier counts under-claimed).
+
+r2 verification: full vitest **206 files / 2318 tests passed**; tsc clean; eslint 0 errors (6 pre-existing generated-file warnings); Playwright `board.spec.ts` **12/12** (40.2s).
 
 ## Key Decisions
 

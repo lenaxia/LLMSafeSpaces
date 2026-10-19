@@ -91,6 +91,16 @@ export function BoardPage() {
     enabled: projects.length === 0,
   });
 
+  // Read-path failures are NOT emptiness (r2): a failed projects/tasks
+  // fetch renders an error notice — the empty-board state is reserved
+  // for a successful read of zero projects (the "no swallowed errors"
+  // posture extended from action paths to read paths).
+  const boardReadError = useMemo(() => {
+    if (projectsQuery.isError) return toBoardError(projectsQuery.error);
+    if (tasksQuery.isError) return toBoardError(tasksQuery.error);
+    return null;
+  }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error]);
+
   // Epics are derived from task rows (display inheritance, R2) plus the
   // epics this session created/opened — the ListEpics REST seam does not
   // exist yet (#1699 stopped it on the engine gap); this bridge keeps the
@@ -511,12 +521,32 @@ export function BoardPage() {
 
       {/* --- Kanban: swimlanes = projects, columns = stages ---------------------- */}
       <div className="flex-1 overflow-auto p-3" data-testid="board-grid">
-        {projects.length === 0 && (
+        {boardReadError ? (
+          <div className="flex h-full items-center justify-center p-4" data-testid="board-read-error">
+            <div className="w-full max-w-md">
+              <BoardErrorNotice
+                error={boardReadError}
+                title="Board failed to load"
+                onDismiss={undefined}
+              />
+              <div className="mt-2 flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void queryClient.invalidateQueries({ queryKey: ["board"] })}
+                  data-testid="board-retry"
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : projectsQuery.isSuccess && projects.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="board-empty">
             <span>No boards yet.</span>
             <Button size="sm" onClick={() => setShowCreateProject(true)}>Create your first project</Button>
           </div>
-        )}
+        ) : null}
         <div className="flex flex-col gap-4">
           {visibleProjects.map((project) => {
             const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
