@@ -1464,6 +1464,6 @@ func (r *recordingDeleteSessionIndex) Register(_ context.Context, _, _, _ string
 }
 
 // Register: design 0066 registration seam — no-op stub for this fixture.
-func (r *failingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
+func (f *failingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
 	return ""
 }

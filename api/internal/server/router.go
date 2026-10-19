@@ -559,13 +559,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// sessionRefMiddleware is design 0066's edge resolution layer,
 	// backed by the database service (nil when absent — disabled).
-	var refMW gin.HandlerFunc
-	if db := services.GetDatabase(); db != nil {
-		refMW = middleware.SessionRefResolution(db)
-	} else {
-		refMW = middleware.SessionRefResolution(nil)
-	}
-	registerWorkspaceRoutes(workspaceGroup, idGroup, services, proxyHandler, cfg, refMW)
+	registerWorkspaceRoutes(workspaceGroup, idGroup, services, proxyHandler, cfg, sessionRefMiddleware(services))
 	// Epic 27b: Bulk agent reload across all pending workspaces.
 	if cfg.BulkReloadHandler != nil {
 		userGroup := router.Group("/api/v1/users/me")
@@ -605,7 +599,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// and therefore inherit the middleware.
 	// Proxy routes — registered on idGroup when a ProxyHandler is provided.
 	if proxyHandler != nil {
-		registerProxyRoutes(idGroup, proxyHandler, refMW)
+		registerProxyRoutes(idGroup, proxyHandler, sessionRefMiddleware(services))
 
 		// S28.3: User-scoped SSE stream (authenticated, rate-limit exempt)
 		eventsGroup := router.Group("/api/v1")
@@ -770,7 +764,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		adminSessions := router.Group("/api/v1/admin/workspaces/:workspaceId/sessions")
 		adminSessions.Use(services.GetAuth().AuthMiddleware())
 		adminSessions.Use(middleware.AdminGuard())
-		adminSessions.POST("/:sessionId/force-abort", refMW, cfg.AdminSessionHandler.ForceAbortSession)
+		adminSessions.POST("/:sessionId/force-abort", sessionRefMiddleware(services), cfg.AdminSessionHandler.ForceAbortSession)
 	}
 
 	// US-69.13: the authority flip gate (park / unpark / in-flight).
@@ -1442,6 +1436,16 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		}
 	}
 	c.JSON(http.StatusOK, sessions)
+}
+
+// sessionRefMiddleware builds design 0066's edge resolution layer
+// from the services bundle — nil resolver (disabled) when no database
+// is wired, so every ref passes through byte-identical.
+func sessionRefMiddleware(services interfaces.Services) gin.HandlerFunc {
+	if db := services.GetDatabase(); db != nil {
+		return middleware.SessionRefResolution(db)
+	}
+	return middleware.SessionRefResolution(nil)
 }
 
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig, refMW gin.HandlerFunc) {
