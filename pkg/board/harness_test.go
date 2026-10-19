@@ -362,12 +362,6 @@ func (s *BoardSuite) reloadEpic(id string) *board.Epic {
 	return e
 }
 
-func (s *BoardSuite) reloadProject(id string) *board.Project {
-	p, err := s.svc.GetProject(context.Background(), id, "")
-	s.Require().NoError(err)
-	return p
-}
-
 // taskRow reads raw columns the read model may not expose.
 type taskRow struct {
 	Stage         string

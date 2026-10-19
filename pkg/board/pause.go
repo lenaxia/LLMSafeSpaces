@@ -249,6 +249,20 @@ func (s *Service) ActivePressure(workspaceID string) *PressureSample {
 
 // --- concurrency caps + read decoration ------------------------------------------
 
+// ConcurrencyCounts is the raw per-owner / per-instance in_progress
+// census the #1747 caps compare against (service.go's helper owns the
+// query — see inFlightCountsForProject).
+type ConcurrencyCounts struct {
+	UserInFlight   int
+	GlobalInFlight int
+}
+
+// UserAtCap reports whether the owner's in_progress count reached the cap.
+func (c ConcurrencyCounts) UserAtCap(cap int) bool { return c.UserInFlight >= cap }
+
+// GlobalAtCap reports whether the instance's in_progress count reached the cap.
+func (c ConcurrencyCounts) GlobalAtCap(cap int) bool { return c.GlobalInFlight >= cap }
+
 // ConcurrencyState is the derived backpressure answer for one project's
 // owner: whether the per-user or per-instance concurrent-claim cap is
 // saturated (informational — never an error at the claim path).

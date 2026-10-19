@@ -305,21 +305,18 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	// notes). (a) workspace resource pressure: agentd's last sample says
 	// the target pod is pressured — stop claiming into it until the
 	// sample clears (hysteresis reporter-side, TTL here). (b) the
-	// concurrency caps: per-user and per-instance in_progress bounds.
-	var ownerUser, targetWS string
-	var userInFlight, globalInFlight int
-	if err := tx.QueryRow(ctx, `
-		SELECT p.user_id, p.target_workspace_id::text,
-		  (SELECT count(*) FROM tasks ti JOIN projects pi ON pi.id = ti.project_id
-		   WHERE ti.stage='in_progress' AND pi.user_id = p.user_id),
-		  (SELECT count(*) FROM tasks WHERE stage='in_progress')
-		FROM projects p WHERE p.id = $1`, projectID).Scan(&ownerUser, &targetWS, &userInFlight, &globalInFlight); err != nil {
+	// concurrency caps: per-owner and per-instance in_progress bounds —
+	// the counts ride inFlightCountsForProject (service.go: the engine
+	// and reconciler stay ownership-agnostic BY CONSTRUCTION, §4.7 —
+	// this file never reads the owner column).
+	counts, targetWS, err := s.inFlightCountsForProject(ctx, tx, projectID)
+	if err != nil {
 		return nil, "", "", err
 	}
 	if sample := s.ActivePressure(targetWS); sample != nil && sample.Pressured() {
 		return nil, "pressured", projectID, nil
 	}
-	if userInFlight >= s.cfg.UserClaimCap || globalInFlight >= s.cfg.GlobalClaimCap {
+	if counts.UserAtCap(s.cfg.UserClaimCap) || counts.GlobalAtCap(s.cfg.GlobalClaimCap) {
 		return nil, "capped", projectID, nil
 	}
 

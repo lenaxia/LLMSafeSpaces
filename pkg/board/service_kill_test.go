@@ -383,7 +383,7 @@ func (s *BoardSuite) TestKill_DependencyGuards() {
 	err = s.svc.AddDependency(ctx, s.owner(), foreign.ID, "", a.ID, "")
 	s.Require().Error(err)
 	s.Require().ErrorAs(err, &de)
-	s.Equal("cross_project", de.Code)
+	s.Equal("cross_workspace", de.Code, "#1747: edges live within a workspace, never across")
 
 	// Duplicate edge: inert (PK).
 	s.Require().NoError(s.svc.AddDependency(ctx, s.owner(), b.ID, "", a.ID, ""))

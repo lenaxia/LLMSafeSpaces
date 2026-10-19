@@ -15,6 +15,12 @@ package board
 // C becomes ready, no A→C appears. The optional reconnect=true flag on
 // delete_task lets orphans inherit the deleted node's direct upstream
 // edges (deduplicated, cycle-guarded) when intent says so.
+//
+// Ordering inside the transaction (the r1 fix): inherited edges are
+// inserted BEFORE the row delete (the cycle guard must see the full
+// live graph); orphan EVENTS + the is_blocked rederive run AFTER the
+// delete — the FK cascade is what removes the stale edges, so an early
+// rederive would still see them and leave the orphan blocked.
 
 import (
 	"context"
@@ -47,19 +53,24 @@ func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			return nil, err
 		}
 		out.OrphanedDependents = orphans.ids
+		// Optional reconnect BEFORE the delete: the inherited edges
+		// reference rows that persist (the deleted node's upstream),
+		// and the cycle guard must see the full live graph.
 		if reconnect {
-			pairs, err := reconnectOrphansTx(ctx, tx, p, t, orphans, upstream)
+			pairs, err := reconnectOrphansTx(ctx, tx, p, orphans, upstream)
 			if err != nil {
 				return nil, err
 			}
 			out.Reconnected = pairs
 		}
-		// Per-orphan visibility events (warning-only; deterministic ids
-		// make replays inert convergence).
-		if err := writeOrphanEvents(ctx, tx, p.ID, t, orphans, actor); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM tasks WHERE id=$1`, t.ID); err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM tasks WHERE id=$1`, t.ID); err != nil {
+		// Orphan events + rederive AFTER the delete: the FK cascade has
+		// taken the stale edges, so the rederive converges (with
+		// reconnect, the inherited edges remain and keep the orphan
+		// blocked-by-upstream — the intent).
+		if err := writeOrphanEvents(ctx, tx, p.ID, t, orphans, actor); err != nil {
 			return nil, err
 		}
 		return map[string]any{
@@ -118,14 +129,13 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 			tasks = append(tasks, t)
 		}
 		rows.Close()
+		type orphanedPair struct {
+			deleted *Task
+			orphans edgeEndpoints
+		}
+		var externals []orphanedPair
 		for _, t := range tasks {
 			out.CascadeTasks = append(out.CascadeTasks, t.ShortID)
-			// Per-task snapshot event (content preservation).
-			if err := insertEventTx(ctx, tx, p.ID,
-				engineEventID("delete_task", t.ID, 0), "delete_task", "task", t.ID, actor,
-				map[string]any{"snapshot": snapshotOf(t), "id": t.ID, "short_id": t.ShortID, "cascade_of": e.ShortID}); err != nil {
-				return nil, err
-			}
 			// Orphans OUTSIDE the epic (the epic's own rows vanish too —
 			// their dependents are inside the blast radius).
 			orphans, _, err := edgesAround(ctx, tx, t.ID)
@@ -139,10 +149,10 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 					external.ids = append(external.ids, o.shortID)
 				}
 			}
-			if err := writeOrphanEvents(ctx, tx, p.ID, t, external, actor); err != nil {
-				return nil, err
+			if len(external.nodes) > 0 {
+				externals = append(externals, orphanedPair{deleted: t, orphans: external})
+				out.OrphanedDependents = append(out.OrphanedDependents, external.ids...)
 			}
-			out.OrphanedDependents = append(out.OrphanedDependents, external.ids...)
 			// Force aborts each in-flight worker BEFORE its row goes.
 			if force && t.Stage == StageInProgress && t.AssigneeSession != "" && s.aborter != nil {
 				_ = s.aborter(ctx, t.ID, t.AssigneeSession)
@@ -154,6 +164,20 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM epics WHERE id=$1`, e.ID); err != nil {
 			return nil, err
+		}
+		// Per-task snapshot events (content preservation) + external
+		// orphan events — AFTER the cascade so the rederives converge.
+		for _, t := range tasks {
+			if err := insertEventTx(ctx, tx, p.ID,
+				engineEventID("delete_task", t.ID, 0), "delete_task", "task", t.ID, actor,
+				map[string]any{"snapshot": snapshotOf(t), "id": t.ID, "short_id": t.ShortID, "cascade_of": e.ShortID}); err != nil {
+				return nil, err
+			}
+		}
+		for _, ex := range externals {
+			if err := writeOrphanEvents(ctx, tx, p.ID, ex.deleted, ex.orphans, actor); err != nil {
+				return nil, err
+			}
 		}
 		return map[string]any{"snapshot": snapshotOf(e), "cascade_tasks": out.CascadeTasks,
 			"id": e.ID, "short_id": e.ShortID, "orphaned_dependents": out.OrphanedDependents}, nil
@@ -219,8 +243,9 @@ func edgesAround(ctx context.Context, tx pgx.Tx, taskID string) (orphans, upstre
 // (#1747 6261560142): each orphaned dependent inherits the deleted
 // node's direct upstream edges — deduplicated (ON CONFLICT), cycle
 // guarded (the DB trigger), self-edges skipped. Rendered as
-// "orphan→upstream" short-id pairs.
-func reconnectOrphansTx(ctx context.Context, tx pgx.Tx, p *Project, deleted *Task, orphans, upstream edgeEndpoints) ([]string, error) {
+// "orphan→upstream" short-id pairs. Runs BEFORE the row delete (the
+// cycle guard needs the full live graph).
+func reconnectOrphansTx(ctx context.Context, tx pgx.Tx, p *Project, orphans, upstream edgeEndpoints) ([]string, error) {
 	var pairs []string
 	for _, o := range orphans.nodes {
 		for _, u := range upstream.nodes {
@@ -233,16 +258,15 @@ func reconnectOrphansTx(ctx context.Context, tx pgx.Tx, p *Project, deleted *Tas
 				return nil, mapDepErr(err, p.ID)
 			}
 			pairs = append(pairs, o.shortID+"→"+u.shortID)
-			if err := rederiveBlocked(ctx, txQ{tx}, o.id); err != nil {
-				return nil, err
-			}
 		}
 	}
 	return pairs, nil
 }
 
 // writeOrphanEvents emits one "unblocked_by_delete of <id>" audit event
-// per orphaned dependent (affected-party visibility, warning-only).
+// per orphaned dependent (affected-party visibility, warning-only) and
+// rederives each orphan's is_blocked — call AFTER the row delete so the
+// cascade has taken the stale edges.
 func writeOrphanEvents(ctx context.Context, tx pgx.Tx, projectID string, deleted *Task, orphans edgeEndpoints, actor Actor) error {
 	for _, o := range orphans.nodes {
 		if err := insertEventTx(ctx, tx, projectID,

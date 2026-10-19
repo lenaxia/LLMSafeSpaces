@@ -169,18 +169,6 @@ func requireOwner(actor Actor, userID string) error {
 	return nil
 }
 
-// requireManagerSurface remains ONLY for the pending_input exits (the
-// human-exit guard in stage.go keeps the manager_surface_only code);
-// manager CRUD no longer refuses the agent surface: ruling #1747 flips
-// design 0067 §4.3c in the manager direction — the agent surface manages
-// its OWN workspace's board, scoped structurally by requireManagerAction.
-func requireManagerSurface(actor Actor) error {
-	if actor.Surface == SurfaceAgent {
-		return &GuardError{Code: GuardManagerSurface, Detail: "manager-only action: pending_input exits are human decisions (§4.2; #1747 keeps this one agent-absent)"}
-	}
-	return nil
-}
-
 // requireManagerAction enforces the #1747 manager-action scope on the
 // agent surface: the acting pod's resolved workspace must be the
 // project's target workspace (§4.4 caller-workspace binding extended to
@@ -980,4 +968,24 @@ func (s *Service) GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, s
 	}
 	s.decorateTask(ctx, t, nil)
 	return t, nil
+}
+
+// inFlightCountsForProject feeds the #1747 concurrency caps at the
+// claim choke point: the project's owner (R7 — the per-USER cap is
+// per-board-owner), the owner's and the instance's in_progress counts,
+// and the project's target workspace (the pressure gate's key). It
+// lives in service.go, NOT engine.go/reconciler.go: the engine and
+// reconciler are ownership-agnostic by construction (§4.7 forward-compat
+// note, source-pinned by TestKill_SourceLevelOwnershipPins) — the
+// owner column is this helper's business alone.
+func (s *Service) inFlightCountsForProject(ctx context.Context, tx pgx.Tx, projectID string) (ConcurrencyCounts, string, error) {
+	var targetWS string
+	var c ConcurrencyCounts
+	err := tx.QueryRow(ctx, `
+		SELECT p.target_workspace_id::text,
+		  (SELECT count(*) FROM tasks ti JOIN projects pi ON pi.id = ti.project_id
+		   WHERE ti.stage='in_progress' AND pi.user_id = p.user_id),
+		  (SELECT count(*) FROM tasks WHERE stage='in_progress')
+		FROM projects p WHERE p.id = $1`, projectID).Scan(&targetWS, &c.UserInFlight, &c.GlobalInFlight)
+	return c, targetWS, err
 }

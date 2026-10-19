@@ -106,6 +106,12 @@ func (s *BoardSuite) TestKill_1747_PauseMustPause() {
 	s.Equal(t2.ID, c.TaskID, "a paused row is never claimable")
 	s.finishClaim(c)
 
+	// Resume a BACKLOG row: no directives (no live worker to message) —
+	// the flag is the whole story; the row re-enters candidacy.
+	_, err = s.svc.ResumeTask(context.Background(), s.owner(), t1.ID, "", "")
+	s.Require().NoError(err)
+	require.Empty(s.T(), msg.calls, "backlog pause/resume messages nobody")
+
 	// Pause the IN-FLIGHT row: halt directive lands, lease keeps running,
 	// forward writes refuse (GuardPaused), the bounce refuses.
 	c2 := s.claimOrFail(ws)
@@ -121,7 +127,7 @@ func (s *BoardSuite) TestKill_1747_PauseMustPause() {
 	require.ErrorAs(s.T(), err, &ge2)
 	s.Equal(board.GuardPaused, ge2.Code, "forward writes refuse while paused")
 
-	// Resume: flag cleared, RESUME delivered, the row re-enters candidacy.
+	// Resume in-flight: forward writes resume after resume.
 	_, err = s.svc.ResumeTask(context.Background(), s.owner(), t1.ID, "", "")
 	s.Require().NoError(err)
 	require.Len(s.T(), msg.calls, 2)
@@ -275,13 +281,13 @@ func (s *BoardSuite) TestKill_1747_DAGScopeAndCaps() {
 
 	// Edge cap: fill to the default (16) and refuse one more.
 	target := s.seedTask(e1, "hub", nil, false)
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 16; i++ {
 		filler := s.seedTask(e1, "filler", nil, false)
 		s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), filler.ID, "", target.ID, ""))
 	}
 	oneMore := s.seedTask(e1, "one-more", nil, false)
 	err = s.svc.AddDependency(context.Background(), s.owner(), oneMore.ID, "", target.ID, "")
-	s.Require().Error(err)
+	s.Require().Error(err, "16 edges/node is the cap — the 17th refuses")
 	var gel *board.GuardError
 	require.ErrorAs(s.T(), err, &gel)
 	s.Equal(board.GuardGraphLimit, gel.Code, "the blast-radius bound")
@@ -344,7 +350,7 @@ func (s *BoardSuite) TestKill_1747_ImportPlan() {
 func (s *BoardSuite) TestKill_1747_EpicActivateAcknowledgment() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
-	active := s.seedEpic(p, board.EpicActive)
+	active := s.seedEpic(p, board.EpicDraft) // activated below — a real transition
 	draft := s.seedEpic(p, board.EpicDraft)
 	dep := s.seedTask(draft, "prereq", nil, false)
 	consumer := s.seedTask(active, "consumer", nil, false)
