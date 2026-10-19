@@ -28,6 +28,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts every deny entry survives the amendment.
 
 
+### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
+
+- **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default
+  `OnRefresh`) on the Workspace CRD + controller** (owner ruling
+  2026-10-19: the user owns when their sessions are interrupted). Under
+  `OnRefresh` a desired agentd digest change NEVER touches a running
+  pod: the desired digest is recorded on the Workspace status
+  (`agentdPendingDigest`) and applies at the next natural pod
+  recreation — user compute refresh (`restartGeneration` bump),
+  suspend/resume, or any controller-initiated recreation. `Rolling`
+  (per-workspace spec, or instance-wide via
+  `controller.agentdDelivery.updatePolicy` → `--agentd-update-policy`)
+  recreates pods on digest drift drain-aware per #761 (deferred behind
+  busy sessions until idle or stalled; `workspace_drain_deferred_total
+  {reason="agentd_update_roll"}`). Resolution order: spec → instance
+  flag → `OnRefresh`; a typo'd flag value fails controller startup and
+  the Helm render. Drift compares the digest PORTION only — a repo/tag
+  re-pin of the same digest never churns the fleet.
+- **`agentdDelivery.forceRoll` escape hatch** (spec, any policy): roll a
+  workspace IMMEDIATELY on digest drift, session drain BYPASSED — for
+  security-critical agentd fixes; the operator setting it declares the
+  consent to cut in-flight turns (the #1505 posture). Level-triggered:
+  no drift is a no-op; clear it after use. Emits the
+  `AgentdUpdateForcedRoll` event and
+  `workspace_drain_forced_total{reason="agentd_update_roll_forced"}`.
+  The new deletion site is classified in the #1724 deletion-path
+  inventory (`upgrade_rollout_kill_test.go`).
+- **Status drift visibility**: Workspace status carries
+  `agentdEffectiveDigest` (digest the current pod was built with) and
+  `agentdPendingDigest` (desired, unapplied — "applies on next
+  refresh"), exposed through `GET /workspaces/{id}/status`
+  (`agentdEffectiveDigest` / `agentdPendingDigest`) for the dashboard.
+- **N-1 compatibility discipline for the worker-tool seam**: the frozen
+  wire contract of `/internal/v1/automation/board/*`
+  (`board_heartbeat` / `board_report_throttle` / `board_move_stage` /
+  `board_read`, captured from agentd v0.39.0) lives in
+  `pkg/board/worker_compat.go` as a tested skew matrix — the frozen
+  sets replay verbatim against the CURRENT API
+  (`board_worker_compat_1746_test.go`) and the live agentd client must
+  emit exactly the newest set (`loopback_board_wire_1746_test.go`).
+  Wire changes are additive (a new frozen set or `/internal/v2`),
+  never v1 mutations.
+- Docs: `docs/operator/agentd-delivery.md` (policy matrix + escape
+  hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
+  volumes pointer), `docs/architecture/components.md` (controller policy
+  + the versioned board seam contract).
 ### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
 
 - **The workspace pod's disk-recovery allowlist now covers the caches

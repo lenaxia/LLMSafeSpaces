@@ -167,6 +167,20 @@ spec:
                   type: boolean
                   nullable: true
                   description: "Tri-state request flag (US-23.3). nil=unspecified/acknowledged; true=request suspend; false=request resume from Suspended. No default — the nil state must be reachable so the controller doesn't auto-resume."
+                agentdDelivery:
+                  type: object
+                  description: "Per-workspace agentd overlay delivery policy override (#1746). Absent = the controller's instance-level default (--agentd-update-policy / controller.agentdDelivery.updatePolicy, OnRefresh unless pinned). updatePolicy deliberately carries NO default: an agentdDelivery object written without it (e.g. a forceRoll-only patch) inherits the instance default — a schema default would materialize on such partial writes and silently pin the workspace."
+                  properties:
+                    updatePolicy:
+                      type: string
+                      enum:
+                        - Rolling
+                        - OnRefresh
+                      description: "Rolling: the controller recreates the pod on agentd digest drift, drain-aware (#761). OnRefresh (product default): running pods are untouched; the desired digest is recorded on status (agentdPendingDigest) and applies at the next natural pod recreation (compute refresh, suspend/resume, other). Empty = inherit the instance-level default."
+                    forceRoll:
+                      type: boolean
+                      default: false
+                      description: "Security-critical escape hatch: on agentd digest drift, reconcile the pod IMMEDIATELY regardless of updatePolicy, bypassing the session drain (in-flight turns are cut). Level-triggered; clear after use."
             status:
               type: object
               properties:
@@ -312,6 +326,12 @@ spec:
                 consecutiveHealthFailures:
                   type: integer
                   format: int32
+                agentdEffectiveDigest:
+                  type: string
+                  description: "agentd overlay image digest (sha256:<64 hex>) the current pod was built with (#1746). Empty in legacy baked-in mode."
+                agentdPendingDigest:
+                  type: string
+                  description: "Desired agentd digest recorded while it differs from agentdEffectiveDigest (updatePolicy OnRefresh, or a roll still deferred) — applies on the next pod recreation. Empty when converged (#1746)."
                 # Agent-reported fields (populated from agentd /v1/statusz scrape).
                 sessions:
                   type: array

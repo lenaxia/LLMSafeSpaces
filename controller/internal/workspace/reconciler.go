@@ -117,6 +117,14 @@ type WorkspaceReconciler struct {
 	AgentdBinarySHA256AMD64 string
 	AgentdBinarySHA256ARM64 string
 
+	// AgentdUpdatePolicyDefault is the INSTANCE-level default for
+	// #1746 agentdDelivery.updatePolicy (--agentd-update-policy; Helm
+	// controller.agentdDelivery.updatePolicy). Empty = OnRefresh, the
+	// product posture (running pods are never rolled on a digest bump;
+	// the desired digest applies at the next natural pod recreation).
+	// A per-workspace spec.agentdDelivery.updatePolicy overrides this.
+	AgentdUpdatePolicyDefault v1.AgentdUpdatePolicy
+
 	// Design 0053 §4.2 opencode overlay delivery. When OpencodeImage is
 	// set, buildPod pins a digest-addressed image volume into every
 	// workspace pod (RO mount at /opencode on the workspace container

@@ -1076,6 +1076,10 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 		ActiveSessions: int(crd.Status.ActiveSessions),
 		Message:        crd.Status.Message,
 		ImageTag:       crd.Status.ImageTag,
+		// #1746 agentd delivery drift visibility: "agentd X pending —
+		// applies on next refresh".
+		AgentdEffectiveDigest: crd.Status.AgentdEffectiveDigest,
+		AgentdPendingDigest:   crd.Status.AgentdPendingDigest,
 	}
 
 	// Fallback: if controller hasn't set ImageTag yet (pre-upgrade pods), read from pod spec

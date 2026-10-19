@@ -315,6 +315,9 @@ var classifiedDeletionPaths = map[string]map[string]string{
 	"health.go": {
 		"restartAgentPod": "dead agentd cannot be drained (#761 by-design exemption)",
 	},
+	"agentd_update_policy.go": {
+		"reconcileAgentdDelivery": "#1746 agentd digest drift: Rolling defers via #761 drain (agentd_update_roll); forceRoll is operator-consented immediate (agentd_update_roll_forced, the #1505 posture)",
+	},
 	"phase_terminating.go": {
 		"handleTerminating": "explicit user destroy — intent trumps in-flight turns",
 	},

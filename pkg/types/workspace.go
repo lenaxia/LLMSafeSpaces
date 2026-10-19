@@ -90,6 +90,13 @@ type WorkspaceStatusResult struct {
 	MemoryTotalBytes int64                      `json:"memoryTotalBytes,omitempty"`
 	ContextUsed      int64                      `json:"contextUsed"`
 	ContextTotal     int64                      `json:"contextTotal"`
+	// AgentdEffectiveDigest / AgentdPendingDigest (#1746): the agentd
+	// overlay digest the current pod runs vs. the desired digest not yet
+	// applied. Pending set + effective different = "agentd X pending —
+	// applies on next refresh". Empty when converged or in legacy
+	// baked-in delivery.
+	AgentdEffectiveDigest string `json:"agentdEffectiveDigest,omitempty"`
+	AgentdPendingDigest   string `json:"agentdPendingDigest,omitempty"`
 }
 
 // WorkspaceMetadata is the database record for a workspace.
