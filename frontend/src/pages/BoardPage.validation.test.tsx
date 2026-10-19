@@ -120,6 +120,11 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
     fireEvent.click(screen.getByTestId("new-project-button"));
+    // r3: the workspaces fetch fires on dialog open now — wait for the
+    // option before selecting it.
+    await waitFor(() =>
+      expect((screen.getByTestId("project-workspace") as HTMLSelectElement).querySelector('option[value="ws-1"]')).not.toBeNull(),
+    );
     fireEvent.change(screen.getByTestId("project-name"), { target: { value: "New" } });
     fireEvent.change(screen.getByTestId("project-workspace"), { target: { value: "ws-1" } });
     fireEvent.change(screen.getByTestId("project-slots"), { target: { value: "3" } });

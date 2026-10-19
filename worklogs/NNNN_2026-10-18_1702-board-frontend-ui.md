@@ -1,8 +1,8 @@
 # Worklog: #1702 — Board frontend UI: kanban/swimlanes, drag, scope switcher, SSE feed
 
-**Date:** 2026-10-18 (r1: 2026-10-18/19; r2: 2026-10-19)
+**Date:** 2026-10-18 (r1: 2026-10-18/19; r2/r3: 2026-10-19)
 **Session:** Lane 4 of the Task Board (design 0067 §7): the BoardPage frontend projection over the #1699 REST surface — kanban/swimlanes with server-arbitrated drag, the project/epic scope switcher, the SSE live feed on the #1687-hardened user stream, and the create/edit surfaces incl. OR4 pr:N tag validation.
-**Status:** Complete — PR #1742 r2 remediation pushed (supersedes #1738, closed after synchronize event loss), orchestrator merges on APPROVED
+**Status:** Complete — PR #1742 r3 remediation pushed, orchestrator merges on APPROVED
 
 ---
 
@@ -72,6 +72,17 @@ The verdict's four findings, all landed:
 5. Hygiene: the one act() warning in `useUserEventStream.board.test.tsx` fixed (frames now emitted test-side inside act); per-file test counts corrected everywhere (boardRules 54 incl. it.each expansions, api/board 11, sse 4 — the earlier counts under-claimed).
 
 r2 verification: full vitest **206 files / 2318 tests passed**; tsc clean; eslint 0 errors (6 pre-existing generated-file warnings); Playwright `board.spec.ts` **12/12** (40.2s).
+
+## r3 (CHANGES_REQUESTED remediation on PR #1742, one commit set)
+
+Both findings landed:
+
+1. **`validation` guard code + a backend-derived parity pin** — `BOARD_GUARD_MESSAGES` gains the `validation` hint (service.go emits it on priority/name/title guards; reachable — the REST handlers never pre-check priority), and `BOARD_ERROR_CODES` is now DERIVED from a golden contract fixture (`frontend/src/api/boardErrorCodes.json`) rather than a hand list. The fixture is pinned GO-SIDE: `api/internal/handlers/board_guard_codes_parity_test.go` source-scans pkg/board's non-test GuardError/DependencyError constructions (constants resolved through the board package's exported values; literals verbatim; the never-constructed GuardDependency drops out by construction) and asserts set equality with the fixture — the mirror-against-itself hole is closed (neither side can drift alone; a new backend code reddens the Go test until the fixture + hint grow). The one-file Go addition is the verdict's pre-specified remedy ("a board_parity_test extension asserting BOARD_ERROR_CODES against renderBoardError's reachable codes") realized as a new file to keep the collision surface zero for the parallel #1700 lane.
+2. **`workspacesQuery` unswallowed** — the query fetches only once the projects read has SETTLED and the list is genuinely needed (empty-board prefetch or the New-project dialog open — never speculatively mid-load, killing both the silent-empty-select path and the Sidebar-cache topology coupling); a failed fetch renders a load-error notice + Retry inside the dialog beside the select. Two pins: failure surfaces in-dialog; retry repopulates the select.
+
+Also per the robustness note: the OR4 client-veto strictness asymmetry (engine Sscanf accepts pr:01; PR:12 rides as a free tag) is now documented in boardRules' doctrine comment — one-directional by design.
+
+r3 verification: full vitest **206 files / 2321 tests passed**; tsc clean; eslint 0 errors (6 pre-existing generated-file warnings); Playwright `board.spec.ts` **12/12** (27.4s); Go `TestBoardGuardCodesParity` + the board parity suite **ok** (`go test ./internal/handlers/ -run "TestBoardGuardCodesParity|TestBoardParity"`).
 
 ## Key Decisions
 

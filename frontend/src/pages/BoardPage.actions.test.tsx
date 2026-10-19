@@ -10,6 +10,7 @@ import {
   seedBoard,
   defaultTasks,
   mockListProjects,
+  mockWorkspacesList,
   mockStartTask,
   mockCancelTask,
   mockActivateEpic,
@@ -308,6 +309,32 @@ describe("BoardPage r1 — cancel / lifecycle / start / feed / concurrency", () 
     fireEvent.click(screen.getByTestId("board-retry"));
     await screen.findByTestId("swimlane-prj-aaaa1111");
     expect(screen.queryByTestId("board-read-error")).toBeNull();
+  });
+
+  it("surfaces a workspaces-list failure inside the New-project dialog (r3: not a silent empty select)", async () => {
+    mockWorkspacesList.mockRejectedValue(new Error("503 workspaces"));
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    fireEvent.click(screen.getByTestId("new-project-button"));
+
+    const err = await screen.findByTestId("workspaces-load-error");
+    expect(err.querySelector('[data-board-error]')?.textContent).toContain("503 workspaces");
+    // The select is present but the failure is rendered beside it — not silent.
+    expect(screen.getByTestId("project-workspace")).toBeInTheDocument();
+  });
+
+  it("retries the workspaces fetch from the dialog", async () => {
+    mockWorkspacesList.mockRejectedValueOnce(new Error("503 workspaces"));
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    fireEvent.click(screen.getByTestId("new-project-button"));
+    await screen.findByTestId("workspaces-load-error");
+
+    fireEvent.click(screen.getByTestId("workspaces-retry"));
+    await waitFor(() => expect(screen.queryByTestId("workspaces-load-error")).toBeNull());
+    // The select now carries the loaded workspace.
+    const select = screen.getByTestId("project-workspace") as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelector('option[value="ws-1"]')).not.toBeNull());
   });
 
   it("keeps the empty state for a SUCCESSFUL read of zero projects", async () => {

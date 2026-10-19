@@ -11,6 +11,15 @@
  * server's move-stage endpoint and the engine's guard outcome (409 +
  * code) is rendered verbatim — the server is the single arbiter (§4.2);
  * a mirror drift shows up as an honest 409, not a client-side veto.
+ *
+ * Doctrine notes: (i) the error-code set below is BACKEND-DERIVED — it
+ * comes from api/boardErrorCodes.json, the golden fixture the Go-side
+ * parity test (api/internal/handlers/board_guard_codes_parity_test.go)
+ * pins against a source-scan of pkg/board's emitted codes, so neither
+ * side can drift alone; (ii) the OR4 client veto is deliberately
+ * STRICTER than the engine (store.go's Sscanf accepts pr:01 and PR:12
+ * passes as a free tag) — the client enforces the documented ruling
+ * form; no invalid state is creatable, and the asymmetry is one-directional.
  */
 
 // --- Stages (ruling R2's binding vocabulary) ----------------------------------
@@ -217,6 +226,7 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   epic_state: "The epic's state refuses this action.",
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",
+  validation: "A field failed the engine's validation (priority, or a required name/title).",
   // DependencyError's codes (ruling R4a — the dependency-write 409 class
   // the server actually emits; GuardDependency is defined engine-side but
   // never returned, so it has no mirror here).
@@ -225,24 +235,16 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   self: "A task cannot depend on itself (ruling R4).",
 };
 
+import boardErrorCodesGolden from "../api/boardErrorCodes.json";
+
 /** Every error code the backend can emit on the board surface — the
- * parity set BOARD_GUARD_MESSAGES must cover exactly (the r2 pin: a
- * mirror file carries no dead keys and misses no live ones). Guard codes
- * per pkg/board/board.go:177-187 minus the never-returned GuardDependency,
- * plus DependencyError's three codes (board.go:192-200). */
-export const BOARD_ERROR_CODES: readonly string[] = [
-  "stage_transition",
-  "done_guard",
-  "claim_token",
-  "manager_surface_only",
-  "workspace_binding",
-  "epic_state",
-  "project_state",
-  "authz",
-  "cycle",
-  "cross_project",
-  "self",
-] as const;
+ * parity set BOARD_GUARD_MESSAGES must cover exactly. BACKEND-DERIVED
+ * (r3): the golden fixture is the shared contract artifact — the Go-side
+ * parity test (board_guard_codes_parity_test.go) pins it against a
+ * source-scan of pkg/board's GuardError/DependencyError constructions,
+ * and the vitest parity test pins this export (and the hint map) against
+ * the same fixture. Neither side can drift alone. */
+export const BOARD_ERROR_CODES: readonly string[] = boardErrorCodesGolden;
 
 export interface DescribedBoardError {
   message: string;

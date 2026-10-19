@@ -85,12 +85,6 @@ export function BoardPage() {
   });
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
 
-  const workspacesQuery = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: () => workspacesApi.list(),
-    enabled: projects.length === 0,
-  });
-
   // Read-path failures are NOT emptiness (r2): a failed projects/tasks
   // fetch renders an error notice — the empty-board state is reserved
   // for a successful read of zero projects (the "no swallowed errors"
@@ -270,6 +264,20 @@ export function BoardPage() {
 
   // --- Dialogs ---------------------------------------------------------------------
   const [showCreateProject, setShowCreateProject] = useState(false);
+
+  const workspacesQuery = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: () => workspacesApi.list(),
+    // r3: fetch only once the projects read has SETTLED and the list is
+    // genuinely needed — the empty-board prefetch or the New-project
+    // dialog — never speculatively mid-load (the dialog must not depend
+    // on the Sidebar's fetch having populated the shared cache), and its
+    // failure must be a rendered error, not a silently empty select.
+    enabled:
+      projectsQuery.isSuccess &&
+      (projects.length === 0 || showCreateProject),
+  });
+
   const [projName, setProjName] = useState("");
   const [projWorkspace, setProjWorkspace] = useState("");
   const [projSlots, setProjSlots] = useState(2);
@@ -638,6 +646,20 @@ export function BoardPage() {
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
             <Dialog.Title className="text-sm font-semibold">New project</Dialog.Title>
             {createError && <BoardErrorNotice error={createError} onDismiss={() => setCreateError(null)} />}
+            {workspacesQuery.isError && (
+              <div data-testid="workspaces-load-error">
+                <BoardErrorNotice error={toBoardError(workspacesQuery.error)} title="Target workspaces failed to load" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-1"
+                  data-testid="workspaces-retry"
+                  onClick={() => void queryClient.invalidateQueries({ queryKey: ["workspaces"] })}
+                >
+                  Retry workspaces
+                </Button>
+              </div>
+            )}
             <label className="flex flex-col gap-1 text-xs">
               <span className="font-medium">Name</span>
               <Input value={projName} onChange={(e) => setProjName(e.target.value)} data-testid="project-name" />
