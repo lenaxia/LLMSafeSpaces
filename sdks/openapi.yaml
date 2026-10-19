@@ -476,8 +476,14 @@ paths:
       description: |
         #1601 out-of-band disk lever: sweeps the workspace pod's allowlisted
         build/package caches (go build+module, npm, pip, pnpm, cargo downloads,
-        mise downloads, mise cache, stale /tmp/go-build residue) — never user data, logs,
-        or anything unrecoverable. Free-ENOUGH semantics: stops once the
+        mise downloads, mise cache, stale /tmp/go-build residue; #1744 adds
+        playwright browsers, the session caches under /tmp/opencode, stale
+        gotmp worker scratch, the golangci-lint cache, npm _cacache/_npx, and
+        the kubebuilder-envtest assets) — never user data, logs,
+        or anything unrecoverable. #1744 safety: classes with open file
+        handles under them report status "in_use" and are never deleted, and
+        classes below their size floor report not_present with the floor in
+        the reason. Free-ENOUGH semantics: stops once the
         volume drops below the target ratio (~0.85), largest class first;
         idempotent. Pass dryRun=true for report-before-free (no mutation).
         Authz: workspace owner. Executed by agentd (write-free rescue path —
@@ -9518,7 +9524,7 @@ components:
           type: integer
         status:
           type: string
-          enum: [freed, would_free, not_present, refused, error, skipped_target_met]
+          enum: [freed, would_free, not_present, in_use, refused, error, skipped_target_met]
         reason:
           type: string
     WorkspaceConditionResult:

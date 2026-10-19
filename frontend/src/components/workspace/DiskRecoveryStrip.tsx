@@ -34,12 +34,21 @@ const CLASS_LABELS: Record<string, string> = {
   "go-build-cache": "Go build cache",
   "go-module-cache": "Go module cache",
   "npm-cache": "npm cache",
+  "npm-npx": "npx package cache",
   "pip-cache": "pip cache",
   "pnpm-store": "pnpm store",
   "cargo-download-cache": "Cargo downloads",
   "mise-download-cache": "mise downloads",
   "mise-xdg-cache": "mise cache",
   "tmp-build-residue": "Stale /tmp build dirs",
+  // #1744 — the regenerable classes that actually fill workspace PVCs.
+  "playwright-browsers": "Playwright browsers",
+  "tmp-opencode-gocache": "Session Go build cache",
+  "tmp-opencode-goocache": "Session Go object cache",
+  "tmp-opencode-npm-cache": "Session npm cache",
+  "gotmp-residue": "Stale Go temp dirs",
+  "golangci-lint-cache": "golangci-lint cache",
+  "kubebuilder-envtest": "envtest assets",
 };
 
 function classLabel(cls: string): string {
@@ -240,7 +249,10 @@ export function DiskRecoveryStrip({ workspaceId, diskUsedBytes, diskTotalBytes }
                   <td className="text-muted-foreground">
                     {c.status === "would_free" && "reclaimable"}
                     {c.status === "freed" && (c.bytesFreed < c.bytes ? `freed (${c.reason ?? "partial"})` : "freed")}
-                    {c.status === "not_present" && "not present"}
+                    {c.status === "not_present" && (c.reason ? `not present (${c.reason})` : "not present")}
+                    {/* #1744: pinned classes keep their measured bytes visible —
+                        the operator's "why is the disk still full" answer. */}
+                    {c.status === "in_use" && `in use (${c.reason ?? "open handles"})`}
                     {c.status === "skipped_target_met" && "skipped — target met"}
                     {c.status === "refused" && <span className="text-red-500">refused ({c.reason})</span>}
                     {c.status === "error" && <span className="text-red-500">error ({c.reason})</span>}
