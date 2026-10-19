@@ -127,6 +127,7 @@ func TestRenameSession_DelegatesToSessionIndex(t *testing.T) {
 		ID: "ws-1", UserID: "user-1",
 	}, nil)
 	si.On("UpsertTitle", mock.Anything, "ws-1", "s1", "New Name").Return(nil)
+	si.On("Register", mock.Anything, "ws-1", "s1", "opencode").Return("").Maybe()
 
 	err := f.svc.RenameSession(context.Background(), "user-1", "ws-1", "s1", "New Name")
 	assert.NoError(t, err)
@@ -178,6 +179,7 @@ func TestMarkSessionSeen_DelegatesToSessionIndex(t *testing.T) {
 		ID: "ws-1", UserID: "user-1",
 	}, nil)
 	si.On("UpdateLastSeen", mock.Anything, "ws-1", "s1").Return(nil)
+	si.On("Register", mock.Anything, "ws-1", "s1", "opencode").Return("").Maybe()
 
 	err := f.svc.MarkSessionSeen(context.Background(), "user-1", "ws-1", "s1")
 	assert.NoError(t, err)
@@ -270,7 +272,8 @@ func TestSetSessionArchived_NotIndexed_NotFoundPropagates(t *testing.T) {
 	assert.Equal(t, 404, apiErr.StatusCode())
 }
 
-// Register: design 0066 registration seam — no-op stub for this fixture.
+// Register: design 0066 registration seam (dispatched so wiring pins
+// can assert on it).
 func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
-	return ""
+	return m.Called(ctx, workspaceID, sessionID, harnessType).String(0)
 }

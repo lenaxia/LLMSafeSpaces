@@ -354,11 +354,7 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort drain
 	if resp.StatusCode >= 400 {
-		// A 404 on the session-scoped message route IS a session-
-		// not-found verdict (the #1340 httpSessionError covenant);
-		// mapping it lets the API's design 0066 layer attach its
-		// did-you-mean payload instead of a bare 502.
-		return nil, a.httpSessionError("POST /session/"+sessionID+"/message", resp)
+		return nil, a.httpError("POST /session/"+sessionID+"/message", resp)
 	}
 	// Use a 64 MB cap (was 4 MB). A single assistant turn can exceed 4 MB
 	// when the model emits verbose tool output (e.g. a large file read or

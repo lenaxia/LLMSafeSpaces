@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -205,8 +206,11 @@ func TestFindRefCandidatesAcrossWorkspaces(t *testing.T) {
 	s, mock, done := setupMockDB(t)
 	defer done()
 
+	// TWO ref bindings (review r1 finding 2): the normalized form for
+	// the short-id/alias matches AND the raw form for the legacy id's
+	// byte-equal match.
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT workspace_id, session_id, title, short_id, last_message_at FROM session_index`)).
-		WithArgs("ws-a", "ws-b", "oc-ab12cd34").
+		WithArgs("ws-a", "ws-b", "oc-ab12cd34", "oc-ab12cd34").
 		WillReturnRows(sqlmock.NewRows([]string{"workspace_id", "session_id", "title", "short_id", "last_message_at"}).
 			AddRow("ws-b", regLiveID, "Worker: #1648", regShortID, nil))
 
@@ -220,5 +224,29 @@ func TestFindRefCandidatesAcrossWorkspaces(t *testing.T) {
 	// Workspace must ride on the row for the cross-workspace payload.
 	if rows[0].Workspace != "ws-b" {
 		t.Errorf("workspace not carried on the candidate row")
+	}
+}
+
+// TestFindRefCandidatesAcrossWorkspaces_MixedCaseLegacyID pins
+// finding 2's fix at the SQL-shape tier: a MIXED-CASE legacy id binds
+// the byte-equal comparison RAW (second ref arg), not lowercased —
+// a normalized-only binding would make every mixed-case ses_… row
+// unmatchable across workspaces.
+func TestFindRefCandidatesAcrossWorkspaces_MixedCaseLegacyID(t *testing.T) {
+	s, mock, done := setupMockDB(t)
+	defer done()
+
+	mixed := "ses_eD9183a46FfeRiNw2PddpL5dAA"
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT workspace_id, session_id, title, short_id, last_message_at FROM session_index`)).
+		WithArgs("ws-b", strings.ToLower(mixed), mixed).
+		WillReturnRows(sqlmock.NewRows([]string{"workspace_id", "session_id", "title", "short_id", "last_message_at"}).
+			AddRow("ws-b", mixed, "Worker: #1648", "", nil))
+
+	rows, err := s.FindRefCandidatesAcrossWorkspaces(context.Background(), []string{"ws-b"}, mixed)
+	if err != nil {
+		t.Fatalf("FindRefCandidatesAcrossWorkspaces: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != mixed {
+		t.Fatalf("mixed-case legacy id must byte-equal match: %+v", rows)
 	}
 }

@@ -304,6 +304,10 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 			sessionindex.ReconcileOutcome("count_unchanged")
 			continue
 		}
+		// Design 0066 §4.2: the count rebuild is a row-creating upsert
+		// shape — register through the seam first (review r1 finding 1;
+		// the loop's own budget bounds the mint cost).
+		h.sessionIndex.Register(ctx, workspaceID, row.ID, "opencode")
 		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.ID, count); err != nil {
 			h.logger.Warn("session reconcile: count rebuild write failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
 			continue

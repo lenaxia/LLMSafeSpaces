@@ -160,15 +160,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generalization): one shared deterministic ranking (bounded
   Levenshtein over short + legacy ids for id-form input;
   word-boundary prefix / token overlap over titles + slugs for
-  alias-form input; last-active DESC tiebreak; top-3) serves the API's
-  structured `404/410 + suggestions:[{title, shortId, sessionId,
-  workspace, lastActive}]` payloads (send 404s, the typed
-  session_gone 410, the archived 404, admin force-abort, alias
-  ambiguity) and the agentd clause (candidates = replica short ids +
-  harness ids + titles + slugs). Workspace-scoped first; only when
-  nothing scores and the requester is known does one bounded
-  exact-match query cover their OTHER authorized workspaces.
-  Ambiguity is never auto-resolved; authz/transport/5xx never suggest.
+  alias-form input; last-active DESC tiebreak; top-3, always — the
+  cross-workspace tail included) serves the API's structured
+  `404/410 + suggestions:[{title, shortId, sessionId, workspace,
+  lastActive}]` payloads (the typed session_gone 410, the archived
+  404, admin force-abort, alias ambiguity) and the agentd clause
+  (candidates = replica short ids + harness ids + titles + slugs).
+  Workspace-scoped first; only when nothing scores and the requester
+  is known does one bounded exact-match query cover their OTHER
+  authorized workspaces. Ambiguity is never auto-resolved;
+  authz/transport/5xx never suggest (a DB error degrades to
+  passthrough, never a 404). The #1340 session-not-found error
+  mapping stays scoped to the session-READ routes exactly as its
+  covenant documents.
 - **The agentd replica + control plane**: `/sandbox-runtime/
   session-shortids.json` (memory-backed class, 0600, atomic rename)
   populated by boot pull, TTL-limited on-miss pulls, and
@@ -182,10 +186,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty id-like miss answers the suggestions payload; no `q` ⇒ the
   bare array byte-identical); `SessionListItem`/`EnsureSessionResponse`
   carry `shortId` (omitempty); OpenAPI additive updates.
-- **Out of this PR** (sequenced per design 0066 M2/M3): the ABI
-  `short_id` fields (`Session` 13 / `ActionResult` 12) + regen and the
-  frontend URL flip — the REST/tools surfaces above are the addressing
-  layer those consume.
+- **Out of this PR** (sequenced per design 0066): the ABI `short_id`
+  fields (`Session` 13 / `ActionResult` 12) + regen and the frontend
+  URL flip. Sequencing note (design §7 inverts here deliberately):
+  this PR lands the M3 addressing/acceptance surfaces ahead of the
+  M2 ABI fields because the REST/tools layer is what the orchestrator
+  lanes address sessions through today, the ABI fields only carry the
+  same ids as data, and both orders converge on the design's Phase C
+  road — the ABI regen lands with the SDK/OpenAPI flip that consumes
+  it.
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 

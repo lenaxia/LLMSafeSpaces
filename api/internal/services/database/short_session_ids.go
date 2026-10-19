@@ -114,9 +114,13 @@ func (s *Service) FindSessionByShortID(ctx context.Context, workspaceID, shortID
 // refuse — NEVER auto-resolve (ruling 8). Aliases are computed, never
 // stored: a rename changes future resolution immediately.
 func (s *Service) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	// ORDER BY last_message_at DESC: the ambiguity payload's
+	// "newest first" contract (review r1: the truncation to the top-3
+	// must be deterministic, never DB-order-arbitrary).
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT session_id, title, short_id, last_message_at
-		 FROM session_index WHERE workspace_id = $1 AND lower(btrim(title)) = $2`,
+		 FROM session_index WHERE workspace_id = $1 AND lower(btrim(title)) = $2
+		 ORDER BY last_message_at DESC NULLS LAST, session_id ASC`,
 		workspaceID, shortid.Normalize(alias))
 	if err != nil {
 		return nil, err
@@ -180,19 +184,25 @@ func (s *Service) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspa
 	}
 	// IN-list expansion (not = ANY($1)): stays driver-portable and
 	// mock-friendly; the set is the owner's bounded workspace list.
-	args := make([]any, 0, len(workspaceIDs)+1)
+	args := make([]any, 0, len(workspaceIDs)+2)
 	placeholders := make([]string, 0, len(workspaceIDs))
 	for i, id := range workspaceIDs {
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
 		args = append(args, id)
 	}
-	args = append(args, shortid.Normalize(ref))
+	// TWO ref bindings (review r1 finding 2): the normalized (lower-
+	// cased) form for the case-insensitive short-id and alias matches,
+	// and the RAW form for the legacy harness id's BYTE-equal match —
+	// harness ids are case-sensitive; lowercasing the needle would
+	// make every mixed-case ses_… row unmatchable.
+	args = append(args, shortid.Normalize(ref), ref)
+	normIdx, rawIdx := len(args)-1, len(args)
 	rows, err := s.DB.QueryContext(ctx,
 		fmt.Sprintf(`SELECT workspace_id, session_id, title, short_id, last_message_at
 		 FROM session_index
 		 WHERE workspace_id IN (%s)
 		   AND (lower(short_id) = $%d OR session_id = $%d OR lower(btrim(title)) = $%d)`,
-			strings.Join(placeholders, ", "), len(args), len(args), len(args)),
+			strings.Join(placeholders, ", "), normIdx, rawIdx, normIdx),
 		args...)
 	if err != nil {
 		return nil, err

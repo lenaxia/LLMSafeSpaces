@@ -961,6 +961,13 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		} else if shortid.IsShortIDForm(scope) {
 			if id, ok := currentSessionShortIDs().resolveShortID(scope); ok {
 				resolved = id
+			} else if pullSessionShortIDsRateLimited(ctx) {
+				// Same on-miss convergence as every other tool (review
+				// r1 skeptical pass: one shared precedence, no diverging
+				// shortcut here).
+				if id, ok := currentSessionShortIDs().resolveShortID(scope); ok {
+					resolved = id
+				}
 			}
 		}
 		scope = resolved

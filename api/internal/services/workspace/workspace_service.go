@@ -1925,6 +1925,9 @@ func (s *Service) MarkSessionSeen(ctx context.Context, userID, workspaceID, sess
 	if s.sessionIndex == nil {
 		return nil
 	}
+	// Design 0066 §4.2: last-seen is a row-creating upsert shape —
+	// register through the seam first (review r1 finding 1).
+	s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	return s.sessionIndex.UpdateLastSeen(ctx, workspaceID, sessionID)
 }
 
@@ -2000,6 +2003,9 @@ func (s *Service) RenameSession(ctx context.Context, userID, workspaceID, sessio
 	if s.sessionIndex == nil {
 		return nil
 	}
+	// Design 0066 §4.2: title-rename is a row-creating upsert shape —
+	// register through the seam first (review r1 finding 1).
+	s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	return s.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title)
 }
 

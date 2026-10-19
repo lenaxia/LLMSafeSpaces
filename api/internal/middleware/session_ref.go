@@ -6,10 +6,12 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/pkg/sessionref"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -50,10 +52,9 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 			setParam(c, "sessionId", res.CanonicalID)
 			c.Next()
 		case res.AmbiguousAlias:
-			suggestions := aliasSuggestions(res.AliasMatches)
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 				"error":       "session alias is ambiguous — " + pluralSessions(len(res.AliasMatches)) + " share this title; none was used (design 0066: ambiguity is never auto-resolved)",
-				"suggestions": suggestions,
+				"suggestions": aliasSuggestions(workspaceID, res.AliasMatches),
 			})
 		default: // unresolved alias
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
@@ -83,24 +84,49 @@ func SuggestionsFor(c *gin.Context, resolver sessionindex.RefResolver, workspace
 	return anyOut
 }
 
-// aliasSuggestions renders an ambiguity's rows as the payload
-// (newest first, capped at 3 — ruling 8's top-3).
-func aliasSuggestions(rows []types.SessionListItem) []any {
-	out := make([]any, 0, len(rows))
-	if len(rows) > 3 {
-		rows = rows[:3]
+// aliasSuggestions renders an ambiguity's rows as the payload —
+// ruling 8's exact row shape {title, shortId, sessionId, workspace,
+// lastActive}, typed sessionref.Suggestion like every other payload
+// path, newest first (FindSessionsByAlias's ORDER BY), capped at 3.
+func aliasSuggestions(workspaceID string, rows []types.SessionListItem) []sessionref.Suggestion {
+	if len(rows) > sessionref.MaxSuggestions {
+		rows = rows[:sessionref.MaxSuggestions]
 	}
+	out := make([]sessionref.Suggestion, 0, len(rows))
 	for _, row := range rows {
-		s := gin.H{"sessionId": row.ID, "shortId": row.ShortID, "workspace": ""}
-		if row.Title != "" {
-			s["title"] = row.Title
+		s := sessionref.Suggestion{
+			Title:     row.Title,
+			ShortID:   row.ShortID,
+			SessionID: row.ID,
+			Workspace: workspaceID,
 		}
-		if row.LastMessageAt != nil {
-			s["lastActive"] = row.LastMessageAt.UTC()
+		if t := lastActiveOfRow(row); !t.IsZero() {
+			utc := t.UTC()
+			s.LastActive = &utc
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// lastActiveOfRow picks a row's freshest activity timestamp — the
+// same semantics the ranked payload paths use (review r1: the
+// ambiguity payload's lastActive must not diverge from every other
+// surface's).
+func lastActiveOfRow(row types.SessionListItem) time.Time {
+	switch {
+	case row.LastMessageAt != nil && row.LastSeenAt != nil:
+		if row.LastMessageAt.After(*row.LastSeenAt) {
+			return *row.LastMessageAt
+		}
+		return *row.LastSeenAt
+	case row.LastMessageAt != nil:
+		return *row.LastMessageAt
+	case row.LastSeenAt != nil:
+		return *row.LastSeenAt
+	default:
+		return time.Time{}
+	}
 }
 
 func pluralSessions(n int) string {

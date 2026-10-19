@@ -5,6 +5,7 @@ package sessionindex
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,9 +105,15 @@ func ResolveSessionRef(ctx context.Context, r RefResolver, workspaceID, ref stri
 		// miss must NOT downgrade addressing (index lag ≠ absent).
 		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
 	}
-	// Alias-form: must resolve or refuse.
+	// Alias-form: must resolve or refuse — EXCEPT on a DB error,
+	// which degrades to passthrough exactly like the short-id branch
+	// (review r1 finding 5: a 5xx must never masquerade as a miss and
+	// answer a 404-with-suggestions; the seam keeps the verdict).
 	matches, err := r.FindSessionsByAlias(ctx, workspaceID, ref)
-	if err != nil || len(matches) == 0 {
+	if err != nil {
+		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
+	}
+	if len(matches) == 0 {
 		return RefResolution{UnresolvedAlias: true}
 	}
 	if len(matches) > 1 {
@@ -150,6 +157,7 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 	if len(out) > 0 || userID == "" {
 		return out
 	}
+	own := len(out)
 	ids, err := r.ListWorkspaceIDsByOwner(cctx, userID)
 	if err != nil || len(ids) == 0 {
 		return out
@@ -178,7 +186,45 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 			out = append(out, s)
 		}
 	}
+	// Ruling 8: "Top-3, always" — including the cross-workspace
+	// tail (review r1 finding 4). The cross matches are exact hits, so
+	// their order is last-active DESC (the payload's deterministic
+	// tiebreak), then workspace/session id as the final stable key;
+	// own-workspace ranked suggestions always outrank the tail.
+	if len(out) > sessionref.MaxSuggestions {
+		cross := out[own:]
+		sort.SliceStable(cross, func(i, j int) bool {
+			a, b := cross[i], cross[j]
+			if !sameTime(a.LastActive, b.LastActive) {
+				return later(a.LastActive, b.LastActive)
+			}
+			if a.Workspace != b.Workspace {
+				return a.Workspace < b.Workspace
+			}
+			return a.SessionID < b.SessionID
+		})
+		out = out[:sessionref.MaxSuggestions]
+	}
 	return out
+}
+
+// sameTime/later compare optional timestamps for the deterministic
+// cross-workspace tail sort.
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
+}
+
+func later(a, b *time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	return a.After(*b)
 }
 
 // lastActiveOf picks a row's freshest activity timestamp (never zero

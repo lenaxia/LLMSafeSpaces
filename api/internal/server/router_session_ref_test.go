@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -147,13 +148,21 @@ func TestSessionRef_AliasCollisionRefusesWithDidYouMean(t *testing.T) {
 	rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/mighty-harbor/seen")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 
+	// Ruling 8's exact row shape on the ambiguity payload too (review
+	// r1 finding 3): title/shortId/sessionId/workspace/lastActive —
+	// the workspace is the route's own, never "".
 	var body struct {
-		Error       string                   `json:"error"`
-		Suggestions []map[string]interface{} `json:"suggestions"`
+		Error       string             `json:"error"`
+		Suggestions []types_Suggestion `json:"suggestions"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Contains(t, body.Error, "ambiguous")
 	require.Len(t, body.Suggestions, 2, "both colliding sessions must be offered")
+	for _, s := range body.Suggestions {
+		assert.Equal(t, "ws-1", s.Workspace, "workspace must be the route's own id")
+		assert.NotEmpty(t, s.SessionID)
+		assert.NotEmpty(t, s.ShortID)
+	}
 }
 
 // Unresolvable input answers suggestions, not silence.
@@ -232,8 +241,8 @@ func TestSessionsQFilter(t *testing.T) {
 		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q=oc-ab12cd35")
 		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 		var body struct {
-			Error       string       `json:"error"`
-			Suggestions []types_Sugg `json:"suggestions"`
+			Error       string             `json:"error"`
+			Suggestions []types_Suggestion `json:"suggestions"`
 		}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		assert.Equal(t, "session not found", body.Error)
@@ -254,10 +263,11 @@ func TestSessionsQFilter(t *testing.T) {
 	})
 }
 
-// types_Sugg mirrors the suggestion payload row (design 0066 §4.6).
-type types_Sugg struct {
-	Title     string `json:"title"`
-	ShortID   string `json:"shortId"`
-	SessionID string `json:"sessionId"`
-	Workspace string `json:"workspace"`
+// types_Suggestion mirrors the suggestion payload row (design 0066 §4.6).
+type types_Suggestion struct {
+	Title      string     `json:"title"`
+	ShortID    string     `json:"shortId"`
+	SessionID  string     `json:"sessionId"`
+	Workspace  string     `json:"workspace"`
+	LastActive *time.Time `json:"lastActive"`
 }

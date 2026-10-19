@@ -5,8 +5,11 @@ package sessionindex
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -161,6 +164,62 @@ func TestSuggestionsFor_CrossWorkspaceOnlyWhenOwnEmpty(t *testing.T) {
 		t.Fatalf("own-workspace hit must not fall through to cross-workspace: %+v", got2)
 	}
 }
+
+// Review r1 finding 4's pin: cross-workspace exact matches never
+// exceed the top-3 cap, and their order is deterministic (last-active
+// DESC, then workspace/session id) even when duplicates abound.
+func TestSuggestionsFor_CrossWorkspaceTopThreeCap(t *testing.T) {
+	now := time.Now()
+	older := now.Add(-2 * time.Hour)
+	oldest := now.Add(-3 * time.Hour)
+	r := &fakeRefResolver{
+		ownerWS: []string{"ws-own", "w1", "w2", "w3", "w4"},
+		crossWS: []types.SessionListItem{
+			{ID: "ses_new", ShortID: "oc-11111111", Workspace: "w1", Title: "dup", LastMessageAt: &now},
+			{ID: "ses_mid", ShortID: "oc-22222222", Workspace: "w2", Title: "dup", LastMessageAt: &older},
+			{ID: "ses_old", ShortID: "oc-33333333", Workspace: "w3", Title: "dup", LastMessageAt: &oldest},
+			{ID: "ses_anc", ShortID: "oc-44444444", Workspace: "w4", Title: "dup", LastMessageAt: nil},
+		},
+	}
+	got := SuggestionsFor(context.Background(), r, "user-1", "ws-own", "oc-00000000")
+	require.Len(t, got, MaxSuggestionsLocal, "ruling 8: top-3, ALWAYS — including the cross-workspace tail")
+	if got[0].SessionID != "ses_new" || got[1].SessionID != "ses_mid" || got[2].SessionID != "ses_old" {
+		t.Fatalf("cross-workspace order must be last-active DESC: %s, %s, %s",
+			got[0].SessionID, got[1].SessionID, got[2].SessionID)
+	}
+}
+
+// Review r1 finding 5's pin: a DB error on the alias lookup degrades
+// to passthrough — a 5xx must never masquerade as a miss and answer a
+// 404-with-suggestions.
+func TestResolveSessionRef_AliasLookupErrorDegradesToPassthrough(t *testing.T) {
+	r := &erroringAliasResolver{}
+	res := ResolveSessionRef(context.Background(), r, "ws", "some-title")
+	if res.MatchedBy != MatchPassthrough || res.CanonicalID != "some-title" {
+		t.Fatalf("alias lookup error must degrade to passthrough: %+v", res)
+	}
+}
+
+type erroringAliasResolver struct{}
+
+func (e *erroringAliasResolver) FindSessionByShortID(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+func (e *erroringAliasResolver) FindSessionsByAlias(_ context.Context, _, _ string) ([]types.SessionListItem, error) {
+	return nil, errors.New("db down")
+}
+func (e *erroringAliasResolver) ListSessionIndex(_ context.Context, _ string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+func (e *erroringAliasResolver) ListWorkspaceIDsByOwner(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (e *erroringAliasResolver) FindRefCandidatesAcrossWorkspaces(_ context.Context, _ []string, _ string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+// MaxSuggestionsLocal mirrors the payload cap for assertions.
+const MaxSuggestionsLocal = 3
 
 func TestSuggestionsFor_NoUserNoCrossWorkspace(t *testing.T) {
 	r := &fakeRefResolver{ownerWS: []string{"ws-other"}, crossWS: []types.SessionListItem{{ID: "ses_x"}}}
