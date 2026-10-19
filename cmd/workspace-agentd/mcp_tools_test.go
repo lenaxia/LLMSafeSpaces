@@ -50,6 +50,7 @@ type fakeAgent struct {
 	summaries    map[string]map[string]string
 	busySet      map[string]bool
 	models       map[string]string // session -> "prov/model"
+	slugs        map[string]string // session -> adjective-noun slug (design 0066 alias material)
 
 	catalogImage map[string]bool // "prov/model" -> image input
 
@@ -77,6 +78,7 @@ func newFakeAgent() *fakeAgent {
 		msgDone:      map[string]int{},
 		abortDropped: map[string]bool{},
 		models:       map[string]string{},
+		slugs:        map[string]string{},
 		catalogImage: map[string]bool{"p/vision": true, "p/text": false},
 	}
 }
@@ -212,7 +214,7 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 				if strings.Contains(f.models[id], "/") {
 					prov, model, _ = strings.Cut(f.models[id], "/")
 				}
-				list = append(list, map[string]any{
+				row := map[string]any{
 					"id": id, "title": title, "agent": "build", "version": "1.18.15",
 					"model": map[string]any{"id": model, "providerID": prov},
 					"time":  map[string]int64{"created": 1789274402332, "updated": 1789274854576},
@@ -220,7 +222,11 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 						"input": 100, "output": 50, "reasoning": 10,
 						"cache": map[string]int64{"read": 400, "write": 0},
 					},
-				})
+				}
+				if slug := f.slugs[id]; slug != "" {
+					row["slug"] = slug
+				}
+				list = append(list, row)
 			}
 			_ = json.NewEncoder(w).Encode(list)
 		case r.Method == http.MethodGet && path == "/session/status":
