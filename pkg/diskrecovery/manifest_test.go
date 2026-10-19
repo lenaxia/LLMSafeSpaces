@@ -139,6 +139,123 @@ func TestPrefixEntryValidation(t *testing.T) {
 	}
 }
 
+// PIN (#1744): the production opencode manifest must declare the
+// regenerable classes that actually fill workspace PVCs — playwright
+// browsers, the session-set /tmp/opencode caches, HOME-side Go scratch
+// (gotmp + stale gotmp-w* workers), golangci-lint's cache, npm's
+// _cacache/_npx payload, and the envtest assets under /workspace/.local.
+// Evidence on the incident pod (2026-10-18/19): three ENOSPC episodes
+// from exactly these trees; 97%→60% swings needed manual sweeps because
+// none of them was a deletion candidate.
+func TestIssue1744RegenerableClassesPresent(t *testing.T) {
+	m := ManifestFor("opencode")
+	want := []Entry{
+		{Class: "playwright-browsers", Path: "/home/sandbox/.cache/ms-playwright", Kind: EntryDir},
+		{Class: "tmp-opencode-gocache", Path: "/tmp/opencode/gocache", Kind: EntryDir},
+		{Class: "tmp-opencode-goocache", Path: "/tmp/opencode/goocache", Kind: EntryDir},
+		{Class: "tmp-opencode-npm-cache", Path: "/tmp/opencode/npm-cache", Kind: EntryDir},
+		{Class: "gotmp-residue", Path: "/home/sandbox/.cache/gotmp", Kind: EntryPrefixStale},
+		{Class: "golangci-lint-cache", Path: "/home/sandbox/.cache/golangci-lint", Kind: EntryDir},
+		{Class: "npm-npx", Path: "/home/sandbox/.npm/_npx", Kind: EntryDir},
+		{Class: "kubebuilder-envtest", Path: "/workspace/.local/kubebuilder-envtest", Kind: EntryDir},
+	}
+	for _, w := range want {
+		found := false
+		for _, e := range m.Entries {
+			if e.Class == w.Class {
+				found = true
+				if e.Path != w.Path || e.Kind != w.Kind {
+					t.Errorf("class %s: want path=%s kind=%s, got path=%s kind=%s", w.Class, w.Path, w.Kind, e.Path, e.Kind)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("#1744: production manifest must declare class %q (%s)", w.Class, w.Path)
+		}
+	}
+	// #1744 item 5: npm-cache is NARROWED from the whole ~/.npm root to
+	// npm's actual cache payload (_cacache is `npm cache clean`'s target).
+	npmSeen := false
+	for _, e := range m.Entries {
+		if e.Class == "npm-cache" {
+			npmSeen = true
+			if e.Path != "/home/sandbox/.npm/_cacache" {
+				t.Errorf("npm-cache must target ~/.npm/_cacache (#1744 item 5), got %s", e.Path)
+			}
+		}
+	}
+	if !npmSeen {
+		t.Error("#1744: npm-cache class missing entirely")
+	}
+}
+
+// PIN (#1744 protectedPath discipline): kubebuilder-envtest assets are
+// regenerable (setup-envtest re-downloads) but live under the
+// /workspace/.local package-home tree — deletable ONLY via the explicit
+// root+entry allow, never by weakening the protected list: the package
+// homes and every non-allowlisted sibling stay refused.
+func TestKubebuilderEnvtestExplicitAllow(t *testing.T) {
+	m := ManifestFor("opencode")
+	if err := validateEntry(m, Entry{Class: "kubebuilder-envtest", Path: "/workspace/.local/kubebuilder-envtest", Kind: EntryDir}); err != nil {
+		t.Fatalf("the explicit #1744 allow must validate, got %v", err)
+	}
+	for _, p := range []string{
+		"/workspace/.local/other-tool",          // sibling: no declared root
+		"/workspace/.local",                     // the package-home tree
+		"/workspace/.local/share",               // the share tree
+		"/workspace/.local/share/mise/installs", // the user's toolchains
+	} {
+		err := validateEntry(m, Entry{Class: "probe", Path: p, Kind: EntryDir})
+		if !errors.Is(err, ErrProtectedPath) && !errors.Is(err, ErrNotAllowlisted) {
+			t.Errorf("%s must stay refused, got %v", p, err)
+		}
+	}
+}
+
+// PIN (#1744 /tmp/opencode discipline): the session cache home under
+// the PVC "tmp" subpath gets a PARENT root — the root itself (it also
+// holds live session scratch and GOBIN tools) is never deletable, and
+// the entries under it are EXACTLY the three named cache dirs.
+func TestTmpOpencodeCacheRootsDeclared(t *testing.T) {
+	m := ManifestFor("opencode")
+	rootSeen := false
+	for _, r := range m.Roots {
+		if r.Path == "/tmp/opencode" {
+			rootSeen = true
+			if r.Kind != RootParent {
+				t.Errorf("/tmp/opencode root must be RootParent (session scratch home), got %s", r.Kind)
+			}
+		}
+	}
+	if !rootSeen {
+		t.Fatal("#1744: no /tmp/opencode cache root declared")
+	}
+	if err := validateEntry(m, Entry{Class: "probe", Path: "/tmp/opencode", Kind: EntryDir}); !errors.Is(err, ErrRootItselfProtected) {
+		t.Errorf("/tmp/opencode itself must stay root-protected, got %v", err)
+	}
+	want := map[string]bool{
+		"/tmp/opencode/gocache":   true,
+		"/tmp/opencode/goocache":  true,
+		"/tmp/opencode/npm-cache": true,
+	}
+	seen := map[string]bool{}
+	for _, e := range m.Entries {
+		if strings.HasPrefix(e.Path, "/tmp/opencode/") {
+			seen[e.Path] = true
+		}
+	}
+	for p := range want {
+		if !seen[p] {
+			t.Errorf("#1744: cache entry %s must be declared", p)
+		}
+	}
+	for p := range seen {
+		if !want[p] {
+			t.Errorf("#1744: unexpected entry under /tmp/opencode widens the boundary: %s", p)
+		}
+	}
+}
+
 // PIN (longest-root match): when roots nest, the most specific
 // declaration governs — a RootSelf root nested inside a RootParent
 // root is deletable itself (the parent rule would refuse it), and the

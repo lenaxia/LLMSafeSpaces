@@ -523,6 +523,142 @@ func TestReportClassesNeverNilOnWire(t *testing.T) {
 	}
 }
 
+// PIN (#1744 open-handle safety, dir arm): a cache tree with ANY open
+// file handle under it is never a deletion candidate — the sweep must
+// report it in_use (measured, visible, untouched), and reap it once the
+// holder closes. This is the guard that lets the whole-dir #1744
+// classes (playwright browsers, session gocache) be reaped without
+// pulling them out from under a live process.
+func TestOpenHandlesHoldDirClasses(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(cacheRoot, "gocache")
+	want := seedTree(t, gocache, 2, 1000)
+	// Hold one file inside the cache open — a live process using it.
+	held, err := os.Open(filepath.Join(gocache, "fa.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: cacheRoot, Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "tmp-opencode-gocache", Path: gocache, Kind: EntryDir},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+
+	// Dry-run: the pinned class must be reported in_use with the
+	// measured figure visible (the operator's "why is the disk still
+	// full" answer) and never counted as reclaimable.
+	rep, err := e.Recover(context.Background(), Request{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassStatus("in_use") {
+		t.Fatalf("cache with an open handle under it must report in_use, got %+v", cr)
+	}
+	if cr.Bytes != want {
+		t.Fatalf("in_use class must still report the measured bytes %d, got %+v", want, cr)
+	}
+	if cr.BytesFreed != 0 {
+		t.Fatalf("in_use class must claim zero freed, got %+v", cr)
+	}
+
+	// Real sweep: same verdict, tree untouched.
+	rep2, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cr2 := rep2.Classes[0]; cr2.Status != ClassStatus("in_use") {
+		t.Fatalf("held cache must stay in_use on a real sweep, got %+v", cr2)
+	}
+	if _, err := os.Stat(gocache); err != nil {
+		t.Fatalf("held cache tree must survive: %v", err)
+	}
+
+	// Holder closes → the class reaps normally.
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rep3, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr3 := rep3.Classes[0]
+	if cr3.Status != ClassFreed || cr3.BytesFreed != want {
+		t.Fatalf("cache must free once the handle closes, got %+v", cr3)
+	}
+	if _, err := os.Stat(gocache); !os.IsNotExist(err) {
+		t.Fatalf("unheld cache must be reaped, got %v", err)
+	}
+}
+
+// PIN (#1744 open-handle safety, prefix arm): per-child — a stale child
+// with an open handle survives while its free siblings reap; the class
+// reports only the free share and says so.
+func TestPrefixChildrenHeldByOpenHandlesExcluded(t *testing.T) {
+	dir := t.TempDir()
+	tmpRoot := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	heldChild := filepath.Join(tmpRoot, "gotmp-w111")
+	freeChild := filepath.Join(tmpRoot, "gotmp-w222")
+	seedTree(t, heldChild, 2, 100) // 200 — held open below
+	seedTree(t, freeChild, 3, 100) // 300 — free
+	old := time.Now().Add(-10 * time.Minute)
+	for _, c := range []string{heldChild, freeChild} {
+		if err := os.Chtimes(c, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := os.Open(filepath.Join(heldChild, "fa.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+
+	m := Manifest{
+		Base:  "test",
+		Roots: []CacheRoot{{Path: filepath.Join(tmpRoot, "gotmp-w"), Kind: RootParent}},
+		Entries: []Entry{
+			{Class: "gotmp-residue", Path: filepath.Join(tmpRoot, "gotmp-w"), Kind: EntryPrefixStale, MinAgeSecs: 120},
+		},
+	}
+	usage := &fakeUsage{total: 10000, used: 9600}
+	e := NewEngine(m, usage.get)
+	e.SetClock(func() time.Time { return time.Now() })
+
+	rep, err := e.Recover(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := rep.Classes[0]
+	if cr.Status != ClassFreed {
+		t.Fatalf("class with one free stale child must free, got %+v", cr)
+	}
+	if cr.Bytes != 300 || cr.BytesFreed != 300 {
+		t.Fatalf("only the free child's 300 bytes may be measured/claimed (held child excluded), got %+v", cr)
+	}
+	if !strings.Contains(cr.Reason, "held") {
+		t.Fatalf("partial-hold outcome must say which share was held, got %+v", cr)
+	}
+	if _, err := os.Stat(heldChild); err != nil {
+		t.Fatalf("held stale child must survive: %v", err)
+	}
+	if _, err := os.Stat(freeChild); !os.IsNotExist(err) {
+		t.Fatalf("free stale child must be reaped, got %v", err)
+	}
+}
+
 // PIN (measure/delete agreement, review r1 F3): an in-root symlinked
 // cache must free its TARGET tree — RemoveAll on the literal link
 // alone would report the target's bytes as freed while the bytes stay
