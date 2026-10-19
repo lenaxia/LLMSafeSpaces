@@ -737,9 +737,10 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 // convention). On fetch failure the last known set is served stale —
 // the annotation is advisory and must never fail the tool.
 var (
-	archivedSetCacheMu  sync.Mutex
-	archivedSetCacheVal map[string]bool
-	archivedSetCacheAt  time.Time
+	archivedSetCacheMu        sync.Mutex
+	archivedSetCacheVal       map[string]bool
+	archivedSetCacheAt        time.Time // retry throttle — stamped on every refresh ATTEMPT
+	archivedSetCacheFetchedAt time.Time // last SUCCESSFUL fetch — the #1735 filter's freshness window
 )
 
 const archivedSetCacheTTL = 15 * time.Second
@@ -758,8 +759,24 @@ func archivedSessionSet(ctx context.Context) map[string]bool {
 	archivedSetCacheAt = time.Now()
 	if fetched != nil {
 		archivedSetCacheVal = fetched
+		archivedSetCacheFetchedAt = time.Now()
 	}
 	archivedSetCacheMu.Unlock()
+	return archivedSetCacheVal
+}
+
+// filterableArchivedSet is the #1735 freshness-gated read: the listing
+// filters may only rely on data whose last SUCCESSFUL fetch is within
+// the TTL. During a platform outage the #1627 annotation keeps serving
+// the last-known set (staleness there is cosmetic), but a filter must
+// not silently hide rows on stale-forever data — past the window it
+// returns nil (no-op filter: everything lists). Review r1 finding 1.
+func filterableArchivedSet() map[string]bool {
+	archivedSetCacheMu.Lock()
+	defer archivedSetCacheMu.Unlock()
+	if archivedSetCacheFetchedAt.IsZero() || time.Since(archivedSetCacheFetchedAt) >= archivedSetCacheTTL {
+		return nil
+	}
 	return archivedSetCacheVal
 }
 
@@ -793,7 +810,8 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 // the metadata annotation (#1627 §4): the platform fact must never
 // fail the tool, and an empty archived set short-circuits untouched.
 func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
-	archivedSet := archivedSessionSet(ctx)
+	archivedSessionSet(ctx) // shared-cache refresh/throttle (annotation source)
+	archivedSet := filterableArchivedSet()
 	if len(archivedSet) == 0 {
 		return string(body)
 	}
@@ -878,8 +896,9 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		}
 		// #1735: the aggregate (scope=="") defaults to non-archived;
 		// include_archived is the explicit opt-in. Single-ID scopes
-		// never reach this branch.
-		return includeArchived || !archivedSet[s.ID]
+		// never reach this branch. The filter set is freshness-gated —
+		// a stale set (platform outage past the TTL) no-ops (r1 f1).
+		return includeArchived || !filterableArchivedSet()[s.ID]
 	}
 	type sessionMeta struct {
 		ID            string  `json:"session_id"`

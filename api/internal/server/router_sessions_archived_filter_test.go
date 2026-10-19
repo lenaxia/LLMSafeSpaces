@@ -83,3 +83,34 @@ func TestListWorkspaceSessions_ExplicitFalseExcludesArchived(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &items))
 	assert.Len(t, items, 2, "explicit include_archived=false is the same as the default")
 }
+
+// Review r1 missing-case 5: an all-archived workspace under the default
+// filter must render an EMPTY ARRAY, not a null body — the frontend and
+// SDK consumers index into the slice.
+func TestListWorkspaceSessions_AllArchived_DefaultIsEmptyArray(t *testing.T) {
+	router, svc := newRouterFixture(t)
+
+	svc.workspace.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(
+		[]types.SessionListItem{
+			{ID: "sess-arch-1", Title: "Shelved lane", Archived: true},
+			{ID: "sess-arch-2", Title: "Older lane", Archived: true},
+		}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "[]", rec.Body.String(), "the empty listing must be an empty array, not null")
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/sessions?include_archived=true", nil)
+	req2.Header.Set("Authorization", "Bearer token")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	var items []types.SessionListItem
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &items))
+	assert.Len(t, items, 2, "the opt-in still returns every archived row")
+}

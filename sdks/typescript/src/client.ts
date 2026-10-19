@@ -375,8 +375,13 @@ class SessionsAPI {
   ensure(workspaceId: string) {
     return this.client.request<EnsureSessionResponse>("POST", `/workspaces/${workspaceId}/sessions/new`);
   }
-  list(workspaceId: string) {
-    return this.client.request<SessionListItem[]>("GET", `/workspaces/${workspaceId}/sessions`);
+  /**
+   * #1735: archived sessions are opt-in — excluded by default; pass
+   * { includeArchived: true } to include them.
+   */
+  list(workspaceId: string, opts?: { includeArchived?: boolean }) {
+    const query = opts?.includeArchived ? "?include_archived=true" : "";
+    return this.client.request<SessionListItem[]>("GET", `/workspaces/${workspaceId}/sessions${query}`);
   }
   getActive(workspaceId: string) {
     return this.client.request<ActiveSessionsResponse>("GET", `/workspaces/${workspaceId}/sessions/active`);

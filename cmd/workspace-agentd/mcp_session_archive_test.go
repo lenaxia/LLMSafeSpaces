@@ -31,6 +31,7 @@ func setupPodSessionEnv(t *testing.T, apiSrv *httptest.Server) {
 	// package-level; a prior test's fetch must not bleed in).
 	archivedSetCacheMu.Lock()
 	archivedSetCacheVal, archivedSetCacheAt = nil, time.Time{}
+	archivedSetCacheFetchedAt = time.Time{}
 	archivedSetCacheMu.Unlock()
 }
 
@@ -148,6 +149,7 @@ func setupMetadataEnv(t *testing.T, platform *httptest.Server) {
 	}
 	archivedSetCacheMu.Lock()
 	archivedSetCacheVal, archivedSetCacheAt = nil, time.Time{}
+	archivedSetCacheFetchedAt = time.Time{}
 	archivedSetCacheMu.Unlock()
 }
 
@@ -283,6 +285,7 @@ func TestMCPSessionMetadata_PlatformUnreachableDegradesSilently(t *testing.T) {
 	t.Setenv("LLMSAFESPACE_API_URL", "http://127.0.0.1:1")
 	archivedSetCacheMu.Lock()
 	archivedSetCacheVal, archivedSetCacheAt = nil, time.Time{}
+	archivedSetCacheFetchedAt = time.Time{}
 	archivedSetCacheMu.Unlock()
 
 	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, false)

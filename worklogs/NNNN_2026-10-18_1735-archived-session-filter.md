@@ -135,3 +135,62 @@ suites `177 passed` total.
 - Design 0066 (short session IDs, #1691) remains the structural fix
   for the ID-fragility half of the incident class this issue cites;
   this lane shrinks the payload the fragile IDs ride in.
+
+## Review round 1 (CHANGES_REQUESTED → remediated in one commit set)
+
+Verdict: core semantics correct, red-first independently reproduced,
+all head suites green — REQUEST CHANGES on four items, all taken:
+
+1. **Warm-cache outage posture (finding 1, substantive).** The shared
+   archived-set cache re-stamps its retry-throttle timestamp on FAILED
+   fetches, so during an outage the last-known set kept filtering
+   forever — contradicting the documented "degrades to the unfiltered
+   list". Fixed behaviorally: a second timestamp
+   (`archivedSetCacheFetchedAt`) records only SUCCESSFUL fetches, and
+   the #1735 listing filters read it through `filterableArchivedSet` —
+   a set whose last successful fetch is past the TTL no-ops the filter
+   (bounded staleness: one ~15s window, the same window the #1627
+   annotation serves; the annotation itself still serves last-known
+   markers, where staleness is cosmetic). Pinned both directions:
+   `TestMCPSessionList_WarmCacheOutage_DegradesToUnfiltered` +
+   `TestMCPSessionList_WarmCacheWithinTTL_StillFilters`
+   (deterministic cache seeding, no platform race). Schema text,
+   CHANGELOG updated to the accurate claim.
+2. **`docs/api/rest.md` stale** — the session-management table row and
+   its paragraph now document the archived-by-default +
+   `include_archived=true` semantics and the response-shape-only rule.
+3. **TypeScript SDK missing the flag** —
+   `sdks/typescript/src/client.ts` `sessions.list(workspaceId, opts?)`
+   with `{ includeArchived: true }`, matching Go/Python (the #1699
+   all-SDKs-together convention).
+4. **Missing test cases (all five added):** frontend opt-in pins
+   (Sidebar.archived + ChatPage.archived assert the migrated callers
+   pass `(wsId, { includeArchived: true })`); SDK serialization pins
+   (Go path-builder test, Python respx URL assertions, TS fetch-URL
+   assertions — default no-param, opt-in exact query);
+   warm-cache outage pins (item 1); malformed/non-array body
+   passthrough (`TestMCPSessionList_MalformedBody_PassesThrough`); API
+   all-archived edge (default renders `[]`, not `null`; `=true`
+   returns every row).
+
+Also noted by the reviewer (minor, no action possible): the
+gocyclo-extraction commit wears a `fix:` prefix where `refactor:` was
+accurate — history is pushed; not rewritten. This round's commits use
+accurate types.
+
+Mid-lane incident (coordination hazard for the orchestrator): the
+local worktree `/workspace/wt-1735` was deleted by an EXTERNAL cleanup
+during CI waiting (PVC pressure; several lane directories vanished,
+including ACTIVE ones). No work lost — everything was committed and
+pushed; worktree recreated from the branch. Also two ENOSPC episodes
+on the shared PVC were resolved by cleaning only this lane's own
+caches (my npm cache, my Playwright browsers, my go scratch) plus one
+clearly-dead probe dir from the already-merged #1722 lane
+(`/tmp/probe17221228456251`, Oct 17, worktree prunable).
+
+r1 verification: full `cmd/workspace-agentd` suite ok (328s; one
+ENOSPC-induced `TestBootGate` failure disappeared after reclaiming my
+own caches — rerun green), `api/internal/server` ok, `sdks/go` ok,
+python 139 passed, `sdks/typescript` 88 passed, frontend
+Sidebar.archived + ChatPage.archived 9 passed (with the new opt-in
+assertions).

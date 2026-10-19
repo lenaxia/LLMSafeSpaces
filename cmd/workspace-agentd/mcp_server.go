@@ -106,7 +106,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; an unreachable platform degrades to listing everything (the filter is advisory)"},
+					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list, never a failed tool"},
 				},
 			},
 		},
