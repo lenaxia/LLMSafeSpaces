@@ -403,8 +403,22 @@ func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
 		`env_iscsi_ipc_exec_rc=`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)
+			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26-lineage)", marker)
 		}
+	}
+	// the r31 fixes (r32 R32-1: all three were mutation-proven
+	// deletable past a green suite — pinned now):
+	for _, marker := range []string{
+		`res "env_iscsid_at_legs=alive"`, // alive-path capture
+		`env_iscsi_ipc_exec_rc=${IPC_EXEC_RC} ipc_out_trunc=$(printf '%s' "$IPC_OUT" | tr '\n' ' ' | head -c 120)"`,
+		`attach_window_iscsid_rc=`, // attach-window measure
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("iscsid-at-leg-time gate missing r31 marker %q (r32 R32-1)", marker)
+		}
+	}
+	if strings.Count(src, "head -c 120") != strings.Count(src, `tr '\n' ' ' | head -c 120`) {
+		t.Fatal("a capture site truncates without newline sanitization (r31 R31-2)")
 	}
 }
 

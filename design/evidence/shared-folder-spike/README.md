@@ -28,7 +28,7 @@ Design doc: [`../../0068_2026-10-16_shared-folder-parked-pvc.md`](../0068_2026-1
 | 39089893139 | fail @ leg 0 | capture landed: replicas RUNNING, engines hang in `starting`; share-manager healthy, waiting for attach |
 | 39093640739 | fail @ leg 0 | instance-manager logs name it: engines fail `nsenter ... iscsiadm` — iscsiadm cannot reach iscsid |
 | 39097290981 | fail @ leg 0 | iscsid alive at t=0, engines still fail — /run/lock/iscsi missing (deb tmpfiles never ran in the live node) |
-| 39101239324 | fail @ prereqs | iscsid would not start at all (direct-launch stderr swallowed) |
+| 39101239324 | fail @ prereqs | (truncation era) iscsid would not start at all — direct-launch stderr swallowed |
 | 39103144189 | fail @ prereqs | ENOENT at the initiatorname write (`/etc/iscsi/initiatorname.iscsi: No such file or directory`) — /etc/iscsi absent, no identity captured |
 | 39104752680 | fail @ prereqs | (truncation artifact — on-runner tail; see the re-adjudication row below) EACCES on `/etc/iscsi` under bare exec |
 | 39106627792 | fail @ prereqs | (truncation era) EACCES on `/etc/iscsi` again — on-runner tail code |

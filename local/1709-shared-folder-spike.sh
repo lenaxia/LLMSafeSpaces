@@ -524,10 +524,11 @@ if ! ${K} create namespace "${NS}" --dry-run=client -o yaml | ${K} apply -f - >/
     exit 1
 fi
 
-# Attach-window iscsid re-measure (r31 R31-1.2: the 39190530387 shape
-# — verified at gate time, daemon dead 30 minutes later at the engines —
-# must be separable; record the daemon + IPC state AT leg 0's attach
-# waits, the moment the engine probes begin).
+# Attach-window iscsid re-measure (r31 R31-1.2): recorded at the START
+# of leg 0's attach waits (before the PVC applies and the ≤600s/≤1200s
+# waits run) — a daemon death DURING those waits remains unmeasured
+# until the next gate or dump; this narrows the 39190530387 30-minute
+# window to the leg-0 wait duration, it does not eliminate it.
 ATTACH_RC=0
 docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ATTACH_RC=$?
 AIPC_RC=0
