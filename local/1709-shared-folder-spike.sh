@@ -369,12 +369,23 @@ ISC_PROBE_RC=0
 docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ISC_PROBE_RC=$?
 if [ "$ISC_PROBE_RC" = "0" ]; then
     res "env_iscsid_at_legs=alive"
-elif docker exec "$NODE" true >/dev/null 2>&1; then
+elif [ "$ISC_PROBE_RC" = "1" ] && docker exec "$NODE" true >/dev/null 2>&1; then
+    # rc 1 = MEASURED dead; rc >= 2 (binary missing, exec-adjacent
+    # failure) with a healthy exec context is EXEC_FAILED, not dead —
+    # matching the env_iscsid_alive discipline (r28 N-R28-2).
     res "env_iscsid_at_legs=dead"
     warn "iscsid dead at leg time — attempting revival"
     docker exec "$NODE" sh -c 'systemctl start iscsid 2>/dev/null || iscsid >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
     sleep 3
-    if docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1        && ! docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' | grep -q "can not connect to iSCSI daemon"; then
+    # IPC re-verification follows the script's OWN selftest discipline
+    # (the comment at the top of this file): never `cmd | grep -q` under
+    # set -o pipefail — iscsiadm exits non-zero in EVERY scenario (no
+    # portal listener), so `! pipeline` is vacuously true and the grep
+    # is never load-bearing (r28 N-R28-1). Capture, then test.
+    REVIVE_RC=0
+    docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || REVIVE_RC=$?
+    IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null || true)
+    if [ "$REVIVE_RC" = "0" ] && ! printf '%s' "$IPC_OUT" | grep -q "can not connect to iSCSI daemon"; then
         res "env_iscsid_revived=yes-ipc-verified"
         ok "iscsid revived at leg time (IPC verified)"
     else

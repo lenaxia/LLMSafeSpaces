@@ -34,7 +34,7 @@ Produce design doc 0068 for #1709 (the owner-settled parked-PVC architecture: RW
 - `bash local/1709-shared-folder-spike.sh selftest` — journal-parser fixtures (clean/torn-tail/gap/dupe/empty) + 4-way exit-contract helper. PASS locally.
 - `bash local/1709-shared-folder-spike.sh render <dir>` + `dash -n` on every emitted body. PASS locally (non-vacuous: anchor + loop-construct + live-script drift pins in the Go test).
 - `go test ./local/ -run 'TestSharedFolderSpike|TestLonghornLib|TestGvisorLib'` — 17 companion pins (incl. standalone payload-parse for longhorn.sh and gvisor.sh, and the iscsid-at-leg-time gate) (bash -n ×2, rendered dash -n + content + drift, `\$\$` dead signature, selftest, exit contract, fail-sentinel normalization, leg-0 shape incl. namespace ordering + scoped deletes, writer redirect, RuntimeClass preflight, hydration size gate, longhorn lib keys/params, workflow shape incl. ctr ref qualification). PASS.
-- Spike runs: every run ledgered in `design/evidence/shared-folder-spike/README.md` (row set is the record); zero green leg executions — the blocker above.
+- Spike runs: ledgered in `design/evidence/shared-folder-spike/README.md` row-per-run (remediation pushes structurally fire runs; rows are appended as they complete); zero green leg executions — the blocker above.
 
 ## Files Modified
 

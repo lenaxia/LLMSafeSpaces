@@ -384,8 +384,17 @@ func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
 	for _, marker := range []string{
 		`env_iscsid_at_legs=`,
 		`env_iscsid_revived=yes-ipc-verified`,
-		`SKIPPED_ISCSID_DEAD`,
-		`SKIPPED_EXEC_FAILED`,
+		// the verdict-row KEYS, not just the shared values — deleting
+		// any a/b/c_status row must fail this pin (r28 N-R28-3)
+		`a_status=SKIPPED_ISCSID_DEAD`,
+		`b_status=SKIPPED_ISCSID_DEAD`,
+		`c_status=SKIPPED_ISCSID_DEAD`,
+		`a_status=SKIPPED_EXEC_FAILED`,
+		`b_status=SKIPPED_EXEC_FAILED`,
+		`c_status=SKIPPED_EXEC_FAILED`,
+		// the IPC capture-then-test discipline (never `cmd | grep -q`
+		// under pipefail — r28 N-R28-1)
+		`IPC_OUT=$(docker exec "$NODE" sh -c 'iscsiadm -m discovery -t sendtargets -p 127.0.0.1 2>&1' 2>/dev/null || true)`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)
