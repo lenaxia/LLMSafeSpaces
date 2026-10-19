@@ -18,7 +18,9 @@ on:
     # Until the file is on main, the spike fires from its PR (same trust
     # domain as dispatch: same-repo branch, write-access author — the
     # pool's restriction targets fork code, which this is not).
-    # Paths-filtered so doc-only pushes never wake the 300m spike. NOTE:
+    # Paths-filtered: pushes touching none of the paths below fire
+    # nothing; pushes touching ANY of them (including the test file)
+    # fire the spike. NOTE:
     # for pull_request the branches filter matches the PR BASE (main).
     types: [opened, synchronize, reopened]
     branches: [main]

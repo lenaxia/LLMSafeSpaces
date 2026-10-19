@@ -349,9 +349,36 @@ else
     res "env_iscsid_alive=EXEC_FAILED"
 fi
 rm -f /tmp/iscsi-probe.$$
-# Per-exec identity drift made explicit in the record (N-R20-2): this
-# probe exec's identity, beside whatever the prereqs payload measured.
+# Node-exec sanity row: the identity the spike's OWN execs see, beside
+# whatever the prereqs payload measured (the historical identity-drift
+# record was the kit's quoting bug, since fixed — this row now simply
+# verifies delivery).
 res "env_exec_identity_spike_probe=$(docker exec "$NODE" id -u 2>/dev/null || echo exec-failed)@$(docker exec "$NODE" hostname 2>/dev/null || echo unknown)"
+
+# iscsid must be alive AT LEG TIME (r26: run 39178767180 measured
+# env_iscsid_alive=dead — the daemon died between green prereqs and the
+# legs; the engine failures then cannot be cleanly attributed to the
+# nesting limit while their initiator's daemon is down). Attempt one
+# revival, re-measure, and gate: legs do not run against a dead daemon.
+if ! docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1; then
+    warn "iscsid dead at leg time — attempting revival"
+    docker exec "$NODE" sh -c 'systemctl start iscsid 2>/dev/null || iscsid >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
+    sleep 3
+    if docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1; then
+        res "env_iscsid_revived=yes"
+        ok "iscsid revived at leg time"
+    else
+        res "env_iscsid_revived=no"
+        res "s0_status=FAIL"
+        res "s0_iscsid_at_legs=dead-revival-failed"
+        res "leg_a=SKIPPED_ISCSID_DEAD"
+        res "leg_b=SKIPPED_ISCSID_DEAD"
+        res "leg_c=SKIPPED_ISCSID_DEAD"
+        res "finished_at=$(date -u +%FT%TZ)"
+        log "spike aborted — iscsid died between prereqs and legs and could not be revived"
+        exit 1
+    fi
+fi
 
 # RuntimeClass preflight — every runtimeClassName referenced below must
 # be registered BEFORE any pod is created (review N-A: a missing runc

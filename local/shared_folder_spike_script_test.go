@@ -351,6 +351,51 @@ func TestLonghornLib_PayloadParsesStandalone(t *testing.T) {
 	}
 }
 
+// gvisor.sh shares the truncation class surface (a single-quote-wrapped
+// `bash -c` payload whose body currently contains no apostrophes —
+// clean today, unpinned before). Extend the parse coverage: extract its
+// payload and syntax-check it standalone, so a future apostrophe in a
+// comment there fails HERE instead of rerouting half a CI run.
+func TestGvisorLib_PayloadParsesStandalone(t *testing.T) {
+	src := mustReadSpike(t, "lib/gvisor.sh")
+	const open = "bash -c '"
+	i := strings.Index(src, open)
+	if i < 0 {
+		return // payload form changed upstream — nothing to pin
+	}
+	rest := src[i+len(open):]
+	j := strings.Index(rest, "'\n")
+	if j < 0 {
+		t.Fatal("gvisor.sh bash -c payload unterminated")
+	}
+	payload := rest[:j]
+	bash := requireBashSpike(t)
+	cmd := exec.Command(bash, "-n")
+	cmd.Stdin = strings.NewReader(payload)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("gvisor.sh payload fails standalone bash -n (the N-R24-1 truncation class): %s", out)
+	}
+	if n := strings.Count(payload, "\n"); n < 20 {
+		t.Fatalf("gvisor.sh payload truncated (%d lines) — the truncation class this pin exists for", n)
+	}
+}
+
+// iscsid-at-leg-time gate (r26): the run that recorded green prereqs
+// measured env_iscsid_alive=dead before leg 0 — legs must not run
+// against a dead daemon, and the revival attempt is part of the record.
+func TestSharedFolderSpike_IscsidAtLegTimeGate(t *testing.T) {
+	src := mustReadSpike(t, spikeScript)
+	for _, marker := range []string{
+		`env_iscsid_revived=`,
+		`SKIPPED_ISCSID_DEAD`,
+		`iscsid died between prereqs and legs`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("iscsid-at-leg-time gate missing marker %q (r26)", marker)
+		}
+	}
+}
+
 // Workflow pins: the runc RuntimeClass must be applied beside gvisor
 // (N-A), the node must be image-pre-warmed via ctr, and EVERY ctr ref
 // must carry a registry host (N-R6-2: the bare `debian@sha256:...` form
