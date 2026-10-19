@@ -362,6 +362,57 @@ describe("DiskRecoveryStrip — production wire shapes (review r1 F2)", () => {
   });
 });
 
+describe("DiskRecoveryStrip — #1744 classes and in_use rendering", () => {
+  // #1744: classes pinned by open handles (or a hot mtime / size floor)
+  // report in_use — measured bytes stay visible, nothing is claimed,
+  // and they never count into the reclaimable total.
+  it("renders an in_use class with its pinned bytes, reason, and zero reclaimable", async () => {
+    const user = userEvent.setup();
+    mocked.mockResolvedValueOnce(
+      report({
+        classes: [
+          { class: "tmp-opencode-gocache", path: "/tmp/opencode/gocache", bytes: 2400, bytesFreed: 0, entries: 900, status: "in_use", reason: "open file handles under the cache tree" },
+          { class: "go-build-cache", path: "/home/sandbox/.cache/go-build", bytes: 1000, bytesFreed: 0, entries: 4, status: "would_free" },
+        ],
+      })
+    );
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+
+    expect(await screen.findByText(/in use \(open file handles/)).toBeInTheDocument();
+    expect(screen.getByText("Session Go build cache")).toBeInTheDocument();
+    expect(screen.getByText("2 KB")).toBeInTheDocument(); // the pinned 2400 B (toFixed(0) over 1024)
+    // Only the would_free class counts toward Free-now — the pinned
+    // in_use 2400 B is excluded, so the button labels 1000 B, not 3 KB.
+    expect(screen.getByTestId("disk-recover-free-now")).toHaveTextContent(/1000 B/);
+  });
+
+  it("friendly labels for the #1744 regenerable classes", async () => {
+    const user = userEvent.setup();
+    mocked.mockResolvedValueOnce(
+      report({
+        classes: [
+          { class: "playwright-browsers", path: "/home/sandbox/.cache/ms-playwright", bytes: 641000000, bytesFreed: 0, entries: 4, status: "would_free" },
+          { class: "gotmp-residue", path: "/home/sandbox/.cache/gotmp", bytes: 0, bytesFreed: 0, entries: 0, status: "skipped_target_met" },
+          { class: "kubebuilder-envtest", path: "/workspace/.local/kubebuilder-envtest", bytes: 0, bytesFreed: 0, entries: 0, status: "skipped_target_met" },
+          { class: "npm-npx", path: "/home/sandbox/.npm/_npx", bytes: 0, bytesFreed: 0, entries: 0, status: "skipped_target_met" },
+          { class: "golangci-lint-cache", path: "/home/sandbox/.cache/golangci-lint", bytes: 0, bytesFreed: 0, entries: 0, status: "skipped_target_met" },
+        ],
+      })
+    );
+    render(<DiskRecoveryStrip workspaceId="ws-1" diskUsedBytes={9700} diskTotalBytes={10000} />);
+    await user.click(screen.getByTestId("disk-recover-review"));
+
+    expect(await screen.findByText("Playwright browsers")).toBeInTheDocument();
+    expect(screen.getByText("Stale Go temp dirs")).toBeInTheDocument();
+    expect(screen.getByText("envtest assets")).toBeInTheDocument();
+    expect(screen.getByText("npx package cache")).toBeInTheDocument();
+    expect(screen.getByText("golangci-lint cache")).toBeInTheDocument();
+    // Raw class slugs never leak into the render.
+    expect(screen.queryByText(/ms-playwright/)).not.toBeInTheDocument();
+  });
+});
+
 describe("DiskRecoveryStrip — partial-sweep honesty (review r5)", () => {
   it("renders bytesFreed (not measured bytes) and the partial reason for a partially-freed class", async () => {
     const user = userEvent.setup();
