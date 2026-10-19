@@ -81,6 +81,7 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		resource, want, why string
 	}{
 		{"/tmp/build-dir/x", "allow", "pre-allow /tmp"},
+		{"/tmp", "allow", "#1759: the bare /tmp PVC mount point itself (children were already allowed; the bare path matched no rule before)"},
 		{"/home/sandbox/.cache/mise/x", "allow", "pre-allow .cache"},
 		{"/home/sandbox/.config/opencode/x", "allow", "pre-allow .config"},
 		{"/sys/fs/cgroup/memory.current", "allow", "cgroup carve-out beats the /sys deny (alphabetical: '*' < 'f')"},
@@ -88,13 +89,14 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/sys", "ask", "BARE /sys matches no rule (^/sys/.*$ needs the slash) — ambient; children stay denied"},
 		{"/sys/kernel/xxx", "deny", "rest of /sys stays denied"},
 		{"/opencode/plugins/llmsafespaces-origin.js", "allow", "pre-allow the ro artifact mount"},
-		{"/home/sandbox/.ssh", "deny", "credential name (bash-typed tripwire)"},
-		{"/home/sandbox/.ssh/id_ed25519", "deny", "child typed through the name"},
+		{"/home/sandbox/.ssh", "deny", "credential name (bash-typed tripwire) — intent key: live-inert on 1.18.15, held by the model (residual 3)"},
+		{"/home/sandbox/.ssh/id_ed25519", "deny", "child typed through the name — the slash-star glob is what bites live; deny-specific beats the /home/sandbox/* allow glob"},
 		{"/home/sandbox/.git-credentials", "deny", "credential name"},
 		{"/home/sandbox/.secrets", "deny", "credential name"},
 		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name under the .local pre-allow (sorts after)"},
-		{"/home/sandbox/projects/foo", "ask", "the home carve restores ambient ask"},
-		{"/home/sandbox", "ask", "BARE home dir: the wildcardless ask key (without it the /home/* deny matches the bare path — pinned r0)"},
+		{"/workspace/.local/opencode/auth.json.bak", "allow", "GRAMMAR EDGE: no live-effective deny shape covers a bare file sibling — the exact twin governs auth.json only (residual 3)"},
+		{"/home/sandbox/projects/foo", "allow", "#1759: the home PVC root is allow (supersedes the home-carve ask)"},
+		{"/home/sandbox", "allow", "BARE home dir allow (#1759); the wildcardless key still beats the /home/* deny on the bare path — pinned r0"},
 		{"/home", "ask", "BARE /home parent matches NO rule (^/home/.*$ needs the slash) — ambient; children under other users still deny"},
 		{"/home/otheruser/x", "deny", "/home parent deny"},
 		{"/etc/passwd", "deny", "deny /etc"},
@@ -110,6 +112,9 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/var/lib/x", "deny", "deny /var"},
 		{"/root/.ssh/x", "deny", "deny /root"},
 		{"/run/secrets/x", "deny", "deny /run"},
+		{"/workspace", "allow", "#1759: the workspace PVC root — belt-and-braces under the project-root exemption (external_directory governs it only when the project root differs; the live legs boot with a foreign project root to exercise it)"},
+		{"/workspace/repo/main.go", "allow", "#1759: workspace PVC children"},
+		{"/workspace/.local/opencode/auth.json", "deny", "the XDG_DATA_HOME auth.json twin (README: authJSONPath) — bash-typed tripwire that must out-rank the /workspace/* allow ('.' 0x2E sorts after '*')"},
 	}
 	for _, tc := range matrix {
 		t.Run(tc.resource, func(t *testing.T) {
@@ -130,6 +135,10 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/home/sandbox/.cache/*", "/home/sandbox/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
 		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/.local/*"},
+		{"/home/sandbox/.ssh/*", "/home/sandbox/*"},
+		{"/home/sandbox/.git-credentials", "/home/sandbox/*"},
+		{"/home/sandbox/.secrets/*", "/home/sandbox/*"},
+		{"/workspace/.local/opencode/auth.json", "/workspace/*"},
 	}
 	for _, c := range carves {
 		require.Contains(t, platformPermissionTiers, c.carve)
@@ -183,9 +192,10 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 }
 
 // The deny-shape premise: allowReopensTierDeny's literal-prefix analysis
-// is sound ONLY for denies that are exact paths or trailing-"/*"
-// prefix globs. Pin the structure itself — a future mid-glob deny key
-// ("/sys/*/ro") would silently break the analysis and could under-drop.
+// is sound ONLY for denies that are exact paths or trailing-glob
+// prefixes ("/*" or a terminal "*" with no other wildcard). Pin the
+// structure itself — a future mid-glob deny key ("/sys/*/ro") would
+// silently break the analysis and could under-drop.
 func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
 	for k, v := range platformPermissionTiers {
 		if v != "deny" {
@@ -202,8 +212,13 @@ func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
 		assert.NotContains(t, k, "?",
 			"deny key %q must carry no ? wildcards (the filter treats its bytes as literal)", k)
 		if strings.Contains(k, "*") {
+			// "/*"-shaped only: the live engine fires denies exclusively
+			// from slash-star patterns (the #1759 grammar finding,
+			// residual 3), and the filter's TrimSuffix soundness argument
+			// is written for prefix globs — any other star placement
+			// would break both.
 			assert.True(t, strings.HasSuffix(k, "/*"),
-				"deny key %q must be a trailing-/* prefix glob (the filter's soundness premise)", k)
+				"deny key %q must be a trailing-/* prefix glob (the filter's soundness premise; the live deny grammar)", k)
 		}
 	}
 }

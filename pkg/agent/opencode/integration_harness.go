@@ -160,8 +160,27 @@ func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *o
 	// answers with the POD's providers instead of the test's — the exact
 	// failure mode live-debugged 2026-09-13 (send hangs, mock never
 	// dialed, "ServeError" in stderr). Path/TMPDIR are the only
-	// pass-throughs the binary needs.
-	cmd.Env = append(os.Environ(),
+	// pass-throughs the binary needs. The inherited copies of every key
+	// we set below are STRIPPED first — appending after os.Environ()
+	// alone leaves the pod's value winning by first-match (#1759: the
+	// pod's XDG_DATA_HOME made the harness adopt the POD's live auth
+	// store, which opencode then self-allows past every external_directory
+	// rule).
+	overrideKeys := map[string]bool{
+		"OPENCODE_CONFIG":          true,
+		"XDG_DATA_HOME":            true,
+		"XDG_CONFIG_HOME":          true,
+		"HOME":                     true,
+		"OPENCODE_SERVER_PASSWORD": true,
+	}
+	env := make([]string, 0, len(os.Environ())+5)
+	for _, kv := range os.Environ() {
+		if overrideKeys[strings.SplitN(kv, "=", 2)[0]] {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env,
 		"OPENCODE_CONFIG="+agentConfigPath,
 		"XDG_DATA_HOME="+dataDir,
 		"XDG_CONFIG_HOME="+configDir,

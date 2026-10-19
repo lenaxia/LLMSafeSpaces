@@ -28,42 +28,91 @@ import (
 //	"/sys/*"  (deny)      < "/sys/fs/cgroup/*" (allow)
 //	"/home/sandbox/*" ask < "/home/sandbox/.ssh…" denies — '*' < '.'
 //
-// TIER MAP (per the 2026-09-19 ruling, amended):
+// TIER MAP (per the 2026-09-19 ruling, amended by #1759 — the three
+// PVC mount points are allow):
 //
+//   - ALLOW (the #1759 PVC roots — bare key AND children glob for each):
+//     /workspace, /tmp, /home/sandbox. /tmp children and the home
+//     .cache/.config/.config pre-allows predate #1759; the ruling made
+//     all three ROOTS allow (bare keys included — the bare path is a
+//     child of its parent's deny or matches no rule otherwise).
+//     /workspace is belt-and-braces under the project-root exemption
+//     (see residual 1); the auth twin deny keeps the tripwire coherent
+//     wherever the rules DO govern it (a foreign project root).
 //   - PRE-ALLOW (kernel-ro verified live for the artifact/cgroup paths —
 //     the mount is the boundary; the rule only stops prompts):
-//     /tmp, /home/sandbox/.cache, /home/sandbox/.local,
+//     /home/sandbox/.cache, /home/sandbox/.local,
 //     /home/sandbox/.config, /sys/fs/cgroup (carved out of the /sys
 //     deny), /opencode.
 //   - ASK (ambient, no rule): everything not matched — /sandbox-cfg,
-//     /agentd-config, /sandbox-runtime, /home/sandbox itself, and the
-//     credential SYMLINK NAMES rt/ssh + rt/git-credentials (git/ssh
-//     tooling consumes them out-of-band, ungated by permissions; the
-//     ambient ask catches a curious agent typing the name).
+//     /agentd-config, /sandbox-runtime, and the credential SYMLINK
+//     NAMES rt/ssh + rt/git-credentials (git/ssh tooling consumes them
+//     out-of-band, ungated by permissions; the ambient ask catches a
+//     curious agent typing the name).
 //   - HARD-DENY: /etc /proc /sys /dev /run /root /var /home (parent);
 //     the home credential names /home/sandbox/.ssh, .secrets,
-//     .git-credentials, .local/opencode/auth.json (bash-typed
-//     tripwire — matching for parsed bash commands uses the TYPED
-//     path); and the RESOLVED secret targets /sandbox-runtime/rt/secrets
-//     and rt/auth.json (file tools resolve symlinks to canonical paths
-//     before asking, so only the resolved target denies read-tool
-//     access).
+//     .git-credentials, .local/opencode/auth.json and the /workspace
+//     twin .local/opencode/auth.json (bash-typed tripwire — matching
+//     for parsed bash commands uses the TYPED path); and the RESOLVED
+//     secret targets /sandbox-runtime/rt/secrets and rt/auth.json (file
+//     tools resolve symlinks to canonical paths before asking, so only
+//     the resolved target denies read-tool access).
 //
 // Design 0060 Part D transcribes the pre-allow set as
-// "caches/config/workspace" — there is deliberately NO /workspace
-// entry: /workspace is the opencode project root, which
-// external_directory does not govern at all (residual 1 below); the
-// workspace subsumes into that exemption, not into a tier.
+// "caches/config/workspace". #1759 (owner, 2026-10-19) superseded the
+// no-/workspace-entry reading: the root now carries an explicit allow.
+// In the live pod /workspace IS the opencode project root (WORKDIR,
+// runtimes/base/Dockerfile) and external_directory does not govern it
+// there — the allow is inert belt-and-braces; it governs (and the twin
+// deny bites) whenever the project root differs.
 //
 // RESIDUALS (documented, not solved — PR + ruling):
 //  1. bash-typed reads of PROJECT-RELATIVE credential paths
 //     (/workspace/.local/opencode/auth.json) are inside the workspace
-//     root: external_directory does not govern them. Same trust class
-//     as the tokens already in the agent's env.
+//     root: external_directory does not govern them when /workspace is
+//     the project root. The twin deny covers every configuration where
+//     the path IS governed. Same trust class as the tokens already in
+//     the agent's env.
 //  2. No read-only granularity exists in the permission model: one
 //     action per directory. The ro mounts carry the real boundary for
 //     the two read-only pre-allows (assert cgroup2 ro before trusting —
 //     runtime default, not our pod spec; /opencode ro is ours).
+//  3. (#1759, observed live on 1.18.15 — 18-probe evidence set) THE
+//     LIVE DENY GRAMMAR: only "/*"-suffixed (slash-star) patterns ever
+//     fire a deny. Per-shape matrix: "X/*" — allow fires, deny fires
+//     (the children globs are what has always protected .ssh/*,
+//     .secrets/*, rt/secrets/*, /etc/*); "X" exact — allow fires
+//     (bare "/tmp" leg), deny NEVER fires (loaded into the engine's
+//     rule list, never matched: ls of the bare .ssh name executed
+//     under the #1759 root allow, both auth.json twins' cats
+//     executed, cat of rt/auth.json fell to ambient ask); "X*"
+//     terminal-star — allow fires, deny never fires (synthetic-boot
+//     probes both directions). CONSEQUENCE: a bare NAME — file or
+//     directory — cannot be denied on this engine under any pattern
+//     shape; the exact deny keys above (incl. both auth.json twins and
+//     the resolved-target rt/auth.json) are intent documentation held
+//     by the MODEL (tierMatch + the matrix), transparent at
+//     evaluation, correct the moment an engine honors them. The
+//     engine also APPENDS its own self-allows (tool-output dir,
+//     /tmp/opencode/*, its XDG-resolved auth store) AFTER the config
+//     rules — appended rules beat config under findLast — so with the
+//     controller-injected XDG_DATA_HOME=/workspace/.local a bash cat
+//     of /workspace/.local/opencode/auth.json is engine-self-allowed
+//     regardless of any rule (PRE-EXISTING; and with the #1759
+//     "/workspace/*" allow the typed path is allowed by config too —
+//     the ask-wall on that one path is traded away by the issue's
+//     own spec; structural secrecy stays US-35.7's tmpfs+wipe and
+//     #821's egress bounds — the tiers are the alarm, not the
+//     closure, design 0060 Part D; the pre-existing
+//     "/home/sandbox/.config/*" allow exposes gh tool-auth the same
+//     way). UPSTREAM ASKS: (i) honor exact/terminal-star denies;
+//     (ii) an exclude shape that beats allow-globs; (iii) stop
+//     self-allowing the auth store. A grammar-conformant PARTIAL
+//     mitigation exists for a future engine: a children deny
+//     ("/workspace/.local/opencode/*") would bite for
+//     opencode.db-class paths under the root allow, but cannot
+//     protect auth.json itself while the appended self-allow stands
+//     (pairs with ask iii) — deliberately NOT added in this change.
 
 // platformPermissionTiers is the external_directory floor the writer
 // bakes into the TOP-LEVEL permission key (the LIVE shape on the
@@ -86,14 +135,16 @@ var platformPermissionTiers = map[string]string{
 	"/sys/*":  "deny",
 	"/var/*":  "deny",
 
-	// --- /home carve: the workspace home back to ambient ask. BOTH keys
-	// are needed: the /* variant governs children; the bare key governs
-	// the directory itself (the ported matcher treats a wildcardless
-	// pattern as an exact match, so ^/home/.*$ would otherwise deny the
-	// bare path with the /home/* deny — r0 finding 3). The bare key
-	// sorts after "/home/*" ('*' 0x2A < 's') — the ask wins.
-	"/home/sandbox":   "ask",
-	"/home/sandbox/*": "ask",
+	// --- /home carve: the workspace home PVC root is ALLOW (#1759 —
+	// supersedes the ruling's home-carve ask). BOTH keys are needed:
+	// the /* variant governs children; the bare key governs the
+	// directory itself (the ported matcher treats a wildcardless
+	// pattern as an exact match, and the /home/* deny matches the bare
+	// path — r0 finding 3). The bare key sorts after "/home/*"
+	// ('*' 0x2A < 's') — the allow wins; every credential deny below
+	// sorts after "/home/sandbox/*" ('*' 0x2A < '.') and keeps winning.
+	"/home/sandbox":   "allow",
+	"/home/sandbox/*": "allow",
 
 	// --- pre-allows under the home carve (each sorts after the ask) ---
 	"/home/sandbox/.cache/*":  "allow",
@@ -101,7 +152,10 @@ var platformPermissionTiers = map[string]string{
 	"/home/sandbox/.local/*":  "allow",
 
 	// --- credential-name denies (bash-typed tripwire; sort after the
-	//     .local/.cache/.config allows they live alongside) ---
+	//     .local/.cache/.config allows they live alongside). These exact
+	//     keys document intent and hold in the MODEL — on the live
+	//     1.18.15 engine wildcardless denies never fire (residual 3);
+	//     the children "/*" variants are what actually bites. ---
 	"/home/sandbox/.git-credentials":          "deny",
 	"/home/sandbox/.git-credentials/*":        "deny",
 	"/home/sandbox/.local/opencode/auth.json": "deny",
@@ -120,7 +174,19 @@ var platformPermissionTiers = map[string]string{
 
 	// --- standalone pre-allows ---
 	"/opencode/*": "allow",
-	"/tmp/*":      "allow",
+
+	// --- the #1759 PVC roots. /tmp children predate the ruling; the
+	//     bare keys close the mount-point-itself gap (the bare path
+	//     matched no rule before — ambient ask on the root dirs). ---
+	"/tmp":       "allow",
+	"/tmp/*":     "allow",
+	"/workspace": "allow",
+
+	// --- workspace PVC children + the XDG auth.json tripwire twin
+	//     (authJSONPath per README). Intent/model key, same inert-on-live
+	//     class as the home twin — residual 3. ---
+	"/workspace/*":                         "allow",
+	"/workspace/.local/opencode/auth.json": "deny",
 
 	// --- resolved secret targets (canonical matching for file tools).
 	//     rt/ssh and rt/git-credentials are deliberately ABSENT: ambient

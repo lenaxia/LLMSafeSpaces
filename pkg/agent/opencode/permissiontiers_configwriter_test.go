@@ -54,6 +54,53 @@ func TestConfigWriter_RendersPermissionTierFloor(t *testing.T) {
 	}
 }
 
+// TestConfigWriter_RendersPVCRootAllowFloor (#1759): all three PVC
+// mount points render as allow — bare key AND children glob — with the
+// credential tripwire denies intact alongside them.
+func TestConfigWriter_RendersPVCRootAllowFloor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	w := NewConfigWriter(path)
+
+	_, err := w.Apply(agentapi.AgentConfigInput{})
+	require.NoError(t, err)
+
+	ext := readRenderedExtDir(t, path)
+	assert.Equal(t, "allow", ext["/workspace"], "#1759: bare workspace PVC root")
+	assert.Equal(t, "allow", ext["/workspace/*"], "#1759: workspace PVC children")
+	assert.Equal(t, "allow", ext["/tmp"], "#1759: bare /tmp PVC root")
+	assert.Equal(t, "allow", ext["/tmp/*"], "workspace/tmp PVC children (pre-existing)")
+	assert.Equal(t, "allow", ext["/home/sandbox"], "#1759: bare home PVC root")
+	assert.Equal(t, "allow", ext["/home/sandbox/*"], "#1759: home PVC children (was the home-carve ask)")
+	assert.Equal(t, "deny", ext["/workspace/.local/opencode/auth.json"],
+		"the XDG auth.json twin renders alongside the /workspace allow — intent/model key (live-inert on 1.18.15, residual 3)")
+}
+
+// TestConfigWriter_FloorAllowSurvivesOperatorSourceDrop (#1759): an
+// operator allow shaped like the root allow ("/home/sandbox/*") is
+// DROPPED at the operator ingress (it reopens the .ssh credential
+// denies), yet the FLOOR's own root allow still renders — the platform
+// default cannot be supplied or defeated through the operator source.
+func TestConfigWriter_FloorAllowSurvivesOperatorSourceDrop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	allowedDirs := filepath.Join(dir, "allowed-dirs.json")
+	writeTiersConfig(t, allowedDirs, `["/home/sandbox/*", "/workspace/*"]`)
+
+	w := NewConfigWriter(path, WithAllowedDirsPath(allowedDirs))
+	_, err := w.Apply(agentapi.AgentConfigInput{})
+	require.NoError(t, err)
+
+	ext := readRenderedExtDir(t, path)
+	assert.Equal(t, "allow", ext["/home/sandbox/*"],
+		"the dropped operator allow must not mask the floor's root allow")
+	assert.Equal(t, "allow", ext["/workspace/*"], "same for the workspace root")
+	assert.Equal(t, "deny", ext["/home/sandbox/.ssh/*"],
+		"the credential denies the operator pattern would have reopened still render")
+	assert.Equal(t, "deny", ext["/home/sandbox/.ssh"],
+		"the bare credential-name deny still renders")
+}
+
 func TestConfigWriter_TierFloorWinsAllowedDirsCollisions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
