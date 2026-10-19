@@ -177,6 +177,10 @@ func TestMCPSessionList_PlatformUnreachable_ListsAll(t *testing.T) {
 // entries without rewriting the survivors (the raw shape is the tool's
 // output contract). Deterministic unit seam — the archived set is
 // pre-seeded into the package cache (no platform fetch to race).
+// Review r2 finding 1: the fixture deliberately carries & < > in a
+// title AND non-compact internal whitespace — json.Marshal would
+// compact and HTML-escape those (proven by the reviewer); the splice
+// must reproduce the element bytes exactly.
 func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
 	archivedSetCacheMu.Lock()
 	archivedSetCacheVal = map[string]bool{"ses_dead": true}
@@ -185,17 +189,19 @@ func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
 	archivedSetCacheMu.Unlock()
 
 	body := `[` + strings.Join([]string{
-		`{"id":"ses_live_1","title":"a","unknownField":{"nested":[1,2]}}`,
+		`{ "id": "ses_live_1", "title": "Fix a & b <script>", "unknownField": { "nested": [1, 2] } }`,
 		`{"id":"ses_dead","title":"b"}`,
-		`{"id":"ses_live_2","title":"c","time":{"created":1789274402332}}`,
-	}, ",") + `]`
+		`{ "id": "ses_live_2", "title": "c", "time": {"created": 1789274402332} }`,
+	}, ", ") + `]`
 
 	filtered := filterArchivedFromSessionList(context.Background(), []byte(body))
 	rawFiltered := splitJSONArray(t, filtered)
 	assert.Equal(t, []string{
-		`{"id":"ses_live_1","title":"a","unknownField":{"nested":[1,2]}}`,
-		`{"id":"ses_live_2","title":"c","time":{"created":1789274402332}}`,
-	}, rawFiltered, "the filtered body is the verbatim body minus the archived element, byte-exact — unknown fields intact")
+		`{ "id": "ses_live_1", "title": "Fix a & b <script>", "unknownField": { "nested": [1, 2] } }`,
+		`{ "id": "ses_live_2", "title": "c", "time": {"created": 1789274402332} }`,
+	}, rawFiltered, "survivors are byte-exact — internal whitespace and & < > unescaped, unknown fields intact (only inter-element separators normalize)")
+	assert.NotContains(t, filtered, `\u0026`, "no HTML-escaping may be introduced (json.Marshal re-serialization would)")
+	assert.NotContains(t, filtered, `\u003c`)
 }
 
 // splitJSONArray splits a JSON array body into its raw element texts

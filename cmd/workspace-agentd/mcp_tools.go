@@ -805,10 +805,14 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 // filterArchivedFromSessionList drops entries whose id is in the
 // platform's archived set (#1735: archived sessions are opt-in on the
 // listing surfaces). Byte-exact element preservation — each surviving
-// element is re-served verbatim (json.RawMessage); on ANY parse failure
-// the original body is returned unfiltered. Same advisory posture as
-// the metadata annotation (#1627 §4): the platform fact must never
-// fail the tool, and an empty archived set short-circuits untouched.
+// element's bytes are spliced from the original body (raw-element
+// concatenation, NOT a re-marshal: json.Marshal would compact and
+// HTML-escape, rewriting titles containing &<>; review r2 finding 1);
+// only the inter-element separators normalize to ",". On ANY parse
+// failure the original body is returned unfiltered. Same advisory
+// posture as the metadata annotation (#1627 §4): the platform fact
+// must never fail the tool, and an empty/stale archived set
+// short-circuits untouched.
 func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
 	archivedSessionSet(ctx) // shared-cache refresh/throttle (annotation source)
 	archivedSet := filterableArchivedSet()
@@ -819,8 +823,10 @@ func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
 	if err := json.Unmarshal(body, &elems); err != nil {
 		return string(body)
 	}
-	kept := make([]json.RawMessage, 0, len(elems))
+	out := make([]byte, 0, len(body))
+	out = append(out, '[')
 	dropped := 0
+	wrote := 0
 	for _, e := range elems {
 		var id struct {
 			ID string `json:"id"`
@@ -829,15 +835,16 @@ func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
 			dropped++
 			continue
 		}
-		kept = append(kept, e)
+		if wrote > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, e...)
+		wrote++
 	}
 	if dropped == 0 {
 		return string(body)
 	}
-	out, err := json.Marshal(kept)
-	if err != nil {
-		return string(body)
-	}
+	out = append(out, ']')
 	return string(out)
 }
 

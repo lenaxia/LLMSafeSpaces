@@ -211,3 +211,32 @@ suffix; the six specs (25 tests) and then the FULL playwright run went
 green locally: 207 passed, 13 skipped, 0 failed. Committed as
 `test(frontend): #1735 — patch the remaining e2e sessions mocks
 (API_PREFIX family)` on the v2 branch.
+
+## Review round 2 on #1743 (CHANGES_REQUESTED → remediated)
+
+One blocking finding, validated by the reviewer's execution: the
+"survivors byte-exact" claim was NOT guaranteed — `json.Marshal` on
+`[]json.RawMessage` compacts and HTML-escapes (`&`→`\u0026`,
+`<`→`\u003c`), rewriting titles that carry those characters, and the
+pin's fixture had no escapable characters so it couldn't catch the
+gap. Remediation took the make-it-true direction (option a):
+`filterArchivedFromSessionList` now splices the survivors by raw-byte
+concatenation (`[` + elements joined with `,` + `]`) — no re-marshal,
+no compaction, no HTML escaping; only inter-element separators
+normalize. The pin's fixture now carries `Fix a & b <script>` plus
+non-compact internal whitespace and asserts the exact element bytes
+plus the absence of `\u0026`/`\u003c`. The reviewer's non-blocking
+observation was also taken: `TestMCPSessionList_HappyPath` resets the
+archived-set cache, removing its alphabetical file-order dependence.
+
+Also on the v2 CI: `Test (-short, with coverage)` failed once on
+`TestBusyTruthE2E_InStreamReseedReconciles` (usagestream, 30s timing
+window, "bridge statuses never reached") — a package this PR never
+touches; it passes locally at `-count=3` and full-package, and the
+race-detector job on the SAME commit succeeded. Recorded as a
+pre-existing CI-runner timing flake, same disclosure class as the
+watchdog count-flake.
+
+r2 verification: agentd full suite ok (327s); `api/internal/server`
+ok; the #1735 test set green at `-count=2` (only the documented
+pre-existing watchdog count-flake fails).

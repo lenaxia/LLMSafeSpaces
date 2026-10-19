@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -389,6 +390,13 @@ func TestMCPSessionRead_RejectsNon200(t *testing.T) {
 
 // TestMCPSessionList_HappyPath verifies a 200 response returns the body.
 func TestMCPSessionList_HappyPath(t *testing.T) {
+	// Review r2 observation: reset the archived-set cache — this test
+	// rides the DEFAULT (filtered) path, and a leftover seed from an
+	// alphabetically-earlier filter test would make it order-dependent.
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal, archivedSetCacheAt, archivedSetCacheFetchedAt = nil, time.Time{}, time.Time{}
+	archivedSetCacheMu.Unlock()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`[{"id":"ses_1"}]`))
