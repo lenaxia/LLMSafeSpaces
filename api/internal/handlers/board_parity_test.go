@@ -3,34 +3,41 @@
 
 package handlers
 
-// board_parity_test.go — the design 0067 §4.3/§6 parity matrix, Lane 2
-// shape: rows = every §4.2 action; columns = REST / external platform
-// MCP / agent-internal MCP. The REST column is LIVE (allow + deny arms
-// per action), the agent column is LIVE on BOTH of its tiers — the
-// Lane 1 internal automation seam (worker actions present; manager
-// rows absent-by-design; guard-class parity on the shared action) and,
-// since #1701, the agentd REGISTRY itself (the board_* tools the
-// in-workspace worker sees in tools/list: exactly the four worker
-// tools, claim_next and every manager row pinned ABSENT at the
-// registry tier) — and the external MCP column is LIVE since #1700
-// (Lane 3): the board_* tools ride the owner's REST projection
-// through pkg/mcp's HTTPClient, so the LIVE arms below drive the REAL
-// REST router fixture over the in-process MCP client — guard outcomes
-// ride the identical renderBoardError path as the REST column (parity
-// by construction, asserted per row). Audit stamping happens at the
-// REST tier the tools ride (surface=rest); pkg/board's
-// SurfaceExternalMCP stays reserved for a direct seam if one ever
-// lands (recorded in this PR's worklog,
-// worklogs/NNNN_2026-10-18_1700-external-board-mcp-tools.md §2 — the
-// NNNN_ sentinel before the post-merge numbering bot runs).
+// board_parity_test.go — the design 0067 §4.3/§6 parity matrix, as
+// amended by issue #1747 (owner rulings 2026-10-19: the base ruling, the
+// consolidated spec comment, the final KISS ruling, and round 3): rows =
+// every §4.2 action; columns = REST / external platform MCP /
+// agent-internal MCP. All three columns are LIVE on BOTH of the agent
+// column's tiers — the internal automation seam (worker actions +, since
+// #1747, the full manager set except the engine-internal rows) and the
+// agentd REGISTRY (the board_* tools the in-workspace agent sees in
+// tools/list) — and the external MCP column rides the owner's REST
+// projection through pkg/mcp's HTTPClient, so the LIVE arms below drive
+// the REAL REST router fixture over the in-process MCP client — guard
+// outcomes ride the identical renderBoardError path as the REST column
+// (parity by construction, asserted per row).
+//
+// #1747 declared asymmetries (pinned as absent cells, per §6):
+//   - heartbeat / report_throttle: worker-only — absent on REST and
+//     external MCP (§4.3b); live on the agent seam.
+//   - claim_next: engine-internal (R9 claim-then-spawn) — absent on ALL
+//     three surfaces, permanently ("the ENGINE claims and spawns").
+//   - task_start: DROPPED from the agent surface (round-3 ruling #2) —
+//     execution is epic/project activation + engine claiming; the row
+//     stays live on the owner's REST/external surfaces.
+//   - cancel is ELIMINATED (round-3 ruling #3): no cancel_task/cancel_epic
+//     rows, no 'cancelled' stage — delete_task/delete_epic replace them
+//     (delete removes the object, not the history).
 //
 // Construction guarantees (the "CI fails on any action lacking full
 // surface coverage" clause): reflection pins EVERY exported method of
 // *BoardHandler to exactly one matrix row's rest method set, the route
-// scans pin exactly which routes each surface registers, and the
-// external column's tool-set agreement pins every registered board_*
-// tool to a matrix row. An endpoint or tool added without its row
-// reddens TestBoardParity_Coverage / TestBoardParity_ExternalMCPColumn.
+// scans pin exactly which routes each surface registers (the seam scan
+// pins router.go's board group; the REST scan pins the /api/v1/me
+// groups), and the external column's tool-set agreement pins every
+// registered board_* tool to a matrix row. An endpoint or tool added
+// without its row reddens TestBoardParity_Coverage /
+// TestBoardParity_ExternalMCPColumn / the route scans.
 
 import (
 	"context"
@@ -40,6 +47,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -76,12 +84,12 @@ type parityRow struct {
 	agent       parityCell
 
 	// agentTool names the agentd registry tool for a live agent cell
-	// (#1701): the tool the in-workspace worker sees in tools/list. An
+	// (#1701): the tool the in-workspace agent sees in tools/list. An
 	// absent agent cell names none — scanAgentdForBoardTools enforces
 	// both directions against cmd/workspace-agentd's source.
 	agentTool string
 
-	// denyClass, when set, is the representative guard the REST allow/
+	// denyErr, when set, is the representative guard the REST allow/
 	// deny arms drive (the fake service returns it; the arm asserts the
 	// mapped HTTP class).
 	denyErr  error
@@ -93,66 +101,109 @@ var (
 	absentCell = parityCell{kind: "absent"}
 )
 
-// boardParityMatrix — THE §4.2 action set. Declared asymmetries are
-// pinned as absent cells, not missing coverage (§6):
-//   - heartbeat / report_throttle: worker-only — absent on REST and on
-//     external MCP (§4.3b: "no claim/heartbeat here"); live on the
-//     agent seam.
-//   - claim_next: engine-internal (R9 claim-then-spawn) — absent on ALL
-//     three surfaces, permanently.
-//   - manager rows (CRUD/lifecycle/cancel/dependencies/task_start):
-//     absent on the agent registry — agents are workers, not managers
-//     (§4.3c).
-//   - move_stage + board_read: on every surface (owner authority on
-//     REST/external-MCP; token-guarded for the worker on the agent
-//     registry).
+// boardParityMatrix — THE §4.2 action set as amended by #1747. The
+// manager set is agent-live at project, epic, and task level (round-3
+// ruling #1: full manager set, workspace-scoped by the pod identity);
+// declared asymmetries are pinned as absent cells, not missing coverage:
+//   - heartbeat / report_throttle: worker-only (§4.3b) — live on the
+//     agent seam only.
+//   - claim_next: engine-internal (R9) — absent on ALL surfaces,
+//     permanently. An agent can never assign itself a task or jump the
+//     backlog.
+//   - task_start: agent-absent (round-3 #2 — execution = activation +
+//     engine claiming); owner REST/external keep it.
+//   - pause/resume (project + task): the scheduling lever (#1747) —
+//     blocks claiming and forward stage-writes, delivers halt/resume
+//     directives to in-flight workers, never cuts a generation
+//     mid-flight. epic_pause/epic_activate carry the same semantics at
+//     epic level.
+//   - delete_task/delete_epic: destructive replacement for the
+//     eliminated cancel (audit history retained; delete_task aborts an
+//     in-flight claim first; delete_epic refuses without force while
+//     claims are live).
 var boardParityMatrix = []parityRow{
 	{action: "create_project", restMethods: []string{"CreateProject"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_create_project"}, agent: absentCell,
-		denyErr: &board.GuardError{Code: board.GuardWorkspaceBinding, Detail: "target workspace must be accessible"}, denyCode: http.StatusForbidden},
+		externalMCP: liveCell, extTools: []string{"board_create_project"}, agent: liveCell,
+		agentTool: "board_create_project",
+		denyErr:   &board.GuardError{Code: board.GuardWorkspaceBinding, Detail: "target workspace must be accessible"}, denyCode: http.StatusForbidden},
 	{action: "update_project", restMethods: []string{"UpdateProject"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
+		agentTool: "board_update_project"},
 	{action: "archive_project", restMethods: []string{"ArchiveProject"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_project_archive"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_project_archive"}, agent: liveCell,
+		agentTool: "board_project_archive"},
 	{action: "unarchive_project", restMethods: []string{"UnarchiveProject"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_project_unarchive"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_project_unarchive"}, agent: liveCell,
+		agentTool: "board_project_unarchive"},
+	{action: "pause_project", restMethods: []string{"PauseProject"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_project_pause"}, agent: liveCell,
+		agentTool: "board_project_pause",
+		denyErr:   &board.GuardError{Code: board.GuardProjectState, Detail: "archived projects refuse pause"}, denyCode: http.StatusConflict},
+	{action: "resume_project", restMethods: []string{"ResumeProject"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_project_resume"}, agent: liveCell,
+		agentTool: "board_project_resume"},
 	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "GetEpic", "GetTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read"}, agent: liveCell,
 		agentTool: "board_read"}, // v1 item form (GetTaskInWorkspace); list/search/health ride the #1699 engine seams
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
+		agentTool: "board_create_epic"},
 	{action: "update_epic", restMethods: []string{"UpdateEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
+		agentTool: "board_update_epic"},
 	{action: "epic_activate", restMethods: []string{"ActivateEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_epic_activate"}, agent: absentCell,
-		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
+		externalMCP: liveCell, extTools: []string{"board_epic_activate"}, agent: liveCell,
+		agentTool: "board_epic_activate",
+		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
 	{action: "epic_pause", restMethods: []string{"PauseEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_epic_pause"}, agent: absentCell,
-		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
+		externalMCP: liveCell, extTools: []string{"board_epic_pause"}, agent: liveCell,
+		agentTool: "board_epic_pause",
+		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
 	{action: "epic_archive", restMethods: []string{"ArchiveEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_epic_archive"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_epic_archive"}, agent: liveCell,
+		agentTool: "board_epic_archive"},
 	{action: "epic_unarchive", restMethods: []string{"UnarchiveEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_epic_unarchive"}, agent: absentCell},
-	{action: "cancel_epic", restMethods: []string{"CancelEpic"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_cancel"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_epic_unarchive"}, agent: liveCell,
+		agentTool: "board_epic_unarchive"},
+	{action: "delete_epic", restMethods: []string{"DeleteEpic"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
+		agentTool: "board_delete_epic",
+		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "claims in flight — force required"}, denyCode: http.StatusConflict},
 	{action: "create_task", restMethods: []string{"CreateEpicTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_create_task"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_create_task"}, agent: liveCell,
+		agentTool: "board_create_task"},
 	{action: "update_task", restMethods: []string{"UpdateTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
+		agentTool: "board_update_task"},
 	{action: "add_dependency", restMethods: []string{"AddDependency"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_add_dependency"}, agent: absentCell,
-		denyErr: &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
+		externalMCP: liveCell, extTools: []string{"board_add_dependency"}, agent: liveCell,
+		agentTool: "board_add_dependency",
+		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	{action: "remove_dependency", restMethods: []string{"RemoveDependency"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_remove_dependency"}, agent: absentCell},
+		externalMCP: liveCell, extTools: []string{"board_remove_dependency"}, agent: liveCell,
+		agentTool: "board_remove_dependency"},
 	{action: "move_stage", restMethods: []string{"MoveStageTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_move_stage"}, agent: liveCell,
 		agentTool: "board_move_stage",
 		denyErr:   &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
 	{action: "task_start", restMethods: []string{"StartTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_start_task"}, agent: absentCell, // owner surface only (§4.3b)
+		externalMCP: liveCell, extTools: []string{"board_start_task"}, agent: absentCell, // round-3 #2: dropped from agent surfaces (the engine claims and spawns)
 		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "paused epics refuse task_start"}, denyCode: http.StatusConflict},
-	{action: "cancel_task", restMethods: []string{"CancelTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_cancel"}, agent: absentCell},
+	{action: "delete_task", restMethods: []string{"DeleteTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
+		agentTool: "board_delete_task",
+		denyErr:   &board.GuardError{Code: board.GuardClaimToken, Detail: "claims in flight"}, denyCode: http.StatusConflict},
+	{action: "pause_task", restMethods: []string{"PauseTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_pause_task"}, agent: liveCell,
+		agentTool: "board_pause_task",
+		denyErr:   &board.GuardError{Code: board.GuardPaused, Detail: "terminal rows refuse pause"}, denyCode: http.StatusConflict},
+	{action: "resume_task", restMethods: []string{"ResumeTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_resume_task"}, agent: liveCell,
+		agentTool: "board_resume_task"},
+	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
+		agentTool: "board_import_plan",
+		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	// Worker-only rows: absent on REST BY DESIGN (no owner surface
 	// delivers them — §4.7) and absent on external MCP BY DESIGN (§4.3b:
 	// external actors hold no claim tokens); live on the agent seam
@@ -162,10 +213,10 @@ var boardParityMatrix = []parityRow{
 	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
 		agentTool: "board_report_throttle"},
 	// Engine-internal since R9 — absent on ALL surfaces, permanently.
-	// Since #1701 the agent surface's absence is enforced at BOTH tiers:
-	// the seam route table (TestBoardParity_AgentColumn) and the agentd
-	// registry scan (TestBoardParity_AgentRegistryColumn) — a
-	// board_claim_next tool registered in agentd reddens here.
+	// The agent surface's absence is enforced at BOTH tiers: the seam
+	// route table (TestBoardParity_AgentColumn) and the agentd registry
+	// scan (TestBoardParity_AgentRegistryColumn) — a board_claim_next
+	// tool registered in agentd reddens here.
 	{action: "claim_next", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: absentCell},
 }
 
@@ -231,7 +282,8 @@ func TestBoardParity_RESTColumn(t *testing.T) {
 			// Deny arm (rows with a representative guard).
 			if row.denyErr != nil {
 				svc2 := newFakeBoardManager()
-				svc2.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+				svc2.projects = svc.projects
+				svc2.tasks = svc.tasks
 				svc2.errFor[boardParitySeam(row.action)] = row.denyErr
 				r2 := newBoardRESTRouter(t, svc2)
 				w2 := boardParityRESTCall(t, r2, row.action)
@@ -243,22 +295,7 @@ func TestBoardParity_RESTColumn(t *testing.T) {
 
 // boardParitySeam maps a matrix action to the fake service's errFor key.
 func boardParitySeam(action string) string {
-	switch action {
-	case "create_project":
-		return "create_project"
-	case "epic_activate":
-		return "epic_activate"
-	case "epic_pause":
-		return "epic_pause"
-	case "add_dependency":
-		return "add_dependency"
-	case "move_stage":
-		return "move_stage"
-	case "task_start":
-		return "task_start"
-	default:
-		return action
-	}
+	return action
 }
 
 // boardParityRESTCall issues one representative request for the action.
@@ -273,6 +310,10 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", `{}`)
 	case "unarchive_project":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/unarchive", `{}`)
+	case "pause_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/pause", `{}`)
+	case "resume_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/resume", `{}`)
 	case "board_read":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
 	case "create_epic":
@@ -287,8 +328,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/archive", `{}`)
 	case "epic_unarchive":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/unarchive", `{}`)
-	case "cancel_epic":
-		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/cancel", `{"reason":"r"}`)
+	case "delete_epic":
+		return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/epics/epc-bbbb2222?force=true", "")
 	case "create_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T"}`)
 	case "update_task":
@@ -301,41 +342,68 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done"}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", `{}`)
-	case "cancel_task":
-		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/cancel", `{"reason":"r"}`)
+	case "delete_task":
+		return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333", "")
+	case "pause_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/pause", `{}`)
+	case "resume_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/resume", `{}`)
+	case "import_plan":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
+			`{"epicTitle":"E","tasks":[{"key":"a","title":"A"},{"key":"b","title":"B","dependsOn":["a"]}]}`)
 	default:
 		t.Fatalf("no representative REST call for action %q — the matrix row is mis-declared", action)
 		return nil
 	}
 }
 
-// TestBoardParity_AgentColumn: the Lane 1 internal automation seam —
-// worker actions live (heartbeat / report_throttle / move_stage /
-// board_read), manager rows absent by design (the route table carries
-// exactly the four worker routes), and the SHARED action (move_stage)
-// renders guard classes IDENTICALLY to the REST column (the §4.3
+// TestBoardParity_AgentColumn: the internal automation seam — worker
+// actions live (heartbeat / report_throttle / move_stage / board_read)
+// and, since #1747, the full manager set except the engine-internal
+// rows (claim_next never routes; task_start dropped by round-3 #2). The
+// route table is pinned by SOURCE SCAN against the real router
+// registration (router.go's board group): exactly the seam's route set
+// — worker routes + manager routes + the resource-pressure telemetry
+// route — and nothing else. The SHARED action (move_stage) renders
+// guard classes IDENTICALLY to the REST column (the §4.3
 // identical-guard-outcomes pin, both surfaces through renderBoardError).
 func TestBoardParity_AgentColumn(t *testing.T) {
-	svc := newFakeBoardService()
-	r := newBoardAutomationRouter(t, svc)
-
-	// Route table: exactly the four worker routes — manager rows are
-	// absent BY DESIGN (§4.3c), and this pin fails if either side
-	// drifts (a manager route added here, or a worker route dropped).
-	var got []string
-	for _, ri := range r.Routes() {
-		got = append(got, ri.Method+" "+ri.Path)
-	}
-	sort.Strings(got)
-	want := []string{
+	// Route table (source scan of the real registration): manager rows
+	// are live per #1747; this pin fails if either side drifts (a row
+	// added without a route, or a route added without a row).
+	assert.Equal(t, []string{
+		"DELETE /internal/v1/automation/board/epics/:id",
+		"DELETE /internal/v1/automation/board/tasks/:id",
+		"DELETE /internal/v1/automation/board/tasks/:id/dependencies/:dependsOnId",
 		"GET /internal/v1/automation/board/tasks/:id",
+		"PATCH /internal/v1/automation/board/epics/:id",
+		"PATCH /internal/v1/automation/board/projects/:id",
+		"PATCH /internal/v1/automation/board/tasks/:id",
+		"POST /internal/v1/automation/board/epics/:id/activate",
+		"POST /internal/v1/automation/board/epics/:id/archive",
+		"POST /internal/v1/automation/board/epics/:id/pause",
+		"POST /internal/v1/automation/board/epics/:id/tasks",
+		"POST /internal/v1/automation/board/epics/:id/unarchive",
+		"POST /internal/v1/automation/board/projects",
+		"POST /internal/v1/automation/board/projects/:id/archive",
+		"POST /internal/v1/automation/board/projects/:id/epics",
+		"POST /internal/v1/automation/board/projects/:id/import-plan",
+		"POST /internal/v1/automation/board/projects/:id/pause",
+		"POST /internal/v1/automation/board/projects/:id/resume",
+		"POST /internal/v1/automation/board/projects/:id/unarchive",
+		"POST /internal/v1/automation/board/resource-pressure",
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
 		"POST /internal/v1/automation/board/tasks/throttle",
-	}
-	assert.Equal(t, want, got, "agent seam route table: worker actions live, manager rows absent")
+		"POST /internal/v1/automation/board/tasks/:id/dependencies",
+		"POST /internal/v1/automation/board/tasks/:id/pause",
+		"POST /internal/v1/automation/board/tasks/:id/resume",
+	}, seamBoardRoutes(t),
+		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
 	// Worker actions are live: one call each (fake succeeds).
+	svc := newFakeBoardService()
+	r := newBoardAutomationRouter(t, svc)
 	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/heartbeat",
 		`{"workspaceID":"ws-1","shortId":"tsk-cccc3333","claimToken":"tok","observedProgressAt":"2026-10-17T00:00:00Z"}`)
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -374,16 +442,54 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 	}
 }
 
+// routeMountExpr matches a gin route mount `x.VERB("path", ...)` (the
+// router's established one-route-per-line formatting).
+var routeMountExpr = regexp.MustCompile(`^[a-z]\.(GET|POST|PATCH|PUT|DELETE)\("([^"]+)"`)
+
+// seamBoardRoutes source-scans router.go's board seam registration (the
+// b.* mounts under the /internal/v1/automation/board group) and returns
+// the sorted "VERB path" set — the scanMCPPkgForBoardTools discipline
+// applied to routes: the pin is against the REAL registration, so the
+// test fixture and the router cannot drift apart silently.
+func seamBoardRoutes(t *testing.T) []string {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "internal", "server", "router.go"))
+	require.NoError(t, err, "router.go not found — repo layout changed?")
+	var out []string
+	inGroup := false
+	for _, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(line, `router.Group("/internal/v1/automation/board")`) {
+			inGroup = true
+			continue
+		}
+		if !inGroup {
+			continue
+		}
+		if trimmed == "}" { // the group body ends at its closing brace
+			break
+		}
+		m := routeMountExpr.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		out = append(out, strings.ToUpper(m[1])+" /internal/v1/automation/board"+m[2])
+	}
+	require.NotEmpty(t, out, "the board seam group was not found in router.go — scan is broken, not the seam")
+	sort.Strings(out)
+	return out
+}
+
 // TestBoardParity_AgentRegistryColumn: #1701's tier of the agent column —
 // the agentd REGISTRY (cmd/workspace-agentd's mcpToolCatalog + the
-// callMCPTool dispatcher), the tool surface the in-workspace worker
+// callMCPTool dispatcher), the tool surface the in-workspace agent
 // actually sees. Construction guarantee, the scanMCPPkgForBoardTools
 // discipline applied to the agent tier: the board_* tools registered in
 // agentd are EXACTLY the matrix's live agent cells' tools — a tool
 // added to agentd without a matrix row reddens here (an unregistered
 // live cell reddens too), and the declared absences are enforced AT the
 // registry: claim_next (engine-internal, R9 — absent on all surfaces,
-// permanently) and every manager row have NO registered tool.
+// permanently) and task_start (round-3 #2) have NO registered tool.
 func TestBoardParity_AgentRegistryColumn(t *testing.T) {
 	catalog, dispatch := scanAgentdForBoardTools(t)
 
@@ -397,7 +503,7 @@ func TestBoardParity_AgentRegistryColumn(t *testing.T) {
 		}
 	}
 	assert.Equal(t, want, catalog,
-		"agentd's board_* registry must be exactly the matrix's live agent tools (manager rows and claim_next absent BY DESIGN, §4.3c/R9)")
+		"agentd's board_* registry must be exactly the matrix's live agent tools (claim_next engine-internal R9; task_start agent-dropped #1747)")
 
 	for tool := range catalog {
 		assert.True(t, dispatch[tool], "registry tool %s has no dispatcher case — the catalog would be a brochure", tool)
@@ -456,19 +562,18 @@ func quotedBoardNames(line string) []string {
 	return out
 }
 
-// TestBoardParity_ExternalMCPColumn: the Lane 3 flip (#1700) — every
-// manager/read row is LIVE on the external MCP surface, the worker
-// rows (heartbeat / report_throttle / claim_next) are absent BY DESIGN,
-// and the tool-set agreement holds in BOTH directions: every registered
-// board_* tool belongs to a matrix row, and every live external cell
-// names real registered tools (a tool without a row, or a row naming a
-// ghost tool, reddens here — the matrix cannot silently miss a
-// surface). The LIVE arms then drive each row's representative tool
-// through the REAL REST router fixture (pkg/mcp tools → HTTPClient →
-// /api/v1/me routes → BoardHandler → renderBoardError), asserting:
-// allow outcomes, the SAME guard classes the REST column renders
-// (deny arms), the R7 owner scope (every request path is a me-route),
-// and foreign-row non-disclosure.
+// TestBoardParity_ExternalMCPColumn: every manager/read row is LIVE on
+// the external MCP surface, the worker rows (heartbeat /
+// report_throttle / claim_next) are absent BY DESIGN, and the tool-set
+// agreement holds in BOTH directions: every registered board_* tool
+// belongs to a matrix row, and every live external cell names real
+// registered tools (a tool without a row, or a row naming a ghost tool,
+// reddens here — the matrix cannot silently miss a surface). The LIVE
+// arms then drive each row's representative tool through the REAL REST
+// router fixture (pkg/mcp tools → HTTPClient → /api/v1/me routes →
+// BoardHandler → renderBoardError), asserting: allow outcomes, the SAME
+// guard classes the REST column renders (deny arms), the R7 owner scope
+// (every request path is a me-route), and foreign-row non-disclosure.
 func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 	// (a) Cell-kind agreement: manager/read rows live with named tools;
 	// declared-asymmetric rows absent with none.
@@ -513,8 +618,8 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 	sort.Strings(unregistered)
 	assert.Empty(t, unregistered,
 		"pkg/mcp registers board tools with NO matrix row (parity by construction requires a row per surface addition): %v", unregistered)
-	for _, banned := range []string{"board_heartbeat", "board_report_throttle"} {
-		assert.False(t, registered[banned], "%s must not exist on the external surface (worker-only, §4.3b)", banned)
+	for _, banned := range []string{"board_heartbeat", "board_report_throttle", "board_cancel"} {
+		assert.False(t, registered[banned], "%s must not exist on the external surface (worker-only §4.3b / cancel eliminated #1747)", banned)
 	}
 	for name := range registered {
 		assert.NotContains(t, name, "claim", "no board_* claim tool exists on any surface (claim_next is engine-internal, R9)")
@@ -552,7 +657,8 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 			// result carries the SAME class the REST column renders.
 			if row.denyErr != nil {
 				svc2 := newFakeBoardManager()
-				svc2.tasks = []board.Task{{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Tags: []string{}}}
+				svc2.projects = svc.projects
+				svc2.tasks = svc.tasks
 				svc2.errFor[boardParitySeam(row.action)] = row.denyErr
 				cl2, _ := newExternalMCPFixture(t, svc2)
 				res2, text2 := boardParityExtCall(t, cl2, row.action)
@@ -616,6 +722,10 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_project_archive", map[string]any{"project_id": "prj-aaaa1111"}, true
 	case "unarchive_project":
 		return "board_project_unarchive", map[string]any{"project_id": "prj-aaaa1111"}, true
+	case "pause_project":
+		return "board_project_pause", map[string]any{"project_id": "prj-aaaa1111"}, true
+	case "resume_project":
+		return "board_project_resume", map[string]any{"project_id": "prj-aaaa1111"}, true
 	case "board_read":
 		return "board_list_projects", map[string]any{}, true
 	case "create_epic":
@@ -630,8 +740,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_epic_archive", map[string]any{"epic_id": "epc-bbbb2222"}, true
 	case "epic_unarchive":
 		return "board_epic_unarchive", map[string]any{"epic_id": "epc-bbbb2222"}, true
-	case "cancel_epic":
-		return "board_cancel", map[string]any{"item_id": "epc-bbbb2222", "reason": "r"}, true
+	case "delete_epic":
+		return "board_delete", map[string]any{"item_id": "epc-bbbb2222", "force": true}, true
 	case "create_task":
 		return "board_create_task", map[string]any{"epic_id": "epc-bbbb2222", "title": "T"}, true
 	case "update_task":
@@ -644,8 +754,16 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": "done"}, true
 	case "task_start":
 		return "board_start_task", map[string]any{"task_id": "tsk-cccc3333"}, true
-	case "cancel_task":
-		return "board_cancel", map[string]any{"item_id": "tsk-cccc3333", "reason": "r"}, true
+	case "delete_task":
+		return "board_delete", map[string]any{"item_id": "tsk-cccc3333"}, true
+	case "pause_task":
+		return "board_pause_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "resume_task":
+		return "board_resume_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "import_plan":
+		return "board_import_plan", map[string]any{
+			"project_id": "prj-aaaa1111", "epic_title": "E",
+			"tasks": []map[string]any{{"key": "a", "title": "A"}, {"key": "b", "title": "B", "depends_on": []string{"a"}}}}, true
 	case "board_read_project_get":
 		return "board_get", map[string]any{"item_id": "prj-aaaa1111"}, true
 	default:
@@ -745,7 +863,8 @@ func scanMCPPkgForBoardTools(t *testing.T) []string {
 // TestBoardParity_WorkerOnlyAbsentOnREST: the declared asymmetry —
 // heartbeat / report_throttle / claim_next have NO route on the REST
 // surface (worker actions live on the agent seam only; claim_next is
-// engine-internal everywhere, R9).
+// engine-internal everywhere, R9). Cancel is eliminated (#1747 round
+// 3): no /cancel route exists on the REST surface — delete replaces it.
 func TestBoardParity_WorkerOnlyAbsentOnREST(t *testing.T) {
 	svc := newFakeBoardManager()
 	r := newBoardRESTRouter(t, svc)
@@ -754,12 +873,82 @@ func TestBoardParity_WorkerOnlyAbsentOnREST(t *testing.T) {
 		assert.NotContains(t, lower, "heartbeat", "worker-only action routed on REST (§4.7)")
 		assert.NotContains(t, lower, "throttle", "worker-only action routed on REST (§4.7)")
 		assert.NotContains(t, lower, "claim", "claim_next is engine-internal (R9) — never routed")
+		assert.NotContains(t, lower, "cancel", "cancel is eliminated (#1747 round 3) — delete replaces it")
 	}
 	// And the direct calls 404 (no route, no handler).
-	for _, path := range []string{"/api/v1/me/tasks/tsk-x/heartbeat", "/api/v1/me/tasks/tsk-x/throttle", "/api/v1/me/tasks/tsk-x/claim"} {
+	for _, path := range []string{"/api/v1/me/tasks/tsk-x/heartbeat", "/api/v1/me/tasks/tsk-x/throttle", "/api/v1/me/tasks/tsk-x/claim", "/api/v1/me/tasks/tsk-x/cancel"} {
 		w := doBoardREST(t, r, http.MethodPost, path, `{}`)
 		assert.Equal(t, http.StatusNotFound, w.Code, path)
 	}
+}
+
+// TestBoardParity_RestRouteTable: the REST surface's board route set,
+// pinned by source scan of the real registration — the #1699 Lane 2
+// routes + #1747's additions (project pause/resume, task pause/resume,
+// delete_task/delete_epic replacing cancel, import-plan) and nothing
+// else. Drift in either direction (a handler without a route, a route
+// without its matrix row) reddens here or in Coverage.
+func TestBoardParity_RestRouteTable(t *testing.T) {
+	assert.Equal(t, []string{
+		"DELETE /api/v1/me/epics/:id",
+		"DELETE /api/v1/me/tasks/:id",
+		"DELETE /api/v1/me/tasks/:id/dependencies/:dependsOnId",
+		"GET /api/v1/me/epics/:id",
+		"GET /api/v1/me/projects",
+		"GET /api/v1/me/projects/:id",
+		"GET /api/v1/me/projects/:id/tasks",
+		"GET /api/v1/me/tasks/:id",
+		"PATCH /api/v1/me/epics/:id",
+		"PATCH /api/v1/me/projects/:id",
+		"PATCH /api/v1/me/tasks/:id",
+		"POST /api/v1/me/epics/:id/activate",
+		"POST /api/v1/me/epics/:id/archive",
+		"POST /api/v1/me/epics/:id/pause",
+		"POST /api/v1/me/epics/:id/tasks",
+		"POST /api/v1/me/epics/:id/unarchive",
+		"POST /api/v1/me/projects",
+		"POST /api/v1/me/projects/:id/archive",
+		"POST /api/v1/me/projects/:id/epics",
+		"POST /api/v1/me/projects/:id/import-plan",
+		"POST /api/v1/me/projects/:id/pause",
+		"POST /api/v1/me/projects/:id/resume",
+		"POST /api/v1/me/projects/:id/unarchive",
+		"POST /api/v1/me/tasks/:id/dependencies",
+		"POST /api/v1/me/tasks/:id/move-stage",
+		"POST /api/v1/me/tasks/:id/pause",
+		"POST /api/v1/me/tasks/:id/resume",
+		"POST /api/v1/me/tasks/:id/start",
+	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows; cancel eliminated; task_start stays owner-only)")
+}
+
+// restBoardRoutes source-scans router.go's /api/v1/me board groups and
+// returns the sorted "VERB path" set (the seamBoardRoutes discipline).
+func restBoardRoutes(t *testing.T) []string {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "internal", "server", "router.go"))
+	require.NoError(t, err, "router.go not found — repo layout changed?")
+	vars := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k."}
+	curVar := ""
+	var out []string
+	for _, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		for prefix, v := range vars {
+			if strings.Contains(line, `router.Group("`+prefix+`")`) {
+				curVar = v
+			}
+		}
+		if curVar == "" {
+			continue
+		}
+		m := routeMountExpr.FindStringSubmatch(trimmed)
+		if m == nil || !strings.HasPrefix(trimmed, curVar) {
+			continue
+		}
+		out = append(out, strings.ToUpper(m[1])+" "+strings.TrimSuffix(curVar, ".")+m[2])
+	}
+	require.NotEmpty(t, out, "the REST board groups were not found in router.go — scan is broken, not the router")
+	sort.Strings(out)
+	return out
 }
 
 // --- §6 cell-case kinds beyond allow/deny: idempotent replay + audit ---
@@ -767,24 +956,27 @@ func TestBoardParity_WorkerOnlyAbsentOnREST(t *testing.T) {
 // replayExceptions names the mutating actions whose requestId does NOT
 // reach an event writer TODAY, so the replay case skips them BY NAME
 // (a conscious, reviewable list — not silent coverage loss):
-//   - archive_project/unarchive_project/epic_activate/epic_pause/
-//     epic_archive/epic_unarchive: the engine's lifecycle writers
-//     discard the requestID parameter (pkg/board service.go:309/:462 —
-//     flagged on PR #1728 as an engine follow-up; no pkg/board edit
-//     from this lane).
-//   - remove_dependency: DELETE carries no body at the REST tier (the
-//     engine seam itself would thread one).
+//   - the project/epic lifecycle writers (archive/unarchive/pause/
+//     resume/activate): the engine's lifecycle writers discard the
+//     requestID parameter (pkg/board service.go — flagged on PR #1728
+//     as an engine follow-up; no pkg/board edit from that lane).
+//   - remove_dependency/delete_task/delete_epic: DELETE carries no body
+//     at the REST tier (force rides the query).
 //
 // When the engine follow-up lands, entries come OFF this list and the
 // replay case covers them.
 var replayExceptions = map[string]string{
 	"archive_project":   "engine lifecycle writer discards requestId (service.go:309)",
 	"unarchive_project": "engine lifecycle writer discards requestId (service.go:309)",
+	"pause_project":     "engine lifecycle writer discards requestId",
+	"resume_project":    "engine lifecycle writer discards requestId",
 	"epic_activate":     "engine lifecycle writer discards requestId (service.go:462)",
 	"epic_pause":        "engine lifecycle writer discards requestId (service.go:462)",
 	"epic_archive":      "engine lifecycle writer discards requestId (service.go:462)",
 	"epic_unarchive":    "engine lifecycle writer discards requestId (service.go:462)",
 	"remove_dependency": "DELETE carries no body at the REST tier",
+	"delete_task":       "DELETE carries no body at the REST tier (force rides the query)",
+	"delete_epic":       "DELETE carries no body at the REST tier (force rides the query)",
 }
 
 // boardReadActions are the non-mutating rows (no replay/audit arms).
@@ -883,8 +1075,6 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E","requestId":`+q(requestID)+`}`)
 	case "update_epic":
 		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/epics/epc-bbbb2222", `{"outcome":"o","requestId":`+q(requestID)+`}`)
-	case "cancel_epic":
-		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/cancel", `{"reason":"r","requestId":`+q(requestID)+`}`)
 	case "create_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T","requestId":`+q(requestID)+`}`)
 	case "update_task":
@@ -895,8 +1085,13 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
-	case "cancel_task":
-		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/cancel", `{"reason":"r","requestId":`+q(requestID)+`}`)
+	case "pause_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/pause", body)
+	case "resume_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/resume", body)
+	case "import_plan":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
+			`{"epicTitle":"E","tasks":[{"key":"a","title":"A"}],"requestId":`+q(requestID)+`}`)
 	default:
 		t.Fatalf("no replay-driver call for action %q", action)
 		return nil
@@ -1013,7 +1208,7 @@ func boardParityExtToolCall(t *testing.T, cl *mcpgoclient.Client, tool string, a
 func boardParityExtCallReqID(t *testing.T, cl *mcpgoclient.Client, action, requestID string) (*mcpgo.CallToolResult, string) {
 	t.Helper()
 	_, args, ok := boardParityExtToolArgs(action)
-	require.True(t, ok, "no representative external tool call for action %q", action)
+	require.True(t, ok, "no representative external tool call for action %q — the matrix row is mis-declared", action)
 	if args == nil {
 		args = map[string]any{}
 	}

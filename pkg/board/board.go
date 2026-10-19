@@ -184,6 +184,13 @@ const (
 	GuardDependency       = "dependency"           // edge rejected (same-project/self/acyclic)
 	GuardProjectState     = "project_state"        // project lifecycle refuses the action
 	GuardAuthz            = "authz"                // user-level ownership (R7)
+
+	// #1747 additions: the pause lever, backpressure caps, and DAG
+	// blast-radius limits.
+	GuardPaused       = "task_paused"       // pause gates claiming, forward writes, and claim mints (#1747)
+	GuardConcurrency  = "concurrency_limit" // user/global concurrent-claim cap refuses a manual dispatch
+	GuardGraphLimit   = "graph_limit"       // edges-per-node / nodes-per-epic cap (blast-radius bound)
+	GuardBackpressure = "backpressure"      // workspace resource pressure gates claiming (informational class)
 )
 
 // DependencyError is the dependency-write 409 (ruling R4a) — carries

@@ -3,18 +3,20 @@
 
 package main
 
-// mcp_board_tools_test.go — #1701 (design 0067 §4.3c): the agent-internal
-// board tools. The worker surface is FOUR tools (board_heartbeat,
-// board_report_throttle, board_move_stage, board_read) carrying
-// claim-token semantics: every in-flight write requires the claim token
-// the fresh worker received in its charter envelope, and the platform
-// (never agentd) arbitrates every guard — agentd passes bodies through
-// verbatim and surfaces the platform's error classes verbatim, the
-// mcpAutomation discipline trigger_*/workflow_* established.
+// mcp_board_tools_test.go — #1701 + #1747 (design 0067 §4.3c as
+// amended): the agent-internal board tools. The WORKER surface keeps
+// its four claim-token tools (board_heartbeat, board_report_throttle,
+// board_move_stage, board_read); #1747 adds the MANAGER set (project/
+// epic/task CRUD incl. pause/resume, delete replacing the eliminated
+// cancel, dependencies, import_plan) so a user-collaborator agent can
+// take an approved design to execution. The platform (never agentd)
+// arbitrates every guard — agentd passes bodies through verbatim and
+// surfaces the platform's error classes verbatim, the mcpAutomation
+// discipline trigger_*/workflow_* established.
 //
-// Red-first: this file landed BEFORE the implementation (registry,
-// dispatcher, client methods) — every registry/wire pin below fails on
-// an absent tool surface by construction.
+// Red-first: the #1701 file landed BEFORE the worker implementation;
+// the #1747 manager additions below landed BEFORE theirs — every
+// registry/wire pin fails on an absent tool surface by construction.
 
 import (
 	"context"
@@ -29,10 +31,12 @@ import (
 
 // --- registry shape ---------------------------------------------------------
 
-// TestMCPBoard_RegistryShape: the agent-internal registry exposes
-// EXACTLY the four worker tools (design §4.3c) — the manager rows and
-// claim_next are absent BY DESIGN: agents are workers, not managers;
-// claiming is engine-side (R9 claim-then-spawn).
+// TestMCPBoard_RegistryShape: the agent-internal registry exposes the
+// worker tools PLUS the #1747 manager set — and exactly the parity
+// matrix's live agent cells: claim_next (engine-internal, R9) and
+// task_start (round-3 #2: execution = activation + engine claiming)
+// are absent BY DESIGN, as is every cancel spelling (cancel is
+// eliminated — delete replaces it).
 func TestMCPBoard_RegistryShape(t *testing.T) {
 
 	tools := mcpToolsList(t)
@@ -44,24 +48,35 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		}
 	}
 
-	want := []string{"board_heartbeat", "board_move_stage", "board_read", "board_report_throttle"}
-	require.Len(t, board, len(want), "exactly four board tools; got %v", board)
+	want := []string{
+		// Worker tools (#1701, design 0067 §4.3c).
+		"board_heartbeat", "board_move_stage", "board_read", "board_report_throttle",
+		// Manager set (#1747): projects.
+		"board_create_project", "board_update_project", "board_project_archive",
+		"board_project_unarchive", "board_project_pause", "board_project_resume",
+		// Manager set (#1747): epics.
+		"board_create_epic", "board_update_epic", "board_epic_activate",
+		"board_epic_pause", "board_epic_archive", "board_epic_unarchive",
+		"board_delete_epic",
+		// Manager set (#1747): tasks + dependencies + plan.
+		"board_create_task", "board_update_task", "board_add_dependency",
+		"board_remove_dependency", "board_delete_task", "board_pause_task",
+		"board_resume_task", "board_import_plan",
+	}
+	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
-		assert.Contains(t, board, name, "worker tool %s must be registered", name)
+		assert.Contains(t, board, name, "board tool %s must be registered", name)
 	}
 
-	// The declared asymmetries, pinned as absences (§4.3c/§4.7):
-	// claim_next is engine-internal (R9 — absent on ALL surfaces,
-	// permanently); manager rows (CRUD/lifecycle/cancel/dependencies/
-	// task_start) never reach the agent registry.
+	// The declared asymmetries, pinned as absences: claim_next is
+	// engine-internal (R9 — absent on ALL surfaces, permanently);
+	// task_start is dropped from agent surfaces (#1747 round 3);
+	// cancel is eliminated everywhere (#1747 round 3).
 	for _, forbidden := range []string{
 		"board_claim_next", "board_claim", "board_task_start", "board_start_task",
-		"board_cancel", "board_create_task", "board_create_epic", "board_create_project",
-		"board_update_task", "board_update_item", "board_add_dependency", "board_remove_dependency",
-		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
-		"board_project_archive", "board_project_unarchive",
+		"board_cancel", "board_cancel_task", "board_cancel_epic", "board_reorder",
 	} {
-		assert.NotContains(t, board, forbidden, "manager/engine action %s must NOT be an agent tool (§4.3c)", forbidden)
+		assert.NotContains(t, board, forbidden, "engine/eliminated action %s must NOT be an agent tool (#1747)", forbidden)
 	}
 }
 
