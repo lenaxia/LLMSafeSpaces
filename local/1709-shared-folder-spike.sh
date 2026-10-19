@@ -526,9 +526,10 @@ fi
 
 # Attach-window iscsid re-measure (r31 R31-1.2): recorded at the START
 # of leg 0's attach waits (before the PVC applies and the ≤600s/≤1200s
-# waits run) — a daemon death DURING those waits remains unmeasured
-# until the next gate or dump; this narrows the 39190530387 30-minute
-# window to the leg-0 wait duration, it does not eliminate it.
+# waits run) and this is the LAST iscsid measurement in the run — a
+# daemon death DURING those waits remains unmeasured, full stop; this
+# narrows the 39190530387 30-minute window to the leg-0 wait duration,
+# it does not eliminate it.
 ATTACH_RC=0
 docker exec "$NODE" pgrep -x iscsid >/dev/null 2>&1 || ATTACH_RC=$?
 AIPC_RC=0
