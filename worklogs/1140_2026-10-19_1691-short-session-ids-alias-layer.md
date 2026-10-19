@@ -116,3 +116,39 @@ the ABI `short_id` fields + regen and the frontend URL flip.
 - `TestRollbackDrill_UnderLoad` (outbox) flaked once under parallel
   package load, both with and without this branch (`-count=3` clean
   both ways) — pre-existing, not touched.
+
+---
+
+## r1 — review remediation (CHANGES_REQUESTED @ ed5d211f)
+
+All six findings + the six missing tests, one commit set (`e89a687c`):
+
+1. **Wiring (finding 1)** — the four unwired row-creating shapes
+   (last-seen, rename, message-count drift writes, workflow-engine
+   preserved fires) now route through the seam; per-path pins at every
+   site. "All six paths" is now true, not just claimed.
+2. **Cross-workspace byte-equality (finding 2)** — two ref bindings
+   (normalized + raw); mixed-case legacy ids match. sqlmock + real-PG
+   pins.
+3. **Ambiguity payload (finding 3)** — typed ruling-8 rows with the
+   route's workspace and uniform lastActive semantics; ORDER BY makes
+   the newest-first truncation deterministic.
+4. **Top-3 (finding 4)** — the cross-workspace tail is ranked
+   deterministically and the whole payload capped.
+5. **5xx never suggests (finding 5)** — alias-lookup DB errors degrade
+   to passthrough; pinned.
+6. **#1340 covenant (finding 6)** — the adapter Send 404 mapping and
+   the API send-404 branch are reverted; the covenant comment stands.
+   Skeptical-pass metadata on-miss-pull parity included.
+
+Test tiers added: `short_session_ids_integration_test.go` (real
+Postgres, `-tags=integration`, runs in CI's database job) — the
+same-session race, distinct-session unique-index arbitration, backfill
+convergence; plus the budget/backfill pin and the four wiring pins.
+
+Verification at `e89a687c`: `go test ./api/... ./pkg/...` (80 pkgs) +
+full `cmd/workspace-agentd` + `go vet -tags=integration` green;
+`golangci-lint` on every touched package 0 issues. PR-body claims
+corrected (all-six wiring, top-3, integration-in-CI now true; the
+send-404 claim withdrawn; the M2/M3 order inversion now commented in
+CHANGELOG + PR body).
