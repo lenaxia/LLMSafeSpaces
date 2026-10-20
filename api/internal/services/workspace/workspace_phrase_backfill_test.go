@@ -87,3 +87,25 @@ func TestGetWorkspace_DeniedCaller_NeverBackfills(t *testing.T) {
 	f.db.AssertNotCalled(t, "EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything,
 		"a denied caller must never trigger the backfill write")
 }
+
+// r2 (verdict Missing #1): the creation-path mint is ASSERTED, not
+// merely permitted — the r1 fixtures stubbed the seam Maybe(), so
+// deleting the mint at creation failed nothing (reads would converge
+// the row in production, but the creation contract needs its pin).
+func TestCreateWorkspace_MintsPhraseAtCreation(t *testing.T) {
+	f := newDefaultsFixture(t, nil)
+	ctx := context.Background()
+
+	f.ws.On("Create", mock.Anything, mock.Anything).
+		Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
+	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
+	f.db.On("EnsureWorkspacePhraseRegistered", mock.Anything, "ws-1").
+		Return("amber-river-7", nil).Once()
+
+	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: "python:3.11"}
+	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
+	require.NoError(t, err)
+	// AssertCalled takes no message arg — the rationale lives here:
+	// creation must mint; the Maybe() stubs elsewhere assert nothing.
+	f.db.AssertCalled(t, "EnsureWorkspacePhraseRegistered", mock.Anything, "ws-1")
+}

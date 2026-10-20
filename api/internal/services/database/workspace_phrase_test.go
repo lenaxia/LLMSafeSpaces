@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // #1757 sqlmock pins: the registration UPDATE (NULL-only guard), the
@@ -108,7 +110,14 @@ func (e *testPgError) Error() string    { return "unique violation" }
 // user-scoped read (post-verifyOwner) precisely so a pre-authorization
 // caller can never mint by probing; this pin holds that property at
 // the tier that owns the SQL.
-func TestGetWorkspace_NullPhrase_IsPureRead(t *testing.T) {
+// r2 (replacing the r1 inert form): the pin must be able to FAIL. A
+// REGISTERED, error-armed UPDATE expectation makes any write loud —
+// consumed ⇒ ExpectationsWereMet returns nil ⇒ the fatal below fires;
+// unconsumed (the pure read) leaves exactly this expectation unmet.
+// The r1 form (zero write expectations) could never fail: an
+// unexpected sqlmock call returns an error the r0 best-effort
+// backfill swallowed, and ExpectationsWereMet cannot see extra calls.
+func TestGetWorkspace_NullPhrase_PerformsNoWrite(t *testing.T) {
 	s, mock, done := setupMockDB(t)
 	defer done()
 
@@ -119,19 +128,41 @@ func TestGetWorkspace_NullPhrase_IsPureRead(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT w.id, w.user_id, w.name, w.runtime, w.storage_size")).
 		WithArgs("ws-legacy").
 		WillReturnRows(rows)
+	// Armed tripwire: any UPDATE during the read consumes this,
+	// silences the unmet-expectation error, and fails the assertion.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE workspaces")).
+		WillReturnError(errors.New("pure read must not write"))
 
 	ws, err := s.GetWorkspace(context.Background(), "ws-legacy")
-	if err != nil {
-		t.Fatalf("GetWorkspace: %v", err)
-	}
-	if ws.PhraseID != "" {
-		t.Fatalf("NULL phrase_id must surface as empty, got %q", ws.PhraseID)
-	}
-	// No UPDATE, no convergence SELECT — ExpectationsWereMet with zero
-	// write expectations IS the pin.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected SQL fired: %v", err)
-	}
+	require.NoError(t, err)
+	require.Empty(t, ws.PhraseID, "NULL phrase_id must surface as empty")
+
+	// nil here means the tripwire was CONSUMED — a write fired.
+	unmet := mock.ExpectationsWereMet()
+	require.Error(t, unmet, "ExpectationsWereMet==nil ⇒ the UPDATE was consumed ⇒ GetWorkspace wrote")
+	assert.Contains(t, unmet.Error(), "UPDATE workspaces",
+		"the only unmet expectation must be the armed UPDATE")
+}
+
+// r2 (verdict Robustness #1): the registration UPDATE carries the
+// deleted_at IS NULL guard — a soft-deleted row (0 rows affected,
+// empty read-back) answers ("", nil) immediately instead of minting
+// onto a dead row or burning the retry budget.
+func TestEnsureWorkspacePhraseRegistered_SoftDeletedRow_NeverWrites(t *testing.T) {
+	s, mock, done := setupMockDB(t)
+	defer done()
+
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE workspaces SET phrase_id = $2, updated_at = NOW()`)).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // guard: no live row matched
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT phrase_id FROM workspaces WHERE id = $1`)).
+		WithArgs("ws-dead").
+		WillReturnRows(sqlmock.NewRows([]string{"phrase_id"}).AddRow(""))
+
+	phrase, err := s.EnsureWorkspacePhraseRegistered(context.Background(), "ws-dead")
+	require.NoError(t, err)
+	assert.Empty(t, phrase, "a dead row has nothing live to converge onto")
+	require.NoError(t, mock.ExpectationsWereMet(),
+		"exactly one UPDATE + one read-back — no retry loop on a dead row")
 }
 
 // r1: a mid-stream failure on the name lookup is an ERROR on every

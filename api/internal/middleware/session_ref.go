@@ -143,26 +143,26 @@ func setParam(c *gin.Context, key, value string) {
 
 // WorkspaceRefResolver resolves #1757 workspace refs and is satisfied
 // by the *database.Service. WorkspaceRefResolution is the #1757
-// workspace-ref edge: :id (and
-// admin :workspaceId) params accept the workspace PHRASE as the
-// canonical address; the UUID passes through byte-identical with the
-// deprecation notice attached; a NAME resolves only when it is the
-// requester's single workspace by that name (names are caller-owned
-// and may collide — ambiguity never resolves here; an ambiguous or
-// absent name passes through UNREWRITTEN so the access gate that
-// follows answers with its ordinary 404 — the workspace surface
-// carries no did-you-mean machinery). Phrase-form resolution failure
-// answers the structured 404; a lookup ERROR answers 503 (a degraded
-// lookup is availability, never a confident miss — §4.4/§4.6
-// 5xx-never-suggests discipline, session-lane precedent). When a
-// phrase resolves, the §4.3 anti-enumeration masking marker is set:
-// a downstream ownership denial on a phrase-addressed workspace is
+// workspace-ref edge: the workspace :id param accepts the workspace
+// PHRASE as the canonical address; the UUID passes through
+// byte-identical with the deprecation notice attached; a NAME
+// resolves only when it is the requester's single workspace by that
+// name (names are caller-owned and may collide — ambiguity never
+// resolves here; an ambiguous or absent name passes through
+// UNREWRITTEN so the access gate that follows answers with its
+// ordinary 404 — the workspace surface carries no did-you-mean
+// machinery). Phrase-form resolution failure answers the structured
+// 404; a lookup ERROR answers 503 (a degraded lookup is
+// availability, never a confident miss — §4.4/§4.6 5xx-never-
+// suggests discipline, session-lane precedent). When a phrase
+// resolves, the §4.3 anti-enumeration masking marker is set: a
+// downstream ownership denial on a phrase-addressed workspace is
 // answered by the access middleware with the byte-identical 404 the
 // unknown phrase gets.
 //
 // Mounted ONLY on the workspace :id group (router idGroup); the
-// admin :workspaceId routes are NOT phrase-wired (deferred — see the
-// PR body's deferral section).
+// admin :workspaceId routes are NOT phrase-wired (deferred — #1792
+// tracks the completion: admin-group phrase addressing).
 type WorkspaceRefResolver interface {
 	FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error)
 	FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error)

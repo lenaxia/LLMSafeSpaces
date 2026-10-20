@@ -170,3 +170,39 @@ func TestTriggerCreate_UUIDTarget_SkipsPhraseLayer(t *testing.T) {
 		assert.Equal(t, "ws-2", *row.WorkspaceID)
 	}
 }
+
+// r2 (verdict Missing #2): the ORG trigger route pins the phrase
+// target too — it shares create() with the user route, but the wiring
+// (SetWorkspacePhraseResolver at app.go) is per-handler; deleting the
+// org wiring 404s every org phrase target with every other test green.
+func newOrgPhraseTargetRouter(t *testing.T, resolver workspacePhraseResolver) (*gin.Engine, *mockTriggerStore) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	store := newMockTriggerStore()
+	h := NewOrgTriggersHandler(store, nil, &mockEncryptor{})
+	h.SetWorkspaceOwnershipAuthorizer(crossWSAuthorizer())
+	h.SetWorkspacePhraseResolver(resolver)
+	r := gin.New()
+	g := r.Group("/api/v1/orgs/:id/triggers")
+	g.Use(func(c *gin.Context) { c.Set("userID", "user-7"); c.Next() })
+	g.POST("", h.OrgCreate)
+	return r, store
+}
+
+func TestTriggerCreate_OrgRoute_PhraseTarget_ResolvesAndPersistsUUID(t *testing.T) {
+	// ws-orgown is org-42-attributed and user-7 is a member — the
+	// org-context gate admits the cross-workspace target.
+	res := &fakePhraseResolver{metas: map[string]string{"amber-river-7": "ws-orgown"}}
+	r, store := newOrgPhraseTargetRouter(t, res)
+
+	w := doREST(t, r, "POST", "/api/v1/orgs/org-42/triggers",
+		phraseBody("amber-river-7"))
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	require.Len(t, store.triggers, 1)
+	for _, row := range store.triggers {
+		require.NotNil(t, row.WorkspaceID, "resolved target must persist")
+		assert.Equal(t, "ws-orgown", *row.WorkspaceID,
+			"the stored key is the RESOLVED UUID, never the phrase")
+	}
+}

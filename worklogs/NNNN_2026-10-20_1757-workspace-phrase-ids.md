@@ -106,3 +106,30 @@ None (review availability depends on the trusted-app-bot fix reaching this PR's 
 - **Tests added:** 7 trigger pins, 7 router pins, 3 service-tier
   backfill pins, 2 sqlmock pins, 2 e2e flows. Phantom-pin lesson
   applied: every "pinned" comment now names a test that exists.
+
+## r2 addendum (verdict @ bb6310a4 — near-approve; all r1 fixes verified)
+
+- List API: `WorkspaceListItem.PhraseID` + the `ListWorkspaces`
+  mapping (the DB query already selected phrase_id; the conversion
+  dropped it — same defect class as the #477 OrgID drop). Pinned:
+  `TestListWorkspaces_PropagatesPhraseID`.
+- SDKs: `phraseId` added to Python/Go/TS/Java Workspace models +
+  list items + openapi.yaml. Root cause of the red canary: the
+  Python dataclass hard-rejects unknown kwargs (`Workspace(**resp)`).
+- `EnsureWorkspacePhraseRegistered`: `deleted_at IS NULL` guard on
+  the UPDATE + early ("", nil) on a dead row (no pointless mints, no
+  retry burn). Pinned: `TestEnsureWorkspacePhraseRegistered_SoftDeletedRow_NeverWrites`.
+- Test hardenings per verdict: creation-mint ASSERTED
+  (`TestCreateWorkspace_MintsPhraseAtCreation`), org trigger route
+  pinned (`TestTriggerCreate_OrgRoute_PhraseTarget_ResolvesAndPersistsUUID`),
+  §4.3 pairing in ONE test (`TestWorkspaceRef_UnknownVsForeignPhrase_ResponsesAreIdentical`),
+  inert pure-read pin replaced with an error-armed UPDATE tripwire
+  (`TestGetWorkspace_NullPhrase_PerformsNoWrite` — consumed ⇒
+  ExpectationsWereMet==nil ⇒ fatal; unconsumed ⇒ the only unmet).
+- Doc residues: phantom "backfill sweep" comment (creation path),
+  session_ref.go admin-:workspaceId self-contradiction; PR body
+  retitle: References #1757 + completion in #1792.
+- Gates: `go vet ./api/... ./pkg/...` clean; full `./pkg/... ./api/...`
+  sweep green (`-p 2` — the default parallelism exhausts the 15G disk
+  at the link stage; environmental, not code). Six named r2 pins
+  individually verified -v PASS.

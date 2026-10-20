@@ -478,9 +478,10 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		return nil, apierrors.NewInternalError("metadata_creation_failed", err)
 	}
 
-	// #1757: mint the workspace phrase at creation — best-effort here
-	// (the backfill sweep converges any miss); the phrase rides the
-	// metadata from the next read on.
+	// #1757: mint the workspace phrase at creation — best-effort here;
+	// a miss converges on the next authorized read (there is no sweep
+	// job — see GetWorkspace). The phrase rides the metadata from the
+	// next read on.
 	if phrase, perr := s.dbService.EnsureWorkspacePhraseRegistered(ctx, meta.ID); perr == nil && phrase != "" {
 		meta.PhraseID = phrase
 	} else if perr != nil {
@@ -657,6 +658,10 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 			// drawer uses this to fetch the owning org's allow_user_prompt
 			// policy and gate the Custom Instructions Lock UI.
 			OrgID: m.OrgID,
+			// #1757 r2: the phrase rides list responses so display
+			// surfaces (dashboard, pickers, board refs — #1792) can
+			// address workspaces without the UUID.
+			PhraseID: m.PhraseID,
 		})
 	}
 

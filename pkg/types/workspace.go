@@ -74,6 +74,12 @@ type WorkspaceListItem struct {
 	// the Workspace Settings drawer's "Custom Instructions" Lock UI.
 	// Mirrors WorkspaceMetadata.OrgID.
 	OrgID *string `json:"orgId,omitempty"`
+	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
+	// fleet-unique) — THE address for the display surfaces (dashboard,
+	// pickers, board refs — completion tracked in #1792); the UUID
+	// above stays the internal key. omitempty: absent only pre-backfill.
+	// Mirrors WorkspaceMetadata.PhraseID.
+	PhraseID string `json:"phraseId,omitempty"`
 }
 
 // WorkspaceStatusResult carries the status fields read from the Workspace CRD.
@@ -138,7 +144,8 @@ type WorkspaceMetadata struct {
 	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
 	// fleet-unique) — THE address for display and cross-workspace
 	// referencing; the UUID above stays the internal key. omitempty:
-	// absent only in the pre-backfill window.
+	// absent only in the pre-backfill window (converges on the next
+	// authorized read).
 	PhraseID string `json:"phraseId,omitempty" db:"phrase_id"`
 }
 

@@ -183,3 +183,29 @@ func TestWorkspaceRef_AmbiguousNamePassesThroughUnrewritten(t *testing.T) {
 	rec := doGet(t, router, "/api/v1/workspaces/my-space/sessions")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
+
+// r2 pairing pin (verdict Missing #3): §4.3's indistinguishability
+// asserted WITHIN one test — the SAME phrase queried twice, first as
+// a miss, then resolving to a REAL but FOREIGN workspace. The two
+// bodies must be JSONEq to each other; until r2 the equality rested
+// on reading two code paths that happen to build the same string.
+func TestWorkspaceRef_UnknownVsForeignPhrase_ResponsesAreIdentical(t *testing.T) {
+	router, ws, db := newRouterFixtureWithDB(t)
+	dropCheckOwnership(ws)
+
+	// First call: the phrase is unknown (""). Second call: the same
+	// phrase resolves to a foreign workspace whose ownership denial
+	// must mask as the identical 404.
+	db.On("FindWorkspaceIDByPhrase", mock.Anything, "amber-river-7").Return("", nil).Once()
+	db.On("FindWorkspaceIDByPhrase", mock.Anything, "amber-river-7").
+		Return("99999999-9999-9999-9999-999999999999", nil).Once()
+	ws.On("CheckOwnership", mock.Anything, mock.Anything, mock.Anything).
+		Return(apierrors.NewForbiddenError("workspace access denied", errors.New("foreign"))).Once()
+
+	unknown := doGet(t, router, "/api/v1/workspaces/amber-river-7/sessions")
+	foreign := doGet(t, router, "/api/v1/workspaces/amber-river-7/sessions")
+	require.Equal(t, http.StatusNotFound, unknown.Code, unknown.Body.String())
+	require.Equal(t, http.StatusNotFound, foreign.Code, foreign.Body.String())
+	assert.JSONEq(t, unknown.Body.String(), foreign.Body.String(),
+		"§4.3: for the SAME ref, the miss and the masked denial must be indistinguishable")
+}

@@ -25,20 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #1756-mirroring deprecation window (owner-scoped, ambiguity never
   resolves, Deprecation/Sunset headers on the rewritten response).
   Routine triggers' `targetWorkspaceId` accepts the phrase (resolved
-  FIRST; the #1729 gate and the stored key both use the UUID).
-  `phraseId` surfaces on workspace metadata AND the GET response.
+  FIRST; the #1729 gate and the stored key both use the UUID — user
+  AND org trigger routes).
+  `phraseId` surfaces on workspace metadata, the GET response, AND
+  the list API (`WorkspaceListItem` + every SDK model: Go, Python,
+  TypeScript, Java, openapi.yaml — the Python dataclass previously
+  hard-rejected the GET field, caught by the live canaries).
   §4.3 anti-enumeration masking: unknown and foreign phrases answer
-  byte-identical 404s on both the route and trigger surfaces.
+  byte-identical 404s on both the route and trigger surfaces (pinned
+  as ONE JSONEq pairing on the same ref).
   Legacy rows converge on the first AUTHORIZED read (the user-scoped
-  read, post-verifyOwner — the DB read is pure; no sweep job).
-- **Deferred (r1, explicit):** frontend display surfaces (dashboard,
-  pickers, board refs — zero frontend changes in this PR) and the
-  admin `:workspaceId` route groups ride their own follow-up; the
-  {workspace-phrase, session-phrase} cross-workspace SSE/SDK pair
-  composes on these primitives and rides the #1756 §5 SDK-major
-  follow-up. A workspace legitimately NAMED `word-word-digit` is
-  addressed by the PHRASE interpretation (shape precedence — pinned
-  in router_workspace_ref_test.go).
+  read, post-verifyOwner — the DB read is pure; no sweep job; the
+  registration UPDATE never touches soft-deleted rows).
+- **Deferred (explicit; completion tracked in #1792):** frontend
+  display surfaces (dashboard, pickers, board refs — zero frontend
+  changes in this PR; the list API now feeds them) and the admin
+  `:workspaceId` route groups; the {workspace-phrase,
+  session-phrase} cross-workspace SSE/SDK pair composes on these
+  primitives and rides the #1756 §5 SDK-major follow-up. A workspace
+  legitimately NAMED `word-word-digit` is addressed by the PHRASE
+  interpretation (shape precedence — pinned in
+  router_workspace_ref_test.go).
 
 ### Added — word-phrase session IDs; short-only emission; full-id input deprecation (#1756, supersedes #1745's format)
 

@@ -248,13 +248,18 @@ const workspacePhraseRetries = 5
 // EnsureWorkspacePhraseRegistered mints and persists a workspace's
 // phrase id (idempotent — re-registering returns the surviving
 // phrase). The global partial unique index (phrase_id WHERE NOT NULL
-// AND deleted_at IS NULL) arbitrates races across replicas.
+// AND deleted_at IS NULL) arbitrates races across replicas. Soft-
+// deleted rows are never written (their phrases are unresolvable by
+// the live-only lookup — a mint onto a dead row would be a pointless
+// write); the seam answers ("", nil) when there is nothing live to
+// converge onto.
 func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
 	for attempt := 0; attempt < workspacePhraseRetries; attempt++ {
 		minted := shortid.MintWorkspacePhrase()
 		tag, err := s.DB.ExecContext(ctx,
 			`UPDATE workspaces SET phrase_id = $2, updated_at = NOW()
-			 WHERE id = $1 AND (phrase_id IS NULL OR phrase_id = '')`,
+			 WHERE id = $1 AND (phrase_id IS NULL OR phrase_id = '')
+			 AND deleted_at IS NULL`,
 			workspaceID, minted)
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -275,6 +280,9 @@ func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspace
 		if n == 1 || phrase != "" {
 			return phrase, nil
 		}
+		// n == 0 with an empty read-back: the row is soft-deleted (or
+		// vanished) — nothing live to converge onto, not a retry case.
+		return "", nil
 	}
 	return "", fmt.Errorf("workspace phrase registration did not converge (%s) after %d attempts", workspaceID, workspacePhraseRetries)
 }
