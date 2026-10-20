@@ -10,15 +10,30 @@ import (
 	mathRand "math/rand"
 	"regexp"
 	"strings"
+	"sync"
 )
 
-// mintRand selects words uniformly. The phrase space is not a secret
-// (#1756: enumeration is ruled a non-issue — ids are references under
-// authz, never capabilities); crypto/rand seeds the process PRNG once
-// so the hot registration path pays no crypto overhead per mint.
+// mintRand selects words uniformly, guarded by mintMu: a *rand.Rand
+// is NOT goroutine-safe, and the registration seam races legitimately
+// (two replicas registering concurrently — CI's -race integration
+// tier caught the unguarded version). The phrase space is not a
+// secret (#1756: enumeration is ruled a non-issue — ids are
+// references under authz, never capabilities); crypto/rand seeds the
+// process PRNG once so the hot registration path pays no crypto
+// overhead per mint.
 //
 //nolint:gosec // G404: the phrase space is not a secret (#1756: enumeration ruled a non-issue; ids are references under authz); crypto/rand seeds once so the hot path pays no crypto cost.
-var mintRand = mathRand.New(mathRand.NewSource(cryptoSeed()))
+var (
+	mintMu   sync.Mutex
+	mintRand = mathRand.New(mathRand.NewSource(cryptoSeed()))
+)
+
+// pickFrom selects one word from a frozen slice under the mint lock.
+func pickFrom(words []string) string {
+	mintMu.Lock()
+	defer mintMu.Unlock()
+	return words[mintRand.Intn(len(words))]
+}
 
 func cryptoSeed() int64 {
 	var b [8]byte
@@ -44,9 +59,9 @@ var (
 // are NOT retried here; the registration seam's check-and-retry loop
 // applies WithCounterSuffix deterministically.
 func MintPhrase() (string, error) {
-	return adjectiveWords[mintRand.Intn(len(adjectiveWords))] + "-" +
-		nounWords[mintRand.Intn(len(nounWords))] + "-" +
-		verbWords[mintRand.Intn(len(verbWords))], nil
+	return pickFrom(adjectiveWords) + "-" +
+		pickFrom(nounWords) + "-" +
+		pickFrom(verbWords), nil
 }
 
 // WithCounterSuffix renders a collision's deterministic
