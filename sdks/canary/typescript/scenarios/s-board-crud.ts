@@ -133,6 +133,52 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P12: cross-tenant read perimeter — a near-miss id is a plain 404
     await r.assertError(() => c.board.getProject('prj-zzzzzzzz'), 'get-project-nearmiss: 404');
+
+    // P12b (#1699 seams): epic listing carries derived progress
+    const [eOk, epics] = await r.assertNoError(
+      () => c.board.listBoardEpics(projectSid),
+      'list-epics: no error',
+    );
+    if (eOk && epics) r.assert(epics.epics.length === 1 && epics.epics[0].progress_derived === true, 'list-epics: derived', '');
+
+    // P12c (#1699 seams): board search — hit + near-miss suggestion
+    const [hOk, hits] = await r.assertNoError(
+      () => c.board.searchBoard('Task A'),
+      'search-hit: no error',
+    );
+    if (hOk && hits) r.assert(hits.results.length === 1, 'search-hit: one result', `${hits.results.length}`);
+    const [nOk, near] = await r.assertNoError(
+      () => c.board.searchBoard(mutateShortID(taskASid)),
+      'search-nearmiss: no error',
+    );
+    if (nOk && near) {
+      r.assert(near.results.length === 0, 'search-nearmiss: zero results', '');
+      r.assert(near.suggestions.includes(taskASid), 'search-nearmiss: suggested', '');
+    }
+
+    // P12d (#1699 seams): the health snapshot renders
+    const [hhOk, health] = await r.assertNoError(
+      () => c.board.getBoardHealth(),
+      'board-health: no error',
+    );
+    if (hhOk && health) {
+      r.assert(Array.isArray(health.active_leases), 'board-health: leases key', '');
+      r.assert(health.pending_input_by_origin != null, 'board-health: origins key', '');
+    }
+
+    // P13 (#1699 replay keys): post-cancel activate from paused; the
+    // SAME requestId twice renders 200-with-original on the replay
+    const replayKey = '10f1c0de-c0de-4000-8000-canary00001';
+    const [a1Ok, act1] = await r.assertNoError(
+      () => c.board.activateEpic(epicSid, { requestId: replayKey }),
+      'lifecycle-replay-1: no error',
+    );
+    if (a1Ok && act1) r.assert(act1.status === 'active', 'lifecycle-replay-1: active', String(act1.status));
+    const [a2Ok, act2] = await r.assertNoError(
+      () => c.board.activateEpic(epicSid, { requestId: replayKey }),
+      'lifecycle-replay-2: 200-with-original',
+    );
+    if (a2Ok && act2) r.assert(act2.status === 'active', 'lifecycle-replay-2: original status', String(act2.status));
   } finally {
     try {
       await c.workspaces.delete(wsID);
@@ -140,6 +186,11 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       // fixture cleanup is best-effort
     }
   }
+}
+
+function mutateShortID(sid: string): string {
+  const tail = sid.endsWith('0') ? '1' : '0';
+  return sid.slice(0, -1) + tail;
 }
 
 async function main() {

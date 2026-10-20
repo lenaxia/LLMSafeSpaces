@@ -269,6 +269,11 @@ func strArg(args map[string]any, key string) string {
 	return v
 }
 
+func boolArg(args map[string]any, key string) (bool, bool) {
+	v, ok := args[key].(bool)
+	return v, ok
+}
+
 func stringSliceArg(args map[string]any, key string) []string {
 	raw, _ := args[key].([]any)
 	if len(raw) == 0 {

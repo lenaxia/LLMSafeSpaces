@@ -45,7 +45,7 @@ func TestBoardTools_BoardReadSearch(t *testing.T) {
 	h := &handlers{client: m, timeout: 30 * time.Second}
 	res, err := callBoardTool(t, h, "board_read", map[string]any{
 		"q": "login", "project_id": "prj-aaaa1111", "epic_id": "epc-bbbb2222",
-		"stage": "backlog", "tags": []string{"auth"},
+		"stage": "backlog", "tags": []any{"auth"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res)

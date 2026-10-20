@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -198,4 +199,44 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	} else {
 		run.OK("get-project-nearmiss: 404")
 	}
+
+	// P12b (#1699 seams): epic listing carries derived progress
+	if epics, err := c.Board.ListBoardEpics(ctx, projectSid); run.AssertNoError(err, "list-epics: no error") {
+		run.Assert(len(epics) == 1, "list-epics: one epic", "")
+		run.Assert(epics[0].ProgressDerived, "list-epics: progress derived", "")
+	}
+
+	// P12c (#1699 seams): board search — hit + near-miss suggestion
+	if hits, err := c.Board.SearchBoard(ctx, "Task A", ll.BoardSearchFilters{}); run.AssertNoError(err, "search-hit: no error") {
+		run.Assert(len(hits.Results) == 1, "search-hit: one result", "")
+	}
+	if near, err := c.Board.SearchBoard(ctx, mutateShortID(taskASid), ll.BoardSearchFilters{}); run.AssertNoError(err, "search-nearmiss: no error") {
+		run.Assert(len(near.Results) == 0, "search-nearmiss: zero results", "")
+		run.Assert(slices.Contains(near.Suggestions, taskASid), "search-nearmiss: suggested", "")
+	}
+
+	// P12d (#1699 seams): the health snapshot renders
+	if health, err := c.Board.GetBoardHealth(ctx); run.AssertNoError(err, "board-health: no error") {
+		run.Assert(health.ActiveLeases != nil && health.PendingInputByOrigin != nil, "board-health: keys present", "")
+	}
+
+	// P13 (#1699 replay keys): post-cancel activate from paused (no
+	// claimable work — no spawns); the SAME requestId twice renders
+	// 200-with-original on the replay
+	const replayKey = "10f1c0de-c0de-4000-8000-canary00001"
+	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
+		run.Assert(act.Status == ll.BoardEpicActive, "lifecycle-replay-1: active", act.Status)
+	}
+	if act2, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-2: 200-with-original") {
+		run.Assert(act2.Status == ll.BoardEpicActive, "lifecycle-replay-2: original status", act2.Status)
+	}
+}
+
+// mutateShortID builds an edit-distance-1 near-miss (suggestion bound).
+func mutateShortID(sid string) string {
+	tail := byte('0')
+	if sid[len(sid)-1] == '0' {
+		tail = '1'
+	}
+	return sid[:len(sid)-1] + string(tail)
 }

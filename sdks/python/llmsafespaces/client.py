@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from .errors import (
     AuthError,
@@ -114,11 +114,13 @@ class _BoardAPI:
     def update_project(self, project_id: str, **kwargs: Any) -> dict[str, Any]:
         return self._c._request("PATCH", f"/me/projects/{project_id}", json=kwargs)
 
-    def archive_project(self, project_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/projects/{project_id}/archive", json={})
+    def archive_project(self, project_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/projects/{project_id}/archive", json=body)
 
-    def unarchive_project(self, project_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/projects/{project_id}/unarchive", json={})
+    def unarchive_project(self, project_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/projects/{project_id}/unarchive", json=body)
 
     def list_project_tasks(self, project_id: str, stage: str = "") -> list[dict[str, Any]]:
         path = f"/me/projects/{project_id}/tasks"
@@ -153,17 +155,21 @@ class _BoardAPI:
     def update_epic(self, epic_id: str, **kwargs: Any) -> dict[str, Any]:
         return self._c._request("PATCH", f"/me/epics/{epic_id}", json=kwargs)
 
-    def epic_activate(self, epic_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json={})
+    def epic_activate(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json=body)
 
-    def epic_pause(self, epic_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/epics/{epic_id}/pause", json={})
+    def epic_pause(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/epics/{epic_id}/pause", json=body)
 
-    def epic_archive(self, epic_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/epics/{epic_id}/archive", json={})
+    def epic_archive(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/epics/{epic_id}/archive", json=body)
 
-    def epic_unarchive(self, epic_id: str) -> dict[str, Any]:
-        return self._c._request("POST", f"/me/epics/{epic_id}/unarchive", json={})
+    def epic_unarchive(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/epics/{epic_id}/unarchive", json=body)
 
     def cancel_epic(self, epic_id: str, *, reason: str = "", request_id: str = "") -> dict[str, Any]:
         body: dict[str, Any] = {"reason": reason} if reason else {}
@@ -225,8 +231,38 @@ class _BoardAPI:
             body["requestId"] = request_id
         return self._c._request("POST", f"/me/tasks/{task_id}/dependencies", json=body)
 
-    def remove_dependency(self, task_id: str, depends_on: str) -> dict[str, Any]:
-        return self._c._request("DELETE", f"/me/tasks/{task_id}/dependencies/{depends_on}")
+    def remove_dependency(self, task_id: str, depends_on: str, *, request_id: str = "") -> dict[str, Any]:
+        path = f"/me/tasks/{task_id}/dependencies/{depends_on}"
+        if request_id:
+            path += f"?requestId={request_id}"
+        return self._c._request("DELETE", path)
+
+    def list_board_epics(self, project_id: str) -> list[dict[str, Any]]:
+        return self._c._request("GET", f"/me/projects/{project_id}/epics").get("epics", [])
+
+    def search_board(
+        self,
+        q: str,
+        *,
+        project: str = "",
+        epic: str = "",
+        stage: str = "",
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        params: list[tuple[str, str]] = [("q", q)]
+        if project:
+            params.append(("project", project))
+        if epic:
+            params.append(("epic", epic))
+        if stage:
+            params.append(("stage", stage))
+        for tag in tags or []:
+            params.append(("tag", tag))
+        query = "&".join(f"{k}={quote(v, safe='')}" for k, v in params)
+        return self._c._request("GET", f"/me/board/search?{query}")
+
+    def get_board_health(self) -> dict[str, Any]:
+        return self._c._request("GET", "/me/board/health")
 
 
 class _TriggersAPI:

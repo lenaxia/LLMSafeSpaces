@@ -177,6 +177,13 @@ func bindBoardBody(c *gin.Context, raw []byte, req any) bool {
 // parity matrix pins the same classes per surface).
 func renderBoardError(c *gin.Context, err error) {
 	switch e := err.(type) {
+	case *board.DuplicateError:
+		// 200-with-original, never an error (the outbox Duplicate{AcceptedID}
+		// contract — a replayed requestId renders the original outcome).
+		if e.Result == nil {
+			e.Result = map[string]any{"duplicate": true, "event_id": e.EventID, "action": e.Action}
+		}
+		c.JSON(http.StatusOK, e.Result)
 	case *board.NotFoundError:
 		c.JSON(http.StatusNotFound, gin.H{"error": e.Error(), "suggestions": e.Suggestions})
 	case *board.GuardError:

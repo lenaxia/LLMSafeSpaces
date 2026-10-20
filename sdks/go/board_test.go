@@ -217,3 +217,67 @@ func TestBoard_StageFilterOnList(t *testing.T) {
 		t.Fatalf("list tasks: %v %+v", err, tasks)
 	}
 }
+
+func TestBoard_SeamsReadsAndReplayKeys(t *testing.T) {
+	c, calls := boardTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me/projects/prj-aaaa1111/epics":
+			_, _ = w.Write([]byte(`{"epics":[{"id":"e1","short_id":"epc-bbbb2222","status":"active","progress_derived":true,"progress_done":1,"progress_total":2}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me/board/search":
+			if r.URL.Query().Get("q") != "login" || r.URL.Query().Get("project") != "prj-aaaa1111" || r.URL.Query()["tag"][0] != "auth" {
+				t.Errorf("search query: %v", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[{"id":"t1","short_id":"tsk-cccc3333","title":"Fix login bug","stage":"backlog"}],"suggestions":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me/board/health":
+			_, _ = w.Write([]byte(`{"active_leases":[{"task_id":"t1","short_id":"tsk-cccc3333","title":"x","project_id":"p1","lease_expires_at":"2026-10-19T12:00:00Z"}],"task_cooldowns":[],"project_cooldowns":[],"pending_input_by_origin":{"escalated":1},"recent_reclaims":[{"task_id":"t2","at":"2026-10-19T11:00:00Z"}],"project_slots":[{"project_id":"p1","short_id":"prj-aaaa1111","worker_slots":2,"in_use":1}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/me/epics/epc-bbbb2222/activate":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["requestId"] != "key-1" {
+				t.Errorf("lifecycle body: %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":"e1","short_id":"epc-bbbb2222","status":"active"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000":
+			if r.URL.Query().Get("requestId") != "key-3" {
+				t.Errorf("delete query: %v", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"task":{"id":"t1","short_id":"tsk-cccc3333","is_blocked":false}}`))
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	ctx := context.Background()
+
+	epics, err := c.Board.ListBoardEpics(ctx, "prj-aaaa1111")
+	if err != nil || len(epics) != 1 || epics[0].ProgressTotal != 2 || !epics[0].ProgressDerived {
+		t.Fatalf("list epics: %v %+v", err, epics)
+	}
+
+	res, err := c.Board.SearchBoard(ctx, "login", BoardSearchFilters{Project: "prj-aaaa1111", Tags: []string{"auth"}})
+	if err != nil || len(res.Results) != 1 || res.Results[0].ShortID != "tsk-cccc3333" {
+		t.Fatalf("search: %v %+v", err, res)
+	}
+
+	h, err := c.Board.GetBoardHealth(ctx)
+	if err != nil || len(h.ActiveLeases) != 1 || h.PendingInputByOrigin["escalated"] != 1 || h.ProjectSlots[0].InUse != 1 {
+		t.Fatalf("health: %v %+v", err, h)
+	}
+
+	if _, err := c.Board.EpicActivate(ctx, "epc-bbbb2222", BoardLifecycleOptions{RequestID: "key-1"}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if _, err := c.Board.RemoveDependency(ctx, "tsk-cccc3333", "tsk-aaaa0000", BoardLifecycleOptions{RequestID: "key-3"}); err != nil {
+		t.Fatalf("remove dependency: %v", err)
+	}
+	want := []string{
+		"GET /api/v1/me/projects/prj-aaaa1111/epics",
+		"GET /api/v1/me/board/search",
+		"GET /api/v1/me/board/health",
+		"POST /api/v1/me/epics/epc-bbbb2222/activate",
+		"DELETE /api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000",
+	}
+	if fmt.Sprint(*calls) != fmt.Sprint(want) {
+		t.Fatalf("calls: %v", *calls)
+	}
+}

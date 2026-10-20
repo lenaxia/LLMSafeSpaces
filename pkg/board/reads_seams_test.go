@@ -33,7 +33,9 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	t1 := s.seedTask(e1, "do the thing", nil, false)
 	t2 := s.seedTask(e1, "never mind", nil, false)
 	s.seedTask(e1, "still queued", nil, false)
-	// 1 done, 1 canceled, 1 backlog → derived 1/2.
+	// 1 done, 1 canceled, 1 backlog → derived 1/3 (the #1747 owner
+	// ruling: Done over ALL tasks — the canceled exclusion design
+	// 0067 R2 carried is superseded by PR #1763's semantics).
 	if _, err := s.svc.MoveStage(ctx, s.owner(), t1.ID, "", board.StageDone, "https://example.com/proof", ""); err != nil {
 		s.T().Fatalf("move to done: %v", err)
 	}
@@ -59,7 +61,7 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	assert.Equal(s.T(), board.EpicActive, got1.Status)
 	assert.True(s.T(), got1.ProgressDerived, "progress is derived, never stored")
 	assert.Equal(s.T(), 1, got1.ProgressDone)
-	assert.Equal(s.T(), 2, got1.ProgressTotal, "denominator excludes canceled")
+	assert.Equal(s.T(), 3, got1.ProgressTotal, "denominator counts ALL tasks (#1747 ruling — PR #1763 semantics)")
 	assert.False(s.T(), got2.ProgressDerived, "task-less epic renders no-progress, never 0/0")
 	assert.Equal(s.T(), 0, got2.ProgressDone)
 	assert.Equal(s.T(), 0, got2.ProgressTotal)

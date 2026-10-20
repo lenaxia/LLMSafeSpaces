@@ -608,3 +608,58 @@ export interface BoardDependencyRequest {
 export interface BoardRequestIdOnly {
   requestId?: string;
 }
+
+export interface BoardSearchFilters {
+  project?: string;
+  epic?: string;
+  stage?: string;
+  tags?: string[];
+}
+
+export interface BoardSearchResult {
+  results: BoardTask[];
+  suggestions: string[];
+}
+
+export interface BoardHealthLease {
+  task_id: string;
+  short_id: string;
+  title: string;
+  project_id: string;
+  assignee_session?: string;
+  lease_expires_at: string;
+}
+
+export interface BoardHealthTaskCooldown {
+  task_id: string;
+  short_id: string;
+  project_id: string;
+  cooldown_until: string;
+}
+
+export interface BoardHealthProjectCooldown {
+  project_id: string;
+  short_id: string;
+  cooldown_until: string;
+}
+
+export interface BoardHealthReclaim {
+  task_id: string;
+  at: string;
+}
+
+export interface BoardHealthProjectSlots {
+  project_id: string;
+  short_id: string;
+  worker_slots: number;
+  in_use: number;
+}
+
+export interface BoardHealth {
+  active_leases: BoardHealthLease[];
+  task_cooldowns: BoardHealthTaskCooldown[];
+  project_cooldowns: BoardHealthProjectCooldown[];
+  pending_input_by_origin: Record<string, number>;
+  recent_reclaims: BoardHealthReclaim[];
+  project_slots: BoardHealthProjectSlots[];
+}

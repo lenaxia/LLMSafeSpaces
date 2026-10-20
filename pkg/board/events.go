@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -80,10 +81,13 @@ func (w *eventWriter) run(ctx context.Context, fn func(tx pgx.Tx) (map[string]an
 	if err != nil {
 		return nil, nil, fmt.Errorf("board: event payload marshal: %w", err)
 	}
-	_, err = tx.Exec(ctx, `
+	actorJSON := actorViewOf(w.actor)
+	var createdAt time.Time
+	err = tx.QueryRow(ctx, `
 		INSERT INTO board_events (id, project_id, item_kind, item_id, action, actor, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		w.requestID, w.projectID, w.itemKind, w.itemID, w.action, actorViewOf(w.actor), payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING created_at`,
+		w.requestID, w.projectID, w.itemKind, w.itemID, w.action, actorJSON, payload).Scan(&createdAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -103,6 +107,13 @@ func (w *eventWriter) run(ctx context.Context, fn func(tx pgx.Tx) (map[string]an
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, err
 	}
+	// §4.6: SSE is a projection — persist first, publish only after the
+	// commit. A replayed requestId never reaches this line (the
+	// fast-path/race branches return above without publishing).
+	w.svc.publishCommitted(Event{
+		ID: w.requestID, ProjectID: w.projectID, ItemKind: w.itemKind, ItemID: w.itemID,
+		Action: w.action, Actor: actorJSON, Payload: payload, CreatedAt: createdAt,
+	})
 	return outcome, nil, nil
 }
 
@@ -125,18 +136,45 @@ func decodeEventPayload(b []byte) map[string]any {
 // #1687) is the consumer's safety net, not publisher retry logic.
 type EventPublisher func(Event)
 
-// insertEventTx writes an event row inside an open transaction with a
-// caller-chosen deterministic id (engine/reconciler writes). ON CONFLICT
-// DO NOTHING: a replayed deterministic id is inert convergence.
-func insertEventTx(ctx context.Context, tx pgx.Tx, projectID, id, action, itemKind, itemID string, actor Actor, payload map[string]any) error {
+// recordEventTx writes an event row inside an open transaction with a
+// caller-chosen deterministic id (engine/reconciler writes) and returns
+// the committed-view Event for post-commit publishing. ON CONFLICT DO
+// NOTHING: a replayed deterministic id is inert convergence — no row,
+// no view, nothing to publish.
+func recordEventTx(ctx context.Context, tx pgx.Tx, projectID, id, action, itemKind, itemID string, actor Actor, payload map[string]any) (Event, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return Event{}, err
 	}
-	_, err = tx.Exec(ctx, `
+	actorJSON := actorViewOf(actor)
+	var createdAt time.Time
+	err = tx.QueryRow(ctx, `
 		INSERT INTO board_events (id, project_id, item_kind, item_id, action, actor, payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project_id, id) DO NOTHING`,
-		id, projectID, itemKind, itemID, action, actorViewOf(actor), b)
-	return err
+		ON CONFLICT (project_id, id) DO NOTHING
+		RETURNING created_at`,
+		id, projectID, itemKind, itemID, action, actorJSON, b).Scan(&createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Event{}, nil
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{
+		ID: id, ProjectID: projectID, ItemKind: itemKind, ItemID: itemID,
+		Action: action, Actor: actorJSON, Payload: b, CreatedAt: createdAt,
+	}, nil
+}
+
+// commitPublishing commits the caller's transaction and fans the
+// collected events out post-commit (§4.6 persist-then-publish). A commit
+// failure publishes nothing.
+func (s *Service) commitPublishing(ctx context.Context, tx pgx.Tx, pending ...Event) error {
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	for _, evt := range pending {
+		s.publishCommitted(evt)
+	}
+	return nil
 }

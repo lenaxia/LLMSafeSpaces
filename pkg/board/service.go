@@ -305,15 +305,15 @@ func projectStatusTx(ctx context.Context, tx pgx.Tx, actor Actor, p *Project, to
 // ArchiveProject is reversible storage; it stops all claims into the
 // project (the p CTE's status predicate).
 func (s *Service) ArchiveProject(ctx context.Context, actor Actor, projectID, requestID string) (*Project, error) {
-	return s.projectLifecycle(ctx, actor, projectID, "", ProjectArchived, "archive_project")
+	return s.projectLifecycle(ctx, actor, projectID, "", ProjectArchived, "archive_project", requestID)
 }
 
 // UnarchiveProject restores active.
 func (s *Service) UnarchiveProject(ctx context.Context, actor Actor, projectID, requestID string) (*Project, error) {
-	return s.projectLifecycle(ctx, actor, projectID, "", ProjectActive, "unarchive_project")
+	return s.projectLifecycle(ctx, actor, projectID, "", ProjectActive, "unarchive_project", requestID)
 }
 
-func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, shortIDOrID, to, action string) (*Project, error) {
+func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, shortIDOrID, to, action, requestID string) (*Project, error) {
 	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -327,7 +327,7 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	if p.Status == to {
 		return p, nil
 	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: "", action: action, itemKind: "project", itemID: p.ID, actor: actor}
+	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "project", itemID: p.ID, actor: actor}
 	_, _, err = ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if err := projectStatusTx(ctx, tx, actor, p, to, action); err != nil {
 			return nil, err
@@ -432,26 +432,26 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 // draft/paused/archived-origin activations (a finished epic completes at
 // activation); the completed→active re-open is exempt (r13 pin).
 func (s *Service) EpicActivate(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true, requestID)
 }
 
 // EpicPause stops new claims, never interrupts in-flight leases.
 func (s *Service) EpicPause(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false, requestID)
 }
 
 // EpicArchive is reversible storage.
 func (s *Service) EpicArchive(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicArchived, "epic_archive", false)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicArchived, "epic_archive", false, requestID)
 }
 
 // EpicUnarchive always restores active (the resumable default) — and, as
 // an archived-origin activation, runs the immediate re-check (r13 pin).
 func (s *Service) EpicUnarchive(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_unarchive", true)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_unarchive", true, requestID)
 }
 
-func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortIDOrID, to, action string, recheck bool) (*Epic, error) {
+func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortIDOrID, to, action string, recheck bool, requestID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -480,7 +480,7 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	if !ok {
 		return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("epic %s→%s is not a lifecycle transition (from %s)", e.Status, to, e.Status)}
 	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: "", action: action, itemKind: "epic", itemID: e.ID, actor: actor}
+	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "epic", itemID: e.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `UPDATE epics SET status=$2 WHERE id=$1`, e.ID, to); err != nil {
 			return nil, err

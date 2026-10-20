@@ -24,6 +24,9 @@ import type {
   BoardCancelRequest,
   BoardMoveStageRequest,
   BoardRequestIdOnly,
+  BoardSearchFilters,
+  BoardSearchResult,
+  BoardHealth,
   ActiveSessionsResponse,
   APIKey,
   AuthResponse,
@@ -891,12 +894,12 @@ class BoardAPI {
     return this.client.request<BoardProject>("PATCH", `/me/projects/${id}`, req);
   }
 
-  archiveProject(id: string) {
-    return this.client.request<BoardProject>("POST", `/me/projects/${id}/archive`, {});
+  archiveProject(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardProject>("POST", `/me/projects/${id}/archive`, req);
   }
 
-  unarchiveProject(id: string) {
-    return this.client.request<BoardProject>("POST", `/me/projects/${id}/unarchive`, {});
+  unarchiveProject(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardProject>("POST", `/me/projects/${id}/unarchive`, req);
   }
 
   listProjectTasks(projectId: string, stage?: string) {
@@ -916,20 +919,20 @@ class BoardAPI {
     return this.client.request<BoardEpic>("PATCH", `/me/epics/${id}`, req);
   }
 
-  activateEpic(id: string) {
-    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, {});
+  activateEpic(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, req);
   }
 
-  pauseEpic(id: string) {
-    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/pause`, {});
+  pauseEpic(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/pause`, req);
   }
 
-  archiveEpic(id: string) {
-    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/archive`, {});
+  archiveEpic(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/archive`, req);
   }
 
-  unarchiveEpic(id: string) {
-    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/unarchive`, {});
+  unarchiveEpic(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/unarchive`, req);
   }
 
   cancelEpic(id: string, req: BoardCancelRequest) {
@@ -964,8 +967,26 @@ class BoardAPI {
     return this.client.request<BoardDependencyMutation>("POST", `/me/tasks/${id}/dependencies`, req);
   }
 
-  removeDependency(id: string, dependsOn: string) {
-    return this.client.request<BoardDependencyMutation>("DELETE", `/me/tasks/${id}/dependencies/${dependsOn}`);
+  removeDependency(id: string, dependsOn: string, requestId?: string) {
+    const q = requestId ? `?requestId=${encodeURIComponent(requestId)}` : "";
+    return this.client.request<BoardDependencyMutation>("DELETE", `/me/tasks/${id}/dependencies/${dependsOn}${q}`);
+  }
+
+  listBoardEpics(projectId: string) {
+    return this.client.request<{ epics: BoardEpic[] }>("GET", `/me/projects/${projectId}/epics`);
+  }
+
+  searchBoard(q: string, filters: BoardSearchFilters = {}) {
+    const params = new URLSearchParams({ q });
+    if (filters.project) params.set("project", filters.project);
+    if (filters.epic) params.set("epic", filters.epic);
+    if (filters.stage) params.set("stage", filters.stage);
+    for (const tag of filters.tags ?? []) params.append("tag", tag);
+    return this.client.request<BoardSearchResult>("GET", `/me/board/search?${params.toString()}`);
+  }
+
+  getBoardHealth() {
+    return this.client.request<BoardHealth>("GET", "/me/board/health");
   }
 }
 
