@@ -134,7 +134,9 @@ func callerPin(t *testing.T, caller string) (ref, version string) {
 		t.Fatalf("%s does not delegate to lenaxia/ai-workflows", caller)
 	}
 	ref = m[1]
-	if ref != "v0.2.16" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(ref) {
+	// vX.Y.Z tag (the propagate sed bumps this literal on every sync — the
+	// regex, not a version equality, is the contract) or a 40-hex SHA pin.
+	if !regexp.MustCompile(`^v\d+\.\d+\.\d+$`).MatchString(ref) && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(ref) {
 		t.Errorf("%s reusable ref must be a vX.Y.Z tag or 40-hex SHA pin, got %q", caller, ref)
 	}
 	m = regexp.MustCompile(`version:\s*(\S+)`).FindStringSubmatch(body)
@@ -455,4 +457,51 @@ func TestNoBlanketAssociationNonePass(t *testing.T) {
 			t.Errorf("%s contains blanket gate %q — association NONE is shared by every app bot and outside contributor; admit bots via the exact-login allowlist only (#1710 ruling)", name, m)
 		}
 	}
+}
+
+// trustedAppBotsInputRe captures the raw JSON array literal of a
+// `trusted_app_bots:` with:-input line in a caller workflow, so copies can
+// be compared byte-for-byte against canonicalTrustedAppBots (ai-workflows
+// #51: the input routes listed bot actors past the opencode CLI's startup
+// collaborator assert — same per-exact-login trust discipline as the gate
+// arm, hence the same single-source ruling).
+var trustedAppBotsInputRe = regexp.MustCompile(
+	`trusted_app_bots:\s*'(\[[^\r\n]*?\])'\s*$`)
+
+// TestTrustedAppBotsInputMatchesCanonicalList extends the #1710
+// single-source ruling to the v0.2.17 trusted_app_bots input: both actor
+// callers (pr-review: bot PR authors; ai-comment: bot commenters) must
+// pass the canonical list, and no other JSON literal may appear. A drifted
+// or missing copy silently re-arms the CLI assert against our own worker
+// pods' PRs and /review triggers (the #1775 outage class).
+func TestTrustedAppBotsInputMatchesCanonicalList(t *testing.T) {
+	want := canonicalListJSON(t)
+	for _, caller := range []string{prReviewCaller, aiCommentCaller} {
+		body := readFile(t, filepath.Join(repoRoot(t), caller))
+		matches := trustedAppBotsInputRe.FindAllStringSubmatch(body, -1)
+		if len(matches) == 0 {
+			t.Errorf("%s does not pass trusted_app_bots — bot-authored PRs and bot /review comments die at the CLI assert (ai-workflows #51; #1775 outage class)", caller)
+			continue
+		}
+		if len(matches) > 1 {
+			t.Errorf("%s carries %d trusted_app_bots inputs — exactly one is the contract", caller, len(matches))
+		}
+		if got := matches[0][1]; got != want {
+			t.Errorf("%s trusted_app_bots drift: got %s, want %s (canonicalTrustedAppBots is the single source; edit the list AND every copy together)", caller, got, want)
+		}
+	}
+}
+
+// canonicalListJSON renders canonicalTrustedAppBots in the exact wire form
+// the callers use (compact JSON array of double-quoted logins).
+func canonicalListJSON(t *testing.T) string {
+	t.Helper()
+	parts := make([]string, len(canonicalTrustedAppBots))
+	for i, login := range canonicalTrustedAppBots {
+		if !exactBotLoginRe.MatchString(login) {
+			t.Fatalf("canonicalTrustedAppBots entry %q is not an exact app-bot login", login)
+		}
+		parts[i] = `"` + login + `"`
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }

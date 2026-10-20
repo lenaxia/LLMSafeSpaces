@@ -49,6 +49,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
+### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51 / v0.2.17)
+
+- **Both AI callers now pin `lenaxia/ai-workflows@v0.2.17` and pass
+  `trusted_app_bots: '["agentic-actor-coder[bot]"]'`.** App-bot accounts
+  can never be repository collaborators (the collaborators API
+  structurally returns `none` for them), so the opencode CLI's startup
+  `assertPermissions()` refused every PR our worker pods authored and
+  every `/review` they posted before any review pass — the #1775 outage
+  class (three dead synchronize runs + a dead `/review` fallback).
+  ai-workflows v0.2.17 adds the opt-in `trusted_app_bots` input: listed
+  actors run in TOKEN mode (assert bypassed for them ONLY; every human
+  and unlisted actor still passes the collaborator assert unchanged;
+  fail-closed on malformed input). The literal must match
+  `canonicalTrustedAppBots` in `tests/ghaworkflows/gha_callers_test.go`
+  (single-source ruling #1710, extended to the new input), and the
+  caller-pin test now accepts any `vX.Y.Z` tag instead of the hardcoded
+  v0.2.16 equality (the propagate sed bumps pins without touching tests
+  — the shape is the contract, not the literal).
 
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
