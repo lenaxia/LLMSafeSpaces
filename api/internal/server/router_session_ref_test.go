@@ -336,7 +336,7 @@ func TestArchivedRoute_AliasMissCarriesSuggestions(t *testing.T) {
 // pin (#1773): an id-form ref that passes through the middleware and
 // hits SetSessionArchived's update-only NotFound answers the
 // structured 404 WITH suggestions — never the bare respondWithError
-// body. A regression in this six-line branch (dropping the
+// body. A regression in this branch (dropping the
 // suggestions key, or passing the wrong workspace to SuggestionsFor)
 // previously passed the entire suite.
 func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
@@ -364,4 +364,5 @@ func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"suggestions"`, "the unindexed-session 404 must carry the did-you-mean payload")
 	assert.Contains(t, rec.Body.String(), "ses_gho00000000000000000B", "the one-edit neighbor must be offered")
+	ws.AssertExpectations(t)
 }
