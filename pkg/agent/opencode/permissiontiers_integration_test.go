@@ -132,6 +132,14 @@ func tierBoot(t *testing.T, prov *httptest.Server) *opencodeServer {
 	for k, v := range platformPermissionTiers {
 		extDir[k] = v
 	}
+	return tierBootExtDir(t, prov, extDir)
+}
+
+// tierBootExtDir is tierBoot with an explicit external_directory map —
+// for legs that probe the ENGINE's ordering semantics on a synthetic
+// rule set rather than the rendered floor.
+func tierBootExtDir(t *testing.T, prov *httptest.Server, extDir map[string]string) *opencodeServer {
+	t.Helper()
 	perms := map[string]any{"external_directory": extDir}
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
@@ -331,4 +339,182 @@ func mustListener(t *testing.T, port int) net.Listener {
 	}
 	t.Fatalf("no free port near %d", port)
 	return nil
+}
+
+// tierBashLeg boots the floor, runs ONE queued bash command, returns the
+// bash tool result — the shared shape of the #1759 deny-preservation legs.
+// The result is NEVER logged raw: these legs target credential-shaped
+// paths, and a regression that lets the command execute would otherwise
+// pour credential material into the test log (#1759 finding). Callers
+// log verdicts, not output.
+func tierBashLeg(t *testing.T, port int, command string) string {
+	t.Helper()
+	prov := tierProbeProvider{}
+	prov.calls = []string{`{"command":"` + command + `"}`}
+	provSrv := &httptest.Server{Listener: mustListener(t, port), Config: &http.Server{Handler: prov.handlerTool(t, "bash", "call_tier_1759")}}
+	provSrv.Start()
+	t.Cleanup(provSrv.Close)
+
+	srv := tierBoot(t, provSrv)
+	c := NewLoopbackClient(srv.baseURL, "test-password")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	id, err := c.SessionCreate(ctx, "tier-1759")
+	require.NoError(t, err)
+
+	_, err = c.SessionSend(ctx, id, "run the command", "", nil)
+	require.NoError(t, err)
+
+	return lastBashResult(t, c, id)
+}
+
+// TestPermissionTier_LiveDenySpecificBeatsAllowGlob — the #1759
+// precedence-ordering validation on the REAL engine. The issue's claim
+// ("deny-specific over allow-glob precedence is already the engine's
+// observed rule ordering") is load-bearing: the entire deny-preservation
+// story rests on the LAST matching rule winning in rendered-key order.
+// Boot with a broad allow sorted BEFORE a specific deny and prove the
+// deny fires; boot the allow alone as the control and prove it does not.
+func TestPermissionTier_LiveDenySpecificBeatsAllowGlob(t *testing.T) {
+	// Deny leg: "/*" (0x2A) sorts before "/etc/*" — under findLast the
+	// specific deny is the last match for /etc/passwd and must win.
+	res := func() string {
+		prov := tierProbeProvider{}
+		prov.calls = []string{`{"command":"cat /etc/passwd"}`}
+		provSrv := &httptest.Server{Listener: mustListener(t, 14520), Config: &http.Server{Handler: prov.handlerTool(t, "bash", "call_tier_ord")}}
+		provSrv.Start()
+		t.Cleanup(provSrv.Close)
+		srv := tierBootExtDir(t, provSrv, map[string]string{"/*": "allow", "/etc/*": "deny"})
+		c := NewLoopbackClient(srv.baseURL, "test-password")
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		id, err := c.SessionCreate(ctx, "tier-ord")
+		require.NoError(t, err)
+		_, err = c.SessionSend(ctx, id, "run the command", "", nil)
+		require.NoError(t, err)
+		out := lastBashResult(t, c, id)
+		t.Logf("ordering deny leg result: %s", out)
+		return out
+	}()
+	assert.Contains(t, res, "prevents you from using this specific tool call",
+		"a specific deny sorted after a broad allow must STILL deny — findLast observed on the live engine")
+	assert.Contains(t, res, `"/etc/*"`,
+		"the matcher's rule dump must quote the specific deny — OUR rule out-ranked the allow")
+
+	// Control leg: the allow alone — same boot, same command — permits.
+	prov := tierProbeProvider{}
+	prov.calls = []string{`{"command":"cat /etc/passwd"}`}
+	provSrv := &httptest.Server{Listener: mustListener(t, 14525), Config: &http.Server{Handler: prov.handlerTool(t, "bash", "call_tier_ctl")}}
+	provSrv.Start()
+	t.Cleanup(provSrv.Close)
+	srv := tierBootExtDir(t, provSrv, map[string]string{"/*": "allow"})
+	c := NewLoopbackClient(srv.baseURL, "test-password")
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	id, err := c.SessionCreate(ctx, "tier-ctl")
+	require.NoError(t, err)
+	_, err = c.SessionSend(ctx, id, "run the command", "", nil)
+	require.NoError(t, err)
+	out := lastBashResult(t, c, id)
+	t.Logf("ordering control leg result: %s", out)
+	assert.NotContains(t, out, "prevents you from using this specific tool call",
+		"the control: with the deny absent the broad allow permits the same command")
+	assert.Contains(t, out, "root:x:",
+		"the control leg's command output proves the read actually ran")
+}
+
+// TestPermissionTier_AllowPathPermitsRead_HomeSandbox — the #1759 red
+// leg for the home PVC root: the read of an allowed /home/sandbox path
+// must SUCCEED through the real binary (pre-fix, the root sits on ask
+// and this leg fails — the permission-wall the issue documents).
+func TestPermissionTier_AllowPathPermitsRead_HomeSandbox(t *testing.T) {
+	// Pod-qualified leg (the cgroup-pin precedent): /home/sandbox is a
+	// workspace-pod PVC mount — absent on CI runners.
+	if _, err := os.Stat("/sandbox-runtime"); err != nil {
+		t.Skip("not the LLMSafeSpaces sandbox (no /sandbox-runtime) — the home PVC root allow is only exercisable where /home/sandbox is the persistent mount")
+	}
+	probeFile := "/home/sandbox/tier-1759-allow-probe.txt"
+	require.NoError(t, os.WriteFile(probeFile, []byte("TIER-1759-HOME-ALLOW-PROBE\n"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(probeFile) })
+
+	prov := tierProbeProvider{}
+	prov.calls = []string{`{"filePath":"` + probeFile + `"}`}
+	provSrv := &httptest.Server{Listener: mustListener(t, 14505), Config: &http.Server{Handler: prov.handler(t)}}
+	provSrv.Start()
+	t.Cleanup(provSrv.Close)
+
+	srv := tierBoot(t, provSrv)
+	c := NewLoopbackClient(srv.baseURL, "test-password")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	id, err := c.SessionCreate(ctx, "tier-1759-home")
+	require.NoError(t, err)
+
+	_, err = c.SessionSend(ctx, id, "read the file", "", nil)
+	require.NoError(t, err, "the turn must complete")
+
+	res := lastToolResult(t, c, id)
+	t.Logf("read tool result: %s", res)
+	assert.NotContains(t, res, "prevents you from using this specific tool call",
+		"the home PVC root is ALLOWED (#1759) — an allow-tier failure here is the permission wall the issue filed")
+	assert.Contains(t, res, "TIER-1759-HOME-ALLOW-PROBE",
+		"the allowed home read must return the file's content through the real matcher")
+}
+
+// TestPermissionTier_AllowPathPermitsRead_Workspace — the #1759 leg for
+// the workspace PVC root. Pod-qualified (the cgroup-pin precedent):
+// /workspace is a workspace-pod PVC mount, absent on CI runners. The
+// harness boots opencode with its project root in a temp dir, so
+// /workspace is genuinely EXTERNAL here and the allow is exercised
+// live (in the real pod /workspace is the project root and the rule
+// is belt-and-braces — see permissiontiers.go).
+func TestPermissionTier_AllowPathPermitsRead_Workspace(t *testing.T) {
+	if _, err := os.Stat("/sandbox-runtime"); err != nil {
+		t.Skip("not the LLMSafeSpaces sandbox (no /sandbox-runtime) — the workspace PVC root allow is only exercisable where /workspace is the persistent mount")
+	}
+	probeFile := "/workspace/tier-1759-allow-probe.txt"
+	require.NoError(t, os.WriteFile(probeFile, []byte("TIER-1759-WORKSPACE-ALLOW-PROBE\n"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(probeFile) })
+
+	prov := tierProbeProvider{}
+	prov.calls = []string{`{"filePath":"` + probeFile + `"}`}
+	provSrv := &httptest.Server{Listener: mustListener(t, 14510), Config: &http.Server{Handler: prov.handler(t)}}
+	provSrv.Start()
+	t.Cleanup(provSrv.Close)
+
+	srv := tierBoot(t, provSrv)
+	c := NewLoopbackClient(srv.baseURL, "test-password")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	id, err := c.SessionCreate(ctx, "tier-1759-ws")
+	require.NoError(t, err)
+
+	_, err = c.SessionSend(ctx, id, "read the file", "", nil)
+	require.NoError(t, err, "the turn must complete")
+
+	res := lastToolResult(t, c, id)
+	t.Logf("read tool result: %s", res)
+	assert.NotContains(t, res, "prevents you from using this specific tool call",
+		"the workspace PVC root is ALLOWED (#1759)")
+	assert.Contains(t, res, "TIER-1759-WORKSPACE-ALLOW-PROBE",
+		"the allowed workspace read must return the file's content through the real matcher")
+}
+
+// TestPermissionTier_BashDeniesHomeCredentialWithRootAllow — the #1759
+// deny-preservation leg: WITH the broad /home/sandbox/* allow rendered,
+// a bash-typed credential path must STILL deny — deny-specific beats
+// allow-glob on the live engine, exactly as the issue asserts.
+// Verdicts only are logged; the probe path is credential-shaped.
+func TestPermissionTier_BashDeniesHomeCredentialWithRootAllow(t *testing.T) {
+	res := tierBashLeg(t, 14515, "cat /home/sandbox/.ssh/id_ed25519")
+	denied := strings.Contains(res, "prevents you from using this specific tool call")
+	quoted := strings.Contains(res, `"/home/sandbox/.ssh/*"`)
+	t.Logf("denied=%v ruleQuoted=%v", denied, quoted)
+	assert.True(t, denied,
+		"a typed credential path must stay denied WITH the #1759 root allow present")
+	assert.True(t, quoted,
+		"the matcher's rule dump must quote the .ssh deny — the specific deny out-ranked the root allow")
 }
