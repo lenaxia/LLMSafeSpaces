@@ -412,7 +412,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.status" isString
+jsonpath "$.epic.status" isString
 
 # The replay: SAME requestId — 200-with-original, never an error
 POST {{base_url}}/me/epics/{{epic_sid}}/activate
@@ -423,7 +423,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.status" isString
+jsonpath "$.epic.status" isString
 
 # DELETE replay key rides the query parameter
 DELETE {{base_url}}/me/tasks/{{task_b_sid}}/dependencies/{{task_a_sid}}?requestId=11111111-2222-3333-4444-555555555566
