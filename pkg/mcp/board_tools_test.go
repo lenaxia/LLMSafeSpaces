@@ -699,11 +699,11 @@ func TestBoardTools_TaskTagsClearWire(t *testing.T) {
 	assert.NotContains(t, string(b), `"tags"`)
 }
 
-// TestBoardTools_AdapterStageValidation (r2): the adapter-owned stage
-// branches — board_read's filter takes the six-stage vocabulary;
-// board_move_stage's target takes the LEGAL manager move-target set
-// (the terminal stage is board_cancel's, not a stage move — the r2
-// finding: the schema must not steer clients into doomed calls).
+// TestBoardTools_AdapterStageValidation (r2, r5): the adapter-owned
+// stage branches — board_read's filter takes the FIVE-stage vocabulary
+// ("cancelled" is not a stage: cancel is eliminated, delete replaces
+// it — the filter rejects it like any misspelling); board_move_stage's
+// target takes the LEGAL manager move-target set.
 func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	readOK := &MockAPIClient{}
 	readOK.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog").Return(`{"tasks":[]}`, nil).Once()
@@ -722,10 +722,18 @@ func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	assert.False(t, res3.IsError)
 	m2 := &MockAPIClient{}
 	h4 := &handlers{client: m2, timeout: 30 * time.Second}
-	for _, bad := range []string{boardStageCancelled, "not_a_stage"} {
+	for _, bad := range []string{"cancelled", "not_a_stage"} {
 		res4, _ := callBoardTool(t, h4, "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": bad})
-		assert.True(t, res4.IsError, "to_stage=%s must be rejected (the terminal stage is board_cancel's)", bad)
+		assert.True(t, res4.IsError, "to_stage=%s must be rejected (cancelled is not a stage — delete replaced cancel)", bad)
 	}
+	// The read tier collapses with it: stage=cancelled is an invalid
+	// FILTER too (the r5 concatenation-dodge fix — six became five).
+	m5 := &MockAPIClient{} // no expectations: validation must precede any call
+	h5 := &handlers{client: m5, timeout: 30 * time.Second}
+	res5, _ := callBoardTool(t, h5, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": "cancelled"})
+	assert.True(t, res5.IsError, "stage=cancelled must be rejected at the tool tier (five-stage vocabulary)")
+	assert.Contains(t, boardResultText(res5), "pending_input", "the error advertises the FIVE live stages")
+	assert.NotContains(t, boardResultText(res5), "cancelled", "the error must not advertise the eliminated stage")
 }
 
 // TestBoardTools_DeleteProjectRefused (r2): board_delete on a prj- id

@@ -785,10 +785,12 @@ describe("userPrompts", () => {
       expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/epics");
       expect(epic.status).toBe("draft");
 
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active", progress_derived: true, progress_done: 1, progress_total: 2 }));
-      const act = await client.board.activateEpic("epc-bbbb2222");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ epic: { id: "e1", status: "active", progress_derived: true, progress_done: 1, progress_total: 2 }, initial_ready_set: ["tsk-cccc3333"] }));
+      const act = await client.board.activateEpic("epc-bbbb2222", { acknowledgeInactiveDeps: true });
       expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/activate");
-      expect(act.progress_derived).toBe(true);
+      expect((mockFetch.mock.calls[1][1] as any).body).toContain('"acknowledgeInactiveDeps":true');
+      expect(act.epic.progress_derived).toBe(true);
+      expect(act.initial_ready_set).toEqual(["tsk-cccc3333"]);
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
       await client.board.pauseEpic("epc-bbbb2222");
@@ -880,7 +882,7 @@ describe("userPrompts", () => {
     });
 
     it("threads lifecycle replay keys (body requestId + DELETE query param)", async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active" }));
+      mockFetch.mockResolvedValueOnce(jsonResponse({ epic: { id: "e1", status: "active" }, initial_ready_set: [] }));
       await client.board.activateEpic("epc-bbbb2222", { requestId: "key-1" });
       expect((mockFetch.mock.calls[0][1] as any).body).toContain('"requestId":"key-1"');
 

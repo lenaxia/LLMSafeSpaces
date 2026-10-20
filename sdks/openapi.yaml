@@ -4599,11 +4599,8 @@ paths:
       summary: Create an epic in a project
       description: |
         Epics default to `draft` (ruling R2): a draft epic feeds no work
-        until activated. NOTE: a project listing
-        endpoint is deliberately absent in v1 (engine seam gap, tracked
-        on #1699).
-        until activated. Epic `priority` is display/filter-only in v1 —
-        the ready set orders by TASK priority.
+        until activated. NOTE: a project listing endpoint is deliberately
+        absent in v1 (engine seam gap, tracked on #1699).
       operationId: createBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4769,14 +4766,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BoardRequestIdOnly"
+              $ref: "#/components/schemas/BoardEpicActivateRequest"
       responses:
         "200":
-          description: Active epic
+          description: Active epic with its initial ready set
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BoardEpic"
+                $ref: "#/components/schemas/BoardEpicActivateResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -4927,10 +4924,9 @@ paths:
       summary: Update a task (partial — omitted fields keep existing values)
       description: |
         Criteria check-off rides here via `setCriteriaMet` (0-based
-        index; the reviewer's Done preparation). Priority changes are
-        ordinary writes
-        claim. NOTE: `tags` and `acceptanceCriteria` REPLACE when
-        present; omitted fields keep existing values.
+        index; the reviewer's Done preparation). NOTE: `tags` and
+        `acceptanceCriteria` REPLACE when present; omitted fields keep
+        existing values.
       operationId: updateBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
@@ -12788,6 +12784,25 @@ components:
           type: array
           items:
             type: string
+    BoardEpicActivateRequest:
+      type: object
+      properties:
+        acknowledgeInactiveDeps:
+          type: boolean
+          description: Acknowledge cross-epic deps entering inactive epics (they stay blocking until those epics activate) — the engine's 409 instructs this flag
+        requestId:
+          type: string
+          description: Replay key (a duplicate submit renders the original 200)
+    BoardEpicActivateResponse:
+      type: object
+      properties:
+        epic:
+          $ref: "#/components/schemas/BoardEpic"
+        initial_ready_set:
+          type: array
+          items:
+            type: string
+          description: The epic's ready task short ids at activation (informational; empty when the ready-set read fails)
     BoardRequestIdOnly:
       type: object
       properties:

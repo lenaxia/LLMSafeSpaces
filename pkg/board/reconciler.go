@@ -24,8 +24,7 @@ import (
 //	   re-armed, NO mint: the held token and its provenance flag are
 //	   untouched, r11 fix);
 //	RC3 dependency consistency — is_blocked recompute from the edge table
-//	   (the belt beneath in-transaction maintenance) + the
-//	   canceled-dependency transition class;
+//	   (the belt beneath in-transaction maintenance);
 //	RC4 epic completion net — missed terminal events from the watermark;
 //	RC5 terminal immutability — never writes terminal rows (predicates +
 //	   the DB stage guard are the belts).

@@ -55,8 +55,16 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     r.assert(/^epc-[0-9a-z]{8}$/.test(epic.short_id), 'create-epic: short_id shape', epic.short_id);
     r.assert(epic.status === 'draft', 'create-epic: draft default', epic.status);
     const epicSid = epic.short_id;
-    const [acOk, act] = await r.assertNoError(() => c.board.activateEpic(epicSid), 'activate-epic: no error');
-    if (acOk && act) r.assert(act.status === 'active', 'activate-epic: active', act.status);
+    // r5: the acknowledge flag rides the contract on the activation
+    // itself (the engine's 409 instructs it; a no-op when no inactive
+    // deps exist) — and the response is the {epic, initial_ready_set}
+    // wrapper.
+    const [acOk, act] = await r.assertNoError(
+      () => c.board.activateEpic(epicSid, { acknowledgeInactiveDeps: true }),
+      'activate-epic: no error',
+    );
+    if (acOk && act) r.assert(act.epic.status === 'active', 'activate-epic: active', act.epic.status);
+    if (acOk && act) r.assert(Array.isArray(act.initial_ready_set), 'activate-epic: ready-set array', act.initial_ready_set);
     const [p1Ok] = await r.assertNoError(() => c.board.pauseEpic(epicSid), 'pause-epic: no error');
     if (p1Ok) await r.assertError(() => c.board.pauseEpic(epicSid), 'pause-paused-epic: guard error');
 

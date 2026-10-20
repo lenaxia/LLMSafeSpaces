@@ -82,9 +82,8 @@ func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epi
 }
 
 // deriveProgress carries the SAME denominator as ListEpics (the #1747
-// owner ruling: Done over ALL tasks — the canceled exclusion design
-// 0067 R2 carried is superseded by PR #1763's semantics; the one-epic
-// and list reads must agree).
+// owner ruling: Done over ALL live tasks — deleted rows leave the
+// board entirely; the one-epic and list reads must agree).
 func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	err := s.q().QueryRow(ctx, `
 		SELECT
@@ -130,9 +129,8 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 // ListEpics lists a project's epics with derived progress (never
 // stored; a zero denominator renders no-progress). One query: the
 // per-epic counts ride a LEFT JOIN over the tasks aggregate (no N+1).
-// Denominator semantics per the #1747 owner ruling (design authority
-// transferred to PR #1763): Done over ALL tasks — the canceled
-// exclusion design 0067 R2 carried is superseded.
+// Denominator semantics per the #1747 owner ruling: Done over ALL live
+// tasks — deleted rows leave the board entirely.
 func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, error) {
 	rows, err := s.q().Query(ctx, `
 		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.project_name,

@@ -26,6 +26,8 @@ import type {
   BoardLifecycleRequest,
   BoardPlanRequest,
   BoardMoveStageRequest,
+  BoardEpicActivateRequest,
+  BoardEpicActivateResponse,
   BoardRequestIdOnly,
   BoardSearchFilters,
   BoardSearchResult,
@@ -922,8 +924,8 @@ class BoardAPI {
     return this.client.request<BoardEpic>("PATCH", `/me/epics/${id}`, req);
   }
 
-  activateEpic(id: string, req: BoardRequestIdOnly = {}) {
-    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, req);
+  activateEpic(id: string, req: BoardEpicActivateRequest = {}) {
+    return this.client.request<BoardEpicActivateResponse>("POST", `/me/epics/${id}/activate`, req);
   }
 
   pauseEpic(id: string, req: BoardRequestIdOnly = {}) {

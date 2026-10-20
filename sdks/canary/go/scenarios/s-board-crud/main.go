@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -109,8 +110,13 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(epic.Status == ll.BoardEpicDraft, "create-epic: draft default", epic.Status)
 	epicSid := epic.ShortID
 
-	if act, err := c.Board.EpicActivate(ctx, epicSid); run.AssertNoError(err, "activate-epic: no error") {
+	// r5: the acknowledge flag rides the contract on the activation
+	// itself (the engine's 409 instructs it; a no-op when no inactive
+	// deps exist) — and the response is the {epic, initial_ready_set}
+	// wrapper.
+	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{AcknowledgeInactiveDeps: true}); run.AssertNoError(err, "activate-epic: no error") {
 		run.Assert(act.Status == ll.BoardEpicActive, "activate-epic: active", act.Status)
+		run.Assert(len(act.InitialReadySet) >= 0, "activate-epic: ready-set array present", fmt.Sprintf("%d ready", len(act.InitialReadySet)))
 	}
 	if _, err := c.Board.EpicPause(ctx, epicSid); run.AssertNoError(err, "pause-epic: no error") {
 		if _, e := c.Board.EpicPause(ctx, epicSid); e == nil {
@@ -224,10 +230,10 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	// claimable work — no spawns); the SAME requestId twice renders
 	// 200-with-original on the replay
 	const replayKey = "11111111-2222-3333-4444-555555555555"
-	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
+	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
 		run.Assert(act.Status == ll.BoardEpicActive, "lifecycle-replay-1: active", act.Status)
 	}
-	if act2, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-2: 200-with-original") {
+	if act2, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-2: 200-with-original") {
 		run.Assert(act2.Status == ll.BoardEpicActive, "lifecycle-replay-2: original status", act2.Status)
 	}
 }

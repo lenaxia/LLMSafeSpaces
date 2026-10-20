@@ -166,10 +166,11 @@ class _BoardAPI:
     def delete_epic(self, epic_id: str, *, force: bool = False) -> dict[str, Any]:
         return self._c._request("DELETE", f"/me/epics/{epic_id}" + ("?force=true" if force else ""))
 
-    def epic_activate(self, epic_id: str, *, acknowledge_inactive_deps: bool = False) -> dict[str, Any]:
-        return self._c._request(
-            "POST", f"/me/epics/{epic_id}/activate", json={"acknowledgeInactiveDeps": acknowledge_inactive_deps}
-        )
+    def epic_activate(self, epic_id: str, *, acknowledge_inactive_deps: bool = False, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"acknowledgeInactiveDeps": acknowledge_inactive_deps}
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json=body)
 
     def pause_project(self, project_id: str) -> dict[str, Any]:
         return self._c._request("POST", f"/me/projects/{project_id}/pause", json={})

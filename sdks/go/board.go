@@ -10,6 +10,7 @@ package llmsafespaces
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -295,8 +296,52 @@ func (s *BoardService) epicLifecycle(ctx context.Context, id, verb string, opts 
 	return &e, nil
 }
 
-func (s *BoardService) EpicActivate(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
-	return s.epicLifecycle(ctx, id, "activate", opts)
+// BoardActivateOptions carries epic-activation's acknowledge flag
+// (the engine's 409 instructs it) plus the replay key.
+type BoardActivateOptions struct {
+	AcknowledgeInactiveDeps bool
+	RequestID               string
+}
+
+// BoardEpicActivateResult is the activation response wrapper: the epic
+// plus its initial ready set (handler shape; the bare epic the SDK
+// once decoded was binding drift).
+type BoardEpicActivateResult struct {
+	BoardEpic
+	InitialReadySet []string `json:"initial_ready_set"`
+}
+
+// UnmarshalJSON decodes the {"epic": {...}, "initial_ready_set": [...]}
+// wrapper into the embedded epic (embedding alone cannot map it).
+func (r *BoardEpicActivateResult) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		Epic            BoardEpic `json:"epic"`
+		InitialReadySet []string  `json:"initial_ready_set"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	r.BoardEpic = wire.Epic
+	r.InitialReadySet = wire.InitialReadySet
+	return nil
+}
+
+func (s *BoardService) EpicActivate(ctx context.Context, id string, opts ...BoardActivateOptions) (*BoardEpicActivateResult, error) {
+	var body struct {
+		AcknowledgeInactiveDeps bool   `json:"acknowledgeInactiveDeps"`
+		RequestID               string `json:"requestId,omitempty"`
+	}
+	for _, o := range opts {
+		body.AcknowledgeInactiveDeps = body.AcknowledgeInactiveDeps || o.AcknowledgeInactiveDeps
+		if o.RequestID != "" {
+			body.RequestID = o.RequestID
+		}
+	}
+	var out BoardEpicActivateResult
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/activate", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (s *BoardService) EpicPause(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {

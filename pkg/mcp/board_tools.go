@@ -40,18 +40,16 @@ import (
 
 // --- Tool definitions ---
 
-// --- Stage vocabularies (single source, r2) ---
+// --- Stage vocabularies (single source, r2; #1747 r5: five stages) ---
 //
-// boardStageCancelled is the design-verbatim stage literal (ruling R2's
-// binding set; the DB CHECK depends on it) — composed so misspell's
-// fixer never rewrites it.
-const boardStageCancelled = "cancel" + "led" //nolint:misspell // design-verbatim stage value
+// Cancel is ELIMINATED — delete replaces it, so the stage machine is
+// FIVE stages and "cancelled" is just an invalid filter value (the
+// tool tier rejects it like any other misspelling).
 
-// boardStages is ruling R2's full six-stage binding set — the READ
-// filter's vocabulary (board_read's stage parameter; every stage is
-// listable, terminal ones included).
+// boardStages is the FIVE-stage binding set — the READ filter's
+// vocabulary (board_read's stage parameter).
 var boardStages = []string{
-	"backlog", "in_progress", "in_review", "done", "pending_input", boardStageCancelled,
+	"backlog", "in_progress", "in_review", "done", "pending_input",
 }
 
 // boardMoveTargets is the stage machine's legal manager move_stage

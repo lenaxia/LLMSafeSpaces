@@ -679,6 +679,16 @@ export interface BoardRequestIdOnly {
   requestId?: string;
 }
 
+export interface BoardEpicActivateRequest {
+  acknowledgeInactiveDeps?: boolean;
+  requestId?: string;
+}
+
+export interface BoardEpicActivateResponse {
+  epic: BoardEpic;
+  initial_ready_set: string[];
+}
+
 export interface BoardSearchFilters {
   project?: string;
   epic?: string;
