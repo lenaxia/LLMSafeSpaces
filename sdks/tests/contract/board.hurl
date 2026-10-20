@@ -127,14 +127,12 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 {
   "title": "Epic one",
-  "outcome": "the contract suite passes",
-  "priority": "P1"
+  "outcome": "the contract suite passes"
 }
 HTTP 201
 [Asserts]
 jsonpath "$.short_id" matches /^epc-[0-9a-z]{8}$/
 jsonpath "$.status" == "draft"
-jsonpath "$.priority" isString
 [Captures]
 epic_id: jsonpath "$.id"
 epic_sid: jsonpath "$.short_id"
@@ -192,7 +190,6 @@ Content-Type: application/json
 {
   "title": "Task A",
   "description": "markdown charter",
-  "priority": "P0",
   "tags": ["pr:1234"],
   "acceptanceCriteria": [
     {"text": "tests green", "met": true},
@@ -203,7 +200,6 @@ HTTP 201
 [Asserts]
 jsonpath "$.short_id" matches /^tsk-[0-9a-z]{8}$/
 jsonpath "$.stage" == "backlog"
-jsonpath "$.priority" isString
 jsonpath "$.tags[0]" matches /^pr:[1-9][0-9]*$/
 jsonpath "$.acceptance_criteria[0].met" isBoolean
 [Captures]
@@ -329,39 +325,25 @@ Prefer: code=409
 }
 HTTP 409
 
-# Cancel task B from backlog — terminal write (cancelled is
-# immutable-terminal and cancel is idempotent on it: 200 both calls)
-POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
+# Delete task B (#1747: cancel is eliminated — delete replaces it; the
+# result lists orphaned dependents; a replay resolves a gone row → 404)
+DELETE {{base_url}}/me/tasks/{{task_b_sid}}
 Authorization: Bearer {{token}}
-Content-Type: application/json
-{
-  "reason": "contract cleanup"
-}
 HTTP 200
 [Asserts]
-jsonpath "$.stage" isString
+jsonpath "$.item_kind" == "task"
 
-POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
+DELETE {{base_url}}/me/tasks/{{task_b_sid}}
 Authorization: Bearer {{token}}
-Content-Type: application/json
-{
-  "reason": "again"
-}
-HTTP 200
-[Asserts]
-jsonpath "$.stage" isString
+HTTP 404
 
-# Cancel epic: cascades to tasks; the epic itself lands paused (R2's set
-# has no cancelled epic value)
-POST {{base_url}}/me/epics/{{epic_sid}}/cancel
+# Delete epic: cascades to its tasks (#1747; the audit keeps every
+# snapshot)
+DELETE {{base_url}}/me/epics/{{epic_sid}}
 Authorization: Bearer {{token}}
-Content-Type: application/json
-{
-  "reason": "contract cleanup"
-}
 HTTP 200
 [Asserts]
-jsonpath "$.status" isString
+jsonpath "$.item_kind" == "epic"
 
 # Authz arm: unauthenticated reads are 401 (Prism enforces security
 # schemes; the live API rejects the missing bearer)
