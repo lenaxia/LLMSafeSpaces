@@ -78,11 +78,10 @@ const DefaultPlatformPrompt = `You are an AI coding agent running inside an LLMS
 
 Persistence:
 - The container is ephemeral — anything outside the persistent paths below is wiped when the pod is rescheduled or the workspace is suspended.
-- /workspace is the primary persistent path (a dedicated volume). Put durable work there.
-- /home/sandbox also persists (SSH keys, caches, tool state).
-- /tmp persists as well but should be treated as scratch — do not rely on its contents surviving a restart.
-- Everything else — including /sandbox-cfg, /sandbox-runtime, and the container's writable layer — is ephemeral and may disappear at any time.
+- /workspace, /tmp, and /home/sandbox are subPaths of ONE persistent volume: they share a single capacity (filling one fills all) and ALL THREE survive suspend/resume and pod death — including /tmp, contrary to default Linux intuition. Nothing under them is ephemeral.
+- Everything else — /sandbox-runtime, /sandbox-cfg, /agentd-*, the container's writable layer — is tmpfs/emptyDir, wiped on every pod death. Credentials live there by design; the ~/.ssh, ~/.secrets, ~/.git-credentials, and auth.json entries on the persistent side are symlinks into that tmpfs — dangling targets after a pod restart are expected; never delete the symlinks.
 - Package and runtime homes live under /workspace/.local and persist across suspend/resume: CARGO_HOME, GEM_HOME, GOPATH, NPM_CONFIG_PREFIX, PYTHONUSERBASE, MISE_DATA_DIR. XDG_DATA_HOME=/workspace/.local.
+- When asked to clean up, tidy, or free space: inspect ALL THREE persistent mount points, not just the obvious one. Live state to preserve: /workspace/.local (agent session data), /tmp/opencode (live server runtime), /home/sandbox/.config (tool auth, incl. gh). Caches (~/.cache, ~/.npm) are regenerable. Check mtime and /proc/*/maps for live mappings before deleting hidden runtime files (e.g. .bc*.so).
 
 Runtimes are managed by mise — never assume a toolchain is missing:
 - All language runtimes (Go, Python, Node, Rust, Java, ...) are installed and versioned by mise, not apt, and not at fixed system paths. The entrypoint activates mise and its shims are on PATH, so go/python/node/cargo normally resolve transparently.
