@@ -144,17 +144,18 @@ def run(r: Runner, cfg: Config) -> None:
             r.assert_(len(listed) == 2, "list-tasks: two backlog", str(len(listed)))
         r.assert_error(lambda: c.board.list_project_tasks(project_sid, stage="wip"), "list-tasks-bad-stage: error")
 
-        # P11: cancel task (terminal) + cancel epic (→ paused)
-        ok, cancelled = r.assert_no_error(
+        # P11 (#1747): delete task + delete epic (cancel is eliminated —
+        # the result lists orphaned dependents; no stage/status comes back)
+        ok, deleted = r.assert_no_error(
             lambda: c.board.delete_task(task_b_sid), "delete-task: no error"
         )
-        if ok and cancelled:
-            r.assert_(cancelled.get("stage") == "cancelled", "cancel-task: cancelled", str(cancelled.get("stage")))
-        ok, ce = r.assert_no_error(
+        if ok and deleted:
+            r.assert_(deleted.get("item_kind") == "task", "delete-task: item kind", str(deleted.get("item_kind")))
+        ok, de = r.assert_no_error(
             lambda: c.board.delete_epic(epic_sid), "delete-epic: no error"
         )
-        if ok and ce:
-            r.assert_(ce.get("status") == "paused", "cancel-epic: paused", str(ce.get("status")))
+        if ok and de:
+            r.assert_(de.get("item_kind") == "epic", "delete-epic: item kind", str(de.get("item_kind")))
 
         # P12: read perimeter — a near-miss id is a plain 404
         r.assert_error(lambda: c.board.get_project("prj-zzzzzzzz"), "get-project-nearmiss: 404")

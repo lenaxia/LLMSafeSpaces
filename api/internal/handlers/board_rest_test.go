@@ -177,16 +177,6 @@ func (f *fakeBoardManager) EpicUnarchive(ctx context.Context, a board.Actor, id,
 	return f.epicLifecycle("epic_unarchive", board.EpicActive)(ctx, a, id, s, r)
 }
 
-func (f *fakeBoardManager) CancelEpic(_ context.Context, actor board.Actor, _, _, reason, requestID string) (*board.Epic, error) {
-	f.call("cancel_epic")
-	f.lastActor, f.lastRequestID = actor, requestID
-	_ = reason
-	if err := f.errFor["cancel_epic"]; err != nil {
-		return nil, err
-	}
-	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Status: board.EpicPaused}, nil
-}
-
 func (f *fakeBoardManager) PauseProject(_ context.Context, actor board.Actor, _, _, requestID string) (*board.Project, error) {
 	f.call("pause_project")
 	f.lastActor, f.lastRequestID = actor, requestID

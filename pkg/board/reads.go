@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -51,7 +52,12 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage string)
 			return nil, err
 		}
 		if proj == nil || proj.ID != t.ProjectID {
-			proj, _ = s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
+			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
+			if perr != nil {
+				slog.WarnContext(ctx, "board: project resolve failed (decoration suppressed)",
+					"projectID", t.ProjectID, "error", perr.Error())
+			}
+			proj = p
 		}
 		s.decorateTask(ctx, t, proj)
 		out = append(out, *t)

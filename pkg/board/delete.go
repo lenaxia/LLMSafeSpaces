@@ -117,13 +117,13 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	}
 
 	out := &DeleteResult{ItemKind: "epic", ID: e.ID, ShortID: e.ShortID}
+	var tasks []*Task // the cascade set (post-commit force aborts read it)
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "delete_epic", itemKind: "epic", itemID: e.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		rows, err := tx.Query(ctx, `SELECT `+taskColumns+` FROM tasks t WHERE t.epic_id=$1 ORDER BY t.created_at, t.id`, e.ID)
 		if err != nil {
 			return nil, err
 		}
-		var tasks []*Task
 		for rows.Next() {
 			t, err := scanTask(rows)
 			if err != nil {
@@ -157,10 +157,6 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 				externals = append(externals, orphanedPair{deleted: t, orphans: external})
 				out.OrphanedDependents = append(out.OrphanedDependents, external.ids...)
 			}
-			// Force aborts each in-flight worker BEFORE its row goes.
-			if force && t.Stage == StageInProgress && t.AssigneeSession != "" && s.aborter != nil {
-				_ = s.aborter(ctx, t.ID, t.AssigneeSession)
-			}
 		}
 		// Tasks (their edges cascade), then the epic.
 		if _, err := tx.Exec(ctx, `DELETE FROM tasks WHERE epic_id=$1`, e.ID); err != nil {
@@ -190,7 +186,28 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 		return nil, err
 	}
 	_ = dup
+	// Force aborts AFTER commit (r2.2, mirroring DeleteTask's ordering
+	// fix): a failed transaction must never cut in-flight workers for
+	// tasks that still exist. The rows/leases died with the commit, so
+	// the aborts are cleanup, not the authority.
+	if force && s.aborter != nil {
+		for _, t := range epicInFlight(tasks) {
+			_ = s.aborter(ctx, t.id, t.assignee)
+		}
+	}
 	return out, nil
+}
+
+// epicInFlight extracts the in-flight (task, assignee) pairs of a
+// cascade set for the post-commit force aborts.
+func epicInFlight(tasks []*Task) []struct{ id, assignee string } {
+	var out []struct{ id, assignee string }
+	for _, t := range tasks {
+		if t.Stage == StageInProgress && t.AssigneeSession != "" {
+			out = append(out, struct{ id, assignee string }{t.ID, t.AssigneeSession})
+		}
+	}
+	return out
 }
 
 // edgeEndpoint is one side of an edge around a to-be-deleted task.

@@ -240,7 +240,11 @@ func (s *BoardSuite) TestKill_1747_DeleteEpicForce() {
 	out, err := s.svc.DeleteEpic(context.Background(), s.owner(), e.ID, "", true, "")
 	s.Require().NoError(err)
 	s.Len(out.CascadeTasks, 2, "every removed task is listed")
-	s.Equal(1, s.aborter.count(), "force aborts the in-flight worker first")
+	s.Equal(1, s.aborter.count(), "force aborts the in-flight worker")
+	var goneAfter int
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM tasks WHERE id=$1`, t1.ID).Scan(&goneAfter))
+	s.Equal(0, goneAfter, "the row is gone BEFORE the abort fired (post-commit ordering, r2.2)")
 	var goneEpic int
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM epics WHERE id=$1`, e.ID).Scan(&goneEpic))

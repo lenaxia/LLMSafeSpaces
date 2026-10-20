@@ -170,6 +170,14 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	assert.Contains(t, w.Body.String(), board.GuardWorkspaceBinding)
 
 	// --- 3: the grant belt against a REAL live assignee ----------------------------
+	// The collaboration-to-execution loop's publish lever: the
+	// collaborator activates the epic through the seam (draft → active;
+	// candidateSQL requires active — the r2.1 fix), THEN the engine
+	// claims: collaboration-to-execution end to end.
+	w = call(http.MethodPost, "/internal/v1/automation/board/epics/"+epic.ID+"/activate",
+		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q}`, wsPod, sess))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
 	// Claim the task through the engine (a spawned worker exists),
 	// then attempt a manager action AS that worker's session: the belt
 	// answers from Postgres and refuses.

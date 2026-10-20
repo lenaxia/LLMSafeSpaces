@@ -118,17 +118,18 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     if (lOk && listed) r.assert(listed.tasks.length === 2, 'list-tasks: two backlog', `${listed.tasks.length}`);
     await r.assertError(() => c.board.listProjectTasks(projectSid, 'wip'), 'list-tasks-bad-stage: error');
 
-    // P11: cancel task (terminal, idempotent) + cancel epic (→ paused)
-    const [cOk, cancelled] = await r.assertNoError(
+    // P11 (#1747): delete task + delete epic (cancel is eliminated — the
+    // result lists orphaned dependents; no stage/status comes back)
+    const [cOk, del] = await r.assertNoError(
       () => c.board.deleteTask(taskBSid),
-      'cancel-task: no error',
+      'delete-task: no error',
     );
-    if (cOk && cancelled) r.assert(cancelled.stage === 'cancelled', 'cancel-task: cancelled', cancelled.stage);
-    const [ceOk, ce] = await r.assertNoError(
+    if (cOk && del) r.assert(del.item_kind === 'task', 'delete-task: item kind', del.item_kind);
+    const [ceOk, de] = await r.assertNoError(
       () => c.board.deleteEpic(epicSid, true),
-      'cancel-epic: no error',
+      'delete-epic: no error',
     );
-    if (ceOk && ce) r.assert(ce.status === 'paused', 'cancel-epic: paused', ce.status);
+    if (ceOk && de) r.assert(de.item_kind === 'epic', 'delete-epic: item kind', de.item_kind);
 
     // P12: cross-tenant read perimeter — a near-miss id is a plain 404
     await r.assertError(() => c.board.getProject('prj-zzzzzzzz'), 'get-project-nearmiss: 404');

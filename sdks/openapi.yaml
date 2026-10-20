@@ -4596,7 +4596,7 @@ paths:
       summary: List a project's tasks
       description: |
         Ordered by (creation order — FIFO, the #1747 claim rule). `stage` filters by one of the
-        six stages (ruling R2's binding set); any other value is a 400.
+        five stages (ruling R2's binding set as amended by #1747); any other value is a 400.
       operationId: listBoardProjectTasks
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -12107,11 +12107,11 @@ components:
           description: DERIVED at read time (ruling R2 — never stored); done tasks
         progress_total:
           type: integer
-          description: DERIVED; total − cancelled (zero denominator renders no-progress)
+          description: DERIVED; total tasks (zero denominator renders no-progress)
         progress_derived:
           type: boolean
           example: false
-          description: false = no-progress ("—") — a task-less or all-cancelled epic, never 0/0
+          description: false = no-progress ("—") — a task-less or all-done epic, never 0/0
     BoardAcceptanceCriterion:
       type: object
       required: [text, met]

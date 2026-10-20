@@ -184,12 +184,12 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		run.OK("list-tasks-bad-stage: error")
 	}
 
-	// P11: cancel task (terminal) + cancel epic (→ paused)
-	if canceled, err := c.Board.CancelTask(ctx, taskBSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task: no error") {
-		run.Assert(canceled.Stage == ll.BoardStageCancelled, "cancel-task: terminal stage", canceled.Stage)
+	// P11 (#1747): delete task + delete epic (cancel is eliminated)
+	if del, err := c.Board.DeleteTask(ctx, taskBSid, false); run.AssertNoError(err, "delete-task: no error") {
+		run.Assert(del.ItemKind == "task", "delete-task: item kind", del.ItemKind)
 	}
-	if ce, err := c.Board.CancelEpic(ctx, epicSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task-epic: no error") {
-		run.Assert(ce.Status == ll.BoardEpicPaused, "cancel-epic: paused", ce.Status)
+	if de, err := c.Board.DeleteEpic(ctx, epicSid, true); run.AssertNoError(err, "delete-epic: no error") {
+		run.Assert(de.ItemKind == "epic", "delete-epic: item kind", de.ItemKind)
 	}
 
 	// P12: read perimeter — a near-miss id is a plain 404
