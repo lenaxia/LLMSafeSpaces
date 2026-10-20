@@ -100,6 +100,31 @@ type vitalsProvider interface {
 	ChildVitals() (pid int, cpuTicks float64, throttledUS float64, err error)
 }
 
+// crashRestartReport is the #1776 crash-attribution slice of the
+// status method: the supervisor's LIFETIME count of crash-classified
+// respawns (since supervisor boot — NOT managedProcess's resetting
+// backoff counter) plus the latest crash's classification. Read-only
+// on the wire; no env values, no argv (A.4 invariants hold).
+type crashRestartReport struct {
+	CrashRestarts   int
+	LastCrashReason string
+	LastCrashAt     time.Time
+}
+
+// crashReporter is the OPTIONAL capability behind the status method's
+// crash-attribution fields (#1776): the supervisor (supervise-opencode)
+// classifies unexpected child exits at the managedProcess crash decision
+// point — the same decision point and strings (crash/oom) as the
+// restart-reason marker — and surfaces the lifetime count so the
+// sidecar's status poller can attribute crash respawns into the
+// agent-restart log. Capability-typed (vitalsProvider precedent) so
+// older test fakes keep compiling, and a pre-#1776 supervisor binary
+// simply omits the fields — the sidecar's mixed-fleet decode reads
+// absence as no evidence, never a miscount.
+type crashReporter interface {
+	CrashRestartReport() crashRestartReport
+}
+
 type controlSocketServer struct {
 	ln   net.Listener
 	proc supervisedProcIface
@@ -286,6 +311,21 @@ func (s *controlSocketServer) status(id *int64) controlResponse {
 		"spawn_env_reason":   spawn.Reason,
 		"files_rev":          spawn.FilesRev,
 		"spawn_files_reason": spawn.FilesReason,
+	}
+	// #1776: crash-attribution fields ride the same additive-JSON
+	// forward-compat rule as every status field (A.1): present when the
+	// supervisor implements the capability, absent for a pre-#1776
+	// binary. The attribution detail is emitted only when a crash was
+	// actually classified (no evidence is not a crash).
+	if cr, ok := s.proc.(crashReporter); ok {
+		rep := cr.CrashRestartReport()
+		result["crash_restarts"] = rep.CrashRestarts
+		if rep.CrashRestarts > 0 {
+			result["last_crash_reason"] = rep.LastCrashReason
+			if !rep.LastCrashAt.IsZero() {
+				result["last_crash_at"] = rep.LastCrashAt.UTC().Format(time.RFC3339)
+			}
+		}
 	}
 	if s.legacyScrubSnapshot != nil {
 		if rep := s.legacyScrubSnapshot(); rep != nil {

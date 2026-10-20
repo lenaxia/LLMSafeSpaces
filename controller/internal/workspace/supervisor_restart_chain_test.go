@@ -108,3 +108,69 @@ func TestSupervisorRestartChain_AgentdToCRDToSDKSchema(t *testing.T) {
 	assert.Equal(t, float64(1), sup["agentRestarts"])
 	assert.Equal(t, "hung", last["verdict"])
 }
+
+// TestSupervisorRestartChain_SidecarCrashArm (#1776): the sidecar-
+// topology crash shape — reason crash, NO verdict key, NO lastError —
+// lands end-to-end through the same chain (agentd wire → controller →
+// CRD + condition → SDK-schema property pins). The verdict's wire
+// absence is the point: uncorroborated crash attribution must not
+// claim one. Acceptance pin per the issue's AC1; its red mode is any
+// revert of the reason-agnostic mirror legs.
+func TestSupervisorRestartChain_SidecarCrashArm(t *testing.T) {
+	at := time.Now().UTC().Format(time.RFC3339)
+	wire := fmt.Sprintf(`{
+		"healthy": true,
+		"version": "1.2.27",
+		"uptime_seconds": 3600,
+		"supervisor": {
+			"agentRestarts": 3,
+			"lastAgentRestart": {
+				"reason": "crash",
+				"at": %q
+			},
+			"consecutiveFailures": 2,
+			"lastHealthError": ""
+		}
+	}`, at)
+
+	var healthResp agentd.HealthzResponse
+	require.NoError(t, json.Unmarshal([]byte(wire), &healthResp))
+	require.NotNil(t, healthResp.Supervisor)
+	require.NotNil(t, healthResp.Supervisor.LastAgentRestart)
+	assert.Empty(t, healthResp.Supervisor.LastAgentRestart.Verdict, "the crash arm carries no verdict key on the wire")
+
+	r, ws, _ := setupSpawnEnvHealthTest(t, healthResp)
+	r.checkAgentHealth(context.Background(), ws)
+
+	require.NotNil(t, ws.Status.AgentSupervisor)
+	assert.Equal(t, int32(3), ws.Status.AgentSupervisor.AgentRestarts)
+	require.NotNil(t, ws.Status.AgentSupervisor.LastAgentRestart)
+	assert.Equal(t, "crash", ws.Status.AgentSupervisor.LastAgentRestart.Reason)
+	assert.Empty(t, ws.Status.AgentSupervisor.LastAgentRestart.Verdict)
+	foundCond := false
+	for _, c := range ws.Status.Conditions {
+		if c.Type == v1.WorkspaceConditionAgentRestarted {
+			foundCond = true
+			assert.Equal(t, "True", c.Status)
+			assert.Equal(t, v1.ReasonWatchdogRestarted, c.Reason)
+			assert.Contains(t, c.Message, "reason: crash")
+		}
+	}
+	assert.True(t, foundCond, "a sidecar crash restart must set the AgentRestarted condition")
+
+	crdWire, err := json.Marshal(ws.Status)
+	require.NoError(t, err)
+	var statusWire map[string]any
+	require.NoError(t, json.Unmarshal(crdWire, &statusWire))
+	sup, ok := statusWire["agentSupervisor"].(map[string]any)
+	require.True(t, ok, "CRD wire must carry agentSupervisor")
+	for _, key := range []string{"agentRestarts", "lastAgentRestart"} {
+		_, ok := sup[key]
+		assert.True(t, ok, "SDK schema property %q missing from the crash arm's CRD wire", key)
+	}
+	last, ok := sup["lastAgentRestart"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "crash", last["reason"])
+	_, hasVerdict := last["verdict"]
+	assert.False(t, hasVerdict, "an empty verdict is omitempty on the CRD wire — the crash arm claims no verdict")
+}

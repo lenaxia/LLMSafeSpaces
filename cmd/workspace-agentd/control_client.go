@@ -71,6 +71,12 @@ type controlStatus struct {
 	// uid-1000 supervisor runs the scrub; the sidecar's healthz mirror
 	// reads it from this status field). Nil until the boot scrub fires.
 	LegacyScrub *agentd.LegacyScrubHealth `json:"-"`
+	// #1776: the supervisor's LIFETIME crash-respawn attribution. A
+	// pre-#1776 supervisor omits the wire fields — zero values, which
+	// the poller reads as no evidence (never a miscount).
+	CrashRestarts   int       `json:"-"`
+	LastCrashReason string    `json:"-"`
+	LastCrashAt     time.Time `json:"-"`
 }
 
 type controlRestartResult struct {
@@ -185,6 +191,9 @@ func decodeControlStatus(res map[string]any) (*controlStatus, error) {
 		FilesRev         string                    `json:"files_rev"`
 		SpawnFilesReason string                    `json:"spawn_files_reason"`
 		LegacyScrub      *agentd.LegacyScrubHealth `json:"legacy_scrub"`
+		CrashRestarts    int                       `json:"crash_restarts"`
+		LastCrashReason  string                    `json:"last_crash_reason"`
+		LastCrashAt      string                    `json:"last_crash_at"`
 	}{}
 	if err := json.Unmarshal(mustMarshal(res), &raw); err != nil {
 		return nil, fmt.Errorf("control socket: status decode: %w", err)
@@ -199,6 +208,8 @@ func decodeControlStatus(res map[string]any) (*controlStatus, error) {
 		FilesRev:         raw.FilesRev,
 		SpawnFilesReason: raw.SpawnFilesReason,
 		LegacyScrub:      raw.LegacyScrub,
+		CrashRestarts:    raw.CrashRestarts,
+		LastCrashReason:  raw.LastCrashReason,
 	}
 	if raw.LastRestartAt != "" {
 		t, err := time.Parse(time.RFC3339, raw.LastRestartAt)
@@ -206,6 +217,13 @@ func decodeControlStatus(res map[string]any) (*controlStatus, error) {
 			return nil, fmt.Errorf("control socket: status timestamp: %w", err)
 		}
 		st.LastRestartAt = t
+	}
+	if raw.LastCrashAt != "" {
+		t, err := time.Parse(time.RFC3339, raw.LastCrashAt)
+		if err != nil {
+			return nil, fmt.Errorf("control socket: status crash timestamp: %w", err)
+		}
+		st.LastCrashAt = t
 	}
 	return st, nil
 }

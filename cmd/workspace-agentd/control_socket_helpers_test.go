@@ -39,6 +39,10 @@ type fakeRestartProc struct {
 	// capability (#1632 fix #1 tests): stageVitals scripts them.
 	vitalsMu      sync.Mutex
 	vitalsSamples []fakeVitalsSample
+
+	// overrideCrash, when set, is returned by CrashRestartReport() —
+	// stages the #1776 crash-attribution capability for status tests.
+	overrideCrash atomic.Pointer[crashRestartReport]
 }
 
 // procStateOverride is the staged State() answer.
@@ -146,6 +150,15 @@ func newControlSocketServerWithProcAndMetrics(t *testing.T, addr string, proc su
 	srv := newControlSocketServerWithProc(t, addr, proc)
 	srv.metricsSource = src
 	return srv
+}
+
+// CrashRestartReport satisfies the crashReporter capability (#1776):
+// nothing staged reports a zero-crash supervisor.
+func (f *fakeRestartProc) CrashRestartReport() crashRestartReport {
+	if o := f.overrideCrash.Load(); o != nil {
+		return *o
+	}
+	return crashRestartReport{}
 }
 
 // RefreshFiles satisfies the file-class live-reload seam (#1244).

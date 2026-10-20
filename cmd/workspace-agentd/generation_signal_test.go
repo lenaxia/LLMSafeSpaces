@@ -104,7 +104,7 @@ func TestGenerationSignalPollerWiring(t *testing.T) {
 	seen := make(chan int, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	startSupervisorStatusPollerWithInterval(ctx, &wg, cc, &supervisorStatusStore{}, func(genPID int) { seen <- genPID }, 5*time.Millisecond)
+	startSupervisorStatusPollerWithInterval(ctx, &wg, cc, &supervisorStatusStore{}, func(genPID int) { seen <- genPID }, nil, 5*time.Millisecond)
 	defer func() { cancel(); wg.Wait() }()
 
 	// Boot boundary observed.

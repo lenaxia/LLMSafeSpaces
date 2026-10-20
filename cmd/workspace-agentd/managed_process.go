@@ -121,8 +121,10 @@ type managedProcess struct {
 	// restart-reason marker write (#1760 surfacing). Called BEFORE
 	// applyBackoff's sleep, under no lock (the supervisor goroutine is
 	// the sole writer of this path). Operator restarts
-	// (restartRequested) and first boot do NOT fire it. Nil = no
-	// observer (supervise-opencode / tests).
+	// (restartRequested) and first boot do NOT fire it. Single-
+	// container agentd wires the restartLog recorder; supervise-
+	// opencode wires the adapter's crash attribution (#1776); nil = no
+	// observer (tests).
 	restartObserver func(reason string)
 
 	// probeWg tracks any in-flight healthProbeAfterRestart

@@ -208,9 +208,9 @@ type SpawnEnvHealth struct {
 // SupervisorStatus is the #1760 supervisor/watchdog slice of healthz
 // and statusz: what the supervisor observed about agent restarts —
 // lifetime counts plus the last restart's attribution. AgentRestarts is
-// a LIFETIME count since agentd boot (watchdog-initiated restarts in
-// both container topologies, plus recorded process-crash restarts where
-// the supervisor records them); it is NOT a crash-loop/backoff counter
+// a LIFETIME count since agentd boot (watchdog-initiated restarts plus
+// supervisor-attributed process-crash restarts — reason crash/oom — in
+// both container topologies); it is NOT a crash-loop/backoff counter
 // and never resets on recovery. Observability only: never flips Healthy,
 // never gates liveness.
 type SupervisorStatus struct {

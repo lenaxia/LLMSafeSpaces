@@ -8,10 +8,11 @@ package main
 // runs in agentd in BOTH container topologies (single-container: the
 // in-process restarter; sidecar: the control-socket restarter — the
 // loop itself is shared, server.go backgroundLoops), so this one log
-// owns restart attribution for watchdog fires in both. Single-container
-// process-crash restarts are recorded through the same log (reason
-// crash/oom, empty verdict); sidecar crash-restart attribution remains
-// with the restart-reason marker (scope ruling, see worklog/PR).
+// owns restart attribution for watchdog fires in both. Process-crash
+// restarts record here in both topologies too (#1776 closed the A11
+// gap): single-container via the restartObserver hook, sidecar via the
+// supervisor-status poller's crash-counter delta (reason crash/oom,
+// empty verdict).
 //
 // Recording hooks ONLY — the suppression/kill decisions in
 // healthz_cache.go and watchdog_vitals.go are untouched.
