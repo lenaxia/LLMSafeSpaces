@@ -326,16 +326,15 @@ Prefer: code=409
 HTTP 409
 
 # Delete task B (#1747: cancel is eliminated — delete replaces it; the
-# result lists orphaned dependents; a replay resolves a gone row → 404)
+# result lists orphaned dependents. The gone-row-replay 404 is an
+# engine-state behavior pinned by the kill-tests — this Prism-mocked
+# contract tier is stateless (every matched route 200s), so only the
+# contract shape is asserted here.)
 DELETE {{base_url}}/me/tasks/{{task_b_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 jsonpath "$.item_kind" == "task"
-
-DELETE {{base_url}}/me/tasks/{{task_b_sid}}
-Authorization: Bearer {{token}}
-HTTP 404
 
 # Delete epic: cascades to its tasks (#1747; the audit keeps every
 # snapshot)
