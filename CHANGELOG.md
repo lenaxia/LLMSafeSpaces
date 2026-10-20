@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backpressure: "disk 92%"` on rows.
 - REST + external MCP mirror the full vocabulary (parity matrix
   green on all three surfaces); SDKs (Go/Python/TypeScript/Java) and
-  the OpenAPI spec updated; migration 000037 drops the cancelled
+  the OpenAPI spec updated; migration 000038 drops the cancelled
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
