@@ -234,7 +234,9 @@ type WorkspaceStatus struct {
 	// Supervisor (#1760) carries the supervisor health-watchdog's agent
 	// restart observations: lifetime restart count, the last restart's
 	// attribution (reason/verdict/lastError/at), and the suppressed
-	// restart count. Nil when the workspace has no restart evidence.
+	// restart count. Nil when no restart evidence is present for the
+	// workspace (never restarted this boot, a runtime that does not
+	// report it, or the state was cleared on an unreachable pod).
 	Supervisor       *SupervisorStatus   `json:"supervisor,omitempty"`
 	Sessions         []SessionStatusItem `json:"sessions,omitempty"`
 	ImageTag         string              `json:"imageTag,omitempty"`

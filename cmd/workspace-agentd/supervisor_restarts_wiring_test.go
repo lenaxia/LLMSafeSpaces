@@ -147,8 +147,9 @@ func TestWatchdogHealthy_RecordsNothing(t *testing.T) {
 	cache := runWatchdogLoopWithRestarts(t, srv.URL, 2*time.Second, fr, nil, nil, log)
 
 	// Wait on the OBSERVABLE (the cache's first healthy refresh), then
-	// settle past the next tick so a would-fire moment would have
-	// recorded — not a tautology.
+	// settle ~3 more shrunk poll intervals (200ms at the 60ms cadence)
+	// so would-fire moments would have had opportunity to record —
+	// no production 5s tick is claimed to have elapsed.
 	require.Eventually(t, func() bool { return cache.Snapshot().Healthy },
 		5*time.Second, 50*time.Millisecond, "loop must run its first healthy refresh")
 	time.Sleep(200 * time.Millisecond)

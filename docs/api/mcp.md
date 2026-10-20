@@ -77,7 +77,7 @@ The [VS Code extension](sdks.md#vs-code-extension) embeds the MCP tool surface a
 
 ## Tools
 
-The server advertises 24 tools, all workspace-centric — the sandbox layer is hidden from callers. Each tool maps to one or more REST API calls.
+The server advertises 44 tools, all workspace-centric — the sandbox layer is hidden from callers. Each tool maps to one or more REST API calls.
 
 ### Workspace lifecycle
 

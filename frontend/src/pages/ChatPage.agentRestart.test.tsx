@@ -118,7 +118,6 @@ async function renderReady(qc: QueryClient) {
     expect(screen.getByTestId("chat-view")).toBeTruthy();
   });
 }
-
 function sendPlatformEvent(evt: WorkspaceStreamEvent) {
   act(() => {
     capturedPlatformHandler?.(evt);
@@ -128,6 +127,10 @@ function sendPlatformEvent(evt: WorkspaceStreamEvent) {
 describe("ChatPage agent-restart surfacing (#1760)", () => {
   beforeEach(() => {
     capturedPlatformHandler = null;
+    // Isolation: clear the params each test re-seeds via renderReady
+    // (the hookcount-file pattern — no cross-test param bleed).
+    paramsRef.workspaceId = undefined;
+    paramsRef.sessionId = undefined;
     vi.clearAllMocks();
   });
 
@@ -199,8 +202,19 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
   // session/workspace switch — a toast received in workspace A must not
   // shadow workspace B's own (empty) status when the router reuses the
   // ChatPage instance.
+  //
+  // r2 discrimination fix: the assertion MUST run against the SETTLED
+  // post-switch state. During ws-2's status-loading window isReady
+  // drops and the banner unmounts transiently — asserting null there
+  // passes against the pre-fix code too (the r1 shape, reproduced by
+  // the reviewer). Only after ws-2 is READY does the stale payload
+  // re-mount the banner: settled, pre-fix shows it (fails) and fixed
+  // does not (passes).
   it("clears the live payload on session switch (no cross-workspace leak)", async () => {
     const qc = makeQueryClient();
+    // Both workspaces Active; ws-2 carries NO restart evidence — the
+    // exact shadowing scenario (resolving for ws-2 is what settles
+    // readiness post-switch).
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     await renderReady(qc);
 
@@ -217,8 +231,18 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
       bumpTick();
     });
 
+    // Settle FIRST: wait until the ws-2 view is ready again (chat view
+    // back after the loading window), then confirm readiness is stable
+    // past a render — the transient unmount is gone by then.
     await waitFor(() => {
-      expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
+      expect(screen.getByTestId("chat-view")).toBeTruthy();
+    }, { timeout: 3000 });
+    await act(async () => {
+      bumpTick();
     });
+    expect(screen.getByTestId("chat-view")).toBeTruthy();
+
+    // Settled assertion: the banner must be absent in the READY state.
+    expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
   });
 });

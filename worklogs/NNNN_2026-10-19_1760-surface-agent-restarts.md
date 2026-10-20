@@ -75,8 +75,12 @@ watcher `agent_restarted` SSE event → frontend dismissible banner
    type in this lane" ruling was factually based on the same miss —
    extending the EXISTING type (one field + two nested structs, the
    exact hand-sync the TS SDK got) is not adding a type and closes the
-   AC4 gap the reviewer blocked on. Fixed in round 1; flagged to the
-   orchestrator.
+   AC4 gap the reviewer blocked on. Fixed in round 1; orchestrator
+   ruled the extension STAYS. Process lesson (orchestrator, on the
+   record): name-pattern verification proves absence of the NAME, not
+   of the thing — route-level verification (`services.go` handler →
+   decoded type) was the correct instrument, and the false negative
+   propagated twice before the reviewer checked the route.
 7. Sidecar-mode supervisor CRASH restarts are out of scope (A11 ruling):
    watchdog restarts surface in both topologies; single-container crash
    restarts surface via the observer hook; sidecar crash attribution stays
@@ -151,6 +155,14 @@ tool. No other out-of-declared-scope file was touched.
    (`clears the live payload on session switch`, the hookcount-pattern
    in-place params mutation — children-as-prop would bail out of the
    re-render, the wrapper renders ChatPage directly).
+   **Round 2 failed-validation record (Rule 7)**: the r1 "regression
+   pin" did not DISCRIMINATE — the reviewer reproduced it passing
+   against the pre-fix code (the post-switch status-loading window
+   drops isReady, unmounting the banner transiently; asserting null in
+   that window is vacuous). Rewritten in r2 to settle the post-switch
+   READY state first (ws-2 view ready, stable across a re-render),
+   then assert absence — verified discriminating by the same
+   controlled-revert method (fails pre-fix, passes post-fix).
 3. **Go SDK `WorkspaceStatus.Supervisor`** — see Assumption 6 above.
    Fixed: field + `SupervisorStatus`/`AgentRestartEvent` added to
    `sdks/go/types.go` (builds + vets clean).
@@ -160,6 +172,30 @@ tool. No other out-of-declared-scope file was touched.
    in the watcher DeletedCleansState test (now states the first-sighting
    policy truthfully).
 
+## Bot review round 2 (CHANGES_REQUESTED → fixed)
+
+1. **Non-discriminating regression pin** — see the r1 item-2 record
+   above (vacuous transient-unmount window). Fixed + verified
+   discriminating by controlled revert.
+2. `paramsRef` not reset in `beforeEach` — fixed (hookcount pattern).
+3. Sweep: wiring-test comment overclaimed "past the next tick" (5s
+   tick vs 200ms sleep) — reworded to the actual semantics; stale
+   `docs/api/mcp.md` headline "24 tools" → 44 (the file this PR edits
+   for parity); Go SDK nil-comment made precise (nil also results from
+   unreachable/undecodable clears).
+
+All six ACs judged ADDRESSED by the r2 review except the test-quality
+caveat this round closed; AC4 Go gap confirmed closed (JSON tags
+verified byte-identical to the wire DTO and openapi by the reviewer).
+
+`TestBusyTruthE2E_InStreamReseedReconciles` (usagestream) timed out its
+30s Eventually twice on this PR's CI (runs 39319516622, 39346439013)
+AND on a MAIN-branch run at 00:14Z (run 39346002933) — same signature,
+coverage-load wall-clock sensitivity. Zero usagestream/sessionstate
+diffstat vs main on this branch; 5x green locally (-short -count=5).
+Orchestrator ruling: rerun-and-not-fix (lane discipline); escalated to
+the owner as a dedicated-fix-lane call.
+
 ## Resource discipline
 
 Memory checked before every heavy command (peak observed 8.59G during the
@@ -167,3 +203,5 @@ package sweep — single-lane targeted runs only, no `-race`, no full
 `make test`; `make build` deferred to the orchestrator's stagger).
 `npm install` run once for the frontend test tier (disk 64% before, ~5.3G
 free).
+
+## CI flake record (pre-existing, orchestrator-routed)
