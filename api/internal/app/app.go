@@ -268,8 +268,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	sessionIndexSvc := sessionindex.New(svc.Database, log)
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		wsSvc.SetSessionIndex(sessionIndexSvc)
+		wsSvc.SetSessionRefs(svc.Database)
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
+	proxyHandler.SetSessionRefs(svc.Database)
 
 	// D6 (#998) finding 4: persist hung-session escalations so alerts
 	// survive SSE disconnects and remain queryable (GET /workspaces/:id/alerts).
@@ -1601,11 +1603,20 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// the routes and the agentd tools 404 (the rename wiring's named
 	// failure class, app.go's own comment above).
 	var podSessionArchiveHandler *handlers.PodSessionArchiveHandler
+	var podSessionRegistryHandler *handlers.PodSessionRegistryHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		podSessionArchiveHandler = handlers.NewPodSessionArchiveHandlerFromClientset(
 			k8sClient.Clientset(), dbSvc, wsSvc, proxyHandler, sessionIndexSvc, cfg.Kubernetes.Namespace,
 		)
 		podSessionArchiveHandler.SetLogger(log)
+		// Design 0066 §4.3: the control-plane surface for the agentd
+		// short-id replica — list (boot/on-miss pull) + register-one
+		// (create_session). Same pod-identity contract; the database
+		// service is the single mint owner.
+		podSessionRegistryHandler = handlers.NewPodSessionRegistryHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, dbSvc, dbSvc, cfg.Kubernetes.Namespace,
+		)
+		podSessionRegistryHandler.SetLogger(log)
 	} else {
 		log.Error("session-archive wiring: workspace service is not the concrete type; the pod session routes are NOT installed",
 			errors.New("svc.Workspace type assertion failed"))
@@ -1661,6 +1672,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
 		PodAutomationHandler:            podAutomationHandler,
 		PodSessionArchiveHandler:        podSessionArchiveHandler,
+		PodSessionRegistryHandler:       podSessionRegistryHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,

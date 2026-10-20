@@ -22,6 +22,7 @@ import (
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -75,12 +76,15 @@ type WorkspaceConfig = types.WorkspaceConfig
 
 // Service implements apiinterfaces.WorkspaceService.
 type Service struct {
-	logger            pkginterfaces.LoggerInterface
-	k8sClient         pkginterfaces.KubernetesClient
-	dbService         apiinterfaces.DatabaseService
-	cacheService      apiinterfaces.CacheService
-	metricsService    apiinterfaces.MetricsService
-	sessionIndex      apiinterfaces.SessionIndexService
+	logger         pkginterfaces.LoggerInterface
+	k8sClient      pkginterfaces.KubernetesClient
+	dbService      apiinterfaces.DatabaseService
+	cacheService   apiinterfaces.CacheService
+	metricsService apiinterfaces.MetricsService
+	sessionIndex   apiinterfaces.SessionIndexService
+	// sessionRefs backs EnsureSession's short-id registration (design
+	// 0066 §4.2): the registration seam is the API's one mint owner.
+	sessionRefs       sessionindex.RefResolver
 	credProvisioner   CredentialProvisioner
 	secretProvisioner SecretAutoProvisioner
 	instanceSettings  *settings.InstanceService
@@ -266,6 +270,13 @@ func New(
 // SetSessionIndex injects the session index service. Optional — nil disables session tracking.
 func (s *Service) SetSessionIndex(si apiinterfaces.SessionIndexService) {
 	s.sessionIndex = si
+}
+
+// SetSessionRefs injects design 0066's short-id registration surface
+// (the database service). Optional — nil leaves EnsureSession without
+// a short id in its response (the harness id alone, today's shape).
+func (s *Service) SetSessionRefs(r sessionindex.RefResolver) {
+	s.sessionRefs = r
 }
 
 func (s *Service) Start() error {
@@ -1076,6 +1087,10 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 		ActiveSessions: int(crd.Status.ActiveSessions),
 		Message:        crd.Status.Message,
 		ImageTag:       crd.Status.ImageTag,
+		// #1746 agentd delivery drift visibility: "agentd X pending —
+		// applies on next refresh".
+		AgentdEffectiveDigest: crd.Status.AgentdEffectiveDigest,
+		AgentdPendingDigest:   crd.Status.AgentdPendingDigest,
 	}
 
 	// Fallback: if controller hasn't set ImageTag yet (pre-upgrade pods), read from pod spec
@@ -1589,11 +1604,22 @@ func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID string)
 		return nil, err
 	}
 
+	// Design 0066 §4.2: POST /sessions/new registers before returning
+	// — the mint point for the short id (idempotent seam; failure
+	// degrades to a short-id-less response, the backfill sweep
+	// converges). The harness type is the adapter that served the
+	// create: opencode, the only live adapter today.
+	shortID := ""
+	if s.sessionIndex != nil {
+		shortID = s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
+	}
+
 	return &types.EnsureSessionResponse{
 		WorkspaceID:    workspaceID,
 		WorkspacePhase: "Active",
 		SessionID:      sessionID,
 		Resumed:        resumed,
+		ShortID:        shortID,
 	}, nil
 }
 
@@ -1903,6 +1929,9 @@ func (s *Service) MarkSessionSeen(ctx context.Context, userID, workspaceID, sess
 	if s.sessionIndex == nil {
 		return nil
 	}
+	// Design 0066 §4.2: last-seen is a row-creating upsert shape —
+	// register through the seam first (review r1 finding 1).
+	s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	return s.sessionIndex.UpdateLastSeen(ctx, workspaceID, sessionID)
 }
 
@@ -1978,6 +2007,9 @@ func (s *Service) RenameSession(ctx context.Context, userID, workspaceID, sessio
 	if s.sessionIndex == nil {
 		return nil
 	}
+	// Design 0066 §4.2: title-rename is a row-creating upsert shape —
+	// register through the seam first (review r1 finding 1).
+	s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	return s.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title)
 }
 

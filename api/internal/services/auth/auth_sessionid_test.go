@@ -551,3 +551,25 @@ func TestOptionalAuthMiddleware_SuspendedUser_TreatedAsAnon(t *testing.T) {
 		t.Errorf("suspended user must not get userID set, got %q", gotUID)
 	}
 }
+
+// Design 0066 (#1691): the new DatabaseService registration/resolution
+// surface — no-op stubs for this fixture.
+func (m *mockDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	return "", nil
+}
+
+func (m *mockDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	return "", nil
+}
+
+func (m *mockDB) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+func (m *mockDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
+	return nil, nil
+}

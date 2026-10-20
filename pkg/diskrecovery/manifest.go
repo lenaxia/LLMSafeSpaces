@@ -34,9 +34,20 @@ type Entry struct {
 	// itself. For EntryPrefixStale: the fixed child-name prefix.
 	Path string
 	Kind EntryKind
-	// MinAgeSecs gates EntryPrefixStale children (0 = no filter; the
-	// production /tmp class uses 120s — the stale-corpse rule).
+	// MinAgeSecs gates age-filtered candidacy. For EntryPrefixStale it
+	// is MANDATORY (validatePrefixEntry refuses <= 0): only children
+	// whose mtime is older than the gate are candidates — live builds
+	// must never be reaped out from under a compiler. For EntryDir it
+	// is OPTIONAL (0 = no gate): a positive value holds the whole class
+	// while the directory's own mtime is younger than the gate — a
+	// freshly-written cache dir is likely mid-population (#1744).
 	MinAgeSecs int64
+	// MinBytes is the per-class size floor (#1744): a measured class
+	// below the floor is not a deletion candidate (not_present, with
+	// the floor in the reason) — a small tree is a partial download or
+	// debris, not the full regenerable set the floor was calibrated
+	// against. 0 = no floor (the pre-#1744 classes keep 0).
+	MinBytes int64
 }
 
 // RootKind marks whether a cache root may itself be deleted.
@@ -123,9 +134,13 @@ var manifests = map[string]Manifest{
 	// topology (pod_builder.go): GOPATH=/workspace/.local/share/go,
 	// CARGO_HOME=/workspace/.local/share/cargo,
 	// MISE_DATA_DIR=/workspace/.local/share/mise, $HOME=/home/sandbox,
-	// /tmp = PVC "tmp" subpath. GOCACHE/GOMODCACHE are unset in the pod
-	// env, so Go's defaults land under $HOME/.cache/go-build and
-	// $GOPATH/pkg/mod.
+	// /tmp = PVC "tmp" subpath. Since #1758 the platform env sets
+	// GOCACHE/GOTMPDIR to a dedicated emptyDir (/sandbox-cache/*), so
+	// the HOME-side go-build/gotmp classes below are LEGACY-DEBRIS
+	// sweepers: pre-#1758 pods and lanes that override the env still
+	// fill these PVC paths; fresh default pods do not. GOMODCACHE
+	// remains unset in the pod env (GOPATH's pkg/mod — the durable
+	// module cache, deliberately PVC-backed per #1758's ruling).
 	"opencode": {
 		Base: "opencode",
 		Roots: []CacheRoot{
@@ -144,14 +159,36 @@ var manifests = map[string]Manifest{
 			// mise's raw download cache. MISE_DATA_DIR root and installs/
 			// (the user's toolchains) stay untouched.
 			{Path: "/workspace/.local/share/mise/downloads", Kind: RootSelf},
+			// #1744 item 6: envtest assets (etcd+kube-apiserver binaries).
+			// Regenerable — setup-envtest re-downloads on demand — but they
+			// live under the protected /workspace/.local package-home tree
+			// (see protectedPaths): the explicit allow is EXACTLY this
+			// directory-sized root, never the package homes around it.
+			{Path: "/workspace/.local/kubebuilder-envtest", Kind: RootSelf},
 			// Stale go build corpses under /tmp (pod PVC "tmp" subpath).
 			{Path: "/tmp/go-build", Kind: RootParent},
+			// #1744: the session cache home on the PVC "tmp" subpath
+			// (agents set GOCACHE=/tmp/opencode/gocache and friends).
+			// RootParent on purpose: /tmp/opencode also hosts LIVE
+			// session scratch (session dirs, logs) and GOBIN-installed
+			// tools — only the three declared cache entries under it
+			// are ever deletion candidates.
+			{Path: "/tmp/opencode", Kind: RootParent},
+			// #1744: anchor for the stale GOTMP worker-scratch prefix
+			// class. Workers with HOME=/home/sandbox get Go's defaults
+			// under ~/.cache — gotmp, gotmp-*, gotmp-w* scratch dirs
+			// that outlive their sessions (observed: gotmp-1735).
+			{Path: "/home/sandbox/.cache/gotmp", Kind: RootParent},
 		},
 		Entries: []Entry{
 			{Class: "go-build-cache", Path: "/home/sandbox/.cache/go-build", Kind: EntryDir},
 			{Class: "pip-cache", Path: "/home/sandbox/.cache/pip", Kind: EntryDir},
 			{Class: "mise-xdg-cache", Path: "/home/sandbox/.cache/mise", Kind: EntryDir},
-			{Class: "npm-cache", Path: "/home/sandbox/.npm", Kind: EntryDir},
+			// #1744 item 5: NARROWED from the whole ~/.npm root to
+			// npm's actual cache payload — _cacache is exactly `npm
+			// cache clean`'s target; _logs and friends stay untouched
+			// (_npx is its own class below).
+			{Class: "npm-cache", Path: "/home/sandbox/.npm/_cacache", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 32 << 20},
 			{Class: "pnpm-store", Path: "/home/sandbox/.local/share/pnpm/store", Kind: EntryDir},
 			{Class: "go-module-cache", Path: "/workspace/.local/share/go/pkg/mod", Kind: EntryDir},
 			{Class: "cargo-download-cache", Path: "/workspace/.local/share/cargo/registry/cache", Kind: EntryDir},
@@ -159,6 +196,41 @@ var manifests = map[string]Manifest{
 			// /tmp/go-build<N> corpse dirs untouched for >120s. The
 			// prefix is fixed here; /tmp as a whole is never a target.
 			{Class: "tmp-build-residue", Path: "/tmp/go-build", Kind: EntryPrefixStale, MinAgeSecs: 120},
+			// ---- #1744: the regenerable classes that actually fill
+			// workspace PVCs. Three safety gates apply: the per-class
+			// staleness gate below (dir mtime), the engine's open-handle
+			// scan (/proc/*/fd — never reap under a live process), and
+			// the MinBytes floor (calibrated to the observed FULL-set
+			// sizes on the incident pod: playwright ~641M, session
+			// gocache ~2.4G, npm _cacache+_npx ~260M, golangci ~103M,
+			// envtest ~163M — below the floor a tree is a partial
+			// download or debris, left alone).
+			// Item 1: playwright browser binaries — re-downloadable via
+			// `playwright install`; the single biggest miss pre-#1744.
+			{Class: "playwright-browsers", Path: "/home/sandbox/.cache/ms-playwright", Kind: EntryDir, MinAgeSecs: 600, MinBytes: 128 << 20},
+			// Item 2: the session-set cache targets under /tmp/opencode
+			// (goocache is carried for lanes that split GOCACHE/GOO —
+			// absent trees simply report not_present).
+			{Class: "tmp-opencode-gocache", Path: "/tmp/opencode/gocache", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 64 << 20},
+			{Class: "tmp-opencode-goocache", Path: "/tmp/opencode/goocache", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 64 << 20},
+			{Class: "tmp-opencode-npm-cache", Path: "/tmp/opencode/npm-cache", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 32 << 20},
+			// Item 3's novel half: gotmp + gotmp-w* worker scratch under
+			// ~/.cache (go-build itself is the existing class above).
+			// The "gotmp" prefix matches the whole GOTMP-family naming
+			// convention; 120s matches the /tmp corpse rule. Floor 0 on
+			// purpose (review r2): the observed corpses are EMPTY dirs
+			// (gotmp-1735) — inode hygiene is exactly this class's job,
+			// and the age gate + open-handle guard carry its safety.
+			{Class: "gotmp-residue", Path: "/home/sandbox/.cache/gotmp", Kind: EntryPrefixStale, MinAgeSecs: 120},
+			// Item 4: golangci-lint's build cache.
+			{Class: "golangci-lint-cache", Path: "/home/sandbox/.cache/golangci-lint", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 16 << 20},
+			// Item 5, second half: npx-installed packages.
+			{Class: "npm-npx", Path: "/home/sandbox/.npm/_npx", Kind: EntryDir, MinAgeSecs: 300, MinBytes: 16 << 20},
+			// Item 6: envtest assets — regenerable (setup-envtest
+			// re-downloads on demand) but under the protected
+			// /workspace/.local package-home tree: deletable ONLY via
+			// this explicit entry + the exact-size RootSelf root above.
+			{Class: "kubebuilder-envtest", Path: "/workspace/.local/kubebuilder-envtest", Kind: EntryDir, MinAgeSecs: 600, MinBytes: 64 << 20},
 		},
 	},
 }
@@ -206,6 +278,11 @@ func validateEntry(m Manifest, e Entry) error {
 	p := filepath.Clean(e.Path)
 	if !filepath.IsAbs(p) || p != e.Path || strings.Contains(e.Path, "..") {
 		return ErrBadPath
+	}
+	// Gate sanity (#1744): negative gate values are authoring bugs —
+	// they would silently invert the staleness/floor comparisons.
+	if e.MinAgeSecs < 0 || e.MinBytes < 0 {
+		return fmt.Errorf("gates must be >= 0: minAgeSecs=%d minBytes=%d", e.MinAgeSecs, e.MinBytes)
 	}
 	// Protected FIRST: naming a protected path — the PVC root, $HOME,
 	// /tmp, a package home, or any ancestor of them — is the

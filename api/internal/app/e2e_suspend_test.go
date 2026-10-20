@@ -462,3 +462,25 @@ func assertStatusE2E(t *testing.T, resp *http.Response, want int, label string) 
 		t.Fatalf("%s: expected %d, got %d: %s", label, want, resp.StatusCode, string(b))
 	}
 }
+
+// Design 0066 (#1691): the new DatabaseService registration/resolution
+// surface — no-op stubs for this fixture (it exercises auth flows).
+func (d *recordingDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	return "", nil
+}
+
+func (d *recordingDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	return "", nil
+}
+
+func (d *recordingDB) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+func (d *recordingDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+
+func (d *recordingDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
+	return nil, nil
+}

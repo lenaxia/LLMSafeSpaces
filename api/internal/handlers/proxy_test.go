@@ -1452,3 +1452,18 @@ func TestProxy_DeleteSession_PublishesUserStreamEvent(t *testing.T) {
 		t.Fatal("timed out waiting for user-stream session.status deleted event")
 	}
 }
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (r *recordingActivitySessionIndex) Register(_ context.Context, _, _, _ string) string {
+	return ""
+}
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (r *recordingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
+	return ""
+}
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (f *failingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
+	return ""
+}

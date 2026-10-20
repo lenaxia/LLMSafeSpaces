@@ -27,6 +27,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/session/agentmessage"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // titleMaxLength bounds session titles and workspace names handed to
@@ -66,6 +67,13 @@ func mcpRenameSession(ctx context.Context, password, sessionID, title string) (s
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
+	// Design 0066: the ref resolves first (short id / alias accepted;
+	// legacy ids pass through byte-identical).
+	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+	if rerr != nil {
+		return "", rerr
+	}
+	sessionID = resolved
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return "", fmt.Errorf("title is required")
@@ -552,6 +560,22 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
 
+	// Design 0066 §4.2: agentd asks the control plane to register the
+	// new session (the API's registration seam is the single mint
+	// owner) and returns the short id beside the harness id. On
+	// control-plane timeout the harness id alone is returned —
+	// degraded, self-heals at the proxy's first observation of the
+	// session.
+	shortID := ""
+	if platClient, saToken, workspaceID, perr := podPlatformClient(); perr == nil {
+		regCtx, regCancel := context.WithTimeout(ctx, 5*time.Second)
+		if sid, rerr := platClient.RegisterSessionShortID(regCtx, saToken, workspaceID, sessionID); rerr == nil && sid != "" {
+			shortID = sid
+			currentSessionShortIDs().put(sid, sessionID)
+		}
+		regCancel()
+	}
+
 	logger := log
 	go func() {
 		if _, err := seamClientWithPassword(password).SessionSend(context.WithoutCancel(ctx), sessionID, prompt, "", nil); err != nil {
@@ -560,11 +584,15 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		}
 	}()
 
-	out, _ := json.Marshal(map[string]string{
+	result := map[string]string{
 		"status":        "created",
 		"session_id":    sessionID,
 		"prompt_status": "delivering_in_background",
-	})
+	}
+	if shortID != "" {
+		result["short_id"] = shortID
+	}
+	out, _ := json.Marshal(result)
 	return string(out), nil
 }
 
@@ -644,6 +672,14 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
+	// Design 0066: resolve the ref (short id / alias) to the canonical
+	// harness id BEFORE the platform call — the platform's index keys
+	// on the canonical id.
+	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+	if rerr != nil {
+		return "", rerr
+	}
+	sessionID = resolved
 	client, saToken, workspaceID, err := podPlatformClient()
 	if err != nil {
 		return "", err
@@ -682,6 +718,13 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
+	// Design 0066: resolve the ref first; the self-guard and the
+	// platform delete then operate on the canonical harness id.
+	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+	if rerr != nil {
+		return "", rerr
+	}
+	sessionID = resolved
 	// Self-delete guard: the plugin-injected current session first; on
 	// a degraded pod (no working plugin) the single busy session IS the
 	// caller — the same fallback the metadata default uses (review r1
@@ -891,6 +934,44 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 	if err != nil {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
+	// Design 0066: an explicit scope is an ADDRESS — short ids
+	// (case-insensitive) and unambiguous aliases (title or slug)
+	// resolve against the live rows; legacy ids pass through
+	// byte-identical.
+	if scope != "" {
+		resolved := scope
+		folded := strings.ToLower(strings.TrimSpace(scope))
+		if !shortid.IsIDForm(scope) {
+			var matches []opencode.SessionSummary
+			for _, s := range sessions {
+				if strings.ToLower(strings.TrimSpace(s.Title)) == folded ||
+					(s.Slug != "" && strings.ToLower(strings.TrimSpace(s.Slug)) == folded) {
+					matches = append(matches, s)
+				}
+			}
+			switch len(matches) {
+			case 1:
+				resolved = matches[0].ID
+			case 0:
+				return "", fmt.Errorf("session %s not found%s", scope, suggestRefClauseFrom(scope, sessions))
+			default:
+				return "", fmt.Errorf("session alias %q is ambiguous — %d sessions share it; none was used (use the exact session id or short id)",
+					scope, len(matches))
+			}
+		} else if shortid.IsShortIDForm(scope) {
+			if id, ok := currentSessionShortIDs().resolveShortID(scope); ok {
+				resolved = id
+			} else if pullSessionShortIDsRateLimited(ctx) {
+				// Same on-miss convergence as every other tool (review
+				// r1 skeptical pass: one shared precedence, no diverging
+				// shortcut here).
+				if id, ok := currentSessionShortIDs().resolveShortID(scope); ok {
+					resolved = id
+				}
+			}
+		}
+		scope = resolved
+	}
 	busy, err := client.GetSessionStatuses(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
@@ -1006,6 +1087,14 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 		resolved, err := resolveSingleBusySession(ctx, client)
 		if err != nil {
 			return "", err
+		}
+		sessionID = resolved
+	} else {
+		// Design 0066: an explicit target is an ADDRESS — resolve it
+		// (short id / unambiguous alias; legacy byte-identical).
+		resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+		if rerr != nil {
+			return "", rerr
 		}
 		sessionID = resolved
 	}
@@ -1218,6 +1307,22 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 
 	client := seamClientWithPassword(password)
 
+	// Design 0066: BOTH addresses resolve first — target and origin
+	// accept short ids and unambiguous aliases; legacy ids pass
+	// through byte-identical (the #1530 recovery above stays on the
+	// raw id, which resolution then confirms or leaves alone).
+	for _, pair := range []struct{ name, ref string }{{"session_id", sessionID}, {"from_session_id", origin}} {
+		resolved, rerr := resolveSessionRef(ctx, password, pair.ref)
+		if rerr != nil {
+			return "", fmt.Errorf("%s: %w", pair.name, rerr)
+		}
+		if pair.name == "session_id" {
+			sessionID = resolved
+		} else {
+			origin = resolved
+		}
+	}
+
 	// Validate BOTH ends by ID (unknown IDs fail loudly here rather
 	// than silently in the detached delivery; the by-ID probe is
 	// immune to the #1452 list-visibility gap). A not-found id gets a
@@ -1324,6 +1429,13 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
+	// Design 0066: resolve the ref first (abort is destructive — an
+	// ambiguous alias REFUSES here, never guesses).
+	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+	if rerr != nil {
+		return "", rerr
+	}
+	sessionID = resolved
 	client := seamClientWithPassword(password)
 	if err := client.Abort(ctx, sessionID); err != nil {
 		if isSessionNotFoundErr(err) {

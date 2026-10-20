@@ -57,11 +57,17 @@ func (h *AdminSessionHandler) ForceAbortSession(c *gin.Context) {
 	}
 
 	if !h.proxyHandler.isSessionActive(c.Request.Context(), workspaceID, sessionID) {
-		c.JSON(http.StatusNotFound, gin.H{
+		body := gin.H{
 			"error":       "session is not currently active (nothing to abort)",
 			"sessionId":   sessionID,
 			"workspaceId": workspaceID,
-		})
+		}
+		// Design 0066 §4.6: not-found-class verdicts carry the
+		// did-you-mean payload (omitted when nothing scores).
+		if s := h.proxyHandler.sessionSuggestions(c, workspaceID, sessionID); len(s) > 0 {
+			body["suggestions"] = s
+		}
+		c.JSON(http.StatusNotFound, body)
 		return
 	}
 

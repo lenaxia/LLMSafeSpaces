@@ -104,6 +104,27 @@ type DatabaseService interface {
 	UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error
 	SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error
 	IsSessionArchived(ctx context.Context, workspaceID, sessionID string) (bool, error)
+	// EnsureSessionRegistered is design 0066's single registration seam:
+	// mint-and-persist the short id (retrying on (workspace_id,
+	// short_id) uniqueness violation), or return the surviving row's
+	// existing short id — the one DB write path that can create a
+	// short id. All other surfaces read or replicate.
+	EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error)
+	// FindSessionByShortID resolves a case-insensitive short id to the
+	// canonical harness session id within one workspace ("" when absent).
+	FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error)
+	// FindSessionsByAlias returns the workspace's sessions whose
+	// casefolded+trimmed title equals the alias (0..n rows — more than
+	// one is the ambiguity the resolution layer must refuse).
+	FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error)
+	// ListWorkspaceIDsByOwner feeds the cross-workspace suggestion
+	// scope (design 0066 §4.6): the workspace ids the user can already
+	// list — suggestions never reveal more than that set.
+	ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error)
+	// FindRefCandidatesAcrossWorkspaces exact-matches a ref (short id
+	// case-insensitive, harness id byte-equal, alias casefolded) across
+	// the given workspaces — the wrong-workspace did-you-mean.
+	FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error)
 	ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error)
 	Ping(ctx context.Context) error
 	Start() error
@@ -187,6 +208,11 @@ type SessionIndexService interface {
 	UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error
 	SetArchived(ctx context.Context, workspaceID, sessionID string, archived bool) error
 	IsArchived(ctx context.Context, workspaceID, sessionID string) (bool, error)
+	// Register is the registration seam's service wrapper (design
+	// 0066): idempotent mint-and-persist behind a known-registered LRU
+	// so the hot per-message path stays registration-free after first
+	// sight. Returns the short id ("" when the seam is degraded).
+	Register(ctx context.Context, workspaceID, sessionID, harnessType string) string
 	Start() error
 	Stop() error
 }

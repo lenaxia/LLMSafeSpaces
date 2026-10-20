@@ -130,9 +130,9 @@ func TestListSessionIndex_IncludesArchivedFlag(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"session_id", "title", "parent_session_id", "last_message_at",
-		"message_count", "last_seen_at", "has_unread", "context_used", "archived",
-	}).AddRow("ses-1", "Old chat", nil, nil, 7, nil, false, nil, true).
-		AddRow("ses-2", "Live chat", nil, nil, 3, nil, false, nil, false)
+		"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id",
+	}).AddRow("ses-1", "Old chat", nil, nil, 7, nil, false, nil, true, nil).
+		AddRow("ses-2", "Live chat", nil, nil, 3, nil, false, nil, false, nil)
 
 	mock.ExpectQuery(regexp.QuoteMeta(
 		`SELECT session_id, title, parent_session_id, last_message_at, message_count, last_seen_at`,

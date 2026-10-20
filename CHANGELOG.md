@@ -50,6 +50,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
 
+### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
+
+- **Workspace pods now carry a dedicated disk-backed emptyDir for the
+  regenerable Go caches.** `GOCACHE=/sandbox-cache/go-build` and
+  `GOTMPDIR=/sandbox-cache/gotmp` are injected with the platform env
+  block, and an 8Gi `SizeLimit` emptyDir (no `Medium` — capacity, not
+  RAM) backs both paths via subPath mounts on every container that runs
+  platform tooling (the main container and the `workspace-setup` init,
+  whose read-only root filesystem would otherwise fail `go install`).
+  Pre-#1758, Go's defaults landed the build cache in
+  `$HOME/.cache/go-build` and build temp in `/tmp` — both subPaths of
+  the workspace PVC, which is never resized — producing the #1744
+  incident economy (55%→93% in minutes under five concurrent Go lanes,
+  ~5G/hour regrowth; caches dying with the pod is the correct
+  lifecycle). `GOPATH` deliberately stays PVC-mounted: the module cache
+  is network-expensive to rebuild and valuable across suspend/resume
+  (the disk-recovery lever sweeps it under pressure). Storage docs
+  updated with the sixth volume and its trade-offs.
+### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
+
+- **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
+  The opencode config writer's platform permission floor now carries
+  default-allow rules for all three PVC mount points (bare key +
+  children glob each — the wildcardless keys shield the bare paths from
+  the `/home/*` parent deny), replacing the pre-#1759 ambient-ask carve
+  on the home root and the narrow subpath pre-allows
+  (`.cache`/`.config`/`.local` — superseded by the root allow and
+  removed as dead rules). Every credential and system deny keeps
+  winning by the documented sort-order precedence
+  (`'*' 0x2A < '.' 0x2E` — each deny sorts after the root allow glob
+  and is the last matching rule for its paths): `.ssh`, `.secrets`,
+  `.git-credentials`, `.local/opencode/auth.json`,
+  `/sandbox-runtime/rt/auth.json` + `rt/secrets`, and the system denies
+  (`/proc`, `/sys`, `/run`, `/etc`, `/dev`, `/root`, `/var`, `/home`).
+  The full verdict matrix — allows present, denies still biting — is
+  pinned in `permissiontiers_test.go`; the deny-preservation pin
+  asserts every deny entry survives the amendment.
+
+
+### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
+
+- **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default
+  `OnRefresh`) on the Workspace CRD + controller** (owner ruling
+  2026-10-19: the user owns when their sessions are interrupted). Under
+  `OnRefresh` a desired agentd digest change NEVER touches a running
+  pod: the desired digest is recorded on the Workspace status
+  (`agentdPendingDigest`) and applies at the next natural pod
+  recreation — user compute refresh (`restartGeneration` bump),
+  suspend/resume, or any controller-initiated recreation. `Rolling`
+  (per-workspace spec, or instance-wide via
+  `controller.agentdDelivery.updatePolicy` → `--agentd-update-policy`)
+  recreates pods on digest drift drain-aware per #761 (deferred behind
+  busy sessions until idle or stalled; `workspace_drain_deferred_total
+  {reason="agentd_update_roll"}`). Resolution order: spec → instance
+  flag → `OnRefresh`; a typo'd flag value fails controller startup and
+  the Helm render. Drift compares the digest PORTION only — a repo/tag
+  re-pin of the same digest never churns the fleet.
+- **`agentdDelivery.forceRoll` escape hatch** (spec, any policy): roll a
+  workspace IMMEDIATELY on digest drift, session drain BYPASSED — for
+  security-critical agentd fixes; the operator setting it declares the
+  consent to cut in-flight turns (the #1505 posture). Level-triggered:
+  no drift is a no-op; clear it after use. Emits the
+  `AgentdUpdateForcedRoll` event and
+  `workspace_drain_forced_total{reason="agentd_update_roll_forced"}`.
+  The new deletion site is classified in the #1724 deletion-path
+  inventory (`upgrade_rollout_kill_test.go`).
+- **Status drift visibility**: Workspace status carries
+  `agentdEffectiveDigest` (digest the current pod was built with) and
+  `agentdPendingDigest` (desired, unapplied — "applies on next
+  refresh"), exposed through `GET /workspaces/{id}/status`
+  (`agentdEffectiveDigest` / `agentdPendingDigest`) for the dashboard.
+- **N-1 compatibility discipline for the worker-tool seam**: the frozen
+  wire contract of `/internal/v1/automation/board/*`
+  (`board_heartbeat` / `board_report_throttle` / `board_move_stage` /
+  `board_read`, captured from agentd v0.39.0) lives in
+  `pkg/board/worker_compat.go` as a tested skew matrix — the frozen
+  sets replay verbatim against the CURRENT API
+  (`board_worker_compat_1746_test.go`) and the live agentd client must
+  emit exactly the newest set (`loopback_board_wire_1746_test.go`).
+  Wire changes are additive (a new frozen set or `/internal/v2`),
+  never v1 mutations.
+- Docs: `docs/operator/agentd-delivery.md` (policy matrix + escape
+  hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
+  volumes pointer), `docs/architecture/components.md` (controller policy
+  + the versioned board seam contract).
+### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
+
+- **The workspace pod's disk-recovery allowlist now covers the caches
+  that actually fill the PVC.** Nine classes covered ~2G of the
+  typical footprint while the biggest regenerables went unchecked —
+  the incident pod logged three ENOSPC episodes in a day (one broke a
+  Go test run at 100%) and needed four manual orchestrator sweeps for
+  97%→60% swings. New classes (with observed live sizes): playwright
+  browsers `~/.cache/ms-playwright` (641M), the session caches
+  `/tmp/opencode/{gocache,goocache,npm-cache}` (2.4G live; the new
+  `/tmp/opencode` root is a parent root — live session scratch and
+  GOBIN tools under it stay untouchable, only the three cache dirs are
+  entries), stale Go temp scratch `~/.cache/gotmp*` incl. `gotmp-w*`
+  worker dirs (the 120s corpse rule), the golangci-lint cache (103M),
+  npm's `_cacache`/`_npx` (260M; the existing `npm-cache` class is
+  NARROWED from the whole `~/.npm` root to `_cacache` — `npm cache
+  clean`'s own target), and the kubebuilder-envtest assets (163M) —
+  regenerable but under the protected `/workspace/.local` package-home
+  tree, allowlisted via an exact-directory root (the protected list
+  itself is untouched).
+- **Three safety gates make those classes reapable without pulling
+  them out from under a live process.** (1) An open-handle scan — one
+  `/proc/*/fd`+`exe`+`cwd` snapshot per sweep: any class (or prefix
+  child) with an open path under it is never a deletion candidate and
+  reports the new `in_use` status with its measured bytes visible. A
+  `/proc` that cannot be enumerated at all fails the scan closed
+  (everything `in_use`); individually unreadable tables (foreign-uid
+  processes, mid-execve transients, non-dumpable session helpers like
+  `(sd-pam)`) are skipped by documented policy — none exist inside the
+  workspace container's pid namespace where the engine runs (verified:
+  7/7 tables readable, one uid).
+  (2) Per-class size floors calibrated to the observed full-set sizes —
+  below the floor a tree is a partial download or debris and reports
+  `not_present` with the floor in the reason. (3) An optional
+  staleness gate on directory classes holds freshly-written (hot)
+  caches whole. The frontend strip renders the new classes and the
+  `in_use` verdict (pinned bytes shown, excluded from the reclaimable
+  total); the REST contract documents the classes and gates.
+
 ## [0.39.0] - 2026-10-19
 
 ### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)
@@ -175,6 +299,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from pending to live (worker-only rows — heartbeat/report_throttle, and
   engine-internal claim — pinned absent by design; external actors hold
   no claim tokens).
+
+### Added — harness-abstracted short session IDs + alias layer + did-you-mean (#1691, design 0066)
+
+- **Sessions gain a platform-minted short address** (`oc-ab12cd34`:
+  harness prefix + 8 chars over `[0-9a-z]`, per-workspace unique,
+  case-insensitive at resolution) beside the 30-char harness id:
+  migration `000037` (nullable `session_index.short_id` + partial
+  unique index `(workspace_id, short_id)`), the single registration
+  seam `EnsureSessionRegistered` (crypto/rand mint in Go, check-and-
+  retry on the unique index, NULL-backfill) wired into all six
+  row-creating index paths + `POST /sessions/new` + the reconcile
+  walk's bounded backfill sweep. The harness id becomes an internal
+  detail at the edges; internal joins stay keyed on it (additive only).
+- **The keyword alias layer (design 0066 ruling 5)**: a session's
+  current title — and, in the agentd tools, its harness slug
+  (`sunny-wolf`) — is a first-class resolvable alias, unambiguous-only
+  within the workspace. Aliases resolve at request time against the
+  live name holders; they are never persisted as references. Every
+  id-taking API route (message/history/get/abort/delete/queue/title/
+  seen/archived/admin force-abort) and every id-taking agentd MCP tool
+  (send_message target + origin, session_read, session_metadata,
+  rename, abort, archive, delete, compact) accepts short ids and
+  unambiguous aliases; a shared precedence (short id > legacy id
+  byte-identical > alias) never rewrites legacy ids and never probes
+  them first — full-ID addressing is byte-identical with zero added
+  round trips, and truncated ids never silently resolve (#1663).
+- **Did-you-mean on every resolution surface** (the #1667
+  generalization): one shared deterministic ranking (bounded
+  Levenshtein over short + legacy ids for id-form input;
+  word-boundary prefix / token overlap over titles + slugs for
+  alias-form input; last-active DESC tiebreak; top-3, always — the
+  cross-workspace tail included) serves the API's structured
+  `404/410 + suggestions:[{title, shortId, sessionId, workspace,
+  lastActive}]` payloads (the typed session_gone 410, the archived
+  404, admin force-abort, alias ambiguity) and the agentd clause
+  (candidates = replica short ids + harness ids + titles + slugs).
+  Workspace-scoped first; only when nothing scores and the requester
+  is known does one bounded exact-match query cover their OTHER
+  authorized workspaces. Ambiguity is never auto-resolved;
+  authz/transport/5xx never suggest. On a transient alias-lookup DB
+  error, resolution degrades by shape: seam-charset-valid refs pass
+  through unchanged (never a false 404), while refs the seam could
+  never accept as ids answer a new honest-availability **503**
+  ("session resolution temporarily unavailable") on the id-taking
+  routes — no suggestions, and no write ever sees title text as a
+  session id (no ghost-row mint). The #1340 session-not-found error
+  mapping stays scoped to the session-READ routes exactly as its
+  covenant documents.
+- **The agentd replica + control plane**: `/sandbox-runtime/
+  session-shortids.json` (memory-backed class, 0600, atomic rename)
+  populated by boot pull, TTL-limited on-miss pulls, and
+  create_session's register round trip over the new pod-identity
+  endpoints (`GET /internal/v1/session-registry`, `POST
+  /internal/v1/session-register`); agentd never mints. create_session
+  returns `short_id` (omitted on control-plane timeout, self-heals);
+  session_list decorates rows with `shortId` and stays byte-verbatim
+  when the replica is empty; `GET /sessions` gains the additive `q`
+  filter (title substring / short-id prefix / legacy-id prefix; an
+  empty id-like miss answers the suggestions payload; no `q` ⇒ the
+  bare array byte-identical); `SessionListItem`/`EnsureSessionResponse`
+  carry `shortId` (omitempty); OpenAPI additive updates.
+- **Out of this PR** (sequenced per design 0066): the ABI `short_id`
+  fields (`Session` 13 / `ActionResult` 12) + regen and the frontend
+  URL flip. Sequencing note (design §7 inverts here deliberately):
+  this PR lands the M3 addressing/acceptance surfaces ahead of the
+  M2 ABI fields because the REST/tools layer is what the orchestrator
+  lanes address sessions through today, the ABI fields only carry the
+  same ids as data, and both orders converge on the design's Phase C
+  road — the ABI regen lands with the SDK/OpenAPI flip that consumes
+  it. Two tracked follow-ups: design 0066 §4.3(c) push-on-mint along
+  agentpush (the replica converges via boot + on-miss pulls in the
+  meantime — the design's own "advisory, nothing is ever unaddressable"
+  discipline), and the send surface's bare-502 on id-form misses — a
+  deliberate exception to ruling 8's everywhere-suggests intent forced
+  by the #1340 covenant (the session-not-found classification stays on
+  the read routes), to be revisited with a typed verdict from the
+  harness.
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 

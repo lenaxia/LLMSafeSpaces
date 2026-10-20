@@ -55,8 +55,16 @@ const (
 	// does not exist (normal on fresh pods), OR exists with nothing
 	// reclaimable (empty cache dir, no stale children), OR existed at
 	// measure time but was aliased/externally removed before the sweep
-	// reached it (carries a reason string).
+	// reached it (carries a reason string), OR measured below the
+	// class's #1744 size floor (the reason carries the floor).
 	ClassNotPresent ClassStatus = "not_present"
+	// ClassInUse: the class EXISTS — Bytes reports the measured figure
+	// so the operator sees what is pinned — but nothing was deleted:
+	// an open file handle (the engine's /proc/*/fd scan) or a hot
+	// directory mtime holds it. The #1744 whole-dir classes (playwright
+	// browsers, session gocache, ...) are never reaped out from under
+	// a live process; re-run once the holder closes.
+	ClassInUse ClassStatus = "in_use"
 	// ClassRefused: the entry FAILED the boundary validator. The class
 	// is reported with the refusal reason; other classes proceed. A
 	// refusal means the manifest (or the filesystem) tried to broaden
