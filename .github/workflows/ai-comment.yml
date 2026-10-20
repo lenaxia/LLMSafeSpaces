@@ -10,15 +10,18 @@
 # versa), and the footer posting via the central post-footer.sh.
 #
 # The `if:` filter MUST stay in the caller (ai-workflows lesson #4) — the
-# reusable workflow cannot gate on the triggering comment. At v0.2.16 the
+# reusable workflow cannot gate on the triggering comment. At v0.2.18 the
 # reusable workflow performs NO commenter filtering of its own (verified:
 # no job-level `if:`, zero bot/author checks in route-command.sh) — caller
 # admission below is the ONLY authorization check; anyone it admits,
-# trusted app bots included, reaches the command router. The `uses:` ref
-# MUST be a hardcoded tag (no vars context); propagate.yml in ai-workflows
-# bumps it on every release.
+# trusted app bots included, reaches the command router. (v0.2.17 added
+# the opt-in trusted_app_bots with:-input below and v0.2.18 fixed its
+# delivery via GITHUB_ENV: it bypasses the opencode CLI's startup
+# collaborator assert for listed bots only — admission, not
+# authorization, stays here.) The `uses:` ref MUST be a hardcoded tag (no
+# vars context); propagate.yml in ai-workflows bumps it on every release.
 #
-# Trusted app-bot allowlist (#1710, ai-workflows v0.2.16 README §4 caller
+# Trusted app-bot allowlist (#1710, ai-workflows v0.2.18 README §4 caller
 # contract): app bots always carry author_association NONE — they are
 # neither owners nor collaborators — so the association clauses above can
 # never admit them. The exact-login arm below is the platform delivery
@@ -73,8 +76,13 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
        contains(fromJson('["agentic-actor-coder[bot]"]'), github.event.comment.user.login))
-    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.16
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.18
     secrets: inherit
     with:
-      version: v0.2.16
+      version: v0.2.18
       project_name: LLMSafeSpaces
+      # Trusted app-bot commenters (ai-workflows #51): without this the CLI
+      # assert refuses bot /review comments pre-LLM even though the admission
+      # arm above deliberately admits them. Must match canonicalTrustedAppBots
+      # (gha_callers_test.go).
+      trusted_app_bots: '["agentic-actor-coder[bot]"]'

@@ -105,16 +105,19 @@ type APIClient interface {
 	BoardGetProject(ctx context.Context, projectID string) (json.RawMessage, error)
 	BoardCreateProject(ctx context.Context, body BoardProjectBody) (json.RawMessage, error)
 	BoardUpdateProject(ctx context.Context, projectID string, body BoardProjectBody) (json.RawMessage, error)
-	BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
-	BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardArchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
+	BoardUnarchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
 	BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error)
+	BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error)
+	BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error)
+	BoardHealth(ctx context.Context) (json.RawMessage, error)
 	BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error)
 	BoardGetEpic(ctx context.Context, epicID string) (json.RawMessage, error)
 	BoardUpdateEpic(ctx context.Context, epicID string, body BoardEpicBody) (json.RawMessage, error)
-	BoardEpicActivate(ctx context.Context, epicID string) (json.RawMessage, error)
-	BoardEpicPause(ctx context.Context, epicID string) (json.RawMessage, error)
-	BoardEpicArchive(ctx context.Context, epicID string) (json.RawMessage, error)
-	BoardEpicUnarchive(ctx context.Context, epicID string) (json.RawMessage, error)
+	BoardEpicActivate(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
+	BoardEpicPause(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
+	BoardEpicArchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
+	BoardEpicUnarchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
 	BoardCancelEpic(ctx context.Context, epicID, reason, requestID string) (json.RawMessage, error)
 	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
@@ -123,7 +126,7 @@ type APIClient interface {
 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardCancelTask(ctx context.Context, taskID, reason, requestID string) (json.RawMessage, error)
 	BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error)
-	BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error
+	BoardRemoveDependency(ctx context.Context, taskID, dependsOn, requestID string) error
 }
 
 // CreateWorkspaceReq is the request body for workspace creation.
@@ -1038,6 +1041,12 @@ type boardCancelBody struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
+// boardRequestIDBody is the optional replay key on otherwise-empty
+// lifecycle bodies.
+type boardRequestIDBody struct {
+	RequestID string `json:"requestId,omitempty"`
+}
+
 // boardDependencyBody mirrors the REST boardDependencyRequest.
 type boardDependencyBody struct {
 	DependsOn string `json:"dependsOn"`
@@ -1066,19 +1075,19 @@ func (c *HTTPClient) BoardUpdateProject(ctx context.Context, projectID string, b
 	return c.doRaw(ctx, http.MethodPatch, "/api/v1/me/projects/"+projectID, body)
 }
 
-func (c *HTTPClient) boardProjectLifecycle(ctx context.Context, projectID, verb string) (json.RawMessage, error) {
+func (c *HTTPClient) boardProjectLifecycle(ctx context.Context, projectID, verb, requestID string) (json.RawMessage, error) {
 	if err := validateID(projectID, "project_id"); err != nil {
 		return nil, err
 	}
-	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/projects/"+projectID+"/"+verb, nil)
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/projects/"+projectID+"/"+verb, boardRequestIDBody{RequestID: requestID})
 }
 
-func (c *HTTPClient) BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
-	return c.boardProjectLifecycle(ctx, projectID, "archive")
+func (c *HTTPClient) BoardArchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
+	return c.boardProjectLifecycle(ctx, projectID, "archive", requestID)
 }
 
-func (c *HTTPClient) BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
-	return c.boardProjectLifecycle(ctx, projectID, "unarchive")
+func (c *HTTPClient) BoardUnarchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
+	return c.boardProjectLifecycle(ctx, projectID, "unarchive", requestID)
 }
 
 func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
@@ -1090,6 +1099,45 @@ func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string
 		path += "?stage=" + url.QueryEscape(stage)
 	}
 	return c.doRaw(ctx, http.MethodGet, path, nil)
+}
+
+// BoardSearchQuery is the board search projection's filter set (§4.8's
+// search box): all fields except Q optional.
+type BoardSearchQuery struct {
+	Q       string
+	Project string
+	Epic    string
+	Stage   string
+	Tags    []string
+}
+
+func (c *HTTPClient) BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error) {
+	if err := validateID(projectID, "project_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/projects/"+projectID+"/epics", nil)
+}
+
+func (c *HTTPClient) BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error) {
+	params := url.Values{}
+	params.Set("q", query.Q)
+	if query.Project != "" {
+		params.Set("project", query.Project)
+	}
+	if query.Epic != "" {
+		params.Set("epic", query.Epic)
+	}
+	if query.Stage != "" {
+		params.Set("stage", query.Stage)
+	}
+	for _, tag := range query.Tags {
+		params.Add("tag", tag)
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/board/search?"+params.Encode(), nil)
+}
+
+func (c *HTTPClient) BoardHealth(ctx context.Context) (json.RawMessage, error) {
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/board/health", nil)
 }
 
 func (c *HTTPClient) BoardCreateEpic(ctx context.Context, projectID string, body BoardEpicBody) (json.RawMessage, error) {
@@ -1113,27 +1161,27 @@ func (c *HTTPClient) BoardUpdateEpic(ctx context.Context, epicID string, body Bo
 	return c.doRaw(ctx, http.MethodPatch, "/api/v1/me/epics/"+epicID, body)
 }
 
-func (c *HTTPClient) boardEpicLifecycle(ctx context.Context, epicID, verb string) (json.RawMessage, error) {
+func (c *HTTPClient) boardEpicLifecycle(ctx context.Context, epicID, verb, requestID string) (json.RawMessage, error) {
 	if err := validateID(epicID, "epic_id"); err != nil {
 		return nil, err
 	}
-	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/"+verb, nil)
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/"+verb, boardRequestIDBody{RequestID: requestID})
 }
 
-func (c *HTTPClient) BoardEpicActivate(ctx context.Context, epicID string) (json.RawMessage, error) {
-	return c.boardEpicLifecycle(ctx, epicID, "activate")
+func (c *HTTPClient) BoardEpicActivate(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "activate", requestID)
 }
 
-func (c *HTTPClient) BoardEpicPause(ctx context.Context, epicID string) (json.RawMessage, error) {
-	return c.boardEpicLifecycle(ctx, epicID, "pause")
+func (c *HTTPClient) BoardEpicPause(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "pause", requestID)
 }
 
-func (c *HTTPClient) BoardEpicArchive(ctx context.Context, epicID string) (json.RawMessage, error) {
-	return c.boardEpicLifecycle(ctx, epicID, "archive")
+func (c *HTTPClient) BoardEpicArchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "archive", requestID)
 }
 
-func (c *HTTPClient) BoardEpicUnarchive(ctx context.Context, epicID string) (json.RawMessage, error) {
-	return c.boardEpicLifecycle(ctx, epicID, "unarchive")
+func (c *HTTPClient) BoardEpicUnarchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	return c.boardEpicLifecycle(ctx, epicID, "unarchive", requestID)
 }
 
 func (c *HTTPClient) BoardCancelEpic(ctx context.Context, epicID, reason, requestID string) (json.RawMessage, error) {
@@ -1205,7 +1253,7 @@ func (c *HTTPClient) BoardAddDependency(ctx context.Context, taskID, dependsOn, 
 		boardDependencyBody{DependsOn: dependsOn, RequestID: requestID})
 }
 
-func (c *HTTPClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error {
+func (c *HTTPClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn, requestID string) error {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return err
 	}
@@ -1215,5 +1263,9 @@ func (c *HTTPClient) BoardRemoveDependency(ctx context.Context, taskID, dependsO
 	if err := validateID(dependsOn, "depends_on"); err != nil {
 		return err
 	}
-	return c.doJSON(ctx, http.MethodDelete, "/api/v1/me/tasks/"+taskID+"/dependencies/"+dependsOn, nil, nil)
+	path := "/api/v1/me/tasks/" + taskID + "/dependencies/" + dependsOn
+	if requestID != "" {
+		path += "?requestId=" + url.QueryEscape(requestID)
+	}
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
 }
