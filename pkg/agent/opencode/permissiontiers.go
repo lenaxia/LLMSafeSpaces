@@ -94,12 +94,16 @@ import (
 //     the CONTENTS stay hard-denied by the "/*" variants (proven live
 //     — the deny-preservation leg in the integration corpus).
 //     (b) A single FILE under an allowed glob has no live-effective
-//     deny shape: e.g. /workspace/.local/opencode/auth.json under
-//     "/workspace/*" is ALLOWED wherever external_directory governs it
-//     (proven with a foreign project root — the integration legs boot
-//     opencode outside /workspace); on the default pod residual 1's
-//     project-root exemption is the governing claim. This exposure is
-//     the config allow's own trade (#1759's owner spec). The closed
+//     deny shape of its own: e.g. /workspace/.local/opencode/auth.json
+//     under "/workspace/*" — its protection is the DIRECTORY children
+//     deny "/workspace/.local/opencode/*", ADOPTED by #1777 (the
+//     owner-funded resolution of this residual); files under an
+//     allowed glob with no children deny remain allowed wherever
+//     external_directory governs them (proven with a foreign project
+//     root — the integration legs boot opencode outside /workspace);
+//     on the default pod residual 1's project-root exemption is the
+//     governing claim. The pre-#1777 exposure was the config allow's
+//     own trade (#1759's owner spec). The closed
 //     #1764 asserted an engine auth-store self-allow that was never
 //     observed (no rule dump ever showed one) and concluded from it
 //     that a children deny could not protect the auth path — the
@@ -113,13 +117,16 @@ import (
 //     (c) The engine APPENDS self-allows after the config rules
 //     (observed shapes: the boot's tool-output directory,
 //     "/tmp/opencode/*"); appended rules beat config under findLast.
-//     (d) A live-effective protective shape DOES exist for the
+//     (d) A live-effective protective shape EXISTS for the
 //     directory case: a children deny "/workspace/.local/opencode/*"
 //     byte-sorts after the root allow and BITES live (probed
 //     2026-10-20: a bash cat of the auth path denied with our rule
-//     quoted in the engine's dump). Adding it to the floor would also
-//     deny opencode.db-class session state to agent tools — an owner
-//     decision, deliberately NOT taken in this documentation change.
+//     quoted in the engine's dump; pinned permanently by
+//     TestPermissionTier_BashDeniesOpencodeDataDir). ADOPTED by #1777:
+//     the owner accepted the scope trade — agent bash/file tools also
+//     lose opencode.db-class session state; the opencode server's own
+//     native IO is unaffected (external_directory gates tool
+//     invocations only).
 //     UPSTREAM ASKS: (i) honor exact/terminal-star denies; (ii) an
 //     exclude shape that beats allow-globs; (iii) document which
 //     paths the engine self-allows (supersedes #1764's ask iii,
@@ -195,6 +202,14 @@ var platformPermissionTiers = map[string]string{
 	//     permission model. ---
 	"/workspace":   "allow",
 	"/workspace/*": "allow",
+
+	// --- #1777: the opencode data dir under the workspace root —
+	//     children deny (the live-effective shape; residual 3(d)).
+	//     Protects the auth store symlink AND opencode.db-class state
+	//     from agent tools; the opencode server's own IO is not gated.
+	//     Sorts after "/workspace/*" ('*' 0x2A < '.' 0x2E) — the deny
+	//     is the last matching rule for every path under the dir. ---
+	"/workspace/.local/opencode/*": "deny",
 
 	// --- resolved secret targets (canonical matching for file tools).
 	//     rt/ssh and rt/git-credentials are deliberately ABSENT: ambient
