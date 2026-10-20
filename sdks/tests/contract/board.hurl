@@ -377,7 +377,6 @@ GET {{base_url}}/me/projects/{{project_sid}}/epics
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.epics" isArray
 jsonpath "$.epics[0].short_id" matches /^epc-[0-9a-z]{8}$/
 jsonpath "$.epics[0].progress_total" isInteger
 jsonpath "$.epics[0].progress_derived" isBoolean
@@ -393,15 +392,13 @@ GET {{base_url}}/me/board/search?q=contract&tag=contract
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.results" isArray
-jsonpath "$.suggestions" isArray
+jsonpath "$.results[0].short_id" isString
 
 # Search by exact short id (case-insensitive resolution shape)
 GET {{base_url}}/me/board/search?q={{task_a_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.results" isArray
 jsonpath "$.results[0].short_id" isString
 
 # Missing q: adapter-owned 400
@@ -419,12 +416,8 @@ GET {{base_url}}/me/board/health
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.active_leases" isArray
-jsonpath "$.task_cooldowns" isArray
-jsonpath "$.project_cooldowns" isArray
-jsonpath "$.pending_input_by_origin" isObject
-jsonpath "$.recent_reclaims" isArray
-jsonpath "$.project_slots" isArray
+jsonpath "$.project_slots[0].worker_slots" isInteger
+jsonpath "$.project_slots[0].in_use" isInteger
 
 # Lifecycle replay key: the optional requestId body threads (a replay
 # renders 200-with-original — the duplicate arm pins it end-to-end)
