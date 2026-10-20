@@ -1078,6 +1078,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#disk-backed-emptydir-the-build-cache-1758" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disk-backed emptyDir: the build cache (#1758)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#platform-delivered-volumes-agentd-opencode-overlays" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2636,6 +2647,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#disk-backed-emptydir-the-build-cache-1758" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disk-backed emptyDir: the build cache (#1758)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#platform-delivered-volumes-agentd-opencode-overlays" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2923,6 +2945,7 @@
 <li><a href="#volume-layout-at-a-glance">Volume layout at a glance</a></li>
 <li><a href="#pvc-backed-mounts">PVC-backed mounts</a></li>
 <li><a href="#tmpfs-emptydir-mounts">tmpfs emptyDir mounts</a></li>
+<li><a href="#disk-backed-emptydir-the-build-cache-1758">Disk-backed emptyDir: the build cache (#1758)</a></li>
 <li><a href="#storageclass-selection">StorageClass selection</a></li>
 <li><a href="#sizing">Sizing</a></li>
 <li><a href="#backup-and-recovery">Backup and recovery</a></li>
@@ -2932,7 +2955,7 @@
 </ul>
 <hr />
 <h2 id="volume-layout-at-a-glance">Volume layout at a glance<a class="headerlink" href="#volume-layout-at-a-glance" title="Permanent link">&para;</a></h2>
-<p>Every workspace pod has five volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death). This split is deliberate: it keeps plaintext credentials off the PVC at rest while keeping user data and caches durable.</p>
+<p>Every workspace pod has six volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death), and one is a disk-backed emptyDir for the regenerable build-cache economy (#1758 — also wiped on pod death, by design: caches are correct to lose). This split is deliberate: it keeps plaintext credentials off the PVC at rest, keeps user data durable, and keeps rebuildable caches OFF the PVC entirely.</p>
 <table>
 <thead>
 <tr>
@@ -2973,12 +2996,19 @@
 <td>No</td>
 <td><code>agent-config.json</code>, <code>secrets-env</code>, <code>admin-prompt.md</code>, symlink targets</td>
 </tr>
+<tr>
+<td><code>/sandbox-cache/{go-build,gotmp}</code></td>
+<td>emptyDir (disk, 8Gi <code>SizeLimit</code>)</td>
+<td>No</td>
+<td><code>GOCACHE</code> / <code>GOTMPDIR</code> — the regenerable Go build-cache economy (#1758)</td>
+</tr>
 </tbody>
 </table>
 <pre class="mermaid"><code>graph LR
     PVC["PVC&lt;br/&gt;(one per Workspace)"] --&gt; WS["/workspace&lt;br/&gt;(subPath: workspace)"]
     PVC --&gt; HOME["/home/sandbox&lt;br/&gt;(subPath: home)"]
     PVC --&gt; TMP["/tmp&lt;br/&gt;(subPath: tmp)"]
+    ED["emptyDir&lt;br/&gt;(node disk, 8Gi, dies with pod)"] --&gt; SC["/sandbox-cache/go-build&lt;br/&gt;+ /sandbox-cache/gotmp&lt;br/&gt;(GOCACHE/GOTMPDIR, #1758)"]
     MEM["tmpfs emptyDir&lt;br/&gt;(RAM, wiped on death)"] --&gt; CFG["/sandbox-cfg&lt;br/&gt;(32Mi, read-only on main)"]
     MEM --&gt; RT["/sandbox-runtime&lt;br/&gt;(96Mi, RW)"]
     RT -.-&gt;|"symlinks"| HOME
@@ -3002,7 +3032,7 @@
 <li>Enricher cache, tool caches (mise, npm, pip, etc.).</li>
 </ul>
 <h3 id="tmp"><code>/tmp</code><a class="headerlink" href="#tmp" title="Permanent link">&para;</a></h3>
-<p>Used for init scripts and package caches. Note: <code>agent-config.json</code> and <code>secrets-env</code> were <strong>moved off <code>/tmp</code></strong> to <code>/sandbox-runtime</code> (tmpfs) — both for at-rest data isolation and because the <code>credential-setup</code> init container's <code>/tmp</code> is read-only (<code>ReadOnlyRootFilesystem</code> with no writable emptyDir mounted).</p>
+<p>Used for init scripts and package caches. Note: <code>agent-config.json</code> and <code>secrets-env</code> were <strong>moved off <code>/tmp</code></strong> to <code>/sandbox-runtime</code> (tmpfs) — both for at-rest data isolation and because the <code>credential-setup</code> init container's <code>/tmp</code> is read-only (<code>ReadOnlyRootFilesystem</code> with no writable emptyDir mounted). The Go build cache no longer lands here either: since #1758 <code>GOCACHE</code>/<code>GOTMPDIR</code> point at the disk-backed <code>/sandbox-cache</code> emptyDir (below), so concurrent Go lanes cannot fill the PVC with regenerable build artifacts (~5G/hour observed pre-#1758).</p>
 <hr />
 <h2 id="tmpfs-emptydir-mounts">tmpfs emptyDir mounts<a class="headerlink" href="#tmpfs-emptydir-mounts" title="Permanent link">&para;</a></h2>
 <p>The two tmpfs-backed emptyDir volumes are the security-critical part of the layout. They hold plaintext credentials at runtime but are <strong>wiped on pod death</strong> — the PVC retains only dangling symlinks, no plaintext bytes.</p>
@@ -3027,8 +3057,18 @@
 <p>User-DEK credentials (env-secrets like <code>GH_TOKEN</code>, SSH keys, user LLM providers) survive a main-container restart because every resync-applied revision is persisted verbatim to the batch file (<code>/sandbox-cfg/secrets.json</code>, an emptyDir that survives container restarts and is wiped on pod death); the next boot's materialize re-applies it. The old reload-replay cache (<code>last-reload-secrets.json</code>) was demolished.</p>
 </details>
 <hr />
+<h2 id="disk-backed-emptydir-the-build-cache-1758">Disk-backed emptyDir: the build cache (#1758)<a class="headerlink" href="#disk-backed-emptydir-the-build-cache-1758" title="Permanent link">&para;</a></h2>
+<p><code>/sandbox-cache</code> is a DISK-backed emptyDir (8Gi <code>SizeLimit</code>, no <code>Medium</code>) holding the two subPath mounts <code>go-build</code> and <code>gotmp</code>. The pod env points <code>GOCACHE=/sandbox-cache/go-build</code> and <code>GOTMPDIR=/sandbox-cache/gotmp</code> there, so the entire regenerable Go build-cache economy — previously Go's <code>$HOME/.cache/go-build</code> and <code>/tmp</code> defaults, both PVC subPaths — dies with the pod instead of accumulating on the PVC (the #1744 evidence: 55%→93% in minutes under five concurrent Go lanes, ~5G/hour regrowth; the PVC is never resized).</p>
+<p>The subPath mounts put both directories in place at container start — kubelet creates missing subPath directories in the volume (<code>SafeMakeDir</code>) with the emptyDir root's <code>0777</code> mode, so the uid-1000 tooling can write immediately; the <code>go</code> tool itself never creates <code>GOTMPDIR</code> (it <code>MkdirTemp</code>s inside it, requiring the parent to exist). The volume is mounted on every container that runs platform tooling — the main container and the <code>workspace-setup</code> init, whose read-only root filesystem would otherwise fail every <code>go install</code>.</p>
+<p>Notes:</p>
+<ul>
+<li><strong>GOPATH deliberately stays on the PVC</strong> (<code>/workspace/.local/share/go</code>): the module cache is re-downloadable but network-expensive and valuable across suspend/resume; the disk-recovery lever covers it under pressure.</li>
+<li>npm/pip/playwright caches still live under their <code>$HOME</code> conventions on the PVC; the disk-recovery allowlist (#1753) remains the sweep for those.</li>
+<li>The 8Gi bound's enforcement semantics (scan-based eviction, overshoot-tolerant by design) and the standing ephemeral-storage decision are documented in <a href="#why-ephemeral-storage-limits-are-not-set">Why ephemeral-storage limits are not set</a>.</li>
+</ul>
+<hr />
 <h2 id="platform-delivered-volumes-agentd-opencode-overlays">Platform-delivered volumes (agentd / opencode overlays)<a class="headerlink" href="#platform-delivered-volumes-agentd-opencode-overlays" title="Permanent link">&para;</a></h2>
-<p>Besides the five mounts above, every workspace pod carries read-only
+<p>Besides the six mounts above, every workspace pod carries read-only
 <strong>image volumes</strong> delivering platform binaries on platform cadence:
 <code>/agentd</code> (always, #863) and <code>/opencode</code> (design 0053 §4.2) — digest-
 pinned, never PVC-backed, wiped with the pod. They are invisible to user
@@ -3282,12 +3322,23 @@ discipline.</p>
 <td><strong>No</strong></td>
 <td>Counts toward memory, not ephemeral storage.</td>
 </tr>
+<tr>
+<td><code>/sandbox-cache</code> (emptyDir, disk, 8Gi <code>SizeLimit</code>, #1758)</td>
+<td><strong>Yes</strong></td>
+<td>The one deliberate disk-backed consumer — bounded by its own per-volume <code>SizeLimit</code> (see below).</td>
+</tr>
 </tbody>
 </table>
-<p>Container logs are the only consumer, and kubelet's own log rotation already bounds them. A per-pod ephemeral-storage limit added no protection beyond that.</p>
+<p>Pre-#1758 the only consumer was container logs, and kubelet's own log rotation already bounded them — a per-pod ephemeral-storage limit added no protection beyond that. #1758 adds the second, deliberate consumer and bounds it where the concern actually lives:</p>
 <div class="admonition warning">
-<p class="admonition-title">When ephemeral limits should come back</p>
-<p>If a future feature introduces a node-disk-backed <code>emptyDir</code> (<code>Medium: ""</code>), per-pod ephemeral limits would need to come back, scoped to the actual concern. The current tmpfs-backed emptyDirs count toward memory, not ephemeral storage.</p>
+<p class="admonition-title">Amended by #1758: the disk-backed emptyDir era</p>
+<p>The original warning here said: <em>"If a future feature introduces a node-disk-backed <code>emptyDir</code> (<code>Medium: ""</code>), per-pod ephemeral limits would need to come back, scoped to the actual concern."</em> That future arrived with #1758's build cache, and the scope-accurate mechanism chosen is the <strong>per-volume <code>SizeLimit</code> (8Gi)</strong> — not per-pod/per-container <code>ephemeral-storage</code> limits:</p>
+<ul>
+<li>The <code>SizeLimit</code> bounds exactly the new surface (the cache volume) and fires eviction at the right threshold (cache overflow), scoped to the pod that owns it.</li>
+<li>A container <code>ephemeral-storage</code> limit would additionally sweep kubelet log usage and any writable-layer noise into the same eviction trigger — the spurious-eviction class that motivated removing the limits in the first place — while adding no bound the <code>SizeLimit</code> doesn't already provide for the cache.</li>
+<li>Enforcement is <strong>eviction-manager scan-based, not instantaneous</strong>: between scans the volume can overshoot 8Gi by whatever the workload wrote in the window; the overshoot heals via eviction on the next scan. The cache is regenerable and dies with the pod, so overshoot-tolerant bounding is the right trade. The bound itself is pinned by test (<code>TestGoCacheEconomy_RelocatedToEmptyDir</code>).</li>
+</ul>
+<p>If a SECOND unbounded disk-backed surface is ever introduced, revisit per-pod ephemeral limits — this amendment covers exactly one deliberate, self-bounded consumer.</p>
 </div>
 <hr />
 <h2 id="cgroup-v2-requirement">cgroup v2 requirement<a class="headerlink" href="#cgroup-v2-requirement" title="Permanent link">&para;</a></h2>
@@ -3329,7 +3380,7 @@ discipline.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 19, 2026 17:09:17 UTC"><span class="timeago" datetime="2026-10-19T17:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 19, 2026 17:09:17 UTC">2026-10-19</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 19, 2026 20:10:17 UTC"><span class="timeago" datetime="2026-10-19T20:10:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 19, 2026 20:10:17 UTC">2026-10-19</span>
   </span>
 
     
