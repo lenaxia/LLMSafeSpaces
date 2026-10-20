@@ -165,28 +165,26 @@ func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *o
 	// alone leaves the pod's value winning by first-match (#1759: the
 	// pod's XDG_DATA_HOME made the harness adopt the POD's live auth
 	// store, which opencode then self-allows past every external_directory
-	// rule).
-	overrideKeys := map[string]bool{
-		"OPENCODE_CONFIG":          true,
-		"XDG_DATA_HOME":            true,
-		"XDG_CONFIG_HOME":          true,
-		"HOME":                     true,
-		"OPENCODE_SERVER_PASSWORD": true,
+	// rule). ONE map drives both the strip and the append — a future
+	// override added here cannot re-introduce the coupling.
+	childOverrides := map[string]string{
+		"OPENCODE_CONFIG":          agentConfigPath,
+		"XDG_DATA_HOME":            dataDir,
+		"XDG_CONFIG_HOME":          configDir,
+		"HOME":                     configDir,
+		"OPENCODE_SERVER_PASSWORD": "test-password",
 	}
-	env := make([]string, 0, len(os.Environ())+5)
+	env := make([]string, 0, len(os.Environ())+len(childOverrides))
 	for _, kv := range os.Environ() {
-		if overrideKeys[strings.SplitN(kv, "=", 2)[0]] {
+		if _, overridden := childOverrides[strings.SplitN(kv, "=", 2)[0]]; overridden {
 			continue
 		}
 		env = append(env, kv)
 	}
-	cmd.Env = append(env,
-		"OPENCODE_CONFIG="+agentConfigPath,
-		"XDG_DATA_HOME="+dataDir,
-		"XDG_CONFIG_HOME="+configDir,
-		"HOME="+configDir,
-		"OPENCODE_SERVER_PASSWORD=test-password",
-	)
+	for k, v := range childOverrides {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
 	cmd.Dir = configDir
 	// Session-detached, mirroring how agentd's supervisor actually
 	// spawns opencode and how every live-validated manual boot ran: the

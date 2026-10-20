@@ -24,9 +24,9 @@ import (
 // and deterministic. The tier set is constructed so that every carve-out
 // sorts AFTER the deny it carves:
 //
-//	"/home/*" (deny)      < "/home/sandbox/*" (ask)   — '*' (0x2A) < 's'
-//	"/sys/*"  (deny)      < "/sys/fs/cgroup/*" (allow)
-//	"/home/sandbox/*" ask < "/home/sandbox/.ssh…" denies — '*' < '.'
+//	"/home/*" (deny)       < "/home/sandbox/*" (allow)  — '*' (0x2A) < 's'
+//	"/sys/*"  (deny)       < "/sys/fs/cgroup/*" (allow)
+//	"/home/sandbox/*" allow < "/home/sandbox/.ssh…" denies — '*' < '.'
 //
 // TIER MAP (per the 2026-09-19 ruling, amended by #1759 — the three
 // PVC mount points are allow):
@@ -92,7 +92,13 @@ import (
 //     shape; the exact deny keys above (incl. both auth.json twins and
 //     the resolved-target rt/auth.json) are intent documentation held
 //     by the MODEL (tierMatch + the matrix), transparent at
-//     evaluation, correct the moment an engine honors them. The
+//     evaluation, correct the moment an engine honors them. The bare
+//     credential NAMES moved ask→allow as a side effect of the root
+//     allow: pre-#1759 "/home/sandbox/.ssh" matched the home-carve
+//     ASK key (blocked in headless turns); post-#1759 it matches
+//     "/home/sandbox/*" allow, so a bare-name listing executes —
+//     name/metadata exposure only, since the CONTENTS stay
+//     hard-denied by the children globs (pinned live). The
 //     engine also APPENDS its own self-allows (tool-output dir,
 //     /tmp/opencode/*, its XDG-resolved auth store) AFTER the config
 //     rules — appended rules beat config under findLast — so with the

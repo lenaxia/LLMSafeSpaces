@@ -464,17 +464,13 @@ func TestPermissionTier_AllowPathPermitsRead_HomeSandbox(t *testing.T) {
 }
 
 // TestPermissionTier_AllowPathPermitsRead_Workspace — the #1759 leg for
-// the workspace PVC root. The harness boots opencode with its project
-// root in a temp dir, so /workspace is genuinely EXTERNAL here and the
-// allow is exercised live (in the real pod /workspace is the project
-// root and the rule is belt-and-braces — see permissiontiers.go).
+// the workspace PVC root. Pod-qualified (the cgroup-pin precedent):
+// /workspace is a workspace-pod PVC mount, absent on CI runners. The
+// harness boots opencode with its project root in a temp dir, so
+// /workspace is genuinely EXTERNAL here and the allow is exercised
+// live (in the real pod /workspace is the project root and the rule
+// is belt-and-braces — see permissiontiers.go).
 func TestPermissionTier_AllowPathPermitsRead_Workspace(t *testing.T) {
-	// Pod-qualified leg (the cgroup-pin precedent): /workspace is a
-	// workspace-pod PVC mount — absent on CI runners. The harness boots
-	// opencode with its project root in a temp dir, so /workspace is
-	// genuinely EXTERNAL here and the allow is exercised live (in the
-	// real pod /workspace is the project root and the rule is
-	// belt-and-braces — see permissiontiers.go).
 	if _, err := os.Stat("/sandbox-runtime"); err != nil {
 		t.Skip("not the LLMSafeSpaces sandbox (no /sandbox-runtime) — the workspace PVC root allow is only exercisable where /workspace is the persistent mount")
 	}

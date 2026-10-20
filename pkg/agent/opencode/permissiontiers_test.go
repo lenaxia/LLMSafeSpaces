@@ -192,10 +192,12 @@ func TestPermissionTier_AllowedDirsCannotReopenDeny(t *testing.T) {
 }
 
 // The deny-shape premise: allowReopensTierDeny's literal-prefix analysis
-// is sound ONLY for denies that are exact paths or trailing-glob
-// prefixes ("/*" or a terminal "*" with no other wildcard). Pin the
-// structure itself — a future mid-glob deny key ("/sys/*/ro") would
-// silently break the analysis and could under-drop.
+// is sound ONLY for denies that are exact paths or trailing-"/*"
+// prefix globs — the one shape the live engine actually fires (the
+// #1759 grammar finding, residual 3; a terminal "*" was tried and
+// disproven live). Pin the structure itself — a future mid-glob deny
+// key ("/sys/*/ro") would silently break the analysis and could
+// under-drop.
 func TestPermissionTier_DenyShapesAreExactOrTrailingGlob(t *testing.T) {
 	for k, v := range platformPermissionTiers {
 		if v != "deny" {

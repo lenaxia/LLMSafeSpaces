@@ -99,6 +99,14 @@ func TestConfigWriter_FloorAllowSurvivesOperatorSourceDrop(t *testing.T) {
 		"the credential denies the operator pattern would have reopened still render")
 	assert.Equal(t, "deny", ext["/home/sandbox/.ssh"],
 		"the bare credential-name deny still renders")
+	// Pin the drop the test name claims (rendered outcome alone is
+	// drop-invariant): both operator patterns re-open tier denies and
+	// are filtered at ingress — the floor keys, not the operator
+	// source, are what rendered above.
+	assert.True(t, allowReopensTierDeny("/home/sandbox/*"),
+		"the operator home-root allow reopens the .ssh denies — dropped at ingress")
+	assert.True(t, allowReopensTierDeny("/workspace/*"),
+		"the operator workspace-root allow reopens the workspace auth twin — dropped at ingress")
 }
 
 func TestConfigWriter_TierFloorWinsAllowedDirsCollisions(t *testing.T) {
