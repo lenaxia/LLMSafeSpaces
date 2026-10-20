@@ -15,8 +15,8 @@ import (
 // control, with exactly one enumerated backward transition — in_review →
 // in_progress (the review bounce or RC2 closed-unmerged drift; both are
 // re-claim-class writes). pending_input is enterable from in_progress/
-// in_review, from the claim path (escalation), and from cancel; its exits
-// are manager-surface-only human writes and are the ONE attempts reset.
+// in_review and from the claim path (escalation); its exits are
+// manager-surface-only human writes and are the ONE attempts reset.
 //
 // Lease lifecycle totality (§4.4): every write landing a row in
 // in_progress sets/re-arms the lease in the same statement and stamps the

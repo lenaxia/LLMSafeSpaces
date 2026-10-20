@@ -43,8 +43,8 @@ import (
 // --- Stage vocabularies (single source, r2; #1747 r5: five stages) ---
 //
 // Cancel is ELIMINATED — delete replaces it, so the stage machine is
-// FIVE stages and "cancelled" is just an invalid filter value (the
-// tool tier rejects it like any other misspelling).
+// FIVE stages and the eliminated stage's literal is just an invalid
+// filter value (the tool tier rejects it like any other misspelling).
 
 // boardStages is the FIVE-stage binding set — the READ filter's
 // vocabulary (board_read's stage parameter).
@@ -792,7 +792,7 @@ func boardItemKind(id string) (string, error) {
 	}
 }
 
-// boardStageSet is ruling R2's six-stage binding set as a set (the
+// boardStageSet is the FIVE-stage binding set as a set (the
 // board_read filter's vocabulary — built from boardStages, the single
 // source).
 func boardStageSet() map[string]bool {
