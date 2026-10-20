@@ -3,7 +3,8 @@
 
 // Package ghaworkflows exercises the ai-workflows onboarding contract for
 // the reusable lenaxia/ai-workflows PR-review and AI-commands workflows
-// (v0.2.16).
+// (v0.2.18 callers; trusted_app_bots input added upstream in v0.2.17,
+// GITHUB_ENV delivery fixed in v0.2.18).
 //
 // The two thin callers (.github/workflows/pr-review.yml, ai-comment.yml)
 // delegate review execution and command routing to centrally-pinned
@@ -22,7 +23,7 @@
 //     fallback via agentic-actor-coder[bot] concluded `skipped` twice with
 //     zero PR-visible trace (runs 38836736982/38850671818 on #1708). Every
 //     gate filtering on author_association must also carry the ONE shared
-//     exact-login allowlist arm (ai-workflows v0.2.16 README §4 caller
+//     exact-login allowlist arm (ai-workflows v0.2.17+ README §4 caller
 //     contract): each entry is a deliberate trust decision, never a blanket
 //     association == 'NONE' pass.
 //   - Pin consistency: `uses: …@vX` and `with.version: vX` must be equal
@@ -466,18 +467,23 @@ func TestNoBlanketAssociationNonePass(t *testing.T) {
 // collaborator assert — same per-exact-login trust discipline as the gate
 // arm, hence the same single-source ruling).
 var trustedAppBotsInputRe = regexp.MustCompile(
-	`trusted_app_bots:\s*'(\[[^\r\n]*?\])'\s*$`)
+	`(?m)^(\s*)trusted_app_bots:\s*'(\[[^\r\n]*?\])'\s*$`)
 
 // TestTrustedAppBotsInputMatchesCanonicalList extends the #1710
-// single-source ruling to the v0.2.17 trusted_app_bots input: both actor
-// callers (pr-review: bot PR authors; ai-comment: bot commenters) must
-// pass the canonical list, and no other JSON literal may appear. A drifted
-// or missing copy silently re-arms the CLI assert against our own worker
-// pods' PRs and /review triggers (the #1775 outage class).
+// single-source ruling to the trusted_app_bots input (added upstream in
+// v0.2.17, delivery fixed in v0.2.18): both actor callers (pr-review: bot
+// PR authors; ai-comment: bot commenters) must pass the canonical list,
+// and no other JSON literal may appear. A drifted or missing copy
+// silently re-arms the CLI assert against our own worker pods' PRs and
+// /review triggers (the #1775 outage class).
 func TestTrustedAppBotsInputMatchesCanonicalList(t *testing.T) {
 	want := canonicalListJSON(t)
 	for _, caller := range []string{prReviewCaller, aiCommentCaller} {
-		body := readFile(t, filepath.Join(repoRoot(t), caller))
+		// stripYAMLCommentLines first: a commented-out `# trusted_app_bots:`
+		// line would otherwise match the regex while the workflow runs
+		// WITHOUT the input — the exact silent re-arm this test exists to
+		// catch (same hazard class TestNoBlanketAssociationNonePass guards).
+		body := stripYAMLCommentLines(readFile(t, filepath.Join(repoRoot(t), caller)))
 		matches := trustedAppBotsInputRe.FindAllStringSubmatch(body, -1)
 		if len(matches) == 0 {
 			t.Errorf("%s does not pass trusted_app_bots — bot-authored PRs and bot /review comments die at the CLI assert (ai-workflows #51; #1775 outage class)", caller)
@@ -486,7 +492,7 @@ func TestTrustedAppBotsInputMatchesCanonicalList(t *testing.T) {
 		if len(matches) > 1 {
 			t.Errorf("%s carries %d trusted_app_bots inputs — exactly one is the contract", caller, len(matches))
 		}
-		if got := matches[0][1]; got != want {
+		if got := matches[0][2]; got != want {
 			t.Errorf("%s trusted_app_bots drift: got %s, want %s (canonicalTrustedAppBots is the single source; edit the list AND every copy together)", caller, got, want)
 		}
 	}
