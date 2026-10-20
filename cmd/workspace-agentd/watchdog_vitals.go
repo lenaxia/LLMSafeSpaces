@@ -184,10 +184,14 @@ func (v vitalSigns) classify() (verdict, string) {
 	}
 }
 
-// suppressionReason is the metric/log label for a suppressed would-fire.
-func (v vitalSigns) suppressionReason() string {
-	verdict, _ := v.classify()
-	switch verdict {
+// label is the wire string of the verdict — the closed taxonomy surfaced
+// by the supervisor-restart recording seam (#1760:
+// SupervisorStatus/AgentRestartEvent). Single source of truth: the
+// suppression metric labels and the surfaced verdict MUST NOT drift.
+func (v verdict) label() string {
+	switch v {
+	case verdictHung:
+		return "hung"
 	case verdictStarved:
 		return "starved"
 	case verdictFlat:
@@ -197,6 +201,12 @@ func (v vitalSigns) suppressionReason() string {
 	default:
 		return "unknown"
 	}
+}
+
+// suppressionReason is the metric/log label for a suppressed would-fire.
+func (v vitalSigns) suppressionReason() string {
+	verdict, _ := v.classify()
+	return verdict.label()
 }
 
 // vitalsGatherer produces one vitalSigns sample. refreshIsHealthyLoop calls
