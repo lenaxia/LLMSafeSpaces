@@ -270,6 +270,8 @@ func (b *usageBridge) ContextUsed(workspaceID, sessionID string, used int64) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Design 0066 registration seam (context-usage row-creating path).
+	b.h.sessionIndex.Register(ctx, workspaceID, sessionID, "")
 	if err := b.h.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessionID, used); err != nil {
 		b.h.logger.Warn("usagestream: context-usage upsert failed", "error", err, "workspaceID", workspaceID, "sessionID", sessionID)
 	}

@@ -490,6 +490,10 @@ func (h *ProxyHandler) postOutboxDeliverSuccess(workspaceID, sessionID string, e
 		h.activityTracker.Record(workspaceID)
 	}
 	if h.sessionIndex != nil && sessionID != "" {
+		// Design 0066 registration seam (detached delivery path).
+		regCtx, regCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		h.sessionIndex.Register(regCtx, workspaceID, sessionID, "")
+		regCancel()
 		h.sessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now())
 	}
 	if h.meteringSvc != nil && workspaceID != "" {

@@ -73,6 +73,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
+### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
+
+- **Workspace pods now carry a dedicated disk-backed emptyDir for the
+  regenerable Go caches.** `GOCACHE=/sandbox-cache/go-build` and
+  `GOTMPDIR=/sandbox-cache/gotmp` are injected with the platform env
+  block, and an 8Gi `SizeLimit` emptyDir (no `Medium` — capacity, not
+  RAM) backs both paths via subPath mounts on every container that runs
+  platform tooling (the main container and the `workspace-setup` init,
+  whose read-only root filesystem would otherwise fail `go install`).
+  Pre-#1758, Go's defaults landed the build cache in
+  `$HOME/.cache/go-build` and build temp in `/tmp` — both subPaths of
+  the workspace PVC, which is never resized — producing the #1744
+  incident economy (55%→93% in minutes under five concurrent Go lanes,
+  ~5G/hour regrowth; caches dying with the pod is the correct
+  lifecycle). `GOPATH` deliberately stays PVC-mounted: the module cache
+  is network-expensive to rebuild and valuable across suspend/resume
+  (the disk-recovery lever sweeps it under pressure). Storage docs
+  updated with the sixth volume and its trade-offs.
 ### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
 
 - **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
@@ -304,6 +322,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from pending to live (worker-only rows — heartbeat/report_throttle, and
   engine-internal claim — pinned absent by design; external actors hold
   no claim tokens).
+
+### Added — harness-abstracted short session IDs + alias layer + did-you-mean (#1691, design 0066)
+
+- **Sessions gain a platform-minted short address** (`oc-ab12cd34`:
+  harness prefix + 8 chars over `[0-9a-z]`, per-workspace unique,
+  case-insensitive at resolution) beside the 30-char harness id:
+  migration `000037` (nullable `session_index.short_id` + partial
+  unique index `(workspace_id, short_id)`), the single registration
+  seam `EnsureSessionRegistered` (crypto/rand mint in Go, check-and-
+  retry on the unique index, NULL-backfill) wired into all six
+  row-creating index paths + `POST /sessions/new` + the reconcile
+  walk's bounded backfill sweep. The harness id becomes an internal
+  detail at the edges; internal joins stay keyed on it (additive only).
+- **The keyword alias layer (design 0066 ruling 5)**: a session's
+  current title — and, in the agentd tools, its harness slug
+  (`sunny-wolf`) — is a first-class resolvable alias, unambiguous-only
+  within the workspace. Aliases resolve at request time against the
+  live name holders; they are never persisted as references. Every
+  id-taking API route (message/history/get/abort/delete/queue/title/
+  seen/archived/admin force-abort) and every id-taking agentd MCP tool
+  (send_message target + origin, session_read, session_metadata,
+  rename, abort, archive, delete, compact) accepts short ids and
+  unambiguous aliases; a shared precedence (short id > legacy id
+  byte-identical > alias) never rewrites legacy ids and never probes
+  them first — full-ID addressing is byte-identical with zero added
+  round trips, and truncated ids never silently resolve (#1663).
+- **Did-you-mean on every resolution surface** (the #1667
+  generalization): one shared deterministic ranking (bounded
+  Levenshtein over short + legacy ids for id-form input;
+  word-boundary prefix / token overlap over titles + slugs for
+  alias-form input; last-active DESC tiebreak; top-3, always — the
+  cross-workspace tail included) serves the API's structured
+  `404/410 + suggestions:[{title, shortId, sessionId, workspace,
+  lastActive}]` payloads (the typed session_gone 410, the archived
+  404, admin force-abort, alias ambiguity) and the agentd clause
+  (candidates = replica short ids + harness ids + titles + slugs).
+  Workspace-scoped first; only when nothing scores and the requester
+  is known does one bounded exact-match query cover their OTHER
+  authorized workspaces. Ambiguity is never auto-resolved;
+  authz/transport/5xx never suggest. On a transient alias-lookup DB
+  error, resolution degrades by shape: seam-charset-valid refs pass
+  through unchanged (never a false 404), while refs the seam could
+  never accept as ids answer a new honest-availability **503**
+  ("session resolution temporarily unavailable") on the id-taking
+  routes — no suggestions, and no write ever sees title text as a
+  session id (no ghost-row mint). The #1340 session-not-found error
+  mapping stays scoped to the session-READ routes exactly as its
+  covenant documents.
+- **The agentd replica + control plane**: `/sandbox-runtime/
+  session-shortids.json` (memory-backed class, 0600, atomic rename)
+  populated by boot pull, TTL-limited on-miss pulls, and
+  create_session's register round trip over the new pod-identity
+  endpoints (`GET /internal/v1/session-registry`, `POST
+  /internal/v1/session-register`); agentd never mints. create_session
+  returns `short_id` (omitted on control-plane timeout, self-heals);
+  session_list decorates rows with `shortId` and stays byte-verbatim
+  when the replica is empty; `GET /sessions` gains the additive `q`
+  filter (title substring / short-id prefix / legacy-id prefix; an
+  empty id-like miss answers the suggestions payload; no `q` ⇒ the
+  bare array byte-identical); `SessionListItem`/`EnsureSessionResponse`
+  carry `shortId` (omitempty); OpenAPI additive updates.
+- **Out of this PR** (sequenced per design 0066): the ABI `short_id`
+  fields (`Session` 13 / `ActionResult` 12) + regen and the frontend
+  URL flip. Sequencing note (design §7 inverts here deliberately):
+  this PR lands the M3 addressing/acceptance surfaces ahead of the
+  M2 ABI fields because the REST/tools layer is what the orchestrator
+  lanes address sessions through today, the ABI fields only carry the
+  same ids as data, and both orders converge on the design's Phase C
+  road — the ABI regen lands with the SDK/OpenAPI flip that consumes
+  it. Two tracked follow-ups: design 0066 §4.3(c) push-on-mint along
+  agentpush (the replica converges via boot + on-miss pulls in the
+  meantime — the design's own "advisory, nothing is ever unaddressable"
+  discipline), and the send surface's bare-502 on id-form misses — a
+  deliberate exception to ruling 8's everywhere-suggests intent forced
+  by the #1340 covenant (the session-not-found classification stays on
+  the read routes), to be revisited with a typed verdict from the
+  harness.
 
 ### Fixed — api/relay rolls no longer wedge in-flight sessions (#1732)
 

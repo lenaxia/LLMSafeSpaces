@@ -64,7 +64,11 @@ type SessionSummary struct {
 	Title   string `json:"title"`
 	Agent   string `json:"agent"`
 	Version string `json:"version"`
-	Model   *struct {
+	// Slug is the harness-native adjective-noun name (opencode 1.18.15
+	// emits one per session). Design 0066 treats it as ALIAS-layer
+	// material — never an id; it resolves requests, never persists.
+	Slug  string `json:"slug"`
+	Model *struct {
 		ID         string `json:"id"`
 		ProviderID string `json:"providerID"`
 	} `json:"model"`
@@ -1200,6 +1204,56 @@ func (c *Client) SessionArchivedSet(ctx context.Context, saToken, workspaceID st
 		return nil, err
 	}
 	return out.Archived, nil
+}
+
+// SessionShortIDEntry is one row of the platform's short-id registry
+// (design 0066 §4.3): the durable API DB is the only place a short id
+// is born; agentd replicates.
+type SessionShortIDEntry struct {
+	SessionID string `json:"sessionID"`
+	ShortID   string `json:"shortID"`
+}
+
+// SessionShortIDRegistry pulls the workspace's full short-id registry —
+// the agentd replica's boot + on-miss fill (GET /internal/v1/session-
+// registry, pod-identity auth).
+func (c *Client) SessionShortIDRegistry(ctx context.Context, saToken, workspaceID string) ([]SessionShortIDEntry, error) {
+	res, err := c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/session-registry?workspaceID=%s", workspaceID), saToken, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Sessions []SessionShortIDEntry `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &out); err != nil {
+		return nil, err
+	}
+	return out.Sessions, nil
+}
+
+// RegisterSessionShortID asks the control plane to register one session
+// (mint-and-persist, idempotent — the single mint owner is the API's
+// registration seam) and returns its short id. agentd NEVER mints.
+func (c *Client) RegisterSessionShortID(ctx context.Context, saToken, workspaceID, sessionID string) (string, error) {
+	body, err := json.Marshal(map[string]string{
+		"workspaceID": workspaceID,
+		"sessionID":   sessionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	res, err := c.automationCall(ctx, http.MethodPost, "/internal/v1/session-register", saToken, body)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		ShortID string `json:"shortID"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &out); err != nil {
+		return "", err
+	}
+	return out.ShortID, nil
 }
 
 // TriggerFires lists a trigger's fire audit rows — the debugging gold:

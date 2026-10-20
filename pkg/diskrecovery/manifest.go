@@ -134,9 +134,13 @@ var manifests = map[string]Manifest{
 	// topology (pod_builder.go): GOPATH=/workspace/.local/share/go,
 	// CARGO_HOME=/workspace/.local/share/cargo,
 	// MISE_DATA_DIR=/workspace/.local/share/mise, $HOME=/home/sandbox,
-	// /tmp = PVC "tmp" subpath. GOCACHE/GOMODCACHE are unset in the pod
-	// env, so Go's defaults land under $HOME/.cache/go-build and
-	// $GOPATH/pkg/mod.
+	// /tmp = PVC "tmp" subpath. Since #1758 the platform env sets
+	// GOCACHE/GOTMPDIR to a dedicated emptyDir (/sandbox-cache/*), so
+	// the HOME-side go-build/gotmp classes below are LEGACY-DEBRIS
+	// sweepers: pre-#1758 pods and lanes that override the env still
+	// fill these PVC paths; fresh default pods do not. GOMODCACHE
+	// remains unset in the pod env (GOPATH's pkg/mod — the durable
+	// module cache, deliberately PVC-backed per #1758's ruling).
 	"opencode": {
 		Base: "opencode",
 		Roots: []CacheRoot{

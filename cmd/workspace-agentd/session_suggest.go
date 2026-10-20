@@ -87,20 +87,20 @@ func pluralEdits(n int) string {
 	return "s"
 }
 
-// sessionSuggestClause is suggestSessionID plus the live-inventory
-// fetch: one bounded GET /session on the failure path. Best-effort —
-// any error returns "" (the suggestion must never fail, delay beyond
-// the one fetch, or mask the original error).
+// sessionSuggestClause is the #1667 clause generalized per design
+// 0066 §4.6: one bounded GET /session on the failure path, candidates
+// = the replica's short ids + the harness ids + the live titles and
+// slugs. Best-effort — any error returns "" (the suggestion must
+// never fail, delay beyond the one fetch, or mask the original
+// error). The output keeps the #1667 text style; suggestSessionID
+// (id-only, ids already in hand) remains for the metadata path whose
+// clause is pinned separately.
 func sessionSuggestClause(ctx context.Context, client *opencode.Client, requestedID string) string {
 	sessions, err := client.SessionList(ctx)
 	if err != nil {
 		return ""
 	}
-	ids := make([]string, 0, len(sessions))
-	for _, s := range sessions {
-		ids = append(ids, s.ID)
-	}
-	return suggestSessionID(requestedID, ids)
+	return suggestRefClauseFrom(requestedID, sessions)
 }
 
 // isSessionNotFoundErr recognizes the seam's 404 error shapes —

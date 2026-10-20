@@ -328,7 +328,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session ID to read (from session_list)"},
+					"session_id": map[string]any{"type": "string", "description": "The session to read — its ID (from session_list), its short id (oc-…, case-insensitive), or an unambiguous title/slug alias (e.g. 'sunny-wolf')"},
 					"limit":      map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
 				},
 				"required": []string{"session_id"},
@@ -432,9 +432,9 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id":      map[string]any{"type": "string", "description": "The target session (from session_list / session_metadata)"},
+					"session_id":      map[string]any{"type": "string", "description": "The target session — its ID (from session_list / session_metadata), its short id (oc-…, case-insensitive), or an unambiguous title/slug alias"},
 					"message":         map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
-					"from_session_id": map[string]any{"type": "string", "description": "Optional fallback: YOUR own session ID, used only when the platform could not inject it automatically (the result tells you). Find yours via session_metadata — your title identifies you. Lets the recipient reply to you."},
+					"from_session_id": map[string]any{"type": "string", "description": "Optional fallback: YOUR own session — ID, short id, or unambiguous alias — used only when the platform could not inject it automatically (the result tells you). Find yours via session_metadata — your title identifies you. Lets the recipient reply to you."},
 				},
 				"required": []string{"session_id", "message"},
 			},
@@ -1001,13 +1001,64 @@ func mcpSessionList(ctx context.Context, password string, includeArchived bool) 
 	if err != nil {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
-	if includeArchived {
-		return string(body), nil
+	// #1735: archived sessions are opt-in — the DEFAULT drops
+	// entries whose id is in the platform's archived set;
+	// include_archived:true keeps every row (surviving entries are
+	// re-served byte-exact, never rewritten).
+	filtered := string(body)
+	if !includeArchived {
+		filtered = filterArchivedFromSessionList(ctx, body)
 	}
-	return filterArchivedFromSessionList(ctx, body), nil
+	// Design 0066: each surviving row gains its short id (additive
+	// field) when the replica knows it — the orchestrator's natural
+	// address. The raw bytes pass through UNCHANGED when the replica
+	// is empty (degraded window), preserving the verbatim-listing
+	// contract.
+	return joinShortIDs([]byte(filtered)), nil
+}
+
+// joinShortIDs decorates a raw GET /session body with each session's
+// replica-known short id ("shortId" field). No known mapping anywhere
+// → the original bytes, byte-identical.
+func joinShortIDs(raw []byte) string {
+	store := currentSessionShortIDs()
+	if store == nil || store.size() == 0 {
+		return string(raw)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return string(raw) // never let decoration break the listing
+	}
+	decorated := false
+	for _, row := range rows {
+		id, _ := row["id"].(string)
+		if id == "" {
+			continue
+		}
+		if short := store.shortIDFor(id); short != "" {
+			row["shortId"] = short
+			decorated = true
+		}
+	}
+	if !decorated {
+		return string(raw)
+	}
+	out, err := json.Marshal(rows)
+	if err != nil {
+		return string(raw)
+	}
+	return string(out)
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
+	// Design 0066: the ref resolves first — short ids (case-
+	// insensitive) and unambiguous aliases accepted; legacy ids pass
+	// through byte-identical.
+	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
+	if rerr != nil {
+		return "", rerr
+	}
+	sessionID = resolved
 	client := seamClientWithPassword(password)
 	body, _, err := client.SessionMessagesRaw(ctx, sessionID, limit, "")
 	if err != nil {

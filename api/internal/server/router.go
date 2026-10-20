@@ -23,9 +23,11 @@ import (
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
@@ -226,6 +228,9 @@ type RouterConfig struct {
 	// session archive/delete surface the agentd #1627 MCP tools call —
 	// TokenReview-gated like the rename endpoint.
 	PodSessionArchiveHandler *handlers.PodSessionArchiveHandler
+	// PodSessionRegistryHandler: pod-identity short-id registry
+	// (agentd replica pulls + create_session registration).
+	PodSessionRegistryHandler *handlers.PodSessionRegistryHandler
 
 	// MCPServersHandler handles external MCP server CRUD for all three
 	// scopes (platform/org/user). Optional — when nil, no MCP routes are
@@ -552,8 +557,9 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	idGroup := workspaceGroup.Group("/:id")
 	idGroup.Use(middleware.WorkspaceAccessMiddleware(services.GetWorkspace()))
 
-	registerWorkspaceRoutes(workspaceGroup, idGroup, services, proxyHandler, cfg)
-
+	// sessionRefMiddleware is design 0066's edge resolution layer,
+	// backed by the database service (nil when absent — disabled).
+	registerWorkspaceRoutes(workspaceGroup, idGroup, services, proxyHandler, cfg, sessionRefMiddleware(services))
 	// Epic 27b: Bulk agent reload across all pending workspaces.
 	if cfg.BulkReloadHandler != nil {
 		userGroup := router.Group("/api/v1/users/me")
@@ -593,7 +599,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// and therefore inherit the middleware.
 	// Proxy routes — registered on idGroup when a ProxyHandler is provided.
 	if proxyHandler != nil {
-		registerProxyRoutes(idGroup, proxyHandler)
+		registerProxyRoutes(idGroup, proxyHandler, sessionRefMiddleware(services))
 
 		// S28.3: User-scoped SSE stream (authenticated, rate-limit exempt)
 		eventsGroup := router.Group("/api/v1")
@@ -758,7 +764,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		adminSessions := router.Group("/api/v1/admin/workspaces/:workspaceId/sessions")
 		adminSessions.Use(services.GetAuth().AuthMiddleware())
 		adminSessions.Use(middleware.AdminGuard())
-		adminSessions.POST("/:sessionId/force-abort", cfg.AdminSessionHandler.ForceAbortSession)
+		adminSessions.POST("/:sessionId/force-abort", sessionRefMiddleware(services), cfg.AdminSessionHandler.ForceAbortSession)
 	}
 
 	// US-69.13: the authority flip gate (park / unpark / in-flight).
@@ -1286,6 +1292,13 @@ func registerInternalPodRoutes(router *gin.Engine, cfg RouterConfig) {
 		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
 	}
 
+	// Pod-identity short-id registry (agentd replica pulls + the
+	// create_session registration half — design 0066 §4.3).
+	if cfg.PodSessionRegistryHandler != nil {
+		router.GET("/internal/v1/session-registry", cfg.PodSessionRegistryHandler.List)
+		router.POST("/internal/v1/session-register", cfg.PodSessionRegistryHandler.Register)
+	}
+
 	// Pod-identity session archive/delete (agentd #1627 MCP tools).
 	if cfg.PodSessionArchiveHandler != nil {
 		router.POST("/internal/v1/session-archive", cfg.PodSessionArchiveHandler.Archive)
@@ -1381,7 +1394,91 @@ func filterArchivedSessions(sessions []types.SessionListItem) []types.SessionLis
 	return kept
 }
 
-func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig) {
+// workspaceSessionsListHandler is the GET /sessions route body
+// (extracted from registerWorkspaceRoutes for the gocyclo gate):
+// #1735's archived opt-in, the design 0066 q filter, and the status
+// merge.
+func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceService, authSvc interfaces.AuthService, proxyHandler *handlers.ProxyHandler, services interfaces.Services) {
+	userID := authSvc.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	workspaceID := c.Param("id")
+	sessions, err := wsSvc.ListWorkspaceSessions(c.Request.Context(), userID, workspaceID)
+	if err != nil {
+		respondWithError(c, err)
+		return
+	}
+	// #1735: archived sessions are opt-in on the listing — the
+	// default response excludes them; include_archived=true restores
+	// the full list. Applied before the q filter so a search composes
+	// with the same visibility the browsing list has (suggestions may
+	// still name archived rows — they are the caller's own).
+	if c.Query("include_archived") != "true" {
+		sessions = filterArchivedSessions(sessions)
+	}
+	// Design 0066 §4.4 search half: an additive, optional q filter
+	// over the same list the caller can already fetch —
+	// case-insensitive title substring, short-id prefix (normalized),
+	// legacy-id prefix. No q ⇒ byte-identical listing.
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		sessions = filterSessionsByQuery(sessions, q)
+		if len(sessions) == 0 {
+			// §4.6: an empty result for an id/title-like query
+			// carries the suggestions payload (ruling 8's one
+			// response shape) instead of silence.
+			db := services.GetDatabase()
+			var resolver sessionindex.RefResolver
+			if db != nil {
+				resolver = db
+			}
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":       "session not found",
+				"suggestions": sessionindex.SuggestionsFor(c.Request.Context(), resolver, userID, workspaceID, q),
+			})
+			return
+		}
+	}
+	// Trigger a one-shot async backfill of parent_session_id from the
+	// authoritative opencode /session list. No-op when the workspace
+	// has already been backfilled this process lifetime, so the steady-
+	// state cost is a single map lookup per request. Useful for
+	// sessions that pre-date the parent_session_id migration.
+	// Skipped when proxyHandler is nil (router built without proxy).
+	if proxyHandler != nil {
+		proxyHandler.BackfillSessionParents(c.Request.Context(), workspaceID)
+		// #1340 S5b convergence: TTL-gated diff of the index against
+		// the harness session list — reaps ghost rows the agent
+		// reports absent for N consecutive checks.
+		proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
+		// Ground-truth session status (#792 Pattern 1): query
+		// /v1/statusz for authoritative busy/idle instead of the
+		// in-memory activeSess map, which goes stale when SSE
+		// events are missed (the stuck-busy bug).
+		activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
+		if len(activeSet) > 0 {
+			for i := range sessions {
+				if activeSet[sessions[i].ID] {
+					sessions[i].Status = "active"
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, sessions)
+}
+
+// sessionRefMiddleware builds design 0066's edge resolution layer
+// from the services bundle — nil resolver (disabled) when no database
+// is wired, so every ref passes through byte-identical.
+func sessionRefMiddleware(services interfaces.Services) gin.HandlerFunc {
+	if db := services.GetDatabase(); db != nil {
+		return middleware.SessionRefResolution(db)
+	}
+	return middleware.SessionRefResolution(nil)
+}
+
+func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig, refMW gin.HandlerFunc) {
 	wsSvc := services.GetWorkspace()
 	authSvc := services.GetAuth()
 
@@ -1631,53 +1728,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 	})
 
 	idGroup.GET("/sessions", func(c *gin.Context) {
-		userID := authSvc.GetUserID(c)
-		if userID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-			return
-		}
-		workspaceID := c.Param("id")
-		sessions, err := wsSvc.ListWorkspaceSessions(c.Request.Context(), userID, workspaceID)
-		if err != nil {
-			respondWithError(c, err)
-			return
-		}
-		// Trigger a one-shot async backfill of parent_session_id from the
-		// authoritative opencode /session list. No-op when the workspace
-		// has already been backfilled this process lifetime, so the steady-
-		// state cost is a single map lookup per request. Useful for
-		// sessions that pre-date the parent_session_id migration.
-		// Skipped when proxyHandler is nil (router built without proxy).
-		if proxyHandler != nil {
-			proxyHandler.BackfillSessionParents(c.Request.Context(), workspaceID)
-			// #1340 S5b convergence: TTL-gated diff of the index against
-			// the harness session list — reaps ghost rows the agent
-			// reports absent for N consecutive checks.
-			proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
-			// Ground-truth session status (#792 Pattern 1): query
-			// /v1/statusz for authoritative busy/idle instead of the
-			// in-memory activeSess map, which goes stale when SSE
-			// events are missed (the stuck-busy bug).
-			activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
-			if len(activeSet) > 0 {
-				for i := range sessions {
-					if activeSet[sessions[i].ID] {
-						sessions[i].Status = "active"
-					}
-				}
-			}
-		}
-		// #1735: archived sessions are opt-in on the listing — the
-		// default response excludes them (they are read-only history,
-		// and long-lived workspaces accumulate an unbounded archived
-		// set); include_archived=true restores the full list. The
-		// filter is response-shape only — the reconciliation above
-		// still sees every row, and single-session lookups resolve
-		// archived sessions regardless.
-		if c.Query("include_archived") != "true" {
-			sessions = filterArchivedSessions(sessions)
-		}
-		c.JSON(http.StatusOK, sessions)
+		workspaceSessionsListHandler(c, wsSvc, authSvc, proxyHandler, services)
 	})
 
 	idGroup.POST("/sessions/new", func(c *gin.Context) {
@@ -1694,7 +1745,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		c.JSON(http.StatusOK, resp)
 	})
 
-	idGroup.PUT("/sessions/:sessionId/title", func(c *gin.Context) {
+	idGroup.PUT("/sessions/:sessionId/title", refMW, func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -1729,7 +1780,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		c.Status(http.StatusNoContent)
 	})
 
-	idGroup.PUT("/sessions/:sessionId/seen", func(c *gin.Context) {
+	idGroup.PUT("/sessions/:sessionId/seen", refMW, func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -1746,7 +1797,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 	// is untouched; archived sessions are read-only at the proxy layer.
 	// The SSE announcement lets every open tab move the session into/out
 	// of the Archived group without a refetch.
-	idGroup.PUT("/sessions/:sessionId/archived", func(c *gin.Context) {
+	idGroup.PUT("/sessions/:sessionId/archived", refMW, func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -1764,6 +1815,17 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		wsID := c.Param("id")
 		sID := c.Param("sessionId")
 		if err := wsSvc.SetSessionArchived(c.Request.Context(), userID, wsID, sID, *body.Archived); err != nil {
+			// Design 0066 §4.6: the update-only 404 (unindexed or
+			// unknown session) carries the did-you-mean payload —
+			// suggestions, never silence.
+			var apiErr *apierrors.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode() == http.StatusNotFound {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error":       apiErr.Error(),
+					"suggestions": middleware.SuggestionsFor(c, refResolverOf(services), wsID, sID),
+				})
+				return
+			}
 			respondWithError(c, err)
 			return
 		}
@@ -1856,26 +1918,31 @@ func registerImageFactoryAdminRoutes(router *gin.Engine, services interfaces.Ser
 // registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the
 // provided idGroup. idGroup already has AuthMiddleware + WorkspaceAccessMiddleware
 // applied, so every proxy handler inherits the single ownership gate.
-func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyHandler) {
-	idGroup.POST("/sessions/:sessionId/message", proxyHandler.SendMessage)
-	idGroup.POST("/sessions/:sessionId/prompt", proxyHandler.SendPromptAsync)
-	idGroup.POST("/sessions/:sessionId/queue", proxyHandler.EnqueueMessage)
+func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyHandler, refMW gin.HandlerFunc) {
+	// Design 0066 (#1691): every id-taking proxy route resolves the
+	// ref first — short id (case-insensitive), legacy id (byte-
+	// identical passthrough), unambiguous alias; an unresolvable
+	// alias-form ref answers the structured 404 + did-you-mean here.
+	session := idGroup.Group("", refMW)
+	session.POST("/sessions/:sessionId/message", proxyHandler.SendMessage)
+	session.POST("/sessions/:sessionId/prompt", proxyHandler.SendPromptAsync)
+	session.POST("/sessions/:sessionId/queue", proxyHandler.EnqueueMessage)
 
-	idGroup.GET("/sessions/:sessionId/queue", proxyHandler.ListQueue)
-	idGroup.DELETE("/sessions/:sessionId/queue/:messageId", proxyHandler.DeleteQueueMessage)
-	idGroup.POST("/sessions/:sessionId/queue/:messageId/retry", proxyHandler.RetryQueueMessage)
-	idGroup.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
-	idGroup.GET("/sessions/:sessionId", proxyHandler.GetSession)
-	idGroup.POST("/sessions/:sessionId/abort", proxyHandler.AbortSession)
+	session.GET("/sessions/:sessionId/queue", proxyHandler.ListQueue)
+	session.DELETE("/sessions/:sessionId/queue/:messageId", proxyHandler.DeleteQueueMessage)
+	session.POST("/sessions/:sessionId/queue/:messageId/retry", proxyHandler.RetryQueueMessage)
+	session.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
+	session.GET("/sessions/:sessionId", proxyHandler.GetSession)
+	session.POST("/sessions/:sessionId/abort", proxyHandler.AbortSession)
 	// Epic 69 US-69.9: the typed-actions union (design 0055 M1 op 5) —
 	// forwarded to the pod's Act op when AGENTD_STATE_AUTHORITY is armed
 	// (D4 single regime; 501 NotSupported when the flag is off).
-	idGroup.POST("/sessions/:sessionId/actions", proxyHandler.SessionAction)
+	session.POST("/sessions/:sessionId/actions", proxyHandler.SessionAction)
 	// Epic 69 US-69.10 (design 0055 S3/D1-B): the API-proxied contract
 	// stream — raw ABI frames; the browser runs the stamped-snapshot
 	// client rule. Behind the authority flag (typed 501 off-regime).
 	idGroup.GET("/contract-events", proxyHandler.ContractEvents)
-	idGroup.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
+	session.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
 	idGroup.GET("/session-events", proxyHandler.StreamEvents)
 
 	// D6 (#998): persisted hung-session alerts (reconnect/workflow surface).
@@ -1890,7 +1957,7 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 
 	// #1313 (epic-71 / 3a): the inbox dismiss exit — a live ask is
 	// rejected first, the record terminalizes as dismissed (S11).
-	idGroup.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
+	session.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
 
 	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
 	// in-workspace session switches where no SSE reconnect fires).
@@ -1907,6 +1974,38 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 // find an *apierrors.APIError or a *pkgerrors.StatusError anywhere in the
 // error chain (handles both direct returns and fmt.Errorf-wrapped errors),
 // falling back to a duck-typed StatusCode() check, then 500 for plain errors.
+// refResolverOf adapts the services bundle to the resolution surface
+// (nil-safe: a router built without a database disables the layer).
+func refResolverOf(services interfaces.Services) sessionindex.RefResolver {
+	if db := services.GetDatabase(); db != nil {
+		return db
+	}
+	return nil
+}
+
+// filterSessionsByQuery is the design 0066 §4.4 q filter: a pure,
+// case-insensitive filter over the list the caller can already fetch —
+// title substring, short-id prefix (normalized), legacy-id prefix.
+// Ordering is untouched (the list surface's recency order).
+func filterSessionsByQuery(sessions []types.SessionListItem, q string) []types.SessionListItem {
+	norm := shortid.Normalize(q)
+	out := make([]types.SessionListItem, 0, len(sessions))
+	for _, s := range sessions {
+		if strings.Contains(strings.ToLower(s.Title), strings.ToLower(q)) {
+			out = append(out, s)
+			continue
+		}
+		if s.ShortID != "" && strings.HasPrefix(shortid.Normalize(s.ShortID), norm) {
+			out = append(out, s)
+			continue
+		}
+		if strings.HasPrefix(s.ID, q) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func respondWithError(c *gin.Context, err error) {
 	var apiErr *apierrors.APIError
 	if errors.As(err, &apiErr) {

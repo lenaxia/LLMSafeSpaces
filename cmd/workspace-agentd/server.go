@@ -749,6 +749,15 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 		deps.sseTracker.subscribe(bgCtx, deps.client)
 	}()
 
+	// Design 0066 §4.3: warm the short-id replica from the platform's
+	// registry at boot (best-effort; on-miss pulls and create_session
+	// registrations cover any gap).
+	bgWg.Add(1)
+	go func() {
+		defer bgWg.Done()
+		bootPullSessionShortIDs(bgCtx)
+	}()
+
 	// US-44.5: memory pressure monitor checks cgroup usage against the
 	// 85% threshold and surfaces the state via statusz.
 	bgWg.Add(1)

@@ -179,3 +179,6 @@ func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond,
 		"the piggybacked pass must reap the count-zero ghost (deleting router.go's ReconcileSessionIndex call fails this)")
 }
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (r *recordingIndex) Register(_ context.Context, _, _, _ string) string { return "" }
