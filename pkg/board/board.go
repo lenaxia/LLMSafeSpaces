@@ -184,6 +184,7 @@ const (
 	GuardDependency       = "dependency"           // edge rejected (same-project/self/acyclic)
 	GuardProjectState     = "project_state"        // project lifecycle refuses the action
 	GuardAuthz            = "authz"                // user-level ownership (R7)
+	GuardInput            = "invalid_input"        // malformed arguments (rendered 400)
 )
 
 // DependencyError is the dependency-write 409 (ruling R4a) — carries

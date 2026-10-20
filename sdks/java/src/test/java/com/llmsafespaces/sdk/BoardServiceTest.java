@@ -83,6 +83,59 @@ class BoardServiceTest {
     }
 
     @Test
+    void boardSeamsReads() throws Exception {
+        String json = """
+            {"epics":[{"id":"e1","short_id":"epc-bbbb2222","status":"active",
+             "progress_derived":true,"progress_done":1,"progress_total":2}]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var epics = client.board.listBoardEpics("prj-aaaa1111");
+            assertEquals(1, epics.size());
+            assertEquals(2, ((Number) epics.get(0).get("progress_total")).intValue());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void boardSearchAndHealth() throws Exception {
+        String search = """
+            {"results":[{"id":"t1","short_id":"tsk-cccc3333","title":"Fix login bug"}],"suggestions":[]}""";
+        var server = startMockServer(200, search);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var res = client.board.searchBoard("login", java.util.Map.of("tags", java.util.List.of("auth")));
+            assertEquals("tsk-cccc3333", ((Map<?, ?>) ((List<?>) res.get("results")).get(0)).get("short_id"));
+            var health = client.board.getBoardHealth();
+            assertNotNull(health);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void boardLifecycleReplayKeyOverload() throws Exception {
+        String json = """
+            {"id":"e1","short_id":"epc-bbbb2222","status":"active"}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var epic = client.board.epicActivate("epc-bbbb2222", "key-1");
+            assertEquals("active", epic.get("status"));
+            var proj = client.board.archiveProject("prj-aaaa1111", "key-2");
+            assertNotNull(proj);
+            var dep = client.board.removeDependency("tsk-cccc3333", "tsk-aaaa0000", "key-3");
+            assertNotNull(dep);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void boardTaskCarriesOR4AnchorTag() throws Exception {
         String json = """
             {"id":"t1","short_id":"tsk-cccc3333","stage":"backlog","tags":["pr:1234"],

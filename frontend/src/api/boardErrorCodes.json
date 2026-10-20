@@ -5,6 +5,7 @@
   "cycle",
   "done_guard",
   "epic_state",
+  "invalid_input",
   "manager_surface_only",
   "project_state",
   "self",
