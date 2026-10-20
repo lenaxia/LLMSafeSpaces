@@ -21,8 +21,6 @@ export interface Workspace {
   labels?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
-  /** #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display address. */
-  phraseId?: string;
 }
 
 export interface CreateWorkspaceRequest {
@@ -48,8 +46,6 @@ export interface WorkspaceListItem {
   maxActiveSessions?: number;
   createdAt: string;
   updatedAt: string;
-  /** #1757 workspace phrase — the display address (surfaces in list responses as of #1757 r2). */
-  phraseId?: string;
 }
 
 export interface PaginationMetadata {

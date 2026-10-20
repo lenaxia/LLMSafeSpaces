@@ -11,10 +11,9 @@ class Workspace:
     # Mirrors the API transfer object (pkg/types/workspace.go Workspace):
     # id, name, userId, runtime, storageSize, phase, pvcName, labels,
     # defaultModel, createdAt, updatedAt, agentNeedsRefresh,
-    # credentialsPendingSince, devPreviewEnabled, phraseId (#1757 — the
-    # 2-words+1-digit display address). NOT WorkspaceMetadata — the DB
-    # record also carries imageTag/agentVersion/orgId, which the DTO
-    # does not emit.
+    # credentialsPendingSince, devPreviewEnabled. NOT WorkspaceMetadata —
+    # the DB record also carries imageTag/agentVersion/orgId, which the
+    # DTO does not emit.
     id: str
     name: str
     userId: str
@@ -29,7 +28,6 @@ class Workspace:
     agentNeedsRefresh: bool = False
     credentialsPendingSince: str | None = None
     devPreviewEnabled: bool = False
-    phraseId: str | None = None
 
 
 @dataclass
@@ -49,9 +47,6 @@ class WorkspaceListItem:
     agentNeedsRefresh: bool = False
     credentialsPendingSince: str | None = None
     orgId: str | None = None
-    # #1757 r2: the phrase rides list responses so display surfaces
-    # (#1792) can address workspaces without the UUID.
-    phraseId: str | None = None
 
 
 @dataclass

@@ -555,12 +555,6 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// WorkspaceAccessMiddleware, the single ownership gate (D5 creator-membership
 	// + D6 org-admin). List/Create have no :id and stay on workspaceGroup.
 	idGroup := workspaceGroup.Group("/:id")
-	// #1757: the workspace phrase (2 words + 1 digit) is the canonical
-	// :id address — resolved to the UUID BEFORE the access gate so
-	// ownership/authorization see the canonical key. UUIDs pass
-	// through byte-identical; unambiguous NAMES rewrite too (the
-	// one-release deprecation window).
-	idGroup.Use(workspaceRefMiddleware(services))
 	idGroup.Use(middleware.WorkspaceAccessMiddleware(services.GetWorkspace()))
 
 	// sessionRefMiddleware is design 0066's edge resolution layer,
@@ -1472,15 +1466,6 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		}
 	}
 	c.JSON(http.StatusOK, sessions)
-}
-
-// workspaceRefMiddleware builds #1757's workspace-phrase resolution
-// (nil resolver — disabled — when no database is wired).
-func workspaceRefMiddleware(services interfaces.Services) gin.HandlerFunc {
-	if db := services.GetDatabase(); db != nil {
-		return middleware.WorkspaceRefResolution(db)
-	}
-	return middleware.WorkspaceRefResolution(nil)
 }
 
 // sessionRefMiddleware builds design 0066's edge resolution layer

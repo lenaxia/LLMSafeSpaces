@@ -104,15 +104,6 @@ type DatabaseService interface {
 	UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error
 	SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error
 	IsSessionArchived(ctx context.Context, workspaceID, sessionID string) (bool, error)
-	// EnsureWorkspacePhraseRegistered mints/persists a workspace's
-	// #1757 phrase id (2 words + 1 digit, fleet-unique, idempotent).
-	EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error)
-	// FindWorkspaceIDByPhrase resolves a workspace phrase to the UUID
-	// ("" when absent). FindWorkspaceIDByName resolves a NAME
-	// unambiguously for the #1757 input-deprecation window ("" on
-	// absent OR ambiguous — names are caller-owned).
-	FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error)
-	FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error)
 	// EnsureSessionRegistered is design 0066's single registration seam:
 	// mint-and-persist the short id (retrying on (workspace_id,
 	// short_id) uniqueness violation), or return the surviving row's

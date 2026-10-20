@@ -478,16 +478,6 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		return nil, apierrors.NewInternalError("metadata_creation_failed", err)
 	}
 
-	// #1757: mint the workspace phrase at creation — best-effort here;
-	// a miss converges on the next authorized read (there is no sweep
-	// job — see GetWorkspace). The phrase rides the metadata from the
-	// next read on.
-	if phrase, perr := s.dbService.EnsureWorkspacePhraseRegistered(ctx, meta.ID); perr == nil && phrase != "" {
-		meta.PhraseID = phrase
-	} else if perr != nil {
-		s.logger.Warn("workspace phrase mint failed; backfill will converge", "workspaceID", meta.ID, "error", perr.Error())
-	}
-
 	s.logger.Info("Workspace created", "workspaceID", created.Name, "userID", userID)
 
 	// Auto-provision default credentials if enabled (Epic 30).
@@ -552,20 +542,6 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 		return nil, err
 	}
 
-	// #1757 r1: legacy (pre-phrase) rows converge HERE — after
-	// verifyOwner, never before (the backfill is a write; an
-	// unauthorized caller probing a foreign UUID must never mint).
-	// Best-effort by the seam's contract; a miss only delays the
-	// phrase one read.
-	if meta.PhraseID == "" {
-		if phrase, perr := s.EnsureWorkspacePhraseRegistered(ctx, meta.ID); perr == nil && phrase != "" {
-			meta.PhraseID = phrase
-		} else if perr != nil {
-			s.logger.Warn("workspace phrase backfill failed; next authorized read retries",
-				"workspaceID", meta.ID, "error", perr.Error())
-		}
-	}
-
 	crd, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {
@@ -598,7 +574,6 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 		DefaultModel:            meta.DefaultModel,
 		AgentNeedsRefresh:       meta.AgentNeedsRefresh,
 		CredentialsPendingSince: meta.CredentialsPendingSince,
-		PhraseID:                meta.PhraseID,
 	}
 	if crd != nil {
 		ws.Phase = string(crd.Status.Phase)
@@ -658,10 +633,6 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 			// drawer uses this to fetch the owning org's allow_user_prompt
 			// policy and gate the Custom Instructions Lock UI.
 			OrgID: m.OrgID,
-			// #1757 r2: the phrase rides list responses so display
-			// surfaces (dashboard, pickers, board refs — #1792) can
-			// address workspaces without the UUID.
-			PhraseID: m.PhraseID,
 		})
 	}
 
@@ -1182,22 +1153,11 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 // removed it — the secretsreconcile loop is the level-triggered
 // correctness path, and notify-pull covers the latency path.)
 
-// EnsureWorkspacePhraseRegistered delegates to the database seam so
-// the access middleware can converge legacy rows POST-authorization
-// (#1757 r1: authorized reads are the only backfill write trigger).
-func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
-	return s.dbService.EnsureWorkspacePhraseRegistered(ctx, workspaceID)
-}
-
 // ResolveWorkspace fetches workspace metadata by ID. It is the pure-fetch half
 // of verifyOwner and the entry point for WorkspaceAccessMiddleware. Returns a
 // NotFound APIError when the workspace does not exist (or the id is empty,
 // mirroring GetWorkspace's empty-input contract) and an Internal APIError when
 // the underlying lookup fails.
-//
-// #1757 r1: this is a PRE-authorization resolution path — it must never
-// trigger the phrase backfill (a write). Legacy rows converge in the
-// user-scoped GetWorkspace (post-verifyOwner) instead.
 func (s *Service) ResolveWorkspace(ctx context.Context, workspaceID string) (*types.WorkspaceMetadata, error) {
 	meta, err := s.dbService.GetWorkspace(ctx, workspaceID)
 	if err != nil {

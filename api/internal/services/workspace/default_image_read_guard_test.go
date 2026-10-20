@@ -30,7 +30,6 @@ func TestCreateWorkspace_EmptyRuntime_StoredFloatingDefaultImage_NotLaunched(t *
 		return ws.Spec.Runtime == "base"
 	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
 	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
-	f.db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 
 	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: ""}
 	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
@@ -48,7 +47,6 @@ func TestCreateWorkspace_EmptyRuntime_StoredUntaggedDefaultImage_NotLaunched(t *
 		return ws.Spec.Runtime == "base"
 	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
 	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
-	f.db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 
 	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: ""}
 	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
@@ -66,7 +64,6 @@ func TestCreateWorkspace_EmptyRuntime_StoredPinnedDefaultImage_StillUsed(t *test
 		return ws.Spec.Runtime == "ghcr.io/lenaxia/llmsafespaces/base:0.15.5"
 	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
 	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
-	f.db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 
 	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: ""}
 	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
@@ -84,7 +81,6 @@ func TestCreateWorkspace_EmptyRuntime_StoredRTEDefaultImage_StillUsed(t *testing
 		return ws.Spec.Runtime == "base"
 	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
 	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
-	f.db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 
 	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: ""}
 	_, err := f.svc.CreateWorkspace(ctx, "user1", req)

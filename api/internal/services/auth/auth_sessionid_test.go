@@ -573,17 +573,3 @@ func (m *mockDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]
 func (m *mockDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
-
-// #1757: the new DatabaseService workspace-phrase surface — no-op
-// stubs for this fixture.
-func (m *mockDB) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
-	return "", nil
-}
-
-func (m *mockDB) FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error) {
-	return "", nil
-}
-
-func (m *mockDB) FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error) {
-	return "", nil
-}

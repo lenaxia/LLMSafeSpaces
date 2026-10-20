@@ -11,6 +11,4 @@ public class Workspace {
     @SerializedName("phase") public String phase;
     @SerializedName("createdAt") public String createdAt;
     @SerializedName("updatedAt") public String updatedAt;
-    /** #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display address. */
-    @SerializedName("phraseId") public String phraseId;
 }

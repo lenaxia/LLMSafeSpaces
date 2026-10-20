@@ -484,17 +484,3 @@ func (d *recordingDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string
 func (d *recordingDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
-
-// #1757: the new DatabaseService workspace-phrase surface — no-op
-// stubs for this fixture (it exercises auth flows).
-func (d *recordingDB) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
-	return "", nil
-}
-
-func (d *recordingDB) FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error) {
-	return "", nil
-}
-
-func (d *recordingDB) FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error) {
-	return "", nil
-}

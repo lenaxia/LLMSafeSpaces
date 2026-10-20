@@ -19,9 +19,6 @@ type Workspace struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	CreatedAt   time.Time         `json:"createdAt"`
 	UpdatedAt   time.Time         `json:"updatedAt"`
-	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
-	// fleet-unique) — the display address; the UUID stays the key.
-	PhraseID string `json:"phraseId,omitempty"`
 }
 
 type CreateWorkspaceRequest struct {
@@ -53,9 +50,6 @@ type WorkspaceListItem struct {
 	Phase       string    `json:"phase,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
-	// PhraseID is the #1757 workspace phrase — the display address
-	// (surfaces in list responses as of #1757 r2; displays in #1792).
-	PhraseID string `json:"phraseId,omitempty"`
 }
 
 type PaginationMetadata struct {

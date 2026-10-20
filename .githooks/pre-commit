@@ -140,15 +140,9 @@ EOF
 # applies to new files only. Merge commits are exempt entirely: worklogs
 # arriving via `git merge main` are already bot-numbered on main, and the
 # staged-diff sees them as "added" — a false positive that blocks every
-# main-merge whose main-side grew worklogs (#1778).
+# main-merge whose main-side grew worklogs.
 run_worklog_prefix_gate() {
-    # A merge in conclusion has MERGE_HEAD set. Resolve it through git
-    # (`rev-parse --verify`), NOT the filesystem path `.git/MERGE_HEAD`:
-    # in a linked worktree (`.git` is a FILE there — the standard
-    # per-lane-worktree topology) the path never exists, so the literal
-    # file test silently disabled this exemption and blocked union
-    # merges carrying main's bot-numbered worklogs (#1778).
-    if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    if [ -f .git/MERGE_HEAD ]; then
         return 0
     fi
     local bad=0

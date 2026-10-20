@@ -68,23 +68,6 @@ func WorkspaceAccessMiddleware(svc workspaceAccessService) gin.HandlerFunc {
 		}
 
 		if err := svc.CheckOwnership(c.Request.Context(), uid, meta); err != nil {
-			// §4.3 anti-enumeration masking (#1757 r1): a workspace
-			// that exists but is foreign, addressed BY PHRASE, answers
-			// with the byte-identical 404 the unknown phrase gets —
-			// Forbidden is not-found-equivalent on the phrase surface,
-			// or the distinction would let any authenticated caller
-			// enumerate the fleet's live phrase space. UUID-addressed
-			// (unguessable) refs keep the honest 403.
-			if phraseVal, marked := c.Get(ContextKeyWorkspaceRefPhrase); marked {
-				if phrase, isStr := phraseVal.(string); isStr && phrase != "" {
-					if ae, ok := err.(apiErrorMatcher); ok && ae.StatusCode() == http.StatusForbidden {
-						c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
-							"error": "workspace not found: no workspace holds the phrase " + phrase,
-						})
-						return
-					}
-				}
-			}
 			respondWithAPIError(c, err)
 			return
 		}

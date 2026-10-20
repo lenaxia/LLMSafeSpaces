@@ -22,7 +22,7 @@ The full #1747 amendment set on the Task Board:
    + the engine belt (IsWorkerSession over live assignee rows, refused
    at the seam with 403). Pins: TestMCPBoard_ManagerGrantGate,
    TestBoardAutomation_ManagerGrantBelt, TestKill_1747_IsWorkerSession.
-3. **Cancel → delete** — five-stage machine (migration 000039 deletes
+3. **Cancel → delete** — five-stage machine (migration 000038 deletes
    cancelled rows + swaps the CHECK + drops the stage_update_guard
    trigger), snapshot-bearing delete events (per-task on cascade),
    orphan listing + `unblocked_by_delete` events, NO auto-reconnect

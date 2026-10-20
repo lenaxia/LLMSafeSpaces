@@ -1,4 +1,4 @@
--- 000039_agent_board_manager_tools (issue #1747, design 0067 amendment)
+-- 000038_agent_board_manager_tools (issue #1747, design 0067 amendment)
 --
 -- The owner rulings of 2026-10-19 (base + consolidated 6261010901 + KISS
 -- 6261037825 + round 3 6261147201):
