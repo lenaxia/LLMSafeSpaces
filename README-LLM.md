@@ -96,6 +96,16 @@ Correct workflow:
 
 A task is **not** done until it has been demonstrated to be integrated properly via passing e2e/integration tests. "It compiles", "unit tests pass", or "it works in isolation" do not satisfy this requirement. Code that is built but never wired into the live request path is incomplete work.
 
+### 0b. Git Identity: Always the App Identity
+
+**When doing ANY git work from inside an LLMSafeSpaces workspace** (commits, pushes, branch creation), authenticate as the **agentic-actor-coder GitHub App** — never with a personal token, and never embed credentials anywhere.
+
+This is already wired for you: the global git credential helper (`/tmp/opencode/bin/git-cred-app`) mints short-lived App installation tokens from the platform-managed key on tmpfs (`/home/sandbox/.secrets/`) plus the `AGENTIC_ACTOR_CODER_APPID` environment variable. Plain `git push` is all you need.
+
+- Do NOT override `credential.helper`, set `GITHUB_TOKEN`/`GH_TOKEN` for git operations, or paste tokens into remotes.
+- Do NOT read, copy, or move the private key out of `.secrets` — it is platform-managed and rotates; the helper picks up rotations automatically.
+- If pushes fail auth, report it; do not improvise alternate credential paths.
+
 ### 1. Type Safety First
 
 **Always:**
