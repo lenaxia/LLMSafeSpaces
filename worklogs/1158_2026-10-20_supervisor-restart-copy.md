@@ -51,4 +51,4 @@ None.
 - frontend/src/components/chat/AgentRestartBanner.tsx (+test), frontend/src/pages/ChatPage.tsx, ChatPage.agentRestart.test.tsx, frontend/src/api/types.ts
 - api/internal/services/workspace/workspace_status_supervisor_test.go
 - sdks/typescript/src/types.ts (hunk-approved)
-- worklogs/NNNN_2026-10-20_supervisor-restart-copy.md — this worklog
+- worklogs/1158_2026-10-20_supervisor-restart-copy.md — this worklog
