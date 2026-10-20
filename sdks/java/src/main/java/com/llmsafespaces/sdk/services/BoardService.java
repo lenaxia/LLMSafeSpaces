@@ -99,7 +99,6 @@ public class BoardService {
                 requestIdBody(requestId), MAP.getType());
     }
 
-    public Map<String, Object> epicPause(String id) { return epicVerb(id, "pause"); }
     public Map<String, Object> epicActivate(String id) { return epicActivate(id, null); }
 
     public Map<String, Object> epicActivate(String id, String requestId) { return epicVerb(id, "activate", requestId); }
