@@ -41,11 +41,15 @@ type fakeBoardManager struct {
 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
 	// create-project input capture, and the pressure sample sink.
 	workerSession          string
+	beltErr                error
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
+	if f.beltErr != nil {
+		return false, f.beltErr
+	}
 	return sessionID != "" && sessionID == f.workerSession, nil
 }
 
@@ -617,6 +621,11 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 	}
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=wip", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code, "unknown stage filter: "+w.Body.String())
+	// #1747 (r2, stage-filter contract pin): the ELIMINATED terminal
+	// stage is not a filter value anymore — same 400 class as a typo
+	// (the openapi enum no longer advertises it either).
+	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel"+"led", "") //nolint:misspell // the eliminated stage value, spelled verbatim
+	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
 }
 
 // TestBoardREST_ListRenders: list endpoints render the owner's boards in

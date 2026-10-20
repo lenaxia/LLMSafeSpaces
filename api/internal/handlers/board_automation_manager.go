@@ -70,14 +70,38 @@ func (h *PodAutomationHandler) managerActor(ownerID, workspaceID, sessionID stri
 
 // resolveManager runs the pod resolve + the grant belt. Writes the
 // refusal itself; ok=false on failure.
+//
+// FAIL-CLOSED (r2, the review's Security-1 fix): a manager route
+// REQUIRES the calling session's identity — an omitted sessionId is a
+// 403, not a pass-through. The hostile caller in ruling §5's threat
+// model is precisely the spawned worker who lies by omission (it holds
+// the same pod SA token the worker tools ride); agentd already refuses
+// identity-less dispatch pre-wire, and the seam now refuses it too
+// instead of trusting the omission. A belt ERROR is likewise a refusal
+// (503): a silent DB blip must not disable the check.
 func (h *PodAutomationHandler) resolveManager(c *gin.Context) (raw []byte, workspaceID, ownerID, sessionID string, ok bool) {
 	raw, workspaceID, ownerID, ok = h.resolve(c)
 	if !ok {
 		return nil, "", "", "", false
 	}
 	sessionID = boardSessionID(c, raw)
-	if belt, hasBelt := h.boardMgr.(boardGrantBelt); hasBelt && sessionID != "" {
-		if worker, err := belt.IsWorkerSession(c.Request.Context(), sessionID); err == nil && worker {
+	if sessionID == "" {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": "board manager routes require the calling session's identity (sessionId) — spawned workers and unidentified callers hold no manager grant (ruling #1747 §5)",
+			"code":  board.GuardManagerSurface,
+		})
+		return nil, "", "", "", false
+	}
+	if belt, hasBelt := h.boardMgr.(boardGrantBelt); hasBelt {
+		worker, err := belt.IsWorkerSession(c.Request.Context(), sessionID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": "board manager grant check failed — refusing fail-open (ruling #1747 §5)",
+				"code":  board.GuardManagerSurface,
+			})
+			return nil, "", "", "", false
+		}
+		if worker {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": "board manager tools attach to user-collaborator sessions, not spawned workers (ruling #1747 §5)",
 				"code":  board.GuardManagerSurface,

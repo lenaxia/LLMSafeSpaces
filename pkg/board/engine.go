@@ -473,10 +473,10 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 		claim.Assignee = sessionID
 		return
 	}
-	// The guarded stamp lost the race (canceled, lapsed, or re-claimed
+	// The guarded stamp lost the race (deleted, lapsed, or re-claimed
 	// while the spawn was in flight): the just-spawned session holds a
 	// dead charter — abort it (the merged design's spawn-stamp guard; the
-	// same interrupt seam as cancel/reclaim).
+	// same interrupt seam as delete/reclaim).
 	if s.aborter != nil {
 		_ = s.aborter(ctx, claim.TaskID, sessionID)
 	}

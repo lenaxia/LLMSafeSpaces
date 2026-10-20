@@ -442,3 +442,77 @@ func (s *BoardSuite) TestKill_1747_IsWorkerSession() {
 	s.False(no)
 	_ = t1
 }
+
+// KILL-TEST 1747-l (r2, the review's missing-case 4): delete_task on an
+// IN-FLIGHT row aborts the worker (the abort branch, previously only
+// pinned for delete_epic's force path) — and only AFTER the delete
+// commits (a failed tx must not cut a worker for a live task).
+func (s *BoardSuite) TestKill_1747_DeleteTaskAbortsInFlight() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "live", nil, false)
+
+	c := s.claimOrFail(ws)
+	s.Equal(t1.ID, c.TaskID)
+	assignee := s.reloadTask(t1.ID).AssigneeSession
+	s.Require().NotEmpty(assignee)
+
+	out, err := s.svc.DeleteTask(context.Background(), s.owner(), t1.ID, "", false, "")
+	s.Require().NoError(err)
+	s.Equal(t1.ShortID, out.ShortID)
+	s.Equal(1, s.aborter.count(), "the in-flight worker is cleanly aborted")
+	s.Equal(t1.ID+"/"+assignee, s.aborter.callsSlice()[0])
+}
+
+// KILL-TEST 1747-m (r2, the review's missing-case 5): task_start at the
+// concurrency cap 409s concurrency_limit (the manual lever's class).
+func (s *BoardSuite) TestKill_1747_TaskStartAtCap() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 8)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "held", nil, false)
+	t2 := s.seedTask(e, "next", nil, false)
+
+	capped := s.cfg
+	capped.UserClaimCap = 1
+	svc := board.NewService(s.pool, capped, board.WithWorkerSpawner(s.spawner.Spawn))
+	c := s.claimWith(svc, ws)
+	s.Equal(t1.ID, c.TaskID)
+
+	_, err := svc.TaskStart(context.Background(), s.owner(), t2.ID, "", "")
+	s.Require().Error(err)
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge)
+	s.Equal(board.GuardConcurrency, ge.Code, "the manual dispatch names the cap (the claim path stays quiet)")
+}
+
+// KILL-TEST 1747-n (r2, the review's missing-case 3): a dependency on a
+// PAUSED prerequisite stays BLOCKING (the DAG spec's explicit call-out;
+// rederiveBlocked keys on stage <> done, so it holds — now pinned).
+func (s *BoardSuite) TestKill_1747_DepOnPausedStaysBlocking() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	prereq := s.seedTask(e, "paused-prereq", nil, false)
+	dep := s.seedTask(e, "dependent", nil, false)
+	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), dep.ID, "", prereq.ID, ""))
+	s.True(s.reloadTask(dep.ID).IsBlocked, "not-done prereq blocks")
+
+	_, err := s.svc.PauseTask(context.Background(), s.owner(), prereq.ID, "", "")
+	s.Require().NoError(err)
+	// The sweep re-derives from the edge table — a paused prereq is NOT
+	// done, so the dependent stays blocked (never pruned-satisfied).
+	res := s.sweep()
+	s.GreaterOrEqual(res.DepRepairs, 0)
+	s.True(s.reloadTask(dep.ID).IsBlocked, "a paused dependency stays BLOCKING (the DAG spec)")
+
+	// And done unblocks it (the contrast arm).
+	_, err = s.svc.UpdateTask(context.Background(), s.owner(), prereq.ID, "",
+		board.TaskInput{AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c", Met: true}}}, "")
+	s.Require().NoError(err)
+	cc := s.claimOrFail(ws)
+	s.Equal(prereq.ID, cc.TaskID)
+	s.finishClaim(cc)
+	s.False(s.reloadTask(dep.ID).IsBlocked, "done unblocks (the ONLY unblock)")
+}

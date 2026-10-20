@@ -586,11 +586,6 @@ func (h *BoardHandler) MoveStageTask(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
-// StartTask is the manual one-off dispatch (task_start): claim + fresh
-// spawn into the project's target workspace (R9), explicitly allowed in
-// draft epics; paused/completed/archived epics and archived projects
-// refuse it. Renders the engine's Claim (escalated: true when the
-// attempts cap withheld the grant).
 type boardStartRequest struct {
 	RequestID string `json:"requestId"`
 }

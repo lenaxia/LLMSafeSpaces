@@ -40,13 +40,20 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage string)
 		return nil, err
 	}
 	defer rows.Close()
+	// r2 N+1 fix: the project (and its cap census context) resolves ONCE
+	// per list call — every row shares the same waiting_on/backpressure
+	// decoration inputs.
+	var proj *Project
 	var out []Task
 	for rows.Next() {
 		t, err := scanTask(rowScan{rows})
 		if err != nil {
 			return nil, err
 		}
-		s.decorateTask(ctx, t, nil)
+		if proj == nil || proj.ID != t.ProjectID {
+			proj, _ = s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
+		}
+		s.decorateTask(ctx, t, proj)
 		out = append(out, *t)
 	}
 	return out, rows.Err()

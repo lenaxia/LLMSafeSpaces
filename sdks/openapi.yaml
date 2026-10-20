@@ -4605,7 +4605,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+            enum: [backlog, in_progress, in_review, done, pending_input]
       responses:
         "200":
           description: Task list
@@ -4631,8 +4631,8 @@ paths:
       summary: Get an epic (with derived progress)
       description: |
         Progress is DERIVED here, never stored (ruling R2): done over
-        (total − cancelled); `progress_derived: false` renders
-        no-progress ("—"), never 0/0.
+        total; `progress_derived: false` renders no-progress ("—"),
+        never 0/0.
       operationId: getBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
@@ -4938,7 +4938,7 @@ paths:
       summary: Move a task's stage (server-arbitrated)
       description: |
         The optimistic-UI write: a drag that loses a race (task claimed,
-        cancelled, or lease-held) returns the guard error (409) and the
+        lease-held, or paused) returns the guard error (409) and the
         UI snaps back. Stages: backlog → in_progress → in_review → done
         plus pending_input; the enumerated transitions are the machine's
         (backlog leaves by claim, not by drag). `done` requires ALL

@@ -105,8 +105,8 @@ type Actor struct {
 	// Surface is the projection the action arrived on.
 	Surface string
 	// ClaimToken is the in-flight guard on caller surfaces (empty for
-	// the reconciler, cancel, and manager pending_input exits — the two
-	// named caller-side overrides).
+	// the reconciler, delete's clean abort, and the manager pending_input
+	// exits — the named caller-side overrides).
 	ClaimToken string
 	// WorkspaceID is the resolved pod workspace on the agent surface
 	// (design §4.4 caller-workspace binding, structural: an in-workspace

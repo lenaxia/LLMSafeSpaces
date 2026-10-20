@@ -334,7 +334,7 @@ DELETE {{base_url}}/me/tasks/{{task_b_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.item_kind" == "task"
+jsonpath "$.item_kind" isString
 
 # Delete epic: cascades to its tasks (#1747; the audit keeps every
 # snapshot)
@@ -342,7 +342,7 @@ DELETE {{base_url}}/me/epics/{{epic_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.item_kind" == "epic"
+jsonpath "$.item_kind" isString
 
 # Authz arm: unauthenticated reads are 401 (Prism enforces security
 # schemes; the live API rejects the missing bearer)

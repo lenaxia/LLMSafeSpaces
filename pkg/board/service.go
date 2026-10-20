@@ -683,9 +683,8 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	return s.store.resolveTask(ctx, s.q(), p.ID, taskID)
 }
 
-// UpdateTask patches fields; priority changes are ordinary writes (the
-// dispatcher reads priority fresh each claim); criteria check-off rides
-// here (the reviewer's Done preparation).
+// UpdateTask patches fields; criteria check-off rides here (the
+// reviewer's Done preparation).
 func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOrID string, in TaskInput, requestID string) (*Task, error) {
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
@@ -900,7 +899,7 @@ func rederiveBlocked(ctx context.Context, q Queryer, taskID string) error {
 			SELECT 1 FROM board_dependencies d
 			JOIN tasks dep ON dep.id = d.depends_on_task_id
 			WHERE d.task_id = t.id AND dep.stage <> 'done')
-		WHERE t.id = $1 AND t.stage <> 'cancelled'`, taskID)
+		WHERE t.id = $1`, taskID)
 	return err
 }
 

@@ -38,11 +38,7 @@ func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	if err != nil {
 		return nil, err
 	}
-	// Clean abort first (#1747 round 3): the in-flight worker's turn is
-	// cut by the interrupt seam BEFORE the row vanishes under it.
-	if t.Stage == StageInProgress && t.AssigneeSession != "" && s.aborter != nil {
-		_ = s.aborter(ctx, t.ID, t.AssigneeSession)
-	}
+	abortWorker := t.Stage == StageInProgress && t.AssigneeSession != "" && s.aborter != nil
 
 	out := &DeleteResult{ItemKind: "task", ID: t.ID, ShortID: t.ShortID}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "delete_task", itemKind: "task", itemID: t.ID, actor: actor}
@@ -82,6 +78,14 @@ func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		return nil, err
 	}
 	_ = dup
+	// Clean abort AFTER commit (#1747 round 3, r2 ordering fix): the
+	// in-flight worker's turn is cut only once the row is REALLY gone —
+	// a failed transaction must never cut a worker for a live task. The
+	// lease/token died with the row, so the abort is cleanup, not the
+	// authority.
+	if abortWorker {
+		_ = s.aborter(ctx, t.ID, t.AssigneeSession)
+	}
 	return out, nil
 }
 

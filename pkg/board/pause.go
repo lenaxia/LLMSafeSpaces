@@ -24,6 +24,7 @@ package board
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -207,6 +208,11 @@ func (s *Service) inFlightUnder(ctx context.Context, predicate, id string) []inF
 		SELECT assignee_session, short_id FROM tasks t
 		WHERE %s AND t.stage='in_progress' AND t.assignee_session IS NOT NULL`, predicate), id)
 	if err != nil {
+		// r2 explicit-error fix: a DB blip must not silently disable the
+		// halt/resume cascade — log loudly and deliver nothing (the
+		// flags stay authoritative; the next lifecycle action retries).
+		slog.WarnContext(ctx, "board: in-flight worker census failed (directives skipped this call)",
+			"error", err.Error())
 		return nil
 	}
 	defer rows.Close()
@@ -214,6 +220,8 @@ func (s *Service) inFlightUnder(ctx context.Context, predicate, id string) []inF
 	for rows.Next() {
 		var w inFlightWorker
 		if err := rows.Scan(&w.session, &w.shortID); err != nil {
+			slog.WarnContext(ctx, "board: in-flight worker census scan failed",
+				"error", err.Error())
 			return nil
 		}
 		out = append(out, w)
@@ -278,6 +286,10 @@ func (s *Service) concurrencyFor(ctx context.Context, p *Project) ConcurrencySta
 		  (SELECT count(*) FROM tasks ti JOIN projects pi ON pi.id = ti.project_id
 		   WHERE ti.stage='in_progress' AND pi.user_id = $1),
 		  (SELECT count(*) FROM tasks WHERE stage='in_progress')`, p.UserID).Scan(&user, &global); err != nil {
+		// r2 explicit-error fix: an unreadable census renders NO note (a
+		// lying waiting_on is worse than none) — logged, never silent.
+		slog.WarnContext(ctx, "board: concurrency census failed (waiting_on suppressed)",
+			"error", err.Error())
 		return ConcurrencyState{}
 	}
 	return ConcurrencyState{UserAtCap: user >= s.cfg.UserClaimCap, GlobalAtCap: global >= s.cfg.GlobalClaimCap}
@@ -344,7 +356,8 @@ func (s *Service) IsWorkerSession(ctx context.Context, sessionID string) (bool, 
 	var live bool
 	err := s.q().QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM tasks
-			WHERE assignee_session = $1 AND stage IN ('in_progress','pending_input'))`, sessionID).Scan(&live)
+			WHERE assignee_session = $1
+			  AND stage IN ('in_progress','in_review','pending_input'))`, sessionID).Scan(&live)
 	return live, err
 }
 

@@ -13,6 +13,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -307,4 +308,32 @@ func TestBoardAutomation_ResourcePressureTelemetry(t *testing.T) {
 	require.NotNil(t, mgr.lastPressureSample)
 	assert.True(t, mgr.lastPressureSample.Disk)
 	assert.InDelta(t, 0.92, mgr.lastPressureSample.DiskRate, 0.001)
+}
+
+// TestBoardAutomation_ManagerBeltFailClosed (r2, the review's Security-1
+// fix pins): the seam belt REFUSES an omitted sessionId (the hostile
+// spawned worker is the caller who lies by omission) and treats a belt
+// ERROR as a refusal — never a pass-through.
+func TestBoardAutomation_ManagerBeltFailClosed(t *testing.T) {
+	mgr := newFakeBoardManager()
+	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+
+	// No sessionId anywhere → 403 fail-closed (previously 201 — the hole).
+	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
+		`{"workspaceID":"ws-1","title":"T1"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code, "an unidentified caller holds no manager grant — fail closed")
+	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
+	assert.Zero(t, mgr.calls["create_task"], "the manager projection is never reached")
+
+	// Belt DB error → 503 refusal (never a silent pass-through).
+	mgr.beltErr = fmt.Errorf("db blip")
+	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
+		`{"workspaceID":"ws-1","sessionId":"ses_anyone","title":"T1"}`)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "a belt error refuses the call (fail closed)")
+	assert.Zero(t, mgr.calls["create_task"])
+
+	// DELETE-class routes carry the session on the QUERY — same rule.
+	mgr.beltErr = nil
+	w = doBoard(t, r, http.MethodDelete, "/internal/v1/automation/board/tasks/tsk-cccc3333?workspaceID=ws-1", "")
+	assert.Equal(t, http.StatusForbidden, w.Code, "query-carried identity omission refuses too")
 }
