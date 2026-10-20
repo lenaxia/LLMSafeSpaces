@@ -15,11 +15,9 @@ package handlers
 // validation, idempotency, and audit are the service's (pkg/board).
 // Error classes map to HTTP through the same renderBoardError the
 // internal automation seam uses, so the parity matrix (§4.3) sees
-// identical outcomes per class.
-//
-// Deliberately NOT routed (engine-seam gaps, flagged on the PR): epic
-// listing (no ListEpics seam), board search, and board health — the
-// board_read projections the engine does not expose yet.
+// identical outcomes per class. The board_read projections this file
+// once omitted (epic listing, search, health) landed with the #1699
+// seam closings; board-wide search + health ride /api/v1/me/board.
 
 import (
 	"context"
@@ -57,6 +55,9 @@ type boardManager interface {
 
 	GetTask(ctx context.Context, taskID, shortIDOrID string) (*board.Task, error)
 	ListTasks(ctx context.Context, projectID string, stage string) ([]board.Task, error)
+	ListEpics(ctx context.Context, projectID string) ([]board.Epic, error)
+	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
+	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
 	CreateTask(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
@@ -260,10 +261,32 @@ func (h *BoardHandler) UpdateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, p)
 }
 
+// boardOptionalRequestID binds the optional {requestId} body on actions
+// whose payloads are otherwise empty (lifecycle posts): an absent body,
+// an empty body, and a chunked ContentLength −1 are all fine — only
+// malformed JSON is a 400 (the StartTask r1-4 discipline).
+func boardOptionalRequestID(c *gin.Context) (string, bool) {
+	var req struct {
+		RequestID string `json:"requestId"`
+	}
+	if c.Request.Body == nil {
+		return "", true
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return "", false
+	}
+	return req.RequestID, true
+}
+
 // ArchiveProject is reversible storage; it stops all claims into the
 // project (the engine's p CTE predicate).
 func (h *BoardHandler) ArchiveProject(c *gin.Context) {
-	p, err := h.board.ArchiveProject(c.Request.Context(), h.boardActor(c), c.Param("id"), "")
+	requestID, ok := boardOptionalRequestID(c)
+	if !ok {
+		return
+	}
+	p, err := h.board.ArchiveProject(c.Request.Context(), h.boardActor(c), c.Param("id"), requestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -273,7 +296,11 @@ func (h *BoardHandler) ArchiveProject(c *gin.Context) {
 
 // UnarchiveProject restores active.
 func (h *BoardHandler) UnarchiveProject(c *gin.Context) {
-	p, err := h.board.UnarchiveProject(c.Request.Context(), h.boardActor(c), c.Param("id"), "")
+	requestID, ok := boardOptionalRequestID(c)
+	if !ok {
+		return
+	}
+	p, err := h.board.UnarchiveProject(c.Request.Context(), h.boardActor(c), c.Param("id"), requestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -303,6 +330,64 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 		tasks = []board.Task{}
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+// ListProjectEpics lists a project's epics with derived progress (the
+// #1699 engine seam).
+func (h *BoardHandler) ListProjectEpics(c *gin.Context) {
+	p, ok := h.ownerProject(c, c.Param("id"))
+	if !ok {
+		return
+	}
+	epics, err := h.board.ListEpics(c.Request.Context(), p.ID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	if epics == nil {
+		epics = []board.Epic{}
+	}
+	c.JSON(http.StatusOK, gin.H{"epics": epics})
+}
+
+// BoardSearch searches the caller's board (short ID exact or title
+// match, §4.8's search box); zero-hit near-misses carry did-you-mean
+// suggestions. The perimeter lives in the seam (foreign rows never
+// match, never suggest). Query-shape validation is the seam's (§4.2);
+// presence is the adapter's (the search box never sends an empty q).
+func (h *BoardHandler) BoardSearch(c *gin.Context) {
+	q := c.Query("q")
+	if q == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q is required"})
+		return
+	}
+	stage := c.Query("stage")
+	if stage != "" && !boardStages()[stage] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages: backlog, in_progress, in_review, done, pending_input"})
+		return
+	}
+	res, err := h.board.SearchTasks(c.Request.Context(), c.GetString("userID"), q, board.SearchFilters{
+		Project: c.Query("project"),
+		Epic:    c.Query("epic"),
+		Stage:   stage,
+		Tags:    c.QueryArray("tag"),
+	})
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// BoardHealth renders the caller's board health snapshot (§4.8's health
+// panel).
+func (h *BoardHandler) BoardHealth(c *gin.Context) {
+	h_, err := h.board.BoardHealth(c.Request.Context(), c.GetString("userID"))
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, h_)
 }
 
 // CreateEpic creates a draft epic in a project (ruling R2's default).
@@ -360,7 +445,11 @@ func (h *BoardHandler) UpdateEpic(c *gin.Context) {
 }
 
 func (h *BoardHandler) epicLifecycle(c *gin.Context, call func(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)) {
-	e, err := call(c.Request.Context(), h.boardActor(c), c.Param("id"), "", "")
+	requestID, ok := boardOptionalRequestID(c)
+	if !ok {
+		return
+	}
+	e, err := call(c.Request.Context(), h.boardActor(c), c.Param("id"), "", requestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -666,9 +755,10 @@ func (h *BoardHandler) AddDependency(c *gin.Context) {
 
 // RemoveDependency removes an edge — one of the pending_input
 // resolutions (removing an abandoned prerequisite's edge unblocks the
-// row; the human re-queue stays a move-stage write).
+// row; the human re-queue stays a move-stage write). DELETE carries no
+// body: the optional replay key rides a query parameter.
 func (h *BoardHandler) RemoveDependency(c *gin.Context) {
-	if err := h.board.RemoveDependency(c.Request.Context(), h.boardActor(c), c.Param("id"), "", c.Param("dependsOnId"), ""); err != nil {
+	if err := h.board.RemoveDependency(c.Request.Context(), h.boardActor(c), c.Param("id"), "", c.Param("dependsOnId"), c.Query("requestId")); err != nil {
 		renderBoardError(c, err)
 		return
 	}

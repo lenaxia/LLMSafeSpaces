@@ -121,6 +121,25 @@ type BoardProjectInput struct {
 	RequestID         string   `json:"requestId,omitempty"`
 }
 
+// BoardLifecycleOptions carries the optional replay key on otherwise-
+// empty lifecycle bodies (clientMessageID discipline: one id per logical
+// operation, reused on retry).
+type BoardLifecycleOptions struct {
+	RequestID string
+}
+
+func lifecycleBody(opts []BoardLifecycleOptions) struct {
+	RequestID string `json:"requestId,omitempty"`
+} {
+	var body struct {
+		RequestID string `json:"requestId,omitempty"`
+	}
+	if len(opts) > 0 {
+		body.RequestID = opts[0].RequestID
+	}
+	return body
+}
+
 // BoardEpicInput is the create/patch body for epics.
 type BoardEpicInput struct {
 	Title     string   `json:"title,omitempty"`
@@ -214,17 +233,17 @@ func (s *BoardService) UpdateProject(ctx context.Context, id string, req BoardPr
 	return &p, nil
 }
 
-func (s *BoardService) ArchiveProject(ctx context.Context, id string) (*BoardProject, error) {
+func (s *BoardService) ArchiveProject(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardProject, error) {
 	var p BoardProject
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/archive", id), struct{}{}, &p); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/archive", id), lifecycleBody(opts), &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
 }
 
-func (s *BoardService) UnarchiveProject(ctx context.Context, id string) (*BoardProject, error) {
+func (s *BoardService) UnarchiveProject(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardProject, error) {
 	var p BoardProject
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/unarchive", id), struct{}{}, &p); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/unarchive", id), lifecycleBody(opts), &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -268,28 +287,28 @@ func (s *BoardService) UpdateEpic(ctx context.Context, id string, req BoardEpicI
 	return &e, nil
 }
 
-func (s *BoardService) epicLifecycle(ctx context.Context, id, verb string) (*BoardEpic, error) {
+func (s *BoardService) epicLifecycle(ctx context.Context, id, verb string, opts []BoardLifecycleOptions) (*BoardEpic, error) {
 	var e BoardEpic
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/%s", id, verb), struct{}{}, &e); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/%s", id, verb), lifecycleBody(opts), &e); err != nil {
 		return nil, err
 	}
 	return &e, nil
 }
 
-func (s *BoardService) EpicActivate(ctx context.Context, id string) (*BoardEpic, error) {
-	return s.epicLifecycle(ctx, id, "activate")
+func (s *BoardService) EpicActivate(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
+	return s.epicLifecycle(ctx, id, "activate", opts)
 }
 
-func (s *BoardService) EpicPause(ctx context.Context, id string) (*BoardEpic, error) {
-	return s.epicLifecycle(ctx, id, "pause")
+func (s *BoardService) EpicPause(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
+	return s.epicLifecycle(ctx, id, "pause", opts)
 }
 
-func (s *BoardService) EpicArchive(ctx context.Context, id string) (*BoardEpic, error) {
-	return s.epicLifecycle(ctx, id, "archive")
+func (s *BoardService) EpicArchive(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
+	return s.epicLifecycle(ctx, id, "archive", opts)
 }
 
-func (s *BoardService) EpicUnarchive(ctx context.Context, id string) (*BoardEpic, error) {
-	return s.epicLifecycle(ctx, id, "unarchive")
+func (s *BoardService) EpicUnarchive(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
+	return s.epicLifecycle(ctx, id, "unarchive", opts)
 }
 
 // DeleteEpic destructively removes the epic and its tasks (#1747: cancel
@@ -405,10 +424,124 @@ func (s *BoardService) AddDependency(ctx context.Context, id string, req BoardDe
 	return &m, nil
 }
 
-func (s *BoardService) RemoveDependency(ctx context.Context, id, dependsOn string) (*BoardDependencyMutation, error) {
+func (s *BoardService) RemoveDependency(ctx context.Context, id, dependsOn string, opts ...BoardLifecycleOptions) (*BoardDependencyMutation, error) {
+	path := fmt.Sprintf("/me/tasks/%s/dependencies/%s", id, dependsOn)
+	if len(opts) > 0 && opts[0].RequestID != "" {
+		path += "?requestId=" + url.QueryEscape(opts[0].RequestID)
+	}
 	var m BoardDependencyMutation
-	if err := s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/me/tasks/%s/dependencies/%s", id, dependsOn), nil, &m); err != nil {
+	if err := s.c.do(ctx, http.MethodDelete, path, nil, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// ListBoardEpics lists a project's epics with derived progress — Done
+// over ALL tasks per the #1747 ruling; a zero denominator renders
+// no-progress.
+func (s *BoardService) ListBoardEpics(ctx context.Context, projectID string) ([]BoardEpic, error) {
+	var resp struct {
+		Epics []BoardEpic `json:"epics"`
+	}
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/projects/%s/epics", projectID), nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Epics, nil
+}
+
+// BoardSearchFilters narrows a board search (all optional; q is the query).
+type BoardSearchFilters struct {
+	Project string
+	Epic    string
+	Stage   string
+	Tags    []string
+}
+
+// BoardSearchResult is the search projection: matching tasks plus
+// did-you-mean suggestions on zero-hit near-misses.
+type BoardSearchResult struct {
+	Results     []BoardTask `json:"results"`
+	Suggestions []string    `json:"suggestions"`
+}
+
+// SearchBoard searches the caller's board — short ID exact
+// (case-insensitive) or title substring, board-wide or filtered.
+func (s *BoardService) SearchBoard(ctx context.Context, q string, f BoardSearchFilters) (*BoardSearchResult, error) {
+	params := url.Values{}
+	params.Set("q", q)
+	if f.Project != "" {
+		params.Set("project", f.Project)
+	}
+	if f.Epic != "" {
+		params.Set("epic", f.Epic)
+	}
+	if f.Stage != "" {
+		params.Set("stage", f.Stage)
+	}
+	for _, tag := range f.Tags {
+		params.Add("tag", tag)
+	}
+	var res BoardSearchResult
+	if err := s.c.do(ctx, http.MethodGet, "/me/board/search?"+params.Encode(), nil, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// BoardHealthLease is one in-flight claim on the health snapshot.
+type BoardHealthLease struct {
+	TaskID          string `json:"task_id"`
+	ShortID         string `json:"short_id"`
+	Title           string `json:"title"`
+	ProjectID       string `json:"project_id"`
+	AssigneeSession string `json:"assignee_session,omitempty"`
+	LeaseExpiresAt  string `json:"lease_expires_at"`
+}
+
+// BoardHealthTaskCooldown is one throttled task's cooldown.
+type BoardHealthTaskCooldown struct {
+	TaskID        string `json:"task_id"`
+	ShortID       string `json:"short_id"`
+	ProjectID     string `json:"project_id"`
+	CooldownUntil string `json:"cooldown_until"`
+}
+
+// BoardHealthProjectCooldown is one project's worker-slot cooldown.
+type BoardHealthProjectCooldown struct {
+	ProjectID     string `json:"project_id"`
+	ShortID       string `json:"short_id"`
+	CooldownUntil string `json:"cooldown_until"`
+}
+
+// BoardHealthReclaim is one recent lease reclaim.
+type BoardHealthReclaim struct {
+	TaskID string `json:"task_id"`
+	At     string `json:"at"`
+}
+
+// BoardHealthProjectSlots is a project's worker budget in use.
+type BoardHealthProjectSlots struct {
+	ProjectID   string `json:"project_id"`
+	ShortID     string `json:"short_id"`
+	WorkerSlots int    `json:"worker_slots"`
+	InUse       int    `json:"in_use"`
+}
+
+// BoardHealth is the §4.8 health panel snapshot.
+type BoardHealth struct {
+	ActiveLeases         []BoardHealthLease           `json:"active_leases"`
+	TaskCooldowns        []BoardHealthTaskCooldown    `json:"task_cooldowns"`
+	ProjectCooldowns     []BoardHealthProjectCooldown `json:"project_cooldowns"`
+	PendingInputByOrigin map[string]int               `json:"pending_input_by_origin"`
+	RecentReclaims       []BoardHealthReclaim         `json:"recent_reclaims"`
+	ProjectSlots         []BoardHealthProjectSlots    `json:"project_slots"`
+}
+
+// GetBoardHealth renders the caller's board health snapshot.
+func (s *BoardService) GetBoardHealth(ctx context.Context) (*BoardHealth, error) {
+	var h BoardHealth
+	if err := s.c.do(ctx, http.MethodGet, "/me/board/health", nil, &h); err != nil {
+		return nil, err
+	}
+	return &h, nil
 }

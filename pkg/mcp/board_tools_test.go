@@ -44,9 +44,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// boardToolNames is the exact external surface (design §4.3b): 18 tools.
+// boardToolNames is the exact external surface (design §4.3b): 19 tools.
 var boardToolNames = []string{
-	"board_list_projects", "board_get", "board_read",
+	"board_list_projects", "board_get", "board_read", "board_health",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
@@ -220,37 +220,37 @@ func boardAllowCases() []boardToolCase {
 		{
 			name: "board_epic_activate", tool: "board_epic_activate", args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", false).Return(`{"status":"active"}`, nil)
+				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", mock.Anything, mock.Anything).Return(`{"status":"active"}`, nil)
 			},
 		},
 		{
 			name: "board_epic_pause", tool: "board_epic_pause", args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardEpicPause", mock.Anything, "epc-bbbb2222").Return(`{"status":"paused"}`, nil)
+				m.On("BoardEpicPause", mock.Anything, "epc-bbbb2222", mock.Anything).Return(`{"status":"paused"}`, nil)
 			},
 		},
 		{
 			name: "board_epic_archive", tool: "board_epic_archive", args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardEpicArchive", mock.Anything, "epc-bbbb2222").Return(`{"status":"archived"}`, nil)
+				m.On("BoardEpicArchive", mock.Anything, "epc-bbbb2222", mock.Anything).Return(`{"status":"archived"}`, nil)
 			},
 		},
 		{
 			name: "board_epic_unarchive", tool: "board_epic_unarchive", args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardEpicUnarchive", mock.Anything, "epc-bbbb2222").Return(`{"status":"active"}`, nil)
+				m.On("BoardEpicUnarchive", mock.Anything, "epc-bbbb2222", mock.Anything).Return(`{"status":"active"}`, nil)
 			},
 		},
 		{
 			name: "board_project_archive", tool: "board_project_archive", args: map[string]any{"project_id": "prj-aaaa1111"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardArchiveProject", mock.Anything, "prj-aaaa1111").Return(`{"status":"archived"}`, nil)
+				m.On("BoardArchiveProject", mock.Anything, "prj-aaaa1111", mock.Anything).Return(`{"status":"archived"}`, nil)
 			},
 		},
 		{
 			name: "board_project_unarchive", tool: "board_project_unarchive", args: map[string]any{"project_id": "prj-aaaa1111"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardUnarchiveProject", mock.Anything, "prj-aaaa1111").Return(`{"status":"active"}`, nil)
+				m.On("BoardUnarchiveProject", mock.Anything, "prj-aaaa1111", mock.Anything).Return(`{"status":"active"}`, nil)
 			},
 		},
 		{
@@ -289,14 +289,14 @@ func boardAllowCases() []boardToolCase {
 			name: "board_project_pause", tool: "board_project_pause",
 			args: map[string]any{"project_id": "prj-aaaa1111"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardProjectPause", mock.Anything, "prj-aaaa1111").Return(`{"paused":true}`, nil)
+				m.On("BoardProjectPause", mock.Anything, "prj-aaaa1111", mock.Anything).Return(`{"paused":true}`, nil)
 			},
 		},
 		{
 			name: "board_project_resume", tool: "board_project_resume",
 			args: map[string]any{"project_id": "prj-aaaa1111"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardProjectResume", mock.Anything, "prj-aaaa1111").Return(`{"paused":false}`, nil)
+				m.On("BoardProjectResume", mock.Anything, "prj-aaaa1111", mock.Anything).Return(`{"paused":false}`, nil)
 			},
 		},
 		{
@@ -322,7 +322,7 @@ func boardAllowCases() []boardToolCase {
 			name: "board_remove_dependency", tool: "board_remove_dependency",
 			args: map[string]any{"task_id": "tsk-cccc3333", "depends_on": "tsk-dddd4444"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardRemoveDependency", mock.Anything, "tsk-cccc3333", "tsk-dddd4444").Return(nil)
+				m.On("BoardRemoveDependency", mock.Anything, "tsk-cccc3333", "tsk-dddd4444", "").Return(nil)
 			},
 		},
 	}
@@ -418,7 +418,7 @@ func TestBoardTools_GuardPassThrough(t *testing.T) {
 			tool: "board_epic_activate",
 			args: map[string]any{"epic_id": "epc-bbbb2222"},
 			mockFn: func(m *MockAPIClient) {
-				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", mock.Anything).
+				m.On("BoardEpicActivate", mock.Anything, "epc-bbbb2222", mock.Anything, mock.Anything).
 					Return("", fmt__error("API error 403: {\"error\":\"board: guard authz: board actions belong to the owning user (ruling R7)\",\"code\":\"authz\"}"))
 			},
 			contains: []string{"403", "authz"},
@@ -582,6 +582,8 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardGet(ctx, makeReq(name, args))
 	case "board_read":
 		return h.boardRead(ctx, makeReq(name, args))
+	case "board_health":
+		return h.boardHealth(ctx, makeReq(name, args))
 	case "board_create_project":
 		return h.boardCreateProject(ctx, makeReq(name, args))
 	case "board_create_epic":

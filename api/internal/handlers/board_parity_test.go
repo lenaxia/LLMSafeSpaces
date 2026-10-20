@@ -142,9 +142,9 @@ var boardParityMatrix = []parityRow{
 	{action: "resume_project", restMethods: []string{"ResumeProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_resume"}, agent: liveCell,
 		agentTool: "board_project_resume"},
-	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "GetEpic", "GetTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read"}, agent: liveCell,
-		agentTool: "board_read"}, // v1 item form (GetTaskInWorkspace); list/search/health ride the #1699 engine seams
+	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
+		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams, live on REST/external)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
 		agentTool: "board_create_epic"},
@@ -896,6 +896,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"GET /api/v1/me/epics/:id",
 		"GET /api/v1/me/projects",
 		"GET /api/v1/me/projects/:id",
+		"GET /api/v1/me/projects/:id/epics",
 		"GET /api/v1/me/projects/:id/tasks",
 		"GET /api/v1/me/tasks/:id",
 		"PATCH /api/v1/me/epics/:id",
@@ -957,29 +958,14 @@ func restBoardRoutes(t *testing.T) []string {
 
 // --- §6 cell-case kinds beyond allow/deny: idempotent replay + audit ---
 
-// replayExceptions names the mutating actions whose requestId does NOT
-// reach an event writer TODAY, so the replay case skips them BY NAME
-// (a conscious, reviewable list — not silent coverage loss):
-//   - the project/epic lifecycle writers (archive/unarchive/pause/
-//     resume/activate): the engine's lifecycle writers discard the
-//     requestID parameter (pkg/board service.go — flagged on PR #1728
-//     as an engine follow-up; no pkg/board edit from that lane).
-//   - remove_dependency/delete_task/delete_epic: DELETE carries no body
-//     at the REST tier (force rides the query).
-//
-// When the engine follow-up lands, entries come OFF this list and the
-// replay case covers them.
+// replayExceptions is EMPTY: every mutating action's requestId reaches
+// an event writer — the #1728-flagged engine gap (lifecycle writers
+// discarding the parameter) and remove_dependency's query-param form
+// landed with #1699. A future gap reintroduces a named entry here so
+// the replay case skips consciously, never silently.
 var replayExceptions = map[string]string{
-	"archive_project":   "engine lifecycle writer discards requestId (service.go:309)",
-	"unarchive_project": "engine lifecycle writer discards requestId (service.go:309)",
-	"pause_project":     "engine lifecycle writer discards requestId",
-	"resume_project":    "engine lifecycle writer discards requestId",
-	"epic_activate":     "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_pause":        "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_archive":      "engine lifecycle writer discards requestId (service.go:462)",
-	"epic_unarchive":    "engine lifecycle writer discards requestId (service.go:462)",
 	"remove_dependency": "DELETE carries no body at the REST tier",
-	"delete_task":       "DELETE carries no body at the REST tier (force rides the query)",
+	"delete_task":       "DELETE carries no body at the REST tier (reconnect rides the query)",
 	"delete_epic":       "DELETE carries no body at the REST tier (force rides the query)",
 }
 
@@ -992,9 +978,11 @@ func boardReadActions() map[string]bool {
 // the REST tier — a mutating action re-invoked with the SAME requestId
 // renders 200-with-original, never an error, and the adapter delivers
 // the identical key on both calls (SDK clients reuse one key per
-// logical operation). The fake resolves replays the way the engine's
-// event writer does (Duplicate{AcceptedID} → 200-with-original), so a
-// handler that translated a replay into an error class would redden.
+// logical operation). The fake models the ADAPTER contract only (both
+// calls succeed, key delivered twice) — it does not emit
+// DuplicateError; the real translation (DuplicateError → 200) is
+// pinned by TestBoardREST_DuplicateReplayRendersOriginal, and the
+// engine's replay semantics by the pkg/board integration suite.
 func TestBoardParity_IdempotentReplay(t *testing.T) {
 	for _, row := range boardParityMatrix {
 		if row.rest.kind != "live" || boardReadActions()[row.action] {
@@ -1083,12 +1071,30 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T","requestId":`+q(requestID)+`}`)
 	case "update_task":
 		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"title":"x","requestId":`+q(requestID)+`}`)
+	case "task_start":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
 	case "add_dependency":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
 	case "move_stage":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
-	case "task_start":
-		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
+	case "archive_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", body)
+	case "unarchive_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/unarchive", body)
+	case "pause_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/pause", body)
+	case "resume_project":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/resume", body)
+	case "epic_activate":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/activate", body)
+	case "epic_pause":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/pause", body)
+	case "epic_archive":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/archive", body)
+	case "epic_unarchive":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/unarchive", body)
+	case "remove_dependency":
+		return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-dddd4444", "")
 	case "pause_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/pause", body)
 	case "resume_task":

@@ -17,6 +17,13 @@ PRJ = re.compile(r"^prj-[0-9a-z]{8}$")
 EPC = re.compile(r"^epc-[0-9a-z]{8}$")
 TSK = re.compile(r"^tsk-[0-9a-z]{8}$")
 PR_ANCHOR = re.compile(r"^pr:[1-9][0-9]*$")
+REPLAY_KEY = "11111111-2222-3333-4444-555555555555"
+
+
+def mutate_sid(sid: str) -> str:
+    """Edit-distance-1 near-miss of a short id (suggestion bound)."""
+    tail = "1" if sid[-1] == "0" else "0"
+    return sid[:-1] + tail
 
 
 def run(r: Runner, cfg: Config) -> None:
@@ -159,6 +166,20 @@ def run(r: Runner, cfg: Config) -> None:
 
         # P12: read perimeter — a near-miss id is a plain 404
         r.assert_error(lambda: c.board.get_project("prj-zzzzzzzz"), "get-project-nearmiss: 404")
+
+        # P13 (#1699 replay keys): post-cancel activate from paused (no
+        # claimable work — no spawns); the SAME requestId twice renders
+        # 200-with-original on the replay
+        ok, act1 = r.assert_no_error(
+            lambda: c.board.epic_activate(epic_sid, request_id=REPLAY_KEY), "lifecycle-replay-1: no error"
+        )
+        if ok and act1:
+            r.assert_(act1.get("status") == "active", "lifecycle-replay-1: active", str(act1.get("status")))
+        ok, act2 = r.assert_no_error(
+            lambda: c.board.epic_activate(epic_sid, request_id=REPLAY_KEY), "lifecycle-replay-2: 200-with-original"
+        )
+        if ok and act2:
+            r.assert_(act2.get("status") == "active", "lifecycle-replay-2: original status", str(act2.get("status")))
     finally:
         try:
             c.workspaces.delete(ws_id)

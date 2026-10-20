@@ -215,6 +215,8 @@ const (
 	GuardConcurrency  = "concurrency_limit" // user/global concurrent-claim cap refuses a manual dispatch
 	GuardGraphLimit   = "graph_limit"       // edges-per-node / nodes-per-epic cap (blast-radius bound)
 	GuardBackpressure = "backpressure"      // workspace resource pressure gates claiming (informational class)
+	// #1699 (#1772): malformed arguments (rendered 400).
+	GuardInput = "invalid_input"
 )
 
 // DependencyError is the dependency-write 409 (ruling R4a) — carries

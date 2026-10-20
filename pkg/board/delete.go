@@ -168,7 +168,7 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 		// Per-task snapshot events (content preservation) + external
 		// orphan events — AFTER the cascade so the rederives converge.
 		for _, t := range tasks {
-			if err := insertEventTx(ctx, tx, p.ID,
+			if _, err := recordEventTx(ctx, tx, p.ID,
 				engineEventID("delete_task", t.ID, 0), "delete_task", "task", t.ID, actor,
 				map[string]any{"snapshot": snapshotOf(t), "id": t.ID, "short_id": t.ShortID, "cascade_of": e.ShortID}); err != nil {
 				return nil, err
@@ -290,7 +290,7 @@ func reconnectOrphansTx(ctx context.Context, tx pgx.Tx, p *Project, orphans, ups
 // cascade has taken the stale edges.
 func writeOrphanEvents(ctx context.Context, tx pgx.Tx, projectID string, deleted *Task, orphans edgeEndpoints, actor Actor) error {
 	for _, o := range orphans.nodes {
-		if err := insertEventTx(ctx, tx, projectID,
+		if _, err := recordEventTx(ctx, tx, projectID,
 			"engine:unblocked_by_delete:"+deleted.ID+":"+o.id, "unblocked_by_delete", "task", o.id, actor,
 			map[string]any{"of": deleted.ShortID, "orphan": o.shortID}); err != nil {
 			return err

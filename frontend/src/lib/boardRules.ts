@@ -224,6 +224,7 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",
   validation: "A field failed the engine's validation (a required name/title, or a shape rule).",
+  invalid_input: "Malformed arguments (a blank or oversized search query, or an unknown filter).",
   // #1747 additions: the pause lever, backpressure caps, graph limits.
   task_paused: "The task is paused — forward writes and claims wait for resume (#1747).",
   concurrency_limit: "The per-user or per-instance concurrent-claim cap is saturated; the task stays ready and retries.",

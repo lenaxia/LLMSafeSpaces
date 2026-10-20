@@ -1584,6 +1584,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				}
 			}()
 			boardReconciler = board.NewReconciler(boardPool, engineCfg, spawnOpts...)
+			// §4.6 SSE live feed (#1699 gap 4): committed board events
+			// fan out on the user + workspace channels as board.event.
+			// Fail-open by construction — nil publisher (no broker)
+			// leaves writes unaffected; the UI's reseed belt covers a
+			// dropped projection.
+			if boardPub := proxyHandler.BoardEventPublisher(boardPool, log); boardPub != nil {
+				boardSvc.SetEventPublisher(boardPub)
+				boardReconciler.SetEventPublisher(boardPub)
+			}
 			if podAutomationHandler != nil {
 				podAutomationHandler.SetBoardService(boardSvc)
 			}

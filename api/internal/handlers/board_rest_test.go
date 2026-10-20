@@ -32,9 +32,16 @@ type fakeBoardManager struct {
 	lastActor     board.Actor
 	lastRequestID string
 
-	projects []board.Project
-	epics    []board.Epic
-	tasks    []board.Task
+	lastProjectID     string
+	lastSearchQuery   string
+	lastSearchFilters board.SearchFilters
+	lastHealthUser    string
+
+	projects     []board.Project
+	epics        []board.Epic
+	tasks        []board.Task
+	searchResult *board.SearchResult
+	health       *board.Health
 
 	errFor map[string]error
 
@@ -280,6 +287,34 @@ func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage string)
 	return f.tasks, nil
 }
 
+func (f *fakeBoardManager) ListEpics(_ context.Context, projectID string) ([]board.Epic, error) {
+	f.call("list_epics")
+	f.lastProjectID = projectID
+	if err := f.errFor["list_epics"]; err != nil {
+		return nil, err
+	}
+	return f.epics, nil
+}
+
+func (f *fakeBoardManager) SearchTasks(_ context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error) {
+	f.call("search_tasks")
+	f.lastSearchQuery, f.lastSearchFilters = q, filters
+	_ = userID
+	if err := f.errFor["search_tasks"]; err != nil {
+		return nil, err
+	}
+	return f.searchResult, nil
+}
+
+func (f *fakeBoardManager) BoardHealth(_ context.Context, userID string) (*board.Health, error) {
+	f.call("board_health")
+	f.lastHealthUser = userID
+	if err := f.errFor["board_health"]; err != nil {
+		return nil, err
+	}
+	return f.health, nil
+}
+
 func (f *fakeBoardManager) CreateTask(_ context.Context, actor board.Actor, _, idOrShort string, in board.TaskInput, requestID string) (*board.Task, error) {
 	f.call("create_task")
 	f.lastActor, f.lastRequestID = actor, requestID
@@ -362,6 +397,10 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p.GET("/:id/tasks", h.ListProjectTasks)
 	p.POST("/:id/epics", h.CreateEpic)
 	p.POST("/:id/import-plan", h.ImportPlan)
+	p.GET("/:id/epics", h.ListProjectEpics)
+	bb := g.Group("/board")
+	bb.GET("/search", h.BoardSearch)
+	bb.GET("/health", h.BoardHealth)
 	e := g.Group("/epics")
 	e.GET("/:id", h.GetEpic)
 	e.PATCH("/:id", h.UpdateEpic)

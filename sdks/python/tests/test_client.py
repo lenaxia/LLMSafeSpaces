@@ -1213,6 +1213,53 @@ def test_board_task_or4_anchor_and_actions():
 
 
 @respx.mock
+def test_board_seams_reads_and_replay_keys():
+    """#1699 seam closings: epic listing, board search, board health, and
+    the lifecycle replay keys (body requestId + the DELETE query param)."""
+    respx.get(f"{BASE}/me/projects/prj-aaaa1111/epics").respond(
+        json={"epics": [{"id": "e1", "short_id": "epc-bbbb2222", "status": "active",
+                         "progress_derived": True, "progress_done": 1, "progress_total": 2}]}
+    )
+    respx.get(f"{BASE}/me/board/search").respond(
+        json={"results": [{"id": "t1", "short_id": "tsk-cccc3333", "title": "Fix login bug"}],
+              "suggestions": []}
+    )
+    respx.get(f"{BASE}/me/board/health").respond(
+        json={"active_leases": [{"task_id": "t1", "short_id": "tsk-cccc3333", "title": "x",
+                                 "project_id": "p1", "lease_expires_at": "2026-10-19T12:00:00Z"}],
+              "task_cooldowns": [], "project_cooldowns": [],
+              "pending_input_by_origin": {"escalated": 1},
+              "recent_reclaims": [{"task_id": "t2", "at": "2026-10-19T11:00:00Z"}],
+              "project_slots": [{"project_id": "p1", "short_id": "prj-aaaa1111", "worker_slots": 2, "in_use": 1}]}
+    )
+    respx.post(f"{BASE}/me/epics/epc-bbbb2222/activate").respond(json={"id": "e1", "status": "active"})
+    respx.post(f"{BASE}/me/projects/prj-aaaa1111/archive").respond(json={"id": "p1", "status": "archived"})
+    respx.delete(f"{BASE}/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000").respond(
+        json={"task": {"id": "t1", "is_blocked": False}}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    epics = client.board.list_board_epics("prj-aaaa1111")
+    assert epics[0]["progress_total"] == 2
+
+    res = client.board.search_board("login", project="prj-aaaa1111", tags=["auth"])
+    assert res["results"][0]["short_id"] == "tsk-cccc3333"
+    sent = str(respx.calls[-1].request.url)
+    assert "q=login" in sent and "project=prj-aaaa1111" in sent and "tag=auth" in sent
+
+    health = client.board.get_board_health()
+    assert health["pending_input_by_origin"]["escalated"] == 1
+    assert health["project_slots"][0]["in_use"] == 1
+
+    client.board.epic_activate("epc-bbbb2222", request_id="key-1")
+    assert '"requestId":"key-1"' in respx.calls[-1].request.content.decode()
+    client.board.archive_project("prj-aaaa1111", request_id="key-2")
+    assert '"requestId":"key-2"' in respx.calls[-1].request.content.decode()
+
+    client.board.remove_dependency("tsk-cccc3333", "tsk-aaaa0000", request_id="key-3")
+    assert "requestId=key-3" in str(respx.calls[-1].request.url)
+
+
+@respx.mock
 def test_sessions_list_include_archived_serialization_1735():
     """#1735: default list carries NO include_archived param (server
     default: exclude archived); the opt-in appends exactly

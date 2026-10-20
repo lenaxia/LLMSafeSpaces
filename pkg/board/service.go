@@ -21,6 +21,12 @@ import (
 // Option configures a Service (functional options, constructed at boot).
 type Option func(*Service)
 
+// WithEventPublisher installs the §4.6 post-commit event projection
+// (SSE fan-out). See EventPublisher.
+func WithEventPublisher(pub EventPublisher) Option {
+	return func(s *Service) { s.publisher = pub }
+}
+
 // WithFailpoint installs the fault seam (kill-tests).
 func WithFailpoint(fp Failpoint) Option {
 	return func(s *Service) { s.failpoint = fp }
@@ -81,6 +87,24 @@ type Service struct {
 	// point skips pressured workspaces; reads surface the note.
 	pressureMu sync.RWMutex
 	pressure   map[string]PressureSample
+	// publisher is the #1699 (#1772) §4.6 event projection.
+	publisher EventPublisher
+}
+
+// SetEventPublisher installs or replaces the §4.6 event projection at
+// wiring time (before first use); nil disables publishing.
+func (s *Service) SetEventPublisher(pub EventPublisher) { s.publisher = pub }
+
+// publishCommitted fans a committed board event to the installed
+// publisher. Called strictly AFTER the writing transaction commits
+// (persist-then-publish, §4.6 i). A zero Event (a replayed
+// deterministic id — ON CONFLICT produced no row, no view) publishes
+// nothing. Fail-open by construction: a nil publisher is a no-op and
+// the write already succeeded.
+func (s *Service) publishCommitted(evt Event) {
+	if s.publisher != nil && evt.ID != "" {
+		s.publisher(evt)
+	}
 }
 
 // NewService constructs the BoardService.
@@ -338,15 +362,15 @@ func projectStatusTx(ctx context.Context, tx pgx.Tx, actor Actor, p *Project, to
 // ArchiveProject is reversible storage; it stops all claims into the
 // project (the p CTE's status predicate).
 func (s *Service) ArchiveProject(ctx context.Context, actor Actor, projectID, requestID string) (*Project, error) {
-	return s.projectLifecycle(ctx, actor, projectID, "", ProjectArchived, "archive_project")
+	return s.projectLifecycle(ctx, actor, projectID, "", ProjectArchived, "archive_project", requestID)
 }
 
 // UnarchiveProject restores active.
 func (s *Service) UnarchiveProject(ctx context.Context, actor Actor, projectID, requestID string) (*Project, error) {
-	return s.projectLifecycle(ctx, actor, projectID, "", ProjectActive, "unarchive_project")
+	return s.projectLifecycle(ctx, actor, projectID, "", ProjectActive, "unarchive_project", requestID)
 }
 
-func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, shortIDOrID, to, action string) (*Project, error) {
+func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, shortIDOrID, to, action, requestID string) (*Project, error) {
 	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -357,10 +381,20 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
+	// Replay-first (a caller key that already landed renders the
+	// original outcome — the status the original write left behind must
+	// not turn a replay into a guard error).
+	dup, err := s.replayOf(ctx, p.ID, requestID, action)
+	if err != nil {
+		return nil, err
+	}
+	if dup != nil {
+		return nil, dup
+	}
 	if p.Status == to {
 		return p, nil
 	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: "", action: action, itemKind: "project", itemID: p.ID, actor: actor}
+	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "project", itemID: p.ID, actor: actor}
 	_, _, err = ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if err := projectStatusTx(ctx, tx, actor, p, to, action); err != nil {
 			return nil, err
@@ -465,6 +499,7 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 // #1747: activation refuses cross-epic edges into INACTIVE epics unless
 // acknowledged (structurally-broken subgraph guard) and resumes any
 // in-flight workers paused under the epic (the pause-must-pause lever).
+// #1699 (#1772): requestID threads the lifecycle replay (Duplicate→200).
 func (s *Service) EpicActivate(ctx context.Context, actor Actor, epicID, shortIDOrID string, ackInactiveDeps bool, requestID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
 	if err != nil {
@@ -479,7 +514,7 @@ func (s *Service) EpicActivate(ctx context.Context, actor Actor, epicID, shortID
 			return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("%d cross-epic dependenc(ies) enter inactive epics — acknowledge (acknowledgeInactiveDeps) or resolve them first", n)}
 		}
 	}
-	e, err = s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true)
+	e, err = s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +568,7 @@ func (s *Service) EpicInitialReadySet(ctx context.Context, epicID string) ([]str
 // in-flight worker under the epic (they land at the current turn's
 // boundary; forward writes refuse while the epic is paused).
 func (s *Service) EpicPause(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	e, err := s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false)
+	e, err := s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -543,16 +578,16 @@ func (s *Service) EpicPause(ctx context.Context, actor Actor, epicID, shortIDOrI
 
 // EpicArchive is reversible storage.
 func (s *Service) EpicArchive(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicArchived, "epic_archive", false)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicArchived, "epic_archive", false, requestID)
 }
 
 // EpicUnarchive always restores active (the resumable default) — and, as
 // an archived-origin activation, runs the immediate re-check (r13 pin).
 func (s *Service) EpicUnarchive(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_unarchive", true)
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_unarchive", true, requestID)
 }
 
-func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortIDOrID, to, action string, recheck bool) (*Epic, error) {
+func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortIDOrID, to, action string, recheck bool, requestID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -566,6 +601,17 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	}
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
+	}
+	// Replay-first: the allowed-map below reads the status the ORIGINAL
+	// write may have changed (activate's replay sees active→active) — a
+	// landed caller key renders the original outcome instead of a guard
+	// error.
+	dup, err := s.replayOf(ctx, p.ID, requestID, action)
+	if err != nil {
+		return nil, err
+	}
+	if dup != nil {
+		return nil, dup
 	}
 	allowed := map[string][]string{
 		EpicActive:   {EpicDraft, EpicPaused, EpicCompleted, EpicArchived},
@@ -581,8 +627,8 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	if !ok {
 		return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("epic %s→%s is not a lifecycle transition (from %s)", e.Status, to, e.Status)}
 	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: "", action: action, itemKind: "epic", itemID: e.ID, actor: actor}
-	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "epic", itemID: e.ID, actor: actor}
+	_, dup, err = ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `UPDATE epics SET status=$2 WHERE id=$1`, e.ID, to); err != nil {
 			return nil, err
 		}

@@ -81,11 +81,25 @@ var boardGetTool = mcp.NewTool("board_get",
 )
 
 var boardReadTool = mcp.NewTool("board_read",
-	mcp.WithDescription("Read a project's tasks, optionally filtered by one of the five stages "+
-		"(backlog, in_progress, in_review, done, pending_input). "+
-		"Search and health projections join this tool when the engine seams land (#1699)."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithDescription("Read a board. Default (with project_id): the project's tasks, optionally "+
+		"filtered by one of the five stages (backlog, in_progress, in_review, done, pending_input — "+
+		"#1747). kind=epics lists the project's epics with derived progress. q= searches your board "+
+		"(short id exact or title match, board-wide when project_id is omitted) with did-you-mean "+
+		"suggestions on zero-hit near-misses. health=true renders the board health snapshot instead."),
+	mcp.WithString("project_id", mcp.Description("Project short id (prj-XXXXXXXX)")),
 	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the five stages)")),
+	mcp.WithString("kind", mcp.Description("Projection selector: epics lists the project's epics (requires project_id)")),
+	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
+	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Search filter: tasks carrying ALL of these tags")),
+	mcp.WithString("epic_id", mcp.Description("Search filter: narrow to one epic (epc-XXXXXXXX)")),
+	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins)")),
+	mcp.WithReadOnlyHintAnnotation(true),
+)
+
+var boardHealthTool = mcp.NewTool("board_health",
+	mcp.WithDescription("The board health snapshot (design 0067 §4.8): active leases with expiry, recent "+
+		"reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker "+
+		"slots in use. The same projection board_read?health=true renders."),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
@@ -198,6 +212,7 @@ var boardEpicActivateTool = mcp.NewTool("board_epic_activate",
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
 	mcp.WithBoolean("acknowledge_inactive_deps",
 		mcp.Description("Acknowledge cross-epic deps entering inactive epics (they stay blocking until those epics activate)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardEpicPauseTool = mcp.NewTool("board_epic_pause",
@@ -205,26 +220,31 @@ var boardEpicPauseTool = mcp.NewTool("board_epic_pause",
 		"cascade HALT directives to the epic's in-flight workers (#1747 pause-must-pause; they land at "+
 		"the current turn's boundary)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardEpicArchiveTool = mcp.NewTool("board_epic_archive",
 	mcp.WithDescription("Archive an epic (reversible storage; it leaves the candidate set)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardEpicUnarchiveTool = mcp.NewTool("board_epic_unarchive",
 	mcp.WithDescription("Unarchive an epic — always restores active (the resumable default)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardProjectArchiveTool = mcp.NewTool("board_project_archive",
 	mcp.WithDescription("Archive a project (reversible): stops ALL claims into it."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardProjectUnarchiveTool = mcp.NewTool("board_project_unarchive",
 	mcp.WithDescription("Unarchive a project: restores active."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardProjectPauseTool = mcp.NewTool("board_project_pause",
@@ -307,6 +327,7 @@ var boardRemoveDependencyTool = mcp.NewTool("board_remove_dependency",
 		"abandoned prerequisite's edge unblocks the row; the human re-queue stays a move-stage write)."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-XXXXXXXX)")),
 	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 // --- Tool handlers ---
@@ -347,16 +368,50 @@ func (h *handlers) boardGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 func (h *handlers) boardRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	projectID := strArg(args, "project_id")
-	if projectID == "" {
-		return mcp.NewToolResultError("project_id is required"), nil
-	}
 	stage := strArg(args, "stage")
+	kind := strArg(args, "kind")
+	q := strArg(args, "q")
+	if b, ok := boolArg(args, "health"); ok && b {
+		resp, err := h.client.BoardHealth(ctx)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to read board health: %v", err)), nil
+		}
+		return mcp.NewToolResultText(string(resp)), nil
+	}
+	if q != "" {
+		resp, err := h.client.BoardSearch(ctx, BoardSearchQuery{
+			Q: q, Project: projectID, Epic: strArg(args, "epic_id"), Stage: stage,
+			Tags: stringSliceArg(args, "tags"),
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to search board: %v", err)), nil
+		}
+		return mcp.NewToolResultText(string(resp)), nil
+	}
+	if projectID == "" {
+		return mcp.NewToolResultError("project_id is required (or pass q to search, health for the snapshot)"), nil
+	}
+	if kind == "epics" {
+		resp, err := h.client.BoardListEpics(ctx, projectID)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to read board epics: %v", err)), nil
+		}
+		return mcp.NewToolResultText(string(resp)), nil
+	}
 	if stage != "" && !boardStageSet()[stage] {
 		return mcp.NewToolResultError("stage filter must be one of " + strings.Join(boardStages, ", ")), nil
 	}
 	resp, err := h.client.BoardListTasks(ctx, projectID, stage)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read board tasks: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardHealth(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	resp, err := h.client.BoardHealth(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read board health: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
@@ -525,13 +580,13 @@ func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) 
 }
 
 func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolRequest,
-	call func(ctx context.Context, epicID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
+	call func(ctx context.Context, epicID, requestID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	epicID := strArg(args, "epic_id")
 	if epicID == "" {
 		return mcp.NewToolResultError("epic_id is required"), nil
 	}
-	resp, err := call(ctx, epicID)
+	resp, err := call(ctx, epicID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to %s epic: %v", verb, err)), nil
 	}
@@ -545,7 +600,7 @@ func (h *handlers) boardEpicActivate(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("epic_id is required"), nil
 	}
 	ack, _ := args["acknowledge_inactive_deps"].(bool)
-	resp, err := h.client.BoardEpicActivate(ctx, epicID, ack)
+	resp, err := h.client.BoardEpicActivate(ctx, epicID, ack, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to activate epic: %v", err)), nil
 	}
@@ -565,13 +620,13 @@ func (h *handlers) boardEpicUnarchive(ctx context.Context, req mcp.CallToolReque
 }
 
 func (h *handlers) boardProjectLifecycle(ctx context.Context, req mcp.CallToolRequest,
-	call func(ctx context.Context, projectID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
+	call func(ctx context.Context, projectID, requestID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	projectID := strArg(args, "project_id")
 	if projectID == "" {
 		return mcp.NewToolResultError("project_id is required"), nil
 	}
-	resp, err := call(ctx, projectID)
+	resp, err := call(ctx, projectID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to %s project: %v", verb, err)), nil
 	}
@@ -715,7 +770,7 @@ func (h *handlers) boardRemoveDependency(ctx context.Context, req mcp.CallToolRe
 	if taskID == "" || dependsOn == "" {
 		return mcp.NewToolResultError("task_id and depends_on are required"), nil
 	}
-	if err := h.client.BoardRemoveDependency(ctx, taskID, dependsOn); err != nil {
+	if err := h.client.BoardRemoveDependency(ctx, taskID, dependsOn, strArg(args, "request_id")); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to remove dependency: %v", err)), nil
 	}
 	return mcp.NewToolResultText(`{"removed":true}`), nil
@@ -849,6 +904,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardListProjectsTool, Handler: h.boardListProjects},
 		server.ServerTool{Tool: boardGetTool, Handler: h.boardGet},
 		server.ServerTool{Tool: boardReadTool, Handler: h.boardRead},
+		server.ServerTool{Tool: boardHealthTool, Handler: h.boardHealth},
 		server.ServerTool{Tool: boardCreateProjectTool, Handler: h.boardCreateProject},
 		server.ServerTool{Tool: boardCreateEpicTool, Handler: h.boardCreateEpic},
 		server.ServerTool{Tool: boardCreateTaskTool, Handler: h.boardCreateTask},

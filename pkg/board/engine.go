@@ -211,11 +211,12 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			Actor{Kind: ActorSystem, Surface: SurfaceReconciler}); err != nil {
 			return nil, err
 		}
-		if err := insertEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
-			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"}, map[string]any{"task_id": t.ID, "attempts": cur.Attempts}); err != nil {
+		evt, err := recordEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
+			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"}, map[string]any{"task_id": t.ID, "attempts": cur.Attempts})
+		if err != nil {
 			return nil, err
 		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := s.commitPublishing(ctx, tx, evt); err != nil {
 			return nil, err
 		}
 		return &Claim{TaskID: t.ID, Escalated: true, Task: s.mustTask(ctx, t.ID)}, nil
@@ -253,11 +254,12 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if evtID == "" {
 		evtID = engineEventID("task_start", t.ID, attemptsDone)
 	}
-	if err := insertEventTx(ctx, tx, p.ID, evtID, "task_start", "task", t.ID,
-		actor, map[string]any{"task_id": t.ID, "attempts": attemptsDone}); err != nil {
+	evt, err := recordEventTx(ctx, tx, p.ID, evtID, "task_start", "task", t.ID,
+		actor, map[string]any{"task_id": t.ID, "attempts": attemptsDone})
+	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.commitPublishing(ctx, tx, evt); err != nil {
 		return nil, err
 	}
 	s.spawnAfter(ctx, &c)
@@ -340,11 +342,12 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StagePendingInput, "", sysActor); err != nil {
 			return nil, "", "", err
 		}
-		if err := insertEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
-			"task", taskID, sysActor, map[string]any{"task_id": taskID, "attempts": attempts}); err != nil {
+		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
+			"task", taskID, sysActor, map[string]any{"task_id": taskID, "attempts": attempts})
+		if err != nil {
 			return nil, "", "", err
 		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := s.commitPublishing(ctx, tx, evt); err != nil {
 			return nil, "", "", err
 		}
 		return &Claim{TaskID: taskID, Escalated: true, Task: s.mustTask(ctx, taskID)}, "escalated", projectID, nil
@@ -387,11 +390,12 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StageInProgress, "", sysActor); err != nil {
 		return nil, "", "", err
 	}
-	if err := insertEventTx(ctx, tx, c.ProjectID, engineEventID("claim", taskID, attemptsDone), "claim",
-		"task", taskID, sysActor, map[string]any{"task_id": taskID, "worker": workerID, "attempts": attemptsDone}); err != nil {
+	evt, err := recordEventTx(ctx, tx, c.ProjectID, engineEventID("claim", taskID, attemptsDone), "claim",
+		"task", taskID, sysActor, map[string]any{"task_id": taskID, "worker": workerID, "attempts": attemptsDone})
+	if err != nil {
 		return nil, "", "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.commitPublishing(ctx, tx, evt); err != nil {
 		return nil, "", "", err
 	}
 

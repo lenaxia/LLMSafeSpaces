@@ -348,3 +348,84 @@ jsonpath "$.item_kind" isString
 # schemes; the live API rejects the missing bearer)
 GET {{base_url}}/me/projects
 HTTP 401
+
+# --- #1699 seam closings: epic listing, board search, board health,
+# lifecycle replay keys -------------------------------------------------
+
+# Epic listing: derived progress rides every row (ruling R2 — never
+# stored; the zero-denominator shape renders no-progress)
+GET {{base_url}}/me/projects/{{project_sid}}/epics
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.epics[0].short_id" matches /^epc-[0-9a-z]{8}$/
+jsonpath "$.epics[0].progress_total" isInteger
+jsonpath "$.epics[0].progress_derived" isBoolean
+
+# Epic listing on a foreign/missing project: plain 404, never disclosed
+GET {{base_url}}/me/projects/prj-zzzzzzzz/epics
+Authorization: Bearer {{token}}
+Prefer: code=404
+HTTP 404
+
+# Board search: q required; structural happy shape
+GET {{base_url}}/me/board/search?q=contract&tag=contract
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.results[0].short_id" isString
+
+# Search by exact short id (case-insensitive resolution shape)
+GET {{base_url}}/me/board/search?q={{task_a_sid}}
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.results[0].short_id" isString
+
+# Missing q: adapter-owned 400
+GET {{base_url}}/me/board/search
+Authorization: Bearer {{token}}
+HTTP 400
+
+# Unknown stage filter: adapter-owned 400 (enumerated set)
+GET {{base_url}}/me/board/search?q=x&stage=wip
+Authorization: Bearer {{token}}
+HTTP 400
+
+# Board health: the §4.8 snapshot shape, zeroed arrays on a quiet board
+GET {{base_url}}/me/board/health
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.project_slots[0].worker_slots" isInteger
+jsonpath "$.project_slots[0].in_use" isInteger
+
+# Lifecycle replay key: the optional requestId body threads (a replay
+# renders 200-with-original — the duplicate arm pins it end-to-end)
+POST {{base_url}}/me/epics/{{epic_sid}}/activate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "requestId": "11111111-2222-3333-4444-555555555555"
+}
+HTTP 200
+[Asserts]
+jsonpath "$.status" isString
+
+# The replay: SAME requestId — 200-with-original, never an error
+POST {{base_url}}/me/epics/{{epic_sid}}/activate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "requestId": "11111111-2222-3333-4444-555555555555"
+}
+HTTP 200
+[Asserts]
+jsonpath "$.status" isString
+
+# DELETE replay key rides the query parameter
+DELETE {{base_url}}/me/tasks/{{task_b_sid}}/dependencies/{{task_a_sid}}?requestId=11111111-2222-3333-4444-555555555566
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.task.short_id" isString

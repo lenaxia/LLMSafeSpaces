@@ -46,11 +46,25 @@ public class BoardService {
     }
 
     public Map<String, Object> archiveProject(String id) {
-        return c.request("POST", "/me/projects/" + id + "/archive", Map.of(), MAP.getType());
+        return archiveProject(id, null);
+    }
+
+    public Map<String, Object> archiveProject(String id, String requestId) {
+        return c.request("POST", "/me/projects/" + id + "/archive",
+                requestIdBody(requestId), MAP.getType());
     }
 
     public Map<String, Object> unarchiveProject(String id) {
-        return c.request("POST", "/me/projects/" + id + "/unarchive", Map.of(), MAP.getType());
+        return unarchiveProject(id, null);
+    }
+
+    public Map<String, Object> unarchiveProject(String id, String requestId) {
+        return c.request("POST", "/me/projects/" + id + "/unarchive",
+                requestIdBody(requestId), MAP.getType());
+    }
+
+    private static Map<String, Object> requestIdBody(String requestId) {
+        return requestId == null || requestId.isEmpty() ? Map.of() : Map.of("requestId", requestId);
     }
 
     public List<Map<String, Object>> listProjectTasks(String projectId, String stage) {
@@ -80,15 +94,27 @@ public class BoardService {
         return c.request("PATCH", "/me/epics/" + id, req, MAP.getType());
     }
 
-    private Map<String, Object> epicVerb(String id, String verb) {
-        return c.request("POST", "/me/epics/" + id + "/" + verb, Map.of(), MAP.getType());
+    private Map<String, Object> epicVerb(String id, String verb, String requestId) {
+        return c.request("POST", "/me/epics/" + id + "/" + verb,
+                requestIdBody(requestId), MAP.getType());
     }
 
     public Map<String, Object> epicPause(String id) { return epicVerb(id, "pause"); }
+    public Map<String, Object> epicActivate(String id) { return epicActivate(id, null); }
 
-    public Map<String, Object> epicArchive(String id) { return epicVerb(id, "archive"); }
+    public Map<String, Object> epicActivate(String id, String requestId) { return epicVerb(id, "activate", requestId); }
 
-    public Map<String, Object> epicUnarchive(String id) { return epicVerb(id, "unarchive"); }
+    public Map<String, Object> epicPause(String id) { return epicPause(id, null); }
+
+    public Map<String, Object> epicPause(String id, String requestId) { return epicVerb(id, "pause", requestId); }
+
+    public Map<String, Object> epicArchive(String id) { return epicArchive(id, null); }
+
+    public Map<String, Object> epicArchive(String id, String requestId) { return epicVerb(id, "archive", requestId); }
+
+    public Map<String, Object> epicUnarchive(String id) { return epicUnarchive(id, null); }
+
+    public Map<String, Object> epicUnarchive(String id, String requestId) { return epicVerb(id, "unarchive", requestId); }
 
     /** #1747: destructive delete (cancel is eliminated); force required
      * while claims are in-flight. */
@@ -153,6 +179,56 @@ public class BoardService {
     }
 
     public Map<String, Object> removeDependency(String id, String dependsOn) {
-        return c.request("DELETE", "/me/tasks/" + id + "/dependencies/" + dependsOn, null, MAP.getType());
+        return removeDependency(id, dependsOn, null);
+    }
+
+    public Map<String, Object> removeDependency(String id, String dependsOn, String requestId) {
+        String path = "/me/tasks/" + id + "/dependencies/" + dependsOn;
+        if (requestId != null && !requestId.isEmpty()) {
+            path += "?requestId=" + java.net.URLEncoder.encode(requestId, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return c.request("DELETE", path, null, MAP.getType());
+    }
+
+    /** Lists a project's epics with derived progress (design 0067 §4.2). */
+    public List<Map<String, Object>> listBoardEpics(String projectId) {
+        Map<String, Object> resp = c.request("GET", "/me/projects/" + projectId + "/epics", null, MAP.getType());
+        Object epics = resp.get("epics");
+        if (epics instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> result = (List<Map<String, Object>>) epics;
+            return result;
+        }
+        return List.of();
+    }
+
+    /** Searches the caller's board: q (required) plus optional filters. */
+    public Map<String, Object> searchBoard(String q, Map<String, Object> filters) {
+        StringBuilder sb = new StringBuilder("/me/board/search?q=")
+                .append(java.net.URLEncoder.encode(q, java.nio.charset.StandardCharsets.UTF_8));
+        if (filters != null) {
+            appendFilter(sb, "project", filters.get("project"));
+            appendFilter(sb, "epic", filters.get("epic"));
+            appendFilter(sb, "stage", filters.get("stage"));
+            Object tags = filters.get("tags");
+            if (tags instanceof List<?>) {
+                for (Object tag : (List<?>) tags) {
+                    sb.append("&tag=").append(java.net.URLEncoder.encode(String.valueOf(tag), java.nio.charset.StandardCharsets.UTF_8));
+                }
+            }
+        }
+        return c.request("GET", sb.toString(), null, MAP.getType());
+    }
+
+    private static void appendFilter(StringBuilder sb, String name, Object value) {
+        if (value != null && !String.valueOf(value).isEmpty()) {
+            sb.append('&').append(name).append('=')
+                    .append(java.net.URLEncoder.encode(String.valueOf(value), java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    /** The caller's board health snapshot (design 0067 §4.8). */
+    public Map<String, Object> getBoardHealth() {
+        return c.request("GET", "/me/board/health", null, MAP.getType());
     }
 }

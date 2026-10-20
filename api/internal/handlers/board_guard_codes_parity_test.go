@@ -48,6 +48,7 @@ var guardConstValues = map[string]string{
 	"GuardConcurrency":      board.GuardConcurrency,
 	"GuardGraphLimit":       board.GuardGraphLimit,
 	"GuardBackpressure":     board.GuardBackpressure,
+	"GuardInput":            board.GuardInput,
 }
 
 // codeExpr matches the Code field of a GuardError{...} or
