@@ -125,7 +125,7 @@ class _BoardAPI:
     def list_project_tasks(self, project_id: str, stage: str = "") -> list[dict[str, Any]]:
         path = f"/me/projects/{project_id}/tasks"
         if stage:
-            path += f"?stage={stage}"
+            path += f"?stage={quote(stage, safe='')}"
         return self._c._request("GET", path).get("tasks", [])
 
     def create_epic(

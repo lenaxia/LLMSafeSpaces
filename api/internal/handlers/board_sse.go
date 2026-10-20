@@ -88,6 +88,13 @@ func (h *ProxyHandler) BoardEventPublisher(pool *pgxpool.Pool, log warnLogger) b
 			h.boardEventDeliver(pool, log, evt)
 		}
 	}()
+	return h.boardEventEnqueuer(events, log)
+}
+
+// boardEventEnqueuer is the write-path half: a non-blocking hand-off
+// that drops (log-only) when the drainer is behind — the committing
+// caller never waits on the projection.
+func (h *ProxyHandler) boardEventEnqueuer(events chan<- board.Event, log warnLogger) board.EventPublisher {
 	return func(evt board.Event) {
 		select {
 		case events <- evt:

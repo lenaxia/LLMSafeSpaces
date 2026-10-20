@@ -93,6 +93,36 @@ func TestBoardSSE_NilBrokerNoOp(t *testing.T) {
 	h.publishBoardFanout("user-1", "ws-1", boardSSEFixture())
 }
 
+// TestBoardSSE_OverflowDropsNeverBlocks: the write-path hand-off is
+// non-blocking — once the bounded queue is full (no drainer installed
+// in this test), further events drop with a logged warning and the
+// publisher returns immediately.
+func TestBoardSSE_OverflowDropsNeverBlocks(t *testing.T) {
+	h := &ProxyHandler{userBroker: eventbroker.NewUserEventBroker()}
+	log := &recordingWarnLogger{}
+	events := make(chan board.Event, 2)
+	pub := h.boardEventEnqueuer(events, log)
+
+	pub(boardSSEFixture())
+	pub(boardSSEFixture())
+	done := make(chan struct{})
+	go func() {
+		pub(boardSSEFixture()) // queue full (no drainer): must drop, not block
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("publisher blocked on a full queue — the write path must never wait on the projection")
+	}
+	assert.Equal(t, 1, log.warns, "the dropped event logs exactly one warning")
+	assert.Len(t, events, 2, "the queued events survive for the drainer")
+}
+
+type recordingWarnLogger struct{ warns int }
+
+func (l *recordingWarnLogger) Warn(string, ...interface{}) { l.warns++ }
+
 // TestBoardSSE_EmptyOwnerSkipsUserCopy: an ownerless fanout (deleted
 // project mid-flight) still reaches the workspace stream; the user
 // publish is skipped, not panicked.
