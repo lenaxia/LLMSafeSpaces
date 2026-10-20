@@ -380,8 +380,9 @@ func (s *BoardService) RemoveDependency(ctx context.Context, id, dependsOn strin
 	return &m, nil
 }
 
-// ListBoardEpics lists a project's epics with derived progress (ruling
-// R2 — Done/(total−cancelled), zero denominator renders no-progress).
+// ListBoardEpics lists a project's epics with derived progress — Done
+// over ALL tasks per the #1747 ruling; a zero denominator renders
+// no-progress.
 func (s *BoardService) ListBoardEpics(ctx context.Context, projectID string) ([]BoardEpic, error) {
 	var resp struct {
 		Epics []BoardEpic `json:"epics"`
