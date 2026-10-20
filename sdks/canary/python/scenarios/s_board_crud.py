@@ -17,7 +17,7 @@ PRJ = re.compile(r"^prj-[0-9a-z]{8}$")
 EPC = re.compile(r"^epc-[0-9a-z]{8}$")
 TSK = re.compile(r"^tsk-[0-9a-z]{8}$")
 PR_ANCHOR = re.compile(r"^pr:[1-9][0-9]*$")
-REPLAY_KEY = "10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f5"
+REPLAY_KEY = "11111111-2222-3333-4444-555555555555"
 
 
 def mutate_sid(sid: str) -> str:

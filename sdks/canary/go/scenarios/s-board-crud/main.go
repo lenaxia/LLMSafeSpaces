@@ -223,7 +223,7 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	// P13 (#1699 replay keys): post-cancel activate from paused (no
 	// claimable work — no spawns); the SAME requestId twice renders
 	// 200-with-original on the replay
-	const replayKey = "10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f5"
+	const replayKey = "11111111-2222-3333-4444-555555555555"
 	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
 		run.Assert(act.Status == ll.BoardEpicActive, "lifecycle-replay-1: active", act.Status)
 	}
