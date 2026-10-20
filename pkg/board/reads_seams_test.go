@@ -54,6 +54,7 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	if _, err := s.svc.DeleteTask(ctx, s.owner(), t2.ID, "", false, ""); err != nil {
 		s.T().Fatalf("delete: %v", err)
 	}
+	_ = t2
 
 	epics, err := s.svc.ListEpics(ctx, p.ID)
 	require.NoError(s.T(), err)
@@ -73,7 +74,9 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	assert.Equal(s.T(), board.EpicActive, got1.Status)
 	assert.True(s.T(), got1.ProgressDerived, "progress is derived, never stored")
 	assert.Equal(s.T(), 1, got1.ProgressDone)
-	assert.Equal(s.T(), 3, got1.ProgressTotal, "denominator counts ALL tasks (#1747 ruling — PR #1763 semantics)")
+	// 3 seeded − 1 deleted (cancel is eliminated; the deleted row is no
+	// longer a denominator member — objects leave the board entirely).
+	assert.Equal(s.T(), 2, got1.ProgressTotal, "denominator counts the LIVE tasks (#1747: deleted rows leave; done/living rows count)")
 	// LIST/GET parity (r1 review): the same epic through GetEpic renders
 	// the identical denominator — one semantic, two reads.
 	viaGet := s.reloadEpic(e1.ID)
