@@ -95,7 +95,7 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/home/sandbox/.ssh/id_ed25519", "deny", "child typed through the name"},
 		{"/home/sandbox/.git-credentials", "deny", "credential name"},
 		{"/home/sandbox/.secrets", "deny", "credential name"},
-		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name under the .local pre-allow (sorts after)"},
+		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name — sorts after the /home/sandbox/* root allow (#1759; the pre-#1759 .local pre-allow was superseded and removed)"},
 		{"/home/sandbox/projects/foo", "allow", "#1759: the home PVC root is default-allow — was the pre-#1759 ambient-ask carve"},
 		{"/home/sandbox", "allow", "BARE home dir default-allow (#1759; the wildcardless key still shields the bare path from the /home/* deny — pinned r0)"},
 		{"/home", "ask", "BARE /home parent matches NO rule (^/home/.*$ needs the slash) — ambient; children under other users still deny"},
