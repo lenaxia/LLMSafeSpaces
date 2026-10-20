@@ -41,4 +41,4 @@ None.
 
 - pkg/agent/opencode/permissiontiers.go — residual 3 (engine deny grammar + experiment + corrected attribution)
 - pkg/agent/opencode/permissiontiers_test.go — grammar-edge matrix row
-- worklogs/1149_2026-10-20_salvage-engine-deny-grammar-note.md — this worklog
+- worklogs/1150_2026-10-20_salvage-engine-deny-grammar-note.md — this worklog
