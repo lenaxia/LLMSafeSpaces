@@ -33,4 +33,13 @@ func TestEventPublisher_Plumbing(t *testing.T) {
 	WithEventPublisher(func(evt Event) { viaOption = evt.ID })(s2)
 	s2.publishCommitted(Event{ID: "e5"})
 	assert.Equal(t, "e5", viaOption)
+
+	// The r1-review contract pin: a ZERO Event (a replayed deterministic
+	// id — ON CONFLICT produced no row) publishes nothing.
+	var seen []string
+	s3 := &Service{}
+	s3.SetEventPublisher(func(evt Event) { seen = append(seen, evt.ID) })
+	s3.publishCommitted(Event{})
+	s3.publishCommitted(Event{ID: "e6"})
+	assert.Equal(t, []string{"e6"}, seen, "zero events are filtered; only real rows publish")
 }

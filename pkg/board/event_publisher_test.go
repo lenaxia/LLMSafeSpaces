@@ -58,19 +58,19 @@ func (c *eventCapture) actions() []string {
 // (action, ids, actor, payload, created_at — the §4.6 payload shape).
 func (s *BoardSuite) TestPublisher_UserActionsPersistThenPublish() {
 	ctx := context.Background()
-	cap := &eventCapture{}
-	s.svc.SetEventPublisher(cap.record)
+	capt := &eventCapture{}
+	s.svc.SetEventPublisher(capt.record)
 
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
 	e := s.seedEpic(p, board.EpicActive)
 
-	before := len(cap.snapshot())
+	before := len(capt.snapshot())
 	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
 		board.TaskInput{Title: "published work", Tags: []string{}}, "pub-task-1")
 	require.NoError(s.T(), err)
 
-	events := cap.snapshot()
+	events := capt.snapshot()
 	require.Len(s.T(), events, before+1, "exactly one publish per committed action")
 	evt := events[len(events)-1]
 	assert.Equal(s.T(), "create_task", evt.Action)
@@ -96,22 +96,24 @@ func (s *BoardSuite) TestPublisher_NoPublishOnAbort() {
 	p := s.seedProject(ws, 0)
 	e := s.seedEpic(p, board.EpicActive)
 
-	cap := &eventCapture{}
-	s.svc.SetEventPublisher(cap.record)
+	capt := &eventCapture{}
+	s.svc.SetEventPublisher(capt.record)
 	s.fps.armAt("create_task.effect", assertErr("publisher abort fixture"))
 
 	_, err := s.svc.CreateTask(context.Background(), s.owner(), e.ID, "",
 		board.TaskInput{Title: "aborted work", Tags: []string{}}, "")
 	require.Error(s.T(), err)
-	assert.Empty(s.T(), cap.snapshot(), "an aborted transaction publishes nothing")
-} // TestPublisher_NoRepublishOnReplay: a replayed requestId renders the
+	assert.Empty(s.T(), capt.snapshot(), "an aborted transaction publishes nothing")
+}
+
+// TestPublisher_NoRepublishOnReplay: a replayed requestId renders the
 // original outcome (200-with-original) and does NOT re-publish — the
 // dedupe scope is the same (project_id, id) uniqueness the event row
 // enforces.
 func (s *BoardSuite) TestPublisher_NoRepublishOnReplay() {
 	ctx := context.Background()
-	cap := &eventCapture{}
-	s.svc.SetEventPublisher(cap.record)
+	capt := &eventCapture{}
+	s.svc.SetEventPublisher(capt.record)
 
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
@@ -131,7 +133,7 @@ func (s *BoardSuite) TestPublisher_NoRepublishOnReplay() {
 	assert.Equal(s.T(), key, dup.EventID)
 
 	var archives int
-	for _, evt := range cap.snapshot() {
+	for _, evt := range capt.snapshot() {
 		if evt.Action == "archive_project" {
 			archives++
 		}
@@ -144,9 +146,9 @@ func (s *BoardSuite) TestPublisher_NoRepublishOnReplay() {
 // reconciler reclaim (the UI's §4.6 live-move feed depends on exactly
 // this class).
 func (s *BoardSuite) TestPublisher_EngineAndReconcilerEventsPublish() {
-	cap := &eventCapture{}
-	s.svc.SetEventPublisher(cap.record)
-	s.recon.SetEventPublisher(cap.record)
+	capt := &eventCapture{}
+	s.svc.SetEventPublisher(capt.record)
+	s.recon.SetEventPublisher(capt.record)
 
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
@@ -155,15 +157,15 @@ func (s *BoardSuite) TestPublisher_EngineAndReconcilerEventsPublish() {
 
 	claim := s.claimOrFail(ws)
 	require.Equal(s.T(), task.ID, claim.TaskID)
-	assert.Contains(s.T(), cap.actions(), "claim", "the engine's claim event publishes")
+	assert.Contains(s.T(), capt.actions(), "claim", "the engine's claim event publishes")
 
 	// Lapse the lease; the reconciler's RC1 reclaim publishes.
 	s.expireLease(task.ID)
 	res := s.sweep()
 	require.EqualValues(s.T(), 1, res.Reclaims)
-	assert.Contains(s.T(), cap.actions(), "reclaim", "the reconciler's reclaim event publishes")
+	assert.Contains(s.T(), capt.actions(), "reclaim", "the reconciler's reclaim event publishes")
 
-	for _, evt := range cap.snapshot() {
+	for _, evt := range capt.snapshot() {
 		if evt.Action == "reclaim" {
 			assert.Equal(s.T(), board.ActorSystem, jsonActorKind(s.T(), evt.Actor))
 			return

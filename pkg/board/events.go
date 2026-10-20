@@ -132,8 +132,11 @@ func decodeEventPayload(b []byte) map[string]any {
 // read projection of board_events — persist first, publish after the
 // commit). Installed at wiring time (app.go → the user event broker);
 // nil means no projection (engine dark / broker absent — writes succeed
-// unaffected). Publishers must not block: the SSE reseed belt (#1646/
-// #1687) is the consumer's safety net, not publisher retry logic.
+// unaffected). Contract: called on the writer's goroutine post-commit —
+// implementations must be FAST, never panic, and never block the write
+// path beyond a bounded step (the shipped wiring hands off to a drained
+// channel); the SSE reseed belt (#1646/#1687) is the consumer's safety
+// net, not publisher retry logic.
 type EventPublisher func(Event)
 
 // recordEventTx writes an event row inside an open transaction with a
@@ -184,17 +187,22 @@ func (s *Service) commitPublishing(ctx context.Context, tx pgx.Tx, pending ...Ev
 // already landed its event renders the original outcome ("200-with-
 // original") regardless of the state the original write left behind —
 // replay-first, then validate (the eventWriter's own fast-path, lifted
-// to the caller's scope). Nil when the key is new.
-func (s *Service) replayOf(ctx context.Context, projectID, requestID, action string) *DuplicateError {
+// to the caller's scope). Nil, nil when the key is new; a probe FAILURE
+// is an error (never silently reclassified as a new key — a transient
+// failure would route a genuine replay into the state guards).
+func (s *Service) replayOf(ctx context.Context, projectID, requestID, action string) (*DuplicateError, error) {
 	if requestID == "" {
-		return nil
+		return nil, nil
 	}
 	var payload []byte
 	err := s.q().QueryRow(ctx,
 		`SELECT payload FROM board_events WHERE project_id=$1 AND id=$2`,
 		projectID, requestID).Scan(&payload)
-	if err != nil {
-		return nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return &DuplicateError{EventID: requestID, Action: action, Result: decodeEventPayload(payload)}
+	if err != nil {
+		return nil, err
+	}
+	return &DuplicateError{EventID: requestID, Action: action, Result: decodeEventPayload(payload)}, nil
 }

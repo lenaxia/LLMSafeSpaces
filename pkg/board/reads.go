@@ -14,8 +14,9 @@ import (
 
 // reads.go — the board_read projection (§4.2): a read model over the
 // materialized columns. Epic progress is DERIVED here, never stored
-// (ruling R2): Done over (total − StageCancelled); a zero denominator
-// renders no-progress, never 0/0.
+// (Done over ALL tasks — the #1747 owner ruling supersedes the
+// original design's canceled exclusion); a zero denominator renders
+// no-progress, never 0/0.
 
 // GetTask resolves a task (case-insensitive short ID or UUID).
 func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Task, error) {
@@ -59,11 +60,15 @@ func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epi
 	return e, nil
 }
 
+// deriveProgress carries the SAME denominator as ListEpics (the #1747
+// owner ruling: Done over ALL tasks — the canceled exclusion design
+// 0067 R2 carried is superseded by PR #1763's semantics; the one-epic
+// and list reads must agree).
 func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	err := s.q().QueryRow(ctx, `
 		SELECT
 			count(*) FILTER (WHERE t.stage = 'done'),
-			count(*) FILTER (WHERE t.stage <> 'cancelled')
+			count(*)
 		FROM tasks t WHERE t.epic_id = $1`, e.ID).Scan(&e.ProgressDone, &e.ProgressTotal)
 	if err != nil {
 		return err

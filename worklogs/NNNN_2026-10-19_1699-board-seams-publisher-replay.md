@@ -39,7 +39,7 @@ Design 0067 §4.2 names board_read(list/get/search/health) and §4.6 mandates SS
 ### requestId threading (Q1 amendment) + the found defect
 
 - `projectLifecycle`/`epicLifecycle` thread the requestID their public signatures already accepted; REST lifecycle endpoints bind the optional `{requestId}` body (EOF-tolerant, the StartTask r1-4 discipline); remove-dependency reads `?requestId=`; MCP lifecycle tools + `BoardRemoveDependency` carry `request_id` (client + interface + mocks); all four SDKs thread the key (Go: additive variadic `BoardLifecycleOptions`; TS/Python: optional params; Java: overloads).
-- **FOUND (pre-existing, fixed here — Rule 5):** no surface translated `DuplicateError` — a live replay answered 500 everywhere (the #1728 fake modeled 200-with-original but the adapter never implemented it). `renderBoardError` now renders the duplicate as 200 + the original recorded result (nil-result race path renders an honest minimal envelope). Pinned by `TestBoardREST_DuplicateReplayRendersOriginal`.
+- **FOUND (pre-existing, fixed here — Rule 5):** no surface translated `DuplicateError` — a live replay answered 500 everywhere (the #1728 fake modeled 200-with-original but the adapter never implemented it). `renderBoardError` now renders the duplicate as 200 + the original recorded result (nil-result race path renders an honest minimal envelope). Pinned by `TestBoardREST_DuplicateReplayRendersOriginal` — CORRECTION (r1): this pin was CLAIMED but absent from the tree at r0 (a scripted edit silently failed; the reviewer's mutation test proved no test reddened without the case — the #1489 violation class). The pin now EXISTS and is mutation-verified in r1 (case deleted → red; restored → green).
 
 ### Contract tier
 
@@ -69,6 +69,16 @@ Design 0067 §4.2 names board_read(list/get/search/health) and §4.6 mandates SS
 - None. Local PG server unavailable (client-only package, no root) — the pkg/board integration suite is CI-executed (secrets-integration.yml path filter covers pkg/board/ + api/internal/handlers/board); compile-verified locally (`go vet -tags integration`). Same tier as lane 2's CI-registered hurl/canaries.
 
 ---
+
+## r1 review remediation (CHANGES_REQUESTED round 1)
+
+- Added the missing DuplicateError→200 regression pin (mutation-verified: case deleted → test red; restored → green) — and corrected the false r0 claim above.
+- Zero-Event guard: publishCommitted filters empty events (a replayed deterministic id — ON CONFLICT, no row — publishes nothing); pinned in TestEventPublisher_Plumbing + the new in-package integration pin TestRecordEventTx_ConflictYieldsZeroEvent.
+- replayOf discriminates pgx.ErrNoRows from probe failures (a transient failure errors the action instead of silently routing a genuine replay into the state guards); error path pinned by TestReplayOf_ErrorPath.
+- Progress-denominator split closed: deriveProgress (GetEpic/epicLifecycle) conformed to Done-over-ALL-tasks like ListEpics; rows.go/reads.go comments conformed; LIST/GET parity pinned inside TestReads_ListEpics.
+- Publisher off the write path: bounded 256-slot channel + single drainer goroutine (the boardDriveCh pattern) — the project lookup and fan-out never run on the committing caller; overflow drops log-only. EventPublisher contract doc updated to match.
+- Python SDK escapes the remove-dependency requestId (quote); replay keys in handler tests/canaries/hurl conformed to real UUIDs (the spec declares format: uuid).
+- Style: cap-shadowing renamed, glued doc comment split, stale R2-formula comments conformed, parity fake premise comment corrected (fake models the adapter contract; the real translation has its own pin).
 
 ## Tests Run
 

@@ -425,7 +425,7 @@ POST {{base_url}}/me/epics/{{epic_sid}}/activate
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
-  "requestId": "10f1c0de-0000-4000-8000-contract0001"
+  "requestId": "10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f5"
 }
 HTTP 200
 [Asserts]
@@ -436,14 +436,14 @@ POST {{base_url}}/me/epics/{{epic_sid}}/activate
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
-  "requestId": "10f1c0de-0000-4000-8000-contract0001"
+  "requestId": "10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f5"
 }
 HTTP 200
 [Asserts]
 jsonpath "$.status" isString
 
 # DELETE replay key rides the query parameter
-DELETE {{base_url}}/me/tasks/{{task_b_sid}}/dependencies/{{task_a_sid}}?requestId=10f1c0de-0000-4000-8000-contract0002
+DELETE {{base_url}}/me/tasks/{{task_b_sid}}/dependencies/{{task_a_sid}}?requestId=10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f6
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]

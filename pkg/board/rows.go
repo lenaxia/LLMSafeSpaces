@@ -48,8 +48,9 @@ type Epic struct {
 	Quantum     int       `json:"quantum"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-	// Derived progress (ruling R2: never stored): Done over (total − StageCancelled),
-	// optionally criteria-weighted. Rendered by board_read only. A zero
+	// Derived progress (never stored): Done over ALL tasks — the #1747
+	// owner ruling (design authority: PR #1763) supersedes the original
+	// design's canceled exclusion. Rendered by board_read only. A zero
 	// denominator renders no-progress (IsNull true), never 0/0.
 	ProgressDone    int  `json:"progress_done"`
 	ProgressTotal   int  `json:"progress_total"`

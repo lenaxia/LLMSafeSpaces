@@ -168,7 +168,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P13 (#1699 replay keys): post-cancel activate from paused; the
     // SAME requestId twice renders 200-with-original on the replay
-    const replayKey = '10f1c0de-c0de-4000-8000-canary00001';
+    const replayKey = '10f1c0de-4a5b-4c6d-8e9f-a0b1c2d3e4f5';
     const [a1Ok, act1] = await r.assertNoError(
       () => c.board.activateEpic(epicSid, { requestId: replayKey }),
       'lifecycle-replay-1: no error',

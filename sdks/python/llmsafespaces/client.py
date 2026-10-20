@@ -234,7 +234,7 @@ class _BoardAPI:
     def remove_dependency(self, task_id: str, depends_on: str, *, request_id: str = "") -> dict[str, Any]:
         path = f"/me/tasks/{task_id}/dependencies/{depends_on}"
         if request_id:
-            path += f"?requestId={request_id}"
+            path += f"?requestId={quote(request_id, safe='')}"
         return self._c._request("DELETE", path)
 
     def list_board_epics(self, project_id: str) -> list[dict[str, Any]]:

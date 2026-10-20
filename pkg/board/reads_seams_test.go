@@ -21,8 +21,10 @@ import (
 )
 
 // TestReads_ListEpics: a project's epics list with DERIVED progress per
-// row (ruling R2 — Done/(total−StageCancelled); zero denominator renders
-// no-progress), ordered by creation; an epic-less project renders empty.
+// row (Done over ALL tasks, the #1747 ruling; zero denominator renders
+// no-progress), ordered by creation; an epic-less project renders
+// empty. Also pins LIST/GET denominator parity: the same epic read
+// through GetEpic agrees (the r1 review's split finding).
 func (s *BoardSuite) TestReads_ListEpics() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
@@ -73,6 +75,11 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	assert.True(s.T(), got1.ProgressDerived, "progress is derived, never stored")
 	assert.Equal(s.T(), 1, got1.ProgressDone)
 	assert.Equal(s.T(), 3, got1.ProgressTotal, "denominator counts ALL tasks (#1747 ruling — PR #1763 semantics)")
+	// LIST/GET parity (r1 review): the same epic through GetEpic renders
+	// the identical denominator — one semantic, two reads.
+	viaGet := s.reloadEpic(e1.ID)
+	assert.Equal(s.T(), got1.ProgressTotal, viaGet.ProgressTotal, "ListEpics and GetEpic must agree on the denominator")
+	assert.Equal(s.T(), got1.ProgressDone, viaGet.ProgressDone)
 	assert.False(s.T(), got2.ProgressDerived, "task-less epic renders no-progress, never 0/0")
 	assert.Equal(s.T(), 0, got2.ProgressDone)
 	assert.Equal(s.T(), 0, got2.ProgressTotal)

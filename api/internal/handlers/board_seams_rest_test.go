@@ -146,10 +146,10 @@ func TestBoardREST_LifecycleRequestID(t *testing.T) {
 			svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
 			r := newBoardRESTRouter(t, svc)
 
-			w := doBoardREST(t, r, http.MethodPost, tc.path, `{"requestId":"lifecycle-key-1"}`)
+			w := doBoardREST(t, r, http.MethodPost, tc.path, `{"requestId":"11111111-2222-3333-4444-555555555555"}`)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, 1, svc.calls[tc.call])
-			assert.Equal(t, "lifecycle-key-1", svc.lastRequestID, "%s must thread the body's requestId", tc.name)
+			assert.Equal(t, "11111111-2222-3333-4444-555555555555", svc.lastRequestID, "%s must thread the body's requestId", tc.name)
 
 			// No body: still fine, requestId empty.
 			w = doBoardREST(t, r, http.MethodPost, tc.path, "")
@@ -157,6 +157,32 @@ func TestBoardREST_LifecycleRequestID(t *testing.T) {
 			assert.Equal(t, "", svc.lastRequestID)
 		})
 	}
+}
+
+// TestBoardREST_DuplicateReplayRendersOriginal: a REAL DuplicateError
+// from the seam renders 200-with-original (the outbox contract) — the
+// adapter-tier translation for the found live-tier defect (replays
+// answered 500 on every surface). Regression pin: deleting the
+// renderBoardError case reddens THIS test (mutation-verified in r1).
+func TestBoardREST_DuplicateReplayRendersOriginal(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	svc.errFor["archive_project"] = &board.DuplicateError{
+		EventID: "11111111-2222-3333-4444-555555555555", Action: "archive_project",
+		Result: map[string]any{"id": "p1", "status": "archived"},
+	}
+	r := newBoardRESTRouter(t, svc)
+
+	w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", `{"requestId":"11111111-2222-3333-4444-555555555555"}`)
+	require.Equal(t, http.StatusOK, w.Code, "a replay is 200-with-original, never an error: %s", w.Body.String())
+	assert.JSONEq(t, `{"id":"p1","status":"archived"}`, w.Body.String())
+
+	// The race-path duplicate with no recorded result renders the honest
+	// minimal envelope, still 200.
+	svc.errFor["archive_project"] = &board.DuplicateError{EventID: "11111111-2222-3333-4444-555555555556", Action: "archive_project"}
+	w = doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", `{"requestId":"11111111-2222-3333-4444-555555555556"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"duplicate":true`)
 }
 
 // TestBoardREST_RemoveDependencyRequestID: DELETE carries no body — the
@@ -167,9 +193,9 @@ func TestBoardREST_RemoveDependencyRequestID(t *testing.T) {
 	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
 	r := newBoardRESTRouter(t, svc)
 
-	w := doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-cccc4444?requestId=rm-key-1", "")
+	w := doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-cccc4444?requestId=11111111-2222-3333-4444-555555555566", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Equal(t, "rm-key-1", svc.lastRequestID, "remove-dependency threads the query-param requestId")
+	assert.Equal(t, "11111111-2222-3333-4444-555555555566", svc.lastRequestID, "remove-dependency threads the query-param requestId")
 
 	w = doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-cccc4444", "")
 	require.Equal(t, http.StatusOK, w.Code)

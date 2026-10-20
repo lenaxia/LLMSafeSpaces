@@ -781,9 +781,11 @@ func boardReadActions() map[string]bool {
 // the REST tier — a mutating action re-invoked with the SAME requestId
 // renders 200-with-original, never an error, and the adapter delivers
 // the identical key on both calls (SDK clients reuse one key per
-// logical operation). The fake resolves replays the way the engine's
-// event writer does (Duplicate{AcceptedID} → 200-with-original), so a
-// handler that translated a replay into an error class would redden.
+// logical operation). The fake models the ADAPTER contract only (both
+// calls succeed, key delivered twice) — it does not emit
+// DuplicateError; the real translation (DuplicateError → 200) is
+// pinned by TestBoardREST_DuplicateReplayRendersOriginal, and the
+// engine's replay semantics by the pkg/board integration suite.
 func TestBoardParity_IdempotentReplay(t *testing.T) {
 	for _, row := range boardParityMatrix {
 		if row.rest.kind != "live" || boardReadActions()[row.action] {

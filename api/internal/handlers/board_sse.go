@@ -71,25 +71,48 @@ func (h *ProxyHandler) publishBoardFanout(owner, workspaceID string, evt board.E
 }
 
 // BoardEventPublisher returns the §4.6 EventPublisher wired to the user
-// event broker: it resolves the event's project (owner + target
-// workspace — one indexed PK read) and fans the rendered row out.
+// event broker. The projection runs OFF the write path: publishCommitted
+// (the writer's goroutine, post-commit) hands the event to a bounded
+// channel drained by one goroutine — the project lookup (indexed PK
+// read) and the broker fan-out never block the committing transaction's
+// caller, and per-project ordering is preserved (single drainer). A
+// full channel drops the event (log-only — the reseed belt covers).
 // nil when no broker is mounted (engine dark — writes unaffected).
 func (h *ProxyHandler) BoardEventPublisher(pool *pgxpool.Pool, log warnLogger) board.EventPublisher {
 	if h.userBroker == nil {
 		return nil
 	}
-	return func(evt board.Event) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		var owner, workspaceID string
-		err := pool.QueryRow(ctx,
-			`SELECT user_id, target_workspace_id::text FROM projects WHERE id=$1`,
-			evt.ProjectID).Scan(&owner, &workspaceID)
-		cancel()
-		if err != nil {
-			log.Warn("board: SSE projection skipped — project lookup failed (reseed belt covers)",
-				"projectID", evt.ProjectID, "error", err.Error())
-			return
+	events := make(chan board.Event, boardPublishQueue)
+	go func() {
+		for evt := range events {
+			h.boardEventDeliver(pool, log, evt)
 		}
-		h.publishBoardFanout(owner, workspaceID, evt)
+	}()
+	return func(evt board.Event) {
+		select {
+		case events <- evt:
+		default:
+			log.Warn("board: SSE projection queue full — event dropped (reseed belt covers)",
+				"projectID", evt.ProjectID, "eventID", evt.ID)
+		}
 	}
+}
+
+// boardPublishQueue bounds the projection's hand-off channel (the write
+// path never blocks on the projection; overflow drops with a log).
+const boardPublishQueue = 256
+
+func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt board.Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var owner, workspaceID string
+	err := pool.QueryRow(ctx,
+		`SELECT user_id, target_workspace_id::text FROM projects WHERE id=$1`,
+		evt.ProjectID).Scan(&owner, &workspaceID)
+	cancel()
+	if err != nil {
+		log.Warn("board: SSE projection skipped — project lookup failed (reseed belt covers)",
+			"projectID", evt.ProjectID, "error", err.Error())
+		return
+	}
+	h.publishBoardFanout(owner, workspaceID, evt)
 }

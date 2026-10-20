@@ -76,10 +76,12 @@ func (s *Service) SetEventPublisher(pub EventPublisher) { s.publisher = pub }
 
 // publishCommitted fans a committed board event to the installed
 // publisher. Called strictly AFTER the writing transaction commits
-// (persist-then-publish, §4.6 i). Fail-open by construction: a nil
-// publisher is a no-op and the write already succeeded.
+// (persist-then-publish, §4.6 i). A zero Event (a replayed
+// deterministic id — ON CONFLICT produced no row, no view) publishes
+// nothing. Fail-open by construction: a nil publisher is a no-op and
+// the write already succeeded.
 func (s *Service) publishCommitted(evt Event) {
-	if s.publisher != nil {
+	if s.publisher != nil && evt.ID != "" {
 		s.publisher(evt)
 	}
 }
@@ -327,7 +329,11 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	// Replay-first (a caller key that already landed renders the
 	// original outcome — the status the original write left behind must
 	// not turn a replay into a guard error).
-	if dup := s.replayOf(ctx, p.ID, requestID, action); dup != nil {
+	dup, err := s.replayOf(ctx, p.ID, requestID, action)
+	if err != nil {
+		return nil, err
+	}
+	if dup != nil {
 		return nil, dup
 	}
 	if p.Status == to {
@@ -476,7 +482,11 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	// write may have changed (activate's replay sees active→active) — a
 	// landed caller key renders the original outcome instead of a guard
 	// error.
-	if dup := s.replayOf(ctx, p.ID, requestID, action); dup != nil {
+	dup, err := s.replayOf(ctx, p.ID, requestID, action)
+	if err != nil {
+		return nil, err
+	}
+	if dup != nil {
 		return nil, dup
 	}
 	allowed := map[string][]string{
@@ -494,7 +504,7 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 		return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("epic %s→%s is not a lifecycle transition (from %s)", e.Status, to, e.Status)}
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "epic", itemID: e.ID, actor: actor}
-	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+	_, dup, err = ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `UPDATE epics SET status=$2 WHERE id=$1`, e.ID, to); err != nil {
 			return nil, err
 		}
