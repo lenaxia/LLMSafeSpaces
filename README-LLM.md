@@ -734,7 +734,7 @@ Both are Tier 2 (admin-mutable) `instance_settings` entries stored in PostgreSQL
 
 The pod builder does NOT set `ephemeral-storage` requests or limits on workspace containers (`controller/internal/workspace/pod_builder.go` `resourceRequirementsFor`). The `Workspace` CRD has no `spec.resources.ephemeralStorage` field, the webhook has no corresponding cap, and Helm has no `maxWorkspaceEphemeralStorageGi` flag. All of these were removed because they protected against a threat (uncontrolled writes to node-local ephemeral storage) that the architecture already mitigates.
 
-**Why nothing meaningful writes to ephemeral storage on a workspace pod:**
+**What writes to ephemeral storage on a workspace pod:**
 
 | Source | Counts toward ephemeral storage? | Notes |
 |---|---|---|
@@ -744,8 +744,9 @@ The pod builder does NOT set `ephemeral-storage` requests or limits on workspace
 | `/workspace` (PVC `subPath: workspace`) | No | PVC-backed |
 | `/home/sandbox` (PVC `subPath: home`) | No | PVC-backed |
 | `/sandbox-cfg` (emptyDir, `Medium: Memory`) | No | Counts toward memory, not ephemeral storage |
+| `/sandbox-cache` (emptyDir, disk, 8Gi `SizeLimit`, #1758) | **Yes** | The one deliberate disk-backed consumer — bounded by its own per-volume `SizeLimit` |
 
-Container logs are the only consumer, and kubelet's own log rotation already bounds them. A per-pod ephemeral-storage limit added no protection beyond that. If a future feature introduces a node-disk-backed `emptyDir` (`Medium: ""`), per-pod ephemeral limits would need to come back, scoped to the actual concern.
+Pre-#1758 the only consumer was container logs, and kubelet's own log rotation already bounded them. #1758 introduced the disk-backed build cache (`GOCACHE`/`GOTMPDIR`) and resolved the original "limits would need to come back" warning by amendment, not by restoring per-pod limits: the per-volume 8Gi `SizeLimit` bounds exactly the new surface where the concern lives (a container `ephemeral-storage` limit would re-blend kubelet logs and writable-layer noise into one spurious-eviction trigger while adding no bound the `SizeLimit` doesn't already provide). Enforcement is eviction-manager scan-based, not instantaneous — overshoot-tolerant by design for a regenerable, pod-lifecycle cache. The full decision record lives in `docs/operator/storage.md` ("Why ephemeral-storage limits are not set").
 
 ### Disk-pressure prompt injection (LLM disk-space nudges)
 

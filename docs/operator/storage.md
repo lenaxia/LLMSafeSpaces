@@ -7,6 +7,7 @@ This page covers how LLMSafeSpaces uses storage: the PVC layout mounted into eve
 - [Volume layout at a glance](#volume-layout-at-a-glance)
 - [PVC-backed mounts](#pvc-backed-mounts)
 - [tmpfs emptyDir mounts](#tmpfs-emptydir-mounts)
+- [Disk-backed emptyDir: the build cache (#1758)](#disk-backed-emptydir-the-build-cache-1758)
 - [StorageClass selection](#storageclass-selection)
 - [Sizing](#sizing)
 - [Backup and recovery](#backup-and-recovery)
@@ -18,7 +19,7 @@ This page covers how LLMSafeSpaces uses storage: the PVC layout mounted into eve
 
 ## Volume layout at a glance
 
-Every workspace pod has five volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death). This split is deliberate: it keeps plaintext credentials off the PVC at rest while keeping user data and caches durable.
+Every workspace pod has six volume mounts. Three are PVC-backed (persist across suspend/resume), two are tmpfs-backed emptyDir (wiped on pod death), and one is a disk-backed emptyDir for the regenerable build-cache economy (#1758 — also wiped on pod death, by design: caches are correct to lose). This split is deliberate: it keeps plaintext credentials off the PVC at rest, keeps user data durable, and keeps rebuildable caches OFF the PVC entirely.
 
 | Mount | Type | Persists? | Purpose |
 |---|---|---|---|
@@ -27,12 +28,14 @@ Every workspace pod has five volume mounts. Three are PVC-backed (persist across
 | `/tmp` | PVC (`subPath: tmp`) | **Yes** | init scripts, package caches |
 | `/sandbox-cfg` | emptyDir (`Medium: Memory`, 32Mi) | No | `secrets.json`, `workspace-config.json`, bootstrap password |
 | `/sandbox-runtime` | emptyDir (`Medium: Memory`, 96Mi, RW) | No | `agent-config.json`, `secrets-env`, `admin-prompt.md`, symlink targets |
+| `/sandbox-cache/{go-build,gotmp}` | emptyDir (disk, 8Gi `SizeLimit`) | No | `GOCACHE` / `GOTMPDIR` — the regenerable Go build-cache economy (#1758) |
 
 ```mermaid
 graph LR
     PVC["PVC<br/>(one per Workspace)"] --> WS["/workspace<br/>(subPath: workspace)"]
     PVC --> HOME["/home/sandbox<br/>(subPath: home)"]
     PVC --> TMP["/tmp<br/>(subPath: tmp)"]
+    ED["emptyDir<br/>(node disk, 8Gi, dies with pod)"] --> SC["/sandbox-cache/go-build<br/>+ /sandbox-cache/gotmp<br/>(GOCACHE/GOTMPDIR, #1758)"]
     MEM["tmpfs emptyDir<br/>(RAM, wiped on death)"] --> CFG["/sandbox-cfg<br/>(32Mi, read-only on main)"]
     MEM --> RT["/sandbox-runtime<br/>(96Mi, RW)"]
     RT -.->|"symlinks"| HOME
@@ -65,7 +68,7 @@ Persistent home-directory content that should survive restarts:
 
 ### `/tmp`
 
-Used for init scripts and package caches. Note: `agent-config.json` and `secrets-env` were **moved off `/tmp`** to `/sandbox-runtime` (tmpfs) — both for at-rest data isolation and because the `credential-setup` init container's `/tmp` is read-only (`ReadOnlyRootFilesystem` with no writable emptyDir mounted).
+Used for init scripts and package caches. Note: `agent-config.json` and `secrets-env` were **moved off `/tmp`** to `/sandbox-runtime` (tmpfs) — both for at-rest data isolation and because the `credential-setup` init container's `/tmp` is read-only (`ReadOnlyRootFilesystem` with no writable emptyDir mounted). The Go build cache no longer lands here either: since #1758 `GOCACHE`/`GOTMPDIR` point at the disk-backed `/sandbox-cache` emptyDir (below), so concurrent Go lanes cannot fill the PVC with regenerable build artifacts (~5G/hour observed pre-#1758).
 
 ---
 
@@ -97,9 +100,23 @@ The symlink architecture is key: `$HOME`-relative credential paths are symlinks 
 
 ---
 
+## Disk-backed emptyDir: the build cache (#1758)
+
+`/sandbox-cache` is a DISK-backed emptyDir (8Gi `SizeLimit`, no `Medium`) holding the two subPath mounts `go-build` and `gotmp`. The pod env points `GOCACHE=/sandbox-cache/go-build` and `GOTMPDIR=/sandbox-cache/gotmp` there, so the entire regenerable Go build-cache economy — previously Go's `$HOME/.cache/go-build` and `/tmp` defaults, both PVC subPaths — dies with the pod instead of accumulating on the PVC (the #1744 evidence: 55%→93% in minutes under five concurrent Go lanes, ~5G/hour regrowth; the PVC is never resized).
+
+The subPath mounts put both directories in place at container start — kubelet creates missing subPath directories in the volume (`SafeMakeDir`) with the emptyDir root's `0777` mode, so the uid-1000 tooling can write immediately; the `go` tool itself never creates `GOTMPDIR` (it `MkdirTemp`s inside it, requiring the parent to exist). The volume is mounted on every container that runs platform tooling — the main container and the `workspace-setup` init, whose read-only root filesystem would otherwise fail every `go install`.
+
+Notes:
+
+- **GOPATH deliberately stays on the PVC** (`/workspace/.local/share/go`): the module cache is re-downloadable but network-expensive and valuable across suspend/resume; the disk-recovery lever covers it under pressure.
+- npm/pip/playwright caches still live under their `$HOME` conventions on the PVC; the disk-recovery allowlist (#1753) remains the sweep for those.
+- The 8Gi bound's enforcement semantics (scan-based eviction, overshoot-tolerant by design) and the standing ephemeral-storage decision are documented in [Why ephemeral-storage limits are not set](#why-ephemeral-storage-limits-are-not-set).
+
+---
+
 ## Platform-delivered volumes (agentd / opencode overlays)
 
-Besides the five mounts above, every workspace pod carries read-only
+Besides the six mounts above, every workspace pod carries read-only
 **image volumes** delivering platform binaries on platform cadence:
 `/agentd` (always, #863) and `/opencode` (design 0053 §4.2) — digest-
 pinned, never PVC-backed, wiped with the pod. They are invisible to user
@@ -294,11 +311,18 @@ The pod builder does **not** set `ephemeral-storage` requests or limits on works
 | `/workspace` (PVC `subPath: workspace`) | **No** | PVC-backed. |
 | `/home/sandbox` (PVC `subPath: home`) | **No** | PVC-backed. |
 | `/sandbox-cfg` (emptyDir, `Medium: Memory`) | **No** | Counts toward memory, not ephemeral storage. |
+| `/sandbox-cache` (emptyDir, disk, 8Gi `SizeLimit`, #1758) | **Yes** | The one deliberate disk-backed consumer — bounded by its own per-volume `SizeLimit` (see below). |
 
-Container logs are the only consumer, and kubelet's own log rotation already bounds them. A per-pod ephemeral-storage limit added no protection beyond that.
+Pre-#1758 the only consumer was container logs, and kubelet's own log rotation already bounded them — a per-pod ephemeral-storage limit added no protection beyond that. #1758 adds the second, deliberate consumer and bounds it where the concern actually lives:
 
-!!! warning "When ephemeral limits should come back"
-    If a future feature introduces a node-disk-backed `emptyDir` (`Medium: ""`), per-pod ephemeral limits would need to come back, scoped to the actual concern. The current tmpfs-backed emptyDirs count toward memory, not ephemeral storage.
+!!! warning "Amended by #1758: the disk-backed emptyDir era"
+    The original warning here said: *"If a future feature introduces a node-disk-backed `emptyDir` (`Medium: ""`), per-pod ephemeral limits would need to come back, scoped to the actual concern."* That future arrived with #1758's build cache, and the scope-accurate mechanism chosen is the **per-volume `SizeLimit` (8Gi)** — not per-pod/per-container `ephemeral-storage` limits:
+
+    - The `SizeLimit` bounds exactly the new surface (the cache volume) and fires eviction at the right threshold (cache overflow), scoped to the pod that owns it.
+    - A container `ephemeral-storage` limit would additionally sweep kubelet log usage and any writable-layer noise into the same eviction trigger — the spurious-eviction class that motivated removing the limits in the first place — while adding no bound the `SizeLimit` doesn't already provide for the cache.
+    - Enforcement is **eviction-manager scan-based, not instantaneous**: between scans the volume can overshoot 8Gi by whatever the workload wrote in the window; the overshoot heals via eviction on the next scan. The cache is regenerable and dies with the pod, so overshoot-tolerant bounding is the right trade. The bound itself is pinned by test (`TestGoCacheEconomy_RelocatedToEmptyDir`).
+
+    If a SECOND unbounded disk-backed surface is ever introduced, revisit per-pod ephemeral limits — this amendment covers exactly one deliberate, self-bounded consumer.
 
 ---
 
