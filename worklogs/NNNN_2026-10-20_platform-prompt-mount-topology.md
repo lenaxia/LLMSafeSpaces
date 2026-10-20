@@ -15,7 +15,7 @@ Replace DefaultPlatformPrompt's Persistence block with the owner-approved text d
 ## Work Completed
 
 - Red-first: the content pins (pkg/types/agent_prompt_test.go) applied to main's prompt → 2 tests RED (main still carried the pre-change text, including the backwards "/tmp … do not rely on its contents surviving" line — verified count=1 on origin/main before starting).
-- Applied the approved 6→6 bullet persistence block from 4633dcb6 (verified byte-clean against main's untouched agent_prompt.go) → green.
+- Applied the approved persistence block from 4633dcb6 (verified byte-clean against main's untouched agent_prompt.go) → green. Bullet count: 6 on main → 5 at head (the three per-root persistence bullets collapsed into the one-volume sentence + tmpfs contrast; reviewer-counted).
 - The prompt service + handlers identity/length pins (DefaultPlatformPrompt equality, ≤ MaxPromptPerLevel) pass unchanged.
 
 ## Key Decisions

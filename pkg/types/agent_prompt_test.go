@@ -35,24 +35,50 @@ func TestDefaultPlatformPromptDocumentsPVCMountPoints(t *testing.T) {
 	}
 	assert.Contains(t, p, "/proc/*/maps",
 		"the live-mapping check before deleting hidden runtime files must be stated")
+	assert.Contains(t, p, "mtime",
+		"the mtime half of the mtime + /proc/*/maps check must be stated")
 	assert.Contains(t, p, "regenerable",
 		"the caches-are-regenerable classification must be present")
+	// The retained runtime-homes bullet (issue requirement 3) — the one
+	// block fact set that predates this change; pin it so a future edit
+	// cannot silently drop it.
+	assert.Contains(t, p, "CARGO_HOME",
+		"the package/runtime home vars under /workspace/.local must stay documented")
+	assert.Contains(t, p, "XDG_DATA_HOME=/workspace/.local",
+		"the XDG data home placement must stay documented")
 }
 
-// TestDefaultPlatformPromptPersistenceBlockContrast: every path the
-// prompt names as ephemeral must be tmpfs/emptyDir-class, and every
-// path named persistent must be PVC-class — no drift in either
-// direction as the text evolves.
+// TestDefaultPlatformPromptPersistenceBlockContrast: the persistence
+// contrast must stay real — every documented ephemeral mount name must
+// co-occur, in its own bullet, with the tmpfs/emptyDir classification
+// that makes it ephemeral (a path drifting out of the classified bullet
+// fails here), the superseded backwards /tmp line must not resurface,
+// and the prompt must stay under the per-tier round-trip cap.
 func TestDefaultPlatformPromptPersistenceBlockContrast(t *testing.T) {
 	p := DefaultPlatformPrompt
 	persist := "/workspace, /tmp, and /home/sandbox are subPaths of ONE persistent volume"
 	idx := strings.Index(p, persist)
 	assert.GreaterOrEqual(t, idx, 0, "the persistence sentence must exist")
 	for _, eph := range []string{"/sandbox-runtime", "/sandbox-cfg", "/agentd-"} {
-		assert.Contains(t, p, eph, "ephemeral mount %s must be documented", eph)
+		bullet := bulletContaining(t, p, eph)
+		assert.True(t, strings.Contains(bullet, "tmpfs") || strings.Contains(bullet, "emptyDir"),
+			"ephemeral mount %s must be classified tmpfs/emptyDir in its bullet: %q", eph, bullet)
 	}
 	assert.NotContains(t, p, "do not rely on its contents surviving",
 		"the superseded backwards /tmp line (#1759) must not resurface — /tmp DOES survive")
 	assert.LessOrEqual(t, len(p), MaxPromptPerLevel(),
 		"the default must stay under the per-tier cap so admins can round-trip it through the UI")
+}
+
+// bulletContaining returns the "- " line containing substr, failing the
+// test if absent — the persistence block's unit of classification.
+func bulletContaining(t *testing.T, p, substr string) string {
+	t.Helper()
+	for _, line := range strings.Split(p, "\n") {
+		if strings.HasPrefix(line, "- ") && strings.Contains(line, substr) {
+			return line
+		}
+	}
+	t.Fatalf("no bullet contains %q", substr)
+	return ""
 }
