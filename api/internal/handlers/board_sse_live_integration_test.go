@@ -102,14 +102,14 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 			close(ready)
 			return
 		}
+		// Headers received ⇒ the handler already subscribed (it
+		// subscribes before writing them). The server sends nothing
+		// further until the first event/heartbeat — do not wait on a
+		// first line.
+		close(ready)
 		defer func() { _ = resp.Body.Close() }()
 		sc := bufio.NewScanner(resp.Body)
-		first := true
 		for sc.Scan() {
-			if first {
-				first = false
-				close(ready)
-			}
 			line := sc.Text()
 			seenMu.Lock()
 			seen = append(seen, line)
@@ -117,9 +117,6 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 			if strings.HasPrefix(line, "data: ") {
 				frames <- strings.TrimPrefix(line, "data: ")
 			}
-		}
-		if first {
-			close(ready)
 		}
 	}()
 	dumpSeen := func() {
