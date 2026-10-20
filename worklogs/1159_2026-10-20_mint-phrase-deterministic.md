@@ -43,4 +43,4 @@ None (PR opening gated on #1797's review clearance — orchestrator ruling).
 ## Files Modified
 
 - pkg/shortid/phrase_test.go — seeded window + distribution bounds + the math documented in the test comment
-- worklogs/NNNN_2026-10-20_mint-phrase-deterministic.md — this worklog
+- worklogs/1159_2026-10-20_mint-phrase-deterministic.md — this worklog
