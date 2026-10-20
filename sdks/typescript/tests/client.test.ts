@@ -792,10 +792,10 @@ describe("userPrompts", () => {
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
       await client.board.pauseEpic("epc-bbbb2222");
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
-      const ce = await client.board.cancelEpic("epc-bbbb2222", { reason: "r" });
-      expect(mockFetch.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/cancel");
-      expect(ce.status).toBe("paused");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ item_kind: "epic", id: "e1", short_id: "epc-bbbb2222" }));
+      const del = await client.board.deleteEpic("epc-bbbb2222", true);
+      expect(mockFetch.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222?force=true");
+      expect(del.item_kind).toBe("epic");
     });
 
     it("creates tasks with the OR4 pr:N anchor tag form", async () => {
@@ -821,7 +821,7 @@ describe("userPrompts", () => {
       expect(rem.task?.is_blocked).toBe(false);
     });
 
-    it("moves stage, starts, cancels, and patches criteria", async () => {
+    it("moves stage, starts, deletes, and patches criteria", async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "done" }));
       const moved = await client.board.moveStage("tsk-cccc3333", { toStage: "done", evidenceUrl: "https://git/pr/1" });
       expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/move-stage");
@@ -833,9 +833,10 @@ describe("userPrompts", () => {
       expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/start");
       expect(claim.claim_token).toBe("tok-1");
 
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "cancelled" }));
-      const cancelled = await client.board.cancelTask("tsk-cccc3333", { reason: "r" });
-      expect(cancelled.stage).toBe("cancelled");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ item_kind: "task", id: "t1", short_id: "tsk-cccc3333" }));
+      const deleted = await client.board.deleteTask("tsk-cccc3333", true);
+      expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333?reconnect=true");
+      expect(deleted.item_kind).toBe("task");
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", acceptance_criteria: [{ text: "c", met: true }] }));
       const patched = await client.board.updateTask("tsk-cccc3333", { setCriteriaMet: 0 });
