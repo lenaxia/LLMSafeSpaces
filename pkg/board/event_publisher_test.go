@@ -88,15 +88,17 @@ func (s *BoardSuite) TestPublisher_UserActionsPersistThenPublish() {
 
 // TestPublisher_NoPublishOnAbort: a fault between effect and marker
 // aborts effect AND publish together — the SSE projection never sees a
-// state the database does not hold (§4.6 i, invariant-4 seam).
+// state the database does not hold (§4.6 i, invariant-4 seam). The
+// fixture seeds BEFORE the publisher installs so the assertion sees
+// only the aborted action's would-be event.
 func (s *BoardSuite) TestPublisher_NoPublishOnAbort() {
-	cap := &eventCapture{}
-	s.svc.SetEventPublisher(cap.record)
-	s.fps.armAt("create_task.effect", assertErr("publisher abort fixture"))
-
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
 	e := s.seedEpic(p, board.EpicActive)
+
+	cap := &eventCapture{}
+	s.svc.SetEventPublisher(cap.record)
+	s.fps.armAt("create_task.effect", assertErr("publisher abort fixture"))
 
 	_, err := s.svc.CreateTask(context.Background(), s.owner(), e.ID, "",
 		board.TaskInput{Title: "aborted work", Tags: []string{}}, "")

@@ -170,11 +170,11 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 		return nil, &GuardError{Code: GuardInput, Detail: "stage filter must be one of the six stages"}
 	}
 
-	args := []any{userID, likeLiteral(trimmed)}
+	args := []any{userID, trimmed, likeLiteral(trimmed)}
 	q2 := `SELECT ` + taskColumns + ` FROM tasks t
 		JOIN projects p ON p.id = t.project_id
 		WHERE p.user_id = $1
-		  AND (lower(t.short_id) = lower($2) OR t.title ILIKE $2 ESCAPE '\')`
+		  AND (lower(t.short_id) = lower($2) OR t.title ILIKE $3 ESCAPE '\')`
 	if filters.Stage != "" {
 		args = append(args, filters.Stage)
 		q2 += fmt.Sprintf(" AND t.stage = $%d", len(args))

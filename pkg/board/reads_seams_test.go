@@ -30,14 +30,25 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	e1 := s.seedEpic(p, board.EpicActive)
 	e2 := s.seedEpic(p, board.EpicDraft)
 
-	t1 := s.seedTask(e1, "do the thing", nil, false)
+	t1 := s.seedTask(e1, "do the thing", nil, true)
 	t2 := s.seedTask(e1, "never mind", nil, false)
 	s.seedTask(e1, "still queued", nil, false)
 	// 1 done, 1 canceled, 1 backlog → derived 1/3 (the #1747 owner
 	// ruling: Done over ALL tasks — the canceled exclusion design
-	// 0067 R2 carried is superseded by PR #1763's semantics).
+	// 0067 R2 carried is superseded by PR #1763's semantics). The
+	// stage journey is the machine's: task_start claims (fresh worker,
+	// token), the worker moves in_progress→in_review, the manager
+	// completes in_review→done (criteria met + evidence).
+	claim, err := s.svc.TaskStart(ctx, s.owner(), t1.ID, "", "")
+	s.Require().NoError(err)
+	s.Require().NotNil(claim)
+	_, err = s.svc.MoveStage(ctx, s.agent("sess-"+claim.ShortID, claim.ClaimToken), t1.ID, "", board.StageInReview, "", "")
+	s.Require().NoError(err)
 	if _, err := s.svc.MoveStage(ctx, s.owner(), t1.ID, "", board.StageDone, "https://example.com/proof", ""); err != nil {
 		s.T().Fatalf("move to done: %v", err)
+	}
+	if _, err := s.svc.CancelTask(ctx, s.owner(), t2.ID, "", "superseded", ""); err != nil {
+		s.T().Fatalf("cancel: %v", err)
 	}
 	if _, err := s.svc.CancelTask(ctx, s.owner(), t2.ID, "", "superseded", ""); err != nil {
 		s.T().Fatalf("cancel: %v", err)
