@@ -49,6 +49,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
+### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
+
+- **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
+  `trusted_app_bots: '["agentic-actor-coder[bot]"]'`.** App-bot accounts
+  can never be repository collaborators (the collaborators API
+  structurally returns `none` for them), so the opencode CLI's startup
+  `assertPermissions()` refused every PR our worker pods authored and
+  every `/review` they posted before any review pass — the #1775 outage
+  class (three dead synchronize runs + a dead `/review` fallback).
+  Upstream v0.2.17 (#51) added the opt-in `trusted_app_bots` input
+  (listed actors run in TOKEN mode — assert bypassed for them ONLY;
+  every human and unlisted actor still passes the collaborator assert
+  unchanged; fail-closed on malformed input); v0.2.18 (#53) fixed the
+  bypass delivery after the first live rollout caught that step-level
+  env never reaches the composite action's inner CLI step — TOKEN now
+  rides `GITHUB_ENV` (validated end-to-end on this very PR's own
+  review: run 39373330689 died at the assert on v0.2.17, run
+  39374196693 executed the LLM on v0.2.18). The literal must match
+  `canonicalTrustedAppBots` in `tests/ghaworkflows/gha_callers_test.go`
+  (single-source ruling #1710, extended to the new input — comment
+  lines stripped and `(?m)`-anchored so a commented-out or mid-block
+  input cannot false-pass), and both callers' pin tests accept any
+  `vX.Y.Z` tag instead of version literals (the propagate sed bumps
+  pins without touching tests — the shape is the contract, not the
+  literal; same relaxation applied to the renovate-analysis pin test).
 
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
