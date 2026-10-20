@@ -127,10 +127,28 @@ test.describe("sidebar full-edge gesture (#1629)", () => {
     await page.touchscreen.tap(box!.x + 6, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
 
-    // Close (tap the close button) and re-open from the center.
-    const close = page.getByRole("button", { name: "Close menu" });
-    const closeBox = await close.boundingBox();
-    await page.touchscreen.tap(closeBox!.x + closeBox!.width / 2, closeBox!.y + closeBox!.height / 2);
+    // #1788: while the drawer is open, the drawer panel (fixed z-40,
+    // 256px, inset-y-0) and overlay (fixed inset-0 z-30) physically
+    // cover the header toggle — tapping the "Close menu" button's
+    // coordinates only reaches the overlay during the first ~40ms of
+    // the slide-in; after that the sidebar's own content swallows the
+    // tap and the drawer never closes (the CI flake). The always-works
+    // close for a pointer user is the backdrop: x=350 is beyond the
+    // panel's 256px reach at every transform position, so the tap hits
+    // the overlay deterministically at any animation age.
+    await page.touchscreen.tap(350, 400);
+    // Wait not just for the label flip (instant) but for the slide-out
+    // to have physically left the toggle exposed: the re-open tap below
+    // must hit the button, and while the animating panel still covers
+    // it the tap would be swallowed (#1788 — same race, slide-out side).
+    await page.waitForFunction<boolean, { x: number; y: number }>(
+      (pt) => {
+        const el = document.elementFromPoint(pt.x, pt.y);
+        return el !== null && el.closest("button[aria-expanded]") !== null;
+      },
+      { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 },
+      { timeout: 5_000 },
+    );
     await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible({ timeout: 5000 });
     await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
