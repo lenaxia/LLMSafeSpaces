@@ -44,4 +44,4 @@ None. (Known environmental: the PR-review gate is temporarily refusing bot-autho
 - pkg/agent/opencode/permissiontiers_test.go — matrix rows (3), carve row
 - pkg/agent/opencode/permissiontiers_configwriter_test.go — render assertion
 - pkg/agent/opencode/permissiontiers_integration_test.go — the permanent 3(d) live leg
-- worklogs/NNNN_2026-10-20_opencode-data-dir-children-deny.md — this worklog
+- worklogs/1155_2026-10-20_opencode-data-dir-children-deny.md — this worklog

@@ -28,6 +28,7 @@ import (
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
@@ -100,6 +101,11 @@ type TriggersHandler struct {
 	audit        workflowAuditLogger
 	encrypt      triggerEncryptor
 	wsExistencer workspaceExistencer
+	// wsPhraseResolver backs #1757's phrase form of targetWorkspaceId
+	// (FindWorkspaceIDByPhrase; the database service). Nil = phrase
+	// targeting not configured — a phrase-shaped target then 404s
+	// through the ownership gate's not-found path.
+	wsPhraseResolver workspacePhraseResolver
 	// wsOwnership backs the #1729 targetWorkspaceId create contract
 	// (creator-or-org-admin rights on the target workspace).
 	wsOwnership workspaceOwnershipAuthorizer
@@ -115,6 +121,18 @@ func (h *TriggersHandler) SetWorkspaceExistencer(w workspaceExistencer) { h.wsEx
 // Forbidden unless the user is the workspace creator or an org admin on
 // it (the 403 half). Implemented by (*workspace.Service); deferred
 // injection mirrors wsExistencer.
+// workspacePhraseResolver resolves #1757 workspace phrases to UUIDs
+// (satisfied by the database service).
+type workspacePhraseResolver interface {
+	FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error)
+}
+
+// SetWorkspacePhraseResolver wires #1757 phrase-form targetWorkspaceId
+// acceptance (deferred injection, the wsOwnership pattern).
+func (h *TriggersHandler) SetWorkspacePhraseResolver(r workspacePhraseResolver) {
+	h.wsPhraseResolver = r
+}
+
 type workspaceOwnershipAuthorizer interface {
 	ResolveWorkspace(ctx context.Context, workspaceID string) (*types.WorkspaceMetadata, error)
 	CheckOwnership(ctx context.Context, userID string, meta *types.WorkspaceMetadata) error
@@ -291,8 +309,31 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	// question is about THEIR creator/org-admin rights on the target.
 	// The user route and the pod seam have actor == ownerID, so this
 	// only changes the org route's answer.
-	targetWorkspaceID := ""
+	targetWorkspaceID := req.TargetWorkspaceID
 	if req.TargetWorkspaceID != "" {
+		// #1757: the phrase form (2 words + 1 digit) resolves to the
+		// UUID first — the stored key stays the UUID (internal keys
+		// unchanged); a phrase that resolves to nothing is the same
+		// 404 every caller already gets.
+		if shortid.IsWorkspacePhraseForm(req.TargetWorkspaceID) {
+			if h.wsPhraseResolver == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
+				return
+			}
+			resolved, rerr := h.wsPhraseResolver.FindWorkspaceIDByPhrase(c.Request.Context(), req.TargetWorkspaceID)
+			if rerr != nil {
+				// Degraded lookup: an infra fault must never answer as a
+				// confident miss (5xx-never-suggests, session-lane r2
+				// precedent) — the availability 503, not a 404.
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "target workspace lookup temporarily unavailable"})
+				return
+			}
+			if resolved == "" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
+				return
+			}
+			targetWorkspaceID = resolved
+		}
 		if req.WorkflowID != "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and targetWorkspaceId"})
 			return
@@ -308,7 +349,11 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "cross-workspace targeting is not configured"})
 			return
 		}
-		meta, rerr := h.wsOwnership.ResolveWorkspace(c.Request.Context(), req.TargetWorkspaceID)
+		// r1: the gate must resolve the RESOLVED UUID, never the raw
+		// input — resolving the phrase again here made every valid,
+		// owned phrase-form target a 404 (the dead path the review
+		// caught).
+		meta, rerr := h.wsOwnership.ResolveWorkspace(c.Request.Context(), targetWorkspaceID)
 		if rerr != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(rerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeNotFound {
@@ -325,6 +370,15 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		if oerr := h.wsOwnership.CheckOwnership(c.Request.Context(), actor, meta); oerr != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(oerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeForbidden {
+				// §4.3 masking (#1757): for a PHRASE-form target the
+				// forbidden case is not-found-equivalent — a foreign
+				// phrase must answer with the byte-identical 404 the
+				// unknown phrase gets, or the distinction enumerates
+				// the fleet's live phrase space.
+				if shortid.IsWorkspacePhraseForm(req.TargetWorkspaceID) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
+					return
+				}
 				c.JSON(http.StatusForbidden, gin.H{"error": "no owner or admin rights on target workspace"})
 				return
 			}
@@ -333,7 +387,9 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize target workspace"})
 			return
 		}
-		targetWorkspaceID = req.TargetWorkspaceID
+		// targetWorkspaceID stays the RESOLVED UUID — the stored key is
+		// the UUID; the phrase never persists (r1: this line previously
+		// clobbered the resolved UUID back to the raw input).
 	}
 
 	// Input mapping (0059): V1–V6 on the create view.

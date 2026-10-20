@@ -139,7 +139,7 @@ const (
 )
 
 // Stages (ruling R2's binding set, as amended by #1747 round 3: the
-// cancel"+"led terminal state is ELIMINATED — delete_task removes rows
+// eliminated cancel terminal state is GONE — delete_task removes rows
 // outright; the machine is forward-moving with the one enumerated
 // backward bounce and the human pending_input exits).
 const (

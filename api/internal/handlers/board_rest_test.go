@@ -652,8 +652,11 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code, "unknown stage filter: "+w.Body.String())
 	// #1747 (r2, stage-filter contract pin): the ELIMINATED terminal
 	// stage is not a filter value anymore — same 400 class as a typo
-	// (the openapi enum no longer advertises it either).
-	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel"+"led", "") //nolint:misspell // the eliminated stage value, spelled verbatim
+	// (the openapi enum no longer advertises it either). The \u escape
+	// spells the historical value as DATA without a bare source
+	// occurrence the US-locale fixer would rewrite (r5 doctrine: one
+	// named/escaped site, never concatenation).
+	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel\u006ced", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
 }
 
