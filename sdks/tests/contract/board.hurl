@@ -156,12 +156,14 @@ HTTP 200
 [Asserts]
 jsonpath "$.outcome" isString
 
-# Epic lifecycle: activate → pause
+# Epic lifecycle: activate → pause (r5: the activate 200 is the
+# {"epic", "initial_ready_set"} wrapper — handler shape, spec'd)
 POST {{base_url}}/me/epics/{{epic_sid}}/activate
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.status" isString
+jsonpath "$.epic.status" isString
+jsonpath "$.initial_ready_set" isCollection
 
 POST {{base_url}}/me/epics/{{epic_sid}}/pause
 Authorization: Bearer {{token}}
