@@ -1059,12 +1059,6 @@ type boardMoveStageBody struct {
 	RequestID   string `json:"requestId,omitempty"`
 }
 
-// boardCancelBody mirrors the REST boardCancelRequest.
-type boardCancelBody struct {
-	Reason    string `json:"reason,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-}
-
 // boardRequestIDBody is the optional replay key on otherwise-empty
 // lifecycle bodies.
 type boardRequestIDBody struct {

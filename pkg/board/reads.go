@@ -135,7 +135,7 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 // exclusion design 0067 R2 carried is superseded.
 func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, error) {
 	rows, err := s.q().Query(ctx, `
-		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.priority, e.project_name,
+		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.project_name,
 		       e.tags, e.vft, e.deficit, e.quantum, e.created_at, e.updated_at,
 		       COALESCE(c.done_count, 0), COALESCE(c.total_count, 0)
 		FROM epics e

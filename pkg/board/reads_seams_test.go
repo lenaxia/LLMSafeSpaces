@@ -257,12 +257,12 @@ func (s *BoardSuite) seedForeignTask(title string) *board.Task {
 			VALUES (gen_random_uuid(), 'prj-ffff0001', $1, 'foreign board', $2, 2, '{}', 'active')
 			RETURNING id
 		), e AS (
-			INSERT INTO epics (id, project_id, short_id, title, status, priority, project_name, tags)
-			VALUES (gen_random_uuid(), (SELECT id FROM p), 'epc-ffff0001', 'foreign epic', 'active', 'P2', 'foreign board', '{}')
+			INSERT INTO epics (id, project_id, short_id, title, status, project_name, tags)
+			VALUES (gen_random_uuid(), (SELECT id FROM p), 'epc-ffff0001', 'foreign epic', 'active', 'foreign board', '{}')
 			RETURNING id
 		)
-		INSERT INTO tasks (id, project_id, epic_id, short_id, title, stage, priority, project_name, epic_name, tags, acceptance_criteria)
-		VALUES (gen_random_uuid(), (SELECT id FROM p), (SELECT id FROM e), 'tsk-ffff0001', $3, 'backlog', 'P2', 'foreign board', 'foreign epic', '{}', '[]')
+		INSERT INTO tasks (id, project_id, epic_id, short_id, title, stage, project_name, epic_name, tags, acceptance_criteria)
+		VALUES (gen_random_uuid(), (SELECT id FROM p), (SELECT id FROM e), 'tsk-ffff0001', $3, 'backlog', 'foreign board', 'foreign epic', '{}', '[]')
 		RETURNING id`, otherUser, ws, title).Scan(&tID)
 	s.Require().NoError(err)
 	s.Require().NoError(s.pool.QueryRow(ctx, `SELECT short_id FROM tasks WHERE id=$1`, tID).Scan(&shortID))
