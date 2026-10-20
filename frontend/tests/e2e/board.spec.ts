@@ -3,7 +3,7 @@
  *
  * Rows:
  *   1. Board renders: swimlanes = projects, columns = stages, cards with
- *      short id / priority / tags / blocked badge.
+ *      short id / pause-waiting chips / tags / blocked badge.
  *   2. Drag = server-arbitrated move_stage: optimistic move + confirm;
  *      refused drag (409 + guard code) snaps back with the code rendered.
  *   3. Done drop collects the evidence URL (required on → done, R2).
@@ -33,7 +33,7 @@ type E2ETask = {
   title: string;
   description: string;
   stage: string;
-  priority: string;
+  paused: boolean;
   project_name: string;
   epic_name: string;
   tags: string[];
@@ -51,7 +51,7 @@ function task(partial: Partial<E2ETask> & { short_id: string; title: string; sta
   return {
     id: `uuid-${partial.short_id}`,
     description: "",
-    priority: "P2",
+    paused: false,
     project_name: partial.project_id === PROJECT_A ? "Apollo" : "Borealis",
     epic_name: partial.epic_id === "epic-1" ? "E1" : "E2",
     tags: [],
@@ -239,7 +239,6 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(card).toBeVisible();
     await expect(card).toContainText("tsk-aaaa0001");
     await expect(card).toContainText("Write charter");
-    await expect(card).toContainText("P2");
 
     // Stage columns in the swimlane grid.
     const laneA = page.getByTestId(`swimlane-${PROJECT_A}`);
