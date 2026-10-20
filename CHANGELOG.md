@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `assertPermissions()` refused every PR our worker pods authored and
   every `/review` they posted before any review pass — the #1775 outage
   class (three dead synchronize runs + a dead `/review` fallback).
-  ai-workflows v0.2.17 adds the opt-in `trusted_app_bots` input: listed
+  ai-workflows v0.2.18 (with #53's GITHUB_ENV delivery fix) adds the opt-in `trusted_app_bots` input: listed
   actors run in TOKEN mode (assert bypassed for them ONLY; every human
   and unlisted actor still passes the collaborator assert unchanged;
   fail-closed on malformed input). The literal must match
