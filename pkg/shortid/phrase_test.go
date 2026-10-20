@@ -4,6 +4,7 @@
 package shortid
 
 import (
+	mathRand "math/rand"
 	"regexp"
 	"strings"
 	"testing"
@@ -42,14 +43,62 @@ func TestMintPhrase_FormatPins(t *testing.T) {
 	}
 }
 
+// TestMintPhrase_HighEntropyNotSequential — deterministic (#1794):
+// the pre-fix design drew 500 UNSEEDED samples from the 160x192x64 =
+// 1,966,080 phrase space, a ~6.2% birthday-collision probability per
+// run (1 - exp(-500*499/(2*1,966,080))) — a 1-in-16 CI redden with no
+// defect behind it. The test now fixes the mint PRNG's seed for the
+// draw window (test-only reseed of the package var, re-armed with a
+// fresh crypto seed on cleanup), which makes the window deterministic
+// AND lets the entropy guard get STRONGER: per-slot distribution
+// bounds catch a degraded generator (e.g. one drawing verbs from a
+// narrowed slice) that the old duplicate-only check could not — under
+// the pinned seed a narrowed generator rarely composes the same full
+// phrase twice in 500 draws. The production path stays crypto-seeded
+// (#1756: enumeration
+// is a ruled non-issue; ids are references under authz).
 func TestMintPhrase_HighEntropyNotSequential(t *testing.T) {
+	mintMu.Lock()
+	mintRand = mathRand.New(mathRand.NewSource(20261020))
+	mintMu.Unlock()
+	t.Cleanup(func() {
+		mintMu.Lock()
+		mintRand = mathRand.New(mathRand.NewSource(cryptoSeed()))
+		mintMu.Unlock()
+	})
+
 	seen := map[string]bool{}
+	adjs, nouns, verbs := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i := 0; i < 500; i++ {
 		id, _ := MintPhrase()
 		if seen[id] {
-			t.Fatalf("duplicate mint %q within 500 draws — random selection broken", id)
+			t.Fatalf("duplicate mint %q within the seeded 500-draw window — random selection broken", id)
 		}
 		seen[id] = true
+		words := strings.Split(id, "-")
+		adjs[words[0]] = true
+		nouns[words[1]] = true
+		verbs[words[2]] = true
+	}
+	// Entropy bounds for the seeded window: uniform draws over the
+	// frozen lists populate most slots — the expected distinct count
+	// for 500 uniform draws over N slots is N(1-(1-1/N)^500):
+	// 153.0/160 adjectives, 177.9/192 nouns, 64.0/64 verbs (the
+	// pinned window's actuals land on these: 153/174/64). The bounds
+	// sit far below expectation so the fixed window can never graze
+	// them, and they detect a generator drawing from under ~55% of a
+	// list (per-list floors: verbs <=35/64 ≈ 55%, adjectives ≈ 62%,
+	// nouns ≈ 63% — narrowings above the floor, e.g. 38 of 64 verbs,
+	// pass); strictly stronger than the old duplicate-only check,
+	// which caught only near-total collapse.
+	if len(adjs) < 100 {
+		t.Errorf("adjective entropy low: %d distinct in 500 draws (uniform expectation 153.0)", len(adjs))
+	}
+	if len(nouns) < 120 {
+		t.Errorf("noun entropy low: %d distinct in 500 draws (uniform expectation 177.9)", len(nouns))
+	}
+	if len(verbs) < 36 {
+		t.Errorf("verb entropy low: %d distinct in 500 draws (uniform expectation 64.0)", len(verbs))
 	}
 }
 
