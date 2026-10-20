@@ -64,12 +64,19 @@ watcher `agent_restarted` SSE event → frontend dismissible banner
    readiness cache. Pinned by the existing latency/no-opencode tests.
 5. onPhaseChange is transition-only → new callback required — validated
    `watcher.go:327`; the orchestrator ratified S7.
-6. **Go SDK does NOT model WorkspaceStatusResult** (orchestrator correction
-   of my milestone (a) claim — my grep had matched `agentHealth` inside a
-   different type in `sdks/go/types.go`). Hand-sync = openapi.yaml +
-   `sdks/typescript/src/types.ts` only. OBSERVED GAP (not this lane's work,
-   per orchestrator): the Go SDK lacks WorkspaceStatusResult coverage
-   entirely — the #1699 SDK canary lane owns that tier.
+6. **Go SDK coverage** — MY ORIGINAL CLAIM AND THE ORCHESTRATOR'S S5
+   CORRECTION WERE BOTH WRONG (review round 1 disproved them; Rule 7
+   failed-validation record): `sdks/go/types.go` DOES model the status
+   endpoint — the type is named **`WorkspaceStatus`** (not
+   `WorkspaceStatusResult`), which is why two greps for
+   "WorkspaceStatusResult" missed it. It is the typed response of
+   `GET /workspaces/:id/status` (decoded by `GetStatus`,
+   `sdks/go/services.go:69`). The orchestrator's "do not add a Go SDK
+   type in this lane" ruling was factually based on the same miss —
+   extending the EXISTING type (one field + two nested structs, the
+   exact hand-sync the TS SDK got) is not adding a type and closes the
+   AC4 gap the reviewer blocked on. Fixed in round 1; flagged to the
+   orchestrator.
 7. Sidecar-mode supervisor CRASH restarts are out of scope (A11 ruling):
    watchdog restarts surface in both topologies; single-container crash
    restarts surface via the observer hook; sidecar crash attribution stays
@@ -130,6 +137,28 @@ tool. No other out-of-declared-scope file was touched.
   for that workspace produces no toast — the chat-load banner covers it.
 - False alarm (checked): `restartObserver` runs outside `p.mu` — matches
   the `onChildStarted` pattern (set before `start()`, single writer path).
+
+## Bot review round 1 (CHANGES_REQUESTED → fixed)
+
+1. **ChatPage hook-count pin 75→76** — valid against commit `40968278`;
+   already fixed on `a2c59069` (pushed before the review landed). Lesson
+   recorded: my "518 green" evidence was a targeted subset that excluded
+   `ChatPage.hookcount.test.tsx` — evidence scoping must cover the pins
+   a change plausibly touches.
+2. **Stale-state leak**: `agentRestarted` never reset — a live toast from
+   workspace A shadowed workspace B's status across in-place route
+   switches. Fixed: reset in the per-session effect; regression-pinned
+   (`clears the live payload on session switch`, the hookcount-pattern
+   in-place params mutation — children-as-prop would bail out of the
+   re-render, the wrapper renders ChatPage directly).
+3. **Go SDK `WorkspaceStatus.Supervisor`** — see Assumption 6 above.
+   Fixed: field + `SupervisorStatus`/`AgentRestartEvent` added to
+   `sdks/go/types.go` (builds + vets clean).
+4. Style nits: tautological `Eventually` in
+   `TestWatchdogHealthy_RecordsNothing` (now waits on the cache's
+   observable healthy refresh + settle); misleading "re-fires" comment
+   in the watcher DeletedCleansState test (now states the first-sighting
+   policy truthfully).
 
 ## Resource discipline
 

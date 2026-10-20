@@ -144,13 +144,14 @@ func TestWatchdogHealthy_RecordsNothing(t *testing.T) {
 	fr := &fakeRestarter{}
 	log := newAgentRestartLog()
 
-	_ = runWatchdogLoopWithRestarts(t, srv.URL, 2*time.Second, fr, nil, nil, log)
+	cache := runWatchdogLoopWithRestarts(t, srv.URL, 2*time.Second, fr, nil, nil, log)
 
-	require.Eventually(t, func() bool { return fr.callCount() >= 0 && logEmpty(log) },
-		5*time.Second, 50*time.Millisecond, "loop must run")
+	// Wait on the OBSERVABLE (the cache's first healthy refresh), then
+	// settle past the next tick so a would-fire moment would have
+	// recorded — not a tautology.
+	require.Eventually(t, func() bool { return cache.Snapshot().Healthy },
+		5*time.Second, 50*time.Millisecond, "loop must run its first healthy refresh")
+	time.Sleep(200 * time.Millisecond)
 	assert.Nil(t, log.snapshot(), "a healthy run records nothing")
-}
-
-func logEmpty(l *agentRestartLog) bool {
-	return l.snapshot() == nil
+	assert.Zero(t, fr.callCount())
 }

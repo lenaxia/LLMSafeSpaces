@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, waitFor, act, screen, fireEvent } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
@@ -67,6 +67,40 @@ vi.mock("../components/chat/ChatView", () => ({
   ChatView: () => <div data-testid="chat-view" />,
 }));
 
+// Mutable route params + a re-render bump (the hookcount pattern): the
+// router reuses ONE ChatPage instance across session/workspace
+// switches — the r1 stale-state regression pin needs an in-place
+// params change, not a remount.
+const paramsRef: Record<string, string | undefined> = {};
+const bumpTickRef: { current: (() => void) | null } = { current: null };
+vi.mock("react-router-dom", async (orig) => {
+  const actual = await orig<typeof import("react-router-dom")>();
+  return {
+    ...actual,
+    useParams: () => paramsRef,
+    useNavigate: () => vi.fn(),
+  };
+});
+// ChatPage is rendered INSIDE the wrapper (not passed as children): a
+// children prop holds the SAME element reference across re-renders and
+// React bails out of the subtree — the params change would never reach
+// ChatPage.
+function ReRenderWrapper({ qc }: { qc: QueryClient }) {
+  const [tick, setTick] = useState(0);
+  bumpTickRef.current = () => setTick((t) => t + 1);
+  void tick;
+  return (
+    <QueryClientProvider client={qc}>
+      <TooltipProvider delayDuration={0}>
+        <ChatPage />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+function bumpTick() {
+  bumpTickRef.current?.();
+}
+
 import { workspacesApi } from "../api/workspaces";
 
 function makeQueryClient() {
@@ -74,17 +108,9 @@ function makeQueryClient() {
 }
 
 async function renderReady(qc: QueryClient) {
-  render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/chat/ws-1/sess-1"]}>
-        <TooltipProvider delayDuration={0}>
-          <Routes>
-            <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
-          </Routes>
-        </TooltipProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  paramsRef.workspaceId = "ws-1";
+  paramsRef.sessionId = "sess-1";
+  render(<ReRenderWrapper qc={qc} />);
   await waitFor(() => {
     expect(capturedPlatformHandler).not.toBeNull();
   });
@@ -167,5 +193,32 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
     const banner = await screen.findByTestId("agent-restart-banner");
     fireEvent.click(banner.querySelector("button")!);
     expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
+  });
+
+  // r1 stale-state regression pin: the live toast payload must reset on
+  // session/workspace switch — a toast received in workspace A must not
+  // shadow workspace B's own (empty) status when the router reuses the
+  // ChatPage instance.
+  it("clears the live payload on session switch (no cross-workspace leak)", async () => {
+    const qc = makeQueryClient();
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    await renderReady(qc);
+
+    sendPlatformEvent({
+      type: "agent_restarted",
+      data: { reason: "health_watchdog", at: "2026-10-19T17:08:14Z" },
+    } as never);
+    expect(await screen.findByTestId("agent-restart-banner")).toBeTruthy();
+
+    // Switch workspace+session in place (same instance, params change).
+    await act(async () => {
+      paramsRef.workspaceId = "ws-2";
+      paramsRef.sessionId = "sess-2";
+      bumpTick();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
+    });
   });
 });

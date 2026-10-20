@@ -517,6 +517,10 @@ export function ChatPage() {
     setSessionWasInterrupted(false);
     setAgentDied(false);
     setAgentDiedMessage(null);
+    // #1760 review r1: the live agent_restarted payload must not leak
+    // across workspace switches (the router reuses this instance; a
+    // toast from workspace A would otherwise shadow B's own status).
+    setAgentRestarted(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);

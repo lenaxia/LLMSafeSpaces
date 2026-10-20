@@ -95,9 +95,10 @@ func TestWorkspaceWatcher_AgentRestartCallback_DeletedCleansState(t *testing.T) 
 	ws := restartEventWS("ws-1", "1", 1, at)
 	fakeWatch.Add(ws)
 	// Delete then re-add the SAME restart (workspace recreated): the
-	// stamp must be forgotten on delete so the recreated workspace's
-	// identical restart record re-fires (a fresh pod's history is fresh
-	// evidence).
+	// Delete branch must clean the restart-stamp state with the rest of
+	// the per-workspace maps (no leak past the object's lifetime). The
+	// re-add itself is a first sighting and does NOT re-fire (that is
+	// observeAgentRestart's documented policy, pinned separately).
 	fakeWatch.Delete(ws)
 	ws2 := restartEventWS("ws-1", "2", 1, at)
 	fakeWatch.Add(ws2)
