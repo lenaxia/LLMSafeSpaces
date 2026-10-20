@@ -187,3 +187,59 @@ func TestWordlists_Frozen(t *testing.T) {
 	check(Nouns, "noun")
 	check(Verbs, "verb")
 }
+
+// --- #1757 workspace phrase pins -------------------------------------------
+
+func TestMintWorkspacePhrase_FormatPins(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 300; i++ {
+		id := MintWorkspacePhrase()
+		if !IsWorkspacePhraseForm(id) {
+			t.Fatalf("MintWorkspacePhrase() = %q: not 2-words+1-digit", id)
+		}
+		words := strings.Split(id, "-")
+		if !Adjectives[words[0]] || !Nouns[words[1]] {
+			t.Fatalf("%q: slots must come from the frozen lists", id)
+		}
+		if len(words[2]) != 1 || words[2][0] < '0' || words[2][0] > '9' {
+			t.Fatalf("%q: third token must be a single digit", id)
+		}
+		seen[id] = true
+	}
+	// The workspace space (160×192×10 ≈ 307k) admits birthday collisions
+	// in a few hundred draws — uniqueness is the fleet-unique INDEX's
+	// job (check-and-retry at the seam), not the mint's. The pin is
+	// randomness: nearly all draws distinct.
+	if len(seen) < 280 {
+		t.Fatalf("only %d distinct phrases in 300 draws — selection not uniform", len(seen))
+	}
+}
+
+// Namespace disjointness for the third ID kind: workspace phrases
+// never classify as session phrases or harness slugs, and vice versa.
+func TestWorkspacePhrase_NamespaceDisjointness(t *testing.T) {
+	ws := []string{"amber-river-7", "linen-orchard-3"}
+	sess := []string{"amber-falcon-glides", "calm-river-drifts-2"}
+	slugs := []string{"sunny-wolf", "mighty-harbor"}
+	for _, s := range ws {
+		if !IsWorkspacePhraseForm(s) {
+			t.Errorf("IsWorkspacePhraseForm(%q) = false", s)
+		}
+		if IsShortIDForm(s) {
+			t.Errorf("workspace phrase %q must not classify as a session phrase", s)
+		}
+	}
+	for _, s := range sess {
+		if IsWorkspacePhraseForm(s) {
+			t.Errorf("session phrase %q must not classify as a workspace phrase", s)
+		}
+	}
+	for _, s := range slugs {
+		if IsWorkspacePhraseForm(s) || IsShortIDForm(s) {
+			t.Errorf("harness slug %q must classify as neither phrase kind", s)
+		}
+	}
+}
+
+// The lazy-backfill read contract: a NULL phrase_id mints on read.
+// (Pinned at the sqlmock tier in the database package.)

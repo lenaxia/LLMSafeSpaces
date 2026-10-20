@@ -658,6 +658,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 			userTriggersHandler.SetWorkspaceOwnershipAuthorizer(wsSvc)
 			orgTriggersHandler.SetWorkspaceOwnershipAuthorizer(wsSvc)
+			// #1757: phrase-form targetWorkspaceId acceptance (the
+			// database service resolves phrases to UUIDs).
+			userTriggersHandler.SetWorkspacePhraseResolver(svc.Database)
+			orgTriggersHandler.SetWorkspacePhraseResolver(svc.Database)
 		} else {
 			log.Error("automation cross-workspace wiring: workspace service is not the concrete type; targetWorkspaceId creates will fail closed",
 				errors.New("svc.Workspace type assertion failed"))

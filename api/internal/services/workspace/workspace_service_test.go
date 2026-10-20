@@ -53,6 +53,9 @@ func newFixture(t *testing.T) *fixture {
 	v1i := kmocks.NewMockLLMSafespacesV1Interface()
 	ws := kmocks.NewMockWorkspaceInterface()
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	cache := &imocks.MockCacheService{}
 	met := &imocks.MockMetricsService{}
 
@@ -470,6 +473,38 @@ func TestListWorkspaces_PropagatesOrgID(t *testing.T) {
 	// `if (workspace.orgId)` check correctly skips the org policy fetch.
 	assert.Nil(t, result.Items[1].OrgID,
 		"personal workspaces must have nil OrgID in the list response")
+}
+
+// TestListWorkspaces_PropagatesPhraseID is a regression test for
+// LLMSafeSpaces#1757 r2: the DB list query already selects phrase_id,
+// but the WorkspaceListItem conversion dropped it — list responses
+// could not feed the display surfaces (#1792) the phrase the GET
+// response already carried. Same defect class as #477 (OrgID).
+func TestListWorkspaces_PropagatesPhraseID(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	metas := []*types.WorkspaceMetadata{
+		{ID: "ws-1", UserID: "user1", Name: "ws1", StorageSize: "10Gi", CreatedAt: now, PhraseID: "amber-river-7"},
+		// Legacy row, pre-backfill: empty phrase must surface empty.
+		{ID: "ws-legacy", UserID: "user1", Name: "legacy", StorageSize: "5Gi", CreatedAt: now},
+	}
+	f.db.On("ListWorkspaces", ctx, "user1", 10, 0).Return(metas, &types.PaginationMetadata{Total: 2, Limit: 10}, nil)
+
+	crdList := &v1.WorkspaceList{Items: []v1.Workspace{
+		{ObjectMeta: metav1.ObjectMeta{Name: "ws-1"}, Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "ws-legacy"}, Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive}},
+	}}
+	f.ws.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "user-id=user1"}).Return(crdList, nil)
+
+	result, err := f.svc.ListWorkspaces(ctx, "user1", types.ListOptions{Limit: 10, Offset: 0})
+	assert.NoError(t, err)
+	assert.Len(t, result.Items, 2)
+	assert.Equal(t, "amber-river-7", result.Items[0].PhraseID,
+		"WorkspaceListItem.PhraseID must be populated — the list response is what the display surfaces (#1792) consume")
+	assert.Empty(t, result.Items[1].PhraseID,
+		"a pre-backfill row surfaces an empty phrase, never a fabricated one")
 }
 
 func TestListWorkspaces_Empty_ReturnsEmptyList(t *testing.T) {
@@ -1272,6 +1307,9 @@ func TestGetWorkspaceStatus_LlmsafespacesV1Error_ReturnsInternal(t *testing.T) {
 	k8s.On("LlmsafespacesV1").Return(nil, errors.New("rest client construction failed"))
 
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	db.On("GetWorkspace", mock.Anything, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
 
 	met := &imocks.MockMetricsService{}
@@ -1300,6 +1338,9 @@ func TestDeleteWorkspace_LlmsafespacesV1Error_ReturnsInternal(t *testing.T) {
 	k8s.On("LlmsafespacesV1").Return(nil, errors.New("scheme missing"))
 
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	db.On("GetWorkspace", mock.Anything, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
 
 	met := &imocks.MockMetricsService{}

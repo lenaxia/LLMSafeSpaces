@@ -9543,6 +9543,9 @@ components:
           type: string
           format: date-time
           nullable: true
+        phraseId:
+          type: string
+          description: The #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display/cross-workspace address. Absent only pre-backfill.
     CreateWorkspaceRequest:
       type: object
       properties:
@@ -9608,6 +9611,9 @@ components:
           type: string
           nullable: true
           description: Owning org for org-scoped workspaces (Epic 11); null for personal workspaces.
+        phraseId:
+          type: string
+          description: The #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display address; surfaces in list responses so pickers/dashboards can address workspaces without the UUID (#1792).
     PaginationMetadata:
       type: object
       properties:
