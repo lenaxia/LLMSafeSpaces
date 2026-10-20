@@ -45,4 +45,4 @@ None.
 - pkg/agent/opencode/integration_harness.go — env strip+append via one map; corrected comment
 - pkg/agent/opencode/integration_harness_env_test.go — behavioral pin (new)
 - pkg/agent/opencode/permissiontiers_integration_test.go — live legs + tierBashLeg (transferred from 23cde048)
-- worklogs/NNNN_2026-10-20_salvage-harness-env-live-legs.md — this worklog
+- worklogs/1147_2026-10-20_salvage-harness-env-live-legs.md — this worklog

@@ -40,4 +40,4 @@ None.
 
 - pkg/types/agent_prompt.go — persistence block (approved text)
 - pkg/types/agent_prompt_test.go — content + contrast pins
-- worklogs/NNNN_2026-10-20_platform-prompt-mount-topology.md — this worklog
+- worklogs/1146_2026-10-20_platform-prompt-mount-topology.md — this worklog
