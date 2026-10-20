@@ -2981,8 +2981,8 @@ external actors hold no claim tokens.</p>
 </tr>
 <tr>
 <td><code>board_read</code></td>
-<td><code>project_id</code></td>
-<td>Read a project's tasks. Optional: <code>stage</code> (one of <code>backlog</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, <code>cancelled</code>)</td>
+<td><em>(none)</em></td>
+<td>Read a board. Default (with <code>project_id</code>): the project's tasks; Optional: <code>stage</code> (one of <code>backlog</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, <code>cancelled</code>). <code>kind=epics</code> (with <code>project_id</code>): the project's epics with derived progress. <code>q</code>: board-wide search (short id exact or title substring; Optional: <code>project_id</code>, <code>epic_id</code>, <code>stage</code>, <code>tags</code> — zero-hit near-misses carry did-you-mean suggestions). <code>health=true</code>: the health snapshot</td>
 </tr>
 <tr>
 <td><code>board_create_project</code></td>
@@ -3017,32 +3017,32 @@ external actors hold no claim tokens.</p>
 <tr>
 <td><code>board_epic_activate</code></td>
 <td><code>epic_id</code></td>
-<td>Activate an epic (start feeding work); re-opens a completed epic</td>
+<td>Activate an epic (start feeding work); re-opens a completed epic. Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_epic_pause</code></td>
 <td><code>epic_id</code></td>
-<td>Pause an epic (stop new claims; in-flight leases run on)</td>
+<td>Pause an epic (stop new claims; in-flight leases run on). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_epic_archive</code></td>
 <td><code>epic_id</code></td>
-<td>Archive an epic (reversible storage)</td>
+<td>Archive an epic (reversible storage). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_epic_unarchive</code></td>
 <td><code>epic_id</code></td>
-<td>Unarchive an epic (always restores active)</td>
+<td>Unarchive an epic (always restores active). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_project_archive</code></td>
 <td><code>project_id</code></td>
-<td>Archive a project (stops all claims into it)</td>
+<td>Archive a project (stops all claims into it). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_project_unarchive</code></td>
 <td><code>project_id</code></td>
-<td>Unarchive a project (restores active)</td>
+<td>Unarchive a project (restores active). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_cancel</code></td>
@@ -3057,12 +3057,19 @@ external actors hold no claim tokens.</p>
 <tr>
 <td><code>board_remove_dependency</code></td>
 <td><code>task_id</code>, <code>depends_on</code></td>
-<td>Remove a dependency edge</td>
+<td>Remove a dependency edge. Optional: <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_health</code></td>
+<td><em>(none)</em></td>
+<td>The board health snapshot (design 0067 §4.8): active leases with expiry, recent reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker slots in use — the same projection <code>board_read?health=true</code> renders</td>
 </tr>
 </tbody>
 </table>
-<p>Board search and health projections join <code>board_read</code> when the engine
-seams land (#1699); epic listing rides <code>board_get</code> per epic today.</p>
+<p>All lifecycle tools (<code>board_epic_activate</code>/<code>_pause</code>/<code>_archive</code>/<code>_unarchive</code>,
+<code>board_project_archive</code>/<code>_unarchive</code>) accept an Optional <code>request_id</code>
+idempotency key — one id per logical operation, reused on retry (a
+replay renders 200-with-original, never an error).</p>
 <h2 id="how-mcp-maps-to-workspace-sessions">How MCP maps to workspace sessions<a class="headerlink" href="#how-mcp-maps-to-workspace-sessions" title="Permanent link">&para;</a></h2>
 <p>The MCP server is a stateless adapter over the REST API. There is no MCP-side session state — every tool call translates to one or more HTTP requests against the API:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>MCP client ──► MCP server (stdio/SSE) ──► LLMSafeSpaces API ──► workspace pod (opencode serve :4096)
