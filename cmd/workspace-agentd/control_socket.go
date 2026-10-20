@@ -39,11 +39,11 @@ const controlProtocolVersion = 1
 
 // restartReasons is the CLOSED enum (A.2 / A.4 invariant 2).
 var restartReasons = map[string]bool{
-	"health_watchdog":   true,
-	"relay_injector":    true,
-	"session_aware":     true,
-	"credential_reload": true,
-	"manual":            true,
+	"health_watchdog":          true,
+	RestartReasonRelayInjector: true,
+	"session_aware":            true,
+	"credential_reload":        true,
+	"manual":                   true,
 }
 
 type controlRequest struct {

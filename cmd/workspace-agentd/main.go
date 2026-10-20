@@ -564,11 +564,29 @@ func liveSessionsLister(deps serverDeps) sessionLister {
 // interrupt-first force path fires when every busy session is stalled —
 // #1342). No pending-apply surfacing: a relay restart is not a credential
 // apply.
+//
+// #1801: this closure is the relay class's restart DECISION point, so it
+// owns the class's restart-reason marker write — every other restart class
+// writes at its own decision site (healthz_cache.go fires, secrets.go
+// applies, xdg_config_layer.go watches; the managedProcess loop covers
+// crash/oom). The write is DECISION-TIME per the accepted M3 semantics
+// (restart_reason.go): a deferred restart that never fires (pod death
+// cancels it) leaves a stale-at-boot marker — same trade-off the
+// credential-apply and config-watcher classes already make. The marker is
+// observability, never a gate: a failed write counts and the restart
+// proceeds.
 func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister, interrupter sessionInterrupter) func() {
 	if proc == nil {
 		return func() {}
 	}
 	return func() {
+		if err := writeRestartReasonMarker(markerPathFromEnv(), RestartReasonRelayInjector, nil); err != nil {
+			log.Error("failed to write restart-reason marker", zap.Error(err))
+			pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonRelayInjector)
+		} else {
+			logRestartReasonAtWrite(RestartReasonRelayInjector, nil, log.Core())
+		}
+		pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonRelayInjector)
 		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartDecisionConfig{
 			PollInterval: restartIdleCheckInterval,
 			StallBound:   restartStallBound,

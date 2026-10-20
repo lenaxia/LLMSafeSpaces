@@ -80,7 +80,7 @@ func newOpsMetrics() *opsMetrics {
 	return &opsMetrics{
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
-			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog)",
+			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog, health_watchdog_unknown_episode, relay_injector)",
 		}, []string{"workspace_id", "reason"}),
 
 		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
