@@ -29,10 +29,16 @@ const registerRetries = 5
 // short_id IS NULL; a raced fill converges on re-read. Idempotent:
 // re-registering returns the surviving short id, never re-mints.
 func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	// #1756: the mint is a 3-word phrase; a collision (the partial
+	// unique index raises 23505) re-mints with the DETERMINISTIC
+	// counter suffix — base-2, then base-3, … — never a re-roll.
 	for attempt := 0; attempt < registerRetries; attempt++ {
-		minted, err := shortid.Mint(harnessType)
+		minted, err := shortid.MintPhrase()
 		if err != nil {
 			return "", err
+		}
+		if attempt > 0 {
+			minted = shortid.WithCounterSuffix(minted, attempt+1)
 		}
 		tag, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)

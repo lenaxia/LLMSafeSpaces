@@ -86,6 +86,27 @@ func bootPullSessionShortIDs(ctx context.Context) {
 	pullSessionShortIDs(pullCtx)
 }
 
+// emitID renders a canonical harness id for TOOL OUTPUT (#1756 §1):
+// the phrase when the replica knows it, the harness id in the
+// degraded window (replica cold). Output-only; resolution/inputs are
+// unchanged.
+func emitID(canonical string) string {
+	if short := currentSessionShortIDs().shortIDFor(canonical); short != "" {
+		return short
+	}
+	return canonical
+}
+
+// deprecationNote returns the #1756 one-release input-deprecation
+// clause for a ref addressed in a deprecated form ("" for canonical
+// phrase/alias inputs).
+func deprecationNote(ref string) string {
+	if !shortid.IsDeprecatedInputForm(ref) {
+		return ""
+	}
+	return " — DEPRECATED: you addressed this session by its full/hashed id; use the 3-word phrase (see session_list)"
+}
+
 // errSessionRef is the structured resolution failure returned to tool
 // callers: the message carries the did-you-mean clause (the #1667
 // style — suggest-only, never an auto-correct).

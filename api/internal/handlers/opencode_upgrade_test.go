@@ -64,7 +64,15 @@ func (m *mockSessionIndex) ListByWorkspace(_ context.Context, workspaceID string
 	if m.failList {
 		return nil, assert.AnError
 	}
-	return append([]types.SessionListItem{}, m.rows[workspaceID]...), nil
+	out := append([]types.SessionListItem{}, m.rows[workspaceID]...)
+	// DB-layer contract (#1756): seeded ID is the harness key; the
+	// list query's InternalID mirror is always populated.
+	for i := range out {
+		if out[i].InternalID == "" {
+			out[i].InternalID = out[i].ID
+		}
+	}
+	return out, nil
 }
 
 // seedRow / seedRowCounted are test helpers for reconciliation scenarios.

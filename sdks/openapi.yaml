@@ -9855,21 +9855,28 @@ components:
           type: string
         sessionId:
           type: string
+          description: >
+            THE session identifier (#1756): the minted 3-word phrase.
+            When the registration seam is momentarily unavailable the
+            response degrades to the harness id in deprecatedSessionId.
         resumed:
           type: boolean
-        shortId:
+        deprecatedSessionId:
           type: string
           description: >
-            The platform-minted short address of the session (design
-            0066): prefix + 8 chars, per-workspace unique, resolved
-            case-insensitively by every id-taking surface. Absent when
-            the registration seam is momentarily unavailable — the
-            harness sessionId above remains the stable fallback.
+            Carries the harness full id ONLY in the degraded window
+            (phrase could not be minted); address sessions by phrase.
     SessionListItem:
       type: object
       properties:
         id:
           type: string
+          description: >
+            THE session identifier (#1756): the platform-minted 3-word
+            adjective-noun-verb phrase (e.g. amber-falcon-glides),
+            per-workspace unique. A row not yet backfilled degrades to
+            the harness id for one convergence cycle. The harness full
+            id is no longer emitted on this surface.
         title:
           type: string
         lastMessageAt:
@@ -9889,13 +9896,7 @@ components:
             stays viewable; unarchiving restores chat instantly).
             ABSENT means not archived — the field is omitempty on the
             wire for backward compatibility.
-        shortId:
-          type: string
-          description: >
-            The platform-minted short address (design 0066): prefix +
-            8 chars, per-workspace unique, case-insensitive at
-            resolution. ABSENT for rows the rollout backfill has not
-            yet reached — every existing consumer keys on id.
+
     SessionAlert:
       type: object
       required: [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]

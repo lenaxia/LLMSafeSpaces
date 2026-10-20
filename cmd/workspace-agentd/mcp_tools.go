@@ -69,6 +69,7 @@ func mcpRenameSession(ctx context.Context, password, sessionID, title string) (s
 	}
 	// Design 0066: the ref resolves first (short id / alias accepted;
 	// legacy ids pass through byte-identical).
+	origRef := sessionID
 	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
 	if rerr != nil {
 		return "", rerr
@@ -92,9 +93,10 @@ func mcpRenameSession(ctx context.Context, password, sessionID, title string) (s
 		return "", fmt.Errorf("failed to rename session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{
-		"status":     "renamed",
-		"session_id": sessionID,
-		"title":      title,
+		"status":      "renamed",
+		"session_id":  emitID(sessionID),
+		"title":       title,
+		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
 	})
 	return string(out), nil
 }
@@ -584,13 +586,19 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		}
 	}()
 
+	// #1756 §1: the tool's identifier output IS the phrase; the
+	// harness id never emits (degraded window: the seam timed out, the
+	// phrase arrives via the replica's next pull — emit the harness id
+	// with the deprecation clause).
 	result := map[string]string{
 		"status":        "created",
 		"session_id":    sessionID,
 		"prompt_status": "delivering_in_background",
 	}
 	if shortID != "" {
-		result["short_id"] = shortID
+		result["session_id"] = shortID
+	} else {
+		result["deprecation"] = "session registered without a phrase (platform unavailable); address it by phrase after the replica converges — re-list with session_list"
 	}
 	out, _ := json.Marshal(result)
 	return string(out), nil
@@ -675,6 +683,7 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 	// Design 0066: resolve the ref (short id / alias) to the canonical
 	// harness id BEFORE the platform call — the platform's index keys
 	// on the canonical id.
+	origRef := sessionID
 	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
 	if rerr != nil {
 		return "", rerr
@@ -701,8 +710,9 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 		status = "unarchived"
 	}
 	out, _ := json.Marshal(map[string]string{
-		"status":     status,
-		"session_id": sessionID,
+		"status":      status,
+		"session_id":  emitID(sessionID),
+		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
 	})
 	return string(out), nil
 }
@@ -720,6 +730,7 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 	}
 	// Design 0066: resolve the ref first; the self-guard and the
 	// platform delete then operate on the canonical harness id.
+	origRef := sessionID
 	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
 	if rerr != nil {
 		return "", rerr
@@ -766,8 +777,9 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 		return "", fmt.Errorf("failed to delete session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{
-		"status":     "deleted",
-		"session_id": sessionID,
+		"status":      "deleted",
+		"session_id":  emitID(sessionID),
+		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
 	})
 	return string(out), nil
 }
@@ -1431,6 +1443,7 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 	}
 	// Design 0066: resolve the ref first (abort is destructive — an
 	// ambiguous alias REFUSES here, never guesses).
+	origRef := sessionID
 	resolved, rerr := resolveSessionRef(ctx, password, sessionID)
 	if rerr != nil {
 		return "", rerr
@@ -1447,8 +1460,9 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 		return "", fmt.Errorf("failed to abort session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{
-		"status":     "aborted",
-		"session_id": sessionID,
+		"status":      "aborted",
+		"session_id":  emitID(sessionID),
+		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
 	})
 	return string(out), nil
 }

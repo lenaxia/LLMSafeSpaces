@@ -295,19 +295,19 @@ func PlanReconciliation(indexRows []types.SessionListItem, harnessList func() (m
 		return nil, nil, nextMiss
 	}
 	for _, row := range indexRows {
-		if present[row.ID] {
+		if present[row.InternalID] {
 			continue
 		}
-		n := prevMiss[row.ID] + 1
+		n := prevMiss[row.InternalID] + 1
 		if n < threshold {
-			nextMiss[row.ID] = n
+			nextMiss[row.InternalID] = n
 			continue
 		}
 		if reap(row) {
-			remove = append(remove, row.ID)
+			remove = append(remove, row.InternalID)
 			continue
 		}
-		keptForOperator = append(keptForOperator, row.ID)
+		keptForOperator = append(keptForOperator, row.InternalID)
 	}
 	return remove, keptForOperator, nextMiss
 }

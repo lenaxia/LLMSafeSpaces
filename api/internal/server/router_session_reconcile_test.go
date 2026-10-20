@@ -82,7 +82,7 @@ func newRecordingIndex() *recordingIndex {
 func (r *recordingIndex) seed(workspaceID, sessionID string, count int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.rows[workspaceID] = append(r.rows[workspaceID], types.SessionListItem{ID: sessionID, Title: sessionID, MessageCount: count})
+	r.rows[workspaceID] = append(r.rows[workspaceID], types.SessionListItem{ID: sessionID, InternalID: sessionID, Title: sessionID, MessageCount: count})
 }
 
 func (r *recordingIndex) RecordMessage(_, _, _ string, _ time.Time) {}

@@ -55,9 +55,15 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 				"error": "session resolution temporarily unavailable — retry",
 			})
 		case res.MatchedBy != sessionindex.MatchPassthrough || res.CanonicalID != "":
-			// Accepted (short/alias) or id-form passthrough: rewrite
-			// the route param to the canonical harness id. For legacy
-			// ids the rewrite is a byte-identical no-op.
+			// Accepted (phrase/alias) or deprecated-id passthrough:
+			// rewrite the route param to the canonical harness id
+			// (internal key), and attach the #1756 one-release input
+			// deprecation notice on the RESPONSE when the caller
+			// addressed by a deprecated form (full id or #1745 hash).
+			if res.DeprecatedInput {
+				c.Header("Deprecation", "true")
+				c.Header("Sunset", "session full-id and hash-short-id input is deprecated; address sessions by the 3-word phrase (see GET /sessions)")
+			}
 			setParam(c, "sessionId", res.CanonicalID)
 			c.Next()
 		case res.AmbiguousAlias:

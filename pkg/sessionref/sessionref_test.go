@@ -63,12 +63,12 @@ func TestRank_LegacyIDEdits_SuggestsLiveID(t *testing.T) {
 
 func TestRank_ShortIDEdits(t *testing.T) {
 	cands := []Candidate{
-		{SessionID: "ses_a", ShortID: "oc-ab12cd34", LastActive: ago(time.Hour)},
-		{SessionID: "ses_b", ShortID: "oc-ef56gh78", LastActive: ago(time.Minute)},
+		{SessionID: "ses_a", ShortID: "amber-falcon-glides", LastActive: ago(time.Hour)},
+		{SessionID: "ses_b", ShortID: "linen-orchard-chirps", LastActive: ago(time.Minute)},
 	}
-	got := Rank("OC-AB12CD35", cands) // case-insensitive, 1 substitution
+	got := Rank("Amber-Falcon-Glided", cands) // case-insensitive, 1 substitution
 	if len(got) != 1 || got[0].SessionID != "ses_a" {
-		t.Fatalf("Rank(OC-AB12CD35) = %+v; want single ses_a", got)
+		t.Fatalf("Rank(Amber-Falcon-Glided) = %+v; want single ses_a", got)
 	}
 }
 
@@ -119,15 +119,19 @@ func TestRank_AliasCollisionSuggestsAllTies(t *testing.T) {
 }
 
 func TestRank_TopThreeCap(t *testing.T) {
+	bases := []string{
+		"amber-falcon-glided", "amber-falcon-glider", "amber-falcon-gliders",
+		"amber-falcon-gliding", "amber-falcon-glide",
+	}
 	var cands []Candidate
 	for i := 0; i < 5; i++ {
 		cands = append(cands, Candidate{
 			SessionID:  fmt.Sprintf("ses_%d", i),
-			ShortID:    fmt.Sprintf("oc-ab12cd3%d", i),
+			ShortID:    bases[i],
 			LastActive: ago(time.Duration(i) * time.Hour),
 		})
 	}
-	got := Rank("oc-ab12cd35", cands) // distance 1 to all five
+	got := Rank("amber-falcon-glides", cands) // distance 1 to all five
 	if len(got) != MaxSuggestions {
 		t.Fatalf("Rank returned %d; want cap %d", len(got), MaxSuggestions)
 	}

@@ -17,13 +17,13 @@ func TestListSessionIndex_IncludesLastSeenAtAndHasUnread(t *testing.T) {
 
 	now := time.Now()
 	rows := sqlmock.NewRows([]string{
-		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id",
-	}).AddRow("ses-1", "Chat", nil, now, 5, now.Add(-time.Hour), true, nil, false, nil).
-		AddRow("ses-2", "Caught up", nil, now, 3, now, false, int64(5000), false, nil).
-		AddRow("ses-3", "Never visited", nil, now, 1, nil, false, nil, false, nil)
+		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
+	}).AddRow("ses-1", "Chat", nil, now, 5, now.Add(-time.Hour), true, nil, false, nil, nil).
+		AddRow("ses-2", "Caught up", nil, now, 3, now, false, int64(5000), false, nil, nil).
+		AddRow("ses-3", "Never visited", nil, now, 1, nil, false, nil, false, nil, nil)
 
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT session_id, title, parent_session_id, last_message_at, message_count, last_seen_at`,
+		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count, si.last_seen_at`,
 	)).WithArgs("ws-1").WillReturnRows(rows)
 
 	items, err := svc.ListSessionIndex(context.Background(), "ws-1")
@@ -49,10 +49,10 @@ func TestListSessionIndex_HasUnreadTrueWhenNewerMessage(t *testing.T) {
 	lastMsg := time.Now()
 	lastSeen := lastMsg.Add(-2 * time.Hour)
 	rows := sqlmock.NewRows([]string{
-		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id",
-	}).AddRow("ses-1", "Unread", nil, lastMsg, 10, lastSeen, true, nil, false, nil)
+		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
+	}).AddRow("ses-1", "Unread", nil, lastMsg, 10, lastSeen, true, nil, false, nil, nil)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title, si.parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
 
 	items, err := svc.ListSessionIndex(context.Background(), "ws-1")
 	require.NoError(t, err)
@@ -66,10 +66,10 @@ func TestListSessionIndex_HasUnreadFalseWhenCaughtUp(t *testing.T) {
 
 	ts := time.Now()
 	rows := sqlmock.NewRows([]string{
-		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id",
-	}).AddRow("ses-1", "Caught up", nil, ts, 5, ts, false, nil, false, nil)
+		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
+	}).AddRow("ses-1", "Caught up", nil, ts, 5, ts, false, nil, false, nil, nil)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title, si.parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
 
 	items, err := svc.ListSessionIndex(context.Background(), "ws-1")
 	require.NoError(t, err)
@@ -82,10 +82,10 @@ func TestListSessionIndex_HasUnreadFalseWhenNullSeenAt(t *testing.T) {
 	defer cleanup()
 
 	rows := sqlmock.NewRows([]string{
-		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id",
-	}).AddRow("ses-1", "New session", nil, time.Now(), 1, nil, false, nil, false, nil)
+		"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
+	}).AddRow("ses-1", "New session", nil, time.Now(), 1, nil, false, nil, false, nil, nil)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title, si.parent_session_id`)).WithArgs("ws-1").WillReturnRows(rows)
 
 	items, err := svc.ListSessionIndex(context.Background(), "ws-1")
 	require.NoError(t, err)
