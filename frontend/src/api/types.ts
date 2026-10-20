@@ -161,6 +161,7 @@ export interface WorkspaceStatus {
   endpoint?: string;
   credentialState?: CredentialState;
   agentHealth?: AgentHealth;
+  supervisor?: SupervisorStatus;
   sessions?: AgentSessionInfo[];
   imageTag?: string;
   diskUsedBytes?: number;
@@ -193,6 +194,39 @@ export interface AgentHealth {
   lastCheckedAt?: string;
   /** Boot-time degradation notices (e.g. default model unavailable). Present with status "Healthy". */
   warnings?: string[];
+}
+
+/**
+ * Supervisor health-watchdog observations about agent restarts (#1760).
+ * agentRestarts is a lifetime count since the pod's supervisor boot —
+ * never a resetting crash-loop counter.
+ */
+export interface SupervisorStatus {
+  /** Total recorded agent restarts since the pod's supervisor boot. */
+  agentRestarts: number;
+  /** Attribution of the most recent recorded restart; absent when none was recorded this boot. */
+  lastAgentRestart?: AgentRestartEvent;
+  /** Total would-fire watchdog restarts suppressed by corroborating evidence (the agent was alive). */
+  suppressedRestarts: number;
+  /** Verdict of the most recent suppression (hung | starved | flat | respawn | unknown); empty when none. */
+  lastSuppressedVerdict?: string;
+}
+
+/** One recorded agent restart by the supervisor health watchdog. */
+export interface AgentRestartEvent {
+  /** health_watchdog | health_watchdog_unknown_episode | crash | oom */
+  reason: string;
+  /** hung | starved | flat | respawn | unknown; empty when uncorroborated */
+  verdict?: string;
+  lastError?: string;
+  at: string;
+}
+
+/** agent_restarted platform event (#1760) — payload rides data, agent_died convention. */
+export interface AgentRestartedEvent {
+  type: "agent_restarted";
+  workspace_id?: string;
+  data: { reason: string; verdict?: string; agentRestarts?: string; at?: string };
 }
 
 export interface MessagePart {
@@ -433,4 +467,5 @@ export type WorkspaceStreamEvent =
   | AgentPermissionResolvedEvent
   | QueueUpdateEvent
   | AgentDiedEvent
+  | AgentRestartedEvent
   | WorkspaceAlertEvent;

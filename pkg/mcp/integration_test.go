@@ -77,12 +77,12 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	require.NoError(t, err)
 
 	// 1. List tools - verify all are registered (12 + 1 run_resolve + 11 Epic 64
-	// + 1 workspace_file_upload + 18 board_* (#1700) + 5 #1747 board_*
-	// (project pause/resume, task pause/resume, delete, import_plan —
-	// board_cancel replaced by board_delete) = 48).
+	// + 1 workspace_file_upload + 18 board_* (#1700) + 1 workspace_status
+	// (#1760) + 5 #1747 board_* (project pause/resume, task pause/resume,
+	// delete, import_plan — board_cancel replaced by board_delete) = 49).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 48)
+	assert.Len(t, toolsResp.Tools, 49)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
@@ -102,6 +102,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	assert.True(t, toolNames["workspace_activate"])
 	assert.True(t, toolNames["workspace_stop"])
 	assert.True(t, toolNames["workspace_refresh_compute"])
+	assert.True(t, toolNames["workspace_status"])
 	assert.True(t, toolNames["session_create"])
 	assert.True(t, toolNames["session_message"])
 	assert.True(t, toolNames["session_history"])

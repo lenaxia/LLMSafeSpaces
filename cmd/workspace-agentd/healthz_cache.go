@@ -356,7 +356,12 @@ func (wd *healthWatchdog) reset() {
 // suppresses without consuming the latch or rate-limit budget (#892 /
 // design 0050 D1). nil disables corroboration (tests, partial wiring) and
 // the watchdog keeps its pre-corroboration semantics exactly.
-func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *healthzCache, logger *zap.Logger, gr *gateRecorder, restarter healthWatchdogRestarter, busyChecker sessionBusyChecker, vitals vitalsGatherer) {
+//
+// restarts, if non-nil, is the #1760 recording seam: fires, the
+// unknown-episode escalation, and suppressions land in the
+// agentRestartLog behind healthz/statusz. Recording is observational
+// only — it never influences a decision. nil disables recording (tests).
+func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *healthzCache, logger *zap.Logger, gr *gateRecorder, restarter healthWatchdogRestarter, busyChecker sessionBusyChecker, vitals vitalsGatherer, restarts *agentRestartLog) {
 	wd := newHealthWatchdog()
 	watchdogLogger := logger.With(zap.String("component", "health_watchdog"))
 
@@ -509,6 +514,9 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 							wd.suppressLogged = true
 						}
 						pkgOpsMetrics.RecordWatchdogSuppression(workspaceIDFromEnv(), v.suppressionReason())
+						if restarts != nil {
+							restarts.recordSuppression(v.suppressionReason())
+						}
 
 						// #1632 fix #2 — the bound. A continuous UNKNOWN
 						// episode this old, on a past-boot process with
@@ -541,6 +549,9 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 								}
 								logRestartReasonAtWrite(RestartReasonHealthWatchdogUnknownEpisode, nil, watchdogLogger.Core())
 								pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonHealthWatchdogUnknownEpisode)
+								if restarts != nil {
+									restarts.record(RestartReasonHealthWatchdogUnknownEpisode, verdictUnknown.label(), snap.LastError, now)
+								}
 								if restarter != nil {
 									go restarter.restart()
 								}
@@ -572,6 +583,18 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					}
 					logRestartReasonAtWrite(RestartReasonHealthWatchdog, nil, watchdogLogger.Core())
 					pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonHealthWatchdog)
+					if restarts != nil {
+						// Corroborated fires carry verdictHung (the only
+						// verdict that reaches this line with vitals
+						// wired); an uncorroborated fire (vitals nil,
+						// pre-#892 semantics) records an empty verdict —
+						// no evidence claimed.
+						verdictLabel := ""
+						if vitals != nil {
+							verdictLabel = verdictHung.label()
+						}
+						restarts.record(RestartReasonHealthWatchdog, verdictLabel, snap.LastError, time.Now())
+					}
 					if restarter != nil {
 						go restarter.restart()
 					}

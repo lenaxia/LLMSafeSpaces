@@ -128,7 +128,7 @@ func TestStatuszHandler_BusyTruthThroughTheRealHandler(t *testing.T) {
 	}
 
 	handler := buildStatuszHandler(client, &providerCache{}, tracker, busyTruth, newMemoryPressureMonitor(),
-		time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+		time.Now(), "", defaultSysMetrics(), nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/statusz", nil))
@@ -206,7 +206,7 @@ func TestStatuszHandler_LastProgressSecondsThroughTheRealHandler(t *testing.T) {
 	}
 
 	handler := buildStatuszHandler(client, &providerCache{}, tracker, busyTruth, newMemoryPressureMonitor(),
-		time.Now(), "", defaultSysMetrics(), nil, nil, nil)
+		time.Now(), "", defaultSysMetrics(), nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/statusz", nil))

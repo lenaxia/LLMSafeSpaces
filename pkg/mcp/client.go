@@ -57,6 +57,10 @@ type APIClient interface {
 	ActivateWorkspace(ctx context.Context, workspaceID string) (*ActivateResp, error)
 	SuspendWorkspace(ctx context.Context, workspaceID string) error
 	RefreshWorkspace(ctx context.Context, workspaceID string) (*RefreshWorkspaceResp, error)
+	// GetWorkspaceStatus (#1760) fetches the workspace status DTO from
+	// the same REST layer the API serves (GET /workspaces/:id/status) —
+	// phase, conditions, agent health, and the supervisor restart slice.
+	GetWorkspaceStatus(ctx context.Context, workspaceID string) (json.RawMessage, error)
 	CreateSession(ctx context.Context, workspaceID string) (*SessionResp, error)
 	GetHistory(ctx context.Context, workspaceID, sessionID string) ([]Message, error)
 	SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error)
@@ -383,6 +387,16 @@ func (c *HTTPClient) SuspendWorkspace(ctx context.Context, workspaceID string) e
 		return err
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/workspaces/"+workspaceID+"/suspend", nil, nil)
+}
+
+// GetWorkspaceStatus fetches the workspace status DTO (#1760) — the
+// same REST service layer the API's own handlers serve. Raw JSON so
+// the tool forwards new fields without a client round-trip re-pin.
+func (c *HTTPClient) GetWorkspaceStatus(ctx context.Context, workspaceID string) (json.RawMessage, error) {
+	if err := validateID(workspaceID, "workspace_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/workspaces/"+workspaceID+"/status", nil)
 }
 
 func (c *HTTPClient) RefreshWorkspace(ctx context.Context, workspaceID string) (*RefreshWorkspaceResp, error) {
