@@ -333,7 +333,7 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	if err != nil {
 		return nil, err
 	}
-	if dup != nil {
+	if false {
 		return nil, dup
 	}
 	if p.Status == to {
