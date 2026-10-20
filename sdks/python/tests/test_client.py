@@ -1159,7 +1159,7 @@ def test_board_project_round_trip():
 def test_board_epic_lifecycle():
     respx.post(f"{BASE}/me/projects/prj-aaaa1111/epics").respond(
         status_code=201,
-        json={"id": "e1", "short_id": "epc-bbbb2222", "status": "draft", "priority": "P2"},
+        json={"id": "e1", "short_id": "epc-bbbb2222", "status": "draft"},
     )
     respx.post(f"{BASE}/me/epics/epc-bbbb2222/activate").respond(
         json={"id": "e1", "status": "active", "progress_derived": True, "progress_done": 1, "progress_total": 2}
@@ -1194,7 +1194,6 @@ def test_board_task_or4_anchor_and_actions():
     )
     respx.delete(f"{BASE}/me/tasks/tsk-cccc3333").respond(
         json={"item_kind": "task", "id": "t1", "short_id": "tsk-cccc3333"}
-    )
     )
     respx.get(f"{BASE}/me/projects/prj-aaaa1111/tasks?stage=backlog").respond(
         json={"tasks": [{"id": "t1", "stage": "backlog"}]}
