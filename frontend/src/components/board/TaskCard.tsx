@@ -4,23 +4,10 @@
 import { useState } from "react";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
-import type { BadgeVariant } from "../ui/Badge";
 import { Link2, Play, AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { BoardTask } from "../../api/board";
 import { STAGE_LABELS, PENDING_ORIGIN_LABELS, prAnchorOf, type BoardStage } from "../../lib/boardRules";
-
-/** Priority chip color scale — P0 hottest. */
-    case "P0":
-      return "destructive";
-    case "P1":
-      return "warning";
-    case "P3":
-      return "muted";
-    default:
-      return "default";
-  }
-}
 
 /**
  * The attempts-cap preview threshold — the R6 platform knob's DOCUMENTED

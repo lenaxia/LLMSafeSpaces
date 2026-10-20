@@ -4873,6 +4873,44 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+    delete:
+      tags: [board]
+      summary: Delete a task (#1747 — cancel is eliminated)
+      description: |
+        Destructive: an idle row goes straight; an in-flight row is
+        cleanly aborted first. The audit event embeds the task's full
+        final-state snapshot. Dependent edges cascade away — orphaned
+        dependents are listed in the response and each carries an
+        unblocked_by_delete audit event (visible, never a refusal). NO
+        auto-reconnect: `reconnect=true` lets orphans inherit the
+        deleted node's direct upstream edges (deduplicated,
+        cycle-guarded) — default off.
+      operationId: deleteBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+        - name: reconnect
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Orphans inherit the deleted node's direct upstream edges (default off)
+      responses:
+        "200":
+          description: Delete result (orphan listing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardDeleteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/move-stage:
     post:
       tags: [board]
@@ -4951,44 +4989,6 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
-    delete:
-      tags: [board]
-      summary: Delete a task (#1747 — cancel is eliminated)
-      description: |
-        Destructive: an idle row goes straight; an in-flight row is
-        cleanly aborted first. The audit event embeds the task's full
-        final-state snapshot. Dependent edges cascade away — orphaned
-        dependents are listed in the response and each carries an
-        unblocked_by_delete audit event (visible, never a refusal). NO
-        auto-reconnect: `reconnect=true` lets orphans inherit the
-        deleted node's direct upstream edges (deduplicated,
-        cycle-guarded) — default off.
-      operationId: deleteBoardTask
-      parameters:
-        - $ref: "#/components/parameters/BoardTaskId"
-        - name: reconnect
-          in: query
-          required: false
-          schema:
-            type: boolean
-          description: Orphans inherit the deleted node's direct upstream edges (default off)
-      responses:
-        "200":
-          description: Delete result (orphan listing)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BoardDeleteResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/BoardNotFound"
-        "409":
-          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/pause:
     post:
       tags: [board]
@@ -5043,6 +5043,7 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+
   /me/tasks/{id}/dependencies:
     post:
       tags: [board]

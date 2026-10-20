@@ -260,9 +260,7 @@ func (s *BoardSuite) TestKill_RC3DependencyConsistency() {
 	out, err := s.svc.DeleteTask(context.Background(), s.owner(), c.ID, "", false, "")
 	s.Require().NoError(err)
 	s.Len(out.OrphanedDependents, 2, "both dependents are listed (affected-party visibility)")
-	for _, dep := range out.OrphanedDependents {
-		s.Equal(1, s.countEvents("unblocked_by_delete:"+dep))
-	}
+	s.Equal(2, s.countEvents("unblocked_by_delete"), "one audit event per orphan (uniform action; ids ride the payload)")
 	s.False(s.rawTask(d1.ID).IsBlocked, "the edge vanished → ready, full stop")
 	s.False(s.rawTask(d2.ID).IsBlocked)
 	s.Equal(board.StageBacklog, s.rawTask(d1.ID).Stage, "dependents unblock in place — never staged pending")
@@ -273,13 +271,15 @@ func (s *BoardSuite) TestKill_RC3DependencyConsistency() {
 	s.Equal(0, res.DepRepairs, "RC3 finds nothing to repair after the in-tx rederive")
 
 	// Done-row stability: a DONE dependent of a not-done task never gets
-	// is_blocked writes (RC3's stage predicate).
+	// is_blocked writes (RC3's stage predicate). The done stage is set
+	// directly (the machine has no path from blocked-backlog to done —
+	// TaskStart refuses blocked rows, correctly); the pin is RC3's
+	// predicate, not the machine's.
 	x := s.seedTask(e, "x", nil, true)
 	doneDep := s.seedTask(e, "done-dep", nil, false)
 	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), doneDep.ID, "", x.ID, ""))
-	s.doneDirect(doneDep)
 	_, err = s.pool.Exec(context.Background(),
-		`UPDATE tasks SET is_blocked=false WHERE id=$1`, doneDep.ID)
+		`UPDATE tasks SET stage='done', is_blocked=false WHERE id=$1`, doneDep.ID)
 	s.Require().NoError(err)
 	res = s.sweep()
 	s.Equal(0, res.DepRepairs, "RC3 never writes is_blocked on done rows (zero-write guarantee)")
