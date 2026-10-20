@@ -81,8 +81,11 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		resource, want, why string
 	}{
 		{"/tmp/build-dir/x", "allow", "pre-allow /tmp"},
-		{"/home/sandbox/.cache/mise/x", "allow", "pre-allow .cache"},
-		{"/home/sandbox/.config/opencode/x", "allow", "pre-allow .config"},
+		{"/tmp", "allow", "BARE /tmp: the PVC mount root itself is default-allow (#1759 — without the bare key only children match)"},
+		{"/home/sandbox/.cache/mise/x", "allow", "#1759 root allow covers .cache (the pre-#1759 subpath pre-allow is superseded)"},
+		{"/home/sandbox/.config/opencode/x", "allow", "#1759 root allow covers .config"},
+		{"/workspace", "allow", "#1759: the workspace PVC mount root default-allow (bare key)"},
+		{"/workspace/src/main.go", "allow", "#1759: the workspace PVC root read-write by default"},
 		{"/sys/fs/cgroup/memory.current", "allow", "cgroup carve-out beats the /sys deny (alphabetical: '*' < 'f')"},
 		{"/sys/fs/cgroup", "allow", "BARE cgroup dir: the wildcardless allow key (r4 finding 2 — without it the /sys deny matches the bare path)"},
 		{"/sys", "ask", "BARE /sys matches no rule (^/sys/.*$ needs the slash) — ambient; children stay denied"},
@@ -93,8 +96,8 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/home/sandbox/.git-credentials", "deny", "credential name"},
 		{"/home/sandbox/.secrets", "deny", "credential name"},
 		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name under the .local pre-allow (sorts after)"},
-		{"/home/sandbox/projects/foo", "ask", "the home carve restores ambient ask"},
-		{"/home/sandbox", "ask", "BARE home dir: the wildcardless ask key (without it the /home/* deny matches the bare path — pinned r0)"},
+		{"/home/sandbox/projects/foo", "allow", "#1759: the home PVC root is default-allow — was the pre-#1759 ambient-ask carve"},
+		{"/home/sandbox", "allow", "BARE home dir default-allow (#1759; the wildcardless key still shields the bare path from the /home/* deny — pinned r0)"},
 		{"/home", "ask", "BARE /home parent matches NO rule (^/home/.*$ needs the slash) — ambient; children under other users still deny"},
 		{"/home/otheruser/x", "deny", "/home parent deny"},
 		{"/etc/passwd", "deny", "deny /etc"},
@@ -118,6 +121,40 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 	}
 }
 
+// TestPermissionTier_PVCRootsDefaultAllow pins the #1759 owner ruling
+// directly on the tier map: all three PVC mount points (workspace, tmp,
+// home — subPaths of the one workspace PVC per the mounts audit) are
+// READ-WRITE by default. The credential and system denies under these
+// roots keep winning by sort order (the matrix above is the
+// denies-still-bite pin with the allows present).
+func TestPermissionTier_PVCRootsDefaultAllow(t *testing.T) {
+	for _, key := range []string{
+		"/workspace",
+		"/workspace/*",
+		"/tmp",
+		"/tmp/*",
+		"/home/sandbox",
+		"/home/sandbox/*",
+	} {
+		v, ok := platformPermissionTiers[key]
+		assert.True(t, ok, "#1759: tier key %q must exist (PVC mount point default-allow)", key)
+		assert.Equal(t, "allow", v, "%q must be allow, got %q", key, v)
+	}
+	// The deny set under the roots — every one must survive #1759.
+	for _, key := range []string{
+		"/home/sandbox/.ssh", "/home/sandbox/.ssh/*",
+		"/home/sandbox/.secrets", "/home/sandbox/.secrets/*",
+		"/home/sandbox/.git-credentials", "/home/sandbox/.git-credentials/*",
+		"/home/sandbox/.local/opencode/auth.json",
+		"/sandbox-runtime/rt/auth.json",
+		"/sandbox-runtime/rt/secrets", "/sandbox-runtime/rt/secrets/*",
+		"/proc/*", "/sys/*", "/run/*", "/etc/*", "/dev/*", "/root/*", "/var/*",
+		"/home/*",
+	} {
+		assert.Equal(t, "deny", platformPermissionTiers[key], "#1759 must not weaken the deny for %q", key)
+	}
+}
+
 // TestPermissionTier_AlphabeticalCarveOrdering pins the mechanism itself:
 // every carve-out key must sort AFTER the deny key it carves — the
 // findLast matcher makes this ordering the entire enforcement story.
@@ -127,9 +164,8 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/home/sandbox", "/home/*"},
 		{"/sys/fs/cgroup/*", "/sys/*"},
 		{"/sys/fs/cgroup", "/sys/*"},
-		{"/home/sandbox/.cache/*", "/home/sandbox/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
-		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/.local/*"},
+		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/*"},
 	}
 	for _, c := range carves {
 		require.Contains(t, platformPermissionTiers, c.carve)
