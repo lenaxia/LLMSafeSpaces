@@ -922,7 +922,6 @@ class BoardAPI {
     return this.client.request<BoardEpic>("PATCH", `/me/epics/${id}`, req);
   }
 
-  activateEpic(id: string, req: { acknowledgeInactiveDeps?: boolean } = {}) {
   activateEpic(id: string, req: BoardRequestIdOnly = {}) {
     return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, req);
   }
