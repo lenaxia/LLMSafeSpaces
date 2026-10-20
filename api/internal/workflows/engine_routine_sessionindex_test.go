@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
@@ -46,10 +47,11 @@ type sessionIndexMessageCall struct {
 // recordingSessionIndex captures the session_index writes the routine
 // path emits. upsertErr, when set, is returned by UpsertTitle.
 type recordingSessionIndex struct {
-	mu        sync.Mutex
-	titles    []sessionIndexTitleCall
-	messages  []sessionIndexMessageCall
-	upsertErr error
+	mu         sync.Mutex
+	titles     []sessionIndexTitleCall
+	messages   []sessionIndexMessageCall
+	upsertErr  error
+	registered []string
 }
 
 func (r *recordingSessionIndex) UpsertTitle(_ context.Context, workspaceID, sessionID, title string) error {
@@ -224,6 +226,8 @@ func TestExecuteRoutine_SessionIndexIntegration(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	db.On("UpsertSessionTitle", mock.Anything, "ws-1", "ses_int1", "Weather Bot").Return(nil)
 	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_int1", mock.AnythingOfType("time.Time")).Return(nil)
+	// Design 0066: the registration seam fires before the title upsert.
+	db.On("EnsureSessionRegistered", mock.Anything, "ws-1", "ses_int1", "opencode").Return("oc-00000001", nil).Maybe()
 	index := sessionindex.New(db, nil)
 	require.NoError(t, index.Start())
 
@@ -243,4 +247,27 @@ func TestExecuteRoutine_SessionIndexIntegration(t *testing.T) {
 	require.Equal(t, "delivered", store.statuses["fire-int1"])
 	db.AssertCalled(t, "UpsertSessionTitle", mock.Anything, "ws-1", "ses_int1", "Weather Bot")
 	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_int1", mock.AnythingOfType("time.Time"))
+}
+
+// Register: design 0066 registration seam — records the call (the §6
+// wiring pin asserts on it).
+func (r *recordingSessionIndex) Register(_ context.Context, _, sessionID, _ string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registered = append(r.registered, sessionID)
+	return ""
+}
+
+// TestIndexPreservedSession_RegistersThroughSeamFirst is design 0066
+// §6's wiring pin for the routine-fire row-creating path (review r1
+// finding 1): every preserved fire-session mints its short id before
+// the title upsert lands.
+func TestIndexPreservedSession_RegistersThroughSeamFirst(t *testing.T) {
+	index := &recordingSessionIndex{}
+	s := &Scheduler{SessionIndex: index}
+	s.indexPreservedSession(context.Background(), noopLogger{}, "ws-1", "ses_fire_1", "Routine title")
+
+	require.NotEmpty(t, index.registered, "the routine-fire index path must route through the registration seam")
+	assert.Equal(t, "ses_fire_1", index.registered[0])
+	assert.NotEmpty(t, index.titles, "the title upsert itself still ran")
 }

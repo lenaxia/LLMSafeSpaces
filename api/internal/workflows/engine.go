@@ -597,6 +597,10 @@ type Scheduler struct {
 type SessionIndexWriter interface {
 	UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error
 	RecordMessage(workspaceID, sessionID, title string, at time.Time)
+	// Register is design 0066's registration seam: every path that
+	// creates a session_index row mints the short id first (idempotent,
+	// LRU-guarded; "" when degraded).
+	Register(ctx context.Context, workspaceID, sessionID, harnessType string) string
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -1044,6 +1048,9 @@ func (s *Scheduler) indexPreservedSession(ctx context.Context, logger Logger, wo
 	if s.SessionIndex == nil {
 		return
 	}
+	// Design 0066 §4.2: every row-creating path routes through the
+	// registration seam first (review r1 finding 1).
+	s.SessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	if err := s.SessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
 		logger.Error(err, "routine: failed to index session title", "sessionId", sessionID, "workspaceID", workspaceID)
 	}

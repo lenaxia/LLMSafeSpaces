@@ -1,0 +1,429 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// withShortIDStore swaps the process-wide replica for a fresh
+// temp-file-backed one.
+func withShortIDStore(t *testing.T) *sessionShortIDStore {
+	t.Helper()
+	old := sessionShortIDsAtomic.Load().(*sessionShortIDStore)
+	s := newSessionShortIDStore(t.TempDir() + "/session-shortids.json")
+	sessionShortIDsAtomic.Store(s)
+	t.Cleanup(func() { sessionShortIDsAtomic.Store(old) })
+	return s
+}
+
+func TestShortIDStore_RoundTripPersists(t *testing.T) {
+	path := t.TempDir() + "/session-shortids.json"
+	s := newSessionShortIDStore(path)
+	s.put("oc-ab12cd34", "ses_live")
+
+	// Reload from disk: the mapping survives (atomic-rename write).
+	s2 := newSessionShortIDStore(path)
+	if id, ok := s2.resolveShortID("OC-AB12CD34"); !ok || id != "ses_live" {
+		t.Fatalf("case-insensitive reload broken: %q,%v", id, ok)
+	}
+	if s2.shortIDFor("ses_live") != "oc-ab12cd34" {
+		t.Fatalf("reverse lookup broken: %q", s2.shortIDFor("ses_live"))
+	}
+}
+
+func TestShortIDStore_RejectsNonShortIDForms(t *testing.T) {
+	s := withShortIDStore(t)
+	s.put("not-a-short-id", "ses_x") // no registry prefix
+	s.put("oc-", "ses_y")            // empty body
+	s.put("ses_ed9183a46ffeRiNw2PddpL5dAA", "ses_z")
+	if s.size() != 0 {
+		t.Fatalf("invalid forms must not enter the replica: size %d", s.size())
+	}
+}
+
+func TestShortIDStore_UnparseableLoadsEmpty(t *testing.T) {
+	path := t.TempDir() + "/session-shortids.json"
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newSessionShortIDStore(path)
+	if s.size() != 0 {
+		t.Fatalf("unparseable file must load empty, got %d", s.size())
+	}
+}
+
+func TestShortIDStore_PutAllReplaces(t *testing.T) {
+	s := withShortIDStore(t)
+	s.put("oc-old1111", "ses_old")
+	s.putAll(map[string]string{"oc-new1111": "ses_new"})
+	if _, ok := s.resolveShortID("oc-old1111"); ok {
+		t.Fatal("putAll must replace, not merge")
+	}
+	if id, ok := s.resolveShortID("oc-new1111"); !ok || id != "ses_new" {
+		t.Fatal("putAll entry missing")
+	}
+}
+
+// --- resolution ------------------------------------------------------------
+
+// fakeRefAgent serves a minimal GET /session inventory with slugs.
+func fakeRefAgent(t *testing.T, sessions ...map[string]any) {
+	t.Helper()
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/session" {
+			_ = json.NewEncoder(w).Encode(sessions)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+func TestResolveSessionRef_LegacyPassthroughZeroExtraRoundTrips(t *testing.T) {
+	withShortIDStore(t)
+	// No seam call may happen: a legacy id must resolve byte-identical
+	// with ZERO added round trips.
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("legacy-id resolution must not touch the seam: %s", r.URL.Path)
+	}))
+	got, err := resolveSessionRef(context.Background(), "pw", "ses_ed9183a46ffeRiNw2PddpL5dAA")
+	if err != nil || got != "ses_ed9183a46ffeRiNw2PddpL5dAA" {
+		t.Fatalf("legacy passthrough broken: %q,%v", got, err)
+	}
+	// The #1663 truncated id passes through byte-identical too.
+	got, err = resolveSessionRef(context.Background(), "pw", "ses_ed9183a46ffeRiNw2PddpL5dA")
+	if err != nil || got != "ses_ed9183a46ffeRiNw2PddpL5dA" {
+		t.Fatalf("truncated id must pass through unchanged: %q,%v", got, err)
+	}
+}
+
+func TestResolveSessionRef_ShortIDFromReplica(t *testing.T) {
+	s := withShortIDStore(t)
+	s.put("oc-ab12cd34", "ses_live")
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("replica hit must not touch the seam: %s", r.URL.Path)
+	}))
+	got, err := resolveSessionRef(context.Background(), "pw", "OC-AB12CD34")
+	if err != nil || got != "ses_live" {
+		t.Fatalf("short-id resolution broken: %q,%v", got, err)
+	}
+}
+
+func TestResolveSessionRef_ShortIDMissOnMissPull(t *testing.T) {
+	withShortIDStore(t)
+	// Fake platform registry answering the on-miss pull.
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-registry" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sessions": []map[string]string{{"sessionID": "ses_pulled", "shortID": "oc-pull123"}},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	setupPodSessionEnv(t, platform)
+
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("id-shaped miss must not touch the seam: %s", r.URL.Path)
+	}))
+	// The platform registry answers the on-miss pull synchronously —
+	// the FIRST resolve already resolves to the canonical id.
+	got, err := resolveSessionRef(context.Background(), "pw", "oc-pull123")
+	if err != nil || got != "ses_pulled" {
+		t.Fatalf("on-miss pull resolution broken: %q,%v", got, err)
+	}
+	// And the replica learned it: the SECOND resolve is replica-only.
+	got, err = resolveSessionRef(context.Background(), "pw", "oc-pull123")
+	if err != nil || got != "ses_pulled" {
+		t.Fatalf("post-pull resolution broken: %q,%v", got, err)
+	}
+}
+
+// newPlatServer stands up a fake platform internal API.
+func newPlatServer(t *testing.T, fn http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(fn)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestResolveSessionRef_AliasTitleAndSlug(t *testing.T) {
+	withShortIDStore(t)
+	fakeRefAgent(t,
+		map[string]any{"id": "ses_a", "title": "Worker: #1691 short ids", "slug": "sunny-wolf", "time": map[string]int64{"updated": 1}},
+		map[string]any{"id": "ses_b", "title": "Board lane", "slug": "quiet-tiger", "time": map[string]int64{"updated": 2}},
+	)
+	for _, ref := range []string{"Worker: #1691 short ids", "sunny-wolf", "Sunny-Wolf"} {
+		got, err := resolveSessionRef(context.Background(), "pw", ref)
+		if err != nil || got != "ses_a" {
+			t.Errorf("alias %q resolved to %q,%v; want ses_a", ref, got, err)
+		}
+	}
+}
+
+func TestResolveSessionRef_AliasCollisionRefuses(t *testing.T) {
+	withShortIDStore(t)
+	// The fleet's live case: two sessions share 'mighty-harbor'.
+	fakeRefAgent(t,
+		map[string]any{"id": "ses_new", "title": "Explore", "slug": "mighty-harbor"},
+		map[string]any{"id": "ses_old", "title": "Architecture Q", "slug": "mighty-harbor"},
+	)
+	_, err := resolveSessionRef(context.Background(), "pw", "mighty-harbor")
+	if err == nil {
+		t.Fatal("ambiguous alias must refuse")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ambiguous") || !strings.Contains(msg, "ses_new") || !strings.Contains(msg, "ses_old") {
+		t.Fatalf("ambiguity must name both candidates: %q", msg)
+	}
+}
+
+func TestResolveSessionRef_AliasMissPassesThroughForSeamVerdict(t *testing.T) {
+	withShortIDStore(t)
+	fakeRefAgent(t,
+		map[string]any{"id": "ses_a", "title": "Swift Heron — follow-up", "slug": "swift-heron"},
+	)
+	// Charset-valid miss (the seam could still be asked): passthrough.
+	got, err := resolveSessionRef(context.Background(), "pw", "swift-heron-follow-ups")
+	if err != nil || got != "swift-heron-follow-ups" {
+		t.Fatalf("charset-valid alias miss must pass through byte-identical: %q,%v", got, err)
+	}
+	// A never-seam-valid ref (spaces) fails HERE with the clause —
+	// the seam's charset guard would only mangle the diagnosis.
+	_, err = resolveSessionRef(context.Background(), "pw", "swift heron follow-ups")
+	if err == nil || !strings.Contains(err.Error(), "did you mean") {
+		t.Fatalf("space-bearing miss must carry the clause: %v", err)
+	}
+}
+
+// The suggestion half of the miss: the TOOL-level 404 clause carries
+// the near title (suggestions, not silence — at the layer that owns
+// the verdict).
+func TestSessionRead_AliasMissSuggestsNotSilence(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	f.newSession("Swift Heron — follow-up")
+
+	_, err := mcpSessionRead(context.Background(), mcpTestPassword, "swift heron follow-ups", 5)
+	if err == nil {
+		t.Fatal("unknown alias must fail at the seam")
+	}
+	if !strings.Contains(err.Error(), "did you mean") || !strings.Contains(err.Error(), "Swift Heron") {
+		t.Fatalf("the miss must name the near session: %q", err.Error())
+	}
+}
+
+func TestResolveSessionRef_ListFailureDegradesToPassthrough(t *testing.T) {
+	withShortIDStore(t)
+	// 5xx from the seam: resolution must degrade, not fail the tool.
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	got, err := resolveSessionRef(context.Background(), "pw", "some-title")
+	if err != nil || got != "some-title" {
+		t.Fatalf("transport failure must degrade to passthrough: %q,%v", got, err)
+	}
+}
+
+// --- create_session registers with the platform ----------------------------
+
+func TestCreateSession_ReturnsShortID(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-register" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"shortID": "oc-creat123"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	setupPodSessionEnv(t, platform)
+
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "do the thing", "t")
+	if err != nil {
+		t.Fatalf("mcpCreateSession: %v", err)
+	}
+	if !strings.Contains(out, `"short_id":"oc-creat123"`) {
+		t.Fatalf("create_session result must carry the registered short id: %s", out)
+	}
+	// The replica learned it — future resolution costs no round trip.
+	if id, ok := currentSessionShortIDs().resolveShortID("oc-creat123"); !ok || id == "" {
+		t.Fatal("replica must learn the created mapping")
+	}
+}
+
+func TestCreateSession_PlatformTimeoutDegradesToHarnessID(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Never answer before the client's 5s register timeout; the
+		// belt-and-suspenders timer keeps the fake reappable even if
+		// the cancel signal is lost in transport teardown.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(6 * time.Second):
+		}
+	})
+	setupPodSessionEnv(t, platform)
+
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "hello", "")
+	if err != nil {
+		t.Fatalf("mcpCreateSession (degraded): %v", err)
+	}
+	if strings.Contains(out, "short_id") {
+		t.Fatalf("degraded result must omit short_id: %s", out)
+	}
+}
+
+// --- session_list joins short ids ------------------------------------------
+
+func TestSessionList_JoinsShortIDs(t *testing.T) {
+	store := withShortIDStore(t)
+	store.put("oc-list1234", "ses_a")
+	fakeRefAgent(t,
+		map[string]any{"id": "ses_a", "title": "Known"},
+		map[string]any{"id": "ses_b", "title": "Unknown"},
+	)
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"shortId":"oc-list1234"`) {
+		t.Fatalf("session_list rows must carry replica-known short ids: %s", out)
+	}
+	if strings.Contains(out, `"shortId":"oc-b`) {
+		t.Fatalf("unknown rows must not gain a shortId")
+	}
+}
+
+func TestSessionList_EmptyReplicaPassesRawBytesThrough(t *testing.T) {
+	withShortIDStore(t)
+	raw := `[{"id":"ses_a","title":"Verbatim"}]`
+	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(raw))
+	}))
+	out, err := mcpSessionList(context.Background(), mcpTestPassword, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != raw {
+		t.Fatalf("empty replica must pass raw bytes through unchanged:\n got %s\nwant %s", out, raw)
+	}
+}
+
+// --- per-tool wiring pins (the orchestrator's acceptance list) --------------
+
+func TestSessionRead_AcceptsAlias(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	f.newSession("Alias Readable")
+
+	if _, err := mcpSessionRead(context.Background(), mcpTestPassword, "alias readable", 5); err != nil {
+		t.Fatalf("session_read must accept a title alias: %v", err)
+	}
+}
+
+func TestSendMessage_AcceptsShortIDAndAlias(t *testing.T) {
+	store := withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	target := f.newSession("Alias Sendable")
+	origin := f.newSession("Origin Session")
+	store.put("oc-send1234", target)
+
+	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "oc-send1234", "ping", "", origin); err != nil {
+		t.Fatalf("send_message must accept a short id: %v", err)
+	}
+	f.awaitMsgDone(t, target, 1)
+	if len(f.sentFor(target)) == 0 {
+		t.Fatal("the short-id-addressed message must deliver to the canonical session")
+	}
+
+	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "alias sendable", "pong", "", "origin session"); err != nil {
+		t.Fatalf("send_message must accept aliases for target and origin: %v", err)
+	}
+	f.awaitMsgDone(t, target, 2)
+}
+
+func TestSessionMetadata_AcceptsSlugAlias(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	id := f.newSession("Board lane")
+	f.mu.Lock()
+	f.slugs[id] = "quiet-tiger"
+	f.mu.Unlock()
+
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "quiet-tiger", "", false, true)
+	if err != nil {
+		t.Fatalf("session_metadata must accept a slug alias: %v", err)
+	}
+	if !strings.Contains(out, id) {
+		t.Fatalf("metadata must describe the resolved session: %s", out)
+	}
+}
+
+func TestSessionMetadata_SlugCollisionRefuses(t *testing.T) {
+	withShortIDStore(t)
+	fakeRefAgent(t,
+		map[string]any{"id": "ses_a", "title": "A", "slug": "twin-star"},
+		map[string]any{"id": "ses_b", "title": "B", "slug": "twin-star"},
+	)
+	_, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "twin-star", "", false, true)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("slug collision must refuse with ambiguity: %v", err)
+	}
+}
+
+func TestAbortSession_AcceptsShortID(t *testing.T) {
+	store := withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	id := f.newSession("Busy")
+	f.busySet[id] = true
+	store.put("oc-ab12345", id)
+
+	if _, err := mcpAbortSession(context.Background(), mcpTestPassword, "OC-AB12345"); err != nil {
+		t.Fatalf("abort_session must accept a case-insensitive short id: %v", err)
+	}
+	assert.Equal(t, []string{id}, f.aborted)
+}
+
+func TestArchiveSession_AcceptsAlias(t *testing.T) {
+	withShortIDStore(t)
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	f.newSession("Archivable")
+
+	var archivedBody string
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 512)
+		n, _ := r.Body.Read(buf)
+		archivedBody = string(buf[:n])
+		w.WriteHeader(http.StatusNoContent)
+	})
+	setupPodSessionEnv(t, platform)
+
+	if _, err := mcpSessionArchive(context.Background(), mcpTestPassword, "archivable", true); err != nil {
+		t.Fatalf("session_archive must accept an alias: %v", err)
+	}
+	if !strings.Contains(archivedBody, `"sessionID":"ses_`) {
+		t.Fatalf("platform must receive the canonical harness id: %q", archivedBody)
+	}
+}

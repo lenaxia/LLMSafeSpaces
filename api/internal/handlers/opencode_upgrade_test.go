@@ -209,3 +209,8 @@ func TestBridge_NilSessionIndex_NoPanic(t *testing.T) {
 		(&usageBridge{h: env.handler}).ContextUsed("ws-1", "s", 10)
 	})
 }
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
+	return ""
+}

@@ -181,3 +181,8 @@ func TestBackfillSessionParents_InvalidateCachesAllowsRetry(t *testing.T) {
 	require.Eventually(t, func() bool { return listCalls.Load() == 2 }, time.Second, 10*time.Millisecond,
 		"backfill must rerun after invalidateCaches")
 }
+
+// Register: design 0066 registration seam — no-op stub for this fixture.
+func (r *recordingSessionIndex) Register(_ context.Context, _, _, _ string) string {
+	return ""
+}

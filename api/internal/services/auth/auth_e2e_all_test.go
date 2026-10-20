@@ -518,3 +518,47 @@ func (c *capturingKeyService) GetDEK(ctx context.Context, sessionID string, matc
 func (c *capturingKeyService) CacheDEK(ctx context.Context, sessionID string, dek []byte, ttl time.Duration) error {
 	return c.inner.CacheDEK(ctx, sessionID, dek, ttl)
 }
+
+// Design 0066 (#1691): the new DatabaseService registration/resolution
+// surface — no-op stubs for this fixture (it exercises auth flows).
+func (m *apiKeyAwareDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	return "", nil
+}
+
+func (m *apiKeyAwareDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	return "", nil
+}
+
+func (m *apiKeyAwareDB) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+func (m *apiKeyAwareDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *apiKeyAwareDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+// Design 0066 (#1691): the new DatabaseService registration/resolution
+// surface — no-op stubs for this fixture.
+func (m *fullMockDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
+	return "", nil
+}
+
+func (m *fullMockDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	return "", nil
+}
+
+func (m *fullMockDB) FindSessionsByAlias(ctx context.Context, workspaceID, alias string) ([]types.SessionListItem, error) {
+	return nil, nil
+}
+
+func (m *fullMockDB) ListWorkspaceIDsByOwner(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *fullMockDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspaceIDs []string, ref string) ([]types.SessionListItem, error) {
+	return nil, nil
+}

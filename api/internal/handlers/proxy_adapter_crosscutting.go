@@ -118,6 +118,14 @@ func (h *ProxyHandler) postAdapterSuccess(c *gin.Context, workspace *v1.Workspac
 	}
 
 	if h.sessionIndex != nil && sessionID != "" && isWriteOp {
+		// Design 0066 registration seam: the first row-creating write
+		// for a (workspace, session) pair mints the short id; the
+		// known-registered LRU keeps the hot path write-free after
+		// first sight. The harness type is the adapter serving this
+		// request — opencode, the only live adapter today (the CRD's
+		// Runtime field names the sandbox image, not the harness);
+		// a second adapter plumbs its own type at its landing PR.
+		h.sessionIndex.Register(c.Request.Context(), workspaceID, sessionID, "opencode")
 		h.sessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now())
 	}
 
