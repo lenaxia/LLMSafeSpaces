@@ -86,18 +86,19 @@ func TestMintPhrase_HighEntropyNotSequential(t *testing.T) {
 	// 153.0/160 adjectives, 177.9/192 nouns, 64.0/64 verbs (the
 	// pinned window's actuals land on these: 153/174/64). The bounds
 	// sit far below expectation so the fixed window can never graze
-	// them, and they detect any generator drawing from under ~60% of
-	// a list — a narrowing ABOVE that support (e.g. 40 of 64 verbs)
-	// passes; strictly stronger than the old duplicate-only check,
+	// them, and they detect a generator drawing from under ~55% of a
+	// list (per-list floors: verbs <=35/64 ≈ 55%, adjectives ≈ 62%,
+	// nouns ≈ 63% — narrowings above the floor, e.g. 38 of 64 verbs,
+	// pass); strictly stronger than the old duplicate-only check,
 	// which caught only near-total collapse.
 	if len(adjs) < 100 {
-		t.Errorf("adjective entropy low: %d distinct in 500 draws (uniform expectation ~135)", len(adjs))
+		t.Errorf("adjective entropy low: %d distinct in 500 draws (uniform expectation 153.0)", len(adjs))
 	}
 	if len(nouns) < 120 {
-		t.Errorf("noun entropy low: %d distinct in 500 draws (uniform expectation ~158)", len(nouns))
+		t.Errorf("noun entropy low: %d distinct in 500 draws (uniform expectation 177.9)", len(nouns))
 	}
 	if len(verbs) < 36 {
-		t.Errorf("verb entropy low: %d distinct in 500 draws (uniform expectation ~47)", len(verbs))
+		t.Errorf("verb entropy low: %d distinct in 500 draws (uniform expectation 64.0)", len(verbs))
 	}
 }
 
