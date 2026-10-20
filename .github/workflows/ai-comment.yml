@@ -14,9 +14,10 @@
 # reusable workflow performs NO commenter filtering of its own (verified:
 # no job-level `if:`, zero bot/author checks in route-command.sh) — caller
 # admission below is the ONLY authorization check; anyone it admits,
-# trusted app bots included, reaches the command router. (v0.2.18 adds the
-# opt-in trusted_app_bots with:-input below: it bypasses the opencode CLI's
-# startup collaborator assert for listed bots only — admission, not
+# trusted app bots included, reaches the command router. (v0.2.17 added
+# the opt-in trusted_app_bots with:-input below and v0.2.18 fixed its
+# delivery via GITHUB_ENV: it bypasses the opencode CLI's startup
+# collaborator assert for listed bots only — admission, not
 # authorization, stays here.) The `uses:` ref MUST be a hardcoded tag (no
 # vars context); propagate.yml in ai-workflows bumps it on every release.
 #
