@@ -238,7 +238,7 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 		if minted >= shortIDBackfillBudget {
 			break
 		}
-		if h.sessionIndex.Register(ctx, workspaceID, row.ID, "opencode") != "" {
+		if h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode") != "" {
 			minted++
 		}
 	}
@@ -273,7 +273,7 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 	}
 	candidates := make([]types.SessionListItem, 0, len(rows))
 	for _, row := range rows {
-		if present[row.ID] {
+		if present[row.InternalID] {
 			candidates = append(candidates, row)
 		}
 	}
@@ -294,7 +294,7 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		candidates = candidates[:reconcileCountBudget]
 	}
 	for _, row := range candidates {
-		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.ID)
+		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
 		if err != nil {
 			sessionindex.ReconcileOutcome("count_walk_error")
 			h.logger.Debug("session reconcile: count walk failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
@@ -307,7 +307,7 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		// Design 0066 §4.2: the count rebuild is a row-creating upsert
 		// shape — register through the seam first (review r1 finding 1;
 		// the loop's own budget bounds the mint cost).
-		h.sessionIndex.Register(ctx, workspaceID, row.ID, "opencode")
+		h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode")
 		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.ID, count); err != nil {
 			h.logger.Warn("session reconcile: count rebuild write failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
 			continue

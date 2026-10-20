@@ -60,9 +60,12 @@ type Candidate struct {
 type Suggestion struct {
 	Title      string     `json:"title,omitempty"`
 	ShortID    string     `json:"shortId,omitempty"`
-	SessionID  string     `json:"sessionId"`
 	Workspace  string     `json:"workspace"`
 	LastActive *time.Time `json:"lastActive,omitempty"`
+	// SessionID carries the harness id for ranking/clause internals
+	// ONLY — never serialized (#1756 §1: the ses_-form leaves default
+	// output; the phrase in ShortID is the re-copy affordance).
+	SessionID string `json:"-"`
 }
 
 // classify returns the input's shape family (design §4.6: the

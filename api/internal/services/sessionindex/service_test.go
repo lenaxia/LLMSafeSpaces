@@ -174,7 +174,7 @@ func TestStartStop_NilLogger_NoPanic(t *testing.T) {
 // this matrix IS the S5b invariant.
 func TestPlanReconciliation(t *testing.T) {
 	row := func(id string, count int) types.SessionListItem {
-		return types.SessionListItem{ID: id, Title: id, MessageCount: count}
+		return types.SessionListItem{ID: id, InternalID: id, Title: id, MessageCount: count}
 	}
 	tests := []struct {
 		name       string

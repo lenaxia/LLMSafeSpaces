@@ -35,8 +35,9 @@ func TestEnsureSessionRegistered_FreshMint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureSessionRegistered: %v", err)
 	}
-	if !shortid.IsShortIDForm(got) || got[:3] != "oc-" {
-		t.Errorf("minted id %q: not an oc- short id", got)
+	// #1756: the mint is a 3-word phrase — never a prefixed hash.
+	if !shortid.IsShortIDForm(got) || shortid.IsLegacyShortIDForm(got) {
+		t.Errorf("minted id %q: not a canonical #1756 phrase", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)

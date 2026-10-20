@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — word-phrase session IDs; short-only emission; full-id input deprecation (#1756, supersedes #1745's format)
+
+- **Session short IDs are 3-word grammatical phrases** (adjective-
+  noun-verb from frozen curated lists, e.g. `amber-falcon-glides`):
+  no hash characters, no harness prefix, no checksum word — words are
+  high-probability LLM tokens, truncation is visible, and did-you-mean
+  recovers word near-misses far better than hash fragments. A
+  deterministic counter suffix (`-2`, `-3`, …) arbitrates mint
+  collisions (never a random re-roll). The lists are frozen with
+  pinned sizes/membership (160×192×64 ≈ 2M phrases/workspace;
+  enumeration is ruled a non-issue — ids are references under authz)
+  and exclude the harness slug vocabulary; session phrases, harness
+  slugs (2 words), and the upcoming workspace phrases (2 words + 1
+  digit, #1757) are disjoint by shape.
+- **Outputs go short-only**: the session list's `id`, parentId (via a
+  parent self-join), `EnsureSessionResponse.sessionId`, the did-you-
+  mean suggestions' re-copy affordance, and the agentd MCP tool
+  outputs (`session_list` row ids, `create_session` result, rename/
+  archive/delete/abort results) now carry the phrase as THE
+  identifier; the harness id moves to internal-only fields
+  (`deprecatedSessionId` appears only in the registration-degraded
+  window; unmapped `session_list` rows carry `id_deprecated` until
+  the replica converges). The #1745 hash short ids stop being minted
+  but stay addressable as input.
+- **Full-id input is deprecated (one release)**: addressing a session
+  by its `ses_…` full id or a #1745 hash id still resolves (truncated
+  ids still never silently resolve) and now attaches the notice —
+  `Deprecation: true` + `Sunset` headers on the API, a `deprecation`
+  note in agentd tool results — naming the phrase as the address.
+  SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
+  major (#1756 §5).
+
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
 - **Workspace pods now carry a dedicated disk-backed emptyDir for the
