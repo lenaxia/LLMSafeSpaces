@@ -1,0 +1,81 @@
+# Worklog: #1779 — TestBusyTruthE2E_InStreamReseedReconciles CI flake root-caused and stabilized
+
+**Date:** 2026-10-20
+**Session:** issue #1779 lane (orchestrator dispatch). Branch `fix/1779-busytruth-e2e-flake`.
+**Status:** Complete pending N=5 consecutive green CI runs
+
+---
+
+## Objective
+
+`TestBusyTruthE2E_InStreamReseedReconciles` (api/internal/services/usagestream/busy_truth_e2e_test.go) failed ~30.0xs Eventually timeouts on main (run 39346002933) and three times on PR #1765 (39346439013 coverage job, 39360417422 race job, 39319516622 attempt-1) — always under coverage/race load, 5x green locally, zero usagestream/sessionstate diffstat on the affected PR. Diagnose with evidence, then stabilize. Hard constraint: if the flake exposed a REAL reseed/reconcile production race, stop and escalate — no test loosening over a product defect.
+
+---
+
+## Root cause (proven; two mechanisms, both test-side)
+
+**CI signature (all four runs identical):** failure at busy_truth_e2e_test.go:315 → `waitForStatuses(["ws1:s1:busy"])` "Condition never satisfied" at 30.02–30.03s — the FIRST busy wait, before the reseed leg; the subscribe wait at :310 passed every time.
+
+**N1 (primary) — the 100ms idle bomb vs real delivery latency.** The pre-fix test armed its consumer with `IdleDrop: 100ms`. `Consumer.Open` starts the settle clock at gate creation (`consumer.go` sets `idleSince` at Open), and the idle watchdog kills the gate at the first tick where ≥100ms elapsed without a busy fold. The busy truth that resets the clock must travel: HTTP subscribe → ingest(IDLE) → ingest(PART_START) → SSE delivery → GetSnapshot consult → fold. Every ingest runs the seq-cursor persist — **two fsyncs** (file + directory; `sessionstate/cursor.go`, FastCursor off in this e2e). Measured on this pod: one ingest = 31–133ms. Any fsync/scheduler hiccup >100ms detonates the window: the watchdog cancels the gate, the stream tears down, and the replay-less stream loses the events — the bridge emission never lands and the wait burns its full 30s budget.
+
+**N2 (bonus) — back-to-back ingests racing the consult.** The test ingested IDLE and PART_START with no awaited emission between them. When the consumer's IDLE-frame consult answers BEFORE the part folds (easy when the inter-ingest fsync gap is tens of ms), the bridge's first emission is `ws1:s1:idle` — an exact-history `waitForStatuses(["ws1:s1:busy"])` can then never match. Same CI signature when the gate survives N1.
+
+**Repro evidence (temporary diagnostic test, fully removed):** unloaded 64-core pod: 1 failure in 3 runs — `open->sub=5.5ms`, the IDLE ingest itself took 100.42ms, at failure `gates=0 subscribers=0 statuses=[]`. Under 2-core+hog load: 2 failures in 6 — one with `ing1->ing2=132.8ms` (N1, statuses=[]), one with `ing1->ing2=31.4ms` and `statuses=[ws1:s1:idle]` (N2 then N1). Explains 5x local green (fast NVMe: whole chain ~10ms) vs CI flake (runners' disks + `-race -short -coverpkg=./...` / `-race` full-suite load).
+
+**Not a product race (escalation constraint not tripped):**
+- `Authority.Stream` registers the subscriber and captures the snapshot stamp under the SAME mutex as projection updates (`sessionstate/authority.go:644-648`) — there is no subscribe/stream event-loss window (I2 ordering is sound).
+- The idle watchdog is the designed scale-to-zero rule; production default is 30s (`DefaultIdleDrop`) and production events are human/LLM-paced, never fsync-raced against the arm.
+- The in-stream reseed redial's snapshot is taken under the reseed's lock hold (`authority.go:498-550`: map swap + reseeded fanout + orphan aborts under one `a.mu` hold), so a redial can never observe the pre-reseed world.
+- The fake-layer `TestInStreamReseedReconcilesDerivedTruth` (consumer_test.go) already pins the consumer logic deterministically.
+- Sister e2e file `bridge_reconcile_e2e_test.go` parks `IdleDrop: time.Hour` for exactly this reason ("so nothing but the test drives the gate down") — the flaky test was the only real-HTTP e2e with a live bomb.
+
+---
+
+## Work Completed
+
+Restructured `TestBusyTruthE2E_InStreamReseedReconciles` (name kept — the flake archaeology is searched by it):
+
+1. **Busy arm + reseed legs on an hour-parked `holder` consumer** with sequenced, awaited emissions: ingest IDLE → wait `[idle]` → ingest PART_START → wait `[idle, busy]` → `holder.Gates()==1`; store.set(idle) → `auth.Reseed(GenerationChange)` → wait `[idle, busy, idle]` (the resync seed fold's bridge correction — the review-r1 stale-busy cure). Every wait is outcome-deterministic; no bomb; no ingest-ordering race.
+2. **Gate-release leg on a second 100ms `dropper` consumer opened AFTER the reseed**, onto a world holding no busy truth: its drop is outcome-certain (nothing can defuse it; runner stalls only postpone it into the 45s Eventually budget). This preserves the original "gate releases when the reseeded truth is idle" scale-to-zero pin at the real surface. A wedged-busy reseed holds the dropper's gate open forever → the wait fails; a pre-connect drop false-pass is covered by leg 1's bridge correction (the wedge cannot hide from both).
+
+**Test-design lesson (consolidated for future e2e authors):** at this surface, back-to-back ingests without awaited intermediate emissions are NON-DETERMINISTIC (the consumer's consult may interleave between them and emit history the exact-match assert can never accept) — sequence inputs against awaited emissions like `TestBusyTruthE2E_RunningBashShowsBusy` does. And a live short `IdleDrop` under real delivery latency is a BOMB, not a settle window: the watchdog clock starts at `Open`, while the busy truth that defuses it still has to cross HTTP + the authority's per-event double-fsync. Real-HTTP e2e rows park `IdleDrop` at an hour (the `bridge_reconcile` discipline) and let the test drive the gate; short windows belong on gates whose defuse-truth cannot exist (the dropper), where the drop is outcome-certain.
+
+**Why not `FastCursor: true`?** It would shave the dominant stall source but fixes neither mechanism's class: any >100ms hiccup still detonates N1, and N2 is ordering, not latency. Determinism comes from structure, not faster walls.
+
+---
+
+## Key Decisions
+
+- Test-only PR: no behavior change, no CHANGELOG entry (worklog 1148 precedent).
+- The old "#1532 de-flake note" comment block (documenting the removed `require.Equal(1, c.Gates())` post-reseed race) went with the shape it described — the holder/dropper split makes the encoding it justified obsolete. The #1532 30s-budget discipline on the shared helpers is untouched.
+- Assumptions stated and validated (Rule 7): CI line-315 trace = pre-reseed leg (all four runs' Error Traces); bomb→teardown→lost-events (diag failure-state dumps `gates=0 subscribers=0`); fsync attribution (ingest-span timings 31–133ms across the cursor's two fsyncs); authority ordering (code read, anchors above); redial-snapshot post-reseed (lock analysis + green runs + discrimination run).
+
+---
+
+## Pin discrimination (r1 fix dependency proven)
+
+Locally reverted the review-r1 `WithResynced` re-arm in `consumer.go` (the in-stream-reseed `seededFold` reset): the restructured test FAILED at exactly `bridge statuses never reached [ws1:s1:idle ws1:s1:busy ws1:s1:idle]` (30.25s) — the reseed-reconcile wait, i.e. the pin bites the production fix it exists to guard. Restored byte-identical (`git diff` = test file only; build green).
+
+---
+
+## Tests Run
+
+- Unloaded: `-run TestBusyTruthE2E_InStreamReseedReconciles -count=3` — green, 0.29–0.30s each.
+- Loaded (6 CPU hogs pinned with the test to 2 cores): `-race -short -count=8 -coverprofile -covermode=atomic -coverpkg=./api/... -run TestBusyTruthE2E` — green (all five busy-truth e2e rows), 19.0s.
+- Loaded: `-race -count=5` full usagestream package — green, 21.6s.
+- Pre-commit gates: gofmt, goimports, golangci-lint (0 issues), `make repolint` (all checks passed).
+
+Residual (pre-existing, family-wide, not introduced here): every busy-truth e2e row depends on one-shot 2s-budget consults; a >2s stall inside one local HTTP roundtrip would flake any of them. No recorded CI hit has that signature; documented, not widened.
+
+---
+
+## Next Steps
+
+N=5 consecutive green CI runs on the branch (push-triggered), then the review lane. Issue #1779 acceptance checkboxes close on the final packet.
+
+---
+
+## Files Modified
+
+- `api/internal/services/usagestream/busy_truth_e2e_test.go` (test restructure; name kept)
+- `worklogs/NNNN_2026-10-20_1779-busytruth-e2e-flake.md` (this file)

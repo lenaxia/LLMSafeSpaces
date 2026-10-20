@@ -1610,18 +1610,25 @@ func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID string)
 	// degrades to a short-id-less response, the backfill sweep
 	// converges). The harness type is the adapter that served the
 	// create: opencode, the only live adapter today.
+	// #1756 §1: the response's identifier IS the phrase; the harness
+	// id leaves default output (it degrades into
+	// DeprecatedSessionId only when the seam could not mint).
 	shortID := ""
 	if s.sessionIndex != nil {
 		shortID = s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
 	}
-
-	return &types.EnsureSessionResponse{
+	resp := &types.EnsureSessionResponse{
 		WorkspaceID:    workspaceID,
 		WorkspacePhase: "Active",
 		SessionID:      sessionID,
 		Resumed:        resumed,
-		ShortID:        shortID,
-	}, nil
+	}
+	if shortID != "" {
+		resp.SessionID = shortID
+	} else {
+		resp.DeprecatedSessionID = sessionID
+	}
+	return resp, nil
 }
 
 // waitForWorkspaceActive polls the workspace CRD until it reaches Active with

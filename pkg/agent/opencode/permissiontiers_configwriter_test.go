@@ -52,6 +52,8 @@ func TestConfigWriter_RendersPermissionTierFloor(t *testing.T) {
 	for k, v := range platformPermissionTiers {
 		assert.Equal(t, v, ext[k], "tier key %q must render with action %q", k, v)
 	}
+	assert.Equal(t, "deny", ext["/workspace/.local/opencode/*"],
+		"#1777: the opencode-data-dir children deny renders — the live-effective protection for auth.json and opencode.db-class paths")
 }
 
 func TestConfigWriter_TierFloorWinsAllowedDirsCollisions(t *testing.T) {

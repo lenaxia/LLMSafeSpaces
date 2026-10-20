@@ -385,9 +385,9 @@ func TestListWorkspaceSessions_MergesActiveStatus(t *testing.T) {
 
 	svc.workspace.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(
 		[]types.SessionListItem{
-			{ID: "sess-1", Title: "Idle chat", MessageCount: 5, Status: "idle"},
-			{ID: "sess-2", Title: "Active chat", MessageCount: 3, Status: "idle"},
-			{ID: "sess-3", Title: "Another idle", MessageCount: 1, Status: "idle"},
+			{ID: "sess-1", InternalID: "sess-1", Title: "Idle chat", MessageCount: 5, Status: "idle"},
+			{ID: "sess-2", InternalID: "sess-2", Title: "Active chat", MessageCount: 3, Status: "idle"},
+			{ID: "sess-3", InternalID: "sess-3", Title: "Another idle", MessageCount: 1, Status: "idle"},
 		}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/sessions", nil)

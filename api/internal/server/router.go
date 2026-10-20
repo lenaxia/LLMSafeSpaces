@@ -1459,7 +1459,7 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
 		if len(activeSet) > 0 {
 			for i := range sessions {
-				if activeSet[sessions[i].ID] {
+				if activeSet[sessions[i].InternalID] {
 					sessions[i].Status = "active"
 				}
 			}
@@ -1999,7 +1999,7 @@ func filterSessionsByQuery(sessions []types.SessionListItem, q string) []types.S
 			out = append(out, s)
 			continue
 		}
-		if strings.HasPrefix(s.ID, q) {
+		if strings.HasPrefix(s.InternalID, q) || strings.HasPrefix(s.ID, q) {
 			out = append(out, s)
 		}
 	}

@@ -32,8 +32,12 @@ jobs:
     # Automation-bot PRs (renovate, dependabot, release-please, mergify,
     # github-merge-queue) are skipped at the job level inside the reusable
     # workflow — no local `if:` needed.
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.16
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.18
     secrets: inherit
     with:
-      version: v0.2.16
+      version: v0.2.18
       project_name: LLMSafeSpaces
+      # Trusted app-bot authors (ai-workflows #51): app bots can never be
+      # collaborators, so the CLI assert refuses their PRs pre-LLM without
+      # this. Must match canonicalTrustedAppBots (gha_callers_test.go).
+      trusted_app_bots: '["agentic-actor-coder[bot]"]'

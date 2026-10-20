@@ -113,7 +113,7 @@ func TestRebuildMessageCounts_RegistersFirst(t *testing.T) {
 		},
 	}
 
-	rows := []types.SessionListItem{{ID: "ses_cnt_1", MessageCount: 1}}
+	rows := []types.SessionListItem{{ID: "ses_cnt_1", InternalID: "ses_cnt_1", MessageCount: 1}}
 	h.rebuildMessageCounts(context.Background(), "ws-1", rows, map[string]bool{"ses_cnt_1": true})
 
 	calls := si.registerCalls()

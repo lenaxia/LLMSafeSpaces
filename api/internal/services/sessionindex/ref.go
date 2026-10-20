@@ -60,6 +60,10 @@ type RefResolution struct {
 	ShortID string
 	// UnresolvedAlias: an alias-form ref that matched nothing.
 	UnresolvedAlias bool
+	// DeprecatedInput: the ref carried an INPUT-only form — the
+	// harness full id or the #1745 hash short id. #1756: accepted for
+	// one release; every surface attaches the deprecation notice.
+	DeprecatedInput bool
 	// DegradedLookup: the resolution PASSED THROUGH only because the
 	// alias lookup errored (transient DB failure). Callers that WRITE
 	// must refuse seam-invalid refs under this flag (finding B).
@@ -93,10 +97,11 @@ func ResolveSessionRef(ctx context.Context, r RefResolver, workspaceID, ref stri
 	if ref == "" {
 		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
 	}
-	if shortid.IsShortIDForm(ref) {
+	if shortid.IsShortIDForm(ref) || shortid.IsLegacyShortIDForm(ref) {
+		deprecated := shortid.IsLegacyShortIDForm(ref)
 		id, err := r.FindSessionByShortID(ctx, workspaceID, ref)
 		if err == nil && id != "" {
-			return RefResolution{CanonicalID: id, MatchedBy: MatchShortID, ShortID: shortid.Normalize(ref)}
+			return RefResolution{CanonicalID: id, MatchedBy: MatchShortID, ShortID: shortid.Normalize(ref), DeprecatedInput: deprecated}
 		}
 		// Miss (or transient error): id-shaped → pass through. The
 		// adapter stays the authority; its 404-class verdict carries

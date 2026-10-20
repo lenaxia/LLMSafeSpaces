@@ -555,11 +555,11 @@ type SecretsDeliveryStatus struct {
 // AgentSupervisorStatus (#1760) mirrors agentd's supervisor slice from
 // /v1/healthz: what the supervisor observed about agent restarts.
 // AgentRestarts is a LIFETIME count since the pod's agentd boot
-// (supervisor-watchdog restarts in both container topologies, plus
-// recorded process-crash restarts where the supervisor records them) —
-// never a resetting crash-loop counter. Cleared to nil when the pod
-// becomes unreachable (stale values from a previous pod must not
-// survive); left as-is when a healthy scrape omits the field
+// (supervisor-watchdog restarts plus supervisor-attributed
+// process-crash restarts — reason crash/oom — in both container
+// topologies) — never a resetting crash-loop counter. Cleared to nil
+// when the pod becomes unreachable (stale values from a previous pod
+// must not survive); left as-is when a healthy scrape omits the field
 // (mixed-fleet runtimes that never report it).
 type AgentSupervisorStatus struct {
 	// AgentRestarts: total recorded agent restarts since agentd boot.

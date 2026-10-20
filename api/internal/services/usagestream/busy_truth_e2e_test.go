@@ -282,8 +282,33 @@ func TestBusyTruthE2E_PermissionWaitIsNotBusy(t *testing.T) {
 // generation-change reseed (the harness died; the store rebuilds from
 // truth) happens INSIDE the client's stream (redial, no return). The
 // consumer's derived baseline must rebuild from the fresh snapshot: the
-// gate releases when the reseeded truth is idle, preserving
-// scale-to-zero through the wedge-recovery path.
+// bridge converges onto the reseeded idle truth, and a gate armed onto
+// that world releases — scale-to-zero preserved through the
+// wedge-recovery path.
+//
+// #1779 determinism design. The pre-fix shape armed the gate with
+// IdleDrop=100ms and then raced its own setup against the idle
+// watchdog: Open starts the settle clock (consumer.go arms idleSince
+// at gate creation), and the busy truth that resets it must travel
+// HTTP subscribe → two ingests → SSE delivery → consult → fold. Every
+// ingest runs the seq-cursor persist (two fsyncs; observed 31–133ms
+// for one ingest on CI-class disks), so a single slow fsync detonated
+// the 100ms window, tore the stream down mid-arm, and the replay-less
+// stream lost the events — the bridge's first emission never landed
+// and the wait burned its whole 30s budget. Ingesting IDLE and
+// PART_START back-to-back added a second race: the consumer's
+// IDLE-frame consult could answer before the part folded, emitting an
+// idle the exact-history assert can never match. Both lose only under
+// load — five green runs locally said nothing.
+//
+// The fix follows the package's own e2e discipline (bridge_reconcile
+// rows park IdleDrop at an hour so nothing but the test drives the
+// gate): the busy-arm and reseed legs run on an hour-parked holder
+// with every emission awaited before the next input, and the
+// gate-release leg runs on a second, short-window consumer opened
+// AFTER the reseed — onto a world holding no busy truth, its drop is
+// outcome-certain (nothing can defuse it; scheduling delays only
+// postpone it into the Eventually budget).
 func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
 	// The store is wired at construction; its (mutex-guarded) seed is
 	// swapped for the reseed. SetStoreForTest is NOT used: it swaps the
@@ -302,43 +327,47 @@ func TestBusyTruthE2E_InStreamReseedReconciles(t *testing.T) {
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 
-	// A short settle window: this row asserts the gate DROPS once the
-	// reseeded truth is idle.
 	br := &syncBridge{}
-	c := newBusyTruthConsumer(t, ts.URL, br, 100*time.Millisecond)
-	c.Open("ws1")
+	holder := newBusyTruthConsumer(t, ts.URL, br, time.Hour)
+	holder.Open("ws1")
 	require.Eventually(t, func() bool { return auth.Metrics().Subscribers >= 1 },
 		30*time.Second, 10*time.Millisecond, "consumer never subscribed")
 
+	// The turn's streaming ends (the harness's ONLY signal) — awaited
+	// BEFORE the tool starts, so the emission order never races the
+	// delivery fold.
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	waitForStatuses(t, br, []string{"ws1:s1:idle"})
+
+	// The bash tool starts — no status event fires, only the part. The
+	// flip-driven consult must publish busy.
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_START, SessionId: "s1", PartId: "p1", Part: runningToolPart("p1")})
-	waitForStatuses(t, br, []string{"ws1:s1:busy"})
-	require.Equal(t, 1, c.Gates(), "precondition: the running tool holds the gate")
+	waitForStatuses(t, br, []string{"ws1:s1:idle", "ws1:s1:busy"})
+	require.Equal(t, 1, holder.Gates(), "precondition: the running tool holds the gate")
 
 	// The harness dies; the store's truth says idle. The reseed is an
 	// IN-STREAM frame — the client redials and resnapshots without the
-	// consumer's run loop ever reconnecting.
-	//
-	// #1532 de-flake note: the old `require.Equal(1, c.Gates())` read
-	// here ("the gate lives through the reseed itself") raced a FAST
-	// reconcile — the idleDrop is only 100ms, so on a quick runner the
-	// gate could legitimately drop before the assert read it, failing
-	// the test in the OPPOSITE direction of the stall flake. The
-	// assert carried no pin value: the bug this row exists for (the
-	// stale-true lease: gate NEVER drops) fails the eventual-zero wait
-	// below, and a gate that drops "during" vs "after" the reseed is
-	// the same correct outcome. The precondition above (polled to 1
-	// before the reseed) plus the eventual zero below is the race-free
-	// encoding of the same contract.
+	// consumer's run loop ever reconnecting. The resync's seed fold is
+	// the authority's post-reseed answer (the redial's snapshot is
+	// taken under the reseed's lock hold, so it can never observe the
+	// pre-reseed world): the derived baseline rebuilds from it and the
+	// bridge must be corrected onto the idle truth — the stale-busy
+	// emission is cured, not left dangling.
 	store.set(map[string]sessionstate.SessionSeed{
 		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
 	})
 	require.NoError(t, auth.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
+	waitForStatuses(t, br, []string{"ws1:s1:idle", "ws1:s1:busy", "ws1:s1:idle"})
 
-	// 45s bound: the drop needs one snapshot fold + the 100ms idleDrop
-	// — microseconds of work, but a multi-second runner stall must not
-	// turn into a CI hit (7+ on record, two of them release runs).
-	require.Eventually(t, func() bool { return c.Gates() == 0 },
+	// Scale-to-zero through the wedge recovery: a gate armed onto the
+	// reseeded world must release once its settle window elapses. A
+	// wedged-busy reseed (the regression this row exists for) holds
+	// this gate open forever — the wait below fails. The window is
+	// safe only because nothing busy exists post-reseed: the drop is
+	// the certain outcome, so the budget absorbs any runner stall.
+	dropper := newBusyTruthConsumer(t, ts.URL, br, 100*time.Millisecond)
+	dropper.Open("ws1")
+	require.Eventually(t, func() bool { return dropper.Gates() == 0 },
 		45*time.Second, 50*time.Millisecond,
-		"the in-stream reseed's snapshot must rebuild the derived baseline — the gate must drop")
+		"a gate armed onto the reseeded idle truth must release — the in-stream reseed's snapshot must rebuild the derived baseline")
 }

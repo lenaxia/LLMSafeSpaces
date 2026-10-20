@@ -30,23 +30,24 @@ func withShortIDStore(t *testing.T) *sessionShortIDStore {
 func TestShortIDStore_RoundTripPersists(t *testing.T) {
 	path := t.TempDir() + "/session-shortids.json"
 	s := newSessionShortIDStore(path)
-	s.put("oc-ab12cd34", "ses_live")
+	s.put("amber-falcon-glides", "ses_live")
 
 	// Reload from disk: the mapping survives (atomic-rename write).
 	s2 := newSessionShortIDStore(path)
-	if id, ok := s2.resolveShortID("OC-AB12CD34"); !ok || id != "ses_live" {
+	if id, ok := s2.resolveShortID("Amber-Falcon-Glides"); !ok || id != "ses_live" {
 		t.Fatalf("case-insensitive reload broken: %q,%v", id, ok)
 	}
-	if s2.shortIDFor("ses_live") != "oc-ab12cd34" {
+	if s2.shortIDFor("ses_live") != "amber-falcon-glides" {
 		t.Fatalf("reverse lookup broken: %q", s2.shortIDFor("ses_live"))
 	}
 }
 
 func TestShortIDStore_RejectsNonShortIDForms(t *testing.T) {
 	s := withShortIDStore(t)
-	s.put("not-a-short-id", "ses_x") // no registry prefix
-	s.put("oc-", "ses_y")            // empty body
-	s.put("ses_ed9183a46ffeRiNw2PddpL5dAA", "ses_z")
+	s.put("not-a-short-id", "ses_x")                 // not the 3-word phrase shape
+	s.put("oc-ab12cd34", "ses_y")                    // #1745 hash form: never re-learned as canonical
+	s.put("ses_ed9183a46ffeRiNw2PddpL5dAA", "ses_z") // full id
+	s.put("swift-heron", "ses_w")                    // partial phrase (2 words)
 	if s.size() != 0 {
 		t.Fatalf("invalid forms must not enter the replica: size %d", s.size())
 	}
@@ -65,12 +66,12 @@ func TestShortIDStore_UnparseableLoadsEmpty(t *testing.T) {
 
 func TestShortIDStore_PutAllReplaces(t *testing.T) {
 	s := withShortIDStore(t)
-	s.put("oc-old1111", "ses_old")
-	s.putAll(map[string]string{"oc-new1111": "ses_new"})
-	if _, ok := s.resolveShortID("oc-old1111"); ok {
+	s.put("linen-orchard-chirps", "ses_old")
+	s.putAll(map[string]string{"jade-harvest-murmurs": "ses_new"})
+	if _, ok := s.resolveShortID("linen-orchard-chirps"); ok {
 		t.Fatal("putAll must replace, not merge")
 	}
-	if id, ok := s.resolveShortID("oc-new1111"); !ok || id != "ses_new" {
+	if id, ok := s.resolveShortID("jade-harvest-murmurs"); !ok || id != "ses_new" {
 		t.Fatal("putAll entry missing")
 	}
 }
@@ -109,11 +110,11 @@ func TestResolveSessionRef_LegacyPassthroughZeroExtraRoundTrips(t *testing.T) {
 
 func TestResolveSessionRef_ShortIDFromReplica(t *testing.T) {
 	s := withShortIDStore(t)
-	s.put("oc-ab12cd34", "ses_live")
+	s.put("amber-falcon-glides", "ses_live")
 	withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("replica hit must not touch the seam: %s", r.URL.Path)
 	}))
-	got, err := resolveSessionRef(context.Background(), "pw", "OC-AB12CD34")
+	got, err := resolveSessionRef(context.Background(), "pw", "Amber-Falcon-Glides")
 	if err != nil || got != "ses_live" {
 		t.Fatalf("short-id resolution broken: %q,%v", got, err)
 	}
@@ -125,7 +126,7 @@ func TestResolveSessionRef_ShortIDMissOnMissPull(t *testing.T) {
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/v1/session-registry" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sessions": []map[string]string{{"sessionID": "ses_pulled", "shortID": "oc-pull123"}},
+				"sessions": []map[string]string{{"sessionID": "ses_pulled", "shortID": "opal-meadow-drifts"}},
 			})
 			return
 		}
@@ -138,12 +139,12 @@ func TestResolveSessionRef_ShortIDMissOnMissPull(t *testing.T) {
 	}))
 	// The platform registry answers the on-miss pull synchronously —
 	// the FIRST resolve already resolves to the canonical id.
-	got, err := resolveSessionRef(context.Background(), "pw", "oc-pull123")
+	got, err := resolveSessionRef(context.Background(), "pw", "opal-meadow-drifts")
 	if err != nil || got != "ses_pulled" {
 		t.Fatalf("on-miss pull resolution broken: %q,%v", got, err)
 	}
 	// And the replica learned it: the SECOND resolve is replica-only.
-	got, err = resolveSessionRef(context.Background(), "pw", "oc-pull123")
+	got, err = resolveSessionRef(context.Background(), "pw", "opal-meadow-drifts")
 	if err != nil || got != "ses_pulled" {
 		t.Fatalf("post-pull resolution broken: %q,%v", got, err)
 	}
@@ -245,7 +246,7 @@ func TestCreateSession_ReturnsShortID(t *testing.T) {
 
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/v1/session-register" {
-			_ = json.NewEncoder(w).Encode(map[string]string{"shortID": "oc-creat123"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"shortID": "amber-falcon-glides"})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -256,11 +257,15 @@ func TestCreateSession_ReturnsShortID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mcpCreateSession: %v", err)
 	}
-	if !strings.Contains(out, `"short_id":"oc-creat123"`) {
-		t.Fatalf("create_session result must carry the registered short id: %s", out)
+	// #1756 §1: session_id IS the phrase; short_id no longer emits.
+	if !strings.Contains(out, `"session_id":"amber-falcon-glides"`) {
+		t.Fatalf("create_session result's session_id must be the registered phrase: %s", out)
+	}
+	if strings.Contains(out, "short_id") {
+		t.Fatalf("the retired short_id field must not emit: %s", out)
 	}
 	// The replica learned it — future resolution costs no round trip.
-	if id, ok := currentSessionShortIDs().resolveShortID("oc-creat123"); !ok || id == "" {
+	if id, ok := currentSessionShortIDs().resolveShortID("amber-falcon-glides"); !ok || id == "" {
 		t.Fatal("replica must learn the created mapping")
 	}
 }
@@ -292,9 +297,9 @@ func TestCreateSession_PlatformTimeoutDegradesToHarnessID(t *testing.T) {
 
 // --- session_list joins short ids ------------------------------------------
 
-func TestSessionList_JoinsShortIDs(t *testing.T) {
+func TestSessionList_EmitsPhraseAsTheID(t *testing.T) {
 	store := withShortIDStore(t)
-	store.put("oc-list1234", "ses_a")
+	store.put("amber-falcon-glides", "ses_a")
 	fakeRefAgent(t,
 		map[string]any{"id": "ses_a", "title": "Known"},
 		map[string]any{"id": "ses_b", "title": "Unknown"},
@@ -303,11 +308,16 @@ func TestSessionList_JoinsShortIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"shortId":"oc-list1234"`) {
-		t.Fatalf("session_list rows must carry replica-known short ids: %s", out)
+	// #1756 §1: the row's id IS the phrase; the harness id never
+	// emits for a mapped row; unmapped rows keep it with the marker.
+	if !strings.Contains(out, `"id":"amber-falcon-glides"`) {
+		t.Fatalf("session_list row id must be the phrase: %s", out)
 	}
-	if strings.Contains(out, `"shortId":"oc-b`) {
-		t.Fatalf("unknown rows must not gain a shortId")
+	if strings.Contains(out, `"id":"ses_a"`) || strings.Contains(out, `"shortId"`) {
+		t.Fatalf("harness ids and the retired shortId field must not emit for mapped rows: %s", out)
+	}
+	if !strings.Contains(out, `"id":"ses_b"`) || !strings.Contains(out, `"id_deprecated":true`) {
+		t.Fatalf("unmapped row keeps the harness id with the deprecation marker: %s", out)
 	}
 }
 
@@ -345,9 +355,9 @@ func TestSendMessage_AcceptsShortIDAndAlias(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	target := f.newSession("Alias Sendable")
 	origin := f.newSession("Origin Session")
-	store.put("oc-send1234", target)
+	store.put("amber-falcon-glides", target)
 
-	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "oc-send1234", "ping", "", origin); err != nil {
+	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-glides", "ping", "", origin); err != nil {
 		t.Fatalf("send_message must accept a short id: %v", err)
 	}
 	f.awaitMsgDone(t, target, 1)
@@ -397,9 +407,9 @@ func TestAbortSession_AcceptsShortID(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 	id := f.newSession("Busy")
 	f.busySet[id] = true
-	store.put("oc-ab12345", id)
+	store.put("amber-falcon-glides", id)
 
-	if _, err := mcpAbortSession(context.Background(), mcpTestPassword, "OC-AB12345"); err != nil {
+	if _, err := mcpAbortSession(context.Background(), mcpTestPassword, "Amber-Falcon-Glides"); err != nil {
 		t.Fatalf("abort_session must accept a case-insensitive short id: %v", err)
 	}
 	assert.Equal(t, []string{id}, f.aborted)

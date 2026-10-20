@@ -59,8 +59,15 @@ type SessionStatusItem struct {
 // completed step event persisted by the API proxy. nil means no LLM
 // step has completed yet for this session (distinguishable from 0).
 type SessionListItem struct {
-	ID            string     `json:"id"`
-	Title         string     `json:"title,omitempty"`
+	// ID is THE identifier on the wire (#1756): the platform-minted
+	// 3-word phrase. During the backfill window a row whose phrase is
+	// not yet minted degrades to the harness id here (converged by
+	// the reconcile sweep's registration pass).
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	// ParentID is the PARENT's phrase (#1756 spec §1: full ids leave
+	// default output); InternalParentID carries the harness key the
+	// platform joins on.
 	ParentID      string     `json:"parentId,omitempty"`
 	LastMessageAt *time.Time `json:"lastMessageAt,omitempty"`
 	MessageCount  int        `json:"messageCount"`
@@ -69,12 +76,16 @@ type SessionListItem struct {
 	HasUnread     bool       `json:"hasUnread"`
 	ContextUsed   *int64     `json:"contextUsed,omitempty"`
 	Origin        string     `json:"origin,omitempty"` // manual | routine | workflow | api
-	// ShortID is the platform-minted short address (design 0066,
-	// #1691): prefix + 8 chars, per-workspace unique, case-insensitive
-	// at resolution. omitempty — rows predating the rollout (and any
-	// the backfill sweep has not yet reached) carry none, and every
-	// existing consumer keys on ID.
-	ShortID string `json:"shortId,omitempty"`
+	// InternalID is the harness session id — the platform's internal
+	// key (reconcile, counts, active-status, backfill joins). Never
+	// serialized (#1756 spec §3: internal key unchanged, external
+	// surface short-only).
+	InternalID string `json:"-"`
+	// InternalParentID is the parent's harness id (internal join key).
+	InternalParentID string `json:"-"`
+	// ShortID is the minted phrase — internal mirror of ID kept for
+	// the mint/backfill machinery; not serialized (ID carries it).
+	ShortID string `json:"-"`
 	// Archived is the platform-level read-only marker (#1627). ABSENT
 	// means NOT archived — the flag is omitempty for backward
 	// compatibility with every existing client.
@@ -118,13 +129,16 @@ type SessionAlert struct {
 type EnsureSessionResponse struct {
 	WorkspaceID    string `json:"workspaceId"`
 	WorkspacePhase string `json:"workspacePhase"`
-	SessionID      string `json:"sessionId"`
-	Resumed        bool   `json:"resumed"`
-	// ShortID is the platform-minted short address of the session
-	// (design 0066, #1691). omitempty: absent when the registration
-	// seam is unavailable (nil session index) — the harness id above
-	// remains the stable fallback in that degraded window.
-	ShortID string `json:"shortId,omitempty"`
+	// SessionID is THE identifier (#1756): the minted 3-word phrase.
+	// The harness full id leaves default output; degraded window
+	// (registration seam unavailable) falls back to it here with the
+	// deprecation notice set.
+	SessionID string `json:"sessionId"`
+	Resumed   bool   `json:"resumed"`
+	// DeprecatedSessionID carries the harness full id ONLY when the
+	// response had to degrade to it (seam unavailable) — the
+	// one-release input-deprecation notice travels with it (#1756 §2).
+	DeprecatedSessionID string `json:"deprecatedSessionId,omitempty"`
 }
 
 type CredentialStateResult struct {
@@ -158,9 +172,9 @@ type WorkspaceConditionResult struct {
 
 // SupervisorStatusResult is the supervisor/watchdog agent-restart slice
 // of the workspace status DTO (#1760). AgentRestarts is a lifetime
-// count since the pod's agentd boot (supervisor-watchdog restarts in
-// both container topologies, plus recorded process-crash restarts
-// where the supervisor records them) — never a resetting crash-loop
+// count since the pod's agentd boot (supervisor-watchdog restarts plus
+// supervisor-attributed process-crash restarts — reason crash/oom — in
+// both container topologies) — never a resetting crash-loop
 // counter.
 type SupervisorStatusResult struct {
 	AgentRestarts int `json:"agentRestarts"`

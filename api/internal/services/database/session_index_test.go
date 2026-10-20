@@ -23,24 +23,30 @@ func TestListSessionIndex_IncludesParentID(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id"}).
-		AddRow("ses_root", "Root chat", nil, time.Now(), 5, nil, false, nil, false, "oc-aaa11111").
-		AddRow("ses_child", "Subagent task", "ses_root", time.Now(), 3, nil, false, int64(8000), false, nil)
+	// #1756: the wire id is the phrase; the harness key rides
+	// InternalID; the parent's PARENTID is the parent's phrase
+	// (self-join), degrading to the harness parent id when the parent
+	// row has no phrase yet.
+	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id"}).
+		AddRow("ses_root", "Root chat", nil, time.Now(), 5, nil, false, nil, false, "amber-falcon-glides", nil).
+		AddRow("ses_child", "Subagent task", "ses_root", time.Now(), 3, nil, false, int64(8000), false, "linen-orchard-chirps", "amber-falcon-glides")
 
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT session_id, title, parent_session_id, last_message_at, message_count`,
+		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count`,
 	)).WithArgs("ws-1").WillReturnRows(rows)
 
 	items, err := svc.ListSessionIndex(context.Background(), "ws-1")
 	require.NoError(t, err)
 	require.Len(t, items, 2)
 
-	assert.Equal(t, "ses_root", items[0].ID)
+	assert.Equal(t, "amber-falcon-glides", items[0].ID, "wire id is the phrase")
+	assert.Equal(t, "ses_root", items[0].InternalID, "harness key rides InternalID")
 	assert.Equal(t, "", items[0].ParentID, "top-level session has empty ParentID")
 	assert.Nil(t, items[0].ContextUsed)
 
-	assert.Equal(t, "ses_child", items[1].ID)
-	assert.Equal(t, "ses_root", items[1].ParentID, "child carries its parent")
+	assert.Equal(t, "linen-orchard-chirps", items[1].ID)
+	assert.Equal(t, "ses_child", items[1].InternalID)
+	assert.Equal(t, "amber-falcon-glides", items[1].ParentID, "child carries its parent's PHRASE")
 	require.NotNil(t, items[1].ContextUsed)
 	assert.Equal(t, int64(8000), *items[1].ContextUsed)
 }
@@ -53,9 +59,9 @@ func TestListSessionIndex_NullParentBecomesEmpty(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id"}).
-		AddRow("ses_solo", "Standalone", nil, time.Now(), 1, nil, false, nil, false, nil)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT session_id, title, parent_session_id`)).
+	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id"}).
+		AddRow("ses_solo", "Standalone", nil, time.Now(), 1, nil, false, nil, false, nil, nil)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title, si.parent_session_id`)).
 		WithArgs("ws-1").
 		WillReturnRows(rows)
 

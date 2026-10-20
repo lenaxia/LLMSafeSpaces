@@ -1009,38 +1009,46 @@ func mcpSessionList(ctx context.Context, password string, includeArchived bool) 
 	if !includeArchived {
 		filtered = filterArchivedFromSessionList(ctx, body)
 	}
-	// Design 0066: each surviving row gains its short id (additive
-	// field) when the replica knows it — the orchestrator's natural
-	// address. The raw bytes pass through UNCHANGED when the replica
-	// is empty (degraded window), preserving the verbatim-listing
-	// contract.
-	return joinShortIDs([]byte(filtered)), nil
+	// #1756 §1: the listing's identifier IS the phrase — each row's
+	// id value flips to the replica-known phrase. Rows without a
+	// known phrase (replica cold) keep the harness id value with a
+	// per-row deprecation marker so callers can re-list later; the
+	// raw bytes pass through UNCHANGED only when the replica is empty
+	// (whole-list degraded window).
+	return emitShortOnlySessionList([]byte(filtered)), nil
 }
 
-// joinShortIDs decorates a raw GET /session body with each session's
-// replica-known short id ("shortId" field). No known mapping anywhere
-// → the original bytes, byte-identical.
-func joinShortIDs(raw []byte) string {
+// emitShortOnlySessionList rewrites each row's id value to the
+// replica-known phrase (#1756 §1: full ids leave tool output). Rows
+// without a known phrase keep the harness id and gain an explicit
+// "id_deprecated": true marker. No known mapping anywhere → the
+// original bytes (whole-list degraded window; the boot/on-miss pulls
+// converge it).
+func emitShortOnlySessionList(raw []byte) string {
 	store := currentSessionShortIDs()
 	if store == nil || store.size() == 0 {
 		return string(raw)
 	}
 	var rows []map[string]any
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		return string(raw) // never let decoration break the listing
+		return string(raw) // never let the rewrite break the listing
 	}
-	decorated := false
+	rewritten := false
 	for _, row := range rows {
 		id, _ := row["id"].(string)
 		if id == "" {
 			continue
 		}
 		if short := store.shortIDFor(id); short != "" {
-			row["shortId"] = short
-			decorated = true
+			row["id"] = short
+			delete(row, "shortId")
+			rewritten = true
+		} else if _, has := row["shortId"]; !has {
+			row["id_deprecated"] = true
+			rewritten = true
 		}
 	}
-	if !decorated {
+	if !rewritten {
 		return string(raw)
 	}
 	out, err := json.Marshal(rows)

@@ -27,8 +27,8 @@ import (
 const (
 	refLiveID  = "ses_ed9183a46ffeRiNw2PddpL5dAA"
 	refTruncID = "ses_ed9183a46ffeRiNw2PddpL5dA"
-	refShortID = "oc-ab12cd34"
-	refShortUp = "OC-AB12CD34"
+	refShortID = "amber-falcon-glides"
+	refShortUp = "Amber-Falcon-Glides"
 	refOtherID = "ses_eaef7aee4ffem2ma1jE6ox9Edq"
 )
 
@@ -161,7 +161,8 @@ func TestSessionRef_AliasCollisionRefusesWithDidYouMean(t *testing.T) {
 	require.Len(t, body.Suggestions, 2, "both colliding sessions must be offered")
 	for _, s := range body.Suggestions {
 		assert.Equal(t, "ws-1", s.Workspace, "workspace must be the route's own id")
-		assert.NotEmpty(t, s.SessionID)
+		// #1756 §1: the payload's re-copy affordance is the PHRASE;
+		// the harness id never serializes.
 		assert.NotEmpty(t, s.ShortID)
 	}
 }
@@ -196,8 +197,8 @@ func TestSessionRef_UnresolvableAliasSuggests(t *testing.T) {
 // response shape). No q ⇒ the unfiltered list.
 func TestSessionsQFilter(t *testing.T) {
 	list := []types.SessionListItem{
-		{ID: refLiveID, ShortID: refShortID, Title: "Swift Heron — follow-up"},
-		{ID: refOtherID, ShortID: "oc-22222222", Title: "Board reconciler"},
+		{ID: refShortID, InternalID: refLiveID, ShortID: refShortID, Title: "Swift Heron — follow-up"},
+		{ID: "linen-orchard-chirps", InternalID: refOtherID, ShortID: "linen-orchard-chirps", Title: "Board reconciler"},
 	}
 
 	t.Run("title_substring", func(t *testing.T) {
@@ -208,30 +209,31 @@ func TestSessionsQFilter(t *testing.T) {
 		var got []types.SessionListItem
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 		require.Len(t, got, 1)
-		assert.Equal(t, refLiveID, got[0].ID)
-		assert.Equal(t, refShortID, got[0].ShortID, "list rows carry the short id")
+		assert.Equal(t, refShortID, got[0].ID, "the wire id IS the phrase (#1756 short-only emission)")
 	})
 
 	t.Run("short_id_prefix", func(t *testing.T) {
 		router, ws, _ := newRouterFixtureWithDB(t)
 		ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(list, nil).Once()
-		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q=oc-ab12")
+		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q=amber-falcon")
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		var got []types.SessionListItem
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 		require.Len(t, got, 1)
-		assert.Equal(t, refLiveID, got[0].ID)
+		assert.Equal(t, refShortID, got[0].ID)
 	})
 
 	t.Run("legacy_id_prefix", func(t *testing.T) {
 		router, ws, _ := newRouterFixtureWithDB(t)
 		ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(list, nil).Once()
+		// legacy-id prefix: matched via the INTERNAL harness key; the
+		// emitted row is still the phrase.
 		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q="+refOtherID[:12])
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		var got []types.SessionListItem
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 		require.Len(t, got, 1)
-		assert.Equal(t, refOtherID, got[0].ID)
+		assert.Equal(t, "linen-orchard-chirps", got[0].ID)
 	})
 
 	t.Run("id_like_miss_carries_suggestions", func(t *testing.T) {
@@ -239,7 +241,7 @@ func TestSessionsQFilter(t *testing.T) {
 		ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(list, nil).Once()
 		// near-miss short id (one substitution) must be suggested
 		db.On("ListSessionIndex", mock.Anything, "ws-1").Return(list, nil).Once()
-		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q=oc-ab12cd35")
+		rec := doJSON(t, router, http.MethodGet, "/api/v1/workspaces/ws-1/sessions?q=amber-falcon-glided")
 		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 		var body struct {
 			Error       string             `json:"error"`
@@ -268,7 +270,6 @@ func TestSessionsQFilter(t *testing.T) {
 type types_Suggestion struct {
 	Title      string     `json:"title"`
 	ShortID    string     `json:"shortId"`
-	SessionID  string     `json:"sessionId"`
 	Workspace  string     `json:"workspace"`
 	LastActive *time.Time `json:"lastActive"`
 }
@@ -350,7 +351,7 @@ func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
 	// SuggestionsFor ranks the workspace's live rows: a one-edit
 	// neighbor must be offered.
 	db.On("ListSessionIndex", mock.Anything, "ws-1").Return([]types.SessionListItem{
-		{ID: "ses_gho00000000000000000B", ShortID: "oc-aaaa1111", Title: "Ghost Neighbor"},
+		{ID: "ses_gho00000000000000000B", ShortID: "amber-falcon-glides", Title: "Ghost Neighbor"},
 	}, nil).Once()
 	db.On("ListWorkspaceIDsByOwner", mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 
@@ -363,6 +364,9 @@ func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"suggestions"`, "the unindexed-session 404 must carry the did-you-mean payload")
-	assert.Contains(t, rec.Body.String(), "ses_gho00000000000000000B", "the one-edit neighbor must be offered")
+	// #1756 §1: the payload's re-copy affordance is the PHRASE; the
+	// harness id appears only inside the service's error TEXT (an
+	// input echo, not an identifier field).
+	assert.Contains(t, rec.Body.String(), "amber-falcon-glides", "the neighbor's PHRASE is the re-copy affordance")
 	ws.AssertExpectations(t)
 }

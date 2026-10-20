@@ -481,8 +481,9 @@ func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sess
 	// #1760: single-container crash attribution rides the supervisor
 	// loop's crash classification (reason crash/oom, empty verdict —
 	// same decision point the restart-reason marker writes). The
-	// supervise-opencode process (sidecar mode) leaves this nil: its
-	// log is not the sidecar's healthz surface (scope ruling).
+	// supervise-opencode process (sidecar mode) wires the SAME hook into
+	// its adapter instead (#1776): the sidecar's status poller carries
+	// the attribution across the control socket into the sidecar's log.
 	if restartLog != nil {
 		proc.restartObserver = func(reason string) {
 			restartLog.record(reason, "", "", time.Now())

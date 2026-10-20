@@ -1106,15 +1106,19 @@ func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) 
 
 func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT session_id, title, parent_session_id, last_message_at, message_count,
-		        last_seen_at,
-		        (last_message_at IS NOT NULL
-		         AND (last_seen_at IS NULL OR last_message_at > last_seen_at)) AS has_unread,
-		        context_used,
-		        archived,
-		        short_id
-		 FROM session_index WHERE workspace_id = $1
-		 ORDER BY last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
+		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count,
+		        si.last_seen_at,
+		        (si.last_message_at IS NOT NULL
+		         AND (si.last_seen_at IS NULL OR si.last_message_at > si.last_seen_at)) AS has_unread,
+		        si.context_used,
+		        si.archived,
+		        si.short_id,
+		        parent.short_id
+		 FROM session_index si
+		 LEFT JOIN session_index parent
+		   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
+		 WHERE si.workspace_id = $1
+		 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1129,17 +1133,31 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		var lastSeen sql.NullTime
 		var contextUsed sql.NullInt64
 		var shortID sql.NullString
-		if err := rows.Scan(&item.ID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID); err != nil {
+		var parentShortID sql.NullString
+		if err := rows.Scan(&item.InternalID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID, &parentShortID); err != nil {
 			return nil, err
 		}
 		if title.Valid {
 			item.Title = title.String
 		}
-		if shortID.Valid {
+		// #1756 spec §1: the wire id is the phrase; the harness id is
+		// the internal key. A not-yet-minted row degrades to the
+		// harness id on the wire for one sweep cycle.
+		item.ID = item.InternalID
+		if shortID.Valid && shortID.String != "" {
 			item.ShortID = shortID.String
+			item.ID = shortID.String
 		}
 		if parentID.Valid {
+			item.InternalParentID = parentID.String
+			// Parent's phrase when the parent row has one (same page
+			// join); else the harness parent id — the sidebar nests by
+			// this, and a dangling internal reference is worse than a
+			// deprecated-shape one.
 			item.ParentID = parentID.String
+			if parentShortID.Valid && parentShortID.String != "" {
+				item.ParentID = parentShortID.String
+			}
 		}
 		if lastMsg.Valid {
 			t := lastMsg.Time

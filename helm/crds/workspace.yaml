@@ -268,8 +268,10 @@ spec:
                       description: |
                         Total recorded agent restarts since the pod's
                         agentd boot — supervisor-watchdog restarts plus
-                        recorded process-crash restarts. A lifetime
-                        count, never a resetting crash-loop counter.
+                        supervisor-attributed process-crash (crash/oom)
+                        restarts, in both container topologies. A
+                        lifetime count, never a resetting crash-loop
+                        counter.
                     lastAgentRestart:
                       type: object
                       description: |
