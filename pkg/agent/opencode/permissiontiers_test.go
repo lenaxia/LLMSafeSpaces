@@ -113,6 +113,7 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/var/lib/x", "deny", "deny /var"},
 		{"/root/.ssh/x", "deny", "deny /root"},
 		{"/run/secrets/x", "deny", "deny /run"},
+		{"/workspace/.local/opencode/auth.json.bak", "allow", "GRAMMAR EDGE (residual 3): no live-effective deny shape covers a single file under an allowed glob — the model verdict documents the unprotected sibling"},
 	}
 	for _, tc := range matrix {
 		t.Run(tc.resource, func(t *testing.T) {

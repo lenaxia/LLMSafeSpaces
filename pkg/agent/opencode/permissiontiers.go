@@ -72,6 +72,41 @@ import (
 //     action per directory. The ro mounts carry the real boundary for
 //     the two read-only pre-allows (assert cgroup2 ro before trusting —
 //     runtime default, not our pod spec; /opencode ro is ours).
+//  3. ENGINE DENY GRAMMAR (observed live on the pinned 1.18.15 during
+//     the #1759 investigation — 20+ probes across synthetic boots and
+//     floor boots; the ported model above is faithful for "/*" rules
+//     and optimistic elsewhere): only "X/*"-suffixed patterns ever
+//     fire a deny. Exact keys ("X") and terminal-star keys ("X*") load
+//     into the engine's rule list but never match for a DENY, while
+//     both shapes DO fire for an ALLOW. Consequences, recorded so
+//     nobody re-derives them:
+//     (a) The bare credential names below are intent/model rules:
+//     live, a typed `ls /home/sandbox/.ssh` executes under the root
+//     allow (pre-#1759 the home carve's ask key blocked it headless);
+//     the CONTENTS stay hard-denied by the "/*" variants (proven live
+//     — the deny-preservation leg in the integration corpus).
+//     (b) A single FILE under an allowed glob has no live-effective
+//     deny shape: e.g. /workspace/.local/opencode/auth.json under
+//     "/workspace/*" is ALLOWED wherever external_directory governs it
+//     (proven with a foreign project root — the integration legs boot
+//     opencode outside /workspace); on the default pod residual 1's
+//     project-root exemption is the governing claim. This exposure is
+//     the config allow's own trade (#1759's owner spec), NOT an engine
+//     auth-store self-allow — an earlier #1764 draft attributed it to
+//     one that was never observed; corrected here.
+//     (c) The engine APPENDS self-allows after the config rules
+//     (observed shapes: the boot's tool-output directory,
+//     "/tmp/opencode/*"); appended rules beat config under findLast.
+//     (d) A live-effective protective shape DOES exist for the
+//     directory case: a children deny "/workspace/.local/opencode/*"
+//     byte-sorts after the root allow and BITES live (probed
+//     2026-10-20: a bash cat of the auth path denied with our rule
+//     quoted in the engine's dump). Adding it to the floor would also
+//     deny opencode.db-class session state to agent tools — an owner
+//     decision, deliberately NOT taken in this documentation change.
+//     UPSTREAM ASKS: (i) honor exact/terminal-star denies; (ii) an
+//     exclude shape that beats allow-globs; (iii) document which
+//     paths the engine self-allows.
 
 // platformPermissionTiers is the external_directory floor the writer
 // bakes into the TOP-LEVEL permission key (the LIVE shape on the
