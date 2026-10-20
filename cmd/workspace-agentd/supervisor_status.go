@@ -78,12 +78,46 @@ func (s *supervisorStatusStore) spawnEnvHealth() *agentd.SpawnEnvHealth {
 	}
 }
 
+// crashRestartTracker derives NEW supervisor-side crash restarts from
+// successive status observations (#1776). The supervisor's counter is a
+// lifetime-since-supervisor-boot count, so the FIRST observation
+// reports it in full — a sidecar that booted (or re-booted) after early
+// crashes must re-derive the truthful count, not read 0 (the exact
+// asymmetry #1776 closes). A monotonic increase reports the delta; a
+// DECREASE (the workspace container restarted, taking the in-process
+// counter with it) rebases silently — a container restart is
+// kubelet-visible, not supervisor crash-respawn attribution.
+type crashRestartTracker struct {
+	mu       sync.Mutex
+	seen     bool
+	baseline int
+}
+
+// observe records one observation and returns how many crash restarts
+// it newly carries (0 = none).
+func (t *crashRestartTracker) observe(crashes int) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.seen {
+		t.seen = true
+		t.baseline = crashes
+		return crashes
+	}
+	if crashes <= t.baseline {
+		t.baseline = crashes
+		return 0
+	}
+	delta := crashes - t.baseline
+	t.baseline = crashes
+	return delta
+}
+
 // startSupervisorStatusPoller polls the supervisor's control-socket
 // status until ctx is done. First poll fires immediately so a boot-time
 // degrade (e.g. first spawn with a dead sidecar) surfaces without
 // waiting a full interval.
 func startSupervisorStatusPoller(ctx context.Context, wg *sync.WaitGroup, cc *controlClient, store *supervisorStatusStore) {
-	startSupervisorStatusPollerWithInterval(ctx, wg, cc, store, nil, supervisorStatusPollInterval)
+	startSupervisorStatusPollerWithInterval(ctx, wg, cc, store, nil, nil, supervisorStatusPollInterval)
 }
 
 // startSupervisorStatusPollerWithInterval is the injectable form:
@@ -91,11 +125,18 @@ func startSupervisorStatusPoller(ctx context.Context, wg *sync.WaitGroup, cc *co
 // generation boundary the poll observes (#1576 layer 1's signal — the
 // boot observation and every respawn; a nil callback is the
 // pre-#1576 no-op, kept for constructions without a tracker).
-func startSupervisorStatusPollerWithInterval(ctx context.Context, wg *sync.WaitGroup, cc *controlClient, store *supervisorStatusStore, onGeneration func(genPID int), interval time.Duration) {
+// restarts, when non-nil, receives crash-respawn attribution derived
+// from the supervisor's status (#1776): each new crash records into
+// the agent-restart log with the supervisor's classification (reason
+// crash/oom, EMPTY verdict) and crash clock. Recording lives HERE, in
+// the poller goroutine — the healthz handler keeps reading the log's
+// cached snapshot only (US-22.1 no-I/O contract).
+func startSupervisorStatusPollerWithInterval(ctx context.Context, wg *sync.WaitGroup, cc *controlClient, store *supervisorStatusStore, onGeneration func(genPID int), restarts *agentRestartLog, interval time.Duration) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		gen := newGenerationSignal()
+		crashes := &crashRestartTracker{}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		poll := func() {
@@ -107,6 +148,21 @@ func startSupervisorStatusPollerWithInterval(ctx context.Context, wg *sync.WaitG
 			store.set(st)
 			if onGeneration != nil && st.ChildPID != 0 && gen.observe(st.ChildPID, st.Restarts) {
 				onGeneration(st.ChildPID)
+			}
+			if restarts != nil {
+				// The count is exact across a window collision (two
+				// crashes between polls record twice); "last" carries
+				// the latest crash's attribution — the surfaced shape
+				// stays truthful either way.
+				if n := crashes.observe(st.CrashRestarts); n > 0 {
+					at := st.LastCrashAt
+					if at.IsZero() {
+						at = time.Now()
+					}
+					for i := 0; i < n; i++ {
+						restarts.record(st.LastCrashReason, "", "", at)
+					}
+				}
 			}
 		}
 		poll()

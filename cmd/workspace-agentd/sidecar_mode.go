@@ -241,6 +241,12 @@ func runSidecarCommand(_ []string) int {
 	// it now (#1573's live finding was that NEITHER ever fired in split
 	// mode; the supervisor holds no tracker by design, so the poller's
 	// observable PID truth is the channel).
+	// #1576 layer 1's signal doubles as the #1776 attribution channel:
+	// the same poll that observes generation boundaries derives crash-
+	// respawn deltas into deps.restartLog (nil reason-enum restarts
+	// never count there — the watchdog's fires already record at fire
+	// time), so the sidecar's supervisor slice carries crash restarts
+	// too. healthz keeps reading the log's cached snapshot (US-22.1).
 	startSupervisorStatusPollerWithInterval(bgCtx, &bgWg, newControlClient(ControlSocketAddr()), supervisorStatus,
 		func(genPID int) {
 			if deps.sseTracker != nil {
@@ -257,7 +263,7 @@ func runSidecarCommand(_ []string) int {
 			if deps.healthCache != nil {
 				deps.healthCache.noteAgentGeneration()
 			}
-		}, supervisorStatusPollInterval)
+		}, deps.restartLog, supervisorStatusPollInterval)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
@@ -325,8 +331,9 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		pendingApply:         newPendingApplyTracker(),
 		// #1760: the sidecar runs the watchdog loop (backgroundLoops is
 		// shared), so its fires/suppressions land in this log and surface
-		// on the sidecar's admin mux. Supervisor crash restarts in this
-		// topology stay with the restart-reason marker (scope ruling).
+		// on the sidecar's admin mux. #1776: supervisor crash respawns
+		// attribute here too — the status poller derives them from the
+		// supervisor's lifetime crash counter over the control socket.
 		restartLog: newAgentRestartLog(),
 	}
 

@@ -158,9 +158,9 @@ type WorkspaceConditionResult struct {
 
 // SupervisorStatusResult is the supervisor/watchdog agent-restart slice
 // of the workspace status DTO (#1760). AgentRestarts is a lifetime
-// count since the pod's agentd boot (supervisor-watchdog restarts in
-// both container topologies, plus recorded process-crash restarts
-// where the supervisor records them) — never a resetting crash-loop
+// count since the pod's agentd boot (supervisor-watchdog restarts plus
+// supervisor-attributed process-crash restarts — reason crash/oom — in
+// both container topologies) — never a resetting crash-loop
 // counter.
 type SupervisorStatusResult struct {
 	AgentRestarts int `json:"agentRestarts"`

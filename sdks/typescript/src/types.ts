@@ -75,8 +75,8 @@ export interface WorkspaceStatusResult {
  * Supervisor health-watchdog observations about agent restarts in the
  * workspace (#1760). agentRestarts is a lifetime count since the
  * workspace pod's supervisor boot — supervisor-watchdog restarts plus
- * recorded process-crash restarts where the supervisor records them —
- * never a resetting crash-loop counter.
+ * supervisor-attributed process-crash (crash/oom) restarts, in both
+ * container topologies — never a resetting crash-loop counter.
  */
 export interface SupervisorStatus {
   /** Total recorded agent restarts since the pod's supervisor boot. */

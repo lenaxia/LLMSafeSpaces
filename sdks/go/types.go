@@ -250,9 +250,9 @@ type WorkspaceStatus struct {
 
 // SupervisorStatus is the supervisor health-watchdog's restart slice of
 // WorkspaceStatus (#1760). AgentRestarts is a lifetime count since the
-// pod's supervisor boot — supervisor-watchdog restarts plus recorded
-// process-crash restarts where the supervisor records them — never a
-// resetting crash-loop counter.
+// pod's supervisor boot — supervisor-watchdog restarts plus
+// supervisor-attributed process-crash (crash/oom) restarts, in both
+// container topologies — never a resetting crash-loop counter.
 type SupervisorStatus struct {
 	AgentRestarts         int                `json:"agentRestarts"`
 	LastAgentRestart      *AgentRestartEvent `json:"lastAgentRestart,omitempty"`

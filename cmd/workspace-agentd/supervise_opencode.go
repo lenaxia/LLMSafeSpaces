@@ -196,6 +196,10 @@ func newSupervisorProcess(ctx context.Context) (*managedProcess, *managedProcAda
 	proc := &managedProcess{cmdFactory: a.composeChild, preSpawn: a.preSpawn}
 	proc.onChildStarted = nil
 	proc.skipHealthProbe = true
+	// #1776: the crash observer feeds the adapter's lifetime crash
+	// attribution, served on the status method — the sidecar's poller
+	// records it into its agentRestartLog (the A11 asymmetry's closure).
+	proc.restartObserver = a.observeCrashRestart
 	a.p = proc
 	return proc, a
 }
@@ -291,6 +295,43 @@ type managedProcAdapter struct {
 	// servedEnvRevAnchor anchors spawned_rev.
 	servedFilesRevAnchor string
 	filesReason          string
+
+	// #1776 crash attribution, guarded by pullMu (same discipline as
+	// the pull state: the supervisor goroutine is the sole writer via
+	// observeCrashRestart; the socket's status reader is the reader of
+	// record). crashRestarts is a LIFETIME count since supervisor boot;
+	// the reason/time pair is the latest crash's classification.
+	crashRestarts   int
+	lastCrashReason string
+	lastCrashAt     time.Time
+}
+
+// observeCrashRestart is the supervisor's restartObserver target
+// (#1776): the managedProcess crash path's classification (reason
+// crash/oom — the same decision point and strings as the restart-
+// reason marker) lands here and is served on the control socket's
+// status for the sidecar's restart log. Operator-class restarts
+// (socket reason-enum requests, config-change restarts) never reach
+// this — the observer fires only when neither stop nor restart was
+// requested.
+func (a *managedProcAdapter) observeCrashRestart(reason string) {
+	now := time.Now()
+	a.pullMu.Lock()
+	a.crashRestarts++
+	a.lastCrashReason = reason
+	a.lastCrashAt = now
+	a.pullMu.Unlock()
+}
+
+// CrashRestartReport implements the crashReporter capability (#1776).
+func (a *managedProcAdapter) CrashRestartReport() crashRestartReport {
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	return crashRestartReport{
+		CrashRestarts:   a.crashRestarts,
+		LastCrashReason: a.lastCrashReason,
+		LastCrashAt:     a.lastCrashAt,
+	}
 }
 
 func (a *managedProcAdapter) factory() func() *exec.Cmd {
