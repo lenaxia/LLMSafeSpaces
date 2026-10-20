@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the global partial unique index with check-and-retry (a collision
   re-draws — the digit slot is the disambiguator; there is no counter
   suffix). The UUID stays the internal key everywhere (migration
-  `000038`, api + helm synced; creation mints, reads lazy-backfill
+  `000039`, api + helm synced; creation mints, reads lazy-backfill
   pre-phrase rows). Namespace rule PINNED: shared wordlists with
   session phrases, disjoint BY SHAPE from them (3 words) and from the
   harness's 2-word no-digit slugs (the digit).
@@ -207,7 +207,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backpressure: "disk 92%"` on rows.
 - REST + external MCP mirror the full vocabulary (parity matrix
   green on all three surfaces); SDKs (Go/Python/TypeScript/Java) and
-  the OpenAPI spec updated; migration 000038 drops the cancelled
+  the OpenAPI spec updated; migration 000039 drops the cancelled
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
