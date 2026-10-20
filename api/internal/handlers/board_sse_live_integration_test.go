@@ -26,15 +26,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
-
-type sseTestLogger struct{ t *testing.T }
-
-func (l sseTestLogger) Warn(msg string, keysAndValues ...interface{}) {
-	l.t.Logf("publisher: %s %v", msg, keysAndValues)
-}
 
 func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -67,11 +62,14 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 	require.NoError(t, err)
 
 	// The production wiring shape: broker-backed ProxyHandler + the
-	// board service with BoardEventPublisher installed.
-	h := &ProxyHandler{userBroker: eventbroker.NewUserEventBroker()}
+	// board service with BoardEventPublisher installed. The observed
+	// logger stands in for the production logger (the stream handler
+	// logs its lifecycle; the snapshot goroutine skips on nil k8s).
+	log, _ := logger.NewObserved()
+	h := &ProxyHandler{userBroker: eventbroker.NewUserEventBroker(), logger: log}
 	cfg := board.DefaultEngineConfig()
 	svc := board.NewService(pool, cfg)
-	pub := h.BoardEventPublisher(pool, sseTestLogger{t: t})
+	pub := h.BoardEventPublisher(pool, log)
 	require.NotNil(t, pub, "broker-mounted handler installs the publisher")
 	svc.SetEventPublisher(pub)
 
