@@ -65,7 +65,7 @@ func TestMirrorAgentSupervisor_RestartSurfaces(t *testing.T) {
 	require.NotNil(t, cond, "AgentRestarted condition must be set")
 	assert.Equal(t, "True", cond.Status)
 	assert.Equal(t, v1.ReasonWatchdogRestarted, cond.Reason)
-	assert.Contains(t, cond.Message, "restarted by the supervisor health watchdog")
+	assert.Contains(t, cond.Message, "restarted by the supervisor (reason:")
 	assert.Contains(t, cond.Message, "hung")
 	assert.NotContains(t, cond.Message, ";", "condition messages must stay semicolon-free (warning-suffix parser contract)")
 }

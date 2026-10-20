@@ -18,7 +18,7 @@ describe("AgentRestartBanner", () => {
   it("renders the watchdog restart with agent-neutral copy", () => {
     render(<AgentRestartBanner restart={RESTART} />);
     const banner = screen.getByRole("alert");
-    expect(banner).toHaveTextContent("restarted by the supervisor health watchdog");
+    expect(banner).toHaveTextContent("restarted by the supervisor at");
     expect(banner).toHaveTextContent("stopped responding to health checks");
     expect(banner).toHaveTextContent("In-flight work may have been interrupted");
     expect(banner).not.toHaveTextContent("opencode");

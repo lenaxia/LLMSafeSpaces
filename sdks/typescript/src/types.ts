@@ -94,7 +94,7 @@ export interface SupervisorStatus {
 }
 
 /**
- * One recorded agent restart by the supervisor health watchdog.
+ * One recorded agent restart by the supervisor (watchdog/crash/oom).
  */
 export interface AgentRestartEvent {
   /** Why the agent was restarted: health_watchdog, health_watchdog_unknown_episode, crash, or oom. */

@@ -29,7 +29,8 @@ function restartStamp(restart: AgentRestartEvent): string {
 
 /**
  * Dismissible banner shown when the workspace's agent was restarted by
- * the supervisor health watchdog (#1760). Rendered on chat load from the
+ * the supervisor (#1760; the mechanism rides the reason field —
+ * health_watchdog/crash/oom). Rendered on chat load from the
  * workspace status (supervisor.lastAgentRestart) and live from the
  * agent_restarted SSE event. Dismissal is keyed by the restart's
  * timestamp: a NEW restart re-shows the banner.
@@ -54,8 +55,8 @@ export function AgentRestartBanner({ restart }: Props) {
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
-        The agent in this workspace was restarted by the supervisor health
-        watchdog at {time} — {reason}{verdict}. In-flight work may have been
+        The agent in this workspace was restarted by the supervisor at{" "}
+        {time} — {reason}{verdict}. In-flight work may have been
         interrupted.
       </span>
       <button

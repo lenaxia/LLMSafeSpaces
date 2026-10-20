@@ -456,8 +456,10 @@ const (
 	// token (scope violation, sanitization refusal, quota) — §4.7.
 	ReasonCredentialRouterRejected = "RouterRejected"
 	// ReasonWatchdogRestarted (#1760): the agent was restarted by the
-	// supervisor health watchdog (the verdict and attribution ride the
-	// message and status.agentSupervisor).
+	// supervisor — the mechanism (health_watchdog/crash/oom) rides the
+	// message's reason field and status.agentSupervisor; the constant
+	// name predates crash/oom attribution (#1796) and is kept for API
+	// compatibility.
 	ReasonWatchdogRestarted = "WatchdogRestarted"
 )
 

@@ -86,7 +86,7 @@ var workspaceStopTool = mcp.NewTool("workspace_stop",
 var workspaceStatusTool = mcp.NewTool("workspace_status",
 	mcp.WithDescription("Get a workspace's status: phase, conditions, agent health, and the supervisor restart history "+
 		"(restart count, last restart reason/verdict/time, suppressed restart count). Useful after an interrupted task — "+
-		"an agent restarted by the supervisor health watchdog explains interrupted work."),
+		"an agent restarted by the supervisor explains interrupted work."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
 )
 

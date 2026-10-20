@@ -44,7 +44,7 @@ func TestGetWorkspaceStatus_SupervisorBlock(t *testing.T) {
 		Type:    v1.WorkspaceConditionAgentRestarted,
 		Status:  "True",
 		Reason:  v1.ReasonWatchdogRestarted,
-		Message: "agent restarted by the supervisor health watchdog (reason: health_watchdog, verdict: hung)",
+		Message: "agent restarted by the supervisor (reason: health_watchdog, verdict: hung)",
 	})
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(activeCrd, nil)
 

@@ -152,7 +152,7 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
     await renderReady(qc);
 
     const banner = await screen.findByTestId("agent-restart-banner");
-    expect(banner).toHaveTextContent("restarted by the supervisor health watchdog");
+    expect(banner).toHaveTextContent("restarted by the supervisor at");
     expect(banner).toHaveTextContent("stopped responding to health checks");
   });
 
@@ -180,7 +180,7 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
     } as never);
 
     const banner = await screen.findByTestId("agent-restart-banner");
-    expect(banner).toHaveTextContent("restarted by the supervisor health watchdog");
+    expect(banner).toHaveTextContent("restarted by the supervisor at");
   });
 
   it("is dismissible", async () => {
