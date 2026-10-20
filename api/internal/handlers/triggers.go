@@ -320,12 +320,19 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
 				return
 			}
-			uuid, rerr := h.wsPhraseResolver.FindWorkspaceIDByPhrase(c.Request.Context(), req.TargetWorkspaceID)
-			if rerr != nil || uuid == "" {
+			resolved, rerr := h.wsPhraseResolver.FindWorkspaceIDByPhrase(c.Request.Context(), req.TargetWorkspaceID)
+			if rerr != nil {
+				// Degraded lookup: an infra fault must never answer as a
+				// confident miss (5xx-never-suggests, session-lane r2
+				// precedent) — the availability 503, not a 404.
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "target workspace lookup temporarily unavailable"})
+				return
+			}
+			if resolved == "" {
 				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
 				return
 			}
-			targetWorkspaceID = uuid
+			targetWorkspaceID = resolved
 		}
 		if req.WorkflowID != "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and targetWorkspaceId"})
@@ -342,7 +349,11 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "cross-workspace targeting is not configured"})
 			return
 		}
-		meta, rerr := h.wsOwnership.ResolveWorkspace(c.Request.Context(), req.TargetWorkspaceID)
+		// r1: the gate must resolve the RESOLVED UUID, never the raw
+		// input — resolving the phrase again here made every valid,
+		// owned phrase-form target a 404 (the dead path the review
+		// caught).
+		meta, rerr := h.wsOwnership.ResolveWorkspace(c.Request.Context(), targetWorkspaceID)
 		if rerr != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(rerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeNotFound {
@@ -359,6 +370,15 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		if oerr := h.wsOwnership.CheckOwnership(c.Request.Context(), actor, meta); oerr != nil {
 			var apiErr *apierrors.APIError
 			if errors.As(oerr, &apiErr) && apiErr.Type == apierrors.ErrorTypeForbidden {
+				// §4.3 masking (#1757): for a PHRASE-form target the
+				// forbidden case is not-found-equivalent — a foreign
+				// phrase must answer with the byte-identical 404 the
+				// unknown phrase gets, or the distinction enumerates
+				// the fleet's live phrase space.
+				if shortid.IsWorkspacePhraseForm(req.TargetWorkspaceID) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
+					return
+				}
 				c.JSON(http.StatusForbidden, gin.H{"error": "no owner or admin rights on target workspace"})
 				return
 			}
@@ -367,7 +387,9 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize target workspace"})
 			return
 		}
-		targetWorkspaceID = req.TargetWorkspaceID
+		// targetWorkspaceID stays the RESOLVED UUID — the stored key is
+		// the UUID; the phrase never persists (r1: this line previously
+		// clobbered the resolved UUID back to the raw input).
 	}
 
 	// Input mapping (0059): V1–V6 on the create view.

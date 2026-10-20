@@ -521,14 +521,12 @@ func (s *Service) GetWorkspace(ctx context.Context, workspaceID string) (*types.
 	}
 	if phraseID.Valid {
 		ws.PhraseID = phraseID.String
-	} else {
-		// #1757 lazy backfill: pre-phrase rows mint on first read —
-		// best-effort by contract (the creation path and this read
-		// path converge; a miss here only delays the phrase one read).
-		if phrase, perr := s.EnsureWorkspacePhraseRegistered(ctx, workspaceID); perr == nil && phrase != "" {
-			ws.PhraseID = phrase
-		}
 	}
+	// r1: this read is PURE — the lazy backfill was moved OUT of the
+	// pre-authorization path (any caller could mint on a foreign
+	// workspace by probing its UUID). Legacy rows converge in the
+	// USER-SCOPED read (services/workspace GetWorkspace, after
+	// verifyOwner) and at creation.
 	return &ws, nil
 }
 

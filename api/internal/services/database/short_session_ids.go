@@ -251,10 +251,7 @@ const workspacePhraseRetries = 5
 // AND deleted_at IS NULL) arbitrates races across replicas.
 func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
 	for attempt := 0; attempt < workspacePhraseRetries; attempt++ {
-		minted, err := shortid.MintWorkspacePhrase()
-		if err != nil {
-			return "", err
-		}
+		minted := shortid.MintWorkspacePhrase()
 		tag, err := s.DB.ExecContext(ctx,
 			`UPDATE workspaces SET phrase_id = $2, updated_at = NOW()
 			 WHERE id = $1 AND (phrase_id IS NULL OR phrase_id = '')`,
@@ -319,8 +316,15 @@ func (s *Service) FindWorkspaceIDByName(ctx context.Context, userID, name string
 		}
 		ids = append(ids, id)
 	}
+	// r1: a mid-iteration stream failure must surface as an error on
+	// EVERY cardinality path — previously only the exactly-one-row
+	// return checked rows.Err(), folding a broken stream into a clean
+	// "absent"/"ambiguous" miss (a confident 404 on infra fault).
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
 	if len(ids) != 1 {
 		return "", nil // ambiguous or absent — never guess
 	}
-	return ids[0], rows.Err()
+	return ids[0], nil
 }

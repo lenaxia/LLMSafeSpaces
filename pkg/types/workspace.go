@@ -25,6 +25,10 @@ type Workspace struct {
 	CredentialsPendingSince *time.Time        `json:"credentialsPendingSince,omitempty"`
 	// DevPreviewEnabled reflects spec.networkAccess.devPreview (Epic 66).
 	DevPreviewEnabled bool `json:"devPreviewEnabled,omitempty"`
+	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
+	// fleet-unique) — THE address for display; the UUID stays the
+	// internal key. omitempty: absent only pre-backfill.
+	PhraseID string `json:"phraseId,omitempty"`
 }
 
 // CreateWorkspaceRequest is the request body for creating a workspace.

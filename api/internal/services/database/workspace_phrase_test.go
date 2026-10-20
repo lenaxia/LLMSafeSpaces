@@ -5,8 +5,10 @@ package database
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -100,3 +102,53 @@ type testPgError struct{ code string }
 
 func (e *testPgError) SQLState() string { return e.code }
 func (e *testPgError) Error() string    { return "unique violation" }
+
+// r1: the DB read is PURE — a NULL phrase_id surfaces as an empty
+// PhraseID with ZERO writes. The lazy backfill moved to the
+// user-scoped read (post-verifyOwner) precisely so a pre-authorization
+// caller can never mint by probing; this pin holds that property at
+// the tier that owns the SQL.
+func TestGetWorkspace_NullPhrase_IsPureRead(t *testing.T) {
+	s, mock, done := setupMockDB(t)
+	defer done()
+
+	rows := sqlmock.NewRows([]string{"id", "user_id", "name", "runtime", "storage_size", "image_tag", "agent_version", "created_at", "updated_at", "default_model", "agent_needs_refresh", "credentials_pending_since", "org_id", "phrase_id"}).
+		AddRow("ws-legacy", "user-1", "Legacy", "python:3.11", "10Gi", "sha-abc", "1.15.12",
+			time.Now(), time.Now(), "", false, nil, nil, nil)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT w.id, w.user_id, w.name, w.runtime, w.storage_size")).
+		WithArgs("ws-legacy").
+		WillReturnRows(rows)
+
+	ws, err := s.GetWorkspace(context.Background(), "ws-legacy")
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if ws.PhraseID != "" {
+		t.Fatalf("NULL phrase_id must surface as empty, got %q", ws.PhraseID)
+	}
+	// No UPDATE, no convergence SELECT — ExpectationsWereMet with zero
+	// write expectations IS the pin.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL fired: %v", err)
+	}
+}
+
+// r1: a mid-stream failure on the name lookup is an ERROR on every
+// cardinality path — previously rows.Err() was only checked on the
+// exactly-one-row return, folding a broken stream into a clean
+// "absent"/"ambiguous" miss (a confident 404 on an infra fault).
+func TestFindWorkspaceIDByName_StreamErrorIsError(t *testing.T) {
+	s, mock, done := setupMockDB(t)
+	defer done()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM workspaces WHERE user_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL`)).
+		WithArgs("user-1", "my-space").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).
+			AddRow("ws-a").AddRow("ws-b").AddRow("ws-c").
+			RowError(2, errors.New("connection reset mid-stream")))
+
+	if _, err := s.FindWorkspaceIDByName(context.Background(), "user-1", "my-space"); err == nil {
+		t.Fatal("a mid-stream failure must surface as an error, never a clean miss")
+	}
+}

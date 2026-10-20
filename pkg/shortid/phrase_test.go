@@ -193,10 +193,7 @@ func TestWordlists_Frozen(t *testing.T) {
 func TestMintWorkspacePhrase_FormatPins(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 300; i++ {
-		id, err := MintWorkspacePhrase()
-		if err != nil {
-			t.Fatalf("MintWorkspacePhrase: %v", err)
-		}
+		id := MintWorkspacePhrase()
 		if !IsWorkspacePhraseForm(id) {
 			t.Fatalf("MintWorkspacePhrase() = %q: not 2-words+1-digit", id)
 		}

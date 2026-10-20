@@ -108,13 +108,16 @@ var lowerAlphaWord = regexp.MustCompile(`^[a-z]+$`)
 const workspaceDigitAlphabet = "0123456789"
 
 // MintWorkspacePhrase returns a fresh 2-word + 1-digit phrase under
-// the mint lock (see mintRand — same thread-safety discipline).
-func MintWorkspacePhrase() (string, error) {
+// the mint lock (see mintRand — same thread-safety discipline). The
+// draw cannot fail (r1: the dead error return was removed); the
+// bounded check-and-retry that CAN fail lives in the persistence
+// seam (EnsureWorkspacePhraseRegistered).
+func MintWorkspacePhrase() string {
 	mintMu.Lock()
 	defer mintMu.Unlock()
 	return adjectiveWords[mintRand.Intn(len(adjectiveWords))] + "-" +
 		nounWords[mintRand.Intn(len(nounWords))] + "-" +
-		string(workspaceDigitAlphabet[mintRand.Intn(len(workspaceDigitAlphabet))]), nil
+		string(workspaceDigitAlphabet[mintRand.Intn(len(workspaceDigitAlphabet))])
 }
 
 // workspacePhraseForm is the #1757 shape: exactly two lowercase word

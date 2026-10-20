@@ -11,8 +11,11 @@
 -- harness slugs (2 words, no digit) BY SHAPE — pinned in
 -- pkg/shortid.
 --
--- Nullable + plain unique index: existing rows are backfilled by the
--- same convergence sweep pattern (#1691); the index enforces
+-- Nullable + plain unique index: legacy rows converge lazily — the
+-- creation path mints, and the FIRST AUTHORIZED read backfills (the
+-- access middleware, post-ownership; non-gate reads backfill in the
+-- seam). There is NO sweep job (r1: the up-comment previously claimed
+-- a #1691-style sweep that does not exist); the index enforces
 -- fleet-wide uniqueness for every minted value including during the
 -- backfill window.
 

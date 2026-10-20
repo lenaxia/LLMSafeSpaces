@@ -148,14 +148,31 @@ func setParam(c *gin.Context, key, value string) {
 // canonical address; the UUID passes through byte-identical with the
 // deprecation notice attached; a NAME resolves only when it is the
 // requester's single workspace by that name (names are caller-owned
-// and may collide — ambiguity never resolves, it did-you-means via
-// the session-suggestion surface's 404 path downstream). Resolution
-// failure on a phrase-shaped ref answers the structured 404; other
-// misses pass through so the existing 404 flow keeps its truth.
+// and may collide — ambiguity never resolves here; an ambiguous or
+// absent name passes through UNREWRITTEN so the access gate that
+// follows answers with its ordinary 404 — the workspace surface
+// carries no did-you-mean machinery). Phrase-form resolution failure
+// answers the structured 404; a lookup ERROR answers 503 (a degraded
+// lookup is availability, never a confident miss — §4.4/§4.6
+// 5xx-never-suggests discipline, session-lane precedent). When a
+// phrase resolves, the §4.3 anti-enumeration masking marker is set:
+// a downstream ownership denial on a phrase-addressed workspace is
+// answered by the access middleware with the byte-identical 404 the
+// unknown phrase gets.
+//
+// Mounted ONLY on the workspace :id group (router idGroup); the
+// admin :workspaceId routes are NOT phrase-wired (deferred — see the
+// PR body's deferral section).
 type WorkspaceRefResolver interface {
 	FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error)
 	FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error)
 }
+
+// ContextKeyWorkspaceRefPhrase is set (gin context) when the caller
+// addressed the workspace by a PHRASE that resolved — the access
+// middleware folds a Forbidden verdict into the byte-identical 404
+// the unknown phrase gets (§4.3 anti-enumeration, #1757).
+const ContextKeyWorkspaceRefPhrase = "workspaceRefPhrase"
 
 // WorkspaceRefResolution rewrites the :id param when the caller used
 // a phrase (or an unambiguous name). Nil resolver disables the layer.
@@ -176,17 +193,31 @@ func WorkspaceRefResolution(resolver WorkspaceRefResolver) gin.HandlerFunc {
 		switch {
 		case shortid.IsWorkspacePhraseForm(ref):
 			id, err := resolver.FindWorkspaceIDByPhrase(c.Request.Context(), ref)
-			if err == nil && id != "" {
+			if err != nil {
+				// Degraded lookup: 503, never a confident miss (a
+				// transient DB outage must not answer "no workspace
+				// holds the phrase").
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": "workspace phrase lookup temporarily unavailable — retry",
+				})
+				return
+			}
+			if id != "" {
 				setParam(c, "id", id)
 				setParam(c, "workspaceId", id)
+				// §4.3 masking marker: the access middleware folds a
+				// Forbidden verdict on a phrase-addressed workspace
+				// into the byte-identical 404 below.
+				c.Set(ContextKeyWorkspaceRefPhrase, shortid.Normalize(ref))
 				c.Next()
 				return
 			}
 			// Phrase-shaped and unresolvable: a 404 with the honest
 			// message (suggestions are session-scoped machinery; a
-			// workspace miss says so plainly).
+			// workspace miss says so plainly). The NORMALIZED ref is
+			// echoed, never the raw input.
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
-				"error": "workspace not found: no workspace holds the phrase " + ref,
+				"error": "workspace not found: no workspace holds the phrase " + shortid.Normalize(ref),
 			})
 		default:
 			// UUID or name: names resolve unambiguously (deprecated
@@ -205,10 +236,27 @@ func WorkspaceRefResolution(resolver WorkspaceRefResolver) gin.HandlerFunc {
 				c.Next()
 				return
 			}
-			if id, err := resolver.FindWorkspaceIDByName(c.Request.Context(), userID, ref); err == nil && id != "" {
+			id, err := resolver.FindWorkspaceIDByName(c.Request.Context(), userID, ref)
+			if err != nil {
+				// Same 5xx-never-suggests discipline as the phrase
+				// arm: a degraded name lookup is availability.
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": "workspace lookup temporarily unavailable — retry",
+				})
+				return
+			}
+			if id != "" {
 				setParam(c, "id", id)
 				setParam(c, "workspaceId", id)
+				// The name form is in its #1757 deprecation window:
+				// mirror the session lane's one-release notice on the
+				// response when the rewrite fires.
+				c.Header("Deprecation", "true")
+				c.Header("Sunset", "workspace name input is deprecated; address workspaces by the 2-word+digit phrase (see GET /workspaces)")
 			}
+			// Absent or ambiguous name: passthrough UNREWRITTEN — the
+			// gate answers with its ordinary verdict (no suggestions
+			// on the workspace surface).
 			c.Next()
 		}
 	}

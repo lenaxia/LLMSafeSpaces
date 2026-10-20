@@ -74,3 +74,35 @@ None (review availability depends on the trusted-app-bot fix reaching this PR's 
 - api/internal/app/{app.go, e2e_suspend_test.go}, api/internal/services/auth/{auth_e2e_all_test.go, auth_sessionid_test.go}
 - pkg/types/workspace.go
 - worklogs/NNNN_... (this file), CHANGELOG.md
+
+## r1 addendum — remediation of the CHANGES_REQUESTED verdict @ 23f01ecd
+
+- **Triggers dead path (Critical 1):** the #1729 gate now resolves
+  the RESOLVED UUID (never the raw phrase) and the clobber line is
+  gone — the stored key is the UUID. Foreign-phrase denial folds into
+  the byte-identical 404 (§4.3). 7 pins in
+  triggers_workspace_phrase_1757_test.go.
+- **5xx-never-suggests (Correctness 2):** degraded phrase/name
+  lookups answer 503 in the middleware AND the trigger surface;
+  FindWorkspaceIDByName checks rows.Err() on every cardinality path
+  (sqlmock pin on the 2-row swallow).
+- **Doc-comment truth (Correctness 4):** WorkspaceRefResolver's
+  contract now states exactly what is wired (idGroup only; admin
+  :workspaceId deferred); Deprecation/Sunset headers attach on the
+  NAME rewrite; ambiguity passes through unrewritten (no suggestions
+  on the workspace surface).
+- **Backfill redesign (Robustness 1 + Correctness 5):** the DB read
+  is PURE (no write, sqlmock pin); legacy rows converge on the first
+  AUTHORIZED read — services/workspace GetWorkspace, post-verifyOwner
+  (3 service-tier pins incl. denied-caller-never-writes);
+  types.Workspace carries phraseId. The migration comment describes
+  the real convergence (no sweep job existed to claim).
+- **§4.3 masking (Security 1):** phrase-addressed Forbidden folds
+  into the byte-identical miss 404 in the access middleware and the
+  trigger gate (router pin asserts JSON equality; e2e covers both).
+- **Style:** uuid shadow renamed; AssertNotCalled moved after
+  ServeHTTP; MintWorkspacePhrase's dead error return removed (the
+  bounded retry that can fail lives in EnsureWorkspacePhraseRegistered).
+- **Tests added:** 7 trigger pins, 7 router pins, 3 service-tier
+  backfill pins, 2 sqlmock pins, 2 e2e flows. Phantom-pin lesson
+  applied: every "pinned" comment now names a test that exists.
