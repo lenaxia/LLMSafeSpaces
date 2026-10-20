@@ -175,9 +175,9 @@ describe("BOARD_GUARD_MESSAGES parity with the backend's emittable codes", () =>
     expect(BOARD_GUARD_MESSAGES[code]?.length).toBeGreaterThan(0);
   });
 
-  it("carries the DependencyError codes the server actually emits (R4a)", () => {
+  it("carries the DependencyError codes the server actually emits (R4a, #1747: workspace-scoped)", () => {
     expect(BOARD_GUARD_MESSAGES.cycle).toBeDefined();
-    expect(BOARD_GUARD_MESSAGES.cross_project).toBeDefined();
+    expect(BOARD_GUARD_MESSAGES.cross_workspace).toBeDefined();
     expect(BOARD_GUARD_MESSAGES.self).toBeDefined();
     expect(BOARD_GUARD_MESSAGES.dependency).toBeUndefined();
   });

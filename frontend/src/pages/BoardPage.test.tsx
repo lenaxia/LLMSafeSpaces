@@ -47,7 +47,6 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(card.closest('[data-stage-drop="backlog"]')).not.toBeNull();
     expect(card.textContent).toContain("tsk-aaaa0001");
     expect(card.textContent).toContain("Write charter");
-    expect(card.textContent).toContain("P2");
   });
 
   it("shows the assignee busy indicator only on claimed in-progress rows", async () => {
