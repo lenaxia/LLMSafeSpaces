@@ -52,9 +52,10 @@ func TestMintPhrase_FormatPins(t *testing.T) {
 // fresh crypto seed on cleanup), which makes the window deterministic
 // AND lets the entropy guard get STRONGER: per-slot distribution
 // bounds catch a degraded generator (e.g. one drawing verbs from a
-// narrowed slice) that the old duplicate-only check could not — a
-// subtle narrowing rarely composes the same full phrase twice in 500
-// draws. The production path stays crypto-seeded (#1756: enumeration
+// narrowed slice) that the old duplicate-only check could not — under
+// the pinned seed a narrowed generator rarely composes the same full
+// phrase twice in 500 draws. The production path stays crypto-seeded
+// (#1756: enumeration
 // is a ruled non-issue; ids are references under authz).
 func TestMintPhrase_HighEntropyNotSequential(t *testing.T) {
 	mintMu.Lock()
@@ -82,10 +83,13 @@ func TestMintPhrase_HighEntropyNotSequential(t *testing.T) {
 	// Entropy bounds for the seeded window: uniform draws over the
 	// frozen lists populate most slots — the expected distinct count
 	// for 500 uniform draws over N slots is N(1-(1-1/N)^500):
-	// ~135/160 adjectives, ~158/192 nouns, ~47/64 verbs. The bounds
-	// sit well below expectation with generous margin for the fixed
-	// window, and far above what any narrowed/degraded generator
-	// produces (a 1/4-narrowed verb list yields ~16 distinct verbs).
+	// 153.0/160 adjectives, 177.9/192 nouns, 64.0/64 verbs (the
+	// pinned window's actuals land on these: 153/174/64). The bounds
+	// sit far below expectation so the fixed window can never graze
+	// them, and they detect any generator drawing from under ~60% of
+	// a list — a narrowing ABOVE that support (e.g. 40 of 64 verbs)
+	// passes; strictly stronger than the old duplicate-only check,
+	// which caught only near-total collapse.
 	if len(adjs) < 100 {
 		t.Errorf("adjective entropy low: %d distinct in 500 draws (uniform expectation ~135)", len(adjs))
 	}
