@@ -41,7 +41,7 @@ func TestIntegrationHarness_ChildHonorsSyntheticDataHome(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the child's structured log never appeared under the harness data dir %s — the child did not honor the synthetic XDG_DATA_HOME (an inherited value won by first-match)", logDir)
+			t.Fatalf("the child's structured log never appeared under the harness data dir %s — the child did not honor the synthetic XDG_DATA_HOME (the overrides stopped being delivered; see the harness env comment for the resolution semantics)", logDir)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
