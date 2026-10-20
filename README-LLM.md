@@ -98,7 +98,7 @@ A task is **not** done until it has been demonstrated to be integrated properly 
 
 ### 0b. Git Identity: Always the App Identity
 
-**When doing ANY git or `gh` work from inside an LLMSafeSpaces workspace** (commits, pushes, branch creation, API calls), authenticate as the **agentic-actor-coder GitHub App** — never with a personal token, and never embed credentials anywhere.
+**When doing ANY git or `gh` work from inside an LLMSafeSpaces workspace** (commits, pushes, branch creation, API calls), authenticate as the **agentic-actor-coder GitHub App** — never with a personal token, and never embed credentials anywhere. This rule is scoped to LLMSafeSpaces work performed from inside a workspace; when contributing to repositories outside LLMSafeSpaces, follow that project's own credential conventions.
 
 The inputs are provided by the platform: the App's private key lives in `/home/sandbox/.secrets/` (platform-managed, rotates) and the App ID in the `AGENTIC_ACTOR_CODER_APPID` environment variable. Use them to mint short-lived App installation tokens (JWT RS256 → installation access token) and configure git/gh to authenticate that way. Figure out the mechanism for your environment — a credential helper, a gh token env, or direct API auth — as long as the result is App-identity authentication.
 
