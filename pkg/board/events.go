@@ -178,3 +178,23 @@ func (s *Service) commitPublishing(ctx context.Context, tx pgx.Tx, pending ...Ev
 	}
 	return nil
 }
+
+// replayOf is the caller-keyed replay probe for actions whose
+// state-dependent guards run BEFORE the eventWriter: a requestId that
+// already landed its event renders the original outcome ("200-with-
+// original") regardless of the state the original write left behind —
+// replay-first, then validate (the eventWriter's own fast-path, lifted
+// to the caller's scope). Nil when the key is new.
+func (s *Service) replayOf(ctx context.Context, projectID, requestID, action string) *DuplicateError {
+	if requestID == "" {
+		return nil
+	}
+	var payload []byte
+	err := s.q().QueryRow(ctx,
+		`SELECT payload FROM board_events WHERE project_id=$1 AND id=$2`,
+		projectID, requestID).Scan(&payload)
+	if err != nil {
+		return nil
+	}
+	return &DuplicateError{EventID: requestID, Action: action, Result: decodeEventPayload(payload)}
+}

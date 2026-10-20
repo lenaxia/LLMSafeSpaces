@@ -324,6 +324,12 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	if err := requireManagerSurface(actor); err != nil {
 		return nil, err
 	}
+	// Replay-first (a caller key that already landed renders the
+	// original outcome — the status the original write left behind must
+	// not turn a replay into a guard error).
+	if dup := s.replayOf(ctx, p.ID, requestID, action); dup != nil {
+		return nil, dup
+	}
 	if p.Status == to {
 		return p, nil
 	}
@@ -465,6 +471,13 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	}
 	if err := requireManagerSurface(actor); err != nil {
 		return nil, err
+	}
+	// Replay-first: the allowed-map below reads the status the ORIGINAL
+	// write may have changed (activate's replay sees active→active) — a
+	// landed caller key renders the original outcome instead of a guard
+	// error.
+	if dup := s.replayOf(ctx, p.ID, requestID, action); dup != nil {
+		return nil, dup
 	}
 	allowed := map[string][]string{
 		EpicActive:   {EpicDraft, EpicPaused, EpicCompleted, EpicArchived},

@@ -59,6 +59,7 @@ Design 0067 §4.2 names board_read(list/get/search/health) and §4.6 mandates SS
 - **Search filters resolve inside the user-scoped query** (subqueries), never via unscoped pre-resolution — a foreign project/epic filter renders empty with no existence disclosure; suggestions draw only from the caller's rows.
 - **Publisher fail-open semantics:** writes never depend on the projection (nil publisher = no-op; lookup failure = log-only drop); consumers are covered by the UI's reseed belt. Panic-safety is the api-side closure's concern if ever needed — the broker publish is in-memory/non-blocking today.
 - **DuplicateError→200 at the shared mapping** (renderBoardError): one translation serves REST, MCP (rides the REST handlers), and the automation seam.
+- **Replay-first ordering (self-review find, fixed pre-CI):** epicLifecycle's allowed-map reads the state the ORIGINAL write changed — a replayed activate (active→active) answered the epic_state 409, not 200-with-original (the stateless guards of move_stage/throttle/creates all sit inside or behind the eventWriter's fast-path; only the lifecycle helpers validated mutable state before the duplicate gate). Both lifecycle helpers now run `replayOf` (the eventWriter fast-path lifted to caller scope) after authz, before the transition validation — authz still precedes replay (policy outranks idempotency), state-dependent guards no longer do.
 - **SDK replay-key ergonomics:** Go variadic options keep the released signatures source-compatible (v0.39.0 shipped Lane 2's SDKs — additive-only freeze discipline).
 
 ---
