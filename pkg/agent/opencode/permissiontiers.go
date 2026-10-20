@@ -33,8 +33,10 @@ import (
 //   - DEFAULT-ALLOW (#1759, the PVC mount points): /workspace, /tmp,
 //     /home/sandbox — the three subPath mounts of the one workspace
 //     PVC are the agent's own filesystem by design; read-write, no
-//     prompts. Every credential deny under the home root still wins
-//     (each sorts after "/home/sandbox/*": '*' 0x2A < '.' 0x2E). The
+//     prompts. In the MODEL every credential deny under the home root
+//     still wins (each sorts after "/home/sandbox/*": '*' 0x2A <
+//     '.' 0x2E); live, the bare/exact keys never fire a deny and the
+//     /* variants are what bite (residual 3(a)). The
 //     pre-#1759 subpath pre-allows (.cache/.config/.local) are
 //     superseded by the root allow and removed — dead rules in a
 //     security floor are noise.
@@ -52,8 +54,11 @@ import (
 //     tripwire — matching for parsed bash commands uses the TYPED
 //     path); and the RESOLVED secret targets /sandbox-runtime/rt/secrets
 //     and rt/auth.json (file tools resolve symlinks to canonical paths
-//     before asking, so only the resolved target denies read-tool
-//     access).
+//     before asking, so in the MODEL only the resolved target denies
+//     read-tool access; live, both targets are keyed as exact denies
+//     — the shape that never fires — so read-tool reads fall to
+//     ambient ask, while rt/secrets children stay denied by the /*
+//     key: residual 3).
 //
 // Design 0060 Part D transcribes the pre-allow set as
 // "caches/config/workspace". #1759 makes the workspace/home/tmp roots
