@@ -74,4 +74,4 @@ Reviewer: mutation-verify pin 1 (revert the hook condition to `[ -f .git/MERGE_H
 
 - `.githooks/pre-commit` — `run_worklog_prefix_gate` merge detection: worktree-correct `git rev-parse -q --verify MERGE_HEAD`; comment documents the `.git`-is-a-file trap (#1778).
 - `pkg/repolint/precommit_hook_worklog_gate_test.go` — new; four red-first pins (merge exemption + still-fires×2 + control).
-- `worklogs/NNNN_2026-10-20_hook-merge-sentinel-exemption.md` — this worklog.
+- `worklogs/1156_2026-10-20_hook-merge-sentinel-exemption.md` — this worklog.
