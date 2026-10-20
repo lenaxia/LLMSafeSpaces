@@ -154,9 +154,12 @@ func TestEnsureWorkspacePhraseRegistered_SoftDeletedRow_NeverWrites(t *testing.T
 
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE workspaces SET phrase_id = $2, updated_at = NOW()`)).
 		WillReturnResult(sqlmock.NewResult(0, 0)) // guard: no live row matched
+	// The REAL dead-row state (r3): migration 000038 leaves legacy rows
+	// NULL — a plain-string scan would ERROR here before the early
+	// return; the pin stubs the actual NULL the seam must survive.
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT phrase_id FROM workspaces WHERE id = $1`)).
 		WithArgs("ws-dead").
-		WillReturnRows(sqlmock.NewRows([]string{"phrase_id"}).AddRow(""))
+		WillReturnRows(sqlmock.NewRows([]string{"phrase_id"}).AddRow(nil))
 
 	phrase, err := s.EnsureWorkspacePhraseRegistered(context.Background(), "ws-dead")
 	require.NoError(t, err)

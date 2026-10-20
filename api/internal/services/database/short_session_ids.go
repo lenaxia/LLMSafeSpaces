@@ -271,17 +271,20 @@ func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspace
 		if err != nil {
 			return "", err
 		}
-		var phrase string
+		var phrase sql.NullString
 		readErr := s.DB.QueryRowContext(ctx,
 			`SELECT phrase_id FROM workspaces WHERE id = $1`, workspaceID).Scan(&phrase)
 		if readErr != nil {
 			return "", readErr
 		}
-		if n == 1 || phrase != "" {
-			return phrase, nil
+		if n == 1 || (phrase.Valid && phrase.String != "") {
+			return phrase.String, nil
 		}
-		// n == 0 with an empty read-back: the row is soft-deleted (or
-		// vanished) — nothing live to converge onto, not a retry case.
+		// n == 0 with a NULL/empty read-back: the row is soft-deleted
+		// (or vanished) — nothing live to converge onto, not a retry
+		// case. NULL-aware scan per the GetWorkspace convention
+		// (database.go) — a plain string errors on the NULL that
+		// migration 00038 leaves on every legacy row.
 		return "", nil
 	}
 	return "", fmt.Errorf("workspace phrase registration did not converge (%s) after %d attempts", workspaceID, workspacePhraseRetries)

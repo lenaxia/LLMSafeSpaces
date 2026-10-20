@@ -133,3 +133,11 @@ None (review availability depends on the trusted-app-bot fix reaching this PR's 
   sweep green (`-p 2` — the default parallelism exhausts the 15G disk
   at the link stage; environmental, not code). Six named r2 pins
   individually verified -v PASS.
+
+## r3 addendum (single mechanical finding @ 4141330b)
+
+- Dead-row read-back is now NULL-aware (`sql.NullString`, the
+  GetWorkspace convention): the documented ("", nil) contract was
+  unreachable — a plain-string scan errors on the NULL migration
+  000038 leaves on legacy rows. Pin stubbed with the REAL state
+  (AddRow(nil)). -v PASS with the fresh-mint and collision pins.
