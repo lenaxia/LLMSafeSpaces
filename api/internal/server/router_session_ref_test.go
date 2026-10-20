@@ -64,6 +64,11 @@ func newRouterFixtureWithDB(t *testing.T) (*gin.Engine, *imocks.MockWorkspaceSer
 	}))
 	auth.On("GetUserID", mock.Anything).Return("test-user")
 
+	// #1757: the workspace-ref layer probes the (non-UUID, non-phrase)
+	// :id form against the name index before the access gate — the
+	// fixture's ws-1 returns no match (passthrough).
+	db.On("FindWorkspaceIDByName", mock.Anything, "test-user", "ws-1").Return("", nil).Maybe()
+
 	svc := &mockServices{auth: auth, metrics: met, workspace: ws, database: db}
 	router := NewRouter(svc, log, nil, RouterConfig{Debug: false})
 	return router, ws, db

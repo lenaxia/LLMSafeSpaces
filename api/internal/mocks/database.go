@@ -250,6 +250,21 @@ func (m *MockDatabaseService) IsSessionArchived(ctx context.Context, workspaceID
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockDatabaseService) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
+	args := m.Called(ctx, workspaceID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockDatabaseService) FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error) {
+	args := m.Called(ctx, phrase)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockDatabaseService) FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error) {
+	args := m.Called(ctx, userID, name)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockDatabaseService) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
 	args := m.Called(ctx, workspaceID, sessionID, harnessType)
 	return args.String(0), args.Error(1)
