@@ -102,6 +102,8 @@ A task is **not** done until it has been demonstrated to be integrated properly 
 
 This is already wired for you: the global git credential helper (`/tmp/opencode/bin/git-cred-app`) mints short-lived App installation tokens from the platform-managed key on tmpfs (`/home/sandbox/.secrets/`) plus the `AGENTIC_ACTOR_CODER_APPID` environment variable. Plain `git push` is all you need.
 
+The same applies to the `gh` CLI: a wrapper (`~/.local/bin/gh`) transparently runs gh under the App installation token whenever it can be minted. Prefer plain `gh` invocations — do not set `GH_TOKEN` manually.
+
 - Do NOT override `credential.helper`, set `GITHUB_TOKEN`/`GH_TOKEN` for git operations, or paste tokens into remotes.
 - Do NOT read, copy, or move the private key out of `.secrets` — it is platform-managed and rotates; the helper picks up rotations automatically.
 - If pushes fail auth, report it; do not improvise alternate credential paths.
