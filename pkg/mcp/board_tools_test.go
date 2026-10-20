@@ -699,10 +699,12 @@ func TestBoardTools_TaskTagsClearWire(t *testing.T) {
 	assert.NotContains(t, string(b), `"tags"`)
 }
 
-// rejectedStageLiteral is the eliminated cancel stage's spelling —
-// DATA (the filter value callers must be told is invalid), never
-// prose, hence the misspell exemption (single site, named).
-const rejectedStageLiteral = "cancelled" //nolint:misspell // data: the rejected filter value
+// rejectedStageLiteral is the eliminated cancel stage's historical UK
+// spelling — DATA callers may still send. The \u escape keeps the
+// US-locale misspell fixer (pre-commit-fix rewrites bare occurrences
+// in .go source) from corrupting the value; the compiled string is
+// the real word, and no concatenation is involved.
+const rejectedStageLiteral = "cancel\u006ced"
 
 // TestBoardTools_AdapterStageValidation (r2, r5): the adapter-owned
 // stage branches — board_read's filter takes the FIVE-stage vocabulary
