@@ -58,6 +58,21 @@ The full #1747 amendment set on the Task Board:
    pressure map gates claiming + decorates reads. Pins:
    TestKill_1747_ConcurrencyCaps, TestKill_1747_ResourcePressureBackpressure.
 
+## Process notes (r2 review round lessons)
+
+- **r1.7-r1.10 were CI stabilizers while three REQUEST_CHANGES reviews
+  accumulated** — the core findings (belt fail-open, integration gap,
+  cancelled remnants) sat unaddressed across four pushes. The reviews
+  were correct every time. r2 addressed them; review 4 then caught that
+  r2's own checklist overclaimed (a regex removal of the dead CancelEpic
+  fake silently missed; openapi prose survivors past the first two sites;
+  a flagship integration test pushed red and unwired). The corrective:
+  every "FIXED" claim in a findings response must be verified by an
+  executed check, not a text substitution — grep-with-assertion in the
+  fix scripts, run-the-test before push, and a compile gate for every
+  module in the diff (the Go canary's separate go.mod made it invisible
+  to the main-tree vet; ci.yml now gates it explicitly).
+
 ## Process notes
 
 - **Red-first**: the parity flip + registry shape + route scans landed
