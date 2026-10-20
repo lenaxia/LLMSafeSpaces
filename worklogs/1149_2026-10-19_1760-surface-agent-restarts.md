@@ -188,6 +188,20 @@ All six ACs judged ADDRESSED by the r2 review except the test-quality
 caveat this round closed; AC4 Go gap confirmed closed (JSON tags
 verified byte-identical to the wire DTO and openapi by the reviewer).
 
+## Bot review round 3 (CHANGES_REQUESTED → fixed)
+
+1. **Residual workspace-only-switch leak**: the reset effect was keyed
+   `[sessionId]` while `agentRestarted` is workspace-scoped — the
+   `/chat/:workspaceId` route (no sessionId) never re-runs the effect,
+   so a live toast from ws-1 could shadow ws-2. Fixed: effect deps
+   `[workspaceId, sessionId]` (which also fixes the identical
+   pre-existing leak mechanism in `agentDied`/`agentDiedMessage`) +
+   a workspace-only-switch test variant (sessionId unchanged,
+   workspaceId changes — pins the dep mechanics).
+2. Worklog: dangling empty CI-flake header merged into its content.
+
+## CI flake record (pre-existing, orchestrator-routed)
+
 `TestBusyTruthE2E_InStreamReseedReconciles` (usagestream) timed out its
 30s Eventually twice on this PR's CI (runs 39319516622, 39346439013)
 AND on a MAIN-branch run at 00:14Z (run 39346002933) — same signature,
@@ -203,5 +217,3 @@ package sweep — single-lane targeted runs only, no `-race`, no full
 `make test`; `make build` deferred to the orchestrator's stagger).
 `npm install` run once for the frontend test tier (disk 64% before, ~5.3G
 free).
-
-## CI flake record (pre-existing, orchestrator-routed)

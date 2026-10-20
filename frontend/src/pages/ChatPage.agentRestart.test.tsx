@@ -245,4 +245,37 @@ describe("ChatPage agent-restart surfacing (#1760)", () => {
     // Settled assertion: the banner must be absent in the READY state.
     expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
   });
+
+  // r3 variant: the workspace-ONLY switch — the /chat/:workspaceId
+  // route shape (sessionId unchanged). Pins the reset effect's dep
+  // mechanics: the effect must re-run on workspaceId change alone.
+  it("clears the live payload on a workspace-only switch", async () => {
+    const qc = makeQueryClient();
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    await renderReady(qc);
+
+    sendPlatformEvent({
+      type: "agent_restarted",
+      data: { reason: "health_watchdog", at: "2026-10-19T17:08:14Z" },
+    } as never);
+    expect(await screen.findByTestId("agent-restart-banner")).toBeTruthy();
+
+    // Switch ONLY the workspace; sessionId unchanged (the dep the old
+    // key missed).
+    await act(async () => {
+      paramsRef.workspaceId = "ws-2";
+      bumpTick();
+    });
+
+    // Settle the post-switch READY state, then assert (same discipline
+    // as the session-switch variant).
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-view")).toBeTruthy();
+    }, { timeout: 3000 });
+    await act(async () => {
+      bumpTick();
+    });
+    expect(screen.getByTestId("chat-view")).toBeTruthy();
+    expect(screen.queryByTestId("agent-restart-banner")).toBeNull();
+  });
 });

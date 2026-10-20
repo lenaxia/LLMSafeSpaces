@@ -201,7 +201,7 @@ export function ChatPage() {
     // the new session's first contextUsed value, triggering spurious compaction banners.
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
-  }, [sessionId]);
+  }, [sessionId, workspaceId]);
 
   const { data: status } = useWorkspaceStatus(workspaceId);
 
@@ -510,7 +510,10 @@ export function ChatPage() {
   const [agentRestarted, setAgentRestarted] = useState<AgentRestartEvent | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
-  // Reset per-session state on session change.
+  // Reset per-session state on session change. Keyed on workspaceId
+  // TOO (#1760 r3): agentRestarted (and agentDied) are workspace-scoped
+  // — the /chat/:workspaceId route carries no sessionId, so a
+  // sessionId-only key would never re-run on workspace-only switches.
   useEffect(() => {
     hasAutoAbortedRef.current = false;
     knownUserMessageIds.current.clear();
@@ -532,7 +535,7 @@ export function ChatPage() {
     // lastHistoryRef declaration below.
     lastHistoryRef.current = null;
     abortDwellStartRef.current = null;
-  }, [sessionId]);
+  }, [workspaceId, sessionId]); // #1760 r3: workspaceId in deps (workspace-only switches)
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
   // #1687 (pin 3): the buffer wipe (and the optimistic trim) is gated on
