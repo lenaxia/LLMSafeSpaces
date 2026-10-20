@@ -507,7 +507,11 @@ func (s *BoardSuite) TestKill_1747_DepOnPausedStaysBlocking() {
 	s.GreaterOrEqual(res.DepRepairs, 0)
 	s.True(s.reloadTask(dep.ID).IsBlocked, "a paused dependency stays BLOCKING (the DAG spec)")
 
-	// And done unblocks it (the contrast arm).
+	// And done unblocks it (the contrast arm): resume the paused
+	// prerequisite (a paused row is unclaimable by design — that is the
+	// point of the pause), drive it to done, and the dependent frees.
+	_, err = s.svc.ResumeTask(context.Background(), s.owner(), prereq.ID, "", "")
+	s.Require().NoError(err)
 	_, err = s.svc.UpdateTask(context.Background(), s.owner(), prereq.ID, "",
 		board.TaskInput{AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c", Met: true}}}, "")
 	s.Require().NoError(err)
