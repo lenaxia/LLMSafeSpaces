@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — workspace phrase IDs (#1757): 2 words + 1 digit, fleet-unique
+
+- **Every workspace gains a minted phrase ID** (`amber-river-7`):
+  two words from the #1756 frozen lists + one digit, FLEET-unique via
+  the global partial unique index with check-and-retry (a collision
+  re-draws — the digit slot is the disambiguator; there is no counter
+  suffix). The UUID stays the internal key everywhere (migration
+  `000038`, api + helm synced; creation mints, reads lazy-backfill
+  pre-phrase rows). Namespace rule PINNED: shared wordlists with
+  session phrases, disjoint BY SHAPE from them (3 words) and from the
+  harness's 2-word no-digit slugs (the digit).
+- **Addressing:** the workspace phrase is the canonical `:id` form on
+  every workspace route — resolved to the UUID before the access gate;
+  phrase misses answer a structured 404. UUIDs pass through
+  byte-identical; unambiguous workspace NAMES rewrite during the
+  #1756-mirroring deprecation window (owner-scoped, ambiguity never
+  resolves). Routine triggers' `targetWorkspaceId` accepts the phrase
+  (stored key stays UUID). `phraseId` surfaces on workspace metadata.
+- The {workspace-phrase, session-phrase} cross-workspace SSE/SDK pair
+  composes on these primitives and rides the #1756 §5 SDK-major
+  follow-up.
+
 ### Added — word-phrase session IDs; short-only emission; full-id input deprecation (#1756, supersedes #1745's format)
 
 - **Session short IDs are 3-word grammatical phrases** (adjective-

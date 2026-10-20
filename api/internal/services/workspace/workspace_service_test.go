@@ -53,6 +53,9 @@ func newFixture(t *testing.T) *fixture {
 	v1i := kmocks.NewMockLLMSafespacesV1Interface()
 	ws := kmocks.NewMockWorkspaceInterface()
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	cache := &imocks.MockCacheService{}
 	met := &imocks.MockMetricsService{}
 
@@ -1272,6 +1275,9 @@ func TestGetWorkspaceStatus_LlmsafespacesV1Error_ReturnsInternal(t *testing.T) {
 	k8s.On("LlmsafespacesV1").Return(nil, errors.New("rest client construction failed"))
 
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	db.On("GetWorkspace", mock.Anything, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
 
 	met := &imocks.MockMetricsService{}
@@ -1300,6 +1306,9 @@ func TestDeleteWorkspace_LlmsafespacesV1Error_ReturnsInternal(t *testing.T) {
 	k8s.On("LlmsafespacesV1").Return(nil, errors.New("scheme missing"))
 
 	db := &imocks.MockDatabaseService{}
+	// #1757: CreateWorkspace mints the phrase — default no-op for
+	// fixtures that don't assert it.
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
 	db.On("GetWorkspace", mock.Anything, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
 
 	met := &imocks.MockMetricsService{}

@@ -478,6 +478,15 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		return nil, apierrors.NewInternalError("metadata_creation_failed", err)
 	}
 
+	// #1757: mint the workspace phrase at creation — best-effort here
+	// (the backfill sweep converges any miss); the phrase rides the
+	// metadata from the next read on.
+	if phrase, perr := s.dbService.EnsureWorkspacePhraseRegistered(ctx, meta.ID); perr == nil && phrase != "" {
+		meta.PhraseID = phrase
+	} else if perr != nil {
+		s.logger.Warn("workspace phrase mint failed; backfill will converge", "workspaceID", meta.ID, "error", perr.Error())
+	}
+
 	s.logger.Info("Workspace created", "workspaceID", created.Name, "userID", userID)
 
 	// Auto-provision default credentials if enabled (Epic 30).

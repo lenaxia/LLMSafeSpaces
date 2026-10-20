@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -138,4 +139,101 @@ func setParam(c *gin.Context, key, value string) {
 			return
 		}
 	}
+}
+
+// WorkspaceRefResolver resolves #1757 workspace refs and is satisfied
+// by the *database.Service. WorkspaceRefResolution is the #1757
+// workspace-ref edge: :id (and
+// admin :workspaceId) params accept the workspace PHRASE as the
+// canonical address; the UUID passes through byte-identical with the
+// deprecation notice attached; a NAME resolves only when it is the
+// requester's single workspace by that name (names are caller-owned
+// and may collide — ambiguity never resolves, it did-you-means via
+// the session-suggestion surface's 404 path downstream). Resolution
+// failure on a phrase-shaped ref answers the structured 404; other
+// misses pass through so the existing 404 flow keeps its truth.
+type WorkspaceRefResolver interface {
+	FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error)
+	FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error)
+}
+
+// WorkspaceRefResolution rewrites the :id param when the caller used
+// a phrase (or an unambiguous name). Nil resolver disables the layer.
+func WorkspaceRefResolution(resolver WorkspaceRefResolver) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if resolver == nil {
+			c.Next()
+			return
+		}
+		ref := c.Param("id")
+		if ref == "" {
+			ref = c.Param("workspaceId")
+		}
+		if ref == "" {
+			c.Next()
+			return
+		}
+		switch {
+		case shortid.IsWorkspacePhraseForm(ref):
+			id, err := resolver.FindWorkspaceIDByPhrase(c.Request.Context(), ref)
+			if err == nil && id != "" {
+				setParam(c, "id", id)
+				setParam(c, "workspaceId", id)
+				c.Next()
+				return
+			}
+			// Phrase-shaped and unresolvable: a 404 with the honest
+			// message (suggestions are session-scoped machinery; a
+			// workspace miss says so plainly).
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
+				"error": "workspace not found: no workspace holds the phrase " + ref,
+			})
+		default:
+			// UUID or name: names resolve unambiguously (deprecated
+			// path); UUIDs pass through byte-identical. Neither
+			// probes the DB for shape validation — the access
+			// middleware that follows is the authority.
+			if looksLikeWorkspaceUUID(ref) {
+				c.Next()
+				return
+			}
+			// The workspace-access middleware runs AFTER this layer
+			// (it needs the rewritten UUID), so the requester id comes
+			// from the auth middleware's context value.
+			userID := c.GetString("userID")
+			if userID == "" {
+				c.Next()
+				return
+			}
+			if id, err := resolver.FindWorkspaceIDByName(c.Request.Context(), userID, ref); err == nil && id != "" {
+				setParam(c, "id", id)
+				setParam(c, "workspaceId", id)
+			}
+			c.Next()
+		}
+	}
+}
+
+// looksLikeWorkspaceUUID is the cheap non-probing guard for the
+// platform's workspace UUID shape — used only to skip the name lookup
+// for obviously-UUID refs (no validation; the access middleware
+// owns the verdict).
+func looksLikeWorkspaceUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }

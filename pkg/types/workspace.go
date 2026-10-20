@@ -125,6 +125,11 @@ type WorkspaceMetadata struct {
 	CredentialsPendingSince *time.Time `json:"credentialsPendingSince,omitempty" db:"credentials_pending_since"`
 	// Epic 11: org attribution (nullable — personal workspaces have no org)
 	OrgID *string `json:"orgId,omitempty" db:"org_id"`
+	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
+	// fleet-unique) — THE address for display and cross-workspace
+	// referencing; the UUID above stays the internal key. omitempty:
+	// absent only in the pre-backfill window.
+	PhraseID string `json:"phraseId,omitempty" db:"phrase_id"`
 }
 
 // WorkspaceUpdates carries the fields that may be changed on a WorkspaceMetadata record.

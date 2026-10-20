@@ -238,3 +238,89 @@ func (s *Service) FindRefCandidatesAcrossWorkspaces(ctx context.Context, workspa
 	}
 	return out, rows.Err()
 }
+
+// --- #1757: workspace phrase IDs -------------------------------------------
+
+// workspacePhraseRetries bounds the fleet-unique check-and-retry.
+// Workspaces are fleet-scarce; collisions are correspondingly rare.
+const workspacePhraseRetries = 5
+
+// EnsureWorkspacePhraseRegistered mints and persists a workspace's
+// phrase id (idempotent — re-registering returns the surviving
+// phrase). The global partial unique index (phrase_id WHERE NOT NULL
+// AND deleted_at IS NULL) arbitrates races across replicas.
+func (s *Service) EnsureWorkspacePhraseRegistered(ctx context.Context, workspaceID string) (string, error) {
+	for attempt := 0; attempt < workspacePhraseRetries; attempt++ {
+		minted, err := shortid.MintWorkspacePhrase()
+		if err != nil {
+			return "", err
+		}
+		tag, err := s.DB.ExecContext(ctx,
+			`UPDATE workspaces SET phrase_id = $2, updated_at = NOW()
+			 WHERE id = $1 AND (phrase_id IS NULL OR phrase_id = '')`,
+			workspaceID, minted)
+		if err != nil {
+			if isUniqueViolation(err) {
+				continue // fleet collision — fresh draw
+			}
+			return "", err
+		}
+		n, err := tag.RowsAffected()
+		if err != nil {
+			return "", err
+		}
+		var phrase string
+		readErr := s.DB.QueryRowContext(ctx,
+			`SELECT phrase_id FROM workspaces WHERE id = $1`, workspaceID).Scan(&phrase)
+		if readErr != nil {
+			return "", readErr
+		}
+		if n == 1 || phrase != "" {
+			return phrase, nil
+		}
+	}
+	return "", fmt.Errorf("workspace phrase registration did not converge (%s) after %d attempts", workspaceID, workspacePhraseRetries)
+}
+
+// FindWorkspaceIDByPhrase resolves a case-insensitive workspace
+// phrase to the workspace UUID — FLEET scope (unlike session phrases,
+// workspace phrases are globally unique). "" when no live workspace
+// holds the phrase.
+func (s *Service) FindWorkspaceIDByPhrase(ctx context.Context, phrase string) (string, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT id FROM workspaces WHERE phrase_id = $1 AND deleted_at IS NULL`,
+		shortid.Normalize(phrase)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// FindWorkspaceIDByName resolves a workspace NAME to the UUID — the
+// unambiguous-only input form of the #1757 deprecation window (names
+// are caller-owned and may collide: 0 or >1 rows is a miss).
+func (s *Service) FindWorkspaceIDByName(ctx context.Context, userID, name string) (string, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id FROM workspaces WHERE user_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL`,
+		userID, name)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]string, 0, 2)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) != 1 {
+		return "", nil // ambiguous or absent — never guess
+	}
+	return ids[0], rows.Err()
+}

@@ -489,12 +489,14 @@ func (s *Service) GetWorkspace(ctx context.Context, workspaceID string) (*types.
                COALESCE(w.default_model, '') AS default_model,
                COALESCE(s.pending_refresh, FALSE) AS agent_needs_refresh,
                s.last_credential_changed_at AS credentials_pending_since,
-               w.org_id
+               w.org_id,
+               w.phrase_id
         FROM workspaces w
         LEFT JOIN workspace_agent_state s ON s.workspace_id = w.id
         WHERE w.id = $1
     `
 	var ws types.WorkspaceMetadata
+	var phraseID sql.NullString
 	err := s.DB.QueryRowContext(ctx, query, workspaceID).Scan(
 		&ws.ID,
 		&ws.UserID,
@@ -509,12 +511,23 @@ func (s *Service) GetWorkspace(ctx context.Context, workspaceID string) (*types.
 		&ws.AgentNeedsRefresh,
 		&ws.CredentialsPendingSince,
 		&ws.OrgID,
+		&phraseID,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get workspace: %w", err)
+	}
+	if phraseID.Valid {
+		ws.PhraseID = phraseID.String
+	} else {
+		// #1757 lazy backfill: pre-phrase rows mint on first read —
+		// best-effort by contract (the creation path and this read
+		// path converge; a miss here only delays the phrase one read).
+		if phrase, perr := s.EnsureWorkspacePhraseRegistered(ctx, workspaceID); perr == nil && phrase != "" {
+			ws.PhraseID = phrase
+		}
 	}
 	return &ws, nil
 }
@@ -737,7 +750,8 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
                COALESCE(w.default_model, '') AS default_model,
                COALESCE(s.pending_refresh, FALSE) AS agent_needs_refresh,
                s.last_credential_changed_at AS credentials_pending_since,
-               w.org_id
+               w.org_id,
+               w.phrase_id
         FROM workspaces w
         LEFT JOIN workspace_agent_state s ON s.workspace_id = w.id
         WHERE w.deleted_at IS NULL AND w.user_id = $1%s
@@ -751,6 +765,7 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
 	workspaces := make([]*types.WorkspaceMetadata, 0)
 	for rows.Next() {
 		var ws types.WorkspaceMetadata
+		var phraseID sql.NullString
 		if err := rows.Scan(
 			&ws.ID, &ws.UserID, &ws.Name, &ws.Runtime,
 			&ws.StorageSize,
@@ -759,8 +774,12 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
 			&ws.DefaultModel,
 			&ws.AgentNeedsRefresh, &ws.CredentialsPendingSince,
 			&ws.OrgID,
+			&phraseID,
 		); err != nil {
 			return nil, nil, fmt.Errorf("failed to scan workspace row: %w", err)
+		}
+		if phraseID.Valid {
+			ws.PhraseID = phraseID.String
 		}
 		workspaces = append(workspaces, &ws)
 	}
