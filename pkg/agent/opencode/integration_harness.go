@@ -89,6 +89,10 @@ func findOrDownloadBinary(t *testing.T) string {
 
 type opencodeServer struct {
 	baseURL string
+	// dataDir is the synthetic XDG_DATA_HOME the child was booted with —
+	// carried so the env-strip pin can prove the child honored OUR value
+	// over any inherited one.
+	dataDir string
 	ctx     context.Context
 	cancel  context.CancelFunc
 	t       *testing.T
@@ -153,21 +157,40 @@ func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *o
 		"--hostname", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 	)
-	// EXPLICIT env, not os.Environ()+overrides: duplicated vars resolve
-	// first-match in the child's libc, so an inherited HOME/XDG_* from the
-	// runner (a workspace pod carries its own opencode config + auth
-	// there) silently overrides the test's configDirs and the instance
-	// answers with the POD's providers instead of the test's — the exact
-	// failure mode live-debugged 2026-09-13 (send hangs, mock never
-	// dialed, "ServeError" in stderr). Path/TMPDIR are the only
-	// pass-throughs the binary needs.
-	cmd.Env = append(os.Environ(),
-		"OPENCODE_CONFIG="+agentConfigPath,
-		"XDG_DATA_HOME="+dataDir,
-		"XDG_CONFIG_HOME="+configDir,
-		"HOME="+configDir,
-		"OPENCODE_SERVER_PASSWORD=test-password",
-	)
+	// EXPLICIT, DEDUPLICATED child env — deterministic under either
+	// duplicate-resolution semantics. The original 2026-09-13 comment
+	// here claimed duplicated env vars resolve first-match in the
+	// child's libc, so an inherited HOME/XDG_* from the runner would
+	// silently override the test's configDirs (live-debugged then:
+	// send hangs, "ServeError"). #1759's salvage re-probed that premise
+	// on the pinned 1.18.15 (a Bun-built binary): with overrides
+	// appended AFTER os.Environ(), the child still honors the appended
+	// values — this build resolves duplicates LAST-match (process.env
+	// overwrite semantics), contradicting the first-match narrative for
+	// this binary. The strip below is therefore hygiene, not a fix for
+	// an observed leak: with it, the child env is correct by
+	// construction whichever way any future binary resolves duplicates.
+	// Path/TMPDIR are the only pass-throughs the binary needs. ONE map
+	// drives both the strip and the append — a future override added
+	// here cannot re-introduce the coupling.
+	childOverrides := map[string]string{
+		"OPENCODE_CONFIG":          agentConfigPath,
+		"XDG_DATA_HOME":            dataDir,
+		"XDG_CONFIG_HOME":          configDir,
+		"HOME":                     configDir,
+		"OPENCODE_SERVER_PASSWORD": "test-password",
+	}
+	env := make([]string, 0, len(os.Environ())+len(childOverrides))
+	for _, kv := range os.Environ() {
+		if _, overridden := childOverrides[strings.SplitN(kv, "=", 2)[0]]; overridden {
+			continue
+		}
+		env = append(env, kv)
+	}
+	for k, v := range childOverrides {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
 	cmd.Dir = configDir
 	// Session-detached, mirroring how agentd's supervisor actually
 	// spawns opencode and how every live-validated manual boot ran: the
@@ -237,6 +260,7 @@ func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *o
 
 	srv := &opencodeServer{
 		baseURL: fmt.Sprintf("http://127.0.0.1:%d", port),
+		dataDir: dataDir,
 		ctx:     ctx,
 		cancel:  cancel,
 		t:       t,
