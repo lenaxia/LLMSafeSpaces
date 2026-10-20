@@ -15,9 +15,11 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,26 +81,60 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 	r.GET("/api/v1/events", h.StreamUserEvents)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
+	// The SSE connection must be client-canceled BEFORE srv.Close (LIFO:
+	// registered after srv's cleanup) — a live stream otherwise blocks
+	// Close's wait on outstanding requests (the 2nd CI run's 5m hang).
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	t.Cleanup(cancelSub)
 
 	// Subscribe first (the frame must arrive on the live stream, not via
-	// replay), then write through the real service.
-	frames := make(chan string, 8)
+	// replay), then write through the real service — the subscription is
+	// ready once the response headers land (the handler subscribes
+	// before writing them).
+	frames := make(chan string, 64)
+	ready := make(chan struct{})
+	var seenMu sync.Mutex
+	var seen []string
 	go func() {
-		resp, err := srv.Client().Get(srv.URL + "/api/v1/events")
+		req, _ := http.NewRequestWithContext(subCtx, http.MethodGet, srv.URL+"/api/v1/events", nil)
+		resp, err := srv.Client().Do(req)
 		if err != nil {
+			close(ready)
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
 		sc := bufio.NewScanner(resp.Body)
+		first := true
 		for sc.Scan() {
+			if first {
+				first = false
+				close(ready)
+			}
 			line := sc.Text()
+			seenMu.Lock()
+			seen = append(seen, line)
+			seenMu.Unlock()
 			if strings.HasPrefix(line, "data: ") {
 				frames <- strings.TrimPrefix(line, "data: ")
 			}
 		}
+		if first {
+			close(ready)
+		}
 	}()
-	// Let the subscription land before the write.
-	time.Sleep(200 * time.Millisecond)
+	dumpSeen := func() {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		t.Logf("stream lines seen (%d):", len(seen))
+		for _, l := range seen {
+			t.Logf("  %s", l)
+		}
+	}
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("SSE subscription did not establish within 5s")
+	}
 
 	owner := board.Actor{Kind: board.ActorUser, UserID: "user-sse", Surface: board.SurfaceREST}
 	p, err := svc.CreateProject(ctx, owner,
@@ -110,7 +146,7 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 	require.NoError(t, err)
 
 	var frame string
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(30 * time.Second)
 	for {
 		select {
 		case frame = <-frames:
@@ -118,7 +154,8 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 				goto found
 			}
 		case <-deadline:
-			t.Fatalf("no board.event create_task frame on the live user stream within 10s")
+			dumpSeen()
+			t.Fatalf("no board.event create_task frame on the live user stream within 30s")
 		}
 	}
 found:
