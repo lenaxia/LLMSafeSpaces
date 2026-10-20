@@ -437,6 +437,16 @@ func LiveBindings() []CRDBinding {
 				"properties", "status", "properties", "secretsDelivery"},
 		},
 		{
+			// AgentSupervisorStatus (#1760): same leaf-under-status class
+			// as SecretsDeliveryStatus — bound from birth so the restart
+			// attribution fields cannot ship un-mirrored.
+			GoFile:   "pkg/apis/llmsafespaces/v1/workspace_types.go",
+			GoStruct: "AgentSupervisorStatus",
+			CRDFile:  "helm/crds/workspace.yaml",
+			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema",
+				"properties", "status", "properties", "agentSupervisor"},
+		},
+		{
 			GoFile:   "pkg/apis/llmsafespaces/v1/runtimeenvironment_types.go",
 			GoStruct: "RuntimeEnvironmentSpec",
 			CRDFile:  "helm/crds/runtimeenvironment.yaml",

@@ -113,6 +113,14 @@ func (m *MockAPIClient) ListModels(ctx context.Context, workspaceID string) (jso
 	return args.Get(0).(json.RawMessage), args.Error(1)
 }
 
+func (m *MockAPIClient) GetWorkspaceStatus(ctx context.Context, workspaceID string) (json.RawMessage, error) {
+	args := m.Called(ctx, workspaceID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(json.RawMessage), args.Error(1)
+}
+
 func (m *MockAPIClient) SetModel(ctx context.Context, workspaceID, model string) error {
 	return m.Called(ctx, workspaceID, model).Error(0)
 }

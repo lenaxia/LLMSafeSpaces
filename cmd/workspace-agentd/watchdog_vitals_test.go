@@ -306,6 +306,13 @@ func newHungServer(t *testing.T, hang time.Duration) *httptest.Server {
 }
 
 func runWatchdogLoop(t *testing.T, srvURL string, timeout time.Duration, restarter healthWatchdogRestarter, busy sessionBusyChecker, vit vitalsGatherer) *healthzCache {
+	return runWatchdogLoopWithRestarts(t, srvURL, timeout, restarter, busy, vit, nil)
+}
+
+// runWatchdogLoopWithRestarts is the injectable form of runWatchdogLoop
+// (#1760): restarts, when non-nil, receives the watchdog's recording
+// hooks. Same pattern as startSupervisorStatusPollerWithInterval.
+func runWatchdogLoopWithRestarts(t *testing.T, srvURL string, timeout time.Duration, restarter healthWatchdogRestarter, busy sessionBusyChecker, vit vitalsGatherer, restarts *agentRestartLog) *healthzCache {
 	t.Helper()
 	orig := getAgentAddr()
 	setAgentAddr(srvURL)
@@ -320,7 +327,7 @@ func runWatchdogLoop(t *testing.T, srvURL string, timeout time.Duration, restart
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, vit)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, vit, restarts)
 	}()
 	t.Cleanup(func() {
 		cancel()
