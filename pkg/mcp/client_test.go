@@ -971,10 +971,10 @@ func TestHTTPClient_BoardRemoveDependency_ValidatesPathIDs(t *testing.T) {
 			t.Errorf("no HTTP request may be issued for malformed ids — saw %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}))
-		err := client.BoardRemoveDependency(context.Background(), "tsk-cccc3333", bad)
+		err := client.BoardRemoveDependency(context.Background(), "tsk-cccc3333", bad, "")
 		require.Error(t, err, "depends_on %q", bad)
 		assert.Contains(t, err.Error(), "depends_on", "the error names the offending field: %v", err)
-		err = client.BoardRemoveDependency(context.Background(), bad, "tsk-dddd4444")
+		err = client.BoardRemoveDependency(context.Background(), bad, "tsk-dddd4444", "")
 		require.Error(t, err, "task_id %q", bad)
 		ts.Close()
 	}

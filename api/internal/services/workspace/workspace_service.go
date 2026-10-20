@@ -1127,6 +1127,7 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 
 	result.CredentialState = credStateFromConditions(crd.Status.Conditions)
 	result.AgentHealth = agentHealthFromConditions(crd.Status.Conditions, crd.Status.LastHealthCheckAt)
+	result.Supervisor = supervisorFromCRD(crd.Status.AgentSupervisor)
 
 	for _, s := range crd.Status.Sessions {
 		result.Sessions = append(result.Sessions, types.SessionStatusItem{
@@ -2090,6 +2091,31 @@ func agentHealthFromConditions(conditions []v1.WorkspaceCondition, lastCheckAt *
 		}
 	}
 	return types.AgentHealthResult{Status: "Unknown"}
+}
+
+// supervisorFromCRD maps the CRD's agentSupervisor block (#1760) into
+// the DTO; nil CRD block → nil DTO field (omitted on the wire).
+func supervisorFromCRD(s *v1.AgentSupervisorStatus) *types.SupervisorStatusResult {
+	if s == nil {
+		return nil
+	}
+	out := &types.SupervisorStatusResult{
+		AgentRestarts:         int(s.AgentRestarts),
+		SuppressedRestarts:    int(s.SuppressedRestarts),
+		LastSuppressedVerdict: s.LastSuppressedVerdict,
+	}
+	if s.LastAgentRestart != nil {
+		ev := &types.AgentRestartEventResult{
+			Reason:    s.LastAgentRestart.Reason,
+			Verdict:   s.LastAgentRestart.Verdict,
+			LastError: s.LastAgentRestart.LastError,
+		}
+		if s.LastAgentRestart.At != nil {
+			ev.At = s.LastAgentRestart.At.Time
+		}
+		out.LastAgentRestart = ev
+	}
+	return out
 }
 
 // --- Epic 10: Secret injection helpers ---

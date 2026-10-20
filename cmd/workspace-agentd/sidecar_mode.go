@@ -323,6 +323,11 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		vitals:               so.vitals(fmtAgentAddr()),
 		sys:                  so.sysMetrics(),
 		pendingApply:         newPendingApplyTracker(),
+		// #1760: the sidecar runs the watchdog loop (backgroundLoops is
+		// shared), so its fires/suppressions land in this log and surface
+		// on the sidecar's admin mux. Supervisor crash restarts in this
+		// topology stay with the restart-reason marker (scope ruling).
+		restartLog: newAgentRestartLog(),
 	}
 
 	// #1601: the sidecar's /workspace mount is READ-ONLY and /home/sandbox

@@ -293,7 +293,7 @@ func TestRefreshIsHealthyLoop_ExitsOnContextCancel(t *testing.T) {
 
 	var done atomic.Bool
 	go func() {
-		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil, nil)
 		done.Store(true)
 	}()
 
@@ -322,7 +322,7 @@ func TestRefreshIsHealthyLoop_ImmediateFirstRefresh(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil, nil)
 
 	// The immediate refresh should fire within 100ms (not waiting for the 5s tick)
 	time.Sleep(200 * time.Millisecond)
@@ -351,7 +351,7 @@ func TestRefreshIsHealthyLoop_RefreshesOnTick(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil, nil)
 
 	// Wait for 2 ticks (5s each) + immediate = at least 3 calls
 	time.Sleep(11 * time.Second)
@@ -517,7 +517,7 @@ func runRefreshLoop(t *testing.T, mockURL string, client *OpenCodeClient, cache 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, nil)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, nil, nil)
 	}()
 	t.Cleanup(func() {
 		cancel()

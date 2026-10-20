@@ -65,7 +65,13 @@ import (
 // AND a `degraded:<reason>` warning — never as Healthy=false (a relay
 // outage must not cascade to a liveness-probe kill; the remedy is the
 // bounded re-arm + conditions, §4.8).
-func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth, relaySnapshot func() *agentd.RelayHealth, legacyScrubSnapshot func() *agentd.LegacyScrubHealth) http.HandlerFunc {
+//
+// supervisorSnapshot (#1760), when non-nil, supplies the supervisor
+// restart slice: lifetime watchdog/crash restart count, the last
+// restart's attribution, the current health-failure run, and the
+// suppression count. Cached state only — a restart record is
+// observability and must NEVER flip Healthy (US-22.1).
+func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth, relaySnapshot func() *agentd.RelayHealth, legacyScrubSnapshot func() *agentd.LegacyScrubHealth, supervisorSnapshot func() *agentd.SupervisorStatus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		warnings := modelResolutionWarnings(modelWarnPath)
 		var spawnEnv *agentd.SpawnEnvHealth
@@ -90,6 +96,10 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 		if legacyScrubSnapshot != nil {
 			legacyScrub = legacyScrubSnapshot()
 		}
+		var supervisor *agentd.SupervisorStatus
+		if supervisorSnapshot != nil {
+			supervisor = supervisorSnapshot()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
 			Healthy:       true,
@@ -102,6 +112,7 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 			PendingApply:  pendingApply,
 			Relay:         relay,
 			LegacyScrub:   legacyScrub,
+			Supervisor:    supervisor,
 			Warnings:      warnings,
 		})
 	}

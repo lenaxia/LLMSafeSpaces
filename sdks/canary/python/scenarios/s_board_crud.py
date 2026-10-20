@@ -17,6 +17,13 @@ PRJ = re.compile(r"^prj-[0-9a-z]{8}$")
 EPC = re.compile(r"^epc-[0-9a-z]{8}$")
 TSK = re.compile(r"^tsk-[0-9a-z]{8}$")
 PR_ANCHOR = re.compile(r"^pr:[1-9][0-9]*$")
+REPLAY_KEY = "11111111-2222-3333-4444-555555555555"
+
+
+def mutate_sid(sid: str) -> str:
+    """Edit-distance-1 near-miss of a short id (suggestion bound)."""
+    tail = "1" if sid[-1] == "0" else "0"
+    return sid[:-1] + tail
 
 
 def run(r: Runner, cfg: Config) -> None:
@@ -145,6 +152,36 @@ def run(r: Runner, cfg: Config) -> None:
             r.assert_(len(listed) == 2, "list-tasks: two backlog", str(len(listed)))
         r.assert_error(lambda: c.board.list_project_tasks(project_sid, stage="wip"), "list-tasks-bad-stage: error")
 
+        # P10b (#1699 seams): epic listing carries derived progress
+        ok, epics = r.assert_no_error(
+            lambda: c.board.list_board_epics(project_sid), "list-epics: no error"
+        )
+        if ok and epics is not None:
+            r.assert_(len(epics) == 1, "list-epics: one epic", str(len(epics)))
+            r.assert_(epics[0].get("progress_derived") is True, "list-epics: progress derived", "")
+
+        # P10c (#1699 seams): board search — hit + near-miss suggestions
+        # (the missing-q 400 is pinned at the contract tier; the SDK
+        # always sends q — the near-miss arm is the canary's share)
+        ok, hits = r.assert_no_error(
+            lambda: c.board.search_board("Task A"), "search-hit: no error"
+        )
+        if ok and hits:
+            r.assert_(len(hits.get("results", [])) == 1, "search-hit: one result", "")
+        ok, near = r.assert_no_error(
+            lambda: c.board.search_board(mutate_sid(task_a_sid)), "search-nearmiss: no error"
+        )
+        if ok and near:
+            r.assert_(len(near.get("results", [])) == 0, "search-nearmiss: zero results", "")
+            r.assert_(task_a_sid in (near.get("suggestions") or []), "search-nearmiss: suggested", "")
+
+        # P10d (#1699 seams): the health snapshot renders
+        ok, health = r.assert_no_error(lambda: c.board.get_board_health(), "board-health: no error")
+        if ok and health:
+            r.assert_("active_leases" in health, "board-health: leases key", "")
+            r.assert_("pending_input_by_origin" in health, "board-health: origins key", "")
+
+
         # P11: cancel task (terminal) + cancel epic (→ paused)
         ok, cancelled = r.assert_no_error(
             lambda: c.board.cancel_task(task_b_sid, reason="canary cleanup"), "cancel-task: no error"
@@ -159,6 +196,20 @@ def run(r: Runner, cfg: Config) -> None:
 
         # P12: read perimeter — a near-miss id is a plain 404
         r.assert_error(lambda: c.board.get_project("prj-zzzzzzzz"), "get-project-nearmiss: 404")
+
+        # P13 (#1699 replay keys): post-cancel activate from paused (no
+        # claimable work — no spawns); the SAME requestId twice renders
+        # 200-with-original on the replay
+        ok, act1 = r.assert_no_error(
+            lambda: c.board.epic_activate(epic_sid, request_id=REPLAY_KEY), "lifecycle-replay-1: no error"
+        )
+        if ok and act1:
+            r.assert_(act1.get("status") == "active", "lifecycle-replay-1: active", str(act1.get("status")))
+        ok, act2 = r.assert_no_error(
+            lambda: c.board.epic_activate(epic_sid, request_id=REPLAY_KEY), "lifecycle-replay-2: 200-with-original"
+        )
+        if ok and act2:
+            r.assert_(act2.get("status") == "active", "lifecycle-replay-2: original status", str(act2.get("status")))
     finally:
         try:
             c.workspaces.delete(ws_id)

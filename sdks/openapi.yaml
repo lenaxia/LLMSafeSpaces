@@ -4444,6 +4444,12 @@ paths:
       operationId: archiveBoardProject
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Archived project
@@ -4462,6 +4468,12 @@ paths:
       operationId: unarchiveBoardProject
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Active project
@@ -4474,15 +4486,35 @@ paths:
         "404":
           $ref: "#/components/responses/BoardNotFound"
   /me/projects/{id}/epics:
+    get:
+      tags: [board]
+      summary: List a project's epics with derived progress
+      description: |
+        Epic progress is DERIVED at read time (never stored; Done over
+        ALL tasks per the #1747 ruling — the cancelled exclusion the
+        original design carried is superseded). A zero denominator
+        renders no-progress. Ordered by creation.
+      operationId: listBoardEpics
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: The project's epics (empty array when none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpicList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
     post:
       tags: [board]
       summary: Create an epic in a project
       description: |
         Epics default to `draft` (ruling R2): a draft epic feeds no work
         until activated. Epic `priority` is display/filter-only in v1 —
-        the ready set orders by TASK priority. NOTE: a project listing
-        endpoint is deliberately absent in v1 (engine seam gap, tracked
-        on #1699).
+        the ready set orders by TASK priority.
       operationId: createBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4605,6 +4637,12 @@ paths:
       operationId: activateBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Active epic
@@ -4627,6 +4665,12 @@ paths:
       operationId: pauseBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Paused epic
@@ -4649,6 +4693,12 @@ paths:
       operationId: archiveBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Archived epic
@@ -4671,6 +4721,12 @@ paths:
       operationId: unarchiveBoardEpic
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
           description: Active epic
@@ -4967,6 +5023,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
         - $ref: "#/components/parameters/BoardDependsOnId"
+        - $ref: "#/components/parameters/BoardRequestIdQuery"
       responses:
         "200":
           description: The re-derived task row
@@ -4980,6 +5037,61 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+  /me/board/search:
+    get:
+      tags: [board]
+      summary: Search the caller's board (short ID exact or title match)
+      description: |
+        User-level, board-wide (ruling R7 — every project the caller
+        owns). `q` matches a short ID exactly (case-insensitive) or a
+        title substring; filters narrow by project focus, epic chip,
+        stage column, and tags. Zero-hit near-misses carry did-you-mean
+        suggestions (top-3) — never across the authorization perimeter.
+        Bounded to the first 50 results.
+      operationId: searchBoard
+      parameters:
+        - $ref: "#/components/parameters/BoardSearchQ"
+        - $ref: "#/components/parameters/BoardSearchProject"
+        - $ref: "#/components/parameters/BoardSearchEpic"
+        - $ref: "#/components/parameters/BoardStageFilter"
+        - name: tag
+          in: query
+          description: Tag filter (repeatable — tasks must carry ALL)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching tasks plus zero-hit suggestions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardSearchResult"
+        "400":
+          description: Missing/oversized q or an unknown stage filter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /me/board/health:
+    get:
+      tags: [board]
+      summary: The caller's board health snapshot
+      description: |
+        The §4.8 health panel feed: active leases with expiry, recent
+        reclaims (last 20), task and project-slot cooldowns,
+        pending_input counts by origin, per-project worker slots in use.
+      operationId: getBoardHealth
+      responses:
+        "200":
+          description: Health snapshot (zeroed arrays for a fresh board)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   # --- Org-scope workflows & triggers (Epic 64) ---
   /orgs/{id}/workflows:
     get:
@@ -8996,6 +9108,48 @@ components:
         type: string
         pattern: "^(prj-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
         example: prj-a1b2c3d4
+    BoardSearchQ:
+      name: q
+      in: query
+      required: true
+      description: Search query — a short ID (exact, case-insensitive) or a title substring (1-200 chars)
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    BoardSearchProject:
+      name: project
+      in: query
+      required: false
+      description: Project focus — UUID or short id (`prj-…`)
+      schema:
+        type: string
+    BoardSearchEpic:
+      name: epic
+      in: query
+      required: false
+      description: Epic chip — UUID or short id (`epc-…`)
+      schema:
+        type: string
+    BoardStageFilter:
+      name: stage
+      in: query
+      required: false
+      description: Stage column filter (one of the six stages)
+      schema:
+        type: string
+        enum: [backlog, in_progress, in_review, done, pending_input, cancelled]
+    BoardRequestIdQuery:
+      name: requestId
+      in: query
+      required: false
+      description: |
+        Idempotency key for DELETE (which carries no body) — the same
+        clientMessageID discipline as the body field: one UUID per
+        logical operation, reused on retry.
+      schema:
+        type: string
+        format: uuid
     BoardEpicId:
       name: id
       in: path
@@ -9490,6 +9644,8 @@ components:
           $ref: "#/components/schemas/CredentialStateResult"
         agentHealth:
           $ref: "#/components/schemas/AgentHealthResult"
+        supervisor:
+          $ref: "#/components/schemas/SupervisorStatus"
         sessions:
           type: array
           items:
@@ -9597,6 +9753,64 @@ components:
           type: string
         lastCheckedAt:
           type: string
+    SupervisorStatus:
+      type: object
+      description: |
+        Supervisor health-watchdog observations about agent restarts in
+        the workspace (#1760). Surfaced so callers can tell an
+        unexplained interruption was a supervisor restart. agentRestarts
+        is a lifetime count since the workspace pod's supervisor boot —
+        supervisor-watchdog restarts plus recorded process-crash
+        restarts where the supervisor records them — never a resetting
+        crash-loop counter. Observability only.
+      properties:
+        agentRestarts:
+          type: integer
+          description: |
+            Total recorded agent restarts since the pod's supervisor
+            boot. A lifetime count; it never resets on recovery.
+        lastAgentRestart:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AgentRestartEvent"
+        suppressedRestarts:
+          type: integer
+          description: |
+            Total would-fire watchdog restarts suppressed by
+            corroborating evidence (the agent process was alive —
+            starved, blocked, or respawning) since the pod's supervisor
+            boot.
+        lastSuppressedVerdict:
+          type: string
+          description: |
+            The supervisor watchdog's classification at the most recent
+            suppression. Empty when no suppression occurred.
+    AgentRestartEvent:
+      type: object
+      description: |
+        One recorded agent restart by the supervisor health watchdog.
+      properties:
+        reason:
+          type: string
+          description: |
+            Why the agent was restarted: health_watchdog (corroborated
+            dead-listener), health_watchdog_unknown_episode (escalated
+            after an evidence outage), crash, or oom.
+        verdict:
+          type: string
+          description: |
+            The supervisor watchdog's classification of the agent
+            process at the restart decision: hung, starved, flat,
+            respawn, or unknown. Empty when the restart was not
+            watchdog-initiated or was uncorroborated.
+        lastError:
+          type: string
+          description: |
+            The health-check error of the episode that led to the
+            restart, when any.
+        at:
+          type: string
+          format: date-time
     SessionStatusItem:
       type: object
       properties:
@@ -12059,6 +12273,120 @@ components:
       properties:
         task:
           $ref: "#/components/schemas/BoardTask"
+    BoardEpicList:
+      type: object
+      required: [epics]
+      properties:
+        epics:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardEpic"
+    BoardSearchResult:
+      type: object
+      required: [results, suggestions]
+      properties:
+        results:
+          type: array
+          description: Matching task rows (bounded to the first 50)
+          items:
+            $ref: "#/components/schemas/BoardTask"
+        suggestions:
+          type: array
+          description: Did-you-mean candidates on zero-hit near-misses (top-3, 0066 shape); empty on hits and far misses
+          items:
+            type: string
+    BoardHealth:
+      type: object
+      required: [active_leases, task_cooldowns, project_cooldowns, pending_input_by_origin, recent_reclaims, project_slots]
+      properties:
+        active_leases:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardHealthLease"
+        task_cooldowns:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardHealthTaskCooldown"
+        project_cooldowns:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardHealthProjectCooldown"
+        pending_input_by_origin:
+          type: object
+          description: pending_input counts keyed by origin (worker, escalated, dependency_abandoned, drift_review)
+          additionalProperties:
+            type: integer
+        recent_reclaims:
+          type: array
+          description: The 20 most recent lease reclaims (RC1), sourced from board_events
+          items:
+            $ref: "#/components/schemas/BoardHealthReclaim"
+        project_slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardHealthProjectSlots"
+    BoardHealthLease:
+      type: object
+      required: [task_id, short_id, title, project_id, lease_expires_at]
+      properties:
+        task_id:
+          type: string
+        short_id:
+          type: string
+        title:
+          type: string
+        project_id:
+          type: string
+        assignee_session:
+          type: string
+        lease_expires_at:
+          type: string
+          format: date-time
+    BoardHealthTaskCooldown:
+      type: object
+      required: [task_id, short_id, project_id, cooldown_until]
+      properties:
+        task_id:
+          type: string
+        short_id:
+          type: string
+        project_id:
+          type: string
+        cooldown_until:
+          type: string
+          format: date-time
+    BoardHealthProjectCooldown:
+      type: object
+      required: [project_id, short_id, cooldown_until]
+      properties:
+        project_id:
+          type: string
+        short_id:
+          type: string
+        cooldown_until:
+          type: string
+          format: date-time
+    BoardHealthReclaim:
+      type: object
+      required: [task_id, at]
+      properties:
+        task_id:
+          type: string
+        at:
+          type: string
+          format: date-time
+    BoardHealthProjectSlots:
+      type: object
+      required: [project_id, short_id, worker_slots, in_use]
+      properties:
+        project_id:
+          type: string
+        short_id:
+          type: string
+        worker_slots:
+          type: integer
+        in_use:
+          type: integer
     BoardRequestId:
       type: string
       format: uuid

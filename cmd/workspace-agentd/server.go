@@ -68,6 +68,11 @@ type serverDeps struct {
 	// sidecar mode — nil vitals restores pre-#892 kill-on-timeout
 	// semantics (the 2026-08-15 kill-churn class).
 	vitals vitalsGatherer
+	// restartLog (#1760) records watchdog fires, the unknown-episode
+	// escalation, and suppressions for the supervisor slice of
+	// healthz/statusz. Nil only in tests — both production topologies
+	// wire it (the watchdog loop runs in agentd in both).
+	restartLog *agentRestartLog
 	// sys supplies statusz's system metrics. Nil → local cgroup reads
 	// (single-container mode). Sidecar mode wires socket-backed reads —
 	// the sidecar's own cgroup is the wrong container (0050 finding).
@@ -167,6 +172,7 @@ func buildStatuszHandler(
 	spawnStatus func() (rev, degraded string),
 	inFlightFn func() int64,
 	relaySnapshot func() *agentd.RelayHealth,
+	supervisorSnapshot func() *agentd.SupervisorStatus,
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -278,6 +284,11 @@ func buildStatuszHandler(
 		if relaySnapshot != nil {
 			relay = relaySnapshot()
 		}
+		// #1760: the supervisor restart slice (cached; never I/O here).
+		var supervisor *agentd.SupervisorStatus
+		if supervisorSnapshot != nil {
+			supervisor = supervisorSnapshot()
+		}
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:             healthy,
 			InFlightDeliveries:  inFlight,
@@ -304,6 +315,7 @@ func buildStatuszHandler(
 			SpawnedRev:          spawnedRev,
 			Degraded:            degraded,
 			Relay:               relay,
+			Supervisor:          supervisor,
 		})
 	})
 }
@@ -699,7 +711,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness))))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness), supervisorSnapshotFor(deps))))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.
@@ -835,7 +847,7 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
-		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, restarter, &busySessionChecker{tracker: deps.sseTracker}, vitals)
+		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, restarter, &busySessionChecker{tracker: deps.sseTracker}, vitals, deps.restartLog)
 	}()
 
 	// #904: orphan zombie reaper. agentd is PID 1 (and a subreaper),
@@ -881,5 +893,5 @@ func legacyScrubHealthSnapshot(deps serverDeps) func() *agentd.LegacyScrubHealth
 // fallback silently dropped the sidecar mirror, the exact nightly
 // regression this PR fixes).
 func healthzRoute(deps serverDeps) http.HandlerFunc {
-	return healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps))
+	return healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot, relayLivenessSnapshotFor(deps.relayLiveness), legacyScrubHealthSnapshot(deps), supervisorSnapshotFor(deps))
 }

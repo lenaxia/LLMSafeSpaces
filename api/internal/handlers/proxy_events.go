@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
@@ -184,6 +185,37 @@ func (h *ProxyHandler) resolveRootSessionID(workspaceID, sessionID string) strin
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return h.sessionParents.resolveRoot(ctx, workspaceID, sessionID)
+}
+
+// onAgentRestart (#1760) is the workspace watcher's restart callback:
+// a changed supervisor restart stamp (the controller mirrored a
+// watchdog restart into the CRD) publishes the agent_restarted platform
+// event so an open chat shows a toast immediately. Payload rides Data
+// per the agent_died convention (bare snake_case event type, map
+// payload — pinned cross-lane ruling).
+func (h *ProxyHandler) onAgentRestart(workspace *v1.Workspace) {
+	if h.userBroker == nil {
+		return
+	}
+	sup := workspace.Status.AgentSupervisor
+	if sup == nil || sup.LastAgentRestart == nil {
+		return
+	}
+	data := map[string]string{
+		"reason":        sup.LastAgentRestart.Reason,
+		"agentRestarts": strconv.Itoa(int(sup.AgentRestarts)),
+	}
+	if sup.LastAgentRestart.Verdict != "" {
+		data["verdict"] = sup.LastAgentRestart.Verdict
+	}
+	if sup.LastAgentRestart.At != nil {
+		data["at"] = sup.LastAgentRestart.At.UTC().Format(time.RFC3339)
+	}
+	h.userBroker.PublishToUser(workspace.Spec.Owner.UserID, apitypes.WorkspaceSSEEvent{
+		Type:        "agent_restarted",
+		WorkspaceID: workspace.Name,
+		Data:        data,
+	})
 }
 
 type queueUpdateData struct {

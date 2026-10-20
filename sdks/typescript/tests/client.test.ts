@@ -849,5 +849,49 @@ describe("userPrompts", () => {
       expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/tasks?stage=backlog");
       expect(res.tasks).toHaveLength(1);
     });
+
+    it("reads the #1699 seams: epic list, board search, board health", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ epics: [{ id: "e1", short_id: "epc-bbbb2222", progress_derived: true, progress_done: 1, progress_total: 2 }] }));
+      const epics = await client.board.listBoardEpics("prj-aaaa1111");
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/epics");
+      expect(epics.epics[0].progress_total).toBe(2);
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ results: [{ id: "t1", short_id: "tsk-cccc3333", stage: "backlog" }], suggestions: [] }));
+      const search = await client.board.searchBoard("login", { project: "prj-aaaa1111", tags: ["auth"] });
+      const searchUrl = mockFetch.mock.calls[1][0] as string;
+      expect(searchUrl).toContain("/me/board/search?");
+      expect(searchUrl).toContain("q=login");
+      expect(searchUrl).toContain("project=prj-aaaa1111");
+      expect(searchUrl).toContain("tag=auth");
+      expect(search.results[0].short_id).toBe("tsk-cccc3333");
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({
+        active_leases: [{ task_id: "t1", short_id: "tsk-cccc3333", title: "x", project_id: "p1", lease_expires_at: "2026-10-19T12:00:00Z" }],
+        task_cooldowns: [], project_cooldowns: [],
+        pending_input_by_origin: { escalated: 1 },
+        recent_reclaims: [{ task_id: "t2", at: "2026-10-19T11:00:00Z" }],
+        project_slots: [{ project_id: "p1", short_id: "prj-aaaa1111", worker_slots: 2, in_use: 1 }],
+      }));
+      const health = await client.board.getBoardHealth();
+      expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/me/board/health");
+      expect(health.pending_input_by_origin["escalated"]).toBe(1);
+      expect(health.project_slots[0].in_use).toBe(1);
+    });
+
+    it("threads lifecycle replay keys (body requestId + DELETE query param)", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active" }));
+      await client.board.activateEpic("epc-bbbb2222", { requestId: "key-1" });
+      expect((mockFetch.mock.calls[0][1] as any).body).toContain('"requestId":"key-1"');
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "p1", status: "archived" }));
+      await client.board.archiveProject("prj-aaaa1111", { requestId: "key-2" });
+      expect((mockFetch.mock.calls[1][1] as any).body).toContain('"requestId":"key-2"');
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ task: { id: "t1", is_blocked: false } }));
+      await client.board.removeDependency("tsk-cccc3333", "tsk-aaaa0000", "key-3");
+      expect(mockFetch.mock.calls[2][0]).toBe(
+        "http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/dependencies/tsk-aaaa0000?requestId=key-3",
+      );
+    });
   });
 });

@@ -38,6 +38,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
+### Added — Task Board: the four #1699 engine-seam closings (design 0067)
+
+- **Board search + health + epic listing — the board_read projections
+  Lane 2 could not surface.** `GET /api/v1/me/board/search?q=…` (short
+  ID exact, case-insensitive, or title substring; project/epic/stage/
+  tag filters; zero-hit near-misses carry 0066-shape did-you-mean
+  suggestions that never cross the ownership perimeter; bounded to 50
+  results), `GET /api/v1/me/board/health` (the §4.8 health panel
+  snapshot: active leases with expiry, the 20 most recent reclaims,
+  task and project-slot cooldowns, pending_input by origin, per-project
+  worker slots in use), and `GET /api/v1/me/projects/{id}/epics` (every
+  row carries DERIVED progress — one aggregate join, no N+1; Done over
+  ALL tasks per the #1747 owner ruling, which supersedes the original
+  design's cancelled-exclusion denominator). Search results and the
+  epic list render in creation order — the FIFO read-side mirror the
+  same ruling sets (priority fields leave the schema with PR #1763). All three surface through the four SDKs, the hurl contract
+  suite, and the external MCP projection (`board_read` grows `q` /
+  `kind=epics` / `health=true`; a dedicated `board_health` tool joins
+  the set — 19 board_* tools).
+- **The `board.event` SSE publisher (design 0067 §4.6) — the board's
+  live-update feed lights up.** Committed board events fan out on the
+  existing user + workspace SSE channels (user copy = the project
+  owner, ruling R7; workspace copy = the project's target) as flat
+  `board.event` frames carrying the `board_events` row — the shape the
+  merged frontend already consumes (invalidation + reconnect reseed;
+  the e2e reclaim arm's `action=reclaim` streams from the reconciler).
+  Publishing is strictly post-commit on BOTH write paths (user/engine
+  eventWriter transactions and the reconciler's deterministic-id
+  writes — a replayed event id publishes nothing) and fail-open: no
+  broker or a failed project lookup logs and drops the projection; the
+  UI's #1646/#1687 reseed belt is the consumer's safety net.
+- **Lifecycle replay protection completed at every tier.** The six
+  lifecycle actions (archive/unarchive project, activate/pause/archive/
+  unarchive epic) now thread `requestId` into their event writers (the
+  engine gap PR #1728's review flagged), remove-dependency carries the
+  replay key as an optional `requestId` query parameter (DELETE has no
+  body), the MCP lifecycle tools grow `request_id`, and the shared
+  error mapping renders a `DuplicateError` replay as 200-with-original
+  — closing a live-tier gap where a replayed requestId answered 500 on
+  every surface. `replayExceptions` in the parity matrix is empty:
+  every mutating action asserts the full idempotent-replay contract on
+  both the REST and external-MCP columns.
+### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
+
+- **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
+  `trusted_app_bots: '["agentic-actor-coder[bot]"]'`.** App-bot accounts
+  can never be repository collaborators (the collaborators API
+  structurally returns `none` for them), so the opencode CLI's startup
+  `assertPermissions()` refused every PR our worker pods authored and
+  every `/review` they posted before any review pass — the #1775 outage
+  class (three dead synchronize runs + a dead `/review` fallback).
+  Upstream v0.2.17 (#51) added the opt-in `trusted_app_bots` input
+  (listed actors run in TOKEN mode — assert bypassed for them ONLY;
+  every human and unlisted actor still passes the collaborator assert
+  unchanged; fail-closed on malformed input); v0.2.18 (#53) fixed the
+  bypass delivery after the first live rollout caught that step-level
+  env never reaches the composite action's inner CLI step — TOKEN now
+  rides `GITHUB_ENV` (validated end-to-end on this very PR's own
+  review: run 39373330689 died at the assert on v0.2.17, run
+  39374196693 executed the LLM on v0.2.18). The literal must match
+  `canonicalTrustedAppBots` in `tests/ghaworkflows/gha_callers_test.go`
+  (single-source ruling #1710, extended to the new input — comment
+  lines stripped and `(?m)`-anchored so a commented-out or mid-block
+  input cannot false-pass), and both callers' pin tests accept any
+  `vX.Y.Z` tag instead of version literals (the propagate sed bumps
+  pins without touching tests — the shape is the contract, not the
+  literal; same relaxation applied to the renovate-analysis pin test).
 
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 

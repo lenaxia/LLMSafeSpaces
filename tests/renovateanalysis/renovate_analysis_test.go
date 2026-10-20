@@ -87,8 +87,11 @@ func TestCallerPinsReusableWorkflow(t *testing.T) {
 		t.Fatal("caller does not use lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml")
 	}
 	pin := ref[1]
-	if pin != "v0.2.16" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(strings.Fields(pin)[0]) {
-		t.Errorf("reusable ref must be the v0.2.16 tag or a 40-hex SHA pin, got %q", pin)
+	// vX.Y.Z tag (propagate's sed bumps the pin without touching tests) or a
+	// 40-hex SHA pin — the shape is the contract, not the literal (same
+	// rationale as gha_callers callerPin).
+	if !regexp.MustCompile(`^v\d+\.\d+\.\d+$`).MatchString(strings.Fields(pin)[0]) && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(strings.Fields(pin)[0]) {
+		t.Errorf("reusable ref must be a vX.Y.Z tag or a 40-hex SHA pin, got %q", pin)
 	}
 
 	for _, perm := range []string{"id-token: write", "contents: write", "issues: write", "pull-requests: write"} {

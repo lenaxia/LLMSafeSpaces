@@ -112,6 +112,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Pod unreachable — clear the terminal-verified delivery state
 		// (US-70.1): no evidence from a dead pod beats stale evidence.
 		ws.Status.SecretsDelivery = nil
+		// Same evidence rule for the supervisor restart state (#1760):
+		// a dead pod's restart history is unknown, not carried forward.
+		ws.Status.AgentSupervisor = nil
 		// Same evidence rule for the deferred-apply surface (#1342): a
 		// dead pod's deferral state is unknown, not pending.
 		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
@@ -133,11 +136,20 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Response undecodable: same reasoning as unreachable — we
 		// can't trust any prior value, clear to nil.
 		ws.Status.SecretsDelivery = nil
+		ws.Status.AgentSupervisor = nil
 		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
 		return
 	}
+
+	// #1760: mirror the supervisor/watchdog restart slice into
+	// status.agentSupervisor + the AgentRestarted condition + the
+	// exactly-once-per-restart event. Runs on ANY decoded response —
+	// the block is agentd's own attribution (the pod answered), not the
+	// agent's claim about itself, so an unhealthy body still carries
+	// truthful restart history.
+	r.mirrorAgentSupervisor(ctx, ws, healthResp.Supervisor)
 
 	if !healthResp.Healthy {
 		ws.Status.ConsecutiveHealthFailures++
@@ -278,6 +290,99 @@ func (r *WorkspaceReconciler) mirrorLegacyScrub(ctx context.Context, ws *v1.Work
 		r.Recorder.Eventf(ws, "Normal", "LegacyKeysScrubbed",
 			"one-time legacy-key scrub complete (%s)", summary)
 	}
+}
+
+// mirrorAgentSupervisor (#1760): agentd's supervisor slice → the CRD's
+// status.agentSupervisor, the AgentRestarted condition, and a K8s
+// Warning event exactly-once per distinct restart. Nil rep (pre-#1760
+// runtime, or a scrape the caller classified as no-evidence) keeps the
+// previously mirrored value — the W15 mixed-fleet policy; the
+// unreachable/undecodable paths clear it explicitly. The condition is a
+// historical fact: each observed restart's record replaces the previous
+// one (never auto-removed).
+func (r *WorkspaceReconciler) mirrorAgentSupervisor(ctx context.Context, ws *v1.Workspace, rep *agentd.SupervisorStatus) {
+	if rep == nil {
+		return
+	}
+	status := &v1.AgentSupervisorStatus{
+		AgentRestarts:         int32(rep.AgentRestarts),      //nolint:gosec // G115: bounded by restart cadence
+		SuppressedRestarts:    int32(rep.SuppressedRestarts), //nolint:gosec // G115: same
+		LastSuppressedVerdict: rep.LastSuppressedVerdict,
+	}
+	if rep.LastAgentRestart != nil {
+		ev := &v1.AgentRestartEvent{
+			Reason:    rep.LastAgentRestart.Reason,
+			Verdict:   rep.LastAgentRestart.Verdict,
+			LastError: rep.LastAgentRestart.LastError,
+		}
+		if !rep.LastAgentRestart.At.IsZero() {
+			t := metav1.NewTime(rep.LastAgentRestart.At.UTC())
+			ev.At = &t
+		}
+		status.LastAgentRestart = ev
+	}
+
+	prior := ws.Status.AgentSupervisor
+	ws.Status.AgentSupervisor = status
+
+	if status.LastAgentRestart == nil {
+		return // no fired restart — counts only, no condition/event
+	}
+	if supervisorStamp(prior) == supervisorStamp(status) {
+		return // same restart re-scraped — idempotent
+	}
+
+	r.setCondition(ws, v1.WorkspaceConditionAgentRestarted, "True",
+		v1.ReasonWatchdogRestarted,
+		fmt.Sprintf("agent restarted by the supervisor health watchdog (reason: %s, verdict: %s) — in-flight work may have been interrupted",
+			status.LastAgentRestart.Reason, verdictOrNone(status.LastAgentRestart.Verdict)))
+
+	if r.Recorder == nil {
+		return
+	}
+	const annKey = "llmsafespaces.dev/agent-restart-reported"
+	stamp := supervisorStamp(status)
+	if ws.Annotations[annKey] == stamp {
+		return // already reported this exact restart (in-memory fast path)
+	}
+	// Persist the stamp exactly like mirrorLegacyScrub: a full Update on
+	// a fresh fetch (the status-subresource write drops metadata).
+	var fresh v1.Workspace
+	if err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &fresh); err != nil {
+		return // a later pass retries (the in-memory stamp stays unset)
+	}
+	if fresh.Annotations == nil {
+		fresh.Annotations = map[string]string{}
+	}
+	fresh.Annotations[annKey] = stamp
+	if err := r.Update(ctx, &fresh); err != nil {
+		return // a later pass retries honestly; never silently dropped
+	}
+	ws.ResourceVersion = fresh.ResourceVersion
+	if ws.Annotations == nil {
+		ws.Annotations = map[string]string{}
+	}
+	ws.Annotations[annKey] = stamp
+	r.Recorder.Eventf(ws, "Warning", "AgentRestarted",
+		"agent restarted by the supervisor health watchdog (reason: %s, verdict: %s, restarts: %d, suppressed: %d)",
+		status.LastAgentRestart.Reason, verdictOrNone(status.LastAgentRestart.Verdict),
+		status.AgentRestarts, status.SuppressedRestarts)
+}
+
+// supervisorStamp delegates to the CRD type's shared stamp (#1760) —
+// the API watcher's SSE emission keys on the same identity, so the two
+// can never disagree about what "a new restart" is.
+func supervisorStamp(s *v1.AgentSupervisorStatus) string {
+	return s.RestartStamp()
+}
+
+// verdictOrNone renders an empty verdict honestly (uncorroborated fire)
+// without leaking the empty string into user-facing copy.
+func verdictOrNone(verdict string) string {
+	if verdict == "" {
+		return "uncorroborated"
+	}
+	return verdict
 }
 
 // relayRevisionOf extracts the applied relay revision from a relay

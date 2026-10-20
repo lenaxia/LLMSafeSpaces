@@ -64,6 +64,10 @@ func (h *ProxyHandler) Start() error {
 		if h.versionSyncCb != nil {
 			watcher.SetVersionSyncCallback(h.versionSyncCb)
 		}
+		// #1760: supervisor-restart detection on the same watch stream —
+		// an AgentRestarted stamp change publishes the agent_restarted
+		// SSE event to the owning user (live toast in open chats).
+		watcher.SetRestartCallback(h.onAgentRestart)
 		if err := watcher.Start(); err != nil {
 			_ = h.activityTracker.Stop()
 			startErr = fmt.Errorf("starting CRD watcher: %w", err)
