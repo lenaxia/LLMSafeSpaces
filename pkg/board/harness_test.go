@@ -57,16 +57,24 @@ func (f *fakeSpawner) failWith(err error) {
 	f.err = err
 }
 
-// fakeAborter records worker aborts (cancel mid-flight).
+// fakeAborter records worker aborts (#1747: delete replaces cancel;
+// aborts fire post-commit). onAbort, when set, runs AT FIRE TIME —
+// the hook the ordering pins use to observe the database while the
+// abort is happening (the row must already be gone there).
 type fakeAborter struct {
-	mu    sync.Mutex
-	calls []string
+	mu      sync.Mutex
+	calls   []string
+	onAbort func(taskID, assignee string)
 }
 
 func (f *fakeAborter) Abort(_ context.Context, taskID, assignee string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, taskID+"/"+assignee)
+	hook := f.onAbort
+	f.mu.Unlock()
+	if hook != nil {
+		hook(taskID, assignee)
+	}
 	return nil
 }
 

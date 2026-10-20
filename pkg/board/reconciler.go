@@ -660,10 +660,6 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 	return done, review, reentry, nil
 }
 
-// rc3Dependencies recomputes is_blocked from the edge table (non-terminal
-// rows only — terminal rows' is_blocked is meaningless and stable) and
-// stages the cancel-dependent transition class (skipping rows already
-// pending: origin preserved, no oscillation).
 // rc3Dependencies recomputes is_blocked from the edge table (RC3): a
 // task is blocked iff it holds a dependency whose prerequisite is not
 // done. With cancel eliminated (#1747 round 3) there is no such

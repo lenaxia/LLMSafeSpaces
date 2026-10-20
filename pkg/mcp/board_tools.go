@@ -20,8 +20,9 @@ package mcp
 //
 // Naming: design 0067 §4.3b names board_list_projects, board_get,
 // board_update_item, board_move_stage, board_start_task, the
-// epic/project lifecycle pairs, board_cancel, the dependency pair, and
-// board_read. The design's board_create_* wildcard expands to
+// epic/project lifecycle pairs, the dependency pair, and board_read
+// (cancel was eliminated — board_delete_task/board_delete_epic replace
+// it). The design's board_create_* wildcard expands to
 // board_create_project/epic/task (REST vocabulary); board_read is the
 // tasks-listing reader (search/health join when the engine seams land,
 // #1699 follow-ups).
@@ -778,7 +779,7 @@ func (h *handlers) boardRemoveDependency(ctx context.Context, req mcp.CallToolRe
 
 // boardItemKind resolves the prj-/epc-/tsk- prefix to its REST resource.
 // Bare UUIDs are refused: the unified tools (board_get, board_update_item,
-// board_cancel) need the kind to select the route, and short ids are this
+// board_delete) need the kind to select the route, and short ids are this
 // surface's addressing contract (§4.3a).
 func boardItemKind(id string) (string, error) {
 	switch {

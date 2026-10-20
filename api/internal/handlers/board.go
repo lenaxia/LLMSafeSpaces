@@ -309,7 +309,7 @@ func (h *BoardHandler) UnarchiveProject(c *gin.Context) {
 }
 
 // ListProjectTasks lists a project's tasks, optionally filtered by one
-// of the six stages (the adapter validates the filter; the engine owns
+// of the five stages (the adapter validates the filter; the engine owns
 // everything else).
 func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 	p, ok := h.ownerProject(c, c.Param("id"))
@@ -505,7 +505,8 @@ func (h *BoardHandler) UnarchiveEpic(c *gin.Context) {
 // DeleteEpic destructively removes the epic and its tasks (#1747: cancel
 // is eliminated — delete replaces it; every removed row keeps its
 // snapshot in the audit log). force is required while claims are
-// in-flight (it aborts each worker first).
+// in-flight (the delete commits, then in-flight workers are aborted —
+// post-commit).
 func (h *BoardHandler) DeleteEpic(c *gin.Context) {
 	force := c.Query("force") == "true"
 	out, err := h.board.DeleteEpic(c.Request.Context(), h.boardActor(c), c.Param("id"), "", force, "")
@@ -705,8 +706,9 @@ func (h *BoardHandler) StartTask(c *gin.Context) {
 }
 
 // DeleteTask is the destructive replacement for the eliminated cancel
-// (#1747): an idle row goes straight; an in-flight row is cleanly
-// aborted first. Edges cascade; orphaned dependents are listed and each
+// (#1747): an idle row goes straight; an in-flight row's worker is
+// aborted AFTER the delete commits (post-commit). Edges cascade;
+// orphaned dependents are listed and each
 // gets an unblocked_by_delete audit event. reconnect=true lets orphans
 // inherit the deleted node's direct upstream edges (deduplicated,
 // cycle-guarded) — default off (no implicit graph rewrites).

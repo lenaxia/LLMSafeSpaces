@@ -29,10 +29,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DeleteTask removes a task. Idle rows go straight; an in-flight row
-// (live claim) gets a clean worker abort FIRST (the existing interrupt
-// seam — best-effort; the row's removal is the authority), then the
-// delete. Edges cascade via FK; orphans are surfaced + audited.
+// DeleteTask removes a task. Idle rows go straight; the delete COMMITS,
+// then an in-flight row's (live claim's) worker is aborted —
+// post-commit, best-effort via the interrupt seam; the row's removal is
+// the authority, and a failed transaction never cuts a worker. Edges
+// cascade via FK; orphans are surfaced + audited.
 func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOrID string, reconnect bool, requestID string) (*DeleteResult, error) {
 	t, p, err := s.taskProjectForActor(ctx, actor, taskID, shortIDOrID)
 	if err != nil {
@@ -92,7 +93,7 @@ func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOr
 // DeleteEpic cascades: every task under the epic is deleted (each with
 // its OWN snapshot event — no aggregate blob), then the epic. Refuses
 // while any claim under the epic is in-flight unless force=true (force
-// aborts each worker first). Orphans (cross-epic dependents OUTSIDE the
+// aborts each in-flight worker post-commit). Orphans (cross-epic dependents OUTSIDE the
 // epic) are surfaced + audited per deleted task.
 func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOrID string, force bool, requestID string) (*DeleteResult, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
@@ -113,7 +114,7 @@ func (s *Service) DeleteEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	// In-flight guard: refuse without force.
 	inFlight := s.inFlightUnder(ctx, "t.epic_id = $1", e.ID)
 	if len(inFlight) > 0 && !force {
-		return nil, &GuardError{Code: GuardEpicState, Detail: "claims in flight under the epic — force required (force=true aborts each worker first)"}
+		return nil, &GuardError{Code: GuardEpicState, Detail: "claims in flight under the epic — force required (force=true deletes, then aborts each in-flight worker post-commit)"}
 	}
 
 	out := &DeleteResult{ItemKind: "epic", ID: e.ID, ShortID: e.ShortID}

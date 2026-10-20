@@ -200,7 +200,7 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 		return nil, &GuardError{Code: GuardInput, Detail: "search query exceeds 200 characters"}
 	}
 	if filters.Stage != "" && !searchStages()[filters.Stage] {
-		return nil, &GuardError{Code: GuardInput, Detail: "stage filter must be one of the six stages"}
+		return nil, &GuardError{Code: GuardInput, Detail: "stage filter must be one of the five stages"}
 	}
 
 	args := []any{userID, trimmed, likeLiteral(trimmed)}

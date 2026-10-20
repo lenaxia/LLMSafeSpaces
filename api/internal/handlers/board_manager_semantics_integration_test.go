@@ -76,6 +76,15 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 		ON CONFLICT (id) DO NOTHING
 	`, wsPod)
 	require.NoError(t, err)
+	// Hermeticity (r8): the foreign workspace row too — the
+	// cross-workspace arm must not depend on a sibling test having
+	// seeded it (standalone-fresh DB is the proof bar).
+	_, err = pool.Exec(ctx, `
+		INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
+		VALUES ($1, 'user-7', 'ws-foreign', 'default', now(), now())
+		ON CONFLICT (id) DO NOTHING
+	`, wsForeign)
+	require.NoError(t, err)
 
 	cfg := board.EngineConfig{
 		AttemptsCap:     3,

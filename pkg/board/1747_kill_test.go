@@ -14,6 +14,7 @@ package board_test
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stretchr/testify/require"
 
@@ -228,6 +229,19 @@ func (s *BoardSuite) TestKill_1747_DeleteEpicForce() {
 	t1 := s.seedTask(e, "live", nil, false)
 	s.seedTask(e, "idle", nil, false)
 
+	// The fire-time probe (r8): query the DB INSIDE the force abort —
+	// "row already gone" is the post-commit ordering OBSERVED.
+	goneAtFire := -1 // -1 = the abort never fired
+	s.aborter.onAbort = func(taskID, _ string) {
+		var n int
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM tasks WHERE id=$1`, taskID).Scan(&n); err != nil {
+			s.T().Errorf("fire-time probe: %v", err)
+			return
+		}
+		goneAtFire = n
+	}
+
 	c := s.claimOrFail(ws)
 	s.Equal(t1.ID, c.TaskID)
 
@@ -240,7 +254,8 @@ func (s *BoardSuite) TestKill_1747_DeleteEpicForce() {
 	out, err := s.svc.DeleteEpic(context.Background(), s.owner(), e.ID, "", true, "")
 	s.Require().NoError(err)
 	s.Len(out.CascadeTasks, 2, "every removed task is listed")
-	s.Equal(1, s.aborter.count(), "force aborts the in-flight worker")
+	s.Equal(1, s.aborter.count(), "force aborts the in-flight worker (post-commit cleanup)")
+	s.Equal(0, goneAtFire, "at fire time the claimed row is ALREADY GONE — delete_epic's force abort is post-commit (r2.2, observed r8)")
 	var goneAfter int
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM tasks WHERE id=$1`, t1.ID).Scan(&goneAfter))
@@ -462,11 +477,54 @@ func (s *BoardSuite) TestKill_1747_DeleteTaskAbortsInFlight() {
 	assignee := s.reloadTask(t1.ID).AssigneeSession
 	s.Require().NotEmpty(assignee)
 
+	// The fire-time probe (r8): query the DB INSIDE the abort call —
+	// "row already gone" is the post-commit ordering OBSERVED, not
+	// inferred from the call sequence after the fact.
+	goneAtFire := -1 // -1 = the abort never fired
+	s.aborter.onAbort = func(taskID, _ string) {
+		var n int
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM tasks WHERE id=$1`, taskID).Scan(&n); err != nil {
+			s.T().Errorf("fire-time probe: %v", err)
+			return
+		}
+		goneAtFire = n
+	}
+
 	out, err := s.svc.DeleteTask(context.Background(), s.owner(), t1.ID, "", false, "")
 	s.Require().NoError(err)
 	s.Equal(t1.ShortID, out.ShortID)
-	s.Equal(1, s.aborter.count(), "the in-flight worker is cleanly aborted")
+	s.Equal(1, s.aborter.count(), "the in-flight worker is aborted (post-commit cleanup)")
 	s.Equal(t1.ID+"/"+assignee, s.aborter.callsSlice()[0])
+	s.Equal(0, goneAtFire, "at fire time the row is ALREADY GONE — delete_task's abort is post-commit (persist-then-abort)")
+}
+
+// KILL-TEST 1747-l2 (r8, the review's ordering pin): a FAILED
+// delete_task transaction never aborts the worker — the delete_task
+// .effect failpoint kills the tx after the row delete but before
+// commit; the in-flight worker must survive UNTOUCHED (no abort call,
+// row intact, claim live). The abort is cleanup for a committed
+// removal, never an action on its own.
+func (s *BoardSuite) TestKill_1747_DeleteTaskTxFailureNoAbort() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "still-live", nil, false)
+
+	c := s.claimOrFail(ws)
+	s.Equal(t1.ID, c.TaskID)
+
+	s.fps.armAt("delete_task.effect", fmt.Errorf("injected crash at delete_task.effect"))
+	defer s.fps.disarm("delete_task.effect")
+
+	_, err := s.svc.DeleteTask(context.Background(), s.owner(), t1.ID, "", false, "")
+	s.Require().Error(err, "the failpoint must fail the delete transaction")
+
+	s.Equal(0, s.aborter.count(), "a failed transaction must NEVER cut a worker")
+	survivor := s.reloadTask(t1.ID)
+	s.Require().NotNil(survivor)
+	s.Equal(t1.ID, survivor.ID)
+	s.Equal(board.StageInProgress, survivor.Stage, "the task is untouched — the row's removal is the only authority")
 }
 
 // KILL-TEST 1747-m (r2, the review's missing-case 5): task_start at the
