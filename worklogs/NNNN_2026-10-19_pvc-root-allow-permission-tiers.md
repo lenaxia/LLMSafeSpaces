@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-19
 **Session:** Implementation lane for issue #1759 (worktree /workspace/wt-1759, branch fix/1759-pvc-default-allow-rules): default read-write external_directory allows for the three PVC mount points (/workspace, /tmp, /home/sandbox), deny preservation under the new allows, two stop-and-report engine investigations, and the platform-prompt persistence block (charter amendment).
-**Status:** Complete
+**Status:** Complete — lane superseded: the owner adjudicated the duplicate external PR #1762 (merged 2026-10-19, d8496b8d) as the #1759 vehicle and closed PR #1764 as the duplicate. This branch carries the lane's unique deltas (harness env fix, live legs, engine-grammar findings, prompt block) pending orchestrator/owner disposition.
 
 ---
 
