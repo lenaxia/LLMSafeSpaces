@@ -113,7 +113,9 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/var/lib/x", "deny", "deny /var"},
 		{"/root/.ssh/x", "deny", "deny /root"},
 		{"/run/secrets/x", "deny", "deny /run"},
-		{"/workspace/.local/opencode/auth.json.bak", "allow", "GRAMMAR EDGE (residual 3): no live-effective deny shape covers a single file under an allowed glob — the model verdict documents the unprotected sibling"},
+		{"/workspace/.local/opencode/auth.json.bak", "deny", "#1777: the children deny covers EVERY file under the opencode data dir — the #1771 grammar-edge row flips to a denial pin"},
+		{"/workspace/.local/opencode/auth.json", "deny", "#1777: the live auth store path — bash-typed reads denied via the children deny (proven live, the 3(d) experiment)"},
+		{"/workspace/.local/opencode/opencode.db", "deny", "#1777: opencode.db-class session state protected from agent tools (the owner-accepted trade)"},
 	}
 	for _, tc := range matrix {
 		t.Run(tc.resource, func(t *testing.T) {
@@ -167,6 +169,7 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/sys/fs/cgroup", "/sys/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
 		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/*"},
+		{"/workspace/.local/opencode/*", "/workspace/*"},
 	}
 	for _, c := range carves {
 		require.Contains(t, platformPermissionTiers, c.carve)
