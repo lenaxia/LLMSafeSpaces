@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
+
+- **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
+  The opencode config writer's platform permission floor now carries
+  default-allow rules for all three PVC mount points (bare key +
+  children glob each — the wildcardless keys shield the bare paths from
+  the `/home/*` parent deny), replacing the pre-#1759 ambient-ask carve
+  on the home root and the narrow subpath pre-allows
+  (`.cache`/`.config`/`.local` — superseded by the root allow and
+  removed as dead rules). Every credential and system deny keeps
+  winning by the documented sort-order precedence
+  (`'*' 0x2A < '.' 0x2E` — each deny sorts after the root allow glob
+  and is the last matching rule for its paths): `.ssh`, `.secrets`,
+  `.git-credentials`, `.local/opencode/auth.json`,
+  `/sandbox-runtime/rt/auth.json` + `rt/secrets`, and the system denies
+  (`/proc`, `/sys`, `/run`, `/etc`, `/dev`, `/root`, `/var`, `/home`).
+  The full verdict matrix — allows present, denies still biting — is
+  pinned in `permissiontiers_test.go`; the deny-preservation pin
+  asserts every deny entry survives the amendment.
+
+
 ### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
 
 - **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default
