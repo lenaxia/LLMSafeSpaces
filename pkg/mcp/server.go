@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ func NewServer(client APIClient, defaultTimeout time.Duration) *server.MCPServer
 		server.ServerTool{Tool: workspaceCreateTool, Handler: h.workspaceCreate},
 		server.ServerTool{Tool: workspaceActivateTool, Handler: h.workspaceActivate},
 		server.ServerTool{Tool: workspaceStopTool, Handler: h.workspaceStop},
+		server.ServerTool{Tool: workspaceStatusTool, Handler: h.workspaceStatus},
 		server.ServerTool{Tool: workspaceRefreshComputeTool, Handler: h.workspaceRefreshCompute},
 		server.ServerTool{Tool: sessionCreateTool, Handler: h.sessionCreate},
 		server.ServerTool{Tool: sessionMessageTool, Handler: h.sessionMessage},
@@ -78,6 +80,13 @@ var workspaceActivateTool = mcp.NewTool("workspace_activate",
 
 var workspaceStopTool = mcp.NewTool("workspace_stop",
 	mcp.WithDescription("Stop a workspace (suspends the agent, preserves all files)"),
+	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
+)
+
+var workspaceStatusTool = mcp.NewTool("workspace_status",
+	mcp.WithDescription("Get a workspace's status: phase, conditions, agent health, and the supervisor restart history "+
+		"(restart count, last restart reason/verdict/time, suppressed restart count). Useful after an interrupted task — "+
+		"an agent restarted by the supervisor health watchdog explains interrupted work."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
 )
 
@@ -167,6 +176,29 @@ func (h *handlers) workspaceStop(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Workspace %s stopped (files preserved)", workspaceID)), nil
+}
+
+// workspaceStatus (#1760): the supervisor restart history rides the
+// same REST service layer as GET /workspaces/:id/status — no separate
+// path. The raw DTO is re-serialized compact so new fields flow
+// without a tool re-pin.
+func (h *handlers) workspaceStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	workspaceID, _ := args["workspace_id"].(string)
+	if workspaceID == "" {
+		return mcp.NewToolResultError("workspace_id is required"), nil
+	}
+
+	raw, err := h.client.GetWorkspaceStatus(ctx, workspaceID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get workspace status: %v", err)), nil
+	}
+
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to encode workspace status: %v", err)), nil
+	}
+	return mcp.NewToolResultText(buf.String()), nil
 }
 
 func (h *handlers) workspaceRefreshCompute(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -267,6 +299,11 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 func strArg(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+func boolArg(args map[string]any, key string) (bool, bool) {
+	v, ok := args[key].(bool)
+	return v, ok
 }
 
 func stringSliceArg(args map[string]any, key string) []string {

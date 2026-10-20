@@ -33,8 +33,10 @@ import (
 //   - DEFAULT-ALLOW (#1759, the PVC mount points): /workspace, /tmp,
 //     /home/sandbox — the three subPath mounts of the one workspace
 //     PVC are the agent's own filesystem by design; read-write, no
-//     prompts. Every credential deny under the home root still wins
-//     (each sorts after "/home/sandbox/*": '*' 0x2A < '.' 0x2E). The
+//     prompts. In the MODEL every credential deny under the home root
+//     still wins (each sorts after "/home/sandbox/*": '*' 0x2A <
+//     '.' 0x2E); live, the bare/exact keys never fire a deny and the
+//     /* variants are what bite (residual 3(a)). The
 //     pre-#1759 subpath pre-allows (.cache/.config/.local) are
 //     superseded by the root allow and removed — dead rules in a
 //     security floor are noise.
@@ -52,8 +54,11 @@ import (
 //     tripwire — matching for parsed bash commands uses the TYPED
 //     path); and the RESOLVED secret targets /sandbox-runtime/rt/secrets
 //     and rt/auth.json (file tools resolve symlinks to canonical paths
-//     before asking, so only the resolved target denies read-tool
-//     access).
+//     before asking, so in the MODEL only the resolved target denies
+//     read-tool access; live, both targets are keyed as exact denies
+//     — the shape that never fires — so read-tool reads fall to
+//     ambient ask, while rt/secrets children stay denied by the /*
+//     key: residual 3).
 //
 // Design 0060 Part D transcribes the pre-allow set as
 // "caches/config/workspace". #1759 makes the workspace/home/tmp roots
@@ -72,6 +77,61 @@ import (
 //     action per directory. The ro mounts carry the real boundary for
 //     the two read-only pre-allows (assert cgroup2 ro before trusting —
 //     runtime default, not our pod spec; /opencode ro is ours).
+//  3. ENGINE DENY GRAMMAR (observed live on the pinned 1.18.15 during
+//     the #1759 investigation — the 18-probe grammar set recorded with
+//     the closed #1764, plus the two salvage experiments (the env
+//     mutation boot, which probed env resolution rather than a grammar
+//     shape, and the children-deny probe in (d)); the ported
+//     model above is faithful for "/*" rules
+//     and optimistic elsewhere): only "X/*"-suffixed patterns ever
+//     fire a deny. Exact keys ("X") and terminal-star keys ("X*") load
+//     into the engine's rule list but never fire a deny, while
+//     both shapes DO fire for an ALLOW. Consequences, recorded so
+//     nobody re-derives them:
+//     (a) The bare credential names below are intent/model rules:
+//     live, a typed `ls /home/sandbox/.ssh` executes under the root
+//     allow (pre-#1759 the home carve's ask key blocked it headless);
+//     the CONTENTS stay hard-denied by the "/*" variants (proven live
+//     — the deny-preservation leg in the integration corpus).
+//     (b) A single FILE under an allowed glob has no live-effective
+//     deny shape of its own: e.g. /workspace/.local/opencode/auth.json
+//     under "/workspace/*" — its protection is the DIRECTORY children
+//     deny "/workspace/.local/opencode/*", ADOPTED by #1777 (the
+//     owner-funded resolution of this residual); files under an
+//     allowed glob with no children deny remain allowed wherever
+//     external_directory governs them (proven with a foreign project
+//     root — the integration legs boot opencode outside /workspace);
+//     on the default pod residual 1's project-root exemption is the
+//     governing claim. The pre-#1777 exposure was the config allow's
+//     own trade (#1759's owner spec). The closed
+//     #1764 asserted an engine auth-store self-allow that was never
+//     observed (no rule dump ever showed one) and concluded from it
+//     that a children deny could not protect the auth path — the
+//     conclusion is falsified jointly by the dump-absence record above
+//     (no appended auth-store rule was ever observed) and by (d)
+//     below — with the caveat that (d)'s boot ran the harness's
+//     synthetic XDG_DATA_HOME, so it proves the children deny bites
+//     for the probed path; its shipped body still
+//     carries the claim uncorrected, and THIS note is the in-repo
+//     correction pointer.
+//     (c) The engine APPENDS self-allows after the config rules
+//     (observed shapes: the boot's tool-output directory,
+//     "/tmp/opencode/*"); appended rules beat config under findLast.
+//     (d) A live-effective protective shape EXISTS for the
+//     directory case: a children deny "/workspace/.local/opencode/*"
+//     byte-sorts after the root allow and BITES live (probed
+//     2026-10-20: a bash cat of the auth path denied with our rule
+//     quoted in the engine's dump; pinned permanently by
+//     TestPermissionTier_BashDeniesOpencodeDataDir). ADOPTED by #1777:
+//     the owner accepted the scope trade — agent bash/file tools also
+//     lose opencode.db-class session state; the opencode server's own
+//     native IO is unaffected (external_directory gates tool
+//     invocations only).
+//     UPSTREAM ASKS: (i) honor exact/terminal-star denies; (ii) an
+//     exclude shape that beats allow-globs; (iii) document which
+//     paths the engine self-allows (supersedes #1764's ask iii,
+//     "stop self-allowing the auth store", per the corrected
+//     attribution above).
 
 // platformPermissionTiers is the external_directory floor the writer
 // bakes into the TOP-LEVEL permission key (the LIVE shape on the
@@ -80,9 +140,11 @@ import (
 // precedence, see the file comment). Values are the opencode actions:
 // "allow", "ask", "deny".
 //
-// The bare-directory entries (no trailing /*) govern the symlink NAME
-// itself (e.g. an `ls /home/sandbox/.ssh`); the /* variants govern
-// children typed through the name.
+// The bare-directory entries (no trailing /*) document the symlink
+// NAME itself in the MODEL (e.g. an `ls /home/sandbox/.ssh`); the /*
+// variants govern children typed through the name. On the live engine
+// the bare keys do not fire for denies — residual 3(a): the children
+// globs are what bite.
 var platformPermissionTiers = map[string]string{
 	// --- deny tier (parents first alphabetically; carves below) ---
 	"/dev/*":  "deny",
@@ -105,8 +167,10 @@ var platformPermissionTiers = map[string]string{
 	"/home/sandbox/*": "allow",
 
 	// --- credential-name denies (bash-typed tripwire; each sorts after
-	//     the "/home/sandbox/*" allow: '*' 0x2A < '.' 0x2E — the deny
-	//     is the LAST matching rule for every credential path) ---
+	//     the "/home/sandbox/*" allow: '*' 0x2A < '.' 0x2E — in the
+	//     MODEL the deny is the LAST matching rule for every credential
+	//     path; live, the bare/exact keys never fire a deny and the /*
+	//     variants are what bite — residual 3(a)) ---
 	"/home/sandbox/.git-credentials":          "deny",
 	"/home/sandbox/.git-credentials/*":        "deny",
 	"/home/sandbox/.local/opencode/auth.json": "deny",
@@ -138,6 +202,14 @@ var platformPermissionTiers = map[string]string{
 	//     permission model. ---
 	"/workspace":   "allow",
 	"/workspace/*": "allow",
+
+	// --- #1777: the opencode data dir under the workspace root —
+	//     children deny (the live-effective shape; residual 3(d)).
+	//     Protects the auth store symlink AND opencode.db-class state
+	//     from agent tools; the opencode server's own IO is not gated.
+	//     Sorts after "/workspace/*" ('*' 0x2A < '.' 0x2E) — the deny
+	//     is the last matching rule for every path under the dir. ---
+	"/workspace/.local/opencode/*": "deny",
 
 	// --- resolved secret targets (canonical matching for file tools).
 	//     rt/ssh and rt/git-credentials are deliberately ABSENT: ambient

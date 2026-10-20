@@ -44,6 +44,7 @@ var guardConstValues = map[string]string{
 	"GuardDependency":       board.GuardDependency,
 	"GuardProjectState":     board.GuardProjectState,
 	"GuardAuthz":            board.GuardAuthz,
+	"GuardInput":            board.GuardInput,
 }
 
 // codeExpr matches the Code field of a GuardError{...} or

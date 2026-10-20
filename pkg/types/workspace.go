@@ -97,6 +97,12 @@ type WorkspaceStatusResult struct {
 	// baked-in delivery.
 	AgentdEffectiveDigest string `json:"agentdEffectiveDigest,omitempty"`
 	AgentdPendingDigest   string `json:"agentdPendingDigest,omitempty"`
+	// Supervisor (#1760): the supervisor/watchdog agent-restart slice —
+	// lifetime restart count, the last restart's attribution
+	// (reason/verdict/lastError/at), and the suppression count. Nil when
+	// the workspace has no restart evidence (never restarted, or a
+	// pre-#1760 runtime).
+	Supervisor *SupervisorStatusResult `json:"supervisor,omitempty"`
 }
 
 // WorkspaceMetadata is the database record for a workspace.

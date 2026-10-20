@@ -28,6 +28,8 @@ import { ChatView } from "../components/chat/ChatView";
 import { SuspendedBanner } from "../components/chat/SuspendedBanner";
 import { AtCapBanner } from "../components/chat/AtCapBanner";
 import { HealthBanner } from "../components/chat/HealthBanner";
+import { AgentRestartBanner } from "../components/chat/AgentRestartBanner";
+import type { AgentRestartEvent } from "../api/types";
 import { AgentReloadBanner } from "../components/workspace/AgentReloadBanner";
 import { DiskUsageBar } from "../components/workspace/DiskUsageBar";
 import { DiskRecoveryStrip } from "../components/workspace/DiskRecoveryStrip";
@@ -199,7 +201,7 @@ export function ChatPage() {
     // the new session's first contextUsed value, triggering spurious compaction banners.
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
-  }, [sessionId]);
+  }, [sessionId, workspaceId]);
 
   const { data: status } = useWorkspaceStatus(workspaceId);
 
@@ -503,15 +505,25 @@ export function ChatPage() {
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
   const [agentDiedMessage, setAgentDiedMessage] = useState<string | null>(null);
+  // #1760: live agent_restarted toast payload (from the SSE platform
+  // event); the chat-load banner reads status.supervisor.lastAgentRestart.
+  const [agentRestarted, setAgentRestarted] = useState<AgentRestartEvent | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
-  // Reset per-session state on session change.
+  // Reset per-session state on session change. Keyed on workspaceId
+  // TOO (#1760 r3): agentRestarted (and agentDied) are workspace-scoped
+  // — the /chat/:workspaceId route carries no sessionId, so a
+  // sessionId-only key would never re-run on workspace-only switches.
   useEffect(() => {
     hasAutoAbortedRef.current = false;
     knownUserMessageIds.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
     setAgentDiedMessage(null);
+    // #1760 review r1: the live agent_restarted payload must not leak
+    // across workspace switches (the router reuses this instance; a
+    // toast from workspace A would otherwise shadow B's own status).
+    setAgentRestarted(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
@@ -523,7 +535,7 @@ export function ChatPage() {
     // lastHistoryRef declaration below.
     lastHistoryRef.current = null;
     abortDwellStartRef.current = null;
-  }, [sessionId]);
+  }, [workspaceId, sessionId]); // #1760 r3: workspaceId in deps (workspace-only switches)
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
   // #1687 (pin 3): the buffer wipe (and the optimistic trim) is gated on
@@ -962,8 +974,22 @@ export function ChatPage() {
       return;
     }
 
+    // #1760: the supervisor health watchdog restarted the agent — show
+    // the dismissible notice immediately and refresh the status query
+    // (the banner-on-load state syncs from supervisor.lastAgentRestart).
+    if (event.type === "agent_restarted") {
+      const d = (event.data ?? {}) as { reason?: string; verdict?: string; at?: string };
+      if (d.at) {
+        setAgentRestarted({ reason: d.reason ?? "health_watchdog", verdict: d.verdict || undefined, at: d.at });
+      }
+      if (workspaceId) {
+        queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
+      }
+      return;
+    }
+
     console.debug("[ChatPage] unhandled platform event type:", event.type);
-  }, [workspaceId, queue]);
+  }, [workspaceId, queue, queryClient]);
 
   // Connect the platform stream unconditionally (even before workspace is
   // Active) so we can detect the Pending→Active phase transition and
@@ -1185,6 +1211,14 @@ export function ChatPage() {
           credentialState={status?.credentialState}
           agentHealth={status?.agentHealth}
         />
+      )}
+
+      {/* #1760: agent restarted by the supervisor health watchdog. The
+          live SSE payload takes precedence (fresher than the status
+          refetch it triggers); dismissal is keyed by the restart
+          timestamp so both sources share one banner. */}
+      {isReady && (
+        <AgentRestartBanner restart={agentRestarted ?? status?.supervisor?.lastAgentRestart} />
       )}
 
       {isReady && sessionWasInterrupted && (

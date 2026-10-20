@@ -3,6 +3,11 @@
 
 package types
 
+import (
+	"encoding/json"
+	"time"
+)
+
 type WorkspaceSSEEvent struct {
 	EventID     uint64      `json:"event_id,omitempty"`
 	WorkspaceID string      `json:"workspace_id,omitempty"`
@@ -30,4 +35,18 @@ type WorkspaceSSEEvent struct {
 	// on agent.question/agent.permission events whose ask is dead and
 	// re-presented from the inbox.
 	WhileAway *bool `json:"whileAway,omitempty"`
+
+	// Board event fields (design 0067 §4.6): the committed board_events
+	// row fans out FLAT on the user + workspace streams as type
+	// "board.event" (siblings of `type`, not nested under `data` — the
+	// merged frontend's pinned contract). All omitempty: no other event
+	// family's wire shape changes.
+	ProjectID    string          `json:"project_id,omitempty"`
+	BoardEventID string          `json:"id,omitempty"`
+	ItemKind     string          `json:"item_kind,omitempty"`
+	ItemID       string          `json:"item_id,omitempty"`
+	Action       string          `json:"action,omitempty"`
+	BoardActor   json.RawMessage `json:"actor,omitempty"`
+	BoardPayload json.RawMessage `json:"payload,omitempty"`
+	CreatedAt    *time.Time      `json:"created_at,omitempty"`
 }

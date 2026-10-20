@@ -65,9 +65,41 @@ export interface WorkspaceStatusResult {
   conditions?: WorkspaceCondition[];
   credentialState: { available: boolean; reason?: string; message?: string };
   agentHealth: { status: string; providersConfigured: number; agentVersion?: string };
+  supervisor?: SupervisorStatus;
   sessions?: { id: string; title?: string; status: string }[];
   diskUsedBytes?: number;
   diskTotalBytes?: number;
+}
+
+/**
+ * Supervisor health-watchdog observations about agent restarts in the
+ * workspace (#1760). agentRestarts is a lifetime count since the
+ * workspace pod's supervisor boot — supervisor-watchdog restarts plus
+ * supervisor-attributed process-crash (crash/oom) restarts, in both
+ * container topologies — never a resetting crash-loop counter.
+ */
+export interface SupervisorStatus {
+  /** Total recorded agent restarts since the pod's supervisor boot. */
+  agentRestarts: number;
+  /** Attribution of the most recent recorded restart; absent when none was recorded this boot. */
+  lastAgentRestart?: AgentRestartEvent;
+  /** Total would-fire watchdog restarts suppressed by corroborating evidence (the agent was alive). */
+  suppressedRestarts: number;
+  /** Verdict of the most recent suppression (hung | starved | flat | respawn | unknown); empty when none. */
+  lastSuppressedVerdict?: string;
+}
+
+/**
+ * One recorded agent restart by the supervisor health watchdog.
+ */
+export interface AgentRestartEvent {
+  /** Why the agent was restarted: health_watchdog, health_watchdog_unknown_episode, crash, or oom. */
+  reason: string;
+  /** Classification at the restart decision: hung, starved, flat, respawn, or unknown; empty when uncorroborated. */
+  verdict?: string;
+  /** The health-check error of the episode that led to the restart, when any. */
+  lastError?: string;
+  at: string;
 }
 
 export interface WorkspaceCondition {
@@ -607,4 +639,59 @@ export interface BoardDependencyRequest {
 
 export interface BoardRequestIdOnly {
   requestId?: string;
+}
+
+export interface BoardSearchFilters {
+  project?: string;
+  epic?: string;
+  stage?: string;
+  tags?: string[];
+}
+
+export interface BoardSearchResult {
+  results: BoardTask[];
+  suggestions: string[];
+}
+
+export interface BoardHealthLease {
+  task_id: string;
+  short_id: string;
+  title: string;
+  project_id: string;
+  assignee_session?: string;
+  lease_expires_at: string;
+}
+
+export interface BoardHealthTaskCooldown {
+  task_id: string;
+  short_id: string;
+  project_id: string;
+  cooldown_until: string;
+}
+
+export interface BoardHealthProjectCooldown {
+  project_id: string;
+  short_id: string;
+  cooldown_until: string;
+}
+
+export interface BoardHealthReclaim {
+  task_id: string;
+  at: string;
+}
+
+export interface BoardHealthProjectSlots {
+  project_id: string;
+  short_id: string;
+  worker_slots: number;
+  in_use: number;
+}
+
+export interface BoardHealth {
+  active_leases: BoardHealthLease[];
+  task_cooldowns: BoardHealthTaskCooldown[];
+  project_cooldowns: BoardHealthProjectCooldown[];
+  pending_input_by_origin: Record<string, number>;
+  recent_reclaims: BoardHealthReclaim[];
+  project_slots: BoardHealthProjectSlots[];
 }

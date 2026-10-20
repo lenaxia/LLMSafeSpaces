@@ -91,11 +91,11 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/sys", "ask", "BARE /sys matches no rule (^/sys/.*$ needs the slash) — ambient; children stay denied"},
 		{"/sys/kernel/xxx", "deny", "rest of /sys stays denied"},
 		{"/opencode/plugins/llmsafespaces-origin.js", "allow", "pre-allow the ro artifact mount"},
-		{"/home/sandbox/.ssh", "deny", "credential name (bash-typed tripwire)"},
+		{"/home/sandbox/.ssh", "deny", "credential name — MODEL verdict; live, the bare key never fires a deny and the children glob is what bites (residual 3a)"},
 		{"/home/sandbox/.ssh/id_ed25519", "deny", "child typed through the name"},
 		{"/home/sandbox/.git-credentials", "deny", "credential name"},
 		{"/home/sandbox/.secrets", "deny", "credential name"},
-		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name under the .local pre-allow (sorts after)"},
+		{"/home/sandbox/.local/opencode/auth.json", "deny", "credential name — sorts after the /home/sandbox/* root allow (#1759; the pre-#1759 .local pre-allow was superseded and removed)"},
 		{"/home/sandbox/projects/foo", "allow", "#1759: the home PVC root is default-allow — was the pre-#1759 ambient-ask carve"},
 		{"/home/sandbox", "allow", "BARE home dir default-allow (#1759; the wildcardless key still shields the bare path from the /home/* deny — pinned r0)"},
 		{"/home", "ask", "BARE /home parent matches NO rule (^/home/.*$ needs the slash) — ambient; children under other users still deny"},
@@ -113,6 +113,9 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/var/lib/x", "deny", "deny /var"},
 		{"/root/.ssh/x", "deny", "deny /root"},
 		{"/run/secrets/x", "deny", "deny /run"},
+		{"/workspace/.local/opencode/auth.json.bak", "deny", "#1777: the children deny covers EVERY file under the opencode data dir — the #1771 grammar-edge row flips to a denial pin"},
+		{"/workspace/.local/opencode/auth.json", "deny", "#1777: the live auth store path — bash-typed reads denied via the children deny (proven live, the 3(d) experiment)"},
+		{"/workspace/.local/opencode/opencode.db", "deny", "#1777: opencode.db-class session state protected from agent tools (the owner-accepted trade)"},
 	}
 	for _, tc := range matrix {
 		t.Run(tc.resource, func(t *testing.T) {
@@ -166,6 +169,7 @@ func TestPermissionTier_AlphabeticalCarveOrdering(t *testing.T) {
 		{"/sys/fs/cgroup", "/sys/*"},
 		{"/home/sandbox/.ssh", "/home/sandbox/*"},
 		{"/home/sandbox/.local/opencode/auth.json", "/home/sandbox/*"},
+		{"/workspace/.local/opencode/*", "/workspace/*"},
 	}
 	for _, c := range carves {
 		require.Contains(t, platformPermissionTiers, c.carve)

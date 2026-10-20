@@ -62,6 +62,10 @@ func NewReconciler(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Reconc
 	return &Reconciler{svc: NewService(pool, cfg, opts...)}
 }
 
+// SetEventPublisher installs the §4.6 event projection on the underlying
+// service (reconciler writes publish through it).
+func (r *Reconciler) SetEventPublisher(pub EventPublisher) { r.svc.SetEventPublisher(pub) }
+
 // SweepResultDetail carries per-phase counters (SweepResult is the public
 // summary; phases append here).
 
@@ -231,6 +235,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var pending []Event
 
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null')
@@ -271,13 +276,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageBacklog, "", sys); err != nil {
 			return 0, err
 		}
-		if err := insertEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
-			"reclaim", "task", v.id, sys, map[string]any{"task_id": v.id}); err != nil {
+		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
+			"reclaim", "task", v.id, sys, map[string]any{"task_id": v.id})
+		if err != nil {
 			return 0, err
 		}
+		pending = append(pending, evt)
 		applied++ // r1-C5: count what landed, not what was scanned
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 		return 0, err
 	}
 	return applied, nil
@@ -388,15 +395,20 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 				_ = tx.Rollback(ctx)
 				return staged, resumed, err
 			}
-			if err := insertEventTx(ctx, tx, r.project, "reconciler:pending:"+r.id, "pending_stage",
-				"task", r.id, sys, map[string]any{"task_id": r.id}); err != nil {
+			evt, err := recordEventTx(ctx, tx, r.project, "reconciler:pending:"+r.id, "pending_stage",
+				"task", r.id, sys, map[string]any{"task_id": r.id})
+			if err != nil {
 				_ = tx.Rollback(ctx)
 				return staged, resumed, err
 			}
 			staged++
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return staged, resumed, err
+			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				return staged, resumed, err
+			}
+		} else {
+			if err := tx.Commit(ctx); err != nil {
+				return staged, resumed, err
+			}
 		}
 	}
 
@@ -442,15 +454,20 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 				_ = tx.Rollback(ctx)
 				return staged, resumed, err
 			}
-			if err := insertEventTx(ctx, tx, r.project, "reconciler:resume:"+r.id, "resume",
-				"task", r.id, sys, map[string]any{"task_id": r.id}); err != nil {
+			evt, err := recordEventTx(ctx, tx, r.project, "reconciler:resume:"+r.id, "resume",
+				"task", r.id, sys, map[string]any{"task_id": r.id})
+			if err != nil {
 				_ = tx.Rollback(ctx)
 				return staged, resumed, err
 			}
 			resumed++
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return staged, resumed, err
+			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				return staged, resumed, err
+			}
+		} else {
+			if err := tx.Commit(ctx); err != nil {
+				return staged, resumed, err
+			}
 		}
 	}
 	return staged, resumed, nil
@@ -523,15 +540,20 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
-					if err := insertEventTx(ctx, tx, t.ProjectID, "reconciler:drift_done:"+t.ID, "drift_done",
-						"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum, "evidence": pr.URL}); err != nil {
+					evt, err := recordEventTx(ctx, tx, t.ProjectID, "reconciler:drift_done:"+t.ID, "drift_done",
+						"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum, "evidence": pr.URL})
+					if err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
 					done++
-				}
-				if err := tx.Commit(ctx); err != nil {
-					return done, review, reentry, err
+					if err := s.commitPublishing(ctx, tx, evt); err != nil {
+						return done, review, reentry, err
+					}
+				} else {
+					if err := tx.Commit(ctx); err != nil {
+						return done, review, reentry, err
+					}
 				}
 			} else {
 				tx, err := s.store.pool.Begin(ctx)
@@ -550,15 +572,20 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
-					if err := insertEventTx(ctx, tx, t.ProjectID, "reconciler:drift_review:"+t.ID, "drift_review",
-						"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum}); err != nil {
+					evt, err := recordEventTx(ctx, tx, t.ProjectID, "reconciler:drift_review:"+t.ID, "drift_review",
+						"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum})
+					if err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
 					review++
-				}
-				if err := tx.Commit(ctx); err != nil {
-					return done, review, reentry, err
+					if err := s.commitPublishing(ctx, tx, evt); err != nil {
+						return done, review, reentry, err
+					}
+				} else {
+					if err := tx.Commit(ctx); err != nil {
+						return done, review, reentry, err
+					}
 				}
 			}
 		case pr.Closed:
@@ -609,15 +636,20 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
 				}
-				if err := insertEventTx(ctx, tx, t.ProjectID, "reconciler:drift_reentry:"+t.ID, "drift_reentry",
-					"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum}); err != nil {
+				evt, err := recordEventTx(ctx, tx, t.ProjectID, "reconciler:drift_reentry:"+t.ID, "drift_reentry",
+					"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum})
+				if err != nil {
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
 				}
 				reentry++
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return done, review, reentry, err
+				if err := s.commitPublishing(ctx, tx, evt); err != nil {
+					return done, review, reentry, err
+				}
+			} else {
+				if err := tx.Commit(ctx); err != nil {
+					return done, review, reentry, err
+				}
 			}
 			if newToken != "" {
 				// After commit: the re-spawn delivers the token to a fresh
@@ -641,6 +673,7 @@ func (s *Service) rc3Dependencies(ctx context.Context) (repairs, abandoned int, 
 		return 0, 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var pending []Event
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks t SET is_blocked = EXISTS(
@@ -693,14 +726,16 @@ func (s *Service) rc3Dependencies(ctx context.Context) (repairs, abandoned int, 
 			if err := writeTransition(ctx, txQ{tx}, v.id, v.stage, StagePendingInput, "", sys); err != nil {
 				return 0, 0, err
 			}
-			if err := insertEventTx(ctx, tx, v.project, "reconciler:abandoned:"+v.id, "abandon_stage",
-				"task", v.id, sys, map[string]any{"task_id": v.id}); err != nil {
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:abandoned:"+v.id, "abandon_stage",
+				"task", v.id, sys, map[string]any{"task_id": v.id})
+			if err != nil {
 				return 0, 0, err
 			}
+			pending = append(pending, evt)
 			abandoned++
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 		return 0, 0, err
 	}
 	return repairs, abandoned, nil
@@ -742,15 +777,20 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 			return n, err
 		}
 		if flipped {
-			if err := insertEventTx(ctx, tx, r.project, "reconciler:epic_complete:"+r.id, "epic_complete",
-				"epic", r.id, sys, map[string]any{"epic_id": r.id}); err != nil {
+			evt, err := recordEventTx(ctx, tx, r.project, "reconciler:epic_complete:"+r.id, "epic_complete",
+				"epic", r.id, sys, map[string]any{"epic_id": r.id})
+			if err != nil {
 				_ = tx.Rollback(ctx)
 				return n, err
 			}
 			n++
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return n, err
+			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				return n, err
+			}
+		} else {
+			if err := tx.Commit(ctx); err != nil {
+				return n, err
+			}
 		}
 	}
 	return n, nil

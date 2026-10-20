@@ -518,3 +518,23 @@ func TestPermissionTier_BashDeniesHomeCredentialWithRootAllow(t *testing.T) {
 	assert.True(t, quoted,
 		"the matcher's rule dump must quote the .ssh deny — the specific deny out-ranked the root allow")
 }
+
+// TestPermissionTier_BashDeniesOpencodeDataDir — the #1777 leg: with
+// the "/workspace/*" root allow rendered, the children deny
+// "/workspace/.local/opencode/*" must deny bash-typed reads of the
+// opencode data dir — the auth store AND opencode.db-class paths. This
+// is the 3(d) experiment (PR #1771 residual 3(d): the shape BITES)
+// promoted to a permanent pin. Runs anywhere the binary runs: the gate
+// fires before file access, so the path need not exist. Verdicts only
+// are logged; the probe path is credential-shaped (piped to wc -c — a
+// regression that lets it execute returns a count, never content).
+func TestPermissionTier_BashDeniesOpencodeDataDir(t *testing.T) {
+	res := tierBashLeg(t, 14548, "cat /workspace/.local/opencode/auth.json | wc -c")
+	denied := strings.Contains(res, "prevents you from using this specific tool call")
+	quoted := strings.Contains(res, `"/workspace/.local/opencode/*"`)
+	t.Logf("denied=%v ruleQuoted=%v", denied, quoted)
+	assert.True(t, denied,
+		"a typed read under the opencode data dir must be denied WITH the workspace root allow present (#1777 children deny)")
+	assert.True(t, quoted,
+		"the matcher's rule dump must quote the children deny — deny-specific beats the allow-glob live")
+}

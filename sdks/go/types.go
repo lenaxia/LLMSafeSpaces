@@ -224,21 +224,51 @@ type APIKey struct {
 
 // WorkspaceStatus is the rich status response from GET /workspaces/:id/status.
 type WorkspaceStatus struct {
-	Phase            string               `json:"phase"`
-	ActiveSessions   int                  `json:"activeSessions"`
-	LastActivityAt   *time.Time           `json:"lastActivityAt,omitempty"`
-	Message          string               `json:"message,omitempty"`
-	Conditions       []WorkspaceCondition `json:"conditions,omitempty"`
-	CredentialState  CredentialState      `json:"credentialState"`
-	AgentHealth      AgentHealth          `json:"agentHealth"`
-	Sessions         []SessionStatusItem  `json:"sessions,omitempty"`
-	ImageTag         string               `json:"imageTag,omitempty"`
-	DiskUsedBytes    int64                `json:"diskUsedBytes,omitempty"`
-	DiskTotalBytes   int64                `json:"diskTotalBytes,omitempty"`
-	MemoryUsedBytes  int64                `json:"memoryUsedBytes,omitempty"`
-	MemoryTotalBytes int64                `json:"memoryTotalBytes,omitempty"`
-	ContextUsed      int64                `json:"contextUsed"`
-	ContextTotal     int64                `json:"contextTotal"`
+	Phase           string               `json:"phase"`
+	ActiveSessions  int                  `json:"activeSessions"`
+	LastActivityAt  *time.Time           `json:"lastActivityAt,omitempty"`
+	Message         string               `json:"message,omitempty"`
+	Conditions      []WorkspaceCondition `json:"conditions,omitempty"`
+	CredentialState CredentialState      `json:"credentialState"`
+	AgentHealth     AgentHealth          `json:"agentHealth"`
+	// Supervisor (#1760) carries the supervisor health-watchdog's agent
+	// restart observations: lifetime restart count, the last restart's
+	// attribution (reason/verdict/lastError/at), and the suppressed
+	// restart count. Nil when no restart evidence is present for the
+	// workspace (never restarted this boot, a runtime that does not
+	// report it, or the state was cleared on an unreachable pod).
+	Supervisor       *SupervisorStatus   `json:"supervisor,omitempty"`
+	Sessions         []SessionStatusItem `json:"sessions,omitempty"`
+	ImageTag         string              `json:"imageTag,omitempty"`
+	DiskUsedBytes    int64               `json:"diskUsedBytes,omitempty"`
+	DiskTotalBytes   int64               `json:"diskTotalBytes,omitempty"`
+	MemoryUsedBytes  int64               `json:"memoryUsedBytes,omitempty"`
+	MemoryTotalBytes int64               `json:"memoryTotalBytes,omitempty"`
+	ContextUsed      int64               `json:"contextUsed"`
+	ContextTotal     int64               `json:"contextTotal"`
+}
+
+// SupervisorStatus is the supervisor health-watchdog's restart slice of
+// WorkspaceStatus (#1760). AgentRestarts is a lifetime count since the
+// pod's supervisor boot — supervisor-watchdog restarts plus
+// supervisor-attributed process-crash (crash/oom) restarts, in both
+// container topologies — never a resetting crash-loop counter.
+type SupervisorStatus struct {
+	AgentRestarts         int                `json:"agentRestarts"`
+	LastAgentRestart      *AgentRestartEvent `json:"lastAgentRestart,omitempty"`
+	SuppressedRestarts    int                `json:"suppressedRestarts"`
+	LastSuppressedVerdict string             `json:"lastSuppressedVerdict,omitempty"`
+}
+
+// AgentRestartEvent is one recorded agent restart by the supervisor
+// health watchdog (#1760). Verdict is the watchdog's classification
+// (hung, starved, flat, respawn, unknown) — empty when the restart was
+// not watchdog-initiated or was uncorroborated.
+type AgentRestartEvent struct {
+	Reason    string    `json:"reason"`
+	Verdict   string    `json:"verdict,omitempty"`
+	LastError string    `json:"lastError,omitempty"`
+	At        time.Time `json:"at"`
 }
 
 type WorkspaceCondition struct {

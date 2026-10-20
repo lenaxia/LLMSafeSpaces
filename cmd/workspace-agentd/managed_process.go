@@ -115,6 +115,18 @@ type managedProcess struct {
 	// busy-flag reset (design 0050 D2); nil = no callback.
 	onChildStarted func()
 
+	// restartObserver, when non-nil, is invoked by the supervisor
+	// goroutine when an unexpected child exit is classified — reason
+	// "oom" or "crash", the same decision point (and strings) as the
+	// restart-reason marker write (#1760 surfacing). Called BEFORE
+	// applyBackoff's sleep, under no lock (the supervisor goroutine is
+	// the sole writer of this path). Operator restarts
+	// (restartRequested) and first boot do NOT fire it. Single-
+	// container agentd wires the restartLog recorder; supervise-
+	// opencode wires the adapter's crash attribution (#1776); nil = no
+	// observer (tests).
+	restartObserver func(reason string)
+
 	// probeWg tracks any in-flight healthProbeAfterRestart
 	// goroutines. stop() waits on it so the probe can no longer
 	// touch the package-level log after stop() returns. Without this
@@ -272,7 +284,9 @@ func (p *managedProcess) supervise() {
 
 		// Crash path: classify exit, handle OOM, record metric, log, backoff, loop.
 		exitKind := classifyExit(waitErr)
+		restartReason := "crash"
 		if isOOMExit(exitKind) {
+			restartReason = "oom"
 			handleOOMExit(workspaceIDFromEnv(), markerPathFromEnv())
 		} else {
 			if err := writeRestartReasonMarker(markerPathFromEnv(), "crash", nil); err != nil {
@@ -282,6 +296,9 @@ func (p *managedProcess) supervise() {
 				logRestartReasonAtWrite("crash", nil, log.Core())
 			}
 			pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), "crash")
+		}
+		if p.restartObserver != nil {
+			p.restartObserver(restartReason)
 		}
 		log.Warn("opencode exited unexpectedly",
 			zap.Error(waitErr),

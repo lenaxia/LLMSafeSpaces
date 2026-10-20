@@ -3,6 +3,8 @@
 
 package agentd
 
+import "time"
+
 // Well-known paths shared between entrypoint scripts and agentd.
 // Shell scripts reference these by convention — keep in sync.
 //
@@ -156,6 +158,13 @@ type HealthzResponse struct {
 	// Nil only before the boot call lands (early boot) or in topologies
 	// that never construct the tracker. Observability only.
 	LegacyScrub *LegacyScrubHealth `json:"legacyScrub,omitempty"`
+	// Supervisor (#1760) is the supervisor/watchdog restart slice:
+	// lifetime restart count, the last restart's attribution
+	// (reason/verdict/lastError/at), the current health-failure run, and
+	// the suppression count. Nil when this agentd build does not record
+	// restarts (pre-#1760 mixed fleet) — no evidence is not a restart.
+	// Observability only: never affects Healthy.
+	Supervisor *SupervisorStatus `json:"supervisor,omitempty"`
 }
 
 // LegacyScrubHealth is the US-72.6 scrub slice of HealthzResponse: the
@@ -194,6 +203,51 @@ type SpawnEnvHealth struct {
 	FilesRev      string `json:"filesRev,omitempty"`
 	FilesDegraded bool   `json:"filesDegraded,omitempty"`
 	FilesReason   string `json:"filesReason,omitempty"`
+}
+
+// SupervisorStatus is the #1760 supervisor/watchdog slice of healthz
+// and statusz: what the supervisor observed about agent restarts —
+// lifetime counts plus the last restart's attribution. AgentRestarts is
+// a LIFETIME count since agentd boot (watchdog-initiated restarts plus
+// supervisor-attributed process-crash restarts — reason crash/oom — in
+// both container topologies); it is NOT a crash-loop/backoff counter
+// and never resets on recovery. Observability only: never flips Healthy,
+// never gates liveness.
+type SupervisorStatus struct {
+	// AgentRestarts: total supervisor/watchdog-initiated agent restarts
+	// recorded since agentd boot.
+	AgentRestarts int `json:"agentRestarts"`
+	// LastAgentRestart: attribution of the most recent recorded restart.
+	// Nil when no restart has been recorded this boot.
+	LastAgentRestart *AgentRestartEvent `json:"lastAgentRestart,omitempty"`
+	// ConsecutiveFailures: the current run of consecutive failed agent
+	// health checks (the watchdog's evidence input).
+	ConsecutiveFailures int `json:"consecutiveFailures"`
+	// LastHealthError: the most recent health-check error, empty when
+	// the agent currently answers healthy.
+	LastHealthError string `json:"lastHealthError,omitempty"`
+	// SuppressedRestarts: total would-fire watchdog restarts suppressed
+	// by corroborating evidence since agentd boot (the agent was alive
+	// — starved, blocked, respawning, or evidence was unavailable — so
+	// the watchdog held its kill).
+	SuppressedRestarts int `json:"suppressedRestarts"`
+	// LastSuppressedVerdict: the verdict of the most recent suppression
+	// (starved | flat | respawn | unknown); empty when none occurred.
+	LastSuppressedVerdict string `json:"lastSuppressedVerdict,omitempty"`
+}
+
+// AgentRestartEvent is one recorded agent restart. Reason is the closed
+// reason set also used by the restart-reason marker
+// (health_watchdog | health_watchdog_unknown_episode | crash | oom).
+// Verdict is the supervisor watchdog's classification of the agent
+// process at the restart decision (hung | starved | flat | respawn |
+// unknown) — empty when the restart was not watchdog-initiated or was
+// uncorroborated.
+type AgentRestartEvent struct {
+	Reason    string    `json:"reason"`
+	Verdict   string    `json:"verdict,omitempty"`
+	LastError string    `json:"lastError,omitempty"`
+	At        time.Time `json:"at"`
 }
 
 // RelayHealth is the relay-only liveness slice of healthz/readyz/statusz
@@ -402,4 +456,8 @@ type StatuszResponse struct {
 	// state; nil when not wired). Mirrors healthz's field on the deep
 	// status endpoint so a relay degrade is visible between scrapes.
 	Relay *RelayHealth `json:"relay,omitempty"`
+	// Supervisor (#1760): the supervisor/watchdog restart slice (cached
+	// state; nil when not wired). Mirrors healthz's field so restart
+	// attribution is visible on the deep scrape too.
+	Supervisor *SupervisorStatus `json:"supervisor,omitempty"`
 }

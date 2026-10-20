@@ -46,17 +46,26 @@ type Watcher struct {
 	namespace            string
 	onPhaseChange        PhaseChangeCallback
 	onVersionSync        VersionSyncCallback // nil-safe; set via SetVersionSyncCallback
+	onAgentRestart       AgentRestartCallback
 	userBroker           WorkspaceOwnerTracker
 	stopCh               chan struct{}
 	stopOnce             sync.Once
 	knownPhases          map[string]string
 	knownPhasesMu        sync.RWMutex
 	knownImageTags       map[string]string // tracks last-seen imageTag per workspace
-	knownImageTagsMu     sync.RWMutex
+	knownImageTagsMu     sync.Mutex
+	knownRestarts        map[string]string // tracks last-seen agent-restart stamp per workspace (#1760)
+	knownRestartsMu      sync.Mutex
 	watchRestartMu       sync.Mutex
 	lastResourceVersion  string
 	lastResourceVersionM sync.Mutex
 }
+
+// AgentRestartCallback is invoked when a workspace's supervisor restart
+// stamp changes on an Active→Active update (#1760) — the moment a
+// watchdog restart becomes visible to SSE consumers. Receives the full
+// workspace; the restart attribution is in status.agentSupervisor.
+type AgentRestartCallback func(workspace *v1.Workspace)
 
 func NewWatcher(
 	k8sClient pkginterfaces.KubernetesClient,
@@ -78,11 +87,40 @@ func NewWatcher(
 		stopCh:         make(chan struct{}),
 		knownPhases:    make(map[string]string),
 		knownImageTags: make(map[string]string),
+		knownRestarts:  make(map[string]string),
 	}, nil
 }
 
 func (w *Watcher) SetUserBroker(broker WorkspaceOwnerTracker) {
 	w.userBroker = broker
+}
+
+// SetRestartCallback sets the callback invoked when a workspace's
+// supervisor restart stamp changes (#1760). Must be called before
+// Start(); calling after Start() is a data race (the watch goroutine
+// reads onAgentRestart without a lock). Same contract as
+// SetVersionSyncCallback.
+func (w *Watcher) SetRestartCallback(cb AgentRestartCallback) {
+	w.onAgentRestart = cb
+}
+
+// observeAgentRestart fires the restart callback when a workspace's
+// restart stamp CHANGES from a previously OBSERVED stamp, and records
+// the new stamp. The first sighting of a workspace (no prior stamp)
+// only records — the chat-load banner already surfaces restarts that
+// predate the stream, and re-toasting stale history on API restarts
+// would be noise. Runs on the single watch goroutine (handleEvent +
+// seed), so the map needs no lock against itself — the mutex covers
+// Get/Set accessors only.
+func (w *Watcher) observeAgentRestart(workspace *v1.Workspace) {
+	stamp := workspace.Status.AgentSupervisor.RestartStamp()
+	w.knownRestartsMu.Lock()
+	prior, existed := w.knownRestarts[workspace.Name]
+	w.knownRestarts[workspace.Name] = stamp
+	w.knownRestartsMu.Unlock()
+	if w.onAgentRestart != nil && stamp != "" && existed && prior != stamp {
+		w.onAgentRestart(workspace)
+	}
 }
 
 // SetVersionSyncCallback sets the callback invoked when a workspace becomes
@@ -189,6 +227,7 @@ func (w *Watcher) seedResourceVersion() error {
 
 	w.knownPhasesMu.Lock()
 	w.knownImageTagsMu.Lock()
+	w.knownRestartsMu.Lock()
 	for i := range list.Items {
 		ws := &list.Items[i]
 		phase := string(ws.Status.Phase)
@@ -198,6 +237,11 @@ func (w *Watcher) seedResourceVersion() error {
 		if ws.Status.ImageTag != "" {
 			w.knownImageTags[ws.Name] = ws.Status.ImageTag
 		}
+		// #1760: pre-populate restart stamps (INCLUDING the empty
+		// stamp) so a genuinely NEW restart on a pre-existing workspace
+		// is a change, not a first sighting (first sightings never
+		// fire — see observeAgentRestart).
+		w.knownRestarts[ws.Name] = ws.Status.AgentSupervisor.RestartStamp()
 		if w.userBroker != nil && ws.Spec.Owner.UserID != "" {
 			w.userBroker.RecordWorkspaceOwner(ws.Name, ws.Spec.Owner.UserID)
 		}
@@ -210,6 +254,7 @@ func (w *Watcher) seedResourceVersion() error {
 		}
 	}
 	w.knownImageTagsMu.Unlock()
+	w.knownRestartsMu.Unlock()
 	w.knownPhasesMu.Unlock()
 
 	// Fire onPhaseChange for already-Active workspaces after releasing locks.
@@ -308,6 +353,9 @@ func (w *Watcher) handleEvent(event watch.Event) {
 		w.knownImageTagsMu.Lock()
 		delete(w.knownImageTags, name)
 		w.knownImageTagsMu.Unlock()
+		w.knownRestartsMu.Lock()
+		delete(w.knownRestarts, name)
+		w.knownRestartsMu.Unlock()
 		if w.userBroker != nil {
 			w.userBroker.CleanupWorkspace(name)
 		}
@@ -330,6 +378,11 @@ func (w *Watcher) handleEvent(event watch.Event) {
 		metrics.RecordWorkspacePhaseTransition(oldPhase, newPhase)
 		w.onPhaseChange(workspace)
 	}
+
+	// #1760: restart detection runs on EVERY event (restarts land while
+	// the phase stays Active — onPhaseChange is transition-only and
+	// structurally cannot carry them).
+	w.observeAgentRestart(workspace)
 
 	// Fire version sync when imageTag changes or when a workspace becomes Active
 	// with a non-empty imageTag. This covers:

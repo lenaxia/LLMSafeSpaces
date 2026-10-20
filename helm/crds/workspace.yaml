@@ -254,6 +254,63 @@ spec:
                         token_expired / router reject reasons) ride
                         degradedReason. Absent on pre-US-72.4 runtimes
                         and flag-off pods.
+                agentSupervisor:
+                  type: object
+                  description: |
+                    Supervisor/watchdog agent-restart state (#1760),
+                    mirrored by the controller from agentd's /v1/healthz
+                    supervisor slice. Absent (nil) means no evidence
+                    (unreachable pod, or a pre-#1760 runtime that does
+                    not report it).
+                  properties:
+                    agentRestarts:
+                      type: integer
+                      description: |
+                        Total recorded agent restarts since the pod's
+                        agentd boot — supervisor-watchdog restarts plus
+                        supervisor-attributed process-crash (crash/oom)
+                        restarts, in both container topologies. A
+                        lifetime count, never a resetting crash-loop
+                        counter.
+                    lastAgentRestart:
+                      type: object
+                      description: |
+                        Attribution of the most recent recorded agent
+                        restart; absent when none was recorded this boot.
+                      properties:
+                        reason:
+                          type: string
+                          description: |
+                            Why the agent was restarted
+                            (health_watchdog,
+                            health_watchdog_unknown_episode, crash, oom).
+                        verdict:
+                          type: string
+                          description: |
+                            The supervisor watchdog's classification of
+                            the agent process at the restart decision
+                            (hung, starved, flat, respawn, unknown).
+                            Empty when the restart was not
+                            watchdog-initiated or was uncorroborated.
+                        lastError:
+                          type: string
+                          description: |
+                            The health-check error of the episode that
+                            led to the restart, if any.
+                        at:
+                          type: string
+                          format: date-time
+                    suppressedRestarts:
+                      type: integer
+                      description: |
+                        Total would-fire watchdog restarts suppressed by
+                        corroborating evidence (the agent was alive) since
+                        agentd boot.
+                    lastSuppressedVerdict:
+                      type: string
+                      description: |
+                        Verdict of the most recent suppression (hung,
+                        starved, flat, respawn, unknown); empty when none.
                 conditions:
                   type: array
                   items:

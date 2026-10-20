@@ -245,7 +245,10 @@ func main() {
 	// agentzSustainFromEnv).
 	agentUnhealthyEpisodeSustain = agentzSustainFromEnv(os.Getenv)
 	servingHealthCache := newHealthzCache()
-	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority, servingHealthCache)
+	// #1760: the supervisor-restart log — watchdog fires (this process
+	// runs the watchdog loop) plus the single-container crash observer.
+	restartLog := newAgentRestartLog()
+	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority, servingHealthCache, restartLog)
 	if stateAuthority != nil {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
 		// US-69.12 + #1311: the convergence watchdog — store-evidence
@@ -276,6 +279,7 @@ func main() {
 		agentConfigWriter:  agentConfigWriter,
 		pendingApply:       newPendingApplyTracker(),
 		interrupter:        newSessionInterrupter(password),
+		restartLog:         restartLog,
 	}
 
 	// #1601: in-process disk recovery — this process (PID 1 of the
@@ -458,11 +462,22 @@ func runRedactCommand(args []string) int {
 // restart, and a one-shot reseed would leave the orphan sweep (S12's
 // backstop) unfired until the NEXT generation. Retries are ctx-bounded
 // (bgCtx — canceled at shutdown) and idempotent per attempt.
-func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority, healthCache *healthzCache) *managedProcess {
+func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority, healthCache *healthzCache, restartLog *agentRestartLog) *managedProcess {
 	if !supervise {
 		return nil
 	}
 	proc := &managedProcess{}
+	// #1760: single-container crash attribution rides the supervisor
+	// loop's crash classification (reason crash/oom, empty verdict —
+	// same decision point the restart-reason marker writes). The
+	// supervise-opencode process (sidecar mode) wires the SAME hook into
+	// its adapter instead (#1776): the sidecar's status poller carries
+	// the attribution across the control socket into the sidecar's log.
+	if restartLog != nil {
+		proc.restartObserver = func(reason string) {
+			restartLog.record(reason, "", "", time.Now())
+		}
+	}
 	// The generation boundary now carries three consumers (tracker D2
 	// reset, authority reseed, and #1632 r1's episode re-arm) — wire it
 	// unconditionally; each consumer is nil-guarded.

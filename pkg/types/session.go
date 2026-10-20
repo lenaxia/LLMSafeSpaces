@@ -169,3 +169,35 @@ type WorkspaceConditionResult struct {
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
 }
+
+// SupervisorStatusResult is the supervisor/watchdog agent-restart slice
+// of the workspace status DTO (#1760). AgentRestarts is a lifetime
+// count since the pod's agentd boot (supervisor-watchdog restarts plus
+// supervisor-attributed process-crash restarts — reason crash/oom — in
+// both container topologies) — never a resetting crash-loop
+// counter.
+type SupervisorStatusResult struct {
+	AgentRestarts int `json:"agentRestarts"`
+	// LastAgentRestart: attribution of the most recent recorded restart;
+	// nil when none was recorded this boot.
+	LastAgentRestart *AgentRestartEventResult `json:"lastAgentRestart,omitempty"`
+	// SuppressedRestarts: total would-fire watchdog restarts suppressed
+	// by corroborating evidence (the agent was alive) since agentd boot.
+	SuppressedRestarts int `json:"suppressedRestarts"`
+	// LastSuppressedVerdict: the verdict of the most recent suppression
+	// (hung | starved | flat | respawn | unknown); empty when none.
+	LastSuppressedVerdict string `json:"lastSuppressedVerdict,omitempty"`
+}
+
+// AgentRestartEventResult is one recorded agent restart (#1760).
+// Reason is the closed reason set (health_watchdog |
+// health_watchdog_unknown_episode | crash | oom); Verdict is the
+// supervisor watchdog's classification (hung | starved | flat |
+// respawn | unknown) — empty when the restart was not
+// watchdog-initiated or was uncorroborated.
+type AgentRestartEventResult struct {
+	Reason    string    `json:"reason"`
+	Verdict   string    `json:"verdict,omitempty"`
+	LastError string    `json:"lastError,omitempty"`
+	At        time.Time `json:"at"`
+}

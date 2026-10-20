@@ -4,6 +4,7 @@
 package v1
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -396,6 +397,13 @@ const (
 	// refusal, quota) — an operator-visible anomaly signal, never silent
 	// (§4.7).
 	WorkspaceConditionCredentialRejected WorkspaceConditionType = "CredentialRejected"
+	// WorkspaceConditionAgentRestarted (#1760) reports that the
+	// in-workspace agent was restarted by the supervisor health
+	// watchdog — set on the restart's observation, carrying the verdict
+	// and time in the message and the structured attribution in
+	// status.agentSupervisor. A historical fact: once set for a restart
+	// it is replaced (not removed) by the next restart's record.
+	WorkspaceConditionAgentRestarted WorkspaceConditionType = "AgentRestarted"
 )
 
 const (
@@ -447,6 +455,10 @@ const (
 	// ReasonCredentialRouterRejected: the router explicitly rejected a
 	// token (scope violation, sanitization refusal, quota) — §4.7.
 	ReasonCredentialRouterRejected = "RouterRejected"
+	// ReasonWatchdogRestarted (#1760): the agent was restarted by the
+	// supervisor health watchdog (the verdict and attribution ride the
+	// message and status.agentSupervisor).
+	ReasonWatchdogRestarted = "WatchdogRestarted"
 )
 
 const (
@@ -540,6 +552,60 @@ type SecretsDeliveryStatus struct {
 	RelayRevision  string `json:"relayRevision,omitempty"`
 }
 
+// AgentSupervisorStatus (#1760) mirrors agentd's supervisor slice from
+// /v1/healthz: what the supervisor observed about agent restarts.
+// AgentRestarts is a LIFETIME count since the pod's agentd boot
+// (supervisor-watchdog restarts plus supervisor-attributed
+// process-crash restarts — reason crash/oom — in both container
+// topologies) — never a resetting crash-loop counter. Cleared to nil
+// when the pod becomes unreachable (stale values from a previous pod
+// must not survive); left as-is when a healthy scrape omits the field
+// (mixed-fleet runtimes that never report it).
+type AgentSupervisorStatus struct {
+	// AgentRestarts: total recorded agent restarts since agentd boot.
+	AgentRestarts int32 `json:"agentRestarts,omitempty"`
+	// LastAgentRestart: attribution of the most recent recorded restart;
+	// nil when none was recorded this boot.
+	LastAgentRestart *AgentRestartEvent `json:"lastAgentRestart,omitempty"`
+	// SuppressedRestarts: total would-fire watchdog restarts suppressed
+	// by corroborating evidence since agentd boot.
+	SuppressedRestarts int32 `json:"suppressedRestarts,omitempty"`
+	// LastSuppressedVerdict: the verdict of the most recent suppression
+	// (hung | starved | flat | respawn | unknown — empty when none).
+	LastSuppressedVerdict string `json:"lastSuppressedVerdict,omitempty"`
+}
+
+// RestartStamp is the exactly-once identity of the restart record
+// (#1760): "agentRestarts@unix-at". A climbed count with the same At
+// (clock skew) still differs; a reset count (new pod boot) with a
+// restart record also differs. Empty when no restart is recorded.
+// Shared by the controller's event de-dup and the API watcher's SSE
+// emission so the two can never disagree about what "a new restart" is.
+func (s *AgentSupervisorStatus) RestartStamp() string {
+	if s == nil || s.LastAgentRestart == nil {
+		return ""
+	}
+	at := int64(0)
+	if s.LastAgentRestart.At != nil {
+		at = s.LastAgentRestart.At.Unix()
+	}
+	return fmt.Sprintf("%d@%d", s.AgentRestarts, at)
+}
+
+// AgentRestartEvent is one recorded agent restart (#1760). Reason is the
+// closed reason set shared with the restart-reason marker
+// (health_watchdog | health_watchdog_unknown_episode | crash | oom).
+// Verdict is the supervisor watchdog's classification of the agent
+// process at the restart decision (hung | starved | flat | respawn |
+// unknown) — empty when the restart was not watchdog-initiated or was
+// uncorroborated. Agent-neutral by construction: no tool names.
+type AgentRestartEvent struct {
+	Reason    string       `json:"reason,omitempty"`
+	Verdict   string       `json:"verdict,omitempty"`
+	LastError string       `json:"lastError,omitempty"`
+	At        *metav1.Time `json:"at,omitempty"`
+}
+
 // WorkspaceStatus defines the observed state of a Workspace.
 // Ownership is documented per-field to enforce the single-writer principle
 // (US-23.3): each field has exactly one owner, eliminating cross-owner
@@ -622,6 +688,14 @@ type WorkspaceStatus struct {
 	// must not survive); left as-is when a healthy scrape omits the
 	// field (mixed-fleet old runtimes never report it — W15).
 	SecretsDelivery *SecretsDeliveryStatus `json:"secretsDelivery,omitempty"`
+
+	// AgentSupervisor (#1760) is the supervisor/watchdog restart state
+	// scraped from agentd's /v1/healthz supervisor slice: lifetime
+	// restart count, the last restart's attribution, and the suppression
+	// count. Same lifecycle policy as SecretsDelivery: cleared to nil
+	// when the pod is unreachable; preserved when a healthy scrape
+	// omits the field (pre-#1760 mixed fleet).
+	AgentSupervisor *AgentSupervisorStatus `json:"agentSupervisor,omitempty"`
 
 	// ---- Startup latency measurement anchors (S18.10) ----
 	//

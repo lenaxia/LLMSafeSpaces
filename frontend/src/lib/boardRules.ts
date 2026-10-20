@@ -227,6 +227,7 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",
   validation: "A field failed the engine's validation (priority, or a required name/title).",
+  invalid_input: "Malformed arguments (a blank or oversized search query, or an unknown filter).",
   // DependencyError's codes (ruling R4a — the dependency-write 409 class
   // the server actually emits; GuardDependency is defined engine-side but
   // never returned, so it has no mirror here).

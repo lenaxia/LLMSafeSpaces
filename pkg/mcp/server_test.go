@@ -113,6 +113,14 @@ func (m *MockAPIClient) ListModels(ctx context.Context, workspaceID string) (jso
 	return args.Get(0).(json.RawMessage), args.Error(1)
 }
 
+func (m *MockAPIClient) GetWorkspaceStatus(ctx context.Context, workspaceID string) (json.RawMessage, error) {
+	args := m.Called(ctx, workspaceID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(json.RawMessage), args.Error(1)
+}
+
 func (m *MockAPIClient) SetModel(ctx context.Context, workspaceID, model string) error {
 	return m.Called(ctx, workspaceID, model).Error(0)
 }
@@ -207,18 +215,33 @@ func (m *MockAPIClient) BoardUpdateProject(ctx context.Context, projectID string
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardArchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID)
+func (m *MockAPIClient) BoardArchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, projectID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardUnarchiveProject(ctx context.Context, projectID string) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID)
+func (m *MockAPIClient) BoardUnarchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, projectID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
 func (m *MockAPIClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
 	args := m.Called(ctx, projectID, stage)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error) {
+	args := m.Called(ctx, projectID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error) {
+	args := m.Called(ctx, query)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardHealth(ctx context.Context) (json.RawMessage, error) {
+	args := m.Called(ctx)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -237,23 +260,23 @@ func (m *MockAPIClient) BoardUpdateEpic(ctx context.Context, epicID string, body
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardEpicActivate(ctx context.Context, epicID string) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID)
+func (m *MockAPIClient) BoardEpicActivate(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardEpicPause(ctx context.Context, epicID string) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID)
+func (m *MockAPIClient) BoardEpicPause(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardEpicArchive(ctx context.Context, epicID string) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID)
+func (m *MockAPIClient) BoardEpicArchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardEpicUnarchive(ctx context.Context, epicID string) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID)
+func (m *MockAPIClient) BoardEpicUnarchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -297,8 +320,8 @@ func (m *MockAPIClient) BoardAddDependency(ctx context.Context, taskID, dependsO
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn string) error {
-	return m.Called(ctx, taskID, dependsOn).Error(0)
+func (m *MockAPIClient) BoardRemoveDependency(ctx context.Context, taskID, dependsOn, requestID string) error {
+	return m.Called(ctx, taskID, dependsOn, requestID).Error(0)
 }
 
 func newTestHandlers() (*handlers, *MockAPIClient) {
