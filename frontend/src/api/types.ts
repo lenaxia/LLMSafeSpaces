@@ -212,7 +212,7 @@ export interface SupervisorStatus {
   lastSuppressedVerdict?: string;
 }
 
-/** One recorded agent restart by the supervisor health watchdog. */
+/** One recorded agent restart by the supervisor (watchdog/crash/oom). */
 export interface AgentRestartEvent {
   /** health_watchdog | health_watchdog_unknown_episode | crash | oom */
   reason: string;

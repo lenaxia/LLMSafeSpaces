@@ -974,7 +974,7 @@ export function ChatPage() {
       return;
     }
 
-    // #1760: the supervisor health watchdog restarted the agent — show
+    // #1760: the supervisor restarted the agent (reason-borne mechanism) — show
     // the dismissible notice immediately and refresh the status query
     // (the banner-on-load state syncs from supervisor.lastAgentRestart).
     if (event.type === "agent_restarted") {
@@ -1213,7 +1213,7 @@ export function ChatPage() {
         />
       )}
 
-      {/* #1760: agent restarted by the supervisor health watchdog. The
+      {/* #1760: agent restarted by the supervisor. The
           live SSE payload takes precedence (fresher than the status
           refetch it triggers); dismissal is keyed by the restart
           timestamp so both sources share one banner. */}

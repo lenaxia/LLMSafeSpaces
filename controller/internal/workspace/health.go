@@ -334,7 +334,7 @@ func (r *WorkspaceReconciler) mirrorAgentSupervisor(ctx context.Context, ws *v1.
 
 	r.setCondition(ws, v1.WorkspaceConditionAgentRestarted, "True",
 		v1.ReasonWatchdogRestarted,
-		fmt.Sprintf("agent restarted by the supervisor health watchdog (reason: %s, verdict: %s) — in-flight work may have been interrupted",
+		fmt.Sprintf("agent restarted by the supervisor (reason: %s, verdict: %s) — in-flight work may have been interrupted",
 			status.LastAgentRestart.Reason, verdictOrNone(status.LastAgentRestart.Verdict)))
 
 	if r.Recorder == nil {
@@ -364,7 +364,7 @@ func (r *WorkspaceReconciler) mirrorAgentSupervisor(ctx context.Context, ws *v1.
 	}
 	ws.Annotations[annKey] = stamp
 	r.Recorder.Eventf(ws, "Warning", "AgentRestarted",
-		"agent restarted by the supervisor health watchdog (reason: %s, verdict: %s, restarts: %d, suppressed: %d)",
+		"agent restarted by the supervisor (reason: %s, verdict: %s, restarts: %d, suppressed: %d)",
 		status.LastAgentRestart.Reason, verdictOrNone(status.LastAgentRestart.Verdict),
 		status.AgentRestarts, status.SuppressedRestarts)
 }

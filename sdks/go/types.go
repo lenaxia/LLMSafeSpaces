@@ -267,7 +267,8 @@ type SupervisorStatus struct {
 }
 
 // AgentRestartEvent is one recorded agent restart by the supervisor
-// health watchdog (#1760). Verdict is the watchdog's classification
+// (#1760; the mechanism rides Reason — health_watchdog/crash/oom).
+// Verdict is the watchdog's classification
 // (hung, starved, flat, respawn, unknown) — empty when the restart was
 // not watchdog-initiated or was uncorroborated.
 type AgentRestartEvent struct {
