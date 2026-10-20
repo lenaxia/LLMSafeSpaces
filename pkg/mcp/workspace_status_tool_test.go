@@ -17,6 +17,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestWorkspaceStatus_ToolDescriptionCopy — #1796: the tool description
+// must attribute restarts to the supervisor (the mechanism rides the
+// reason field), never claim the watchdog performed a crash/oom
+// restart. Pins the literal — a silent revert of the copy fails here.
+func TestWorkspaceStatus_ToolDescriptionCopy(t *testing.T) {
+	desc := workspaceStatusTool.Description
+	assert.Contains(t, desc, "an agent restarted by the supervisor explains interrupted work",
+		"the description's restart attribution must be the supervisor")
+	assert.NotContains(t, desc, "supervisor health watchdog",
+		"the description must not claim the watchdog performed the restart (crash/oom ride the reason field)")
+}
+
 func TestWorkspaceStatus_SupervisorRestartsSurface(t *testing.T) {
 	h, mockClient := newTestHandlers()
 	ctx := context.Background()

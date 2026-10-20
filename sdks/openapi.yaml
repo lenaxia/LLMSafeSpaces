@@ -9795,7 +9795,7 @@ components:
     AgentRestartEvent:
       type: object
       description: |
-        One recorded agent restart by the supervisor health watchdog.
+        One recorded agent restart by the supervisor (watchdog/crash/oom).
       properties:
         reason:
           type: string

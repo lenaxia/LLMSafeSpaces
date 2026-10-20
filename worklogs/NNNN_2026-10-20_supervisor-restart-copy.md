@@ -8,7 +8,7 @@
 
 ## Objective
 
-User-facing copy says "restarted by the supervisor" for all restarts; the mechanism (health_watchdog/crash/oom) is carried by the reason field. No literal claims the watchdog performed a crash/oom restart.
+User-facing copy says "restarted by the supervisor" for all restarts; the mechanism (health_watchdog/crash/oom) is carried by the reason field. Scope: the audited user-facing sites and their SDK/spec mirrors — subsystem-name references (sidecar_mode.go, helm CRDs) and historical records (CHANGELOG/worklogs) correctly keep the watchdog noun and are out of scope.
 
 ---
 

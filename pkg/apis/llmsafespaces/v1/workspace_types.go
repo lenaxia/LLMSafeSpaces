@@ -398,8 +398,9 @@ const (
 	// (§4.7).
 	WorkspaceConditionCredentialRejected WorkspaceConditionType = "CredentialRejected"
 	// WorkspaceConditionAgentRestarted (#1760) reports that the
-	// in-workspace agent was restarted by the supervisor health
-	// watchdog — set on the restart's observation, carrying the verdict
+	// in-workspace agent was restarted by the supervisor — the
+	// mechanism (health_watchdog/crash/oom) rides the message's reason
+	// field — set on the restart's observation, carrying the verdict
 	// and time in the message and the structured attribution in
 	// status.agentSupervisor. A historical fact: once set for a restart
 	// it is replaced (not removed) by the next restart's record.
