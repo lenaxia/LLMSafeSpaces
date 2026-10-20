@@ -74,12 +74,13 @@ import (
 //     runtime default, not our pod spec; /opencode ro is ours).
 //  3. ENGINE DENY GRAMMAR (observed live on the pinned 1.18.15 during
 //     the #1759 investigation — the 18-probe grammar set recorded with
-//     the closed #1764, plus the two salvage experiments: the env
-//     mutation boot and the children-deny probe in (d); the ported
+//     the closed #1764, plus the two salvage experiments (the env
+//     mutation boot, which probed env resolution rather than a grammar
+//     shape, and the children-deny probe in (d)); the ported
 //     model above is faithful for "/*" rules
 //     and optimistic elsewhere): only "X/*"-suffixed patterns ever
 //     fire a deny. Exact keys ("X") and terminal-star keys ("X*") load
-//     into the engine's rule list but never match for a DENY, while
+//     into the engine's rule list but never fire a deny, while
 //     both shapes DO fire for an ALLOW. Consequences, recorded so
 //     nobody re-derives them:
 //     (a) The bare credential names below are intent/model rules:
@@ -97,7 +98,11 @@ import (
 //     #1764 asserted an engine auth-store self-allow that was never
 //     observed (no rule dump ever showed one) and concluded from it
 //     that a children deny could not protect the auth path — the
-//     conclusion is falsified by (d) below; its shipped body still
+//     conclusion is falsified jointly by the dump-absence record above
+//     (no appended auth-store rule was ever observed) and by (d)
+//     below — with the caveat that (d)'s boot ran the harness's
+//     synthetic XDG_DATA_HOME, so it proves the children deny bites
+//     for the probed path; its shipped body still
 //     carries the claim uncorrected, and THIS note is the in-repo
 //     correction pointer.
 //     (c) The engine APPENDS self-allows after the config rules
@@ -150,8 +155,10 @@ var platformPermissionTiers = map[string]string{
 	"/home/sandbox/*": "allow",
 
 	// --- credential-name denies (bash-typed tripwire; each sorts after
-	//     the "/home/sandbox/*" allow: '*' 0x2A < '.' 0x2E — the deny
-	//     is the LAST matching rule for every credential path) ---
+	//     the "/home/sandbox/*" allow: '*' 0x2A < '.' 0x2E — in the
+	//     MODEL the deny is the LAST matching rule for every credential
+	//     path; live, the bare/exact keys never fire a deny and the /*
+	//     variants are what bite — residual 3(a)) ---
 	"/home/sandbox/.git-credentials":          "deny",
 	"/home/sandbox/.git-credentials/*":        "deny",
 	"/home/sandbox/.local/opencode/auth.json": "deny",
