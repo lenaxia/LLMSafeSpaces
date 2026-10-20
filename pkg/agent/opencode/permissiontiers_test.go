@@ -91,7 +91,7 @@ func TestPermissionTier_PrecedenceModel(t *testing.T) {
 		{"/sys", "ask", "BARE /sys matches no rule (^/sys/.*$ needs the slash) — ambient; children stay denied"},
 		{"/sys/kernel/xxx", "deny", "rest of /sys stays denied"},
 		{"/opencode/plugins/llmsafespaces-origin.js", "allow", "pre-allow the ro artifact mount"},
-		{"/home/sandbox/.ssh", "deny", "credential name (bash-typed tripwire)"},
+		{"/home/sandbox/.ssh", "deny", "credential name — MODEL verdict; live, the bare key never fires a deny and the children glob is what bites (residual 3a)"},
 		{"/home/sandbox/.ssh/id_ed25519", "deny", "child typed through the name"},
 		{"/home/sandbox/.git-credentials", "deny", "credential name"},
 		{"/home/sandbox/.secrets", "deny", "credential name"},

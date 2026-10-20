@@ -73,8 +73,10 @@ import (
 //     the two read-only pre-allows (assert cgroup2 ro before trusting —
 //     runtime default, not our pod spec; /opencode ro is ours).
 //  3. ENGINE DENY GRAMMAR (observed live on the pinned 1.18.15 during
-//     the #1759 investigation — 20+ probes across synthetic boots and
-//     floor boots; the ported model above is faithful for "/*" rules
+//     the #1759 investigation — the 18-probe grammar set recorded with
+//     the closed #1764, plus the two salvage experiments: the env
+//     mutation boot and the children-deny probe in (d); the ported
+//     model above is faithful for "/*" rules
 //     and optimistic elsewhere): only "X/*"-suffixed patterns ever
 //     fire a deny. Exact keys ("X") and terminal-star keys ("X*") load
 //     into the engine's rule list but never match for a DENY, while
@@ -91,9 +93,13 @@ import (
 //     (proven with a foreign project root — the integration legs boot
 //     opencode outside /workspace); on the default pod residual 1's
 //     project-root exemption is the governing claim. This exposure is
-//     the config allow's own trade (#1759's owner spec), NOT an engine
-//     auth-store self-allow — an earlier #1764 draft attributed it to
-//     one that was never observed; corrected here.
+//     the config allow's own trade (#1759's owner spec). The closed
+//     #1764 asserted an engine auth-store self-allow that was never
+//     observed (no rule dump ever showed one) and concluded from it
+//     that a children deny could not protect the auth path — the
+//     conclusion is falsified by (d) below; its shipped body still
+//     carries the claim uncorrected, and THIS note is the in-repo
+//     correction pointer.
 //     (c) The engine APPENDS self-allows after the config rules
 //     (observed shapes: the boot's tool-output directory,
 //     "/tmp/opencode/*"); appended rules beat config under findLast.
@@ -106,7 +112,9 @@ import (
 //     decision, deliberately NOT taken in this documentation change.
 //     UPSTREAM ASKS: (i) honor exact/terminal-star denies; (ii) an
 //     exclude shape that beats allow-globs; (iii) document which
-//     paths the engine self-allows.
+//     paths the engine self-allows (supersedes #1764's ask iii,
+//     "stop self-allowing the auth store", per the corrected
+//     attribution above).
 
 // platformPermissionTiers is the external_directory floor the writer
 // bakes into the TOP-LEVEL permission key (the LIVE shape on the
@@ -115,9 +123,11 @@ import (
 // precedence, see the file comment). Values are the opencode actions:
 // "allow", "ask", "deny".
 //
-// The bare-directory entries (no trailing /*) govern the symlink NAME
-// itself (e.g. an `ls /home/sandbox/.ssh`); the /* variants govern
-// children typed through the name.
+// The bare-directory entries (no trailing /*) document the symlink
+// NAME itself in the MODEL (e.g. an `ls /home/sandbox/.ssh`); the /*
+// variants govern children typed through the name. On the live engine
+// the bare keys do not fire for denies — residual 3(a): the children
+// globs are what bite.
 var platformPermissionTiers = map[string]string{
 	// --- deny tier (parents first alphabetically; carves below) ---
 	"/dev/*":  "deny",
