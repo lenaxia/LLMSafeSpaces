@@ -98,15 +98,14 @@ A task is **not** done until it has been demonstrated to be integrated properly 
 
 ### 0b. Git Identity: Always the App Identity
 
-**When doing ANY git work from inside an LLMSafeSpaces workspace** (commits, pushes, branch creation), authenticate as the **agentic-actor-coder GitHub App** — never with a personal token, and never embed credentials anywhere.
+**When doing ANY git or `gh` work from inside an LLMSafeSpaces workspace** (commits, pushes, branch creation, API calls), authenticate as the **agentic-actor-coder GitHub App** — never with a personal token, and never embed credentials anywhere.
 
-This is already wired for you: the global git credential helper (`/tmp/opencode/bin/git-cred-app`) mints short-lived App installation tokens from the platform-managed key on tmpfs (`/home/sandbox/.secrets/`) plus the `AGENTIC_ACTOR_CODER_APPID` environment variable. Plain `git push` is all you need.
+The inputs are provided by the platform: the App's private key lives in `/home/sandbox/.secrets/` (platform-managed, rotates) and the App ID in the `AGENTIC_ACTOR_CODER_APPID` environment variable. Use them to mint short-lived App installation tokens (JWT RS256 → installation access token) and configure git/gh to authenticate that way. Figure out the mechanism for your environment — a credential helper, a gh token env, or direct API auth — as long as the result is App-identity authentication.
 
-The same applies to the `gh` CLI: a wrapper (`~/.local/bin/gh`) transparently runs gh under the App installation token whenever it can be minted. Prefer plain `gh` invocations — do not set `GH_TOKEN` manually.
-
-- Do NOT override `credential.helper`, set `GITHUB_TOKEN`/`GH_TOKEN` for git operations, or paste tokens into remotes.
-- Do NOT read, copy, or move the private key out of `.secrets` — it is platform-managed and rotates; the helper picks up rotations automatically.
-- If pushes fail auth, report it; do not improvise alternate credential paths.
+- If a helper or wrapper is already present in the environment, plain `git`/`gh` may already comply — verify rather than rebuild.
+- Do NOT override with personal tokens, set `GITHUB_TOKEN`/`GH_TOKEN` to non-App credentials for git operations, or paste tokens into remotes.
+- Do NOT read, copy, or move the private key out of `.secrets` beyond minting tokens from it — it rotates; handle rotations gracefully (re-glob the key file).
+- If App-identity auth genuinely cannot be established, report it and stop — do not improvise alternate credential paths.
 
 ### 1. Type Safety First
 
