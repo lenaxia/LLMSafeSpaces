@@ -42,14 +42,28 @@ func TestGoCacheEconomy_RelocatedToEmptyDir(t *testing.T) {
 	require.True(t, setup, "fixture must create the workspace-setup init (r2: without it the init-side assertions are vacuous)")
 
 	// ENV: GOCACHE/GOTMPDIR point at the emptyDir, not the PVC-backed
-	// defaults ($HOME/.cache/go-build, /tmp).
+	// defaults ($HOME/.cache/go-build, /tmp) — on BOTH tooling
+	// containers (r3 minor: the init's env pinned too, not just main).
 	for name, want := range map[string]string{
 		"GOCACHE":  "/sandbox-cache/go-build",
 		"GOTMPDIR": "/sandbox-cache/gotmp",
 	} {
 		v, ok := envVar(main, name)
 		require.True(t, ok, "#1758: %s must be platform env — the Go defaults land on the PVC (the fill incident)", name)
-		assert.Equal(t, want, v.Value, name)
+		assert.Equal(t, want, v.Value, "main: "+name)
+		var setupEnv *corev1.EnvVar
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name != "workspace-setup" {
+				continue
+			}
+			for j := range pod.Spec.InitContainers[i].Env {
+				if pod.Spec.InitContainers[i].Env[j].Name == name {
+					setupEnv = &pod.Spec.InitContainers[i].Env[j]
+				}
+			}
+		}
+		require.NotNil(t, setupEnv, "workspace-setup: %s must be set (package installs hit GOCACHE)", name)
+		assert.Equal(t, want, setupEnv.Value, "workspace-setup: "+name)
 	}
 
 	// VOLUME: disk-backed emptyDir with the 8Gi SizeLimit. Disk-backed
