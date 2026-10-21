@@ -19,7 +19,7 @@ Green main's Build jobs: re-pin the five golang builder images to the 1.26.10-er
 
 ## Key Decisions
 
-- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks (heal raced by the bot → carry → five digests). The r4/r5 reviews caught, in turn: my stale second-version PR body (a silently-failed edit), the #1828/43a7ba29 misattribution (this worklog's Session line originally credited #1828 with workflows+go.mod; git shows 57495a4c touched only security-scan.yml + the frontend files), a 20-vs-19 pin miscount, and my first correction's replace silently no-opping on the Session line. All corrected in this commit with asserted edits.
+- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks (heal raced by the bot → carry → five digests). Review history, honestly: r4 caught the stale second-version PR body (a silently-failed edit) and the #1828/43a7ba29 misattribution; r5 caught that my first correction's replace had silently no-opped (fixed in b1fc44e7, asserted); r6 caught three residual defects (a stray CJK character, the Session marker, line 18's collective attribution) — fixed in fdbe84d2; r7 caught this very line overclaiming. Each round's fixes are that round's commit.
 
 ## Blockers
 
