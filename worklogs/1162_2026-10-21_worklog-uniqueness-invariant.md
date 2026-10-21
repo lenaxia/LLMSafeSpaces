@@ -25,7 +25,7 @@ Duplicate worklog numbers — producable by two lag-window writers under the san
 
 ## Key Decisions
 
-- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; gaps under the sentinel scheme are the bot's own transient state (and 73 historical ones exist), so gap-gating would redden every branch until the bot backfills history.
+- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; gaps under the sentinel scheme are the bot's own transient state (and 73 historical ones exist), so gap-gating would redden every branch forever — nothing backfills historical holes.
 - The e2e pin runs the REAL hook binary path (prebuilt real repolint where the hook looks for it) rather than unit-mocking FixWorklogs — the scenario IS the hook's contract.
 
 ## Blockers
