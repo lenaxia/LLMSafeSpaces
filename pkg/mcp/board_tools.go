@@ -87,6 +87,7 @@ var boardReadTool = mcp.NewTool("board_read",
 		"suggestions on zero-hit near-misses. health=true renders the board health snapshot instead."),
 	mcp.WithString("project_id", mcp.Description("Project short id (prj-XXXXXXXX)")),
 	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the five stages)")),
+	mcp.WithBoolean("failed", mcp.Description("#1813 failed-state filter: true lists only tasks whose last attempt failed (crash loop, exhaustion — last_attempt_failed overlay), false only clean rows")),
 	mcp.WithString("kind", mcp.Description("Projection selector: epics lists the project's epics (requires project_id)")),
 	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Search filter: tasks carrying ALL of these tags")),
@@ -400,7 +401,11 @@ func (h *handlers) boardRead(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	if stage != "" && !boardStageSet()[stage] {
 		return mcp.NewToolResultError("stage filter must be one of " + strings.Join(boardStages, ", ")), nil
 	}
-	resp, err := h.client.BoardListTasks(ctx, projectID, stage)
+	failed := ""
+	if b, ok := boolArg(args, "failed"); ok && b {
+		failed = "true"
+	}
+	resp, err := h.client.BoardListTasks(ctx, projectID, stage, failed)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read board tasks: %v", err)), nil
 	}

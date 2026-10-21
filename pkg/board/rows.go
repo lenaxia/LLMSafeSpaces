@@ -86,14 +86,22 @@ type Task struct {
 	// candidacy, claim mints, and forward stage-writes. Never a stage —
 	// the five-stage vocabulary is binding; a paused in-flight worker
 	// received a HALT directive and finishes its current turn.
-	Paused           bool       `json:"paused"`
-	AssigneeSession  string     `json:"assignee_session,omitempty"`
-	ClaimToken       string     `json:"claim_token,omitempty"`
-	LeaseExpiresAt   *time.Time `json:"lease_expires_at,omitempty"`
-	LastProgressAt   *time.Time `json:"last_progress_at,omitempty"`
-	Attempts         int        `json:"attempts"`
-	ClaimIncremented bool       `json:"claim_incremented_attempts"`
-	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	Paused bool `json:"paused"`
+	// The failed-state attribute overlay (#1813): a task whose worker
+	// attempt failed (lease-lapse reclaim; attempts-cap exhaustion)
+	// carries a VISIBLE failure marker — NEVER a stage (the five-stage
+	// vocabulary is binding). Engine-set; reset by any successful turn
+	// (in_review/done entry) and the pending_input human exit.
+	LastAttemptFailed bool       `json:"last_attempt_failed"`
+	FailureCount      int        `json:"failure_count"`
+	LastFailureAt     *time.Time `json:"last_failure_at,omitempty"`
+	AssigneeSession   string     `json:"assignee_session,omitempty"`
+	ClaimToken        string     `json:"claim_token,omitempty"`
+	LeaseExpiresAt    *time.Time `json:"lease_expires_at,omitempty"`
+	LastProgressAt    *time.Time `json:"last_progress_at,omitempty"`
+	Attempts          int        `json:"attempts"`
+	ClaimIncremented  bool       `json:"claim_incremented_attempts"`
+	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row

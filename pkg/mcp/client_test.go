@@ -990,7 +990,7 @@ func TestHTTPClient_BoardListTasks_EncodesStageFilter(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	_, err := client.BoardListTasks(context.Background(), "prj-aaaa1111", "in_progress")
+	_, err := client.BoardListTasks(context.Background(), "prj-aaaa1111", "in_progress", "")
 	require.NoError(t, err)
 	assert.Equal(t, "/api/v1/me/projects/prj-aaaa1111/tasks", gotPath)
 	assert.Equal(t, "stage=in_progress", gotQuery)

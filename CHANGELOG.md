@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: failed-state attribute overlay (issue #1813)
+
+- **A task whose worker attempt failed is now VISIBLE**: the engine
+  sets a `last_attempt_failed` overlay (with `failure_count` —
+  consecutive — and `last_failure_at`) on every lease-lapse reclaim
+  and at attempts-cap exhaustion. NEVER a sixth stage — the five-stage
+  vocabulary is untouched; the failed row stays in its stage (usually
+  backlog) and carries the marker.
+- **Auto-return-to-ready with backoff**: the reclaim parks the row
+  behind the existing cooldown gate with doubling backoff per
+  consecutive failure (base `board.failureBackoffSeconds`, default
+  60s; capped at 1h) — redispatch is automatic, never a manager
+  action. A crash-looping task is both visible and rate-limited.
+- **Reset on success**: any completed turn (in_review / done entry)
+  and the pending_input human exit clear the overlay and count with
+  the attempts reset.
+- **Surfaces**: `GET /me/projects/{id}/tasks?failed=true|false`
+  (tri-state filter); `board_read`'s `failed` argument (MCP); the UI
+  task card carries a `FAILED ×n` badge; the overlay renders on every
+  task read (REST/SDK/MCP) and in reclaim/escalate audit events.
+
 (nothing yet)
 
 ## [0.40.1] - 2026-10-21

@@ -323,6 +323,7 @@ type Config struct {
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
 		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
 		SweepSeconds           int  `mapstructure:"sweepSeconds"`
 		UserClaimCap           int  `mapstructure:"userClaimCap"`
@@ -451,6 +452,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("board.attemptsCap", 3)
 	v.SetDefault("board.leaseSeconds", 900)
 	v.SetDefault("board.throttleBackoffSeconds", 300)
+	// #1813: failed-attempt auto-return-to-ready BASE backoff (doubling
+	// per consecutive failure, capped at 1h engine-side).
+	v.SetDefault("board.failureBackoffSeconds", 60)
 	v.SetDefault("board.drrQuantum", 1)
 	v.SetDefault("board.sweepSeconds", 30)
 
@@ -895,6 +899,9 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"); ok {
 		config.Board.ThrottleBackoffSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS"); ok {
+		config.Board.FailureBackoffSeconds = n
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_DRRQUANTUM"); ok {
 		config.Board.DRRQuantum = n

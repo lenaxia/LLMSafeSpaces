@@ -202,9 +202,13 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
 	if cur.Attempts >= s.cfg.AttemptsCap {
+		// #1813: exhaustion carries the failure overlay onto the
+		// pending_input row — the human sees WHY it escalated.
 		if _, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated'
-			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
+			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated',
+				last_attempt_failed=true, last_failure_at=now(),
+				failure_count=GREATEST(failure_count, $2)
+			WHERE id=$1 AND stage='backlog'`, t.ID, cur.Attempts); err != nil {
 			return nil, err
 		}
 		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StagePendingInput, "",
@@ -212,7 +216,8 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			return nil, err
 		}
 		evt, err := recordEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
-			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"}, map[string]any{"task_id": t.ID, "attempts": cur.Attempts})
+			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"},
+			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "last_attempt_failed": true})
 		if err != nil {
 			return nil, err
 		}

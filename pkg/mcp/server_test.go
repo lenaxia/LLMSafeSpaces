@@ -225,8 +225,8 @@ func (m *MockAPIClient) BoardUnarchiveProject(ctx context.Context, projectID, re
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID, stage)
+func (m *MockAPIClient) BoardListTasks(ctx context.Context, projectID, stage, failed string) (json.RawMessage, error) {
+	args := m.Called(ctx, projectID, stage, failed)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 

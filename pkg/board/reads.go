@@ -29,14 +29,20 @@ func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Tas
 	return t, nil
 }
 
-// ListTasks lists a project's tasks (optionally by stage) in creation
-// order — the FIFO claim order's read-side mirror (#1747).
-func (s *Service) ListTasks(ctx context.Context, projectID string, stage string) ([]Task, error) {
+// ListTasks lists a project's tasks (optionally by stage and by the
+// #1813 failed-state overlay) in creation order — the FIFO claim
+// order's read-side mirror (#1747). failed is tri-state: "" (no
+// filter), "true" (only failed-attempt rows), "false" (only clean).
+func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed string) ([]Task, error) {
 	q := `SELECT ` + taskColumns + ` FROM tasks t WHERE t.project_id=$1`
 	args := []any{projectID}
 	if stage != "" {
-		q += ` AND t.stage=$2`
+		q += ` AND t.stage=$` + itoa(len(args)+1)
 		args = append(args, stage)
+	}
+	if failed == "true" || failed == "false" {
+		q += ` AND t.last_attempt_failed=$` + itoa(len(args)+1)
+		args = append(args, failed == "true")
 	}
 	q += ` ORDER BY t.created_at, t.id`
 	rows, err := s.q().Query(ctx, q, args...)

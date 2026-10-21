@@ -109,7 +109,7 @@ type APIClient interface {
 	BoardUnarchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
 	BoardProjectPause(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
 	BoardProjectResume(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
-	BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error)
+	BoardListTasks(ctx context.Context, projectID, stage, failed string) (json.RawMessage, error)
 	BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error)
 	BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error)
 	BoardHealth(ctx context.Context) (json.RawMessage, error)
@@ -1116,13 +1116,20 @@ func (c *HTTPClient) BoardProjectResume(ctx context.Context, projectID, requestI
 	return c.boardProjectLifecycle(ctx, projectID, "resume", requestID)
 }
 
-func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage, failed string) (json.RawMessage, error) {
 	if err := validateID(projectID, "project_id"); err != nil {
 		return nil, err
 	}
 	path := "/api/v1/me/projects/" + projectID + "/tasks"
+	query := url.Values{}
 	if stage != "" {
-		path += "?stage=" + url.QueryEscape(stage)
+		query.Set("stage", stage)
+	}
+	if failed == "true" || failed == "false" {
+		query.Set("failed", failed)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	return c.doRaw(ctx, http.MethodGet, path, nil)
 }

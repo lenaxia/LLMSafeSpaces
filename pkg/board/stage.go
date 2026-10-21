@@ -35,6 +35,10 @@ type moveStageResult struct {
 
 // MoveStage is the server-arbitrated stage machine write: a drag that
 // loses a race returns the authoritative outcome and the UI snaps back.
+// reset_overlay is the #1813 success clause: a completed turn clears
+// the failure overlay and its consecutive count.
+const reset_overlay = `, failure_count=0, last_attempt_failed=false`
+
 func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*Task, error) {
 	ref := pick(taskID, shortIDOrID)
 	t, err := s.resolveTaskForActor(ctx, actor, ref)
@@ -144,15 +148,17 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	case from == StageInProgress && toStage == StageInReview:
 		// Forward exit: work done, awaiting review — nothing is leased.
 		// The identity is retained (the bounce/RC2 consumer, §4.1).
+		// #1813: a completed turn is SUCCESS — the failure overlay and
+		// its consecutive count reset here.
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`, evidenceURL, actor)
+			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 
 	case from == StageInProgress && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
 			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`, evidenceURL, actor)
+			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
 			err = s.doneCascade(ctx, tx, cur)
 		}
@@ -182,7 +188,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`, evidenceURL, actor)
+			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
 			err = s.doneCascade(ctx, tx, cur)
 		}
@@ -208,7 +214,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				 claim_incremented_attempts=false, attempts=0`, evidenceURL, actor)
+				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false`, evidenceURL, actor)
 		}
 
 	default:
@@ -322,7 +328,8 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL, attempts=0
+			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL, attempts=0,
+			failure_count=0, last_attempt_failed=false
 		WHERE id=$1 AND stage='pending_input'`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {

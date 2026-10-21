@@ -91,6 +91,21 @@ const base = {
   created_at: "2026-10-10T00:00:00Z",
   updated_at: "2026-10-10T00:00:00Z",
   attempts: 0,
+  last_attempt_failed: false,
+  failure_count: 0,
+};
+
+export const TASK_FAILED: BoardTask = {
+  ...base,
+  id: "task-uuid-f",
+  project_id: "proj-uuid-a",
+  epic_id: "epic-uuid-1",
+  short_id: "tsk-ffff0009",
+  title: "Crash looping",
+  stage: "backlog",
+  attempts: 2,
+  last_attempt_failed: true,
+  failure_count: 2,
 };
 
 export const TASK_BACKLOG: BoardTask = {
@@ -163,7 +178,7 @@ export const TASK_PENDING: BoardTask = {
 };
 
 export function defaultTasks(): BoardTask[] {
-  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING];
+  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING, TASK_FAILED];
 }
 
 /** Seeds the standard two-project board. Returns the seeded task list

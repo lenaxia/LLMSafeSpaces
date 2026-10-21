@@ -54,7 +54,7 @@ type boardManager interface {
 	DeleteEpic(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, force bool, requestID string) (*board.DeleteResult, error)
 
 	GetTask(ctx context.Context, taskID, shortIDOrID string) (*board.Task, error)
-	ListTasks(ctx context.Context, projectID string, stage string) ([]board.Task, error)
+	ListTasks(ctx context.Context, projectID string, stage, failed string) ([]board.Task, error)
 	ListEpics(ctx context.Context, projectID string) ([]board.Epic, error)
 	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
 	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
@@ -321,7 +321,13 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input"})
 		return
 	}
-	tasks, err := h.board.ListTasks(c.Request.Context(), p.ID, stage)
+	// #1813: the failed-state overlay filter — tri-state boolean.
+	failed := c.Query("failed")
+	if failed != "" && failed != "true" && failed != "false" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed filter must be true or false"})
+		return
+	}
+	tasks, err := h.board.ListTasks(c.Request.Context(), p.ID, stage, failed)
 	if err != nil {
 		renderBoardError(c, err)
 		return

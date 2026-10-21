@@ -49,6 +49,16 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(card.textContent).toContain("Write charter");
   });
 
+  it("carries the #1813 failed-state overlay badge (FAILED ×n — never a stage)", async () => {
+    renderBoard();
+    const badge = await screen.findByTestId("failed-tsk-ffff0009");
+    expect(badge.textContent).toContain("FAILED ×2");
+    // The overlay is an ATTRIBUTE, not a stage: the failed row still
+    // sits in its stage column (backlog) with the ordinary card shape.
+    const card = screen.getByTestId("task-card-tsk-ffff0009");
+    expect(card.getAttribute("data-stage")).toBe("backlog");
+  });
+
   it("shows the assignee busy indicator only on claimed in-progress rows", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");

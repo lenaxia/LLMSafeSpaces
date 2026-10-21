@@ -73,6 +73,12 @@ export interface BoardTask {
   last_progress_at?: string | null;
   attempts: number;
   claim_incremented_attempts: boolean;
+  /** #1813 failed-state overlay: the last worker attempt failed (lease
+   * lapse → reclaim, or attempts-cap exhaustion). Never a stage. */
+  last_attempt_failed: boolean;
+  /** Consecutive failures — the doubling backoff driver. */
+  failure_count: number;
+  last_failure_at?: string | null;
   cooldown_until?: string | null;
   stage_entered_at: string;
   created_at: string;

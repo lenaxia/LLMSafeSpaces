@@ -52,6 +52,12 @@ type EngineConfig struct {
 	// the task (cooldown_until) and the project (slot_cooldown_until).
 	// Default 5m.
 	ThrottleBackoff time.Duration
+	// FailureBackoff is the BASE auto-return-to-ready backoff for a
+	// failed attempt (#1813): the lease-lapse reclaim parks the row
+	// behind cooldown_until = now() + FailureBackoff << (n-1) (doubling
+	// per CONSECUTIVE failure, capped at 1h). A successful turn or the
+	// pending_input human exit clears the overlay + count. Default 60s.
+	FailureBackoff time.Duration
 	// DRRQuantum is the default per-epic deficit-round-robin round
 	// allowance (epics.quantum). Default 1.
 	DRRQuantum int
@@ -82,6 +88,7 @@ type EngineConfig struct {
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
 		AttemptsCap:       3,
+		FailureBackoff:    time.Minute,
 		LeaseDuration:     15 * time.Minute,
 		ThrottleBackoff:   5 * time.Minute,
 		DRRQuantum:        1,
@@ -137,6 +144,27 @@ const (
 	SurfaceAgent       = "agent"        // (c) agent-internal registry (workers)
 	SurfaceReconciler  = "reconciler"   // system actor, engine-internal
 )
+
+// failureBackoff is the #1813 auto-return-to-ready delay for the nth
+// consecutive failure: base << (n-1), capped at one hour (a crash-looping
+// row must never park forever — return-to-ready is automatic).
+func (c EngineConfig) failureBackoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	b := c.FailureBackoff
+	for i := 1; i < n && b < time.Hour; i++ {
+		b *= 2
+	}
+	if b > time.Hour || b <= 0 {
+		if b <= 0 {
+			b = time.Minute
+		} else {
+			b = time.Hour
+		}
+	}
+	return b
+}
 
 // Stages (ruling R2's binding set, as amended by #1747 round 3: the
 // eliminated cancel terminal state is GONE — delete_task removes rows

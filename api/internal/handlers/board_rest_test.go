@@ -277,7 +277,7 @@ func (f *fakeBoardManager) GetTask(_ context.Context, _, _ string) (*board.Task,
 	return nil, &board.NotFoundError{Item: "task", Identifier: "t1"}
 }
 
-func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage string) ([]board.Task, error) {
+func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage, failed string) ([]board.Task, error) {
 	f.call("list_tasks")
 	_ = projectID
 	if err := f.errFor["list_tasks"]; err != nil {
@@ -658,6 +658,15 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 	// named/escaped site, never concatenation).
 	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel\u006ced", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
+
+	// #1813: the failed-state overlay filter — tri-state boolean on the
+	// SAME endpoint; anything but true/false is a 400.
+	for _, f := range []string{"true", "false"} {
+		w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed="+f, "")
+		assert.Equal(t, http.StatusOK, w.Code, "failed="+f)
+	}
+	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=maybe", "")
+	assert.Equal(t, http.StatusBadRequest, w.Code, "failed filter is tri-state boolean: "+w.Body.String())
 }
 
 // TestBoardREST_ListRenders: list endpoints render the owner's boards in

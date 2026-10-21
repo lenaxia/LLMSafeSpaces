@@ -4630,6 +4630,8 @@ paths:
       description: |
         Ordered by (creation order — FIFO, the #1747 claim rule). `stage` filters by one of the
         five stages (ruling R2's binding set as amended by #1747); any other value is a 400.
+        `failed` filters by the #1813 failed-state overlay (true: only tasks whose last attempt
+        failed — crash loop, lease-lapse reclaims, exhaustion; false: only clean rows).
       operationId: listBoardProjectTasks
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4639,6 +4641,12 @@ paths:
           schema:
             type: string
             enum: [backlog, in_progress, in_review, done, pending_input]
+        - name: failed
+          in: query
+          required: false
+          description: "#1813 failed-state overlay filter (tri-state boolean)"
+          schema:
+            type: boolean
       responses:
         "200":
           description: Task list
@@ -12287,7 +12295,7 @@ components:
           type: boolean
     BoardTask:
       type: object
-      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, stage_entered_at, created_at, updated_at]
+      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, last_attempt_failed, failure_count, stage_entered_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -12372,6 +12380,18 @@ components:
           type: integer
           minimum: 0
           description: Claims granted (the claim statement is the ONLY increment; the human pending_input exit is the ONE reset)
+        last_attempt_failed:
+          type: boolean
+          description: "#1813 failed-state overlay — the last worker attempt failed (lease-lapse reclaim or attempts-cap exhaustion). NEVER a stage; reset by any successful turn (in_review/done entry) and the pending_input human exit."
+        failure_count:
+          type: integer
+          minimum: 0
+          description: CONSECUTIVE failed attempts (the doubling auto-return-to-ready backoff driver)
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the latest attempt failure landed
         cooldown_until:
           type: string
           format: date-time

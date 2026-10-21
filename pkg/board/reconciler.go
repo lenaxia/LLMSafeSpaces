@@ -236,7 +236,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	var pending []Event
 
 	rows, err := tx.Query(ctx, `
-		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null')
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
 		FROM tasks t
 		WHERE t.stage='in_progress' AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
 		FOR UPDATE OF t SKIP LOCKED`)
@@ -245,11 +245,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 	type victim struct {
 		id, project, episode string
+		failures             int32
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.project, &v.episode); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -260,11 +261,18 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
 	applied := 0
 	for _, v := range victims {
+		// #1813 failed-state overlay: the lease lapse IS the attempt
+		// failure — mark it, count it CONSECUTIVELY, and park the row
+		// behind doubling backoff (auto-return-to-ready via the
+		// existing cooldown candidacy gate; never a stage).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				claim_incremented_attempts=false
-			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`, v.id)
+				claim_incremented_attempts=false,
+				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
+				cooldown_until=now()+make_interval(secs=>$2::float8)
+			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
+			v.id, s.cfg.failureBackoff(int(v.failures)+1).Seconds())
 		if err != nil {
 			return 0, err
 		}
@@ -275,7 +283,8 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			return 0, err
 		}
 		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
-			"reclaim", "task", v.id, sys, map[string]any{"task_id": v.id})
+			"reclaim", "task", v.id, sys,
+			map[string]any{"task_id": v.id, "failure_count": v.failures + 1, "last_attempt_failed": true})
 		if err != nil {
 			return 0, err
 		}
