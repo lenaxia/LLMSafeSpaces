@@ -47,7 +47,7 @@ standard applies before anything is pushed.
 - [x] Middleware pin: ses_ input → Deprecation/Sunset headers
       (TestSessionRef_LegacyInputCarriesDeprecationNotice — PASS;
       asserts RFC 8594 HTTP-date via http.ParseTime).
-- [ ] Integration: registry payload → pullSessionShortIDs →
+- [x] Integration: registry payload → pullSessionShortIDs →
       resolveSessionRef-by-phrase → harness id; ArchivedSet →
       filterArchivedFromSessionList.
 - [x] Unit: reap phrase-keyed row; RebuildMessageCount InternalID;

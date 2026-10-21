@@ -2712,3 +2712,66 @@ func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
 	assert.Contains(t, out2, `"origin":"calm-otter-naps"`)
 	assert.NotContains(t, out2, `"origin_deprecated"`, "warm replica: the phrase needs no flag")
 }
+
+// r3 missing-test 1: the session_id_deprecated marker emission, warm
+// AND cold, plus the guarded deprecation note (clean refs carry NO
+// empty-string field). Covers every `if idDegraded` block's contract.
+func TestMCPEmission_SessionIDDeprecatedMarker(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("one")
+	withAgentServer(t, f.handler(t))
+
+	// COLD replica: the raw id ships FLAGGED.
+	outCold, err := mcpCompact(context.Background(), mcpTestPassword, s1, "")
+	require.NoError(t, err)
+	assert.Contains(t, outCold, `"session_id_deprecated":"true"`,
+		"cold replica: the raw harness id must be flagged")
+	assert.Contains(t, outCold, s1)
+	// A clean canonical ref (the harness id is the deprecated form
+	// here) carries the NOTE — non-empty.
+	assert.Contains(t, outCold, `"deprecation":`)
+
+	// WARM replica: the phrase ships, unflagged, and NO deprecation
+	// field at all (r3 f4: never an empty-string emission). The
+	// phrase goes in as the user typed it — mcpCompact resolves
+	// internally and the note keys off the ORIGINAL ref.
+	store := withShortIDStore(t)
+	store.put("amber-falcon-naps", s1)
+	outWarm, err := mcpCompact(context.Background(), mcpTestPassword, "amber-falcon-naps", "")
+	require.NoError(t, err)
+	assert.Contains(t, outWarm, `"session_id":"amber-falcon-naps"`)
+	assert.NotContains(t, outWarm, "session_id_deprecated",
+		"warm replica: the phrase needs no flag")
+	assert.NotContains(t, outWarm, `"deprecation":`,
+		"a phrase-form ref carries NO deprecation field — not an empty one")
+}
+
+// r3 missing-test 2: session_metadata rows emit the phrase from a
+// warm replica (substituting s.ID would fail) and FLAG cold rows
+// (id_deprecated, parity with session_list).
+func TestMCPSessionMetadata_WarmReplicaEmitsPhraseAndFlagsCold(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("warm-row")
+	s2 := f.newSession("cold-row")
+	withAgentServer(t, f.handler(t))
+	t.Setenv("WORKSPACE_ID", "ws-meta")
+
+	store := withShortIDStore(t)
+	store.put("amber-falcon-naps", s1)
+
+	out, err := mcpSessionMetadata(context.Background(), mcpTestPassword, "", "", true, false)
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	byID := map[string]map[string]any{}
+	for _, s := range res["sessions"].([]any) {
+		m := s.(map[string]any)
+		byID[m["session_id"].(string)] = m
+	}
+	warm, ok := byID["amber-falcon-naps"]
+	require.True(t, ok, "the warm session's row must carry the PHRASE as its id")
+	assert.NotContains(t, warm, "id_deprecated", "the phrase row carries no cold flag")
+	cold, ok := byID[s2]
+	require.True(t, ok, "the cold session's row keeps its harness id")
+	assert.Equal(t, true, cold["id_deprecated"], "the cold row's harness id must be flagged")
+}

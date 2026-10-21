@@ -94,13 +94,17 @@ func mcpRenameSession(ctx context.Context, password, sessionID, title string) (s
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":      "renamed",
-		"session_id":  id,
-		"title":       title,
-		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
+		"status":     "renamed",
+		"session_id": id,
+		"title":      title,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
+	}
+	// #1756 §2: the deprecation note rides ONLY deprecated-form
+	// inputs — never an empty-string field on clean refs (r3 f4).
+	if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+		res["deprecation"] = note
 	}
 	out, _ := json.Marshal(res)
 	return string(out), nil
@@ -716,12 +720,16 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":      status,
-		"session_id":  id,
-		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
+		"status":     status,
+		"session_id": id,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
+	}
+	// #1756 §2: the deprecation note rides ONLY deprecated-form
+	// inputs — never an empty-string field on clean refs (r3 f4).
+	if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+		res["deprecation"] = note
 	}
 	out, _ := json.Marshal(res)
 	return string(out), nil
@@ -788,12 +796,16 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":      "deleted",
-		"session_id":  id,
-		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
+		"status":     "deleted",
+		"session_id": id,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
+	}
+	// #1756 §2: the deprecation note rides ONLY deprecated-form
+	// inputs — never an empty-string field on clean refs (r3 f4).
+	if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+		res["deprecation"] = note
 	}
 	out, _ := json.Marshal(res)
 	return string(out), nil
@@ -1016,7 +1028,10 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		return includeArchived || !filterableArchivedSet()[s.ID]
 	}
 	type sessionMeta struct {
-		ID            string  `json:"session_id"`
+		ID string `json:"session_id"`
+		// #1756 §1 parity with session_list rows: the harness id
+		// ships FLAGGED when the replica is cold, never silent.
+		IDDeprecated  bool    `json:"id_deprecated,omitempty"`
 		Title         string  `json:"title"`
 		Agent         string  `json:"agent,omitempty"`
 		Model         string  `json:"model,omitempty"`
@@ -1037,12 +1052,14 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		if !match(s) {
 			continue
 		}
+		mID, mIDDegraded := emitIDFields(s.ID)
 		m := sessionMeta{
-			ID:       emitID(s.ID),
-			Title:    s.Title,
-			Agent:    s.Agent,
-			Busy:     busy[s.ID] == "busy" || busy[s.ID] == "retry",
-			Archived: archivedSet[s.ID],
+			ID:           mID,
+			IDDeprecated: mIDDegraded,
+			Title:        s.Title,
+			Agent:        s.Agent,
+			Busy:         busy[s.ID] == "busy" || busy[s.ID] == "retry",
+			Archived:     archivedSet[s.ID],
 		}
 		if s.Time.Created > 0 {
 			created := time.UnixMilli(s.Time.Created)
@@ -1175,7 +1192,9 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 		if idDegraded {
 			res["session_id_deprecated"] = "true"
 		}
-		res["deprecation"] = strings.TrimSpace(deprecationNote(origRef))
+		if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+			res["deprecation"] = note
+		}
 		out, _ := json.Marshal(res)
 		return string(out), nil
 	}
@@ -1198,7 +1217,9 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 	if id2Degraded {
 		res2["session_id_deprecated"] = "true"
 	}
-	res2["deprecation"] = strings.TrimSpace(deprecationNote(origRef))
+	if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+		res2["deprecation"] = note
+	}
 	out, _ := json.Marshal(res2)
 	return string(out), nil
 }
@@ -1508,12 +1529,16 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":      "aborted",
-		"session_id":  id,
-		"deprecation": strings.TrimSpace(deprecationNote(origRef)),
+		"status":     "aborted",
+		"session_id": id,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
+	}
+	// #1756 §2: the deprecation note rides ONLY deprecated-form
+	// inputs — never an empty-string field on clean refs (r3 f4).
+	if note := strings.TrimSpace(deprecationNote(origRef)); note != "" {
+		res["deprecation"] = note
 	}
 	out, _ := json.Marshal(res)
 	return string(out), nil

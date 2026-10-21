@@ -1703,3 +1703,14 @@ func TestMCPSessionRead_WarmReplicaRewritesSessionIDs(t *testing.T) {
 	assert.NotContains(t, body, "ses_warm", "no harness id survives the rewrite when the phrase is known")
 	assert.Contains(t, body, "ses_cold", "an id the replica does not know rides untouched (degraded passthrough)")
 }
+
+// r3 missing-test 3: the malformed-JSON leg of the raw-body rewrite —
+// an unparseable body passes through byte-identical even with a warm
+// store (never fails the tool, never mangles bytes).
+func TestEmitShortOnlyRawBody_MalformedJSONPassesThrough(t *testing.T) {
+	store := withShortIDStore(t)
+	store.put("amber-falcon-naps", "ses_x")
+	raw := []byte(`[{"id":"ses_x","title":"Broken …"`) // truncated JSON
+	got := emitShortOnlyRawBody(raw)
+	assert.Equal(t, string(raw), got, "malformed bodies return byte-identical")
+}
