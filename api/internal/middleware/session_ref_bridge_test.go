@@ -124,3 +124,55 @@ func TestSessionRefBridge_MiddlewareToMCPClient(t *testing.T) {
 func TestSessionRefBridge_HeaderConstantIsTheJoinedSeam(t *testing.T) {
 	assert.Equal(t, "X-Session-Ref-Resolved", types.HeaderSessionRefResolved)
 }
+
+// TestSessionRefBridge_PhraseKeyedFrames (r2 missing-test 2): the same
+// continuous middleware→client seam under the post-#1824 REFRESHED-POD
+// wire shape — frames carry the PHRASE as session_id with the harness
+// id additive (internal_session_id). The real client must complete the
+// wait from live frames keyed by EITHER space.
+func TestSessionRefBridge_PhraseKeyedFrames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const (
+		phrase    = "amber-falcon-glides"
+		canonical = "ses_bridge_canonical_2"
+	)
+
+	seenPromptParam := make(chan string, 1)
+	router := gin.New()
+	group := router.Group("/api/v1/workspaces/:id", middleware.SessionRefResolution(&bridgeResolver{phrase: phrase, canonical: canonical}))
+	group.POST("/sessions/:sessionId/prompt", func(c *gin.Context) {
+		seenPromptParam <- c.Param("sessionId")
+		c.Status(http.StatusAccepted)
+	})
+	router.GET("/api/v1/workspaces/:id/contract-events", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		flusher := c.Writer.(http.Flusher)
+		snap := fmt.Sprintf(`{"snapshot":{"atSeq":1,"snapshot":{"sessions":[{"sessionId":%q,"internalSessionId":%q,"status":"SESSION_STATUS_BUSY"}]}}}`, phrase, canonical)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", snap)
+		flusher.Flush()
+		delta := fmt.Sprintf(`{"event":{"seq":2,"event":{"type":"EVENT_TYPE_PART_DELTA","sessionId":%q,"internalSessionId":%q,"delta":"live-phrase"}}}`, phrase, canonical)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", delta)
+		flusher.Flush()
+		idle := fmt.Sprintf(`{"event":{"seq":3,"event":{"type":"EVENT_TYPE_SESSION_STATUS","sessionId":%q,"internalSessionId":%q,"status":"SESSION_STATUS_IDLE"}}}`, phrase, canonical)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", idle)
+		flusher.Flush()
+		<-c.Request.Context().Done()
+	})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	client := &llmmcp.HTTPClient{BaseURL: ts.URL, HTTPClient: ts.Client()}
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", phrase, "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "live-phrase", resp, "phrase-keyed frames complete the wait via the caller ref")
+	assert.Less(t, time.Since(start), 3*time.Second)
+
+	select {
+	case got := <-seenPromptParam:
+		assert.Equal(t, canonical, got, "the middleware still rewrites the route param to the canonical id")
+	default:
+		t.Fatal("the prompt route never fired")
+	}
+}

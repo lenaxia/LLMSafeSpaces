@@ -1452,7 +1452,19 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		// ids on the warm path.
 		warn := "session_id carried a duplicated-argument fragment (emission slip): recovered target " + emitID(sessionID) +
 			" from the leading id and delivered there — re-check the ID you pass (session_list / session_metadata)."
+		// r2 f1: the mismatch verdict compares CANONICAL-to-CANONICAL —
+		// a fragment whose embedded origin (any id space: phrase or
+		// harness) resolves to the SAME session as the resolved origin
+		// is NOT a mismatch; comparing the raw form against the
+		// resolved canonical emitted the false "X differs from X"
+		// clause.
+		embeddedCanonical := embeddedOrigin
 		if embeddedOrigin != origin {
+			if embeddedResolved, rerr := resolveSessionRef(ctx, password, embeddedOrigin); rerr == nil {
+				embeddedCanonical = embeddedResolved
+			}
+		}
+		if embeddedCanonical != origin {
 			warn += " The fragment's embedded origin " + emitID(embeddedOrigin) + " differs from the resolved origin " + emitID(origin) + " — treated as cosmetic (the embedded copy is not trusted; the resolved origin wins attribution)."
 		}
 		warnParts = append(warnParts, warn)

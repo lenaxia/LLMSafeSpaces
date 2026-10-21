@@ -384,3 +384,52 @@ func TestHTTPClient_SendMessage_FullIDInputMatchesPhraseFramesViaInternalID(t *t
 	assert.Less(t, time.Since(start), 2*time.Second,
 		"a full-id input must complete via the additive internal id on refreshed pods")
 }
+
+// TestSessionMessage_ValidationErrorCarriesNotice (r2 f3): the §2
+// notice rides EARLY validation errors too — a deprecated full-id
+// session_id plus a missing message (or invalid attachment) keeps the
+// notice, matching REST where Deprecation/Sunset attach in middleware
+// before handler validation.
+func TestSessionMessage_ValidationErrorCarriesNotice(t *testing.T) {
+	h, _ := newTestHandlers()
+	const legacy = "ses_fulllegacyid1234567890ab"
+
+	t.Run("missing message", func(t *testing.T) {
+		result, err := h.sessionMessage(context.Background(), makeReq("session_message", map[string]any{
+			"workspace_id": "ws-1",
+			"session_id":   legacy,
+		}))
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		require.Len(t, result.Content, 2, "validation errors carry the notice block")
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "message is required")
+		assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
+	})
+
+	t.Run("invalid attachment", func(t *testing.T) {
+		result, err := h.sessionMessage(context.Background(), makeReq("session_message", map[string]any{
+			"workspace_id": "ws-1",
+			"session_id":   legacy,
+			"message":      "hello",
+			"files":        []any{"/etc/passwd"},
+		}))
+		require.NoError(t, err)
+		assert.True(t, result.IsError)
+		require.Len(t, result.Content, 2, "validation errors carry the notice block")
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "invalid files")
+		assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
+	})
+}
+
+// TestSessionHistory_MissingWorkspaceCarriesNotice (r2 f3 twin).
+func TestSessionHistory_MissingWorkspaceCarriesNotice(t *testing.T) {
+	h, _ := newTestHandlers()
+	result, err := h.sessionHistory(context.Background(), makeReq("session_history", map[string]any{
+		"session_id": "ses_fulllegacyid1234567890ab",
+	}))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	require.Len(t, result.Content, 2)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "workspace_id is required")
+	assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
+}

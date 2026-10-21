@@ -295,15 +295,20 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 	workspaceID, _ := args["workspace_id"].(string)
 	sessionID, _ := args["session_id"].(string)
 	message, _ := args["message"].(string)
+	// r2 f3: the §2 notice rides EVERY error arm once a deprecated-form
+	// session id is in hand — REST's Deprecation/Sunset pair attaches
+	// in middleware BEFORE handler validation; early validation errors
+	// must not be the exception.
+	notice := sessionRefDeprecationNotice(sessionID)
 
 	if workspaceID == "" {
-		return mcp.NewToolResultError("workspace_id is required"), nil
+		return newToolResultErrorWithNotice("workspace_id is required", notice), nil
 	}
 	if sessionID == "" {
 		return mcp.NewToolResultError("session_id is required"), nil
 	}
 	if message == "" {
-		return mcp.NewToolResultError("message is required"), nil
+		return newToolResultErrorWithNotice("message is required", notice), nil
 	}
 
 	composed := message
@@ -312,15 +317,15 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 		var cerr error
 		composed, cerr = attachments.Compose(message, files)
 		if cerr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid files: %v", cerr)), nil
+			return newToolResultErrorWithNotice(fmt.Sprintf("invalid files: %v", cerr), notice), nil
 		}
 	}
 	if len(composed) > maxMessageSize {
 		if len(files) > 0 {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"message too large (%d bytes including attachment manifest, max %d)", len(composed), maxMessageSize)), nil
+			return newToolResultErrorWithNotice(fmt.Sprintf(
+				"message too large (%d bytes including attachment manifest, max %d)", len(composed), maxMessageSize), notice), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("message too large (%d bytes, max %d)", len(composed), maxMessageSize)), nil
+		return newToolResultErrorWithNotice(fmt.Sprintf("message too large (%d bytes, max %d)", len(composed), maxMessageSize), notice), nil
 	}
 
 	response, err := h.client.SendMessage(ctx, workspaceID, sessionID, composed, h.timeout)
@@ -329,14 +334,13 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 		// pair rides error responses; agentd covers its error
 		// envelope) — a deprecated-form ref that fails still tells
 		// the caller the address form is going away.
-		return newToolResultErrorWithNotice(fmt.Sprintf("failed to send message: %v", err),
-			sessionRefDeprecationNotice(sessionID)), nil
+		return newToolResultErrorWithNotice(fmt.Sprintf("failed to send message: %v", err), notice), nil
 	}
 
 	// #1816 §2 parity: a deprecated-form session ref (full/hashed id)
 	// carries the one-release deprecation notice as a second content
 	// block — the MCP twin of the REST Deprecation/Sunset headers.
-	if note := sessionRefDeprecationNotice(sessionID); note != "" {
+	if note := notice; note != "" {
 		return newToolResultTextWithNotice(response, note), nil
 	}
 	return mcp.NewToolResultText(response), nil
@@ -346,9 +350,12 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 	args := req.GetArguments()
 	workspaceID, _ := args["workspace_id"].(string)
 	sessionID, _ := args["session_id"].(string)
+	// r2 f3 (session_message's twin): every error arm carries the
+	// notice once a deprecated-form session id is in hand.
+	notice := sessionRefDeprecationNotice(sessionID)
 
 	if workspaceID == "" {
-		return mcp.NewToolResultError("workspace_id is required"), nil
+		return newToolResultErrorWithNotice("workspace_id is required", notice), nil
 	}
 	if sessionID == "" {
 		return mcp.NewToolResultError("session_id is required"), nil
@@ -358,8 +365,7 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		// #1816 §2 parity (session_message's twin): the notice rides
 		// the error path here too.
-		return newToolResultErrorWithNotice(fmt.Sprintf("failed to get history: %v", err),
-			sessionRefDeprecationNotice(sessionID)), nil
+		return newToolResultErrorWithNotice(fmt.Sprintf("failed to get history: %v", err), notice), nil
 	}
 
 	out, _ := json.Marshal(msgs)

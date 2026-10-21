@@ -478,14 +478,15 @@ func (c *HTTPClient) GetHistory(ctx context.Context, workspaceID, sessionID stri
 // StreamFrames, US-69.11) until the target session goes IDLE or the
 // agent asks for input.
 //
-// #1816 phrase addressing: the session ref may be the 3-word phrase
-// (or, in the one-release deprecation window, the full/hashed id —
-// the REST edge resolves every form). The ABI stream frames still
-// carry harness ids (the short_id M2 cutover is deferred), so the
-// resolved canonical id is learned from the prompt response's
-// X-Session-Ref-Resolved header and drives the stream matching —
-// without it a phrase-typed filter would never match a frame and the
-// wait would burn its whole budget before the history fallback.
+// #1816 phrase addressing, post-#1824: the session ref may be the
+// 3-word phrase (or, in the one-release deprecation window, the
+// full/hashed id — the REST edge resolves every form). Contract frames
+// are keyed by the PHRASE on refreshed pods (#1824's emission
+// translation, harness id additive as internal_session_id) and by the
+// HARNESS id on heal-window/legacy pods — so the wait admits a frame
+// keyed by EITHER space (sessionMatchKeys), with the resolved
+// canonical id learned from the prompt response's
+// HeaderSessionRefResolved when the edge rewrote the ref.
 func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error) {
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return "", err

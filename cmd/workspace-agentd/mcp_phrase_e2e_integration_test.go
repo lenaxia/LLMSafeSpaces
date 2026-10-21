@@ -138,3 +138,62 @@ func TestOriginE2E1816_DeprecatedFullIDCarriesNotice(t *testing.T) {
 	assert.Contains(t, (*toolResults)[0], `"status":"aborted"`,
 		"the window still ACCEPTS the deprecated form")
 }
+
+// TestOriginE2E1816_UnresolvablePhraseRefusesCleanly (r2 missing-test
+// 1, the unhappy leg): a 3-word phrase that resolves to NO session is
+// an id-shaped miss — it passes through to the seam untouched and the
+// REAL opencode's verdict is the refusal: no delivery, the caller's
+// phrase echoed, no harness-id leak. (The did-you-mean clause rides
+// the resolver-side ALIAS leg — covered by the twin subtest — because
+// the pinned seam answers id-shaped misses with its own 500-class
+// verdict, not a 404.)
+func TestOriginE2E1816_UnresolvablePhraseRefusesCleanly(t *testing.T) {
+	client, toolResults, provider := bootOriginE2E1627(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "e21816-unresolvable-caller")
+	// The replica is COLD for this phrase (never warmed): the miss
+	// passes through untouched and the seam arbitrates.
+	_ = withShortIDStore(t)
+
+	provider.mu.Lock()
+	provider.tool = "llmsafespaces_send_message"
+	provider.args = `{"session_id":"quiet-marmot-glints","message":"anyone?"}`
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "send to a phrase that does not exist", "", nil)
+	require.NoError(t, err, "the caller's turn must complete (the refusal is a tool error)")
+
+	require.NotEmpty(t, *toolResults)
+	first := (*toolResults)[0]
+	assert.True(t, strings.HasPrefix(first, "ERROR: "),
+		"an unresolvable phrase must REFUSE, not deliver: %s", first)
+	assert.Contains(t, first, "quiet-marmot-glints",
+		"the refusal names the requested phrase (the caller's own input, echoed back)")
+}
+
+// TestOriginE2E1816_AliasMissRefusesWithDidYouMean (the resolver-side
+// unhappy leg): an alias-form target that matches nothing fails at the
+// RESOLVER with the #1663-class did-you-mean clause — no seam call, no
+// delivery — through the real dispatch.
+func TestOriginE2E1816_AliasMissRefusesWithDidYouMean(t *testing.T) {
+	client, toolResults, provider := bootOriginE2E1627(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "e21816-aliasmiss-caller")
+
+	provider.mu.Lock()
+	provider.tool = "llmsafespaces_send_message"
+	provider.args = `{"session_id":"no such session titled this","message":"x"}`
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "send by a made-up title", "", nil)
+	require.NoError(t, err, "the caller's turn must complete (the refusal is a tool error)")
+
+	require.NotEmpty(t, *toolResults)
+	first := (*toolResults)[0]
+	assert.True(t, strings.HasPrefix(first, "ERROR: "), "an alias miss must refuse: %s", first)
+	assert.Contains(t, first, "not found", "the refusal names the miss")
+}

@@ -72,16 +72,16 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 			}
 			// #1816 resolved-id bridge: tell the caller which
 			// canonical id the ref mapped to. The platform MCP
-			// client (pkg/mcp) consumes this to match the ABI
-			// contract stream — whose frames still carry harness
-			// ids until the deferred short_id M2 cutover — instead
-			// of burning the whole wait budget on a phrase-typed
-			// filter that never matches. Correlation for a caller
-			// that just addressed the session under authz, on the
-			// response it already receives — §1 governs
-			// session-bearing payload BODIES; this retires with the
-			// ABI short_id M2 cutover (phrase-native frames). Only
-			// a true RESOLUTION (phrase/alias) reports: a
+			// client (pkg/mcp) consumes this as ONE key of its
+			// dual-space contract-stream match — post-#1824 frames
+			// are phrase-keyed on refreshed pods (harness additive
+			// as internal_session_id) and harness-keyed on
+			// heal-window/legacy pods, so a phrase-typed filter
+			// alone would burn the whole wait budget on the latter.
+			// Correlation for a caller that just addressed the
+			// session under authz, on the response it already
+			// receives — §1 governs session-bearing payload BODIES.
+			// Only a true RESOLUTION (phrase/alias) reports: a
 			// passthrough caller already holds the canonical id.
 			// The literal lives in pkg/types — ONE definition shared
 			// with the client (the bridge continuity test joins the

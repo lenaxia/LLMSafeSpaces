@@ -147,3 +147,60 @@ Two concrete surfaces remained:
   mcp_phrase_parity_test.go, mcp_phrase_e2e_integration_test.go,
   mcp_tools_test.go (mcpAutomation signature churn), mcp_board_tools_test.go
   (same), board_manager_e2e_integration_test.go (same)
+
+---
+
+## r1 review (CHANGES_REQUESTED) — remediated @ a86aa2eb lineage
+
+- Finding 1 (bridge seam thin): ONE constant `types.HeaderSessionRefResolved`
+  (pkg/types/session.go) imported by middleware + client; continuity pin
+  `TestSessionRefBridge_MiddlewareToMCPClient` (real middleware ↔ real
+  HTTPClient.SendMessage over HTTP).
+- Finding 2 (§2 success-path-only): `newToolResultErrorWithNotice` on the
+  send/history error paths (IsError kept).
+- Non-blocking: camelCase `sessionId` scanner key + envelope pin.
+
+## Post-#1824 adaptation (main landed phrase-keyed frames while r1 was out)
+
+Main's #1824/#1817 flipped contract frames to PHRASE-keyed (harness additive
+as internal_session_id) on refreshed pods — inverting the r0 bridge (the
+client would have filtered on the harness id against phrase-keyed frames).
+Rebased onto 43a7ba29; the client's wait now admits a frame keyed by EITHER
+space (sessionMatchKeys: session_id OR internal_session_id == resolved
+canonical OR caller-typed ref). Three regime pins (all red-first where the
+old code burned the budget): phrase/harness-frames (heal-window),
+phrase/phrase-frames (refreshed), full-id/phrase-frames-via-additive (the
+deprecated window stays functional).
+
+## r2 review (CHANGES_REQUESTED) — remediated
+
+- **f1 false #1530 origin-mismatch**: the warning compared the raw embedded
+  ref against the resolved canonical — a phrase-form embedded origin of the
+  SAME session emitted "X differs from X". Fixed: canonical-to-canonical
+  comparison (embedded resolved via resolveSessionRef before the verdict).
+  Pin: `TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause`.
+- **f2 did-you-mean harness leak**: `describeSuggestion` parenthesized the
+  harness id beside the phrase ("calm-otter-naps (ses_…)"). Fixed:
+  phrase-only when known; the harness id renders alone only on a cold
+  replica. Pin: `TestSuggestClause_WarmReplicaRendersPhraseOnly`.
+- **f3 early-validation notice bypass**: pkg/mcp validation errors (missing
+  message/workspace, invalid attachment) skipped the §2 notice. Fixed: the
+  notice is computed once per call and rides EVERY error arm. Pins:
+  `TestSessionMessage_ValidationErrorCarriesNotice`,
+  `TestSessionHistory_MissingWorkspaceCarriesNotice`.
+- **Missing-test 1 (unhappy e2e)**: `TestOriginE2E1816_UnresolvablePhrase-
+  RefusesCleanly` (phrase miss → seam-verdict refusal, phrase echoed, no
+  delivery) + `TestOriginE2E1816_AliasMissRefusesWithDidYouMean` (resolver-
+  side clause). Note: the pinned opencode answers id-shaped misses with a
+  500-class verdict (not 404), so the did-you-mean clause rides the alias
+  leg — asserted where it actually fires.
+- **Missing-test 2 (phrase-keyed bridge leg)**:
+  `TestSessionRefBridge_PhraseKeyedFrames` — the continuous middleware↔
+  client seam under the refreshed-pod wire shape (phrase session_id +
+  additive internalSessionId on snapshot AND events).
+- **Stale premise**: doc comments / CHANGELOG / this worklog said the
+  stream "still carries harness ids" — rewritten to the post-#1824
+  dual-regime reality.
+- Reviewer's agentd-create wording note (prose `deprecation` vs
+  `session_id_deprecated`) acknowledged — pre-existing #1756 design;
+  the PR body's "agentd parity" phrasing softened in this worklog.

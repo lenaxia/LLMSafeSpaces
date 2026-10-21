@@ -9,11 +9,13 @@ import "time"
 // session-ref middleware sets it (value = the canonical harness id)
 // whenever a caller-addressed session ref was RESOLVED — phrase or
 // alias rewrite, never a byte-identical passthrough. The platform MCP
-// client (pkg/mcp) consumes it to match the ABI contract stream, whose
-// frames still carry harness ids until the deferred short_id M2
-// cutover. ONE definition, imported by both sides of the seam — a
-// rename must redden the bridge continuity test, not silently break
-// phrase sends. Retires with the phrase-native ABI cutover.
+// client (pkg/mcp) consumes it as one key of its dual-space contract
+// stream match: post-#1824, frames are phrase-keyed on refreshed pods
+// (harness additive as internal_session_id) and harness-keyed on
+// heal-window/legacy pods — the client admits either. ONE definition,
+// imported by both sides of the seam — a rename must redden the
+// bridge continuity test, not silently break phrase sends. Retires
+// with a phrase-only ABI.
 const HeaderSessionRefResolved = "X-Session-Ref-Resolved"
 
 // WSConnection represents a WebSocket connection

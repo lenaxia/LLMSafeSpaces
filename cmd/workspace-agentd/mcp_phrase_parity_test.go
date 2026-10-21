@@ -284,3 +284,45 @@ func TestMCPEnvelope_BoardDeclaredSessionIDNotice(t *testing.T) {
 	assert.Contains(t, blocks[0], "Error:")
 	assert.Contains(t, blocks[1], "DEPRECATED")
 }
+
+// TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause (r2 f1):
+// a #1530 fragment whose embedded origin is the SAME session as the
+// resolved origin (typed in the other id space — a phrase beside a
+// harness id) must NOT emit the "differs from the resolved origin"
+// clause: the comparison is canonical-to-canonical, never raw-form to
+// canonical.
+func TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	origin := f.newSession("origin")
+	withAgentServer(t, f.handler(t))
+	store := withShortIDStore(t)
+	store.put("calm-otter-naps", origin)
+
+	// Fragment: harness target + embedded origin as the PHRASE of the
+	// SAME session as the declared origin.
+	mangled := target + `","lsp_injected_session":"calm-otter-naps"}`
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", origin, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, "duplicated-argument fragment", "the recovery warning is present")
+	assert.NotContains(t, out, "differs from the resolved origin",
+		"a same-session embedded origin (phrase form of the same session) is NOT a mismatch")
+	f.awaitMsgDone(t, target, 1)
+}
+
+// TestSuggestClause_WarmReplicaRendersPhraseOnly (r2 f2): the
+// did-you-mean clause leads with the phrase and NEVER parenthesizes
+// the harness id when the replica knows it — the re-copy affordance is
+// the phrase (#1756 §1 emission closure).
+func TestSuggestClause_WarmReplicaRendersPhraseOnly(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("Worker: 1691")
+	withAgentServer(t, f.handler(t))
+	store := withShortIDStore(t)
+	store.put("calm-otter-naps", s1)
+
+	clause := sessionSuggestClause(context.Background(), seamClientWithPassword(mcpTestPassword), "calm-otter-napz")
+	require.NotEmpty(t, clause, "the near-miss must suggest")
+	assert.Contains(t, clause, "calm-otter-naps")
+	assert.NotContains(t, clause, s1, "the harness id must not ride the clause when the phrase is known")
+}

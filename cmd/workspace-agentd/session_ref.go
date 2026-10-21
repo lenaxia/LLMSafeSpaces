@@ -542,13 +542,16 @@ func suggestRefClauseFrom(requested string, sessions []opencode.SessionSummary) 
 	}
 }
 
-// describeSuggestion renders one candidate for the clause: the short
-// id when known (the canonical address), the harness id always (the
-// re-copy target), and the title/slug when present.
+// describeSuggestion renders one candidate for the clause: the phrase
+// when the replica knows it — the #1756 §1 re-copy affordance, phrase
+// ONLY (r2: the harness parenthetical leaked the full id beside the
+// canonical address). The harness id renders alone only when no phrase
+// is known (cold replica — the caller must have SOME addressable form).
+// The title/slug ride along when present.
 func describeSuggestion(s sessionref.Suggestion) string {
 	label := s.SessionID
 	if s.ShortID != "" {
-		label = s.ShortID + " (" + s.SessionID + ")"
+		label = s.ShortID
 	}
 	if s.Title != "" {
 		label += " — " + s.Title
