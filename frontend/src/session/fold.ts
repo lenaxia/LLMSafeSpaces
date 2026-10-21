@@ -58,6 +58,7 @@ export function applySequenced(fold: SessionFold, seqed: SequencedEvent): boolea
     snap = create(SessionSnapshotSchema, {
       sessionId: sid,
       status: SessionStatus.UNKNOWN,
+      internalSessionId: evt.internalSessionId,
     });
     fold.sessions.set(sid, snap);
   }

@@ -35,10 +35,12 @@ async function setupBase(page: Page, opts: {
   sessBHasUnread?: boolean;
   sessALastSeenAt?: string;
   sessAMessages?: unknown[];
+  sessAId?: string;
 } = {}) {
   const sessAStatus = opts.sessAStatus ?? "idle";
   const sessBHasUnread = opts.sessBHasUnread ?? false;
   const sessAMessages = opts.sessAMessages ?? [];
+  const sessAId = opts.sessAId ?? SESS_A1;
 
   // Auth
   await page.route(`${API}/auth/me`, (r: Route) =>
@@ -67,7 +69,7 @@ async function setupBase(page: Page, opts: {
   // Session lists
   await page.route(`${API}/workspaces/${WS_A}/sessions?*`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
-      { id: SESS_A1, title: "Task Alpha", status: sessAStatus, hasUnread: false, messageCount: 2, lastSeenAt: opts.sessALastSeenAt },
+      { id: sessAId, title: "Task Alpha", status: sessAStatus, hasUnread: false, messageCount: 2, lastSeenAt: opts.sessALastSeenAt },
     ])}));
   await page.route(`${API}/workspaces/${WS_B}/sessions?*`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
@@ -75,7 +77,7 @@ async function setupBase(page: Page, opts: {
     ])}));
 
   // Message history — default empty; callers can pass sessAMessages to override
-  await page.route(`${API}/workspaces/${WS_A}/sessions/${SESS_A1}/message**`, (r: Route) =>
+  await page.route(`${API}/workspaces/${WS_A}/sessions/${sessAId}/message**`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(sessAMessages) }));
 
   // Models
@@ -88,7 +90,7 @@ async function setupBase(page: Page, opts: {
 
   // Contract stream (US-69.10 cutover: ChatPage consumes session state via
   // /contract-events) — minimal idle snapshot, delivered then held.
-  await mockIdleContractStream(page, `${API}/workspaces/*/contract-events`, SESS_A1);
+  await mockIdleContractStream(page, `${API}/workspaces/*/contract-events`, sessAId);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +136,49 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
 
     // Spinner should replace the MessageSquare icon on the session row
     await expect(page.locator(".animate-spin").first()).toBeVisible({ timeout: 5_000 });
+  });
+
+  // Test 40b (#1817 E2.1): the phrase is the wire/join id; the harness id
+  // rides additively as data.internal_session_id. A busy event keyed by the
+  // phrase must badge within a bounded window, and the badge must clear on
+  // the matching idle — divergent ids must not split the session.
+  test("40b — busy badge with divergent phrase/harness ids clears on idle", async ({ page }) => {
+    const PHRASE_ID = "quiet-mountain-9";
+    const HARNESS_ID = "ses_sa_a1_harness";
+    await setupBase(page, { sessAId: PHRASE_ID });
+
+    // The fulfilled response ends, so the hook reconnects. Re-stamping the
+    // current status on every connection keeps the busy window open until
+    // the test flips it to idle (a reconnect wipe must not clear it early).
+    let userStatus: "busy" | "idle" = "busy";
+    let userStreamHits = 0;
+    await page.route(`${API}/events`, async (r: Route) => {
+      userStreamHits++;
+      await r.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        body: `data: ${JSON.stringify({ type: "session.status", workspace_id: WS_A, session_id: PHRASE_ID, status: userStatus, data: { internal_session_id: HARNESS_ID } })}\n\n`,
+      });
+    });
+
+    await page.goto(`/chat/${WS_A}/${PHRASE_ID}`);
+    await expect(page.getByText("Task Alpha")).toBeVisible({ timeout: 10_000 });
+
+    await expect(page.getByLabel("Agent working").first()).toBeVisible({ timeout: 2_000 });
+
+    const alphaHeader = page.getByRole("button", { name: "Alpha", exact: true });
+    await alphaHeader.click();
+    // The collapsed header's accessible name gains the indicator's label
+    // ("Alpha Agent working"), so re-locate by prefix after the click.
+    const collapsedAlpha = page.getByRole("button", { name: /^Alpha/ }).first();
+    await expect(collapsedAlpha.locator("[data-busy]")).toBeVisible({ timeout: 2_000 });
+
+    const hitsBeforeIdle = userStreamHits;
+    userStatus = "idle";
+    await expect.poll(async () => userStreamHits, { timeout: 5_000 }).toBeGreaterThan(hitsBeforeIdle);
+
+    await expect(collapsedAlpha.locator("[data-busy]")).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.getByLabel("Agent working")).toHaveCount(0, { timeout: 2_000 });
   });
 
   // Test 41: Unread pulsation appears on a different session after its agent completes.

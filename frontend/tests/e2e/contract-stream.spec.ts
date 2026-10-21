@@ -36,30 +36,52 @@ function eventFrame(seq: number | bigint, event: Record<string, unknown>): strin
   })}\n\n`;
 }
 
-function partEnd(seq: number | bigint, partId: string, text: string, messageId = "msg_a1"): string {
+function partEnd(
+  seq: number | bigint,
+  partId: string,
+  text: string,
+  messageId = "msg_a1",
+  wireSessionId = SESSION_ID,
+  internalId = "",
+): string {
   return eventFrame(seq, {
     type: "EVENT_TYPE_PART_END",
-    sessionId: SESSION_ID,
+    sessionId: wireSessionId,
+    ...(internalId ? { internalSessionId: internalId } : {}),
     messageId,
     partId,
     part: { id: partId, type: "PART_TYPE_TEXT", text },
   });
 }
 
-function partDelta(seq: number | bigint, partId: string, delta: string, messageId = "msg_a1"): string {
+function partDelta(
+  seq: number | bigint,
+  partId: string,
+  delta: string,
+  messageId = "msg_a1",
+  wireSessionId = SESSION_ID,
+  internalId = "",
+): string {
   return eventFrame(seq, {
     type: "EVENT_TYPE_PART_DELTA",
-    sessionId: SESSION_ID,
+    sessionId: wireSessionId,
+    ...(internalId ? { internalSessionId: internalId } : {}),
     messageId,
     partId,
     delta,
   });
 }
 
-function sessionStatus(seq: number | bigint, status: "SESSION_STATUS_IDLE" | "SESSION_STATUS_BUSY"): string {
+function sessionStatus(
+  seq: number | bigint,
+  status: "SESSION_STATUS_IDLE" | "SESSION_STATUS_BUSY",
+  wireSessionId = SESSION_ID,
+  internalId = "",
+): string {
   return eventFrame(seq, {
     type: "EVENT_TYPE_SESSION_STATUS",
-    sessionId: SESSION_ID,
+    sessionId: wireSessionId,
+    ...(internalId ? { internalSessionId: internalId } : {}),
     status,
   });
 }
@@ -87,9 +109,16 @@ interface HarnessOptions {
   userStreamBody?: string;
   /** Dynamic user-stream body (takes precedence over userStreamBody). */
   userStream?: () => string;
+  /** Wire session id used by REST routes and user-stream frames. */
+  wireSessionId?: string;
+  /** Additive harness id emitted as data.internal_session_id. */
+  internalId?: string;
 }
 
 async function setupChatMocks(page: Page, opts: HarnessOptions) {
+  const wireSessionId = opts.wireSessionId ?? SESSION_ID;
+  const internalId = opts.internalId ?? "";
+  const internalData = internalId ? { data: { internal_session_id: internalId } } : {};
   await page.route(`${API_PREFIX}/auth/login`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "e2e-test-token", user: { id: "u1", username: "testuser", role: "user" } }) });
   });
@@ -112,18 +141,18 @@ async function setupChatMocks(page: Page, opts: HarnessOptions) {
   // a future bare-request flow would bypass this mock silently.
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
     if (route.request().method() === "POST") {
-      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: SESSION_ID, sessionId: SESSION_ID }) });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: wireSessionId, sessionId: wireSessionId }) });
     } else {
       const body = opts.sessions
         ? opts.sessions()
-        : [{ id: SESSION_ID, title: "Contract stream session", messageCount: 0, status: "idle" }];
+        : [{ id: wireSessionId, title: "Contract stream session", messageCount: 0, status: "idle" }];
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     }
   });
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/*/ensure`, async (route: Route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: SESSION_ID }) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: wireSessionId }) });
   });
-  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/message*`, async (route: Route) => {
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${wireSessionId}/message*`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(opts.history()) });
   });
 
@@ -135,8 +164,8 @@ async function setupChatMocks(page: Page, opts: HarnessOptions) {
   // User stream: busy status seeds the provider's busy map so the
   // streaming bubble renders while the turn is in flight.
   await page.route(`${API_PREFIX}/events`, async (route: Route) => {
-    const busy = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`;
-    const idle = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "idle" })}\n\n`;
+    const busy = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: wireSessionId, status: "busy", ...internalData })}\n\n`;
+    const idle = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: wireSessionId, status: "idle", ...internalData })}\n\n`;
     const body = opts.userStream ? opts.userStream() : (opts.userStreamBody ?? busy);
     void busy; void idle;
     await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
@@ -320,5 +349,73 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     await page.waitForTimeout(2500);
     const bounce = page.locator("span.animate-bounce");
     await expect(bounce).toHaveCount(0);
+  });
+
+  test("divergent_phrase_ids_e2e: phrase-keyed stream renders once; harness-keyed decoy is ignored", async ({ page }) => {
+    const PHRASE_ID = "quiet-mountain-9";
+    const HARNESS_ID = "ses_sa_a1_harness";
+    let turnOver = false;
+    await setupChatMocks(page, {
+      wireSessionId: PHRASE_ID,
+      internalId: HARNESS_ID,
+      history: () => (turnOver
+        ? [userHistoryMessage("draft the release notes"), assistantHistoryMessage("Hello world")]
+        : [userHistoryMessage("draft the release notes")]),
+      sessions: () => [{ id: PHRASE_ID, title: "Phrase-keyed session", messageCount: 0, status: "idle" }],
+      userStream: () => (turnOver
+        ? `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: PHRASE_ID, status: "idle", data: { internal_session_id: HARNESS_ID } })}\n\n`
+        : `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: PHRASE_ID, status: "busy", data: { internal_session_id: HARNESS_ID } })}\n\n`),
+    });
+
+    // Phase-based so React StrictMode's double-mount cannot consume the
+    // single progress frame: every pre-flip connection serves the live
+    // intermediate state, and the test flips to the final turn once both
+    // the badge and the delta are visible.
+    let finalDelivered = false;
+    let contractHits = 0;
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, async (route: Route) => {
+      contractHits++;
+      if (!turnOver) {
+        const body =
+          snapshotFrame(5, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello" }], queueDepth: 0, pendingInputs: [] }]) +
+          partEnd(6, "p2", "SHOULD-NOT-RENDER", "msg_decoy", HARNESS_ID, HARNESS_ID) +
+          partDelta(7, "p1", " wor", "msg_a1", PHRASE_ID, HARNESS_ID) +
+          partEnd(8, "p1", "Hello wor", "msg_a1", PHRASE_ID, HARNESS_ID);
+        await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+        return;
+      }
+      if (!finalDelivered) {
+        finalDelivered = true;
+        const body =
+          snapshotFrame(9, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello wor" }], queueDepth: 0, pendingInputs: [] }]) +
+          partDelta(10, "p1", "ld", "msg_a1", PHRASE_ID, HARNESS_ID) +
+          partEnd(11, "p1", "Hello world", "msg_a1", PHRASE_ID, HARNESS_ID) +
+          sessionStatus(12, "SESSION_STATUS_IDLE", PHRASE_ID, HARNESS_ID);
+        await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+        return;
+      }
+      const body = snapshotFrame(12, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }]);
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+    });
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${PHRASE_ID}`);
+    await expect(page.locator("h2")).toContainText("Contract Stream WS", { timeout: 10000 });
+
+    // The user-stream busy must badge the sidebar while the turn is live
+    // (the final frame is phase-gated above, so this window is stable).
+    await expect(page.locator("[data-busy]").first()).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Hello wor").first()).toBeVisible({ timeout: 10000 });
+
+    const hitsBeforeTurnOver = contractHits;
+    turnOver = true;
+    await expect
+      .poll(async () => contractHits, { timeout: 15000 })
+      .toBeGreaterThan(hitsBeforeTurnOver);
+
+    await expect(page.getByText("Hello world").first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("SHOULD-NOT-RENDER")).toHaveCount(0);
+    await expect
+      .poll(async () => page.locator('[aria-label="Chat messages"] div.justify-start').filter({ hasText: "Hello world" }).count(), { timeout: 15000 })
+      .toBe(1);
   });
 });
