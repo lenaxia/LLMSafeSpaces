@@ -201,8 +201,10 @@ func (s *BoardSuite) TestKill_1813_ListTasksFailedFilter() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	clean := s.seedTask(e, "clean", nil, false)
+	// FIFO: flappy is seeded FIRST so claimOrFail claims IT (clean never
+	// holds a lease — rc1 ignores it).
 	flappy := s.seedTask(e, "flappy", nil, false)
+	clean := s.seedTask(e, "clean", nil, false)
 
 	s.claimOrFail(ws)
 	s.expireLease(flappy.ID)
