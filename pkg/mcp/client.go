@@ -499,8 +499,8 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	// key extracts no text and is rejected (#1034). The response's
 	// HeaderSessionRefResolved (pkg/types — ONE definition shared with
 	// the middleware; set when the edge REWROTE the ref — phrase/alias
-	// inputs) carries the canonical harness id the stream frames are
-	// keyed on (#1816 bridge; the continuity test joins both sides).
+	// inputs) carries the canonical harness id (#1816 bridge; the
+	// continuity test joins both sides).
 	origRef := sessionID
 	body := map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": message}},
@@ -518,6 +518,14 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	// sseCtx bounds the whole wait (including reconnects); the parent
 	// ctx stays alive for the history fallback and the async
 	// permission auto-approve.
+	//
+	// Frame matching is DUAL-KEY post-#1824: refreshed pods key frames
+	// by the PHRASE (session_id = phrase, harness additive as
+	// internal_session_id — the #1817 emission translation), while
+	// heal-window/legacy pods still key by the harness id. The wait
+	// accepts a frame keyed by EITHER the caller-facing ref or the
+	// bridge-resolved canonical id — matching only one space would
+	// burn the whole budget on the other pod regime.
 	sseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -569,9 +577,12 @@ const contractReconnectPause = 200 * time.Millisecond
 // and PART_DELTA accumulation for live text. replyCtx outlives the
 // stream context and backs the async permission replies. callerRef is
 // the caller-facing session id (the phrase when addressed by phrase) —
-// the question result reports THAT, never the harness id the ABI frame
-// carries (#1816 §1).
+// frames match on EITHER key (post-#1824 refreshed pods key frames by
+// the phrase; legacy/heal-window pods by the harness id), and the
+// question result reports the caller-facing form, never the other
+// space's id (#1816 §1).
 func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID, callerRef string) (string, *questionEventResult, error) {
+	matchKeys := newSessionMatchKeys(sessionID, callerRef)
 	var response strings.Builder
 	var lastSeq uint64
 
@@ -597,7 +608,7 @@ func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspac
 			return response.String(), nil, err
 		}
 
-		read := c.readContractStream(resp.Body, workspaceID, sessionID, callerRef, &lastSeq, &response, replyCtx)
+		read := c.readContractStream(resp.Body, workspaceID, matchKeys, callerRef, &lastSeq, &response, replyCtx)
 		_ = resp.Body.Close()
 
 		if read.question != nil || read.idle {
@@ -637,14 +648,34 @@ type contractStreamRead struct {
 	reconnect bool
 }
 
+// sessionMatchKeys is the DUAL-KEY frame filter (#1816 post-#1824): a
+// frame belongs to this wait when its session_id matches the resolved
+// canonical id (harness-keyed frames — legacy/heal-window pods and the
+// internal id space) OR the caller-facing ref (phrase-keyed frames —
+// refreshed pods, the #1817 emission translation). An empty key never
+// matches; duplicate keys collapse.
+type sessionMatchKeys struct{ a, b string }
+
+func newSessionMatchKeys(canonical, callerRef string) sessionMatchKeys {
+	return sessionMatchKeys{a: strings.TrimSpace(canonical), b: strings.TrimSpace(callerRef)}
+}
+
+func (k sessionMatchKeys) match(sid string) bool {
+	if sid == "" {
+		return false
+	}
+	return sid == k.a || sid == k.b
+}
+
 // readContractStream parses the SSE body (data/event/comment lines,
 // per the SSE framing) and folds ABI StreamFrames until the target
 // session goes IDLE, an input request arrives, or the body ends.
 // Parse errors on individual frames are tolerated (skipped) — one bad
-// frame never kills the wait. callerRef rewrites the question result's
-// session id to the caller-facing form (#1816 §1: the harness id the
-// ABI frame carries never leaks into tool output on the phrase path).
-func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID, callerRef string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
+// frame never kills the wait. keys is the dual-key filter (either id
+// space); callerRef rewrites the question result's session id to the
+// caller-facing form (#1816 §1: the other space's id never leaks into
+// tool output on the phrase path).
+func (c *HTTPClient) readContractStream(body io.Reader, workspaceID string, keys sessionMatchKeys, callerRef string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
 	var read contractStreamRead
 	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
 
@@ -669,7 +700,7 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID, 
 			// A snapshot whose target session is already IDLE completes
 			// the wait immediately (checked before any event).
 			for _, s := range snap.GetSnapshot().GetSessions() {
-				if s.GetSessionId() == sessionID && s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+				if keys.match(s.GetSessionId()) && s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
 					read.idle = true
 					return
 				}
@@ -694,7 +725,7 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID, 
 			if sid == "" && evt.GetInput() != nil {
 				sid = evt.GetInput().GetSessionId()
 			}
-			if sid != sessionID {
+			if !keys.match(sid) {
 				return // other sessions on the pod-wide stream never bleed in
 			}
 			switch evt.GetType() {

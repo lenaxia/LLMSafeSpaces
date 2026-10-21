@@ -273,3 +273,61 @@ func TestSessionHistory_DeprecatedInputErrorCarriesNotice(t *testing.T) {
 func TestSessionRefResolvedHeaderConstantShared(t *testing.T) {
 	assert.Equal(t, "X-Session-Ref-Resolved", types.HeaderSessionRefResolved)
 }
+
+// ===== post-#1824: phrase-keyed frames (refreshed pods) =====================
+
+// TestHTTPClient_SendMessage_PhraseKeyedFramesMatchCallerRef pins the
+// post-#1824 contract-stream shape at THIS client: refreshed pods emit
+// frames keyed by the PHRASE (session_id = phrase, harness additive as
+// internal_session_id). The client must match the frame stream on the
+// CALLER-FACING phrase — not only the bridge-resolved harness id
+// (matching the harness alone would burn the whole budget again on
+// refreshed pods: the inversion of the pre-#1824 bug).
+func TestHTTPClient_SendMessage_PhraseKeyedFramesMatchCallerRef(t *testing.T) {
+	const canonical = "ses_refreshed_pod_id"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(types.HeaderSessionRefResolved, canonical)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		// #1824 shape: phrase-keyed rows/events, harness ADDITIVE.
+		writeContractFrame(t, w, snapshotFrame(1, &abiv1.SessionSnapshot{
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+		}))
+		flusher.Flush()
+		evt := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Delta:             "refreshed ",
+		}
+		writeContractFrame(t, w, eventFrame(2, evt))
+		flusher.Flush()
+		evt2 := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}
+		writeContractFrame(t, w, eventFrame(3, evt2))
+		flusher.Flush()
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/message", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", "amber-falcon-glides", "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "refreshed ", resp)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"phrase-keyed frames (refreshed pods) must match — not burn the budget")
+}
