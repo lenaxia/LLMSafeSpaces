@@ -14,15 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`.github/prompts/pr-review.md` VERIFICATION EXECUTION POLICY section).
   Measured basis (PR #1763 runtime drill-down + revalidation, n=11 runs):
   re-running CI-covered suites (`go vet ./...`, full `-race` suite, `-short`
-  coverage, vitest) plus `sleep N; gh pr checks` idle waits cost a mean
-  3.1 min per review run (max 11.2) for zero added signal. The reviewer-unique
-  verification stays mandatory and untouched: `-tags integration` board/
-  agentd/handlers suites beyond CI's named pins, agentd E2E, and
-  mutation/red-checks for bug-fix pins (~8 min across the sample — the
-  quality floor, not overhead). Quality floor unchanged by design: a green
-  CI run is execution evidence only and never waives the TESTS gate's
-  structural requirements; no model change, no tool removal. Pinned red-first
-  by `TestPrReviewPromptCIFirstExecutionPolicy` (tests/ghaworkflows).
+  coverage, vitest, the named `-tags integration` pins, and the
+  path-filtered board-manager integration suites when secrets-integration.yml
+  ran green) plus `sleep N; gh pr checks` idle waits cost a mean 3.1 min per
+  review run (max 11.2) for zero added signal. Waiting targets the CI
+  workflow runs (`gh run watch`), never `gh pr checks --watch` (self-watch
+  deadlock); skipped checks are not coverage — path-skipped suites are the
+  reviewer's local obligation, alongside the always-local residue: board/
+  agentd integration suites CI did not run, agentd E2E, and mutation/
+  red-checks for bug-fix pins (~8 min across the sample — the quality floor,
+  not overhead). A green CI run is execution evidence only and never waives
+  the TESTS gate's structural requirements; no model change, no tool removal.
+  Pinned red-first by `TestPrReviewPromptCIFirstExecutionPolicy`
+  (tests/ghaworkflows).
 
 ## [0.40.1] - 2026-10-21
 

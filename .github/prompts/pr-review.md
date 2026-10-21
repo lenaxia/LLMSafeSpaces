@@ -5,30 +5,51 @@ evidence comes from, NEVER the quality floor: every gate below (test levels,
 regression pins, issue closure) applies with identical force either way.
 
 Before running ANY test, vet, or lint command locally:
-1. Check the head's CI status FIRST: `gh pr checks <PR>` (or `gh run list
-   --commit <head SHA>` if the view is ambiguous). Bind what you see to the
-   exact head SHA you are reviewing — green checks from any other SHA are not
-   evidence for this review.
-2. If a suite CI runs on this PR is GREEN on the same head SHA, do NOT re-run
-   it locally — cite the green check name as execution evidence instead of a
-   local transcript. CI-covered (see .github/workflows/ci.yml): `go vet ./...`,
-   the full `go test -race -count=1 ./...` suite, the `-short` coverage run,
-   the frontend vitest suite, and the NAMED `-tags integration` pins CI lists
-   explicitly (origin-plugin, permission-tier, origin E2E, #1722, and every
-   other named pin CI runs). Re-running
-   these locally is measured duplication — a mean 3.1 min and up to 11.2 min
-   per review round for zero added signal (#1763 runtime drill-down).
+1. Check the head's CI status FIRST: `gh run list --commit <head SHA>` (all
+   workflows) or `gh pr checks <PR>` for the summary view. Bind what you see
+   to the exact head SHA you are reviewing — green checks from any other SHA
+   are not evidence for this review.
+2. If a suite CI runs on this PR is GREEN (conclusion: success) on the same
+   head SHA, do NOT re-run it locally — cite the green check name as
+   execution evidence instead of a local transcript. Only a SUCCESS check on
+   the exact head counts: a SKIPPED check is not evidence — when a check was
+   skipped (docs-only paths, path-filtered suites) and the diff touches what
+   it would have run, execute that suite locally yourself. CI-covered (see
+   .github/workflows/ci.yml): `go vet ./...`, the full
+   `go test -race -count=1 ./...` suite, the `-short` coverage run, the
+   frontend vitest suite, and the NAMED `-tags integration` pins CI lists
+   explicitly (origin-plugin, permission-tier, origin E2E, #1722, harness
+   synthetic-data-home, and every other named pin CI runs). Additionally the
+   path-filtered secrets-integration.yml workflow runs `-tags integration`
+   board-manager suites (kill-tests, worker/manager semantics, board-manager
+   E2E) when its filters match (pkg/board/, api/internal/handlers/board*,
+   cmd/workspace-agentd/board_manager_e2e*) — when that workflow RAN and is
+   GREEN on the head, those suites are covered; when it was skipped, run them
+   locally (a RED run goes through rule 3's triage first — re-run locally
+   only when the failure was infra/transient AND the diff touches what the
+   suite exercises). Re-running covered suites locally is measured
+   duplication — a mean 3.1 min and up to 11.2 min per review round for zero
+   added signal (#1763 runtime drill-down).
 3. If a CI check is RED on the head, do not re-run it locally to see for
-   yourself: read the failing log (`gh run view <run> --log-failed`) and treat
-   the red as a review finding in its own right.
-4. If CI is still running on the head, wait with a single `gh pr checks
-   --watch` (or one later re-poll) — never sleep-poll (`sleep N; gh pr checks`
-   loops idle 100-150s per round for nothing).
+   yourself: read the failing log (`gh run view <run> --log-failed`) and
+   classify first — an infra/transient failure (runner eviction, network
+   5xx, provider 429, snapshot flake) is reported as CI noise on the PR, not
+   a code finding; only a diff-related failure (build break, test
+   regression, lint violation) is a review finding in its own right.
+4. If CI is still running on the head, wait on the CI WORKFLOW RUNS ONLY —
+   `gh run list --workflow ci.yml --commit <head SHA>` (plus
+   secrets-integration.yml when its filters match) and `gh run watch <run
+   id>` once, or one later re-poll. NEVER `gh pr checks --watch`: that
+   watches ALL checks including THIS review job itself and would wait on its
+   own completion — a deadlock until job timeout. And never sleep-poll
+   (`sleep N; gh pr checks` loops idle 100-150s per round for nothing).
 5. ALWAYS still run locally what CI does NOT cover — this residue is yours and
    stays mandatory on every review whose diff touches code it exercises:
-   - the `-tags integration` suites beyond CI's named pins — board manager
-     semantics/E2E, agentd handlers (CI's plain `./...` and `-race` runs do
-     not compile or execute the integration-tagged surface);
+   - the `-tags integration` suites not covered above — when
+     secrets-integration.yml did not run (path-skipped), the board manager
+     semantics/E2E and agentd-handler suites are yours; CI's plain `./...`
+     and `-race` runs never compile or execute the integration-tagged
+     surface;
    - agentd E2E beyond the named CI pins;
    - mutation/red-checks for bug-fix pins: in a scratch worktree, revert or
      break the fix and confirm the pinning test goes red without it.

@@ -18,18 +18,27 @@ import (
 //
 // Basis (LLMSafeSpaces PR #1763 drill-down + revalidation, comments
 // 6308423248 / 6309172907, n=11 runs): the reviewer burned a measured mean
-// 3.1 min/run (max 11.2) re-running `go vet ./...`, full `-race` suites and
-// vitest that ci.yml already runs on the same head (ci.yml:145/264/304/487/
-// 514), plus 101-152s `sleep N; gh pr checks` idle waits. The must-stay
-// residue the reviewer uniquely covers — `-tags integration` board/agentd
-// suites, agentd E2E, mutation/red-checks (revalidation: 494s + ~45s across
-// the 11 runs) — is NOT CI-covered (ci.yml:617-629 covers -tags integration
-// only for opencode-plugin tests) and must keep running locally.
+// 3.1 min/run (max 11.2) re-running suites CI already executes on the same
+// head — ci.yml's `go vet ./...`, full `-race` suite, `-short` coverage and
+// vitest (ci.yml:145/264/304/487/514) plus the NAMED `-tags integration`
+// pins (ci.yml:617-629, pkg/agent/opencode/ and cmd/workspace-agentd) and,
+// when its path filters match, the secrets-integration.yml board-manager
+// `-tags integration` suites (secrets-integration.yml:65,144-179: pkg/board/,
+// api/internal/handlers/board*, board_manager_e2e) — plus 101-152s of
+// `sleep N; gh pr checks` idle waits. The reviewer-unique residue (board/
+// agentd integration suites when secrets-integration did not run, agentd
+// E2E, mutation/red-checks; 494s + ~45s across the sample) stays mandatory.
+//
+// The wait rule is deadlock-aware: `gh pr checks --watch` watches ALL checks
+// INCLUDING the review job itself (it is a check on the same PR) and would
+// wait on its own completion — so the prompt must direct waiting at the CI
+// workflow runs only (`gh run watch`) and must never mention the
+// self-watching form as an instruction. Negative markers below pin both
+// that and the inversion phrases demonstrated in review of PR #1833.
 //
 // Quality floor is unchanged by design: CI-green evidence changes WHERE
 // execution evidence comes from, never whether the PR's diff must contain
-// the mandated test levels. Each marker below is load-bearing; removing one
-// silently re-opens the double-execution / sleep-poll waste.
+// the mandated test levels.
 func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 	root := repoRoot(t)
 	b, err := os.ReadFile(filepath.Join(root, ".github", "prompts", "pr-review.md"))
@@ -44,27 +53,33 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		needle string
 		why    string
 	}{
-		// (a) CI-first: the head's checks are queried BEFORE any local run.
-		{`gh pr checks`,
-			"the reviewer must query the head's CI status (gh pr checks) before running anything locally"},
+		// (a) CI-first: the head's runs are queried BEFORE any local run.
+		{`gh run list --commit <head SHA>`,
+			"the reviewer must query the head's CI runs before running anything locally"},
 		// (a) no local re-run of CI-green suites on the same head.
 		{`do NOT re-run it locally`,
 			"a suite CI runs green on the review head must not be executed again by the reviewer"},
-		// (a) the skip is bound to the exact head SHA, not to whatever checks happen to show.
+		// (a) the skip is bound to the exact head SHA and a SUCCESS conclusion.
 		{`same head SHA`,
 			"the CI-green skip evidence must be bound to the exact head SHA under review"},
+		{`a SKIPPED check is not evidence`,
+			"skipped checks (docs-only paths, path-filtered suites) must not count as coverage — the reviewer runs those suites locally when the diff touches them"},
+		// (a) conditional board coverage via secrets-integration.yml.
+		{`secrets-integration.yml`,
+			"the path-filtered board-manager integration suites are CI-covered when that workflow RAN green on the head — without this the prompt double-mandates them (PR #1833 review finding 2)"},
 		// (b) the must-stay residue: CI-uncovered suites stay mandatory local work.
 		{`-tags integration`,
-			"CI does not run the -tags integration board/agentd/handlers suites beyond its named pins — the reviewer must keep running them locally"},
+			"the integration-tagged surface CI did not run on this head must stay a local execution obligation"},
 		{`agentd E2E`,
-			"agentd E2E is reviewer-unique verification and must stay a local execution obligation"},
+			"agentd E2E beyond the named CI pins is reviewer-unique verification and must stay"},
 		{`mutation`,
 			"mutation/red-checks (break the fix, confirm the pinning test goes red) are reviewer-unique and must stay"},
-		// (c) no sleep-polling.
-		{`--watch`,
-			"waiting on CI must use a single gh pr checks --watch (or one re-poll), never sleep N loops"},
-		{`never sleep-poll`,
-			"the sleep N; gh pr checks idling pattern (measured 101-152s/run) must be explicitly forbidden"},
+		// (c) deadlock-safe waiting.
+		{`gh run watch`,
+			"waiting on CI must target the CI workflow runs (gh run watch), never all checks"},
+		// (c) red triage: infra noise is not a code finding.
+		{`infra/transient failure`,
+			"a red check must be classified — infra/transient failures are CI noise, only diff-related failures are review findings"},
 		// Quality floor: CI-green is execution evidence only, not a coverage waiver.
 		{`does NOT waive`,
 			"a green CI run is execution evidence for suites CI runs — it must never waive the structural test-level requirements of the TESTS gate"},
@@ -72,5 +87,47 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		if !strings.Contains(body, strings.Join(strings.Fields(marker.needle), " ")) {
 			t.Errorf("pr-review.md CI-first execution policy lost its marker %q: %s", marker.needle, marker.why)
 		}
+	}
+
+	// Negative markers — phrases that must NEVER appear. The inversion
+	// phrases are the exact ones demonstrated to defeat a Contains-only pin
+	// (PR #1833 review).
+	for _, forbidden := range []struct {
+		needle string
+		why    string
+	}{
+		{"NEVER run `gh pr checks`",
+			"inversion phrase: the reviewer must run the CI-status query, not be told to skip it"},
+		{"ignore the same head SHA",
+			"inversion phrase: skip evidence must stay bound to the exact head SHA"},
+		{"sleep-poll instead",
+			"inversion phrase: sleep-polling is the measured waste this policy removes"},
+		{"always re-run",
+			"inversion phrase: CI-green suites must not be re-run locally"},
+	} {
+		if strings.Contains(body, strings.Join(strings.Fields(forbidden.needle), " ")) {
+			t.Errorf("pr-review.md CI-first execution policy contains forbidden phrase %q: %s", forbidden.needle, forbidden.why)
+		}
+	}
+
+	// The self-deadlocking watch form (`gh pr checks --watch` includes THIS
+	// review job's own check and waits on its own completion — PR #1833
+	// review finding 1) may appear ONLY inside its explicit prohibition
+	// ("NEVER `gh pr checks --watch`"). Any additional occurrence is an
+	// instruction to deadlock, so total occurrences must equal prohibited
+	// occurrences.
+	watchTotal := strings.Count(body, "gh pr checks --watch")
+	watchProhibited := strings.Count(body, "NEVER `gh pr checks --watch`")
+	if watchTotal != watchProhibited {
+		t.Errorf("pr-review.md: `gh pr checks --watch` appears %d times but only %d are inside the NEVER-prohibition — a bare occurrence instructs the reviewer to wait on its own review job (deadlock until job timeout)",
+			watchTotal, watchProhibited)
+	}
+
+	// Ordering: the policy must precede the review checklist — it is a
+	// first-action discipline ("before running ANY test locally").
+	policyIdx := strings.Index(body, "VERIFICATION EXECUTION POLICY")
+	checklistIdx := strings.Index(body, "Review checklist")
+	if policyIdx < 0 || checklistIdx < 0 || policyIdx > checklistIdx {
+		t.Errorf("policy section must exist and precede 'Review checklist' (first-action discipline); policyIdx=%d checklistIdx=%d", policyIdx, checklistIdx)
 	}
 }
