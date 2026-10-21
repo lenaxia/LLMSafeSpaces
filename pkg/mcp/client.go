@@ -648,23 +648,30 @@ type contractStreamRead struct {
 	reconnect bool
 }
 
-// sessionMatchKeys is the DUAL-KEY frame filter (#1816 post-#1824): a
-// frame belongs to this wait when its session_id matches the resolved
-// canonical id (harness-keyed frames — legacy/heal-window pods and the
-// internal id space) OR the caller-facing ref (phrase-keyed frames —
-// refreshed pods, the #1817 emission translation). An empty key never
-// matches; duplicate keys collapse.
+// sessionMatchKeys is the DUAL-KEY + ADDITIVE-ID frame filter (#1816
+// post-#1824): a frame belongs to this wait when its session_id
+// matches the resolved canonical id (harness-keyed frames — legacy/
+// heal-window pods and the internal id space) OR the caller-facing ref
+// (phrase-keyed frames — refreshed pods, the #1817 emission
+// translation) OR its ADDITIVE internal_session_id matches either key
+// (the #1824 pairing — lets a full-id deprecated-window input adopt
+// the phrase-keyed frames of refreshed pods). Empty ids never match.
 type sessionMatchKeys struct{ a, b string }
 
 func newSessionMatchKeys(canonical, callerRef string) sessionMatchKeys {
 	return sessionMatchKeys{a: strings.TrimSpace(canonical), b: strings.TrimSpace(callerRef)}
 }
 
-func (k sessionMatchKeys) match(sid string) bool {
-	if sid == "" {
-		return false
+func (k sessionMatchKeys) matchWithInternal(sid, internalID string) bool {
+	for _, id := range [...]string{sid, internalID} {
+		if id == "" {
+			continue
+		}
+		if id == k.a || id == k.b {
+			return true
+		}
 	}
-	return sid == k.a || sid == k.b
+	return false
 }
 
 // readContractStream parses the SSE body (data/event/comment lines,
@@ -700,7 +707,8 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID string, keys
 			// A snapshot whose target session is already IDLE completes
 			// the wait immediately (checked before any event).
 			for _, s := range snap.GetSnapshot().GetSessions() {
-				if keys.match(s.GetSessionId()) && s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+				if keys.matchWithInternal(s.GetSessionId(), s.GetInternalSessionId()) &&
+					s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
 					read.idle = true
 					return
 				}
@@ -725,7 +733,7 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID string, keys
 			if sid == "" && evt.GetInput() != nil {
 				sid = evt.GetInput().GetSessionId()
 			}
-			if !keys.match(sid) {
+			if !keys.matchWithInternal(sid, evt.GetInternalSessionId()) {
 				return // other sessions on the pod-wide stream never bleed in
 			}
 			switch evt.GetType() {

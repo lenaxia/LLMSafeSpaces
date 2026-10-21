@@ -331,3 +331,56 @@ func TestHTTPClient_SendMessage_PhraseKeyedFramesMatchCallerRef(t *testing.T) {
 	assert.Less(t, time.Since(start), 2*time.Second,
 		"phrase-keyed frames (refreshed pods) must match — not burn the budget")
 }
+
+// TestHTTPClient_SendMessage_FullIDInputMatchesPhraseFramesViaInternalID:
+// the deprecated full-id input window must still WORK on refreshed pods
+// — frames are phrase-keyed with the harness id ADDITIVE
+// (internal_session_id, #1824); the wait adopts a frame whose additive
+// id matches the typed ref (#1816 residual gap closure).
+func TestHTTPClient_SendMessage_FullIDInputMatchesPhraseFramesViaInternalID(t *testing.T) {
+	const legacy = "ses_fulllegacyid1234567890ab"
+	mux := http.NewServeMux()
+	// Full-id passthrough: the bridge sets NO header (nothing resolved).
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/"+legacy+"/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, &abiv1.SessionSnapshot{
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: legacy,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+		}))
+		flusher.Flush()
+		evt := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: legacy,
+			Delta:             "adopted",
+		}
+		writeContractFrame(t, w, eventFrame(2, evt))
+		flusher.Flush()
+		idle := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: legacy,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}
+		writeContractFrame(t, w, eventFrame(3, idle))
+		flusher.Flush()
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/"+legacy+"/message", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", legacy, "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "adopted", resp)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"a full-id input must complete via the additive internal id on refreshed pods")
+}
