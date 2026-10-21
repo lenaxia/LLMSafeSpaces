@@ -476,3 +476,33 @@ func TestMCPBoard_WorkerRegistry(t *testing.T) {
 	assert.True(t, rehydrated.isWorker("ses_a"), "the record survives restarts")
 	assert.False(t, rehydrated.isWorker("ses_never"))
 }
+
+// TestMCPBoard_ManagerDeclaredPhraseResolves (#1816): the DECLARED
+// sessionId fallback (degraded pod — no plugin injection) accepts a
+// 3-word PHRASE: it resolves through the same §4.4 precedence as
+// every other caller-typed session ref, and the RESOLVED harness id
+// rides the platform wire (the platform's SessionID column is the
+// internal key).
+func TestMCPBoard_ManagerDeclaredPhraseResolves(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("board-caller")
+	withAgentServer(t, f.handler(t))
+	store := withShortIDStore(t)
+	store.put("amber-falcon-glides", caller)
+
+	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-dddd4444"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		"epicId":    "epc-bbbb2222",
+		"title":     "T-phrase",
+		"sessionId": "amber-falcon-glides", // declared fallback, phrase form
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, "tsk-dddd4444")
+
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+	assert.JSONEq(t, `"`+caller+`"`, string(wire["sessionId"]),
+		"the DECLARED phrase resolves to the harness id on the platform wire")
+}
