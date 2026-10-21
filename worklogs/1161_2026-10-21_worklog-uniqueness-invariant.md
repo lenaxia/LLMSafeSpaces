@@ -46,4 +46,4 @@ None.
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins
-- worklogs/NNNN_2026-10-21_worklog-uniqueness-invariant.md — this worklog
+- worklogs/1161_2026-10-21_worklog-uniqueness-invariant.md — this worklog

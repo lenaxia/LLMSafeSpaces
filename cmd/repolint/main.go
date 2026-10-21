@@ -236,8 +236,9 @@ func runWorklogSentinels(root string) int {
 // can carry unnumbered sentinels between a merge and the bot's
 // numbering commit, and the post-rewrite hook's sanctioned renumber-all
 // semantics then lets a rebasing lane and the bot independently mint
-// the same number. Gaps stay warnings (the sentinel scheme makes them
-// transient bot-lag artifacts); DUPLICATES are the real corruption.
+// the same number. Gaps stay warnings (they are historical or bot-lag
+// holes that nothing backfills — the fix pass only ever numbers
+// above max); DUPLICATES are the real corruption.
 func runWorklogUniqueness(root string) int {
 	dir := filepath.Join(root, "worklogs")
 	rep, err := repolint.SequenceCheck(repolint.SequenceConfig{
@@ -254,7 +255,7 @@ func runWorklogUniqueness(root string) int {
 		return 1
 	}
 	if rep.HasWarnings() {
-		fmt.Printf("WARN  worklogs uniqueness: %d gap(s) (bot-lag artifacts; the next merge heals them)\n", len(rep.MissingVersions))
+		fmt.Printf("WARN  worklogs uniqueness: %d gap(s) (historical/bot-lag; gaps never gate — duplicates are the failure class)\n", len(rep.MissingVersions))
 		return 0
 	}
 	fmt.Printf("ok    worklogs unique (%d numbered, max %d)\n", len(rep.SeenVersions), rep.MaxVersion)
