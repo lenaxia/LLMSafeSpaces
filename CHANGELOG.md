@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
+
+- **SSH git operations no longer die on formatting-corrupt stored
+  keys.** A live provisioned key delivered with ONE trailing space on
+  every line (PEM markers included) made stock OpenSSH fail with the
+  misleading `error in libcrypto` — killing every SSH git operation in
+  fresh workspaces while the key material itself was intact. The
+  agentd delivery writer now runs a belt at the staging seam
+  (`pkg/agentd/secrets`): a structurally clean, parse-valid key (or an
+  OpenSSH-format passphrase-protected one — x/crypto reports those as
+  `PassphraseMissingError`, which is validity, not corruption) is
+  staged byte-identical; anything else gets one strict repair
+  (per-line whitespace trim + CRLF normalize) staged only if it parses
+  or is OpenSSH-format passphrase-protected — reproducing the clean
+  PEM byte-for-byte for the padding-only corruption class (encrypted
+  OpenSSH keys included). Other encrypted PEM envelopes (PKCS#8
+  `ENCRYPTED PRIVATE KEY`) parse as unsupported in x/crypto and stage
+  verbatim under never-worse; garbage likewise. Detection is
+  STRUCTURAL, because Go's parser tolerates exactly the
+  trailing-space class OpenSSH rejects. The frontend save path
+  normalizes ssh-key values on create/update (paste/transport reflow
+  cannot reintroduce the class), defense in depth with the belt.
+
 (nothing yet)
 
 ## [0.40.0] - 2026-10-21

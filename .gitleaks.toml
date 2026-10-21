@@ -52,6 +52,23 @@ paths = [
   # ob_ prefix is the platform's own namespace). Verified 2026-09-11
   # (PR #1323 review): the generic-api-key rule fires on its shape alone.
   '''cmd/workspace-agentd/admission_incident_repro_test\.go''',
+  # #1793 belt tests: every "key-looking" string is synthetic by
+  # construction — the Go fixture generates real keypairs AT RUNTIME
+  # (ed25519.GenerateKey + ssh.MarshalPrivateKey; the only literal is
+  # the deliberately-unparseable garbage "not-a-key at all!!" between
+  # PEM markers, which the private-key rule fires on by shape alone),
+  # and the frontend normalizer suite uses low-entropy 'A'-repeat
+  # bodies (the first commit carried base64-shaped dummies, rewritten
+  # in fbe904cf; the rule still scans that branch history — hence this
+  # entry). Verified 2026-10-21: no committed bytes are or derive from
+  # a real credential.
+  '''pkg/agentd/secrets/sshkey_belt_test\.go''',
+  '''frontend/src/lib/sshPrivateKey\.test\.ts''',
+  # Same class, review r2: the SecretsTab component pin (the existing
+  # harness) feeds marker-wrapped, low-entropy 'A'/'B'-repeat bodies
+  # through the create form — the private-key rule fires on the PEM
+  # marker shape alone. Synthetic by construction; never a credential.
+  '''frontend/src/components/settings/SecretsTab\.test\.tsx''',
   # #832 byte-compat gate: the golden hex map inlines the pre-consolidation
   # HKDF outputs for the deterministic fixture master (bytes 0x01..0x1f,
   # pkg/secrets/testdata/derive_server_key_golden.txt). Every value in this
