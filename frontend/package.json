@@ -61,7 +61,7 @@
     "jsdom": "^20.0.3",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.1.5",
+    "vite": "^8.1.6",
     "vitest": "^3.2.7"
   },
   "overrides": {
