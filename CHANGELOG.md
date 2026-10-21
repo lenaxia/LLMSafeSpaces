@@ -7,7 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Changed — platform MCP surfaces flip to phrase session IDs (#1816, the #1756 §5 remainder)
+
+- **The external MCP server (pkg/mcp / cmd/mcp) accepts phrase
+  addressing for real.** `session_message` with a 3-word phrase target
+  previously worked only by accident: the ABI contract stream still
+  carries harness ids (the short_id M2 cutover is deferred), so the
+  client's stream filter never matched a frame — the wait burned its
+  whole budget and answered via history fallback, and pending-input
+  questions never surfaced. The session-ref middleware now sets
+  `X-Session-Ref-Resolved` on every resolved (phrase/alias) rewrite,
+  and the MCP client drives the stream wait on that canonical id —
+  phrase-targeted sends complete from live frames. The bridge is
+  correlation on a response the caller already receives under authz
+  (not a session-bearing payload surface) and retires with the
+  phrase-native ABI cutover. The pending-question result's session id
+  is likewise rewritten to the caller-facing phrase — the harness id
+  never leaks into tool output on the phrase path.
+- **§2 deprecation notices reach the MCP surfaces.** The external
+  server's `session_message`/`session_history` attach the one-release
+  notice as a second content block on full/hashed-id inputs, and the
+  workspace agentd's tools/call envelope does the same for every
+  session tool — including array-shaped `session_read` and
+  `session_metadata` scopes that had no object field to carry it, and
+  `send_message`'s declared ORIGIN ref (the id the recipient re-uses
+  to reply). Parity with the REST `Deprecation`/`Sunset` headers.
+- **Degraded rows surface flagged on the external server too**:
+  `session_create`'s registration-degraded window now emits
+  `session_id_deprecated: true` + the address-by-phrase guidance
+  (agentd parity — never a silently-raw harness id).
+- **Emission closure on the agentd `llmsafespaces_*` handlers**: the
+  #1530 duplicated-argument recovery warning, the multiple-busy
+  refusal, did-you-mean clauses, and metadata/compact/send error
+  paths render session ids as phrases whenever the replica knows
+  them (ranking stays keyed on the internal id). The #1530 recovery
+  itself now accepts 3-word phrase targets — phrases are the
+  canonical address and the emission slip follows the form callers
+  see. Board manager tools' declared `sessionId` fallback resolves
+  phrase refs like every other id-taking input.
+- **e2e (the issue's acceptance)**: phrase-targeted `send_message`
+  and `abort_session` proven through the real chain — pinned opencode
+  binary, real origin-injection plugin, real tool dispatch, warm
+  phrase replica — with the harness id asserted absent from results;
+  the full-id window still accepts with the notice.
 
 ## [0.40.1] - 2026-10-21
 
