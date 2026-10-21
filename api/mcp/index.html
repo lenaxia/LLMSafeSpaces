@@ -2982,7 +2982,7 @@ external actors hold no claim tokens.</p>
 <tr>
 <td><code>board_read</code></td>
 <td><em>(none)</em></td>
-<td>Read a board. Default (with <code>project_id</code>): the project's tasks; Optional: <code>stage</code> (one of <code>backlog</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, <code>cancelled</code>). <code>kind=epics</code> (with <code>project_id</code>): the project's epics with derived progress. <code>q</code>: board-wide search (short id exact or title substring; Optional: <code>project_id</code>, <code>epic_id</code>, <code>stage</code>, <code>tags</code> — zero-hit near-misses carry did-you-mean suggestions). <code>health=true</code>: the health snapshot</td>
+<td>Read a board. Default (with <code>project_id</code>): the project's tasks; Optional: <code>stage</code> (one of the five stages <code>backlog</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code> — #1747). <code>kind=epics</code> (with <code>project_id</code>): the project's epics with derived progress. <code>q</code>: board-wide search (short id exact or title substring; Optional: <code>project_id</code>, <code>epic_id</code>, <code>stage</code>, <code>tags</code> — zero-hit near-misses carry did-you-mean suggestions). <code>health=true</code>: the health snapshot</td>
 </tr>
 <tr>
 <td><code>board_create_project</code></td>
@@ -2992,22 +2992,27 @@ external actors hold no claim tokens.</p>
 <tr>
 <td><code>board_create_epic</code></td>
 <td><code>project_id</code>, <code>title</code></td>
-<td>Create a DRAFT epic. Optional: <code>outcome</code> (the steering wheel), <code>priority</code> (<code>P0</code>–<code>P3</code>, default <code>P2</code>), <code>tags</code>, <code>request_id</code></td>
+<td>Create a DRAFT epic. Optional: <code>outcome</code> (the steering wheel), <code>tags</code>, <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_create_task</code></td>
 <td><code>epic_id</code>, <code>title</code></td>
-<td>Create a backlog task; <code>description</code> (markdown) seeds the fresh worker's charter. Optional: <code>priority</code>, <code>tags</code> (may carry one <code>pr:N</code> anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), <code>acceptance_criteria</code> (<code>[{text, met}]</code> — Done = ALL met + evidence), <code>request_id</code></td>
+<td>Create a backlog task; <code>description</code> (markdown) seeds the fresh worker's charter. Optional: <code>tags</code> (may carry one <code>pr:N</code> anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), <code>acceptance_criteria</code> (<code>[{text, met}]</code> — Done = ALL met + evidence), <code>depends_on</code> (prerequisite short ids — edges added in the same write, #1747), <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_update_item</code></td>
 <td><code>item_id</code></td>
-<td>Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep existing values. <strong>Tags differ by kind</strong> (engine rules, REST-identical): on a task, omitted <code>tags</code> keep the set and an explicit <code>[]</code> clears it; on a project/epic, tags are written unconditionally — omitting them clears (send the full set to keep). Project fields: <code>name</code>, <code>target_workspace_id</code>, <code>worker_slots</code>, <code>tags</code>. Epic: <code>title</code>, <code>outcome</code>, <code>priority</code>, <code>tags</code>. Task: <code>title</code>, <code>description</code>, <code>priority</code>, <code>tags</code>, <code>acceptance_criteria</code>, <code>set_criteria_met</code> (0-based index check-off). Optional: <code>request_id</code></td>
+<td>Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep existing values. <strong>Tags differ by kind</strong> (engine rules, REST-identical): on a task, omitted <code>tags</code> keep the set and an explicit <code>[]</code> clears it; on a project/epic, tags are written unconditionally — omitting them clears (send the full set to keep). Project fields: <code>name</code>, <code>target_workspace_id</code>, <code>worker_slots</code>, <code>tags</code>. Epic: <code>title</code>, <code>outcome</code>, <code>tags</code>. Task: <code>title</code>, <code>description</code>, <code>tags</code>, <code>acceptance_criteria</code>, <code>set_criteria_met</code> (0-based index check-off). Optional: <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_health</code></td>
+<td><em>(none)</em></td>
+<td>The board health snapshot (design 0067 §4.8): active leases with expiry, recent reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker slots in use. The same projection <code>board_read</code> with <code>health=true</code> renders</td>
 </tr>
 <tr>
 <td><code>board_move_stage</code></td>
 <td><code>task_id</code>, <code>to_stage</code></td>
-<td>Server-arbitrated stage move. Legal manager targets: <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, and <code>backlog</code> (the pending_input human exits); entering from backlog is claim-only (<code>board_start_task</code>) and <code>cancelled</code> is <code>board_cancel</code>'s terminal — neither is a stage move. <code>done</code> requires all acceptance criteria met + <code>evidence_url</code>. Optional: <code>evidence_url</code>, <code>request_id</code></td>
+<td>Server-arbitrated stage move. Legal manager targets: <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, and <code>backlog</code> (the pending_input human exits); entering from backlog is claim-only (<code>board_start_task</code>) and removal is <code>board_delete</code> — neither is a stage move. Forward moves refuse on a paused task (409 <code>task_paused</code>, #1747). <code>done</code> requires all acceptance criteria met + <code>evidence_url</code>. Optional: <code>evidence_url</code>, <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_start_task</code></td>
@@ -3017,59 +3022,80 @@ external actors hold no claim tokens.</p>
 <tr>
 <td><code>board_epic_activate</code></td>
 <td><code>epic_id</code></td>
-<td>Activate an epic (start feeding work); re-opens a completed epic. Optional: <code>request_id</code></td>
+<td>Activate an epic (start feeding work); re-opens a completed epic. Refuses cross-epic dependencies into inactive epics unless acknowledged (<code>acknowledge_inactive_deps</code>); reports the initial ready set (#1747)</td>
 </tr>
 <tr>
 <td><code>board_epic_pause</code></td>
 <td><code>epic_id</code></td>
-<td>Pause an epic (stop new claims; in-flight leases run on). Optional: <code>request_id</code></td>
+<td>Pause an epic (stop new claims; halt directives cascade to in-flight workers — #1747 pause-must-pause)</td>
 </tr>
 <tr>
 <td><code>board_epic_archive</code></td>
 <td><code>epic_id</code></td>
-<td>Archive an epic (reversible storage). Optional: <code>request_id</code></td>
+<td>Archive an epic (reversible storage)</td>
 </tr>
 <tr>
 <td><code>board_epic_unarchive</code></td>
 <td><code>epic_id</code></td>
-<td>Unarchive an epic (always restores active). Optional: <code>request_id</code></td>
+<td>Unarchive an epic (always restores active)</td>
 </tr>
 <tr>
 <td><code>board_project_archive</code></td>
 <td><code>project_id</code></td>
-<td>Archive a project (stops all claims into it). Optional: <code>request_id</code></td>
+<td>Archive a project (stops all claims into it)</td>
 </tr>
 <tr>
 <td><code>board_project_unarchive</code></td>
 <td><code>project_id</code></td>
-<td>Unarchive a project (restores active). Optional: <code>request_id</code></td>
+<td>Unarchive a project (restores active)</td>
 </tr>
 <tr>
-<td><code>board_cancel</code></td>
+<td><code>board_project_pause</code></td>
+<td><code>project_id</code></td>
+<td>Pause a project — the #1747 scheduling lever: blocks claiming for every task under it, halt cascade to in-flight workers</td>
+</tr>
+<tr>
+<td><code>board_project_resume</code></td>
+<td><code>project_id</code></td>
+<td>Resume a paused project (resume cascade; lapsed leases re-enter the FIFO pool)</td>
+</tr>
+<tr>
+<td><code>board_pause_task</code></td>
+<td><code>task_id</code></td>
+<td>Pause a task (#1747): claims off, forward writes refused (409 <code>task_paused</code>), HALT to the in-flight worker; the lease keeps running (lapse accounting). Optional: <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_resume_task</code></td>
+<td><code>task_id</code></td>
+<td>Resume a paused task (RESUME directive; a lapsed lease re-enters the FIFO pool). Optional: <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_delete</code></td>
 <td><code>item_id</code></td>
-<td>Terminal cancel of an epic or task (<code>epc-</code>/<code>tsk-</code>): revokes lease + token, aborts the worker, cascades per design §4.2. Optional: <code>reason</code>, <code>request_id</code></td>
+<td>Destructive delete of a task or epic (#1747 — cancel is eliminated): the audit keeps a full final-state snapshot per removed row; orphaned dependents are listed and each carries an <code>unblocked_by_delete</code> audit event; no auto-reconnect (<code>reconnect=true</code> on tasks lets orphans inherit upstream edges). <code>force=true</code> required for an epic with claims in-flight. Optional: <code>force</code>, <code>reconnect</code></td>
+</tr>
+<tr>
+<td><code>board_import_plan</code></td>
+<td><code>project_id</code>, <code>epic_title</code></td>
+<td>Materialize a full plan atomically (one epic + tasks + edges, all-or-nothing, #1747). <code>dry_run=true</code> validates and renders the graph + warnings + initial ready set — the plan-approval moment</td>
 </tr>
 <tr>
 <td><code>board_add_dependency</code></td>
 <td><code>task_id</code>, <code>depends_on</code></td>
-<td>Add a structural dependency edge (within a project; cycles rejected with did-you-mean suggestions). Optional: <code>request_id</code></td>
+<td>Add a structural dependency edge (within a workspace — cross-epic allowed, never cross-workspace; cycles rejected with did-you-mean suggestions; duplicates are idempotent no-ops; per-node caps, #1747). Optional: <code>request_id</code></td>
 </tr>
 <tr>
 <td><code>board_remove_dependency</code></td>
 <td><code>task_id</code>, <code>depends_on</code></td>
-<td>Remove a dependency edge. Optional: <code>request_id</code></td>
-</tr>
-<tr>
-<td><code>board_health</code></td>
-<td><em>(none)</em></td>
-<td>The board health snapshot (design 0067 §4.8): active leases with expiry, recent reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker slots in use — the same projection <code>board_read?health=true</code> renders</td>
+<td>Remove a dependency edge</td>
 </tr>
 </tbody>
 </table>
-<p>All lifecycle tools (<code>board_epic_activate</code>/<code>_pause</code>/<code>_archive</code>/<code>_unarchive</code>,
-<code>board_project_archive</code>/<code>_unarchive</code>) accept an Optional <code>request_id</code>
-idempotency key — one id per logical operation, reused on retry (a
-replay renders 200-with-original, never an error).</p>
+<p>Board search and health projections join <code>board_read</code> when the engine
+seams land (#1699); epic listing rides <code>board_get</code> per epic today.
+Ordering is dependency-only FIFO (#1747): no priority field, no
+position field, no ordering tool exists — dependencies alone define the
+ready set and creation order serves it.</p>
 <h2 id="how-mcp-maps-to-workspace-sessions">How MCP maps to workspace sessions<a class="headerlink" href="#how-mcp-maps-to-workspace-sessions" title="Permanent link">&para;</a></h2>
 <p>The MCP server is a stateless adapter over the REST API. There is no MCP-side session state — every tool call translates to one or more HTTP requests against the API:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>MCP client ──► MCP server (stdio/SSE) ──► LLMSafeSpaces API ──► workspace pod (opencode serve :4096)
@@ -3146,7 +3172,7 @@ replay renders 200-with-original, never an error).</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 20, 2026 01:12:43 UTC"><span class="timeago" datetime="2026-10-20T01:12:43+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 20, 2026 01:12:43 UTC">2026-10-20</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 20, 2026 18:01:59 UTC"><span class="timeago" datetime="2026-10-20T18:01:59+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 20, 2026 18:01:59 UTC">2026-10-20</span>
   </span>
 
     
