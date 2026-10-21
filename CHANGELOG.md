@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
+
+- **The delivery boundary now refuses literal placeholder tokens.** The
+  mid-write emission-corruption mode (observed across worker sessions
+  and the orchestrator) replaces a drafted body with a placeholder
+  token as the call fires — the sender rarely notices, and every such
+  delivery costs the recipient a turn to diagnose. `send_message`
+  validates BEFORE delivery and rejects the narrow exact-match set
+  (trimmed, case-insensitive): `placeholder`, `placeholder-removed`,
+  `<placeholder>`, `todo`, `tbd`, `asdf`, `qwerty` — with the
+  re-compose guidance in the error. NOT a length heuristic: short
+  legitimate payloads (`ok`, `x`), probe traffic (`test`, `ping`), and
+  sentences merely CONTAINING a placeholder word pass untouched
+  (pinned). The tool description teaches the same contract: send the
+  complete intended content; re-compose if emission corruption ate the
+  draft.
 
 ## [0.40.0] - 2026-10-21
 
