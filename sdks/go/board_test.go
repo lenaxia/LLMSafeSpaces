@@ -225,13 +225,13 @@ func TestBoard_StageFilterOnList(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"tasks":[{"id":"t1","short_id":"tsk-cccc3333","stage":"backlog"}]}`))
 	})
-	tasks, err := c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "backlog", "")
+	tasks, err := c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "backlog")
 	if err != nil || len(tasks) != 1 || tasks[0].Stage != BoardStageBacklog {
 		t.Fatalf("list tasks: %v %+v", err, tasks)
 	}
 
 	// #1813: the failed-state filter threads and the overlay decodes.
-	tasks, err = c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "", "true")
+	tasks, err = c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "", BoardListOptions{Failed: "true"})
 	if err != nil || len(tasks) != 1 || !tasks[0].LastAttemptFailed || tasks[0].FailureCount != 2 {
 		t.Fatalf("failed-filter list: %v %+v", err, tasks)
 	}

@@ -207,9 +207,14 @@ export const boardApi = {
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/archive`),
   unarchiveProject: (idOrShort: string): Promise<BoardProject> =>
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/unarchive`),
-  listProjectTasks: (idOrShort: string, stage?: string): Promise<BoardTask[]> => {
-    const q = stage ? `?stage=${encodeURIComponent(stage)}` : "";
-    return api.get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q}`).then((r) => r.tasks ?? []);
+  listProjectTasks: (idOrShort: string, stage?: string, opts?: { failed?: boolean }): Promise<BoardTask[]> => {
+    const params = new URLSearchParams();
+    if (stage) params.set("stage", stage);
+    if (opts?.failed !== undefined) params.set("failed", String(opts.failed));
+    const q = params.toString();
+    return api
+      .get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q ? `?${q}` : ""}`)
+      .then((r) => r.tasks ?? []);
   },
 
   // /me/projects/:id/epics + /me/epics

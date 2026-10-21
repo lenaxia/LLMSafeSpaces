@@ -20,9 +20,13 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class BoardServiceTest {
 
+    private final java.util.concurrent.atomic.AtomicReference<String> lastPath =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
     private HttpServer startMockServer(int statusCode, String responseBody) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/api/v1/", exchange -> {
+            lastPath.set(exchange.getRequestURI().toString());
             exchange.sendResponseHeaders(statusCode, responseBody.length());
             exchange.getResponseBody().write(responseBody.getBytes());
             exchange.close();
@@ -44,6 +48,25 @@ class BoardServiceTest {
             var proj = client.board.createProject(Map.of("name", "B", "targetWorkspaceId", "ws-1"));
             assertEquals("prj-aaaa1111", proj.get("short_id"));
             assertEquals("active", proj.get("status"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void boardListProjectTasksFailedFilter() throws Exception {
+        String json = """
+            {"tasks":[{"id":"t1","last_attempt_failed":true,"failure_count":2}]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            List<Map<String, Object>> tasks = client.board.listProjectTasks("prj-aaaa1111", null, Boolean.TRUE);
+            assertEquals(1, tasks.size());
+            assertEquals(Boolean.TRUE, tasks.get(0).get("last_attempt_failed"));
+            assertEquals(2.0, tasks.get(0).get("failure_count"));
+            String path = lastPath.get();
+            assertTrue(path != null && path.contains("failed=true"), "the failed filter rides the query: " + path);
         } finally {
             server.stop(0);
         }

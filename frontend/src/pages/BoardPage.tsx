@@ -62,6 +62,9 @@ export function BoardPage() {
   const [focusEpic, setFocusEpic] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  // #1813: the failed-state overlay filter (client-side, the tagFilter
+  // pattern — the server ?failed= param serves programmatic callers).
+  const [failedOnly, setFailedOnly] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(true);
 
   // --- Data ---------------------------------------------------------------------
@@ -166,6 +169,7 @@ export function BoardPage() {
     return tasks.filter((t) => {
       if (focusEpic !== "all" && t.epic_id !== focusEpic) return false;
       if (tagFilter && !t.tags.includes(tagFilter)) return false;
+      if (failedOnly && !t.last_attempt_failed) return false;
       if (q) {
         return (
           t.short_id.toLowerCase().includes(q) ||
@@ -175,7 +179,7 @@ export function BoardPage() {
       }
       return true;
     });
-  }, [tasks, focusEpic, tagFilter, search]);
+  }, [tasks, focusEpic, tagFilter, failedOnly, search]);
 
   // --- Optimistic drag (§4.6: optimistic, server-arbitrated snap-back) -----------
   const [optimistic, setOptimistic] = useState<OptimisticMap>({});
@@ -476,6 +480,18 @@ export function BoardPage() {
               {e.title}
             </button>
           ))}
+          <span className="mx-1 text-border">|</span>
+          <button
+            onClick={() => setFailedOnly(!failedOnly)}
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+              failedOnly ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground hover:bg-accent",
+            )}
+            data-testid="failed-filter-toggle"
+            title="#1813: show only tasks whose last worker attempt failed (the overlay — never a stage)"
+          >
+            FAILED
+          </button>
           {allTags.length > 0 && <span className="mx-1 text-border">|</span>}
           {allTags.map((tag) => (
             <button

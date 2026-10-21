@@ -253,9 +253,20 @@ func (s *BoardService) UnarchiveProject(ctx context.Context, id string, opts ...
 	return &p, nil
 }
 
-// ListProjectTasks lists a project's tasks; stage and failed are
-// optional filters (failed: "true"/"false" — the #1813 overlay).
-func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage, failed string) ([]BoardTask, error) {
+// BoardListOptions carries the optional #1813 failed-state filter
+// (variadic so the pre-#1813 three-argument call sites keep compiling —
+// the migration path for the signature change).
+type BoardListOptions struct {
+	Failed string // "true" | "false" | "" (no filter)
+}
+
+// ListProjectTasks lists a project's tasks; stage and the optional
+// failed-state overlay filter (#1813) ride the query.
+func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage string, opts ...BoardListOptions) ([]BoardTask, error) {
+	var failed string
+	for _, o := range opts {
+		failed = o.Failed
+	}
 	path := fmt.Sprintf("/me/projects/%s/tasks", projectID)
 	query := url.Values{}
 	if stage != "" {

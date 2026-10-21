@@ -17,6 +17,7 @@ package board_test
 
 import (
 	"context"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -107,21 +108,47 @@ func (s *BoardSuite) TestKill_1813_ConsecutiveAccumulateAndResetOnSuccess() {
 	s.Equal(0, done.FailureCount)
 }
 
-// KILL-TEST 1813-d: exhaustion escalation (the attempts cap) marks the
-// overlay on the pending_input row — the human sees WHY it escalated.
+// KILL-TEST 1813-d (r8 rework — the review's red-first pin for the
+// claim-path escalation write): drive attempts to the cap WITHOUT any
+// failure (each grant SUCCEEDS: claim → in_review, the bounce re-claim
+// never re-increments… so alternate claim → in_review → manager bounce
+// → done-attempts reset? No: in_review→done resets. The clean path
+// that accumulates attempts with the overlay CLEAR is claim →
+// in_review → (worker keeps it live)… the review's own recipe: claim →
+// in_review (success, overlay+count stay 0, attempts preserved) →
+// bounce (re-claim, no increment) → throttle (requeue, rollback).
+// Attempts only move on grants, so the recipe is repeated
+// claim→in_review→bounce→throttle cycles — the throttle requeue puts
+// the row back in backlog claimable after cooldown clear.
 func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 	ws := s.seedWorkspace()
-	p := s.seedProject(ws, 2) // cap-friendly
+	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
 	t1 := s.seedTask(e, "exhausted", nil, false)
 
 	for i := 0; i < s.cfg.AttemptsCap; i++ {
-		s.claimOrFail(ws)
-		s.expireLease(t1.ID)
-		s.sweep()
+		c := s.claimOrFail(ws)
+		s.Equal(t1.ID, c.TaskID)
+		_, err := s.svc.MoveStage(context.Background(), s.agent("sess-"+c.ShortID, c.ClaimToken), t1.ID, "", board.StageInReview, "", "")
+		s.Require().NoError(err, "a SUCCESSFUL turn (overlay stays clear, attempts preserved)")
+		// Manager bounce re-claims without incrementing; then a 429 on
+		// that token requeues (rollback — never an attempt).
+		_, err = s.svc.MoveStage(context.Background(), s.owner(), t1.ID, "", board.StageInProgress, "", "")
+		s.Require().NoError(err)
+		bounced := s.reloadTask(t1.ID)
+		s.Require().NotEmpty(bounced.ClaimToken, "the bounce minted a re-claim token")
+		_, err = s.svc.ReportThrottle(context.Background(), s.agent("sess-"+bounced.ShortID, bounced.ClaimToken), t1.ID, "", time.Minute, "")
+		s.Require().NoError(err)
 		s.clearCooldowns(p, t1.ID)
 	}
 
+	pre := s.reloadTask(t1.ID)
+	s.Equal(s.cfg.AttemptsCap, pre.Attempts, "the recipe reached the cap")
+	s.False(pre.LastAttemptFailed, "precondition: NO failure ever happened — the overlay is clear")
+	s.Equal(0, pre.FailureCount)
+
+	// The (N+1)th claim: claimOnce's escalation write is the ONLY thing
+	// that sets the overlay on this path (no rc1 reclaim ran).
 	c, err := s.svc.ClaimNext(context.Background(), "w2", ws)
 	s.Require().NoError(err)
 	s.Require().NotNil(c.Task)
@@ -129,8 +156,26 @@ func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	s.True(after.LastAttemptFailed, "escalation carries the failure overlay")
-	s.GreaterOrEqual(after.FailureCount, s.cfg.AttemptsCap, "the cap's failures are counted")
+	s.True(after.LastAttemptFailed, "the ESCALATION write carries the overlay (this pin goes red without a8dc072d's SET)")
+	s.Require().NotNil(after.LastFailureAt)
+	// r8 semantics: a withheld grant is not an attempt — the count stays
+	// the CONSECUTIVE-failures count (zero here: every attempt succeeded).
+	s.Equal(0, after.FailureCount, "escalation never fabricates failure_count (attempts included successes)")
+
+	// The escalate event carries the marker + timestamp symmetrically.
+	var evtOK bool
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT payload->>'last_attempt_failed', payload->>'last_failure_at' IS NOT NULL
+		 FROM board_events WHERE action='escalate' AND item_id=$1`, t1.ID)
+	s.Require().NoError(err)
+	for rows.Next() {
+		var marker string
+		var hasTS bool
+		s.Require().NoError(rows.Scan(&marker, &hasTS))
+		evtOK = marker == "true" && hasTS
+	}
+	rows.Close()
+	s.True(evtOK, "the escalate event payload carries last_attempt_failed + last_failure_at")
 }
 
 // KILL-TEST 1813-e: the pending_input human exit clears the overlay
@@ -231,4 +276,60 @@ func (s *BoardSuite) TestKill_1813_ListTasksFailedFilter() {
 	s.Require().NoError(err)
 	s.Len(stageAndFailed, 1)
 	s.Equal(flappy.ID, stageAndFailed[0].ID, "stage+failed compose")
+}
+
+// KILL-TEST 1813-h (r8): TaskStart's at-cap escalation carries the
+// overlay from ITS OWN write (SQL-seeded cap + clear overlay — no
+// reclaim involved), and the event payload matches.
+func (s *BoardSuite) TestKill_1813_TaskStartEscalationMarksOverlay() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "manual", nil, false)
+
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE tasks SET attempts=$2 WHERE id=$1`, t1.ID, s.cfg.AttemptsCap)
+	s.Require().NoError(err)
+	s.False(s.reloadTask(t1.ID).LastAttemptFailed, "precondition: overlay clear")
+
+	c, err := s.svc.TaskStart(context.Background(), s.owner(), t1.ID, "", "")
+	s.Require().NoError(err)
+	s.Require().NotNil(c.Task)
+	s.True(c.Escalated, "TaskStart at cap escalates")
+
+	after := s.reloadTask(t1.ID)
+	s.Equal(board.StagePendingInput, after.Stage)
+	s.True(after.LastAttemptFailed, "TaskStart's escalation write sets the overlay")
+	s.Require().NotNil(after.LastFailureAt)
+	s.Equal(0, after.FailureCount, "no fabricated count")
+}
+
+// KILL-TEST 1813-i (r8): the pending_input human exit's RE-CLAIM arm
+// (identity present — worker-origin pending, assignee retained) clears
+// the overlay; 1813-e covers only the backlog branch (reclaim NULLs the
+// assignee, forcing that arm).
+func (s *BoardSuite) TestKill_1813_PendingReclaimExitClearsOverlay() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "held", nil, false)
+
+	// Worker-origin pending_input: the claim's identity is retained
+	// (stage predicate suspends the lease clock).
+	c := s.claimOrFail(ws)
+	_, err := s.svc.MoveStage(context.Background(), s.agent("sess-"+c.ShortID, c.ClaimToken), t1.ID, "", board.StagePendingInput, "", "")
+	s.Require().NoError(err)
+	// Seed the overlay (the escalation composition shape).
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET last_attempt_failed=true, failure_count=1 WHERE id=$1`, t1.ID)
+	s.Require().NoError(err)
+
+	// The human exit with identity present → the re-claim arm.
+	_, err = s.svc.MoveStage(context.Background(), s.owner(), t1.ID, "", board.StageInProgress, "", "")
+	s.Require().NoError(err)
+
+	after := s.reloadTask(t1.ID)
+	s.Equal(board.StageInProgress, after.Stage)
+	s.False(after.LastAttemptFailed, "the re-claim arm clears the overlay with the attempts reset")
+	s.Equal(0, after.FailureCount)
 }
