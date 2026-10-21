@@ -6,6 +6,9 @@ import {
   rekeySessionMap,
   resetSessionAliases,
   resolveSessionAlias,
+  sessionAliasRekeyCount,
+  sessionAliasVersion,
+  subscribeSessionAliases,
   translateSessionIds,
 } from "./sessionAliases";
 
@@ -110,5 +113,53 @@ describe("sessionAliases (#1817 heal-window seam)", () => {
     // Oldest entries evicted; the newest still resolve.
     expect(resolveSessionAlias(WS, "harness-0")).toBe("harness-0");
     expect(resolveSessionAlias(WS, "harness-599")).toBe("phrase-599");
+  });
+
+  it("bounds the number of workspaces, evicting the oldest", () => {
+    for (let i = 0; i < 1200; i++) {
+      expect(learnSessionAlias(`ws-${i}`, `phrase-${i}`, `harness-${i}`)).toBe(true);
+    }
+    expect(hasSessionAliases("ws-0")).toBe(false);
+    expect(hasSessionAliases("ws-1199")).toBe(true);
+  });
+
+  it("reports whether a pair changed and bumps the observable version", () => {
+    const v0 = sessionAliasVersion();
+    expect(learnSessionAlias(WS, PHRASE, HARNESS)).toBe(true);
+    const v1 = sessionAliasVersion();
+    expect(v1).toBeGreaterThan(v0);
+
+    // Re-learning the same pair is a no-op: no version bump.
+    expect(learnSessionAlias(WS, PHRASE, HARNESS)).toBe(false);
+    expect(sessionAliasVersion()).toBe(v1);
+    expect(learnSessionAlias(WS, PHRASE, PHRASE)).toBe(false);
+    expect(learnSessionAlias(WS, "", HARNESS)).toBe(false);
+  });
+
+  it("notifies subscribers once per learned change, per workspace", () => {
+    const seen: string[] = [];
+    const unsubscribe = subscribeSessionAliases((ws) => seen.push(ws));
+    expect(learnSessionAlias(WS, PHRASE, HARNESS)).toBe(true);
+    expect(learnSessionAlias(WS, PHRASE, HARNESS)).toBe(false);
+    expect(learnSessionAlias("ws-2", PHRASE, HARNESS)).toBe(true);
+    unsubscribe();
+    learnSessionAlias(WS, "another-phrase-2", HARNESS);
+    expect(seen).toEqual([WS, "ws-2"]);
+  });
+
+  it("rejects overlong, whitespace, and control-character ids", () => {
+    const overlong = "x".repeat(300);
+    expect(learnSessionAlias(WS, overlong, HARNESS)).toBe(false);
+    expect(learnSessionAlias(WS, PHRASE, overlong)).toBe(false);
+    expect(learnSessionAlias(WS, "has space", HARNESS)).toBe(false);
+    expect(learnSessionAlias(WS, PHRASE, "har\nness")).toBe(false);
+    expect(learnSessionAlias("bad ws", PHRASE, HARNESS)).toBe(false);
+    expect(hasSessionAliases(WS)).toBe(false);
+  });
+
+  it("counts re-key passes (the hot-path assertion hook)", () => {
+    const before = sessionAliasRekeyCount();
+    rekeySessionMap(WS, new Map());
+    expect(sessionAliasRekeyCount()).toBe(before + 1);
   });
 });

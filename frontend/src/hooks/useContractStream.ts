@@ -7,7 +7,12 @@ import { getEnv } from "../env";
 import { createSSEConnection, type SSEConnection } from "../lib/sseConnection";
 import { wsLog } from "../lib/wsLog";
 import { applySequenced, applySnapshot, cloneSessionSnapshot, newFold, type SessionFold } from "../session/fold";
-import { rekeySessionMap, translateSessionIds } from "../session/sessionAliases";
+import {
+  rekeySessionMap,
+  sessionAliasVersion,
+  subscribeSessionAliases,
+  translateSessionIds,
+} from "../session/sessionAliases";
 
 const MIN_RECONNECT_MS = 2_000;
 const MAX_RECONNECT_MS = 30_000;
@@ -39,12 +44,14 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
   optionsRef.current = options;
 
   const foldRef = useRef<SessionFold>(newFold());
+  const aliasVersionRef = useRef(-1);
   const [state, setState] = useState<ContractStreamState>(() => projectState(foldRef.current));
 
   useEffect(() => {
     if (!workspaceId) return;
 
     foldRef.current = newFold();
+    aliasVersionRef.current = -1;
     setState(projectState(foldRef.current));
 
     let hasConnectedOnce = false;
@@ -54,6 +61,26 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
     const url = `${apiBaseUrl}/workspaces/${workspaceId}/contract-events`;
 
     const publish = () => setState(projectState(foldRef.current));
+
+    // #1817: a pair learned on either surface bumps the module version.
+    // Re-key only when it moved — PART_DELTA and other alias-free frames
+    // are the hot path and must not walk every session.
+    const rekeyIfAliasesChanged = (): boolean => {
+      const version = sessionAliasVersion();
+      if (version === aliasVersionRef.current) return false;
+      aliasVersionRef.current = version;
+      return rekeySessionMap(workspaceId, foldRef.current.sessions);
+    };
+
+    const unsubscribeAliases = subscribeSessionAliases((changedWorkspace) => {
+      if (changedWorkspace !== workspaceId) {
+        // Consume unrelated workspace changes so the next frame here does
+        // not pay for a re-key that cannot move any of this fold's rows.
+        aliasVersionRef.current = sessionAliasVersion();
+        return;
+      }
+      if (rekeyIfAliasesChanged()) publish();
+    });
 
     conn.current = createSSEConnection({
       url,
@@ -83,7 +110,7 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
               if (ids.sessionId) s.sessionId = ids.sessionId;
               if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
             }
-            rekeySessionMap(workspaceId, foldRef.current.sessions);
+            rekeyIfAliasesChanged();
             applySnapshot(foldRef.current, frame.frame.value);
             seeded = true;
             publish();
@@ -99,6 +126,10 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
             }
             const seqed = frame.frame.value;
             if (seqed.event) {
+              // #1817: learn/translate ONLY applied frames. A stale or
+              // duplicate frame (seq ≤ fold.seq) is discarded first, so it
+              // cannot overwrite a newer harness→phrase mapping.
+              if (seqed.seq <= foldRef.current.seq) return;
               // #1817 heal window: same normalization for live events —
               // a harness-keyed legacy frame joins the phrase-keyed fold.
               const ids = translateSessionIds(
@@ -109,7 +140,7 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
               if (ids.sessionId) seqed.event.sessionId = ids.sessionId;
               if (ids.internalSessionId) seqed.event.internalSessionId = ids.internalSessionId;
             }
-            rekeySessionMap(workspaceId, foldRef.current.sessions);
+            rekeyIfAliasesChanged();
             if (applySequenced(foldRef.current, seqed)) {
               if (seqed.event?.type !== EventType.PART_DELTA) publish();
               optionsRef.current.onEvent?.(seqed.event!, seqed.seq);
@@ -142,7 +173,10 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
       maxReconnectMs: MAX_RECONNECT_MS,
     });
 
-    return () => conn.current!.destroy();
+    return () => {
+      unsubscribeAliases();
+      conn.current!.destroy();
+    };
   }, [workspaceId]);
 
   return state;

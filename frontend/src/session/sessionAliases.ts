@@ -24,31 +24,95 @@
 //
 // The seam never invents a mapping: absent an additive id it is the identity,
 // which is exactly the pre-fix behavior (never worse).
+//
+// Scope limitation: learning happens wherever a translator observes the
+// pair. The contract stream is mounted by ChatPage only; sidebar-only pages
+// run just the user stream. With a pre-fix API (harness-keyed user events,
+// no additive id) and a post-fix agentd (phrase-keyed contract rows that
+// carry internalSessionId), a sidebar-only page has no source for the pair,
+// so it cannot heal until a chat view has been opened once in this tab (the
+// map is module-level and outlives the page). Healing sidebar-only pages
+// requires hoisting the single contract-stream connection to the shell —
+// not a second SSE connection — which is an architectural change outside
+// this seam.
 
 const MAX_ALIASES_PER_WORKSPACE = 512;
+const MAX_WORKSPACES = 1024;
+const MAX_SESSION_ID_LENGTH = 256;
 
 /** workspaceId → (harnessId → phraseId). Insertion-ordered for bounded
  * eviction; per-workspace so one workspace's ids can never resolve in
  * another. */
 const aliasesByWorkspace = new Map<string, Map<string, string>>();
 
+/** Bumped on every learned/overwritten/evicted pair. Consumers compare it
+ * against their last re-key to avoid O(all sessions) work on every frame. */
+let aliasVersion = 0;
+let rekeyCount = 0;
+type SessionAliasListener = (workspaceId: string) => void;
+const aliasListeners = new Set<SessionAliasListener>();
+
+/** Monotonic generation of the alias map (test/observability hook). */
+export function sessionAliasVersion(): number {
+  return aliasVersion;
+}
+
+/** Subscribes to alias changes; receives the workspace that changed. The
+ * returned function unsubscribes. Fired synchronously so a consumer can
+ * re-key its own projection without waiting for another wire frame. */
+export function subscribeSessionAliases(listener: SessionAliasListener): () => void {
+  aliasListeners.add(listener);
+  return () => {
+    aliasListeners.delete(listener);
+  };
+}
+
+/** Test/introspection hook: number of full re-key passes run. */
+export function sessionAliasRekeyCount(): number {
+  return rekeyCount;
+}
+
+/** Rejects ids that cannot be a session/workspace id: empty, overlong, or
+ * whitespace/control characters (frame fields are untrusted input). */
+function isBoundedId(value: string | undefined): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_SESSION_ID_LENGTH) {
+    return false;
+  }
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (/\s/.test(ch) || code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
 /** Teaches the seam one additive pair (wire = phrase, internal = harness).
- * Equal or empty ids teach nothing. The additive field is optional on every
- * emitter, so absence is normal, never an error. */
+ * Returns true when the map changed. Equal, empty, overlong, or malformed
+ * ids teach nothing. The additive field is optional on every emitter, so
+ * absence is normal, never an error. */
 export function learnSessionAlias(
   workspaceId: string | undefined,
   wireSessionId: string | undefined,
   internalSessionId: string | undefined,
-): void {
-  if (!workspaceId || !wireSessionId || !internalSessionId) return;
-  if (wireSessionId === internalSessionId) return;
+): boolean {
+  if (
+    !isBoundedId(workspaceId) ||
+    !isBoundedId(wireSessionId) ||
+    !isBoundedId(internalSessionId)
+  ) {
+    return false;
+  }
+  if (wireSessionId === internalSessionId) return false;
 
   let table = aliasesByWorkspace.get(workspaceId);
   if (!table) {
+    if (aliasesByWorkspace.size >= MAX_WORKSPACES) {
+      const oldestWorkspace = aliasesByWorkspace.keys().next().value;
+      if (oldestWorkspace !== undefined) aliasesByWorkspace.delete(oldestWorkspace);
+    }
     table = new Map();
     aliasesByWorkspace.set(workspaceId, table);
   }
-  if (table.get(internalSessionId) === wireSessionId) return;
+  if (table.get(internalSessionId) === wireSessionId) return false;
 
   table.delete(internalSessionId);
   table.set(internalSessionId, wireSessionId);
@@ -56,6 +120,10 @@ export function learnSessionAlias(
     const oldest = table.keys().next().value;
     if (oldest !== undefined) table.delete(oldest);
   }
+
+  aliasVersion++;
+  for (const listener of Array.from(aliasListeners)) listener(workspaceId);
+  return true;
 }
 
 /** Resolves a harness id to its phrase; unknown ids pass through. */
@@ -98,9 +166,11 @@ export function translateSessionIds(
   return { sessionId: wireSessionId, internalSessionId };
 }
 
-/** Test hook: clears the process-wide alias map. */
+/** Test hook: clears the process-wide alias map and its observers. The
+ * version/counter stay monotonic (they only move forward for the process). */
 export function resetSessionAliases(): void {
   aliasesByWorkspace.clear();
+  aliasListeners.clear();
 }
 
 /** Reads the additive harness id off a user-stream event payload (both the
@@ -143,6 +213,7 @@ export function rekeySessionMap(
   workspaceId: string | undefined,
   sessions: Map<string, AliasableSession>,
 ): boolean {
+  rekeyCount++;
   let changed = false;
   for (const [key, snap] of Array.from(sessions.entries())) {
     if (!key) continue;

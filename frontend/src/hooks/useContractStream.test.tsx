@@ -6,7 +6,13 @@
 // for a fresh stamped snapshot.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import {
+  learnSessionAlias,
+  resetSessionAliases,
+  resolveSessionAlias,
+  sessionAliasRekeyCount,
+} from "../session/sessionAliases";
 import { useContractStream } from "./useContractStream";
 
 function sseBody(obj: unknown): string {
@@ -50,6 +56,7 @@ describe("useContractStream", () => {
   let consoleWarnRestore: typeof console.warn;
 
   beforeEach(() => {
+    resetSessionAliases();
     fetchRestore = globalThis.fetch;
     consoleWarnRestore = console.warn;
     console.warn = vi.fn();
@@ -178,5 +185,92 @@ describe("useContractStream", () => {
     const { result } = renderHook(() => useContractStream("ws1", { onEvent }));
     await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
     expect(result.current.seq).toBe(5n);
+  });
+
+  // #1817: late-learned aliases must re-key the fold WITHOUT waiting for
+  // the next contract frame. The pair arrives on the OTHER surface (the
+  // user stream in SessionActivityProvider); the already-folded legacy row
+  // is harness-keyed.
+  it("re-keys a harness-keyed fold row immediately when a pair is learned from the other surface", async () => {
+    const HARNESS = "ses_late_harness";
+    const PHRASE = "late-phrase-7";
+    const mock = makeMockFetch([
+      snapshotFrame(4, [{ sessionId: HARNESS, status: "SESSION_STATUS_IDLE" }]),
+    ]);
+    globalThis.fetch = mock;
+    const { result } = renderHook(() => useContractStream("ws-late", {}));
+    await waitFor(() => expect(result.current.sessions.has(HARNESS)).toBe(true));
+
+    // The contract reader is parked after the snapshot — no further frame
+    // is delivered. Learning happens on the user stream.
+    act(() => {
+      expect(learnSessionAlias("ws-late", PHRASE, HARNESS)).toBe(true);
+    });
+
+    await waitFor(() => expect(result.current.sessions.has(PHRASE)).toBe(true));
+    expect(result.current.sessions.has(HARNESS)).toBe(false);
+    expect(result.current.sessions.get(PHRASE)?.internalSessionId).toBe(HARNESS);
+  });
+
+  // #1817 hot path: PART_DELTA frames carry no alias change, so the O(all
+  // sessions) re-key must not run on them.
+  it("does not re-key on PART_DELTA when no alias version changed", async () => {
+    const PHRASE = "quiet-mountain-9";
+    const HARNESS = "ses_hot_harness";
+    const mock = makeMockFetch([
+      snapshotFrame(5, [{
+        sessionId: PHRASE,
+        internalSessionId: HARNESS,
+        status: "SESSION_STATUS_BUSY",
+        inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "a" }],
+      }]),
+      eventFrame(6, { type: "EVENT_TYPE_PART_DELTA", sessionId: PHRASE, internalSessionId: HARNESS, partId: "p1", delta: "b" }),
+    ]);
+    globalThis.fetch = mock;
+    let rekeysAtSnapshot = -1;
+    const onSnapshot = vi.fn(() => {
+      rekeysAtSnapshot = sessionAliasRekeyCount();
+    });
+    const onEvent = vi.fn();
+    renderHook(() => useContractStream("ws-hot", { onSnapshot, onEvent }));
+
+    await waitFor(() => expect(onSnapshot).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
+    expect(rekeysAtSnapshot).toBeGreaterThanOrEqual(0);
+    expect(sessionAliasRekeyCount()).toBe(rekeysAtSnapshot);
+  });
+
+  // #1817: only APPLIED frames may teach the alias map. A stale/duplicate
+  // frame (seq <= fold.seq) is discarded before translation, so it cannot
+  // overwrite the current harness→phrase mapping.
+  it("does not learn aliases from a stale duplicate frame", async () => {
+    const PHRASE_NEW = "fresh-phrase-1";
+    const PHRASE_OLD = "stale-phrase-0";
+    const HARNESS = "ses_stale_harness";
+    const mock = makeMockFetch([
+      snapshotFrame(10, [{ sessionId: PHRASE_NEW, internalSessionId: HARNESS, status: "SESSION_STATUS_IDLE" }]),
+      // Stale duplicate carrying an OLD phrase for the same harness. If
+      // learned, it would overwrite the fresh mapping.
+      eventFrame(9, {
+        type: "EVENT_TYPE_SESSION_STATUS",
+        sessionId: PHRASE_OLD,
+        internalSessionId: HARNESS,
+        status: "SESSION_STATUS_BUSY",
+      }),
+      // Applied frame without an additive pair — does not re-teach the map,
+      // so the assertion below reflects what the stale frame did.
+      eventFrame(11, {
+        type: "EVENT_TYPE_SESSION_STATUS",
+        sessionId: PHRASE_NEW,
+        status: "SESSION_STATUS_BUSY",
+      }),
+    ]);
+    globalThis.fetch = mock;
+    const onEvent = vi.fn();
+    renderHook(() => useContractStream("ws-stale", { onEvent }));
+
+    await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
+    expect(onEvent.mock.calls[0]?.[1]).toBe(11n);
+    expect(resolveSessionAlias("ws-stale", HARNESS)).toBe(PHRASE_NEW);
   });
 });
