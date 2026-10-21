@@ -76,10 +76,10 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
        contains(fromJson('["agentic-actor-coder[bot]"]'), github.event.comment.user.login))
-    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.18
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.20
     secrets: inherit
     with:
-      version: v0.2.18
+      version: v0.2.20
       project_name: LLMSafeSpaces
       # Trusted app-bot commenters (ai-workflows #51): without this the CLI
       # assert refuses bot /review comments pre-LLM even though the admission
