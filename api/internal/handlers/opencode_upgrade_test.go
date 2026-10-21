@@ -37,8 +37,9 @@ type mockSessionIndex struct {
 	failList      bool              // ListByWorkspace returns an error when set
 	rebuiltCounts map[string]int    // key: "workspaceID/sessionID" (#1481 count rebuilds)
 	rows          map[string][]types.SessionListItem
-	archived      map[string]bool // key: "workspaceID/sessionID" (#1627)
-	failArchived  bool            // IsArchived returns an error when set (#1627 fail-open pin)
+	archived      map[string]bool   // key: "workspaceID/sessionID" (#1627)
+	failArchived  bool              // IsArchived returns an error when set (#1627 fail-open pin)
+	phrases       map[string]string // key: "workspaceID/sessionID" → the minted phrase (#1817 dual-id fixtures)
 }
 
 func newMockSessionIndex() *mockSessionIndex {
@@ -47,6 +48,7 @@ func newMockSessionIndex() *mockSessionIndex {
 		contextUsed: make(map[string]*int64),
 		deletedTree: make(map[string]bool),
 		rows:        make(map[string][]types.SessionListItem),
+		phrases:     map[string]string{},
 	}
 }
 
@@ -218,7 +220,11 @@ func TestBridge_NilSessionIndex_NoPanic(t *testing.T) {
 	})
 }
 
-// Register: design 0066 registration seam — no-op stub for this fixture.
+// Register: design 0066 registration seam — returns a seeded phrase
+// when the fixture planted one (the #1817 dual-id contract), else "".
 func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
-	return ""
+	if m.phrases == nil {
+		return ""
+	}
+	return m.phrases[workspaceID+"/"+sessionID]
 }
