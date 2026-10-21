@@ -629,6 +629,45 @@ func (h *TriggersHandler) validateUpdateScriptConflict(c *gin.Context, existing 
 	return true
 }
 
+// validateUpdateTargets carries the #1442 targetless guard and the
+// #1519/#1522 parent-id audit on the UPDATE view. Extracted verbatim
+// from update() — the function exceeded the repo's gocyclo ceiling.
+//
+// #1442: the post-patch row must keep an execution target. The 0059
+// V-matrix already rejected opted-in de-targeting patches (V1, the
+// specific message); anything still targetless here is a plain
+// de-targeting patch — the user-API route to a zombie tick, now a 400.
+//
+// #1519/#1522: a PATCHED target must resolve — nonexistent
+// workflowId/workspaceId patches previously reached the FK as an
+// opaque 500 ("failed to update trigger"). The workflowId half is
+// answered by the #1519 merged-view check inside the caller's mapping
+// block (every workflowId patch touches mapping, so that check always
+// runs first and additionally surfaces stored ghosts on de-opt
+// patches); this arm carries the workspaceId half via the existencer.
+// STORED targets outside mapping-touching patches stay FK-anchored and
+// untouched (a legacy row with a cross-owner workflowId remains
+// patchable for mitigation — the #1440 loud-fire zombie tolerates
+// enabled:false).
+func (h *TriggersHandler) validateUpdateTargets(c *gin.Context, req *types.UpdateTriggerRequest, targetlessAfterPatch bool) bool {
+	if targetlessAfterPatch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
+		return false
+	}
+	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return false
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return false
+		}
+	}
+	return true
+}
+
 // validateUpdateMapping runs the 0059 V7 wiring/mapping rules for
 // patches that touch the mapping surface. Extracted from update() —
 // the function exceeded the repo's gocyclo ceiling.
@@ -856,36 +895,8 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	// #1442: the post-patch row must keep an execution target. The 0059
-	// V-matrix above already rejected opted-in de-targeting patches (V1,
-	// the specific message); anything still targetless here is a plain
-	// de-targeting patch — the user-API route to a zombie tick, now a 400.
-	if targetlessAfterPatch {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
+	if !h.validateUpdateTargets(c, &req, targetlessAfterPatch) {
 		return
-	}
-
-	// The parent-id audit on the UPDATE view (#1519/#1522): a PATCHED
-	// target must resolve — nonexistent workflowId/workspaceId patches
-	// previously reached the FK as an opaque 500 ("failed to update
-	// trigger"). The workflowId half is answered by the #1519 merged-view
-	// check inside the mapping block above (every workflowId patch
-	// touches mapping, so that check always runs first and additionally
-	// surfaces stored ghosts on de-opt patches); this arm carries the
-	// workspaceId half via the existencer. STORED targets outside
-	// mapping-touching patches stay FK-anchored and untouched (a legacy
-	// row with a cross-owner workflowId remains patchable for mitigation
-	// — the #1440 loud-fire zombie tolerates enabled:false).
-	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
-		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
-			return
-		}
-		if !exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
-			return
-		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
