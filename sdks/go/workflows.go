@@ -89,9 +89,11 @@ type Trigger struct {
 // CreateTriggerReq is the body for creating a trigger.
 //
 // Worked example (#1812 gate) — nightly digest, LLM called only when
-// work accumulated:
+// work accumulated (package llmsafespaces — alias as you like):
 //
-//	req := workflows.CreateTriggerReq{
+//	import llm "github.com/lenaxia/llmsafespaces/sdk/go"
+//
+//	req := llm.CreateTriggerReq{
 //	    Name: "nightly-digest", SourceType: "cron",
 //	    SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
 //	    WorkspaceID: wsID,

@@ -84,7 +84,9 @@ func TestIssue1812E2EScript_RowsAndAssertions(t *testing.T) {
 // itself against real jq (the r2 review's Finding 1: `// empty` swallows
 // false, making the closed-gate assertion unreachable). A string-only
 // structural needle cannot catch this class — the pin must EVALUATE the
-// expression. Skips only where jq is unavailable (not on the nightly).
+// expression, and it sources the expression FROM THE SCRIPT (a
+// hardcoded copy could drift while the script regresses). Skips only
+// where jq is unavailable (not on the nightly).
 func TestIssue1812E2EScript_GateFieldEvaluatesFalse(t *testing.T) {
 	raw, err := os.ReadFile(issue1812Script)
 	require.NoError(t, err)
@@ -94,9 +96,24 @@ func TestIssue1812E2EScript_GateFieldEvaluatesFalse(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed — the nightly and dev pods carry it")
 	}
-	// The exact expression shape gate_field builds, evaluated against a
-	// closed-gate audit payload.
-	expr := `.actionResult.gate.proceed | tostring`
+	// Pull the extractor's jq program straight out of the script's
+	// gate_field line, substituting the field the e2e asserts on.
+	gateFieldLine := ""
+	for _, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, "jq -r") && strings.Contains(line, "actionResult.gate") {
+			gateFieldLine = strings.TrimSpace(line)
+			break
+		}
+	}
+	require.NotEmpty(t, gateFieldLine, "gate_field's jq invocation not found in the script")
+	marker := `jq -r "`
+	mIdx := strings.Index(gateFieldLine, marker)
+	require.GreaterOrEqual(t, mIdx, 0, "gate_field's jq program must follow jq -r \"")
+	rest := gateFieldLine[mIdx+len(marker):]
+	end := strings.Index(rest, `"`)
+	require.GreaterOrEqual(t, end, 0, "gate_field's jq program must be a double-quoted string")
+	expr := strings.ReplaceAll(rest[:end], "${1}", "proceed")
+
 	cmd := exec.Command("bash", "-c", `printf '%s' '{"actionResult":{"gate":{"proceed":false,"vars":{"topic":"nothing-new"}}}}' | jq -r '`+expr+`'`)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "jq evaluation failed: %s", string(out))

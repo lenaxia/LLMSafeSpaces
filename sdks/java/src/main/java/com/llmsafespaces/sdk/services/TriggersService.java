@@ -35,15 +35,20 @@ import java.util.Map;
  * workflow's DAG carries its own script/condition nodes).</p>
  *
  * <p>Worked example — nightly digest, LLM called only when work
- * accumulated:</p>
+ * accumulated. The 14 arguments in order: name, sourceType,
+ * sourceConfig, workspaceId, workflowId, prompt, agent, scriptPath,
+ * scriptArgs, scriptEnv, memoryMode, captureMode, preserveSession,
+ * script:</p>
  * <pre>{@code
  * triggers.create(
- *     "nightly-digest", "cron",
- *     Map.of("expr", "0 2 * * *", "tz", "UTC"),
- *     wsId, null,                       // workspace, no workflow
- *     "Summarize the {{count}} new items.", null,
- *     null, null, null, null, null, null, null,   // legacy fields
- *     Map.of("language", "python",
+ *     "nightly-digest",                              // name
+ *     "cron",                                        // sourceType
+ *     Map.of("expr", "0 2 * * *", "tz", "UTC"),      // sourceConfig
+ *     wsId, null,                                    // workspaceId, workflowId
+ *     "Summarize the {{count}} new items.",          // prompt
+ *     null, null, null, null,                        // agent, scriptPath, scriptArgs, scriptEnv
+ *     null, null, null,                              // memoryMode, captureMode, preserveSession
+ *     Map.of("language", "python",                   // script (#1812 gate)
  *            "handler", "def handler(input):\n"
  *                     + "    n = count_open_items()\n"
  *                     + "    return {\"proceed\": n > 0, \"vars\": {\"count\": str(n)}}\n"));
