@@ -1,4 +1,4 @@
--- 000038 down: restore the pre-#1747 shape. DESTRUCTIVE CAVEATS:
+-- 000039 down: restore the pre-#1747 shape. DESTRUCTIVE CAVEATS:
 --   * priority columns return with the P2 default (per-row values are
 --     unrecoverable — they were dropped in the up migration).
 --   * cancelled rows deleted by the up migration are unrecoverable

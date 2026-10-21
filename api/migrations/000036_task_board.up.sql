@@ -160,7 +160,7 @@ END $$;
 -- column list before CREATE INDEX IF NOT EXISTS skips on name, so a
 -- re-apply of this file against a #1747 schema (priority dropped) would
 -- error on the old column list; already-applied databases never re-run
--- this file and receive the swap from 000038's DROP+CREATE instead.
+-- this file and receive the swap from 000039's DROP+CREATE instead.
 CREATE INDEX IF NOT EXISTS idx_tasks_ready_set
     ON public.tasks USING btree (project_id, created_at, id)
     WHERE (stage = 'backlog'::text AND is_blocked = false);
