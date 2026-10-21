@@ -203,12 +203,13 @@ func runMigrations(root string) int {
 // new worklogs). The CLI always reports; the caller (Makefile / CI / hook)
 // decides severity via exit-code handling.
 //
-// The old sequence check (duplicate detection, gap detection, mainline
-// collision detection) is intentionally removed: authors no longer pick
-// numbers, so collisions cannot originate at authoring time, and the
-// post-merge bot assigns numbers atomically per-merge, so merge-time
-// collisions cannot occur either. A residual NNNN_ on main is the only
-// signal worth checking — it means the bot failed to run.
+// The sequence checks live in runWorklogUniqueness below: duplicate
+// detection is RESTORED there (#1795 — the "bot assigns atomically,
+// collisions cannot occur" premise was falsified by the bot-lag window,
+// where a rebasing lane's post-rewrite renumber and the bot can
+// independently mint the same number) and gaps are its warning class.
+// A residual NNNN_ on main remains this check's own signal — it means
+// the bot failed to run (or has not run yet: the lag window).
 func runWorklogSentinels(root string) int {
 	dir := filepath.Join(root, "worklogs")
 	rep, err := repolint.SentinelCheck(dir)
