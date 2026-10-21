@@ -276,6 +276,36 @@ describe("useContractStream", () => {
     expect(result.current.sessions.size).toBe(3);
   });
 
+  // #1824 r11: a fold reseed must not leave a duplicate harness row next to
+  // the phrase row. Sequence: a legacy harness-keyed snapshot is folded, then
+  // a reconnect delivers the phrase+internal snapshot. applySnapshot retains
+  // absent sessions, so without re-keying BEFORE the apply (and retiring the
+  // harness row when the phrase exists) both keys survive.
+  it("reseed: legacy harness snapshot then phrase+internal snapshot leaves one canonical row", async () => {
+    const HARNESS = "ses_reseed_harness";
+    const PHRASE = "reseed-phrase-1";
+    const mock = vi.fn()
+      .mockImplementationOnce(async () => makeResponse([
+        snapshotFrame(3, [{ sessionId: HARNESS, status: "SESSION_STATUS_IDLE" }]),
+      ], { endAfterChunks: true }))
+      .mockImplementationOnce(async () => makeResponse([
+        snapshotFrame(7, [
+          { sessionId: PHRASE, internalSessionId: HARNESS, status: "SESSION_STATUS_BUSY" },
+          { sessionId: "internal-unrelated", status: "SESSION_STATUS_IDLE" },
+        ]),
+      ]));
+    globalThis.fetch = mock;
+    const { result } = renderHook(() => useContractStream("ws-reseed", {}));
+
+    await waitFor(() => expect(mock).toHaveBeenCalledTimes(2), { timeout: 8000 });
+    await waitFor(() => expect(result.current.sessions.has(PHRASE)).toBe(true));
+    expect(result.current.sessions.has(HARNESS)).toBe(false);
+    expect(Array.from(result.current.sessions.keys())).toEqual(
+      expect.arrayContaining([PHRASE, "internal-unrelated"]),
+    );
+    expect(result.current.sessions.size).toBe(2);
+  });
+
   // #1817: only APPLIED frames may teach the alias map. A stale/duplicate
   // frame (seq <= fold.seq) is discarded before translation, so it cannot
   // overwrite the current harness→phrase mapping.

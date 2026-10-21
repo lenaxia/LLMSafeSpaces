@@ -114,19 +114,29 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
             // resolves to the phrase through it. Post-fix rows pass through
             // unchanged (the seam is the identity for a phrase wire id).
             applyingSnapshot = true;
-            beginSessionAliasBatch();
             try {
-              for (const s of frame.frame.value.snapshot?.sessions ?? []) {
-                const ids = translateSessionIds(workspaceId, s.sessionId, s.internalSessionId);
-                if (ids.sessionId) s.sessionId = ids.sessionId;
-                if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
+              beginSessionAliasBatch();
+              try {
+                for (const s of frame.frame.value.snapshot?.sessions ?? []) {
+                  const ids = translateSessionIds(workspaceId, s.sessionId, s.internalSessionId);
+                  if (ids.sessionId) s.sessionId = ids.sessionId;
+                  if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
+                }
+              } finally {
+                endSessionAliasBatch();
               }
+              // #1824 r11: re-key the EXISTING fold BEFORE applying the new
+              // snapshot. applySnapshot retains sessions absent from the
+              // snapshot, so a legacy harness row would otherwise survive
+              // beside the phrase row. Re-keying first lets the fresher
+              // phrase projection land on the canonical key.
+              rekeyIfAliasesChanged();
+              applySnapshot(foldRef.current, frame.frame.value);
             } finally {
-              endSessionAliasBatch();
+              // #1824 r11: never leave the alias subscriber suppressed if
+              // translation or applySnapshot throws.
+              applyingSnapshot = false;
             }
-            applySnapshot(foldRef.current, frame.frame.value);
-            applyingSnapshot = false;
-            rekeyIfAliasesChanged();
             seeded = true;
             publish();
             optionsRef.current.onSnapshot?.(projectState(foldRef.current));

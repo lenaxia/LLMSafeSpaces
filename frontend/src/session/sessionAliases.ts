@@ -238,7 +238,8 @@ export interface AliasableSession {
  * later events translate. Only legacy rows move: a row whose additive id
  * equals its key is the decoy/stale shape and is never aliased (the same
  * guard as translateSessionIds). An existing phrase entry wins — it is the
- * newer projection and events will update it.
+ * newer projection, so the stale harness row is retired (deleted) rather
+ * than kept as a duplicate key for the same session.
  *
  * Returns true when the map changed (callers publish on true).
  */
@@ -253,7 +254,14 @@ export function rekeySessionMap(
     if (snap.internalSessionId === key) continue;
     const phrase = resolveSessionAlias(workspaceId, key);
     if (!phrase || phrase === key) continue;
-    if (sessions.has(phrase)) continue;
+    if (sessions.has(phrase)) {
+      // #1824 r11: same session, phrase is the newer projection. Retire
+      // the harness row — leaving both keys duplicates the session after
+      // a fold reseed (applySnapshot retains absent sessions).
+      sessions.delete(key);
+      changed = true;
+      continue;
+    }
     sessions.delete(key);
     snap.sessionId = phrase;
     if (!snap.internalSessionId) snap.internalSessionId = key;

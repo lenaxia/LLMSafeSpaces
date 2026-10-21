@@ -90,7 +90,7 @@ describe("sessionAliases (#1817 heal-window seam)", () => {
     expect(sessions.get(PHRASE)).toEqual({ sessionId: PHRASE, internalSessionId: HARNESS });
   });
 
-  it("re-key never moves the same-id decoy or overwrites an existing phrase entry", () => {
+  it("re-key never moves the same-id decoy but retires a duplicate harness row when the phrase exists", () => {
     learnSessionAlias(WS, PHRASE, HARNESS);
     const decoy = new Map<string, { sessionId?: string; internalSessionId?: string }>([
       [HARNESS, { sessionId: HARNESS, internalSessionId: HARNESS }],
@@ -98,12 +98,17 @@ describe("sessionAliases (#1817 heal-window seam)", () => {
     expect(rekeySessionMap(WS, decoy)).toBe(false);
     expect(decoy.has(HARNESS)).toBe(true);
 
+    // #1824 r11: the phrase row is the newer projection of the same
+    // session. A stale harness row left by a pre-fix snapshot must be
+    // retired, not kept as a duplicate key.
     const existing = new Map<string, { sessionId?: string; internalSessionId?: string }>([
       [HARNESS, { sessionId: HARNESS, internalSessionId: "" }],
       [PHRASE, { sessionId: PHRASE, internalSessionId: HARNESS }],
     ]);
-    expect(rekeySessionMap(WS, existing)).toBe(false);
-    expect(existing.has(HARNESS)).toBe(true);
+    expect(rekeySessionMap(WS, existing)).toBe(true);
+    expect(existing.size).toBe(1);
+    expect(existing.has(HARNESS)).toBe(false);
+    expect(existing.get(PHRASE)).toEqual({ sessionId: PHRASE, internalSessionId: HARNESS });
   });
 
   it("bounds the per-workspace alias table", () => {

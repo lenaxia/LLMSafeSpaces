@@ -129,6 +129,13 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
   }
 }
 
+// registerFirstSeen records a request's first observation without calling
+// Date.now() from a render-analyzed body (react-hooks/purity). Runs from
+// event callbacks via module scope, like wipeBusyForEventLoss.
+function registerFirstSeen(firstSeen: Map<string, number>, requestId: string): void {
+  if (!firstSeen.has(requestId)) firstSeen.set(requestId, Date.now());
+}
+
 // #1824: a late-learned harness→phrase pair must re-key the provider's
 // session-keyed activity maps — the contract fold's re-key alone leaves the
 // sidebar unbadged. Only keys that resolve through the changed workspace's
@@ -548,9 +555,30 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // changed workspace's table can never translate another workspace's id.
   useEffect(() => {
     const unsubscribe = subscribeSessionAliases((workspaceId) => {
-      // Snapshot the ownership table before the pendingActions updater
-      // rewrites it — content updaters run in the same render pass.
+      // Snapshot the ownership table BEFORE mutating any ref — the
+      // pendingActions updater runs at render time (twice under React
+      // StrictMode) and must not observe a half-rewritten table.
       const workspaceOf = new Map(pendingActionWsRef.current);
+
+      // #1824 r11: ref bookkeeping is done synchronously, OUTSIDE the
+      // state updaters. React 19 StrictMode double-invokes updaters; a
+      // ref write inside one makes the second invocation see the moved
+      // state and return the stale `prev` (harness-keyed state, phrase-
+      // keyed refs/content).
+      for (const [sessionId, wsId] of Array.from(pendingActionWsRef.current)) {
+        if (wsId !== workspaceId) continue;
+        const phrase = resolveSessionAlias(workspaceId, sessionId);
+        if (!phrase || phrase === sessionId) continue;
+        pendingActionWsRef.current.delete(sessionId);
+        pendingActionWsRef.current.set(phrase, workspaceId);
+      }
+      for (const [requestId, sessionId] of Array.from(requestToSessionRef.current)) {
+        if (workspaceOf.get(sessionId) !== workspaceId) continue;
+        const phrase = resolveSessionAlias(workspaceId, sessionId);
+        if (!phrase || phrase === sessionId) continue;
+        requestToSessionRef.current.set(requestId, phrase);
+      }
+
       setBusySessions(
         (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
       );
@@ -568,10 +596,23 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         }
         return next ?? prev;
       });
+      // #1824 r11: a delete recorded before the pair learned must follow
+      // the session too — ChatPage navigates on the phrase key.
+      setDeletedSessions((prev) => {
+        let next: Set<string> | null = null;
+        for (const sessionId of Array.from(prev)) {
+          const phrase = resolveSessionAlias(workspaceId, sessionId);
+          if (!phrase || phrase === sessionId) continue;
+          if (!next) next = new Set(prev);
+          next.delete(sessionId);
+          next.add(phrase);
+        }
+        return next ?? prev;
+      });
       setPendingActions((prev) => {
         let next: Map<string, Set<string>> | null = null;
         for (const [sessionId, requestIds] of Array.from(prev.entries())) {
-          if (pendingActionWsRef.current.get(sessionId) !== workspaceId) continue;
+          if (workspaceOf.get(sessionId) !== workspaceId) continue;
           const phrase = resolveSessionAlias(workspaceId, sessionId);
           if (!phrase || phrase === sessionId) continue;
           if (!next) next = new Map(prev);
@@ -580,13 +621,6 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const merged = new Set(existing ?? []);
           for (const requestId of requestIds) merged.add(requestId);
           next.set(phrase, merged);
-          pendingActionWsRef.current.delete(sessionId);
-          pendingActionWsRef.current.set(phrase, workspaceId);
-          for (const requestId of requestIds) {
-            if (requestToSessionRef.current.get(requestId) === sessionId) {
-              requestToSessionRef.current.set(requestId, phrase);
-            }
-          }
         }
         return next ?? prev;
       });
@@ -832,29 +866,45 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        // #1824 r11: resolve the staged ids at COMMIT time. The staging
+        // map holds the raw event id; the additive pair may have been
+        // learned while the flight was open. Committing the raw id would
+        // resurrect the harness key and rewrite pendingActionWsRef to it.
+        const wsSessionIds = new Set<string>();
+        for (const [sessionId, wid] of pendingActionWsRef.current) {
+          if (wid === wsId) wsSessionIds.add(sessionId);
+        }
+        const resolvedStaged: Array<[string, string]> = [];
+        if (staged) {
+          for (const [requestId, sessionId] of staged) {
+            // #1365: the flight's staged set can carry an ask the user
+            // resolved while the flight was in flight (fetch-before-click,
+            // commit-after-clear). A tombstoned id stays cleared.
+            if (resolvedTombstonesRef.current.has(requestId)) continue;
+            resolvedStaged.push([
+              requestId,
+              resolveSessionAlias(wsId, sessionId) ?? sessionId,
+            ]);
+          }
+        }
+
+        // Ref bookkeeping stays OUTSIDE the updater (React 19 StrictMode
+        // double-invokes updaters; a ref write inside one makes the second
+        // invocation disagree with the first).
+        for (const [requestId, sessionId] of resolvedStaged) {
+          requestToSessionRef.current.set(requestId, sessionId);
+          pendingActionWsRef.current.set(sessionId, wsId);
+          registerFirstSeen(requestFirstSeenRef.current, requestId);
+        }
+
         setPendingActions((prev) => {
           const next = new Map(prev);
-          for (const [sessionId] of next) {
-            if (pendingActionWsRef.current.get(sessionId) === wsId) {
-              next.delete(sessionId);
-            }
-          }
-          if (staged) {
-            for (const [requestId, sessionId] of staged) {
-              // #1365: the flight's staged set can carry an ask the user
-              // resolved while the flight was in flight (fetch-before-click,
-              // commit-after-clear). A tombstoned id stays cleared.
-              if (resolvedTombstonesRef.current.has(requestId)) continue;
-              const existing = next.get(sessionId);
-              const set = new Set(existing ?? []);
-              set.add(requestId);
-              next.set(sessionId, set);
-              requestToSessionRef.current.set(requestId, sessionId);
-              pendingActionWsRef.current.set(sessionId, wsId);
-              if (!requestFirstSeenRef.current.has(requestId)) {
-                requestFirstSeenRef.current.set(requestId, Date.now());
-              }
-            }
+          for (const sessionId of wsSessionIds) next.delete(sessionId);
+          for (const [requestId, sessionId] of resolvedStaged) {
+            const existing = next.get(sessionId);
+            const set = new Set(existing ?? []);
+            set.add(requestId);
+            next.set(sessionId, set);
           }
           return next;
         });
