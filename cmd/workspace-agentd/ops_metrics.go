@@ -80,7 +80,7 @@ func newOpsMetrics() *opsMetrics {
 	return &opsMetrics{
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
-			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog)",
+			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog, health_watchdog_unknown_episode, relay_injector)",
 		}, []string{"workspace_id", "reason"}),
 
 		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
@@ -269,7 +269,8 @@ func (m *opsMetrics) RecordUploadScrub(workspaceID string, files int) {
 
 // RecordRestart increments the restart counter for the given reason.
 // Reasons: env_secrets, api_key, credential_reload (socket-topology
-// outcome-recorded), crash, oom, user_requested, health_watchdog.
+// outcome-recorded), crash, oom, user_requested, health_watchdog,
+// health_watchdog_unknown_episode, relay_injector.
 func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 	if workspaceID == "" {
 		workspaceID = "unknown"

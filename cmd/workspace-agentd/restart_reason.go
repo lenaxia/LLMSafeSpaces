@@ -65,6 +65,14 @@ const (
 	// escalation from a corroborated dead-listener kill in metrics and
 	// boot-time marker reads.
 	RestartReasonHealthWatchdogUnknownEpisode = "health_watchdog_unknown_episode"
+
+	// RestartReasonRelayInjector (#1801) is recorded when the relay
+	// injector (boot-time injection or a re-arm cycle) restarts opencode
+	// to apply relay config — the single-container kill leg that goes
+	// through the session-aware restart decision. The same string is a
+	// member of the control socket's closed reason enum (control_
+	// socket.go), so supervisor- and agentd-side attributions agree.
+	RestartReasonRelayInjector = "relay_injector"
 )
 
 // restartReason is the on-disk JSON shape of the restart-reason marker.

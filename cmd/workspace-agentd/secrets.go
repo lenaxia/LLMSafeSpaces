@@ -1338,7 +1338,8 @@ func hasFileClassEntries(batch []secrets.Secret) bool {
 // used in the on-disk restart-reason marker) to the short Prometheus label
 // used by opsMetrics.RecordRestart. The metric help text enumerates:
 // env_secrets, api_key, credential_reload, crash, oom, user_requested,
-// health_watchdog. Unknown reasons pass through unchanged so the metric
+// health_watchdog, health_watchdog_unknown_episode, relay_injector.
+// Unknown reasons pass through unchanged so the metric
 // remains useful if new reasons are added.
 func metricRestartReason(markerReason string) string {
 	switch markerReason {

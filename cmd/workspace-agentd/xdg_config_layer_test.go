@@ -249,6 +249,10 @@ func TestWatchAgentConfigForChanges_RestartsOnChange(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"rev":1}`), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// #1801 class-3d pin: the watcher is a restart decision site — its
+	// marker write must land alongside the restart it triggers.
+	markerPath := filepath.Join(dir, "restart-reason.json")
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", markerPath)
 
 	restarts := make(chan time.Time, 4)
 	restartNow := func() { restarts <- time.Now() }
@@ -267,6 +271,9 @@ func TestWatchAgentConfigForChanges_RestartsOnChange(t *testing.T) {
 	case <-restarts:
 	case <-time.After(15 * time.Second):
 		t.Fatal("watcher did not fire a restart for a content change")
+	}
+	if reason, ok := markerReasonAt(markerPath); !ok || reason != "credential_reload" {
+		t.Fatalf("watcher restart must write the credential_reload marker, got reason=%q ok=%v", reason, ok)
 	}
 	// Exactly one restart for one change.
 	select {
