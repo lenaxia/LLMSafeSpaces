@@ -288,9 +288,6 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		// windows; empty entries are skipped by the auth gate.
 		Passwords: []string{controlPlanePassword, password},
 		Logger:    log,
-		// #1817/#1821 piece 1: contract frames leave keyed by the
-		// phrase (harness id additive) — the frontend fold's join.
-		IDTranslator: emissionIDTranslator,
 	}
 	a, err := sessionstate.New(cfg)
 	if err != nil {
@@ -308,16 +305,6 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 	}
 	authority = a // the stall-wake closure's target
 	return a
-}
-
-// emissionIDTranslator is the sessionstate Config.IDTranslator
-// (#1817/#1821 piece 1, ruling A): harness session id → the platform
-// PHRASE at the contract-stream emission surface, from the same
-// short-id store the MCP surfaces read (session_shortids.go — the
-// registry pull with TTL caching). Unresolved ids return "" — the
-// authority passes the harness id through (the heal window).
-func emissionIDTranslator(harnessID string) string {
-	return currentSessionShortIDs().shortIDFor(harnessID)
 }
 
 // startStateAuthorityReseed drives the boot reseed: opencode may not be
