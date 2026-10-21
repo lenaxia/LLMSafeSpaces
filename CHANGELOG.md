@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(nothing yet)
+
+## [0.40.0] - 2026-10-21
+
 ### Changed — trust `ai-workflows-propagation[bot]` for AI review + slash commands (#1810)
 
 - `ai-workflows-propagation[bot]` (the ai-workflows propagation pipeline's
