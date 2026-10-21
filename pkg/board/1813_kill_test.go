@@ -148,8 +148,11 @@ func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 	s.False(pre.LastAttemptFailed, "precondition: NO failure ever happened — the overlay is clear")
 	s.Equal(0, pre.FailureCount)
 
-	// The (N+1)th claim: claimOnce's escalation write is the ONLY thing
-	// that sets the overlay on this path (no rc1 reclaim ran).
+	// The (N+1)th claim escalates. r10: the escalation writes NO
+	// overlay (the invariant last_attempt_failed == (failure_count > 0)
+	// is rc1's alone) — every attempt here SUCCEEDED, so the marker
+	// stays false and no FAILED ×0 can render. The exhaustion signal is
+	// pending_origin='escalated' + attempts at cap.
 	c, err := s.svc.ClaimNext(context.Background(), "w2", ws)
 	s.Require().NoError(err)
 	s.Require().NotNil(c.Task)
@@ -157,10 +160,8 @@ func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	// r9 TRUTHFUL semantics: every attempt on this row SUCCEEDED, so the
-	// escalation does NOT claim a failure — the marker stays false and
-	// no FAILED ×0 can ever render (the exhaustion itself is visible as
-	// pending_origin='escalated' + attempts at cap).
+	s.Require().NotNil(after.PendingOrigin)
+	s.Equal(board.PendingOriginEscalated, *after.PendingOrigin)
 	s.False(after.LastAttemptFailed, "all-success exhaustion carries NO failure marker (truthful overlay)")
 	s.Nil(after.LastFailureAt)
 	s.Equal(0, after.FailureCount)
@@ -225,13 +226,15 @@ func (s *BoardSuite) TestKill_1813_DriftDoneClearsOverlay() {
 	e := s.seedEpic(p, board.EpicActive)
 	prTask := s.seedTask(e, "pr-task", []string{"pr:42"}, true)
 
-	// Park in_review, then seed the overlay onto it (composition shape).
+	// Park in_review, then seed the FULL overlay onto it (composition
+	// shape — timestamp included, so the reset's nil-assertion
+	// discriminates: r10's review gap).
 	c := s.claimOrFail(ws)
 	s.Equal(prTask.ID, c.TaskID)
 	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), prTask.ID, "", board.StageInReview, "", "")
 	s.Require().NoError(err)
 	_, err = s.pool.Exec(context.Background(),
-		`UPDATE tasks SET last_attempt_failed=true, failure_count=2 WHERE id=$1`, prTask.ID)
+		`UPDATE tasks SET last_attempt_failed=true, failure_count=2, last_failure_at=now() WHERE id=$1`, prTask.ID)
 	s.Require().NoError(err)
 
 	s.drift.set(42, board.PRState{Merged: true, URL: "https://git.example/pr/42"})
@@ -305,7 +308,9 @@ func (s *BoardSuite) TestKill_1813_TaskStartEscalationMarksOverlay() {
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	// Truthful semantics: zero failures on the row → no marker.
+	s.Require().NotNil(after.PendingOrigin)
+	s.Equal(board.PendingOriginEscalated, *after.PendingOrigin)
+	// r10: no escalation overlay write exists — zero failures → no marker.
 	s.False(after.LastAttemptFailed, "all-success exhaustion carries NO failure marker")
 	s.Nil(after.LastFailureAt)
 	s.Equal(0, after.FailureCount, "no fabricated count")
@@ -326,9 +331,10 @@ func (s *BoardSuite) TestKill_1813_PendingReclaimExitClearsOverlay() {
 	c := s.claimOrFail(ws)
 	_, err := s.svc.MoveStage(context.Background(), s.agent("sess-"+c.ShortID, c.ClaimToken), t1.ID, "", board.StagePendingInput, "", "")
 	s.Require().NoError(err)
-	// Seed the overlay (the escalation composition shape).
+	// Seed the FULL overlay (timestamp included — the reset's
+	// nil-assertion discriminates).
 	_, err = s.pool.Exec(context.Background(),
-		`UPDATE tasks SET last_attempt_failed=true, failure_count=1 WHERE id=$1`, t1.ID)
+		`UPDATE tasks SET last_attempt_failed=true, failure_count=1, last_failure_at=now() WHERE id=$1`, t1.ID)
 	s.Require().NoError(err)
 
 	// The human exit with identity present → the re-claim arm.
@@ -359,13 +365,39 @@ func (s *BoardSuite) TestKill_1813_FailedExhaustionKeepsMarker() {
 		s.clearTaskBackoff(t1.ID)
 	}
 
+	pre := s.reloadTask(t1.ID)
+	s.True(pre.LastAttemptFailed, "precondition: the reclaims set the marker")
+	preTS := pre.LastFailureAt
+
 	c, err := s.svc.ClaimNext(context.Background(), "w", ws)
 	s.Require().NoError(err)
 	s.Require().True(c.Escalated)
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	s.True(after.LastAttemptFailed, "a FAILED exhaustion carries the marker")
+	s.True(after.LastAttemptFailed, "a FAILED exhaustion keeps the marker (rc1's)")
 	s.Equal(s.cfg.AttemptsCap, after.FailureCount)
+	// r10 discriminator: the escalation does NOT restamp the overlay —
+	// last_failure_at is still the LAST RECLAIM's moment (an escalation
+	// SET would replace it; deleting the marker SET alone can't flip
+	// the invariant, but restamping can — this pin catches it).
 	s.Require().NotNil(after.LastFailureAt)
+	s.Require().NotNil(preTS)
+	s.Equal(preTS.Format(time.RFC3339Nano), after.LastFailureAt.Format(time.RFC3339Nano),
+		"the escalation leaves rc1's failure timestamp untouched")
+
+	// The reclaim audit event carries the overlay fields incl. the timestamp.
+	var evtOK bool
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT payload->>'last_attempt_failed', payload->>'failure_count', payload->>'last_failure_at' IS NOT NULL
+		 FROM board_events WHERE action='reclaim' AND item_id=$1 LIMIT 1`, t1.ID)
+	s.Require().NoError(err)
+	for rows.Next() {
+		var marker, count string
+		var hasTS bool
+		s.Require().NoError(rows.Scan(&marker, &count, &hasTS))
+		evtOK = marker == "true" && count != "" && count != "0" && hasTS
+	}
+	rows.Close()
+	s.True(evtOK, "the reclaim event carries the overlay fields + timestamp")
 }

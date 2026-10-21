@@ -9,12 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
 
-- **A task whose worker attempt failed is now VISIBLE**: the engine
-  sets a `last_attempt_failed` overlay (with `failure_count` —
-  consecutive — and `last_failure_at`) on every lease-lapse reclaim
-  and at attempts-cap exhaustion. NEVER a sixth stage — the five-stage
-  vocabulary is untouched; the failed row stays in its stage (usually
-  backlog) and carries the marker.
+- **A task whose worker attempt failed is now VISIBLE**: every
+  lease-lapse reclaim marks `last_attempt_failed` (+1 consecutive
+  `failure_count`, `last_failure_at`). NEVER a sixth stage — the
+  five-stage vocabulary is untouched; the failed row stays in its
+  stage (usually backlog) and carries the marker.
 - **Auto-return-to-ready with backoff**: the reclaim parks the row
   behind the existing cooldown gate with doubling backoff per
   consecutive failure (base `board.failureBackoffSeconds`, default
@@ -24,17 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the pending_input human exit clear the overlay and count with
   the attempts reset.
 - **Truthful marker semantics**: the overlay means an attempt
-  actually failed. A crash-loop exhaustion carries
-  `last_attempt_failed` + the consecutive count; an all-success
-  exhaustion (attempts preserved through in_review, cap reached with
-  zero failures) escalates WITHOUT the marker — `FAILED ×0` cannot
-  render (the exhaustion itself is visible as pending_input with
-  `pending_origin=escalated` + attempts at cap).
+  actually failed, and ONLY the reclaim writes it (the invariant
+  last_attempt_failed == (failure_count > 0) holds through every
+  reset). An all-success exhaustion (attempts preserved through
+  in_review, cap reached with zero failures) escalates WITHOUT the
+  marker — `FAILED ×0` cannot render; the exhaustion signal is
+  pending_input with `pending_origin=escalated`, attempts at cap, and
+  an `exhausted=true` audit event.
 - **Surfaces**: `GET /me/projects/{id}/tasks?failed=true|false`
   (tri-state filter); `board_read`'s `failed` argument (MCP); the UI
   task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
   the overlay renders on every task read (REST/SDK/MCP) and in
-  reclaim/escalate audit events.
+  reclaim audit events (escalate events carry exhausted=true).
 
 ## [0.40.1] - 2026-10-21
 

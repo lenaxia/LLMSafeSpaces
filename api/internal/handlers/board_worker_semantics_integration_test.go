@@ -326,7 +326,7 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 	// --- 4b: #1813 failure → visible overlay → backoff → auto re-dispatch,
 	// end to end through the real seam (the review's e2e tier gate).
 	t.Run("failure_overlay_visible_through_seam_1813", func(t *testing.T) {
-		shortID, projectID := seed(t, false)
+		shortID, _ := seed(t, false)
 
 		claimFor(t, wsPod, shortID)
 		_, err := pool.Exec(ctx, `UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE short_id=$1`, shortID)
@@ -348,7 +348,6 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		require.ErrorIs(t, err, board.ErrNoCandidate, "the failed row waits out its backoff")
 		_, err = pool.Exec(ctx, `UPDATE tasks SET cooldown_until=NULL WHERE short_id=$1`, shortID)
 		require.NoError(t, err)
-		_ = projectID
 		c2 := claimFor(t, wsPod, shortID)
 		assert.NotEmpty(t, c2.ClaimToken, "re-dispatch mints a fresh working token automatically")
 	})
