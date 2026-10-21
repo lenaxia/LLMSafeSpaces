@@ -270,6 +270,10 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		require.NoError(t, err)
 		_, err = recon.Sweep(ctx)
 		require.NoError(t, err)
+		// #1813: drop the reclaim's failure backoff — this arm pins
+		// token single-use, not the park.
+		_, err = pool.Exec(ctx, `UPDATE tasks SET cooldown_until=NULL WHERE short_id=$1`, shortID2)
+		require.NoError(t, err)
 
 		w = heartbeat(t, shortID2, claim2.ClaimToken, time.Now().UTC().Add(time.Minute).Format(time.RFC3339))
 		require.Equal(t, http.StatusConflict, w.Code, "a reclaimed claim's token is dead")
