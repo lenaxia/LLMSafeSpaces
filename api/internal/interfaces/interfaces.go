@@ -119,6 +119,8 @@ type DatabaseService interface {
 	// existing short id — the one DB write path that can create a
 	// short id. All other surfaces read or replicate.
 	EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error)
+	// PhraseFor: read-only harness→phrase lookup (#1817 emission edge).
+	PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool)
 	// FindSessionByShortID resolves a case-insensitive short id to the
 	// canonical harness session id within one workspace ("" when absent).
 	FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error)
@@ -222,6 +224,12 @@ type SessionIndexService interface {
 	// so the hot per-message path stays registration-free after first
 	// sight. Returns the short id ("" when the seam is degraded).
 	Register(ctx context.Context, workspaceID, sessionID, harnessType string) string
+	// PhraseFor (#1817/#1821 piece 1) is the READ-ONLY harness→phrase
+	// lookup for emission edges — never mints (the mock/production
+	// Register divergence the r2 review caught: mint-on-miss creates
+	// phantom rows at the observation edge). Hit-LRU + TTL-bounded
+	// negative cache; ok=false → harness passthrough.
+	PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool)
 	Start() error
 	Stop() error
 }

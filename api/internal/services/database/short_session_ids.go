@@ -344,3 +344,18 @@ func (s *Service) FindWorkspaceIDByName(ctx context.Context, userID, name string
 	}
 	return ids[0], nil
 }
+
+// PhraseFor (#1817/#1821 piece 1): READ-ONLY harness→phrase lookup —
+// never mints (the emission edge must not create rows for ids it
+// merely observes; Register's mint-on-miss is the writer's seam).
+// Returns ok=false when the row or phrase is absent.
+func (s *Service) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	var phrase sql.NullString
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT short_id FROM session_index WHERE workspace_id = $1 AND session_id = $2`,
+		workspaceID, sessionID).Scan(&phrase)
+	if err != nil || !phrase.Valid || phrase.String == "" {
+		return "", false
+	}
+	return phrase.String, true
+}

@@ -55,10 +55,11 @@ type Service struct {
 	// Register before every upsert; after first sight the pair is
 	// LRU-resident and the seam costs one map lookup. Bounded; a miss
 	// is never a correctness event (registration is idempotent).
-	registerMu  sync.Mutex
-	registerLRU *list.List // front = most recent
-	registerMap map[string]*list.Element
-	registerCap int
+	registerMu   sync.Mutex
+	registerLRU  *list.List // front = most recent
+	registerMap  map[string]*list.Element
+	registerCap  int
+	phraseMisses map[string]time.Time // #1817 read-only negative cache
 }
 
 // registeredPair is one LRU entry.
@@ -71,6 +72,72 @@ type registeredPair struct {
 // workspace's live-session cardinality; small enough that the memory
 // is noise.
 const registerLRUCap = 8192
+
+// phraseMissTTL (#1817): read-only lookups cache ABSENCE for a short
+// window only — the backfill/reconcile sweeps mint phrases
+// asynchronously, and a forever-cached miss would serve stale
+// passthrough after the row lands. Hits cache until eviction (the
+// phrase is immutable per row).
+const phraseMissTTL = 30 * time.Second
+
+// PhraseFor (#1817/#1821 piece 1) is the READ-ONLY harness→phrase
+// lookup for emission edges: never mints (Register's mint-on-miss is
+// the writer's seam), bounded context, hits LRU-cached and misses
+// cached for phraseMissTTL only. ok=false → caller passes the harness
+// id through unchanged (the heal-window behavior).
+func (s *Service) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	if s.db == nil || workspaceID == "" || sessionID == "" {
+		return "", false
+	}
+	if shortID, ok := s.knownRegistered(workspaceID, sessionID); ok && shortID != "" {
+		return shortID, true
+	}
+	if s.recentMiss(workspaceID, sessionID) {
+		return "", false
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	phrase, ok := s.db.PhraseFor(qCtx, workspaceID, sessionID)
+	if !ok {
+		s.noteMiss(workspaceID, sessionID)
+		return "", false
+	}
+	s.markRegistered(workspaceID, sessionID, phrase)
+	return phrase, true
+}
+
+// phraseMisses: bounded (workspace,session)→seen-at map for negative
+// caching; guarded by registerMu.
+func (s *Service) recentMiss(workspaceID, sessionID string) bool {
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+	if s.phraseMisses == nil {
+		return false
+	}
+	at, ok := s.phraseMisses[workspaceID+"\x00"+sessionID]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > phraseMissTTL {
+		delete(s.phraseMisses, workspaceID+"\x00"+sessionID)
+		return false
+	}
+	return true
+}
+
+func (s *Service) noteMiss(workspaceID, sessionID string) {
+	s.registerMu.Lock()
+	defer s.registerMu.Unlock()
+	if s.phraseMisses == nil {
+		s.phraseMisses = make(map[string]time.Time)
+	}
+	if len(s.phraseMisses) >= registerLRUCap {
+		// Cheap bound: drop the whole miss cache rather than evict
+		// LRU-wise — misses are advisory, repopulated on demand.
+		s.phraseMisses = make(map[string]time.Time)
+	}
+	s.phraseMisses[workspaceID+"\x00"+sessionID] = time.Now()
+}
 
 func (s *Service) knownRegistered(workspaceID, sessionID string) (string, bool) {
 	key := workspaceID + "\x00" + sessionID
