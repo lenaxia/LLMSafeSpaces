@@ -75,7 +75,7 @@ jobs:
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
-       contains(fromJson('["agentic-actor-coder[bot]"]'), github.event.comment.user.login))
+       contains(fromJson('["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'), github.event.comment.user.login))
     uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.20
     secrets: inherit
     with:
@@ -85,4 +85,4 @@ jobs:
       # assert refuses bot /review comments pre-LLM even though the admission
       # arm above deliberately admits them. Must match canonicalTrustedAppBots
       # (gha_callers_test.go).
-      trusted_app_bots: '["agentic-actor-coder[bot]"]'
+      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'

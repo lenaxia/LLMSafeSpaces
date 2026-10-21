@@ -283,7 +283,7 @@ func TestWorkflowScriptReferencesResolve(t *testing.T) {
 // authorize them; each entry is a deliberate trust decision (adding one
 // means editing this list AND every gate copy — the drift test below fails
 // until all copies match).
-var canonicalTrustedAppBots = []string{"agentic-actor-coder[bot]"}
+var canonicalTrustedAppBots = []string{"agentic-actor-coder[bot]", "ai-workflows-propagation[bot]"}
 
 // trustedBotArmRe matches the allowlist arm in the canonical ai-workflows
 // v0.2.16 README §4 form, capturing the raw JSON array literal so copies
