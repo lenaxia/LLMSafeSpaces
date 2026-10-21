@@ -5,6 +5,8 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -161,6 +164,73 @@ func TestUserStreamSessionEvents_JoinableWithSessionList(t *testing.T) {
 		iid, _ = d["internal_session_id"].(string)
 	}
 	assert.Equal(t, harnessID, iid, "the harness id stays reachable (additive internal_session_id)")
+
+	// Surface 3 (reviewer minor 3b): the CONTRACT-STREAM projection is the
+	// third surface the tripwire must cover. Build the real agentd
+	// authority with a phrase translator and assert its subscribe
+	// snapshot carries the SAME join key: sessionId = phrase,
+	// internalSessionId = harness (State()/statusz stay harness-keyed).
+	auth, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      t16Parser{},
+		Passwords:   []string{"agentd-password"},
+		IDTranslator: func(id string) string {
+			if id == harnessID {
+				return phraseID
+			}
+			return ""
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = auth.Close() })
+	auth.IngestForTest(&abiv1.Event{
+		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId: harnessID,
+		Status:    abiv1.SessionStatus_SESSION_STATUS_BUSY,
+	})
+
+	frames, cancel, err := auth.Stream(t.Context())
+	require.NoError(t, err)
+	defer cancel()
+	var snapshot *abiv1.SessionSnapshot
+	select {
+	case frame := <-frames:
+		sf, ok := frame.Frame.(*abiv1.StreamFrame_Snapshot)
+		require.True(t, ok, "first contract frame must be the subscribe snapshot")
+		require.NotNil(t, sf.Snapshot)
+		require.NotNil(t, sf.Snapshot.Snapshot)
+		for _, row := range sf.Snapshot.Snapshot.Sessions {
+			if row.GetSessionId() == phraseID || row.GetInternalSessionId() == harnessID {
+				snapshot = row
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no contract-stream snapshot frame")
+	}
+	require.NotNil(t, snapshot, "the contract snapshot must contain the session join row")
+	assert.Equal(t, phraseID, snapshot.GetSessionId(),
+		"contract-stream snapshot: wire id must equal the sessions-list key (the third surface)")
+	assert.Equal(t, harnessID, snapshot.GetInternalSessionId(),
+		"contract-stream snapshot: the harness id stays additive")
+}
+
+// t16Parser is the minimal contract event parser the T1.6 third-surface
+// assertion needs ("busy <id>" / "idle <id>").
+type t16Parser struct{}
+
+func (t16Parser) Parse(raw []byte) (*abiv1.Event, bool, error) {
+	var id, status string
+	if n, _ := fmt.Sscanf(string(raw), "%s %s", &status, &id); n != 2 {
+		return nil, false, nil
+	}
+	switch status {
+	case "busy":
+		return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: id, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY}, true, nil
+	case "idle":
+		return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: id, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE}, true, nil
+	default:
+		return nil, false, nil
+	}
 }
 
 // #1817 piece 3 (finding 3): the LIFECYCLE CLEARS. A busy flip emitted by
@@ -417,4 +487,222 @@ func TestPublishInputResolvedIsPhraseKeyed(t *testing.T) {
 			"the payload keeps its own harness session_id (the contract shape); the join is the wire phrase")
 	}
 	assert.Equal(t, "per_1", evt.RequestID)
+}
+
+// #1817 piece 3 (reviewer minor 3a): the six lifecycle clear CALL SITES must
+// actually run the translation — a unit pin on the translator alone would
+// stay green if a call site were deleted. Each subtest drives a real
+// lifecycle path and asserts the event that reaches the broker is keyed by
+// the PHRASE (and, for the delete tail, that no ghost row is minted).
+func TestLifecycleClearCallSitesArePhraseKeyed(t *testing.T) {
+	const harnessID = "ses_clearsite_1817"
+	const phraseID = "november-foxtrot-2"
+
+	t.Run("idle reconcile (proxy_events)", func(t *testing.T) {
+		env, srv := newStatuszTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/statusz" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"sessions":[{"id":"` + harnessID + `","status":"idle"}]}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+		defer srv.Close()
+
+		si := newMockSessionIndex()
+		si.phrases["ws-1/"+harnessID] = phraseID
+		env.handler.SetSessionIndex(si)
+		env.handler.userBroker = eventbroker.NewUserEventBroker()
+		env.handler.SetActiveSessionsForTest("ws-1", []string{harnessID})
+
+		got := make(chan apitypes.WorkspaceSSEEvent, 1)
+		sub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
+		require.NoError(t, err)
+		defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+		go func() { got <- <-sub.Ch }()
+
+		env.handler.reconcileSessionState("ws-1", "10.0.0.1", "test-password")
+
+		select {
+		case evt := <-got:
+			assert.Equal(t, "session.status", evt.Type)
+			assert.Equal(t, "idle", evt.Status)
+			assert.Equal(t, phraseID, evt.SessionID,
+				"the idle reconcile clear must be phrase-keyed (deleting its translate call leaves the busy latch stuck)")
+		case <-time.After(3 * time.Second):
+			t.Fatal("idle reconcile published no clear")
+		}
+	})
+
+	t.Run("delete tail (proxy_handlers)", func(t *testing.T) {
+		h, si := newBridgeIndexHandler(t)
+		si.phrases["ws-1/"+harnessID] = phraseID
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+
+		sub, err := broker.SubscribeWorkspace("ws-1")
+		require.NoError(t, err)
+		defer broker.UnsubscribeWorkspace("ws-1", sub)
+		got := make(chan apitypes.WorkspaceSSEEvent, 1)
+		go func() { got <- <-sub.Ch }()
+
+		h.removeActiveSessionEvents(context.Background(), "ws-1", harnessID)
+
+		select {
+		case evt := <-got:
+			assert.Equal(t, "deleted", evt.Status)
+			assert.Equal(t, phraseID, evt.SessionID,
+				"the delete clear must be phrase-keyed (deleting its no-mint translate call leaves the busy latch stuck)")
+		case <-time.After(3 * time.Second):
+			t.Fatal("delete tail published no clear")
+		}
+		assert.Zero(t, si.registeredCalls()["ws-1/"+harnessID],
+			"the delete clear resolves read-only — it must never mint")
+	})
+
+	t.Run("archive (proxy_lifecycle)", func(t *testing.T) {
+		h, si := newBridgeIndexHandler(t)
+		si.phrases["ws-1/"+harnessID] = phraseID
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+
+		sub, err := broker.SubscribeWorkspace("ws-1")
+		require.NoError(t, err)
+		defer broker.UnsubscribeWorkspace("ws-1", sub)
+		got := make(chan apitypes.WorkspaceSSEEvent, 1)
+		go func() { got <- <-sub.Ch }()
+
+		h.PublishSessionArchived("ws-1", harnessID, true)
+
+		select {
+		case evt := <-got:
+			assert.Equal(t, "archived", evt.Status)
+			assert.Equal(t, phraseID, evt.SessionID,
+				"the archive clear must be phrase-keyed (deleting its translate call leaves the busy latch stuck)")
+		case <-time.After(3 * time.Second):
+			t.Fatal("archive published no clear")
+		}
+	})
+
+	t.Run("admin force-abort (admin_session)", func(t *testing.T) {
+		proxy := newProxyForAdminTest(t)
+		si := newMockSessionIndex()
+		si.phrases["ws-1/"+harnessID] = phraseID
+		proxy.SetSessionIndex(si)
+		proxy.SetActiveSessionsForTest("ws-1", []string{harnessID})
+
+		h := newAdminSessionHandlerForTest(t, proxy, nil)
+		r := setupAdminSessionRouter(t, h, "admin")
+
+		sub, err := proxy.userBroker.SubscribeWorkspace("ws-1")
+		require.NoError(t, err)
+		defer proxy.userBroker.UnsubscribeWorkspace("ws-1", sub)
+		got := make(chan apitypes.WorkspaceSSEEvent, 1)
+		go func() { got <- <-sub.Ch }()
+
+		w := doAdminForceAbort(r, "ws-1", harnessID)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		select {
+		case evt := <-got:
+			assert.Equal(t, "aborted", evt.Status)
+			assert.Equal(t, phraseID, evt.SessionID,
+				"the admin abort clear must be phrase-keyed (deleting its translate call leaves the busy latch stuck)")
+		case <-time.After(3 * time.Second):
+			t.Fatal("force-abort published no clear")
+		}
+	})
+}
+
+// #1817 piece 3 (reviewer minor 3c / #1821 degrade rule): when the seam
+// CANNOT resolve a phrase, the harness-keyed passthrough is flagged with
+// session_id_deprecated so a consumer can tell a degraded id from a healthy
+// one. The struct-shaped InputRequest payload is the documented exception —
+// it must never be clobbered. A successful translation carries no flag.
+func TestTranslationMissFlagsSessionIDDeprecated(t *testing.T) {
+	const harnessID = "ses_miss_1817"
+	const phraseID = "oscar-tango-4"
+
+	t.Run("session.status miss is flagged", func(t *testing.T) {
+		h, _ := newBridgeIndexHandler(t)
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+		broker.RecordWorkspaceOwner("ws-1", "user-miss")
+		sub, err := broker.SubscribeUser("user-miss")
+		require.NoError(t, err)
+		defer broker.UnsubscribeUser("user-miss", sub)
+
+		(&usageBridge{h: h}).SessionStatusWithInternal("ws-1", harnessID, "", true)
+		evt := <-sub.Ch
+
+		assert.Equal(t, harnessID, evt.SessionID, "a miss keeps the harness id (never worse)")
+		data, ok := evt.Data.(map[string]any)
+		require.True(t, ok, "a miss must materialize map Data to carry the deprecation flag")
+		assert.Equal(t, "true", data["session_id_deprecated"],
+			"a harness passthrough must be flagged (the #1821 degrade rule)")
+		assert.NotContains(t, data, "internal_session_id",
+			"a miss must not fabricate the additive harness id")
+	})
+
+	t.Run("agent.*.resolved miss is flagged", func(t *testing.T) {
+		h, _ := newBridgeIndexHandler(t)
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+		broker.RecordWorkspaceOwner("ws-1", "user-miss")
+		sub, err := broker.SubscribeUser("user-miss")
+		require.NoError(t, err)
+		defer broker.UnsubscribeUser("user-miss", sub)
+
+		(&usageBridge{h: h}).InputResolvedWithInternal("ws-1", harnessID, "", "req-miss")
+		evt := <-sub.Ch
+
+		assert.Equal(t, harnessID, evt.SessionID)
+		data, ok := evt.Data.(map[string]string)
+		require.True(t, ok)
+		assert.Equal(t, "true", data["session_id_deprecated"],
+			"a resolved-event passthrough must be flagged (the #1821 degrade rule)")
+	})
+
+	t.Run("successful translation is not flagged", func(t *testing.T) {
+		h, si := newBridgeIndexHandler(t)
+		si.phrases["ws-1/"+harnessID] = phraseID
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+		broker.RecordWorkspaceOwner("ws-1", "user-miss")
+		sub, err := broker.SubscribeUser("user-miss")
+		require.NoError(t, err)
+		defer broker.UnsubscribeUser("user-miss", sub)
+
+		(&usageBridge{h: h}).SessionStatusWithInternal("ws-1", harnessID, "", true)
+		evt := <-sub.Ch
+
+		assert.Equal(t, phraseID, evt.SessionID)
+		data, ok := evt.Data.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, harnessID, data["internal_session_id"])
+		assert.NotContains(t, data, "session_id_deprecated",
+			"a translated event is healthy — no deprecation flag")
+	})
+
+	t.Run("struct InputRequest payload is never clobbered or flagged", func(t *testing.T) {
+		h, _ := newBridgeIndexHandler(t)
+		broker := eventbroker.NewUserEventBroker()
+		h.SetUserBrokerForTest(broker)
+		broker.RecordWorkspaceOwner("ws-1", "user-miss")
+		sub, err := broker.SubscribeUser("user-miss")
+		require.NoError(t, err)
+		defer broker.UnsubscribeUser("user-miss", sub)
+
+		(&usageBridge{h: h}).InputRequested("ws-1", &abiv1.InputRequest{
+			Id: "req-struct", SessionId: harnessID,
+			Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "keep me",
+		})
+		evt := <-sub.Ch
+
+		assert.Equal(t, harnessID, evt.SessionID)
+		ir, ok := evt.Data.(session.InputRequest)
+		require.True(t, ok, "the struct payload must survive a translation miss (documented exception)")
+		assert.Equal(t, "keep me", ir.Question)
+		assert.Equal(t, harnessID, ir.SessionID)
+	})
 }

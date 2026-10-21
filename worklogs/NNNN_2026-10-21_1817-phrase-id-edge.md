@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 review rounds closed; r7 also closed the Go-side CI findings).
+**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r8 review rounds closed; r7 also closed the Go-side CI findings and r8 the merge-hygiene minors).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -139,8 +139,8 @@ phrase-keyed busy flip (the stuck-busy's lifecycle half).
   sessionindex negative cache) is a separate slice. #1817 remains
   PARTIALLY addressed until the e2e pins (E2.1/E2.6) and the
   integration/e2e test levels land. (Updated: integration levels landed in
-  r6; the frontend E2E pins land in the separate frontend commit
-  `bce1579c`.)
+  r6; the genuinely red-first E2.1/E2.6 pins and the frontend heal-window
+  seam landed in `4d07a8fc7` — see Correction (iv).)
 
 Tests Run:
 - `go test ./api/internal/handlers/ -count=1` — FULL suite green (89s), incl. the three new pins.
@@ -215,7 +215,8 @@ breaking the flip-only contract. Fixed: read `g.derived[consultSessionID(evt)]`.
 ### Out of scope (still follow-ups, not this PR)
 - e2e pins (E2.1/E2.6) and the integration/e2e test levels. #1817 remains
   PARTIALLY addressed until those land. (Integration levels landed in r6;
-  frontend E2E pins land in `bce1579c`.)
+  the red-first E2.1/E2.6 pins and the heal-window seam landed in
+  `4d07a8fc7`.)
 
 Tests Run (r2):
 - `go build ./...` — clean.
@@ -360,7 +361,8 @@ so the fix is contract-preserving, not behavior-changing.
 - E2.1/E2.6 e2e pins and the integration test level (translated authority
   stream → consumer → real bridge → real sessionindex/DB). #1817 remains
   PARTIALLY addressed until those land. (Integration level landed in r6;
-  frontend E2E pins land in `bce1579c`.)
+  the red-first E2.1/E2.6 pins and the heal-window seam landed in
+  `4d07a8fc7`.)
 - TS fold clone `internalSessionId` (finding 5 frontend half).
 
 Tests Run (r4):
@@ -406,8 +408,10 @@ never resolves, every frame forked a goroutine that only took the global
 mutex. Fix: the singleflight flag (finding 1's mechanism) coalesces to ONE
 concurrent warm pull — a second unresolved emission while a warm is in
 flight returns without forking.
-RED-first pin: `TestEmissionTranslator_WarmDedupsToSinglePull` (20 emissions
-while the pull is blocked → the pull runs ~1×, not 20×).
+This r5 dedup pin was later found vacuous and retired; the r6 worker moved
+the bound to one long-lived worker and r7 replaced the pin with a real
+live-goroutine peak measurement (see Corrections (i)–(ii) and the r7
+section).
 
 ### Finding 3 — MINOR: publishInputResolved used the request context
 `translateSessionIDToPhrase(c.Request.Context(), …)` — a browser
@@ -463,8 +467,7 @@ ONLY after the r6 worker commit (56afc7251); the earlier wording is annotated
 here as disproved rather than silently rewritten.
 
 ### Correction (ii) — both dedup pins were vacuous (r7)
-The r5 `TestEmissionTranslator_WarmDedupsToSinglePull` counted PULLS while
-the pull was blocked, not goroutines; the old implementation already
+The r5 dedup pin counted PULLS while the pull was blocked, not goroutines; the old implementation already
 coalesced pulls, so it passed against the code it was meant to reject.
 The r6 replacement counted worker STARTS via the test-only
 `shortIDWarmWorkerStarts`. That counter stays at 1 even if a per-emission
@@ -483,11 +486,34 @@ The header previously scoped it "for ruling"; Ruling A executed it in piece
 is corrected; the historical ruling-request section is retained as history,
 not as current status.
 
-### Correction (iv) — new integration levels; E2E is a separate frontend commit
+### Correction (iv) — integration levels, the genuinely red-first E2E, and the heal-window seam (r8)
 The earlier "integration levels are a follow-up" notes are now closed for
-this slice by the Postgres-backed tests below. The frontend E2E pins
-(E2.1/E2.6) land in the separate frontend commit `bce1579c` on this branch;
-this Go-side work neither adds nor claims red-first E2E coverage.
+this slice by the Postgres-backed tests below. The GENUINELY red-first
+E2.1/E2.6 pins and the frontend heal-window id seam land in `4d07a8fc7`
+(not `bce1579c`). `bce1579c`'s E2E was post-fix phrase-keyed and passed on
+`origin/main`, so it did not reproduce the divergence; `4d07a8fc7` instead
+drives PRE-FIX wire shapes on the surface under test and is verified red on
+`origin/main` (tests only, no seam) at the predicted assertions, then green
+on the branch.
+
+The seam (`frontend/src/session/sessionAliases.ts`, consumed by
+`useContractStream.ts` and `SessionActivityProvider.tsx`):
+- learns per-workspace (harness → phrase) pairs from ADDITIVE ids
+  (`data.internal_session_id` on user-stream events, `internalSessionId` on
+  contract frames);
+- is bounded at 512 aliases per workspace with FIFO eviction;
+- is the IDENTITY when no pair is known (never worse than pre-fix);
+- refuses an equal-id "pair" so a same-id decoy cannot alias onto the phrase
+  session;
+- late-re-keys fold rows that landed under the harness key before the pair
+  was learned (`rekeySessionMap`), publishing only when the map changed.
+
+Honest limitation: if BOTH streams are fully pre-fix — no additive id
+anywhere — no mapping exists, so a refresh/bounce is still required. The
+seam covers the real skew cases (API-new/agentd-old and
+API-old/agentd-new); it does not invent a mapping from nothing.
+
+The Postgres-backed test levels:
 - `api/internal/handlers/usagestream_phrase_integration_test.go` — real
   Postgres, real `sessionindex`, real `sessionstate.Authority`, real
   `abiclient`, real `usagestream.Consumer`, real `usageBridge`, real
@@ -594,3 +620,65 @@ package). Workflow edits count as changed, so the workflow validates itself.
 - `go test -race -timeout 300s ./api/internal/services/usagestream/ -count=10` — green.
 - `go test -timeout 180s ./cmd/workspace-agentd/ -run 'TestEmissionTranslator|TestWarm|TestShortIDStore' -count=1` — green.
 - `go test -tags=integration -race -count=1 -run 'TestIntegrationUsageStream' ./api/internal/handlers/` (real Postgres) — green.
+
+## Piece 3 (continued) — r8 review (2026-10-21, merge-hygiene minors)
+
+r8 was the docs/PR-body accuracy round plus three minimal findings. The
+E2E ownership correction is in Correction (iv); the PR body was rewritten to
+describe the current design and no longer claims there are no E2E pins, an
+"unexercised" integration level, or the retired dedup pin.
+
+### Minor 3a — lifecycle clears pinned at the CALL SITES
+`TestLifecycleClearIsPhraseKeyed` only called the translator directly, so
+deleting a call site would not fail anything. `TestLifecycleClearCallSites-
+ArePhraseKeyed` now drives the REAL paths — `reconcileSessionState` (idle),
+`removeActiveSessionEvents` (delete, and asserts no mint), and
+`PublishSessionArchived` (archive) — plus the admin force-abort HTTP route,
+asserting the event that reaches the workspace broker is phrase-keyed.
+Mutation evidence (run, not assumed): removing the translate call from each
+site makes its subtest fail with the harness id on the wire
+(`ses_clearsite_1817` instead of `november-foxtrot-2`). The pending-input /
+inbox re-present prompts are covered by the existing phrase pins for those
+emissions; they are prompts, not lifecycle clears.
+
+### Minor 3b — T1.6 covers the third surface
+`TestUserStreamSessionEvents_JoinableWithSessionList` now builds a real
+`sessionstate.Authority` with an `IDTranslator`, ingests a harness-keyed
+busy event, and asserts the subscribe SNAPSHOT carries the same join key
+(`sessionId` = phrase, `internalSessionId` = harness). The tripwire therefore
+covers all three surfaces: list row, user stream, contract projection.
+Mutation evidence: disabling the translation in `podSnapshotsLocked` makes
+the test fail ("the contract snapshot must contain the session join row").
+
+### Minor 3c — `session_id_deprecated` on a translation miss (#1821 degrade rule)
+On a translation miss the harness id still passes through (never worse) but
+map-shaped `session.status` / `agent.*.resolved` payloads now carry
+`session_id_deprecated: "true"` (`markDeprecatedSessionID`, matching the
+existing MCP `session_id_deprecated` string convention). Successful
+translations carry no flag. The struct-shaped `agent.question` /
+`agent.permission` `session.InputRequest` payload is the documented
+EXCEPTION: it is never clobbered to carry a marker (the same clobber the
+piece-2 fix preserves). Pins: `TestTranslationMissFlagsSessionIDDeprecated`
+(miss flagged for status + resolved; healthy translation unflagged; struct
+payload intact). RED first: both miss subtests failed before the helper was
+added.
+
+### Deliberately deferred
+- The `agent.question` / `agent.permission` payload ids
+  (`SessionID`/`RootSessionID`) remain harness-space; only the ENVELOPE is
+  phrase-keyed. The payload-internal join is a separate cross-surface contract
+  change (PR body "Remaining").
+- Delete-clear against a cold/warm-LRU miss passes the harness id through
+  (now flagged deprecated) — it never mints a ghost row by design.
+
+### Tests Run (r8)
+- `go build ./...` — clean.
+- `golangci-lint run ./api/internal/... ./cmd/workspace-agentd/...` — 0 issues.
+- `go test -timeout 180s ./api/internal/handlers/ -count=1` — green (97s).
+- `go test -race -timeout 300s ./api/internal/services/usagestream/ -count=1` — green.
+- Postgres integration (`TEST_DATABASE_URL`, tags=integration): usage-stream
+  (translated, legacy, reconnect, dead-index) + registry round trip + agentd
+  emission warm — all PASS.
+- `make repolint` — all checks passed (the NNNN sentinel warning is the
+  expected post-merge numbering note).
+- Mutation evidence for every new pin is recorded in the findings above.

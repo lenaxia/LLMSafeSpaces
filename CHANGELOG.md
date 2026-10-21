@@ -42,7 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authority stream → real consumer → real `usageBridge` → real
   `sessionindex`, the create-via-API registry round trip, the
   legacy-frame phrase translation, and the agentd replica warm against
-  the real registry contract.
+  the real registry contract. A translation miss on the user-stream edge
+  flags the passthrough harness id as `session_id_deprecated` (map-shaped
+  `session.status` / `agent.*.resolved` payloads only; the struct
+  `agent.question` payload is left intact), and the lifecycle clear call
+  sites (idle reconcile, delete, archive, admin abort) are pinned through
+  their real paths.
+- **Frontend heal-window id seam (#1817, additive).** The app now learns
+  per-workspace (harness → phrase) aliases from the additive ids
+  (`data.internal_session_id` on user-stream events, `internalSessionId`
+  on contract frames), bounded at 512 aliases per workspace with FIFO
+  eviction, identity when no pair is known (never worse), with an
+  equal-id decoy guard and late re-key of fold rows that arrived before
+  the pair. This closes the API-new/agentd-old and API-old/agentd-new skew
+  windows. It cannot help when BOTH streams are fully pre-fix (no additive
+  id anywhere) — those workspaces still need a refresh/bounce. The
+  red-first E2.1/E2.6 Playwright pins drive pre-fix wire shapes on the
+  surface under test (composer send + sidebar collapsed-workspace busy
+  count, harness-keyed idle clear, reconnect lost-idle wipe, pre-fix
+  contract frames in the phrase view, and a non-vacuous same-id decoy);
+  they fail on `origin/main` at the predicted assertions and pass with the
+  seam.
 
 (nothing yet)
 

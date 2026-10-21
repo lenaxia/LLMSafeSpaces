@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -457,6 +458,7 @@ func (h *ProxyHandler) translateSessionIDToPhrase(ctx context.Context, workspace
 	defer cancel()
 	phrase := h.sessionIndex.Register(regCtx, workspaceID, harnessID, "")
 	if phrase == "" || phrase == harnessID {
+		markDeprecatedSessionID(evt)
 		return
 	}
 	evt.SessionID = phrase
@@ -505,6 +507,7 @@ func (h *ProxyHandler) translateSessionIDToPhraseNoMint(workspaceID string, evt 
 	}
 	phrase := h.sessionIndex.ResolveShortID(workspaceID, harnessID)
 	if phrase == "" || phrase == harnessID {
+		markDeprecatedSessionID(evt)
 		return
 	}
 	evt.SessionID = phrase
@@ -517,6 +520,35 @@ func (h *ProxyHandler) translateSessionIDToPhraseNoMint(workspaceID string, evt 
 		evt.Data = data
 	case map[string]string:
 		data["internal_session_id"] = harnessID
+	}
+}
+
+// markDeprecatedSessionID is the #1821 degrade-rule marker: when the
+// translation seam cannot resolve a phrase, the harness id passes through
+// (never worse) but is FLAGGED as deprecated so consumers can distinguish a
+// degraded emission from a healthy one. Only the map-shaped payloads of the
+// session.status / agent.*.resolved events carry the flag; the struct
+// InputRequest payload (agent.question / agent.permission) is the
+// documented exception — its shape is never clobbered to carry a marker.
+func markDeprecatedSessionID(evt *apitypes.WorkspaceSSEEvent) {
+	isStatus := evt.Type == "session.status"
+	isResolved := strings.HasPrefix(evt.Type, "agent.") && strings.HasSuffix(evt.Type, ".resolved")
+	if !isStatus && !isResolved {
+		return
+	}
+	switch d := evt.Data.(type) {
+	case nil:
+		evt.Data = map[string]any{"session_id_deprecated": "true"}
+	case map[string]any:
+		if d == nil {
+			d = map[string]any{}
+		}
+		d["session_id_deprecated"] = "true"
+		evt.Data = d
+	case map[string]string:
+		d["session_id_deprecated"] = "true"
+	case session.InputRequest:
+		// Documented exception: keep the contract struct intact.
 	}
 }
 
