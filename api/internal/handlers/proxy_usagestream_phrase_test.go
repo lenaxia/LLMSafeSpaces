@@ -67,9 +67,21 @@ func TestUserStreamSessionEventsCarryPhraseID(t *testing.T) {
 		(&usageBridge{h: h}).InputRequested("ws-1", &abiv1.InputRequest{
 			Id: "req-1", SessionId: harnessID, Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "q?",
 		})
-		_, sid, iid := next(t)
-		assert.Equal(t, phraseID, sid)
-		assert.Equal(t, harnessID, iid)
+		evt := <-sub.Ch
+		assert.Equal(t, phraseID, evt.SessionID,
+			"the busy join keys on the phrase — the harness id never matches a minted row (the #1817 root cause)")
+		// #1817 piece 2: agent.question carries a STRUCT payload
+		// (session.InputRequest), not a map — the clobber fix preserved it.
+		// The harness id rides along ADDITIVELY as the payload's own
+		// SessionID field (the contract shape); session.InputRequest has
+		// no internal_session_id field, so the additive-map assertion is
+		// superseded by the struct assertion.
+		ir, ok := evt.Data.(session.InputRequest)
+		require.True(t, ok,
+			"the agent.question payload must stay the session.InputRequest struct (the clobber fix preserves it)")
+		assert.Equal(t, harnessID, ir.SessionID,
+			"the harness id rides along ADDITIVELY as the payload's SessionID (never dropped, never the join key)")
+		assert.Equal(t, "q?", ir.Question, "the question survives the translation")
 	})
 
 	t.Run("agent.question.resolved carries the phrase", func(t *testing.T) {
