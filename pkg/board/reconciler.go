@@ -528,7 +528,8 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				}
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
-						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false
+						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false,
+						failure_count=0, last_attempt_failed=false
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)
