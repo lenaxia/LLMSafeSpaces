@@ -5,43 +5,24 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## [Unreleased]
 
-### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+### Changed — PR-review runtime: CI-first execution policy in the review prompt (#1763 lever 2)
 
-- **Duplicate worklog numbers now FAIL `make repolint`** — the new
-  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
-  (`WorklogNumberPattern`) so historical uppercase-slug files count
-  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
-  the lowercase-only slug class; healed here by renumbering the
-  non-series member of each pair — final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166). Gaps stay warnings:
-  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
-  (pinned end-to-end through the real hook: every sentinel numbered,
-  main-inherited included, all unique) and the falsified "sentinels
-  never appear on origin/main" / "collisions cannot occur" comments
-  are corrected. The invariant caught one real collision in-flight
-  (its own PR's 1161 vs main's lag-window assignment); a second
-  (1162) was pre-empted by a manual leapfrog before it could redden.
-  Companion security bumps shipped separately: 43a7ba29 (Go
-  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
-
-### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
-
-- **The delivery boundary now refuses literal placeholder tokens.** The
-  mid-write emission-corruption mode (observed across worker sessions
-  and the orchestrator) replaces a drafted body with a placeholder
-  token as the call fires — the sender rarely notices, and every such
-  delivery costs the recipient a turn to diagnose. `send_message`
-  validates BEFORE delivery and rejects the narrow exact-match set
-  (trimmed, case-insensitive): `placeholder`, `placeholder-removed`,
-  `<placeholder>`, `todo`, `tbd`, `asdf`, `qwerty` — with the
-  re-compose guidance in the error. NOT a length heuristic: short
-  legitimate payloads (`ok`, `x`), probe traffic (`test`, `ping`), and
-  sentences merely CONTAINING a placeholder word pass untouched
-  (pinned). The tool description teaches the same contract: send the
-  complete intended content; re-compose if emission corruption ate the
-  draft.
+- **The AI reviewer now checks the head SHA's CI status before running any
+  suite locally and never re-executes what CI already ran green on that head**
+  (`.github/prompts/pr-review.md` VERIFICATION EXECUTION POLICY section).
+  Measured basis (PR #1763 runtime drill-down + revalidation, n=11 runs):
+  re-running CI-covered suites (`go vet ./...`, full `-race` suite, `-short`
+  coverage, vitest) plus `sleep N; gh pr checks` idle waits cost a mean
+  3.1 min per review run (max 11.2) for zero added signal. The reviewer-unique
+  verification stays mandatory and untouched: `-tags integration` board/
+  agentd/handlers suites beyond CI's named pins, agentd E2E, and
+  mutation/red-checks for bug-fix pins (~8 min across the sample — the
+  quality floor, not overhead). Quality floor unchanged by design: a green
+  CI run is execution evidence only and never waives the TESTS gate's
+  structural requirements; no model change, no tool removal. Pinned red-first
+  by `TestPrReviewPromptCIFirstExecutionPolicy` (tests/ghaworkflows).
 
 ## [0.40.1] - 2026-10-21
 
