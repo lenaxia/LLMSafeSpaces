@@ -526,7 +526,7 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		AuthJSONPath:      authJSONPath,
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
-		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter),
+		KillOpenCode:      relayKillWithMarker(relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter)),
 		// #910 gates: no re-arm attempt while any session is busy (the
 		// existing tracker oracle — the same busyness source the restart
 		// deferral trusts) or while a deferred restart is outstanding
@@ -553,7 +553,7 @@ func liveSessionsLister(deps serverDeps) sessionLister {
 	}
 }
 
-// relayKillFunc builds the relay injector's opencode-restart trigger.
+// relayKillFunc builds the shared session-aware opencode-restart trigger.
 //
 // Session-aware kill (US-44.2 semantics): a direct proc.restart() here killed
 // any session waiting on a pending question/permission — the in-memory input
@@ -565,28 +565,18 @@ func liveSessionsLister(deps serverDeps) sessionLister {
 // #1342). No pending-apply surfacing: a relay restart is not a credential
 // apply.
 //
-// #1801: this closure is the relay class's restart DECISION point, so it
-// owns the class's restart-reason marker write — every other restart class
-// writes at its own decision site (healthz_cache.go fires, secrets.go
-// applies, xdg_config_layer.go watches; the managedProcess loop covers
-// crash/oom). The write is DECISION-TIME per the accepted M3 semantics
-// (restart_reason.go): a deferred restart that never fires (pod death
-// cancels it) leaves a stale-at-boot marker — same trade-off the
-// credential-apply and config-watcher classes already make. The marker is
-// observability, never a gate: a failed write counts and the restart
-// proceeds.
+// This closure is SHARED by two restart classes and carries NO class marker
+// of its own: the single-container XDG config watcher's restartNow (below,
+// #1300) and the relay injector's KillOpenCode (via relayKillWithMarker,
+// #1801). Each class writes its own restart-reason marker at ITS decision
+// site (xdg_config_layer.go writes credential_reload before restartNow; the
+// injector's wrapper writes relay_injector) — a write here would clobber the
+// other class's marker (#1803 review finding 1).
 func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister, interrupter sessionInterrupter) func() {
 	if proc == nil {
 		return func() {}
 	}
 	return func() {
-		if err := writeRestartReasonMarker(markerPathFromEnv(), RestartReasonRelayInjector, nil); err != nil {
-			log.Error("failed to write restart-reason marker", zap.Error(err))
-			pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonRelayInjector)
-		} else {
-			logRestartReasonAtWrite(RestartReasonRelayInjector, nil, log.Core())
-		}
-		pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonRelayInjector)
 		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartDecisionConfig{
 			PollInterval: restartIdleCheckInterval,
 			StallBound:   restartStallBound,
@@ -595,6 +585,27 @@ func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartable
 			Interrupter:  interrupter,
 			BgWg:         bgWg,
 		}) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be canceled at shutdown
+	}
+}
+
+// relayKillWithMarker wraps the relay injector's kill with the relay class's
+// restart-reason marker write (#1801): the injector is the class's decision
+// site, so it owns the write — every restart class writes at its own decision
+// site. The write is DECISION-TIME per the accepted M3 semantics
+// (restart_reason.go): a deferred restart that never fires (pod death cancels
+// it) leaves a stale-at-boot marker — the same trade-off the credential-apply
+// and config-watcher classes already make. The marker is observability, never
+// a gate: a failed write counts and the restart proceeds.
+func relayKillWithMarker(kill func()) func() {
+	return func() {
+		if err := writeRestartReasonMarker(markerPathFromEnv(), RestartReasonRelayInjector, nil); err != nil {
+			log.Error("failed to write restart-reason marker", zap.Error(err))
+			pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonRelayInjector)
+		} else {
+			logRestartReasonAtWrite(RestartReasonRelayInjector, nil, log.Core())
+		}
+		pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonRelayInjector)
+		kill()
 	}
 }
 

@@ -57,12 +57,19 @@ func markerAt(t *testing.T, path string) restartReason {
 // Class 3e — relay injector / re-arm kill (the #1801 / 06:19 class)
 // -----------------------------------------------------------------------
 
-// TestRelayKillFunc_WritesMarker_ImmediateLeg pins the #1801 fix's core:
-// an idle-session relay kill writes reason "relay_injector" to the
-// marker BEFORE the session-aware restart fires. Red mode: delete the
-// write in relayKillFunc — the marker assertion fails (the 06:19 shape:
+// relayKillUnderTest composes the production injector wiring
+// (maybeStartRelayInjector): the shared session-aware kill wrapped by the
+// relay class's marker write.
+func relayKillUnderTest(ctx context.Context, proc *mockManagedProcess, tracker *sessionStatusTracker) func() {
+	return relayKillWithMarker(relayKillFunc(ctx, nil, proc, tracker, nil, nil))
+}
+
+// TestRelayKillWithMarker_WritesMarker_ImmediateLeg pins the #1801 fix's core:
+// an idle-session relay kill writes reason "relay_injector" to the marker
+// BEFORE the session-aware restart fires. Red mode: delete the write in
+// relayKillWithMarker — the marker assertion fails (the 06:19 shape:
 // restart happened, marker stale).
-func TestRelayKillFunc_WritesMarker_ImmediateLeg(t *testing.T) {
+func TestRelayKillWithMarker_WritesMarker_ImmediateLeg(t *testing.T) {
 	withTestLogger(t)
 	markerPath := filepath.Join(t.TempDir(), "restart-reason.json")
 	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", markerPath)
@@ -70,8 +77,7 @@ func TestRelayKillFunc_WritesMarker_ImmediateLeg(t *testing.T) {
 
 	proc := &mockManagedProcess{}
 	tracker := newSessionStatusTracker()
-	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil, nil)
-	kill()
+	relayKillUnderTest(context.Background(), proc, tracker)()
 
 	assert.Equal(t, 1, proc.restartCount(), "idle sessions — restart must fire immediately")
 	m := markerAt(t, markerPath)
@@ -81,7 +87,25 @@ func TestRelayKillFunc_WritesMarker_ImmediateLeg(t *testing.T) {
 	assert.NoError(t, err, "marker timestamp must be RFC3339")
 }
 
-// TestRelayKillFunc_WritesMarker_AtDecisionTimeWhileDeferred pins the
+// TestRelayKillWithMarker_SharedClosureWritesNoMarker pins the #1803 review
+// finding-1 shape from the other side: the BARE relayKillFunc (the closure
+// main.go wires as the XDG watcher's restartNow) writes NO marker — a
+// class-specific write inside the shared closure would clobber whichever
+// class already wrote at its own decision site.
+func TestRelayKillWithMarker_SharedClosureWritesNoMarker(t *testing.T) {
+	withTestLogger(t)
+	markerPath := filepath.Join(t.TempDir(), "restart-reason.json")
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", markerPath)
+
+	proc := &mockManagedProcess{}
+	relayKillFunc(context.Background(), nil, proc, newSessionStatusTracker(), nil, nil)()
+
+	assert.Equal(t, 1, proc.restartCount(), "the shared closure must still restart")
+	_, err := os.Stat(markerPath)
+	require.True(t, os.IsNotExist(err), "the shared closure must not write any class marker")
+}
+
+// TestRelayKillWithMarker_WritesMarker_AtDecisionTimeWhileDeferred pins the
 // M3 decision-time semantics for the relay class: the marker is written
 // when the restart is REQUESTED, not when the deferred restart later
 // COMPLETES. With a busy session the restart is withheld, yet the
@@ -89,7 +113,7 @@ func TestRelayKillFunc_WritesMarker_ImmediateLeg(t *testing.T) {
 // restart_reason.go (decision time is when the relay config change
 // became relevant; a deferred restart that never fires leaves a
 // stale-at-boot marker, mitigated by the 10-minute stale threshold).
-func TestRelayKillFunc_WritesMarker_AtDecisionTimeWhileDeferred(t *testing.T) {
+func TestRelayKillWithMarker_WritesMarker_AtDecisionTimeWhileDeferred(t *testing.T) {
 	withTestLogger(t)
 	markerPath := filepath.Join(t.TempDir(), "restart-reason.json")
 	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", markerPath)
@@ -103,8 +127,7 @@ func TestRelayKillFunc_WritesMarker_AtDecisionTimeWhileDeferred(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	kill := relayKillFunc(ctx, nil, proc, tracker, nil, nil)
-	kill()
+	relayKillUnderTest(ctx, proc, tracker)()
 
 	assert.Equal(t, 0, proc.restartCount(), "busy session — restart must be deferred")
 	m := markerAt(t, markerPath)
@@ -112,11 +135,11 @@ func TestRelayKillFunc_WritesMarker_AtDecisionTimeWhileDeferred(t *testing.T) {
 		"marker must land at DECISION time even while the restart is deferred")
 }
 
-// TestRelayKillFunc_MarkerFailureDoesNotBlockRestart mirrors the H2
+// TestRelayKillWithMarker_MarkerFailureDoesNotBlockRestart mirrors the H2
 // doctrine: the marker is observability, never a gate. A sabotaged
 // marker path (parent is a regular file → MkdirAll fails) must not
 // stop the restart, and the failure must be counted.
-func TestRelayKillFunc_MarkerFailureDoesNotBlockRestart(t *testing.T) {
+func TestRelayKillWithMarker_MarkerFailureDoesNotBlockRestart(t *testing.T) {
 	withTestLogger(t)
 	dir := t.TempDir()
 	blockingFile := filepath.Join(dir, "blocker")
@@ -127,17 +150,16 @@ func TestRelayKillFunc_MarkerFailureDoesNotBlockRestart(t *testing.T) {
 	before := testutil.ToFloat64(pkgOpsMetrics.markerWriteFailures.WithLabelValues("ws-1801-relay-markerfail", RestartReasonRelayInjector))
 
 	proc := &mockManagedProcess{}
-	kill := relayKillFunc(context.Background(), nil, proc, newSessionStatusTracker(), nil, nil)
-	kill()
+	relayKillUnderTest(context.Background(), proc, newSessionStatusTracker())()
 
 	assert.Equal(t, 1, proc.restartCount(), "restart must proceed despite marker-write failure")
 	after := testutil.ToFloat64(pkgOpsMetrics.markerWriteFailures.WithLabelValues("ws-1801-relay-markerfail", RestartReasonRelayInjector))
 	assert.Equal(t, before+1, after, "marker-write failure must be counted")
 }
 
-// TestRelayKillFunc_RecordsRestartMetric pins the ops-metric leg: the
+// TestRelayKillWithMarker_RecordsRestartMetric pins the ops-metric leg: the
 // relay class appears in workspace_restarts_total{reason="relay_injector"}.
-func TestRelayKillFunc_RecordsRestartMetric(t *testing.T) {
+func TestRelayKillWithMarker_RecordsRestartMetric(t *testing.T) {
 	withTestLogger(t)
 	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", filepath.Join(t.TempDir(), "restart-reason.json"))
 	t.Setenv("WORKSPACE_ID", "ws-1801-relay-metric")
@@ -145,12 +167,26 @@ func TestRelayKillFunc_RecordsRestartMetric(t *testing.T) {
 	before := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-1801-relay-metric", RestartReasonRelayInjector))
 
 	proc := &mockManagedProcess{}
-	kill := relayKillFunc(context.Background(), nil, proc, newSessionStatusTracker(), nil, nil)
-	kill()
+	relayKillUnderTest(context.Background(), proc, newSessionStatusTracker())()
 
 	after := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-1801-relay-metric", RestartReasonRelayInjector))
 	assert.Equal(t, before+1, after,
 		`workspace_restarts_total{reason="relay_injector"} must increment on a relay restart`)
+}
+
+// TestRelayKillWithMarker_InjectorWiringCarriesTheWrapper source-pins the
+// production wiring (same lockstep-needle pattern as
+// TestOpencodeBootLayersWiring): the injector's KillOpenCode wraps the
+// shared kill with the class marker write; the watcher keeps the BARE
+// closure.
+func TestRelayKillWithMarker_InjectorWiringCarriesTheWrapper(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	require.NoError(t, err, "wiring pin must fail on unreadable source, not skip")
+	src := string(body)
+	assert.Contains(t, src, "KillOpenCode:      relayKillWithMarker(relayKillFunc(",
+		"the injector wiring must wrap the shared kill with the relay marker write")
+	assert.Contains(t, src, "go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,\n\t\t\trelayKillFunc(",
+		"the watcher wiring must keep the BARE shared closure (its class marker is written at its own decision site)")
 }
 
 // TestRestartReasonRelayInjector_Constant pins the shared string: the
@@ -271,4 +307,57 @@ func TestRestartMarker_SecretsApplySingleContainer(t *testing.T) {
 	m := markerAt(t, markerPath)
 	assert.Equal(t, "env_secrets_changed", m.Reason)
 	assert.Equal(t, []string{"GH_TOKEN"}, m.SecretNames)
+}
+
+// -----------------------------------------------------------------------
+// Production composite — watcher × shared closure (#1803 review finding 1)
+// -----------------------------------------------------------------------
+
+// TestWatchAgentConfigForChanges_ProductionComposite_MarkerStaysCredentialReload
+// wires the REAL single-container composite (main.go:346-347):
+// watchAgentConfigForChanges with the BARE relayKillFunc as restartNow and
+// an idle tracker. The watcher writes credential_reload at its decision
+// site BEFORE calling restartNow — the shared closure must not overwrite it
+// with a relay-class attribution, and the relay restart counter must not
+// record a watcher restart. Red mode: put the relay marker write back
+// inside relayKillFunc (the r1 shape) — both assertions fail.
+func TestWatchAgentConfigForChanges_ProductionComposite_MarkerStaysCredentialReload(t *testing.T) {
+	withTestLogger(t)
+	if testing.Short() {
+		t.Skip("watcher timing test")
+	}
+	t.Setenv("WORKSPACE_ID", "ws-1801-composite")
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "agent-config.json")
+	if err := os.WriteFile(p, []byte(`{"rev":1}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(dir, "restart-reason.json")
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", markerPath)
+
+	proc := &mockManagedProcess{}
+	tracker := newSessionStatusTracker()
+	relayBefore := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-1801-composite", RestartReasonRelayInjector))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchAgentConfigForChanges(ctx, p, xdgTestLogger(t),
+		relayKillFunc(ctx, nil, proc, tracker, nil, nil))
+
+	time.Sleep(6 * time.Second)
+	if err := os.WriteFile(p, []byte(`{"rev":2}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	require.Eventually(t, func() bool {
+		return proc.restartCount() == 1
+	}, 15*time.Second, 50*time.Millisecond, "the composite must restart through the shared closure")
+
+	m := markerAt(t, markerPath)
+	assert.Equal(t, "credential_reload", m.Reason,
+		"a watcher-class restart must keep the watcher's marker — never a relay overwrite")
+	relayAfter := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-1801-composite", RestartReasonRelayInjector))
+	assert.Equal(t, relayBefore, relayAfter,
+		`a watcher-class restart must not increment workspace_restarts_total{reason="relay_injector"}`)
 }

@@ -269,7 +269,8 @@ func (m *opsMetrics) RecordUploadScrub(workspaceID string, files int) {
 
 // RecordRestart increments the restart counter for the given reason.
 // Reasons: env_secrets, api_key, credential_reload (socket-topology
-// outcome-recorded), crash, oom, user_requested, health_watchdog.
+// outcome-recorded), crash, oom, user_requested, health_watchdog,
+// health_watchdog_unknown_episode, relay_injector.
 func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 	if workspaceID == "" {
 		workspaceID = "unknown"
