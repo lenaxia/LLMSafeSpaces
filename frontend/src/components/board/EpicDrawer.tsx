@@ -34,7 +34,7 @@ const ACTION_LABELS: Record<string, string> = {
   move_stage: "stage moved",
   create_task: "task created",
   update_task: "task updated",
-  cancel_task: "task cancelled",
+  delete_task: "task deleted",
   start_task: "worker dispatched",
   add_dependency: "dependency added",
   remove_dependency: "dependency removed",
@@ -42,18 +42,24 @@ const ACTION_LABELS: Record<string, string> = {
   update_epic: "epic updated",
   epic_activate: "epic activated",
   epic_pause: "epic paused",
-  cancel_epic: "epic cancelled",
+  delete_epic: "epic deleted",
   create_project: "project created",
   update_project: "project updated",
   heartbeat: "heartbeat",
   report_throttle: "throttled (429 requeue)",
   reclaim: "lease reclaimed",
   escalate: "escalated to pending input",
+  pause_task: "task paused",
+  resume_task: "task resumed",
+  pause_project: "project paused",
+  resume_project: "project resumed",
+  import_plan: "plan imported",
+  unblocked_by_delete: "unblocked by delete",
 };
 
 /**
  * EpicDrawer — §4.8's epic focus: the outcome (the human's steering
- * wheel, R2) front and center, DERIVED progress (Done/(total−Cancelled)
+ * wheel, R2) front and center, DERIVED progress (Done/total
  * — computed by board_read, never stored; a zero denominator renders
  * "—", never 0/0), activate/pause, the worker budget (slots in use),
  * and the SSE activity feed (board.event payloads for this epic's

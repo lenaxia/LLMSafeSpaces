@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -100,7 +101,7 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	// P5: epic create (draft default) → activate → double-pause guard
 	epic, err := c.Board.CreateEpic(ctx, projectSid, ll.BoardEpicInput{
-		Title: "E1", Outcome: "canary", Priority: "P1",
+		Title: "E1", Outcome: "canary",
 	})
 	if !run.AssertNoError(err, "create-epic: no error") {
 		return
@@ -109,8 +110,13 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(epic.Status == ll.BoardEpicDraft, "create-epic: draft default", epic.Status)
 	epicSid := epic.ShortID
 
-	if act, err := c.Board.EpicActivate(ctx, epicSid); run.AssertNoError(err, "activate-epic: no error") {
+	// r5: the acknowledge flag rides the contract on the activation
+	// itself (the engine's 409 instructs it; a no-op when no inactive
+	// deps exist) — and the response is the {epic, initial_ready_set}
+	// wrapper.
+	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{AcknowledgeInactiveDeps: true}); run.AssertNoError(err, "activate-epic: no error") {
 		run.Assert(act.Status == ll.BoardEpicActive, "activate-epic: active", act.Status)
+		run.Assert(len(act.InitialReadySet) >= 0, "activate-epic: ready-set array present", fmt.Sprintf("%d ready", len(act.InitialReadySet)))
 	}
 	if _, err := c.Board.EpicPause(ctx, epicSid); run.AssertNoError(err, "pause-epic: no error") {
 		if _, e := c.Board.EpicPause(ctx, epicSid); e == nil {
@@ -122,9 +128,9 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	// P6: task create with the OR4 pr:N anchor tag + criteria
 	taskA, err := c.Board.CreateTask(ctx, epicSid, ll.BoardTaskInput{
-		Title:    "Task A",
-		Priority: "P0",
-		Tags:     []string{"pr:1234"},
+		Title: "Task A",
+
+		Tags: []string{"pr:1234"},
 		AcceptanceCriteria: []ll.BoardAcceptanceCriterion{
 			{Text: "c1", Met: true},
 			{Text: "c2", Met: false},
@@ -185,12 +191,12 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		run.OK("list-tasks-bad-stage: error")
 	}
 
-	// P11: cancel task (terminal) + cancel epic (→ paused)
-	if canceled, err := c.Board.CancelTask(ctx, taskBSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task: no error") {
-		run.Assert(canceled.Stage == ll.BoardStageCancelled, "cancel-task: terminal stage", canceled.Stage)
+	// P11 (#1747): delete task + delete epic (cancel is eliminated)
+	if del, err := c.Board.DeleteTask(ctx, taskBSid, false); run.AssertNoError(err, "delete-task: no error") {
+		run.Assert(del.ItemKind == "task", "delete-task: item kind", del.ItemKind)
 	}
-	if ce, err := c.Board.CancelEpic(ctx, epicSid, ll.BoardCancelInput{Reason: "canary cleanup"}); run.AssertNoError(err, "cancel-task-epic: no error") {
-		run.Assert(ce.Status == ll.BoardEpicPaused, "cancel-epic: paused", ce.Status)
+	if de, err := c.Board.DeleteEpic(ctx, epicSid, true); run.AssertNoError(err, "delete-epic: no error") {
+		run.Assert(de.ItemKind == "epic", "delete-epic: item kind", de.ItemKind)
 	}
 
 	// P12: read perimeter — a near-miss id is a plain 404
@@ -224,10 +230,10 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	// claimable work — no spawns); the SAME requestId twice renders
 	// 200-with-original on the replay
 	const replayKey = "11111111-2222-3333-4444-555555555555"
-	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
+	if act, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-1: no error") {
 		run.Assert(act.Status == ll.BoardEpicActive, "lifecycle-replay-1: active", act.Status)
 	}
-	if act2, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardLifecycleOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-2: 200-with-original") {
+	if act2, err := c.Board.EpicActivate(ctx, epicSid, ll.BoardActivateOptions{RequestID: replayKey}); run.AssertNoError(err, "lifecycle-replay-2: 200-with-original") {
 		run.Assert(act2.Status == ll.BoardEpicActive, "lifecycle-replay-2: original status", act2.Status)
 	}
 }

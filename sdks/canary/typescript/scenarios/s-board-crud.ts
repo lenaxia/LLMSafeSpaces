@@ -48,15 +48,23 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P5: epic create (draft default) → activate → double-pause guard
     const [eOk, epic] = await r.assertNoError(
-      () => c.board.createEpic(projectSid, { title: 'E1', outcome: 'canary', priority: 'P1' }),
+      () => c.board.createEpic(projectSid, { title: 'E1', outcome: 'canary' }),
       'create-epic: no error',
     );
     if (!eOk || !epic) return;
     r.assert(/^epc-[0-9a-z]{8}$/.test(epic.short_id), 'create-epic: short_id shape', epic.short_id);
     r.assert(epic.status === 'draft', 'create-epic: draft default', epic.status);
     const epicSid = epic.short_id;
-    const [acOk, act] = await r.assertNoError(() => c.board.activateEpic(epicSid), 'activate-epic: no error');
-    if (acOk && act) r.assert(act.status === 'active', 'activate-epic: active', act.status);
+    // r5: the acknowledge flag rides the contract on the activation
+    // itself (the engine's 409 instructs it; a no-op when no inactive
+    // deps exist) — and the response is the {epic, initial_ready_set}
+    // wrapper.
+    const [acOk, act] = await r.assertNoError(
+      () => c.board.activateEpic(epicSid, { acknowledgeInactiveDeps: true }),
+      'activate-epic: no error',
+    );
+    if (acOk && act) r.assert(act.epic.status === 'active', 'activate-epic: active', act.epic.status);
+    if (acOk && act) r.assert(Array.isArray(act.initial_ready_set), 'activate-epic: ready-set array', act.initial_ready_set);
     const [p1Ok] = await r.assertNoError(() => c.board.pauseEpic(epicSid), 'pause-epic: no error');
     if (p1Ok) await r.assertError(() => c.board.pauseEpic(epicSid), 'pause-paused-epic: guard error');
 
@@ -65,7 +73,6 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () =>
         c.board.createTask(epicSid, {
           title: 'Task A',
-          priority: 'P0',
           tags: ['pr:1234'],
           acceptanceCriteria: [
             { text: 'c1', met: true },
@@ -119,17 +126,18 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     if (lOk && listed) r.assert(listed.tasks.length === 2, 'list-tasks: two backlog', `${listed.tasks.length}`);
     await r.assertError(() => c.board.listProjectTasks(projectSid, 'wip'), 'list-tasks-bad-stage: error');
 
-    // P11: cancel task (terminal, idempotent) + cancel epic (→ paused)
-    const [cOk, cancelled] = await r.assertNoError(
-      () => c.board.cancelTask(taskBSid, { reason: 'canary cleanup' }),
-      'cancel-task: no error',
+    // P11 (#1747): delete task + delete epic (cancel is eliminated — the
+    // result lists orphaned dependents; no stage/status comes back)
+    const [cOk, del] = await r.assertNoError(
+      () => c.board.deleteTask(taskBSid),
+      'delete-task: no error',
     );
-    if (cOk && cancelled) r.assert(cancelled.stage === 'cancelled', 'cancel-task: cancelled', cancelled.stage);
-    const [ceOk, ce] = await r.assertNoError(
-      () => c.board.cancelEpic(epicSid, { reason: 'canary cleanup' }),
-      'cancel-epic: no error',
+    if (cOk && del) r.assert(del.item_kind === 'task', 'delete-task: item kind', del.item_kind);
+    const [ceOk, de] = await r.assertNoError(
+      () => c.board.deleteEpic(epicSid, true),
+      'delete-epic: no error',
     );
-    if (ceOk && ce) r.assert(ce.status === 'paused', 'cancel-epic: paused', ce.status);
+    if (ceOk && de) r.assert(de.item_kind === 'epic', 'delete-epic: item kind', de.item_kind);
 
     // P12: cross-tenant read perimeter — a near-miss id is a plain 404
     await r.assertError(() => c.board.getProject('prj-zzzzzzzz'), 'get-project-nearmiss: 404');

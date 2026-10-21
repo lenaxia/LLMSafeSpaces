@@ -3,7 +3,7 @@
  *
  * Rows:
  *   1. Board renders: swimlanes = projects, columns = stages, cards with
- *      short id / priority / tags / blocked badge.
+ *      short id / pause-waiting chips / tags / blocked badge.
  *   2. Drag = server-arbitrated move_stage: optimistic move + confirm;
  *      refused drag (409 + guard code) snaps back with the code rendered.
  *   3. Done drop collects the evidence URL (required on → done, R2).
@@ -33,7 +33,7 @@ type E2ETask = {
   title: string;
   description: string;
   stage: string;
-  priority: string;
+  paused: boolean;
   project_name: string;
   epic_name: string;
   tags: string[];
@@ -51,7 +51,7 @@ function task(partial: Partial<E2ETask> & { short_id: string; title: string; sta
   return {
     id: `uuid-${partial.short_id}`,
     description: "",
-    priority: "P2",
+    paused: false,
     project_name: partial.project_id === PROJECT_A ? "Apollo" : "Borealis",
     epic_name: partial.epic_id === "epic-1" ? "E1" : "E2",
     tags: [],
@@ -184,11 +184,19 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     void r.fulfill(j(t));
   });
 
-  await page.route(`${API}/me/tasks/*/cancel`, async (r: Route) => {
-    const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
+  await page.route(`${API}/me/tasks/*`, async (r: Route) => {
+    // #1747: cancel is eliminated — DELETE removes the row; the delete
+    // result lists orphaned dependents (surfaced, never a refusal).
+    if (r.request().method() !== "DELETE") {
+      void r.continue();
+      return;
+    }
+    const shortId = r.request().url().split("/tasks/")[1]?.split("?")[0];
     const t = state.tasks.find((x) => x.short_id === shortId);
-    if (t) t.stage = "cancelled";
-    void r.fulfill(j(t ?? { error: "not found" }, t ? 200 : 404));
+    state.tasks = state.tasks.filter((x) => x.short_id !== shortId);
+    void r.fulfill(j(t
+      ? { item_kind: "task", id: t.id, short_id: t.short_id, orphaned_dependents: [] }
+      : { error: "not found" }, t ? 200 : 404));
   });
   await page.route(`${API}/me/tasks/*/start`, async (r: Route) => {
     const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
@@ -239,7 +247,6 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(card).toBeVisible();
     await expect(card).toContainText("tsk-aaaa0001");
     await expect(card).toContainText("Write charter");
-    await expect(card).toContainText("P2");
 
     // Stage columns in the swimlane grid.
     const laneA = page.getByTestId(`swimlane-${PROJECT_A}`);
@@ -365,20 +372,18 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(page.getByTestId("task-save")).toBeDisabled();
   });
 
-  test("cancel arm: terminal write lands the card in Cancelled (design §4.8 Lane-4 e2e arm)", async ({ page }) => {
+  test("delete arm: destructive write removes the card (#1747 — cancel is eliminated)", async ({ page }) => {
     const state = await openBoard(page);
     expect(state.tasks.find((t) => t.short_id === "tsk-cccc0003")!.stage).toBe("in_review");
 
     await page.getByTestId("task-card-tsk-cccc0003").click();
-    await page.getByTestId("cancel-task").click();
+    await page.getByTestId("delete-task").click();
 
-    // The terminal write + invalidation: the dialog closes and the card
-    // appears in the collapsible Cancelled side column.
-    await expect(page.getByTestId("cancel-task")).toHaveCount(0, { timeout: 8000 });
-    await page.getByTestId("side-columns-toggle").first().click();
-    await expect(
-      page.locator('[data-swimlane="prj-aaaa1111"] [data-stage-drop="cancelled"]').getByTestId("task-card-tsk-cccc0003"),
-    ).toBeVisible({ timeout: 8000 });
+    // The destructive write + invalidation: the dialog closes and the
+    // card is GONE (delete removes the object; the audit keeps the
+    // snapshot — no Cancelled column exists anymore).
+    await expect(page.getByTestId("delete-task")).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("task-card-tsk-cccc0003")).toHaveCount(0, { timeout: 8000 });
   });
 
   test("reclaim arm: a streamed reclaim event converges the row to Backlog (lease lapse)", async ({ page }) => {
@@ -413,23 +418,28 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-stage", "in_progress", { timeout: 8000 });
   });
 
-  test("refusal arm: cancel 409 keeps the dialog open with the guard code rendered", async ({ page }) => {
+  test("refusal arm: delete 409 keeps the dialog open with the guard code rendered", async ({ page }) => {
     const state = freshState();
     await installSSEEmitters(page);
     await setupBoardMocks(page, state);
-    // Override cancel to refuse (already-terminal race, engine class).
-    await page.route(`${API}/me/tasks/*/cancel`, (r: Route) =>
-      r.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "board: guard stage_transition: already terminal", code: "stage_transition" }) }));
+    // Override delete to refuse (the in-flight-needs-force class, #1747).
+    await page.route(`${API}/me/tasks/*`, (r: Route) => {
+      if (r.request().method() !== "DELETE") {
+        void r.continue();
+        return;
+      }
+      void r.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "board: guard epic_state: claims in flight — force required", code: "epic_state" }) });
+    });
     await page.goto("/board");
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
 
     await page.getByTestId("task-card-tsk-cccc0003").click();
-    await page.getByTestId("cancel-task").click();
+    await page.getByTestId("delete-task").click();
 
     const notice = page.locator("[data-board-error]");
-    await expect(notice).toHaveAttribute("data-board-error", "stage_transition", { timeout: 8000 });
+    await expect(notice).toHaveAttribute("data-board-error", "epic_state", { timeout: 8000 });
     // The dialog STAYS open (the fields survive for a retry).
-    await expect(page.getByTestId("cancel-task")).toBeVisible();
+    await expect(page.getByTestId("delete-task")).toBeVisible();
     await expect(page.getByTestId("task-title")).toBeVisible();
   });
 

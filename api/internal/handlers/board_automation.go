@@ -40,10 +40,12 @@ type boardService interface {
 
 // SetBoardService installs the canonical BoardService (app wiring; the
 // nil-service routes are not registered — construction and route
-// registration move together in app.go).
+// registration move together in app.go). #1747: the same service carries
+// the manager projection the seam's manager routes speak.
 func (h *PodAutomationHandler) SetBoardService(svc *board.Service) {
 	h.board = svc
 	h.boardEngine = svc.Config()
+	h.boardMgr = svc
 }
 
 // HasBoard reports whether the board service is wired (route gating).

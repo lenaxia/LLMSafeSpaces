@@ -52,6 +52,10 @@ type PodAutomationHandler struct {
 	// nil until Lane 1's app wiring (the routes register only with it).
 	board       boardService
 	boardEngine board.EngineConfig
+	// boardMgr is the #1747 manager half of the seam (the same
+	// *board.Service, widened to the manager projection the REST adapter
+	// uses — the seam's manager routes speak it with pod identity).
+	boardMgr boardManager
 }
 
 // NewPodAutomationHandlerFromClientset is the production constructor
