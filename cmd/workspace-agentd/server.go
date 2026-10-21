@@ -770,6 +770,11 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 		bootPullSessionShortIDs(bgCtx)
 	}()
 
+	// #1817 r6: bind the emission-warm singleton to bgCtx so shutdown
+	// cancels/joins it. It is started here (before serving) so the first
+	// emission never pins it to a process-lifetime context.
+	ensureShortIDWarmWorker(bgCtx)
+
 	// US-44.5: memory pressure monitor checks cgroup usage against the
 	// 85% threshold and surfaces the state via statusz.
 	bgWg.Add(1)

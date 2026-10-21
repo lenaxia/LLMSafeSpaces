@@ -439,31 +439,16 @@ func (h *ProxyHandler) translateSessionIDToPhrase(ctx context.Context, workspace
 	// #1817 piece 3 — double-translation guard (the refreshed-pod defect):
 	// on refreshed pods the agentd emission already translated the frame to
 	// the phrase and left the harness id ADDITIVELY as internal_session_id
-	// (authority.go wireEvent / projection.go podSnapshotsLocked). If the
-	// consumer passes that already-phrase wire id back through this
-	// translation, the Register below would treat the PHRASE as a session_id
-	// and MINT a new short-id row (sessionindex.Service.Register →
-	// EnsureSessionRegistered — the INSERT keys on session_id, but a phrase
-	// lives in short_id, so the phrase is never found and a ghost row is
-	// created). That re-broke the busy join this PR exists to fix and
-	// produced a phantom sessions-list row. The additive internal id is the
-	// marker that the frame was already translated: resolve from it (the
-	// harness id) and leave the phrase untouched — Register on an already-
-	// resolved session is a no-op (the row exists), and the internal id
-	// stays the harness id. A harness-keyed frame (heal window / legacy)
-	// has no internal id and still translates: phrase = Register(harness).
-	// #1817 piece 3 — double-translation guard (the refreshed-pod defect):
-	// the additive internal_session_id is the marker that agentd ALREADY
-	// translated the frame — the wire SessionID is the PHRASE and the
-	// harness id rides additively. In that case the wire id is already
-	// correct: re-registering the phrase (Register(workspace, phrase)) would
-	// MINT a phantom short-id row (EnsureSessionRegistered INSERTs on
-	// session_id, but a phrase lives in short_id), re-breaking the busy join
-	// and writing context_used to a ghost row. So pass the phrase through
-	// UNCHANGED (re-affirm the additive id) — never downgrade a correct
-	// phrase to the harness id, even under a degraded index (Register
-	// returning "" must not flip a healthy refreshed-pod frame back to
-	// harness space — "never worse" holds for the refreshed-pod shape too).
+	// (authority.go wireEvent / projection.go podSnapshotsLocked). The
+	// additive id is therefore the marker that the wire SessionID is already
+	// the PHRASE. Re-registering it (Register(workspace, phrase)) would MINT
+	// a phantom short-id row (EnsureSessionRegistered INSERTs on session_id,
+	// but a phrase lives in short_id), re-breaking the busy join and writing
+	// context_used to a ghost row. So pass the phrase through UNCHANGED
+	// (re-affirm the additive id) — never downgrade a correct phrase to the
+	// harness id, even under a degraded index. A harness-keyed frame (heal
+	// window / legacy) has no internal id and still translates:
+	// phrase = Register(harness).
 	if internalID := internalSessionIDFromData(evt.Data); internalID != "" {
 		setInternalSessionID(evt, internalID)
 		return

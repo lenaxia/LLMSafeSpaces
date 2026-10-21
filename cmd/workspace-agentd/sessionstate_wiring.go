@@ -315,7 +315,7 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 // PHRASE at the contract-stream emission surface, from the same
 // short-id store the MCP surfaces read (session_shortids.go). Unresolved
 // ids return "" — the authority passes the harness id through (the heal
-// window) — and trigger an ASYNC warm of the replica.
+// window) — and enqueue an asynchronous replica warm.
 //
 // #1817 piece 3 (r4 finding 1): the replica is populated ONLY by (a) the
 // boot pull, (b) the on-miss pull that is invoked from MCP ref resolution,
@@ -330,23 +330,18 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 // true of the MCP path but NOT of emission — there was no pull on emission.
 //
 // Fix: warm on miss. A miss here is an unresolved id in the LIVE emission
-// path (not a caller looping on a typo), so schedule a detached, TTL-rate-
-// limited replica pull. The pull is ASYNC because wireEvent runs under the
-// authority lock (a synchronous HTTP pull would stall every emission); the
-// store's put/putAll + the pull's rate-limit mutex are independent of that
-// lock, so the off-lock goroutine is safe. The current frame still passes
-// the harness id through (heal window — never worse); the pull converges
-// the replica so subsequent frames for the session carry the phrase.
+// path (not a caller looping on a typo), so enqueue it for the replica warm
+// worker (session_ref.go). The pull is ASYNC because wireEvent runs under
+// the authority lock (a synchronous HTTP pull would stall every emission);
+// the worker coalesces a frame burst into one pull and backs off per id, so
+// a hot stream costs neither a goroutine per frame nor a pull per frame. The
+// current frame still passes the harness id through (heal window — never
+// worse); the pull converges the replica so subsequent frames for the
+// session carry the phrase.
 func emissionIDTranslator(harnessID string) string {
 	phrase := currentSessionShortIDs().shortIDFor(harnessID)
 	if phrase == "" && harnessID != "" {
-		// #1817 r4 finding 1 / r5 finding 2: schedule the warm. The
-		// singleflight flag inside warmSessionShortIDsOnMiss dedups it to
-		// ONE concurrent pull (no goroutine-per-emission), and — unlike the
-		// fixed 30s TTL — a back-to-back UI-created session gets its own
-		// warm once the in-flight one completes (the #1817 dead-streaming
-		// symptom on the common path).
-		go warmSessionShortIDsOnMiss()
+		warmSessionShortIDsOnMiss(harnessID)
 	}
 	return phrase
 }

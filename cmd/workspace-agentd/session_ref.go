@@ -69,8 +69,8 @@ func pullSessionShortIDs(ctx context.Context) bool {
 
 // pullSessionShortIDsRateLimited is the on-miss pull behind the TTL (the
 // MCP ref-resolution path — the caller loops on a typo, so a fixed window
-// bounds platform hammering). The EMISSION warm uses a different gate
-// (pullSessionShortIDSWarm below) — see its doc for why the fixed TTL is
+// bounds platform hammering). The EMISSION warm uses a different gate: the
+// queue+worker+backoff in this file — see its doc for why the fixed TTL is
 // wrong for the multi-session warm case.
 func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	shortIDPullMu.Lock()
@@ -83,42 +83,208 @@ func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	return pullSessionShortIDs(ctx)
 }
 
-// warmPullInFlight dedups the emission-path replica warm: at most ONE warm
-// pull runs at a time (#1817 r5 finding 2 — the r4 draft spawned a
-// goroutine PER unresolved emission frame, unbounded on a session the
-// replica never resolves). A second unresolved emission while a warm is in
-// flight coalesces onto the running pull instead of forking.
-var warmPullInFlight int32
+// Emission-path warm worker (#1817 r6 findings 1-4). The per-emission
+// goroutine and its in-flight CAS could not bound a hot stream: every
+// unresolved frame forked a goroutine, an overlapping id was dropped, and
+// without the TTL a registry that never resolved an id pulled once per
+// frame. This is ONE long-lived worker (sync.Once) fed by a bounded wake
+// channel: misses only enqueue an id and signal; the worker coalesces a
+// batch into one pull and applies per-id exponential backoff (1s → 30s)
+// to ids the registry still does not resolve, so pulls stay bounded. Ids
+// arriving while a pull is in flight stay pending and are pulled on the
+// next loop — never dropped.
+const (
+	shortIDWarmBackoffMin = time.Second
+	shortIDWarmBackoffMax = 30 * time.Second
+	// Entries idle this long are pruned (a session deleted/renamed away
+	// cannot pin a queue slot forever).
+	shortIDWarmEntryTTL = 10 * time.Minute
+	// Hard ceiling on the backoff map: prune the oldest entries past it.
+	shortIDWarmMaxEntries = 4096
+)
 
-// pullSessionShortIDSWarm is the emission-path async replica warm
-// (#1817 r4 finding 1, r5 finding 1+2). Unlike the MCP on-miss pull it is
-// NOT gated by the fixed 30s TTL: a legitimate UI-created session B created
-// within 30s of session A's warm must still get its own warm (the TTL
-// would lock B out for its whole first turn — the #1817 dead-streaming
-// symptom on the common path). Instead it is gated by an in-flight
-// singleflight: a miss schedules ONE detached pull if none is running, and
-// coalesces if one is. The pull's own 15s context bounds it; the flag is
-// cleared when it completes so the NEXT unresolved id (a newer session) can
-// trigger a fresh warm. Best-effort — a failure degrades to the heal window
-// (harness id passthrough), never worse than pre-fix.
-func pullSessionShortIDSWarm(ctx context.Context) bool {
-	if !atomic.CompareAndSwapInt32(&warmPullInFlight, 0, 1) {
-		// A warm is already running — coalesce onto it. The next unresolved
-		// emission (after it completes) will trigger a fresh pull.
-		return false
-	}
-	defer atomic.StoreInt32(&warmPullInFlight, 0)
-	return pullSessionShortIDs(ctx)
+var (
+	warmWorkerOnce   sync.Once
+	warmWorkerCtx    context.Context
+	warmWorkerCancel context.CancelFunc
+	warmWorkerWg     sync.WaitGroup
+
+	warmWake = make(chan struct{}, 1)
+	warmMu   sync.Mutex
+	// warmPending holds ids awaiting a pull. warmBackoff holds per-id
+	// negative-cache state (absent = due now). Both are guarded by warmMu.
+	warmPending = map[string]struct{}{}
+	warmBackoff = map[string]shortIDWarmBackoff{}
+
+	// shortIDWarmWorkerStarts is a test hook: incremented exactly once,
+	// when the singleton worker goroutine starts.
+	shortIDWarmWorkerStarts int32
+)
+
+type shortIDWarmBackoff struct {
+	delay     time.Duration
+	notBefore time.Time
+	lastSeen  time.Time
 }
 
-// warmSessionShortIDsOnMiss is the emission-path warm entrypoint: a single
-// detached goroutine (survives the authority's context) running the
-// singleflight pull. Safe to call per-emission — the in-flight flag dedups
-// it to one concurrent pull (#1817 r5 finding 2).
-func warmSessionShortIDsOnMiss() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	pullSessionShortIDSWarm(ctx)
+// ensureShortIDWarmWorker starts the singleton worker. The first caller's
+// context governs its lifetime (production passes bgCtx so shutdown joins
+// it; the emission path falls back to a process-lifetime context).
+func ensureShortIDWarmWorker(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	warmWorkerOnce.Do(func() {
+		warmWorkerCtx, warmWorkerCancel = context.WithCancel(ctx)
+		warmWorkerWg.Add(1)
+		go func() {
+			defer warmWorkerWg.Done()
+			shortIDWarmWorker(warmWorkerCtx)
+		}()
+	})
+}
+
+// warmSessionShortIDsOnMiss records one unresolved emission id and wakes
+// the worker. It NEVER spawns a goroutine and never blocks on the pull.
+func warmSessionShortIDsOnMiss(harnessID string) {
+	if harnessID == "" {
+		return
+	}
+	ensureShortIDWarmWorker(context.Background())
+	now := time.Now()
+	warmMu.Lock()
+	warmPending[harnessID] = struct{}{}
+	if b, ok := warmBackoff[harnessID]; ok {
+		b.lastSeen = now
+		warmBackoff[harnessID] = b
+	}
+	warmMu.Unlock()
+	select {
+	case warmWake <- struct{}{}:
+	default:
+	}
+}
+
+func shortIDWarmWorker(ctx context.Context) {
+	atomic.AddInt32(&shortIDWarmWorkerStarts, 1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-warmWake:
+		}
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			due, wait := shortIDWarmDue()
+			if len(due) == 0 {
+				if wait <= 0 {
+					break // nothing pending — park on warmWake
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-warmWake:
+					timer.Stop()
+				case <-timer.C:
+				}
+				continue
+			}
+			_ = pullSessionShortIDs(ctx)
+			shortIDWarmSettle(due)
+		}
+	}
+}
+
+// shortIDWarmDue takes the currently due ids out of pending and returns the
+// wait until the earliest still-backed-off id (0 when none are waiting).
+func shortIDWarmDue() ([]string, time.Duration) {
+	now := time.Now()
+	warmMu.Lock()
+	defer warmMu.Unlock()
+	shortIDWarmPruneLocked(now)
+	var due []string
+	var next time.Time
+	for id := range warmPending {
+		b, backedOff := warmBackoff[id]
+		if !backedOff || !now.Before(b.notBefore) {
+			due = append(due, id)
+			delete(warmPending, id)
+			continue
+		}
+		if next.IsZero() || b.notBefore.Before(next) {
+			next = b.notBefore
+		}
+	}
+	if len(due) == 0 && !next.IsZero() {
+		return nil, time.Until(next)
+	}
+	return due, 0
+}
+
+// shortIDWarmSettle records the outcome of one pull for the ids it covered:
+// resolved ids leave both maps; unresolved ids stay pending under a doubled
+// (capped) backoff. The store is consulted before taking warmMu — the store's
+// lock is never nested under the warm lock.
+func shortIDWarmSettle(ids []string) {
+	resolved := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if currentSessionShortIDs().shortIDFor(id) != "" {
+			resolved[id] = struct{}{}
+		}
+	}
+	now := time.Now()
+	warmMu.Lock()
+	defer warmMu.Unlock()
+	for _, id := range ids {
+		if _, ok := resolved[id]; ok {
+			delete(warmPending, id)
+			delete(warmBackoff, id)
+			continue
+		}
+		b := warmBackoff[id]
+		if b.delay <= 0 {
+			b.delay = shortIDWarmBackoffMin
+		} else {
+			b.delay *= 2
+			if b.delay > shortIDWarmBackoffMax {
+				b.delay = shortIDWarmBackoffMax
+			}
+		}
+		b.notBefore = now.Add(b.delay)
+		if b.lastSeen.IsZero() {
+			b.lastSeen = now
+		}
+		warmBackoff[id] = b
+		warmPending[id] = struct{}{}
+	}
+	shortIDWarmPruneLocked(now)
+}
+
+// shortIDWarmPruneLocked drops idle entries and enforces the hard ceiling.
+// Caller holds warmMu.
+func shortIDWarmPruneLocked(now time.Time) {
+	cutoff := now.Add(-shortIDWarmEntryTTL)
+	for id, b := range warmBackoff {
+		if b.lastSeen.Before(cutoff) {
+			delete(warmBackoff, id)
+			delete(warmPending, id)
+		}
+	}
+	for len(warmBackoff) > shortIDWarmMaxEntries {
+		var oldestID string
+		var oldest time.Time
+		for id, b := range warmBackoff {
+			if oldestID == "" || b.lastSeen.Before(oldest) {
+				oldestID, oldest = id, b.lastSeen
+			}
+		}
+		delete(warmBackoff, oldestID)
+		delete(warmPending, oldestID)
+	}
 }
 
 // bootPullSessionShortIDs warms the replica at agentd start (§4.3
