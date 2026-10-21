@@ -245,6 +245,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
+
+### Changed — Toolchain: Go 1.26.10 (crypto/x509 advisory) + worklog uniqueness invariant (#1795)
+
+- **Go 1.26.10** (crypto/x509 GO advisory — govulncheck's own trace
+  names `Fixed in: crypto/x509@go1.26.10` via
+  passkey → webauthn → x509.Verify): go.mod directive, all 20
+  workflow go-version pins, and the four digest-pinned golang builder
+  Dockerfiles re-pinned to the 1.26.10 tag manifest
+  (`sha256:5c3f3f28…`, registry-verified — GOTOOLCHAIN=local made the
+  old 1.26.9 digests incompatible with the directive).
+- **repolint worklog uniqueness invariant** (ruling c on the #1795
+  lag window): duplicate worklog numbers now FAIL `make repolint`
+  (gaps stay warnings — historical holes nothing backfills); the
+  post-rewrite renumber-all semantics stay (pinned end-to-end) and
+  the falsified "sentinels never appear on origin/main" /
+  "collisions cannot occur" comments are corrected. Also bumps vite
+  8.1.5 → 8.3.4 / nested 7.3.6 → 7.3.7 (CVE-2026-112942, Trivy).
+
 ### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
 - **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass

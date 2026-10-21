@@ -19,13 +19,13 @@ Duplicate worklog numbers — producable by two lag-window writers under the san
   - TestWorklogUniqueness_RedOnDuplicates — CLI-level: a scratch root with two worklogs claiming 1150 must produce a "FAIL worklogs uniqueness" naming the number. The DISCRIMINATING assertion is the check's own output line (the scratch's other missing-dir failures would otherwise trivially satisfy an exit-code check — caught while building the pin: the first fixture also had a hyphen/underscore typo that deformed the duplicate into an unversioned file; both fixed before relying on it).
   - TestRepolintMain_RegistersWorklogUniqueness — the #1305 registration pattern: silent deregistration fails the pin.
 - **The lag-window e2e pin** — TestPostRewrite_LagWindowRenumbersMainInheritedSentinels: the 25ed1853 scenario end-to-end through the REAL post-rewrite hook (scratch repo + linked worktree, main carrying two unnumbered sentinels, lane rebasing onto it): every sentinel numbered INCLUDING the main-inherited ones, all numbers unique. Pins ruling c's chosen semantics — an option-(a) "fix" (skip main-inherited) must fail here. Building it surfaced two harness realities, both documented in the pin: the hook's fix-worklogs pass resolves root via go.mod (the scratch must carry one) and the pre-existing hookScratch seeds its own lane sentinel + numbered fixtures (the assertion counts accordingly).
-- **The invariant**: runWorklogUniqueness in cmd/repolint/main.go — SequenceCheck over worklogs with WorklogPattern + AllowGaps (duplicates FAIL red; gaps WARN as transient bot-lag artifacts, matching the real repo's state where it reports 73 historical gaps as warnings).
+- **The invariant**: runWorklogUniqueness in cmd/repolint/main.go — SequenceCheck over worklogs with WorklogPattern + AllowGaps (duplicates FAIL red; gaps WARN — historical or bot-lag holes that nothing backfills; the repo reports 75 as warnings at this head).
 - **Comment fix** in sequence.go's assignSentinels: the sentinel pass now documents the lag window, the deliberate renumber-all heal (assignments skip both local and remote occupied numbers), and points at the uniqueness invariant as the safety net.
 - **Mutation verification on the final tree**: deregistering the check (file-copy mutation, restored) → both pins FAIL; registered → full pkg/repolint suite green (21.9s); `make repolint` on the real repo clean (sentinels ok, uniqueness ok-with-gap-warnings).
 
 ## Key Decisions
 
-- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; gaps under the sentinel scheme are the bot's own transient state (and 73 historical ones exist), so gap-gating would redden every branch forever — nothing backfills historical holes.
+- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; nothing backfills historical gap holes (75 exist at this head), so gap-gating would redden every branch forever.
 - The e2e pin runs the REAL hook binary path (prebuilt real repolint where the hook looks for it) rather than unit-mocking FixWorklogs — the scenario IS the hook's contract.
 
 ## Blockers
@@ -43,6 +43,7 @@ None.
 
 ## Files Modified
 
+- CHANGELOG.md — Unreleased entry (toolchain 1.26.10 + the invariant + the vite CVE bump)
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins
