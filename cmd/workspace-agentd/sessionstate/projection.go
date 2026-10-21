@@ -443,7 +443,14 @@ func (a *Authority) sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.
 func (a *Authority) podSnapshotsLocked() []*abiv1.SessionSnapshot {
 	out := make([]*abiv1.SessionSnapshot, 0, len(a.sessions))
 	for id, rec := range a.sessions {
-		out = append(out, a.sessionSnapshotLocked(id, rec))
+		snap := a.sessionSnapshotLocked(id, rec)
+		if a.cfg.IDTranslator != nil {
+			if phrase := a.cfg.IDTranslator(id); phrase != "" && phrase != id {
+				snap.InternalSessionId = id
+				snap.SessionId = phrase
+			}
+		}
+		out = append(out, snap)
 	}
 	return out
 }

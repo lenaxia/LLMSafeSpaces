@@ -408,10 +408,34 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 	a.seq = next
 	a.lastSeqAt = time.Now()
 	a.projectLocked(evt)
-	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: next, Event: evt}}}
+	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: next, Event: a.wireEvent(evt)}}}
 	a.fanoutLocked(frame)
 }
 
+// wireEvent is the EMISSION-surface id translation (#1817/#1821 piece
+// 1): the frame's session id becomes the platform PHRASE with the
+// harness id preserved ADDITIVELY as internal_session_id — one id
+// space for the frontend fold's join. The internal projection (and
+// State()/statusz) keep the harness id; only this COPY translates.
+// Shallow struct copy: nested messages are read-only downstream. Nil
+// translator / unresolved id → the original event (the heal window —
+// consumers must not require the phrase).
+func (a *Authority) wireEvent(evt *abiv1.Event) *abiv1.Event {
+	if a.cfg.IDTranslator == nil || evt == nil || evt.SessionId == "" {
+		return evt
+	}
+	phrase := a.cfg.IDTranslator(evt.SessionId)
+	if phrase == "" || phrase == evt.SessionId {
+		return evt
+	}
+	// proto.Clone (not a struct copy): Event embeds protoimpl.MessageState
+	// (a lock — govet copylocks); the clone also detaches nested messages
+	// so the wire copy can never alias mutable projection state.
+	out := proto.Clone(evt).(*abiv1.Event)
+	out.InternalSessionId = evt.SessionId
+	out.SessionId = phrase
+	return out
+}
 
 func (a *Authority) projectLocked(evt *abiv1.Event) {
 	a.applyContractLocked(evt)
