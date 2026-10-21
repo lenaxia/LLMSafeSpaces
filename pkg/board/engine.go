@@ -334,10 +334,15 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	// lands pending_input/escalated instead (§4.4). No lease, no token,
 	// no spawn; attempts stay at N.
 	if attempts >= s.cfg.AttemptsCap {
+		// #1813: exhaustion carries the failure overlay onto the
+		// pending_input row — the human sees WHY it escalated (the
+		// DOMINANT automatic site; TaskStart mirrors this).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-				pending_origin='escalated'
-			WHERE id=$1 AND stage='backlog'`, taskID)
+				pending_origin='escalated',
+				last_attempt_failed=true, last_failure_at=now(),
+				failure_count=GREATEST(failure_count, $2)
+			WHERE id=$1 AND stage='backlog'`, taskID, attempts)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -348,7 +353,8 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			return nil, "", "", err
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
-			"task", taskID, sysActor, map[string]any{"task_id": taskID, "attempts": attempts})
+			"task", taskID, sysActor,
+			map[string]any{"task_id": taskID, "attempts": attempts, "last_attempt_failed": true, "failure_count": attempts})
 		if err != nil {
 			return nil, "", "", err
 		}

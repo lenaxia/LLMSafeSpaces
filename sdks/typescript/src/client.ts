@@ -907,9 +907,12 @@ class BoardAPI {
     return this.client.request<BoardProject>("POST", `/me/projects/${id}/unarchive`, req);
   }
 
-  listProjectTasks(projectId: string, stage?: string) {
-    const q = stage ? `?stage=${encodeURIComponent(stage)}` : "";
-    return this.client.request<{ tasks: BoardTask[] }>("GET", `/me/projects/${projectId}/tasks${q}`);
+  listProjectTasks(projectId: string, stage?: string, opts?: { failed?: boolean }) {
+    const params = new URLSearchParams();
+    if (stage) params.set("stage", stage);
+    if (opts?.failed !== undefined) params.set("failed", String(opts.failed));
+    const q = params.toString();
+    return this.client.request<{ tasks: BoardTask[] }>("GET", `/me/projects/${projectId}/tasks${q ? `?${q}` : ""}`);
   }
 
   createEpic(projectId: string, req: BoardEpicCreateRequest) {

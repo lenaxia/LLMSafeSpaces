@@ -182,10 +182,10 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 
 	// P10: listing with the enumerated stage filter; unknown stage 400s
-	if tasks, err := c.Board.ListProjectTasks(ctx, projectSid, "backlog"); run.AssertNoError(err, "list-tasks: no error") {
+	if tasks, err := c.Board.ListProjectTasks(ctx, projectSid, "backlog", ""); run.AssertNoError(err, "list-tasks: no error") {
 		run.Assert(len(tasks) == 2, "list-tasks: two backlog", "")
 	}
-	if _, e := c.Board.ListProjectTasks(ctx, projectSid, "wip"); e == nil {
+	if _, e := c.Board.ListProjectTasks(ctx, projectSid, "wip", ""); e == nil {
 		run.Fail("list-tasks-bad-stage: error", "expected error, got success")
 	} else {
 		run.OK("list-tasks-bad-stage: error")

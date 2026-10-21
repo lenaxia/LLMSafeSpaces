@@ -323,6 +323,36 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		require.Equal(t, float64(1), body["attempts"], "re-claim after cooldown: the increment belongs to the grant")
 	})
 
+	// --- 4b: #1813 failure → visible overlay → backoff → auto re-dispatch,
+	// end to end through the real seam (the review's e2e tier gate).
+	t.Run("failure_overlay_visible_through_seam_1813", func(t *testing.T) {
+		shortID, projectID := seed(t, false)
+
+		claimFor(t, wsPod, shortID)
+		_, err := pool.Exec(ctx, `UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE short_id=$1`, shortID)
+		require.NoError(t, err)
+		_, err = recon.Sweep(ctx)
+		require.NoError(t, err)
+
+		// The overlay is VISIBLE on the real read: last_attempt_failed,
+		// failure_count, and the row sits in backlog (never a stage).
+		_, body := boardGet(t, shortID)
+		require.Equal(t, board.StageBacklog, body["stage"], "the failed row returns to backlog — the overlay is an attribute")
+		assert.Equal(t, true, body["last_attempt_failed"], "the overlay renders on the seam read")
+		assert.Equal(t, float64(1), body["failure_count"])
+		assert.NotNil(t, body["last_failure_at"])
+
+		// Backoff parks it: no claimable candidate until the cooldown
+		// clears — then dispatch is AUTOMATIC (no manager action).
+		_, err = svc.ClaimNext(ctx, "w-overlay", wsPod)
+		require.ErrorIs(t, err, board.ErrNoCandidate, "the failed row waits out its backoff")
+		_, err = pool.Exec(ctx, `UPDATE tasks SET cooldown_until=NULL WHERE short_id=$1`, shortID)
+		require.NoError(t, err)
+		_ = projectID
+		c2 := claimFor(t, wsPod, shortID)
+		assert.NotEmpty(t, c2.ClaimToken, "re-dispatch mints a fresh working token automatically")
+	})
+
 	// --- 5: foreign-task 404-class (r1-S1 structural binding) -------------------
 
 	t.Run("foreign_task_404_class", func(t *testing.T) {

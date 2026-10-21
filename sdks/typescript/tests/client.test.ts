@@ -853,6 +853,15 @@ describe("userPrompts", () => {
       expect(res.tasks).toHaveLength(1);
     });
 
+    it("threads the #1813 failed-state filter on the task list", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ tasks: [] }));
+      await client.board.listProjectTasks("prj-aaaa1111", undefined, { failed: true });
+      expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/tasks?failed=true");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ tasks: [] }));
+      await client.board.listProjectTasks("prj-aaaa1111", "backlog", { failed: false });
+      expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/tasks?stage=backlog&failed=false");
+    });
+
     it("reads the #1699 seams: epic list, board search, board health", async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ epics: [{ id: "e1", short_id: "epc-bbbb2222", progress_derived: true, progress_done: 1, progress_total: 2 }] }));
       const epics = await client.board.listBoardEpics("prj-aaaa1111");

@@ -760,6 +760,14 @@ func TestBoardTools_BoardReadFailedFilter(t *testing.T) {
 	h2 := &handlers{client: m2, timeout: 30 * time.Second}
 	res2, _ := callBoardTool(t, h2, "board_read", map[string]any{"project_id": "prj-aaaa1111"})
 	assert.False(t, res2.IsError, "absent failed arg means no filter")
+
+	// r6 (review): explicit false THREADS — "false only clean rows" per
+	// the tool description, never a silent no-filter.
+	m3 := &MockAPIClient{}
+	m3.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "", "false").Return(`{"tasks":[]}`, nil).Once()
+	h3 := &handlers{client: m3, timeout: 30 * time.Second}
+	res3, _ := callBoardTool(t, h3, "board_read", map[string]any{"project_id": "prj-aaaa1111", "failed": false})
+	assert.False(t, res3.IsError, "explicit false filters clean rows")
 }
 
 // TestBoardTools_DeleteProjectRefused (r2): board_delete on a prj- id

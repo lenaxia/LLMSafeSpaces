@@ -216,14 +216,24 @@ func TestBoard_DependencyAndClaimDecode(t *testing.T) {
 
 func TestBoard_StageFilterOnList(t *testing.T) {
 	c, _ := boardTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "stage=backlog") {
+		if r.URL.Query().Get("failed") == "" && !strings.Contains(r.URL.RawQuery, "stage=backlog") {
 			t.Errorf("stage filter missing: %s", r.URL.RawQuery)
+		}
+		if r.URL.Query().Get("failed") == "true" {
+			_, _ = w.Write([]byte(`{"tasks":[{"id":"t1","short_id":"tsk-cccc3333","stage":"backlog","last_attempt_failed":true,"failure_count":2}]}`))
+			return
 		}
 		_, _ = w.Write([]byte(`{"tasks":[{"id":"t1","short_id":"tsk-cccc3333","stage":"backlog"}]}`))
 	})
-	tasks, err := c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "backlog")
+	tasks, err := c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "backlog", "")
 	if err != nil || len(tasks) != 1 || tasks[0].Stage != BoardStageBacklog {
 		t.Fatalf("list tasks: %v %+v", err, tasks)
+	}
+
+	// #1813: the failed-state filter threads and the overlay decodes.
+	tasks, err = c.Board.ListProjectTasks(context.Background(), "prj-aaaa1111", "", "true")
+	if err != nil || len(tasks) != 1 || !tasks[0].LastAttemptFailed || tasks[0].FailureCount != 2 {
+		t.Fatalf("failed-filter list: %v %+v", err, tasks)
 	}
 }
 

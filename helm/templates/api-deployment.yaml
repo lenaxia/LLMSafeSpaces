@@ -158,6 +158,9 @@ spec:
               value: {{ dig "leaseSeconds" 900 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
               value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
+            # #1813: failed-attempt auto-return-to-ready base backoff.
+            - name: LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS
+              value: {{ dig "failureBackoffSeconds" 60 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_DRRQUANTUM
               value: {{ dig "drrQuantum" 1 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_SWEEPSECONDS

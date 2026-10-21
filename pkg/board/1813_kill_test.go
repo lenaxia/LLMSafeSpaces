@@ -161,3 +161,72 @@ func (s *BoardSuite) TestKill_1813_PendingResolutionClearsOverlay() {
 	s.Equal(0, after.Attempts, "attempts reset (the existing semantic)")
 	require.True(s.T(), after.Stage == board.StageInProgress || after.Stage == board.StageBacklog)
 }
+
+// KILL-TEST 1813-f (r6, the review's regression gate for the RC2
+// drift-done clause): a task carrying the overlay (SQL-seeded — every
+// in_review ENTRY path already clears it, so the fixture sets it
+// directly, which is exactly the reachable-by-composition shape the
+// claim-path escalation site produces) converges to done via the RC2
+// merged-anchor drift arm and the overlay + count are CLEARED there —
+// a done row never renders FAILED ×n.
+func (s *BoardSuite) TestKill_1813_DriftDoneClearsOverlay() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	prTask := s.seedTask(e, "pr-task", []string{"pr:42"}, true)
+
+	// Park in_review, then seed the overlay onto it (composition shape).
+	c := s.claimOrFail(ws)
+	s.Equal(prTask.ID, c.TaskID)
+	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), prTask.ID, "", board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET last_attempt_failed=true, failure_count=2 WHERE id=$1`, prTask.ID)
+	s.Require().NoError(err)
+
+	s.drift.set(42, board.PRState{Merged: true, URL: "https://git.example/pr/42"})
+	res := s.sweep()
+	s.Equal(1, res.DriftDone)
+
+	after := s.reloadTask(prTask.ID)
+	s.Equal(board.StageDone, after.Stage)
+	s.False(after.LastAttemptFailed, "the drift-done entry clears the overlay (a done row never renders FAILED)")
+	s.Equal(0, after.FailureCount)
+}
+
+// KILL-TEST 1813-g (the review's read-path gate): ListTasks honors the
+// failed filter against the real database — true keeps only failed
+// rows, false only clean, empty keeps all.
+func (s *BoardSuite) TestKill_1813_ListTasksFailedFilter() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	clean := s.seedTask(e, "clean", nil, false)
+	flappy := s.seedTask(e, "flappy", nil, false)
+
+	s.claimOrFail(ws)
+	s.expireLease(flappy.ID)
+	s.sweep()
+	s.clearTaskBackoff(flappy.ID)
+
+	only, err := s.svc.ListTasks(context.Background(), p.ID, "", "true")
+	s.Require().NoError(err)
+	s.Len(only, 1)
+	s.Equal(flappy.ID, only[0].ID, "failed=true keeps the failed row only")
+	s.True(only[0].LastAttemptFailed)
+	s.Equal(1, only[0].FailureCount)
+
+	cleanOnly, err := s.svc.ListTasks(context.Background(), p.ID, "", "false")
+	s.Require().NoError(err)
+	s.Len(cleanOnly, 1)
+	s.Equal(clean.ID, cleanOnly[0].ID, "failed=false keeps the clean row only")
+
+	all, err := s.svc.ListTasks(context.Background(), p.ID, "", "")
+	s.Require().NoError(err)
+	s.Len(all, 2, "absent keeps all rows")
+
+	stageAndFailed, err := s.svc.ListTasks(context.Background(), p.ID, board.StageBacklog, "true")
+	s.Require().NoError(err)
+	s.Len(stageAndFailed, 1)
+	s.Equal(flappy.ID, stageAndFailed[0].ID, "stage+failed compose")
+}

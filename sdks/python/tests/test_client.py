@@ -1198,6 +1198,9 @@ def test_board_task_or4_anchor_and_actions():
     respx.get(f"{BASE}/me/projects/prj-aaaa1111/tasks?stage=backlog").respond(
         json={"tasks": [{"id": "t1", "stage": "backlog"}]}
     )
+    respx.get(f"{BASE}/me/projects/prj-aaaa1111/tasks?failed=true").respond(
+        json={"tasks": []}
+    )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     task = client.board.create_task("epc-bbbb2222", title="T", tags=["pr:1234"])
     assert re.match(r"^pr:[1-9][0-9]*$", task["tags"][0])
@@ -1210,6 +1213,8 @@ def test_board_task_or4_anchor_and_actions():
     assert claim["claim_token"] == "tok-1" and claim["escalated"] is False
     assert client.board.delete_task("tsk-cccc3333")["item_kind"] == "task"
     assert len(client.board.list_project_tasks("prj-aaaa1111", stage="backlog")) == 1
+    # #1813: the failed-state overlay filter threads (true/false kwarg).
+    assert len(client.board.list_project_tasks("prj-aaaa1111", failed=True)) == 0
 
 
 @respx.mock

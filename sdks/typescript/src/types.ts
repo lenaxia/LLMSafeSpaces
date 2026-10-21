@@ -549,6 +549,11 @@ export interface BoardTask {
   lease_expires_at?: string | null;
   last_progress_at?: string | null;
   attempts: number;
+  /** #1813 failed-state overlay: the last worker attempt failed. */
+  last_attempt_failed: boolean;
+  /** Consecutive failures — the doubling backoff driver. */
+  failure_count: number;
+  last_failure_at?: string | null;
   cooldown_until?: string | null;
   stage_entered_at: string;
   created_at: string;

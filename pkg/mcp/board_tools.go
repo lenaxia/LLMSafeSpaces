@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -401,9 +402,11 @@ func (h *handlers) boardRead(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	if stage != "" && !boardStageSet()[stage] {
 		return mcp.NewToolResultError("stage filter must be one of " + strings.Join(boardStages, ", ")), nil
 	}
+	// #1813: tri-state — explicit true/false both thread (absent = no
+	// filter). The tool description promises "false only clean rows".
 	failed := ""
-	if b, ok := boolArg(args, "failed"); ok && b {
-		failed = "true"
+	if b, ok := boolArg(args, "failed"); ok {
+		failed = strconv.FormatBool(b)
 	}
 	resp, err := h.client.BoardListTasks(ctx, projectID, stage, failed)
 	if err != nil {

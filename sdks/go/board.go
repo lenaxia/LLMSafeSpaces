@@ -94,6 +94,9 @@ type BoardTask struct {
 	IsBlocked          bool                       `json:"is_blocked"`
 	BlockedBy          []string                   `json:"blocked_by,omitempty"`
 	Attempts           int                        `json:"attempts"`
+	LastAttemptFailed  bool                       `json:"last_attempt_failed"`
+	FailureCount       int                        `json:"failure_count"`
+	LastFailureAt      string                     `json:"last_failure_at,omitempty"`
 	StageEnteredAt     string                     `json:"stage_entered_at"`
 	CreatedAt          string                     `json:"created_at"`
 	UpdatedAt          string                     `json:"updated_at"`
@@ -250,10 +253,19 @@ func (s *BoardService) UnarchiveProject(ctx context.Context, id string, opts ...
 	return &p, nil
 }
 
-func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage string) ([]BoardTask, error) {
+// ListProjectTasks lists a project's tasks; stage and failed are
+// optional filters (failed: "true"/"false" — the #1813 overlay).
+func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage, failed string) ([]BoardTask, error) {
 	path := fmt.Sprintf("/me/projects/%s/tasks", projectID)
+	query := url.Values{}
 	if stage != "" {
-		path += "?stage=" + url.QueryEscape(stage)
+		query.Set("stage", stage)
+	}
+	if failed == "true" || failed == "false" {
+		query.Set("failed", failed)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	var resp struct {
 		Tasks []BoardTask `json:"tasks"`

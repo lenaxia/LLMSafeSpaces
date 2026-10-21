@@ -33,6 +33,7 @@ type fakeBoardManager struct {
 	lastRequestID string
 
 	lastProjectID     string
+	lastFailed        string
 	lastSearchQuery   string
 	lastSearchFilters board.SearchFilters
 	lastHealthUser    string
@@ -279,12 +280,30 @@ func (f *fakeBoardManager) GetTask(_ context.Context, _, _ string) (*board.Task,
 
 func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage, failed string) ([]board.Task, error) {
 	f.call("list_tasks")
+	f.lastFailed = failed
 	_ = projectID
 	if err := f.errFor["list_tasks"]; err != nil {
 		return nil, err
 	}
-	_ = stage
-	return f.tasks, nil
+	out := f.tasks
+	if stage != "" {
+		out = filterTasks(out, func(t board.Task) bool { return t.Stage == stage })
+	}
+	if failed == "true" || failed == "false" {
+		want := failed == "true"
+		out = filterTasks(out, func(t board.Task) bool { return t.LastAttemptFailed == want })
+	}
+	return out, nil
+}
+
+func filterTasks(in []board.Task, keep func(board.Task) bool) []board.Task {
+	var out []board.Task
+	for _, t := range in {
+		if keep(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (f *fakeBoardManager) ListEpics(_ context.Context, projectID string) ([]board.Epic, error) {
@@ -660,13 +679,31 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
 
 	// #1813: the failed-state overlay filter — tri-state boolean on the
-	// SAME endpoint; anything but true/false is a 400.
-	for _, f := range []string{"true", "false"} {
-		w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed="+f, "")
-		assert.Equal(t, http.StatusOK, w.Code, "failed="+f)
+	// SAME endpoint; anything but true/false is a 400. The filter is
+	// SEMANTIC (the fake honors it): true keeps only failed rows,
+	// false only clean rows, absent keeps all.
+	svc2 := newFakeBoardManager()
+	svc2.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	svc2.tasks = []board.Task{
+		{ID: "t-clean", ShortID: "tsk-aaaa0001", ProjectID: "p1", EpicID: "e1", Title: "clean", Stage: board.StageBacklog},
+		{ID: "t-failed", ShortID: "tsk-bbbb0002", ProjectID: "p1", EpicID: "e1", Title: "flappy", Stage: board.StageBacklog, LastAttemptFailed: true, FailureCount: 2},
 	}
-	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=maybe", "")
-	assert.Equal(t, http.StatusBadRequest, w.Code, "failed filter is tri-state boolean: "+w.Body.String())
+	r2 := newBoardRESTRouter(t, svc2)
+	w2 := doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=true", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-bbbb0002", "failed=true keeps the failed row")
+	assert.NotContains(t, w2.Body.String(), "tsk-aaaa0001", "failed=true drops the clean row")
+	assert.Contains(t, w2.Body.String(), `"failure_count":2`, "the overlay renders on the read")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=false", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-aaaa0001", "failed=false keeps the clean row")
+	assert.NotContains(t, w2.Body.String(), "tsk-bbbb0002", "failed=false drops the failed row")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-aaaa0001")
+	assert.Contains(t, w2.Body.String(), "tsk-bbbb0002", "absent keeps all rows")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=maybe", "")
+	assert.Equal(t, http.StatusBadRequest, w2.Code, "failed filter is tri-state boolean: "+w2.Body.String())
 }
 
 // TestBoardREST_ListRenders: list endpoints render the owner's boards in

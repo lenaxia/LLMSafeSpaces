@@ -122,10 +122,15 @@ class _BoardAPI:
         body: dict[str, Any] = {"requestId": request_id} if request_id else {}
         return self._c._request("POST", f"/me/projects/{project_id}/unarchive", json=body)
 
-    def list_project_tasks(self, project_id: str, stage: str = "") -> list[dict[str, Any]]:
+    def list_project_tasks(self, project_id: str, stage: str = "", *, failed: bool | None = None) -> list[dict[str, Any]]:
         path = f"/me/projects/{project_id}/tasks"
+        query: list[str] = []
         if stage:
-            path += f"?stage={quote(stage, safe='')}"
+            query.append(f"stage={quote(stage, safe='')}")
+        if failed is not None:
+            query.append(f"failed={'true' if failed else 'false'}")
+        if query:
+            path += "?" + "&".join(query)
         return self._c._request("GET", path).get("tasks", [])
 
     def create_epic(

@@ -24,6 +24,10 @@ import (
 // token+lease; pending_input keeps its token (clock suspended by the stage
 // predicate); the resume is a NO-MINT preserve-case (r11 fix).
 
+// reset_overlay is the #1813 success clause: a completed turn clears
+// the failure overlay and its consecutive count.
+const reset_overlay = `, failure_count=0, last_attempt_failed=false`
+
 // moveStageResult is the event payload + replay outcome.
 type moveStageResult struct {
 	TaskID         string `json:"task_id"`
@@ -35,10 +39,6 @@ type moveStageResult struct {
 
 // MoveStage is the server-arbitrated stage machine write: a drag that
 // loses a race returns the authoritative outcome and the UI snaps back.
-// reset_overlay is the #1813 success clause: a completed turn clears
-// the failure overlay and its consecutive count.
-const reset_overlay = `, failure_count=0, last_attempt_failed=false`
-
 func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*Task, error) {
 	ref := pick(taskID, shortIDOrID)
 	t, err := s.resolveTaskForActor(ctx, actor, ref)
