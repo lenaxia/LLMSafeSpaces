@@ -5,6 +5,17 @@ package types
 
 import "time"
 
+// HeaderSessionRefResolved is the #1816 resolved-id bridge header: the
+// session-ref middleware sets it (value = the canonical harness id)
+// whenever a caller-addressed session ref was RESOLVED — phrase or
+// alias rewrite, never a byte-identical passthrough. The platform MCP
+// client (pkg/mcp) consumes it to match the ABI contract stream, whose
+// frames still carry harness ids until the deferred short_id M2
+// cutover. ONE definition, imported by both sides of the seam — a
+// rename must redden the bridge continuity test, not silently break
+// phrase sends. Retires with the phrase-native ABI cutover.
+const HeaderSessionRefResolved = "X-Session-Ref-Resolved"
+
 // WSConnection represents a WebSocket connection
 type WSConnection interface {
 	// ReadMessage reads a message from the connection

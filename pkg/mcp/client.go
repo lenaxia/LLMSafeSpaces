@@ -21,6 +21,7 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/shortid"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 const (
@@ -496,9 +497,10 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	// 1. Fire prompt_async. The /prompt handler accepts the parts-based
 	// body shape ({parts:[{type:text,...}]}) — a bare {"message": ...}
 	// key extracts no text and is rejected (#1034). The response's
-	// X-Session-Ref-Resolved (set when the edge REWROTE the ref —
-	// phrase/alias inputs) carries the canonical harness id the stream
-	// frames are keyed on (#1816 bridge).
+	// HeaderSessionRefResolved (pkg/types — ONE definition shared with
+	// the middleware; set when the edge REWROTE the ref — phrase/alias
+	// inputs) carries the canonical harness id the stream frames are
+	// keyed on (#1816 bridge; the continuity test joins both sides).
 	origRef := sessionID
 	body := map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": message}},
@@ -508,7 +510,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	if err != nil {
 		return "", err
 	}
-	if resolved := strings.TrimSpace(promptHeaders.Get("X-Session-Ref-Resolved")); resolved != "" {
+	if resolved := strings.TrimSpace(promptHeaders.Get(types.HeaderSessionRefResolved)); resolved != "" {
 		sessionID = resolved
 	}
 

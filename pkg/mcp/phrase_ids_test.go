@@ -13,6 +13,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // ===== session_create: degraded window carries the marker (#1816 G1) =====
@@ -216,4 +218,58 @@ func TestHTTPClient_SendMessage_QuestionResultRewritesSessionID(t *testing.T) {
 	assert.Contains(t, resp, "que_123")
 	assert.Contains(t, resp, "amber-falcon-glides",
 		"the question result carries the caller-facing phrase")
+}
+
+// ===== §2 notice parity on ERROR results (review r1 finding 2) =====
+
+// TestSessionMessage_DeprecatedInputErrorCarriesNotice: a deprecated
+// full-id input whose send FAILS still carries the notice — REST rides
+// errors too, and agentd covers its error envelope (#1816 r1 parity).
+func TestSessionMessage_DeprecatedInputErrorCarriesNotice(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	const legacy = "ses_fulllegacyid1234567890ab"
+	mockClient.On("SendMessage", ctx, "ws-1", legacy, "hello", 300*time.Second).
+		Return("", fmt.Errorf("API error 503: unavailable"))
+
+	result, err := h.sessionMessage(ctx, makeReq("session_message", map[string]any{
+		"workspace_id": "ws-1",
+		"session_id":   legacy,
+		"message":      "hello",
+	}))
+	require.NoError(t, err)
+	assert.True(t, result.IsError, "the send error surfaces as a tool error")
+	require.Len(t, result.Content, 2, "the notice rides the ERROR result too")
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "failed to send message")
+	assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
+	mockClient.AssertExpectations(t)
+}
+
+func TestSessionHistory_DeprecatedInputErrorCarriesNotice(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	const legacy = "ses_fulllegacyid1234567890ab"
+	mockClient.On("GetHistory", ctx, "ws-1", legacy).
+		Return(nil, fmt.Errorf("API error 500: boom"))
+
+	result, err := h.sessionHistory(ctx, makeReq("session_history", map[string]any{
+		"workspace_id": "ws-1",
+		"session_id":   legacy,
+	}))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	require.Len(t, result.Content, 2, "the notice rides the ERROR result too")
+	assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
+	mockClient.AssertExpectations(t)
+}
+
+// TestSessionRefResolvedHeaderConstantShared pins the seam the bridge
+// joins on: the middleware (api) and the platform MCP client (pkg/mcp)
+// MUST agree on the exact header literal — a rename on either side
+// silently re-breaks phrase sends. The constant lives in pkg/types so
+// both sides import ONE definition (review r1 finding 1).
+func TestSessionRefResolvedHeaderConstantShared(t *testing.T) {
+	assert.Equal(t, "X-Session-Ref-Resolved", types.HeaderSessionRefResolved)
 }

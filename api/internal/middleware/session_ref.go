@@ -83,8 +83,11 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 			// ABI short_id M2 cutover (phrase-native frames). Only
 			// a true RESOLUTION (phrase/alias) reports: a
 			// passthrough caller already holds the canonical id.
+			// The literal lives in pkg/types — ONE definition shared
+			// with the client (the bridge continuity test joins the
+			// two sides).
 			if res.MatchedBy != sessionindex.MatchPassthrough && res.CanonicalID != "" {
-				c.Header("X-Session-Ref-Resolved", res.CanonicalID)
+				c.Header(types.HeaderSessionRefResolved, res.CanonicalID)
 			}
 			setParam(c, "sessionId", res.CanonicalID)
 			c.Next()

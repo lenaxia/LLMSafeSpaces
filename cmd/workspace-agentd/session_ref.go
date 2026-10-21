@@ -395,13 +395,14 @@ func deprecationNote(ref string) string {
 // sessionArgsDeprecationNote scans one tools/call argument set for
 // caller-typed session refs in deprecated form (full/hashed ids) and
 // returns the standalone notice block for the result envelope (""
-// when every ref is clean). Covers `session_id` and `from_session_id`
-// — the two CALLER-typed session args across the catalog;
+// when every ref is clean). Covers `session_id`, `from_session_id`,
+// and the board manager tools' camelCase `sessionId` declared
+// fallback — the three CALLER-typed session args across the catalog;
 // `lsp_injected_session` is the harness's own attestation (never
 // caller-typed) and is deliberately exempt. #1816: envelope-level §2
 // parity with the REST Deprecation/Sunset headers.
 func sessionArgsDeprecationNote(args map[string]any) string {
-	for _, key := range []string{"session_id", "from_session_id"} {
+	for _, key := range []string{"session_id", "from_session_id", "sessionId"} {
 		if ref, ok := args[key].(string); ok && shortid.IsDeprecatedInputForm(ref) {
 			return "DEPRECATED: you addressed a session by its full/hashed id; " +
 				"use the 3-word phrase (see session_list). Full/hashed session-id inputs are " +

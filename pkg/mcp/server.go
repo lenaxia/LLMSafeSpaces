@@ -264,14 +264,30 @@ type sessionCreateResult struct {
 // SECOND text content block (#1816): the tool's payload shape stays
 // byte-compatible for consumers reading the first block, while the
 // notice stays model-visible — parity with the REST Deprecation/Sunset
-// headers and agentd's envelope note.
+// headers and agentd's envelope note. The error twin keeps isError
+// set so clients still classify the result as a failure.
 func newToolResultTextWithNotice(text, notice string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			mcp.NewTextContent(text),
-			mcp.NewTextContent(notice),
-		},
+		Content: contentWithNotice(text, notice),
 	}
+}
+
+// newToolResultErrorWithNotice is the ERROR-path twin: the failure text
+// first, the notice second ("" notice = a plain single-block error).
+func newToolResultErrorWithNotice(text, notice string) *mcp.CallToolResult {
+	res := &mcp.CallToolResult{
+		IsError: true,
+		Content: contentWithNotice(text, notice),
+	}
+	return res
+}
+
+func contentWithNotice(text, notice string) []mcp.Content {
+	content := []mcp.Content{mcp.NewTextContent(text)}
+	if notice != "" {
+		content = append(content, mcp.NewTextContent(notice))
+	}
+	return content
 }
 
 func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -309,7 +325,12 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 
 	response, err := h.client.SendMessage(ctx, workspaceID, sessionID, composed, h.timeout)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to send message: %v", err)), nil
+		// #1816 §2 parity rides ERRORS too (REST's Deprecation/Sunset
+		// pair rides error responses; agentd covers its error
+		// envelope) — a deprecated-form ref that fails still tells
+		// the caller the address form is going away.
+		return newToolResultErrorWithNotice(fmt.Sprintf("failed to send message: %v", err),
+			sessionRefDeprecationNotice(sessionID)), nil
 	}
 
 	// #1816 §2 parity: a deprecated-form session ref (full/hashed id)
@@ -335,7 +356,10 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 
 	msgs, err := h.client.GetHistory(ctx, workspaceID, sessionID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to get history: %v", err)), nil
+		// #1816 §2 parity (session_message's twin): the notice rides
+		// the error path here too.
+		return newToolResultErrorWithNotice(fmt.Sprintf("failed to get history: %v", err),
+			sessionRefDeprecationNotice(sessionID)), nil
 	}
 
 	out, _ := json.Marshal(msgs)
