@@ -528,7 +528,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			// below must not read it as busy). The consult governs.
 			busy := evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_BUSY ||
 				evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_COMPACTING
-			if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok {
+			if derived, ok := c.consultBusy(workspaceID, g, consultSessionID(evt)); ok {
 				busy = derived
 			}
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
@@ -550,7 +550,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		g.mu.Lock()
 		prev := g.derived[evt.GetSessionId()]
 		g.mu.Unlock()
-		if derived, ok := c.consultBusy(workspaceID, g, evt.GetSessionId()); ok && derived != prev {
+		if derived, ok := c.consultBusy(workspaceID, g, consultSessionID(evt)); ok && derived != prev {
 			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), derived)
 			// #1666: the emission is the reconcile baseline — record it.
 			g.mu.Lock()
@@ -572,6 +572,21 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			}
 		}
 	}
+}
+
+// consultSessionID is the id the busy consult keys the authority by: the
+// harness id, carried ADDITIVELY on the emitted event's
+// internal_session_id (the #1817/#1821 piece-1 emission puts the phrase
+// on the wire session_id). The authority's GetSnapshot map is
+// harness-id-keyed — a phrase key 404s and fails open to the raw status
+// (the sporadic-busy this fixes). Legacy events without the additive
+// field (or with it empty) fall back to the wire session_id — never
+// worse than today.
+func consultSessionID(evt *abiv1.Event) string {
+	if id := evt.GetInternalSessionId(); id != "" {
+		return id
+	}
+	return evt.GetSessionId()
 }
 
 // consultBusy asks the authority for one session's derived busy truth

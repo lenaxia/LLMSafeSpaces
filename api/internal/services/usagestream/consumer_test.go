@@ -662,6 +662,62 @@ func TestConsultFailureIsObservable(t *testing.T) {
 	require.Equal(t, 2, lg.count(), "the 51st failure warns again (every 50th)")
 }
 
+// --- #1817 piece 2: the consult keys the authority by the INTERNAL
+// (harness) id, not the emitted phrase -------------------------------
+
+// TestConsultResolvesPhraseToHarness: the emission carries the PHRASE as
+// the wire session_id (the #1817/#1821 piece-1 translation) with the
+// harness id riding ADDITIVELY on internal_session_id. The authority's
+// GetSnapshot map is harness-id-keyed, so a consult that passed the
+// phrase would 404 and fail open to the raw status — re-creating the
+// sporadic-busy this fixes. The consult must resolve phrase→harness via
+// the additive field.
+func TestConsultResolvesPhraseToHarness(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const phrase = "amber-river-7"
+	const harness = "ses_harness_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId:         phrase,
+		InternalSessionId: harness,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+	})
+	require.Equal(t, []string{"ws1:" + phrase + ":busy"}, br.statuses,
+		"the consult must key the authority by the harness id (internal_session_id) — a phrase key 404s and fails open to the raw idle")
+}
+
+// TestConsultLegacyEventFallsBackToSessionId: a pre-piece-1 event (no
+// additive field) carries the harness id on the wire session_id. The
+// consult must fall back to it, so legacy emitters keep consulting —
+// never worse than today.
+func TestConsultLegacyEventFallsBackToSessionId(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const harness = "ses_legacy_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: harness, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:" + harness + ":busy"}, br.statuses,
+		"an event without internal_session_id must consult on the wire session_id")
+}
+
+// TestConsultEmptyInternalFallsBack: the additive field present but EMPTY
+// (an un-refreshed emitter that set the field without a value) must fall
+// back to the wire session_id, not consult an empty key.
+func TestConsultEmptyInternalFallsBack(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const harness = "ses_empty_internal_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: harness, InternalSessionId: "", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:" + harness + ":busy"}, br.statuses,
+		"an empty internal_session_id must fall back to the wire session_id, never consult an empty key")
+}
+
 // --- #1666: the reconnect/resync snapshot fold reconciles the BRIDGE
 // onto the post-reconnect busy truth (the backend twin of #1646) ------
 

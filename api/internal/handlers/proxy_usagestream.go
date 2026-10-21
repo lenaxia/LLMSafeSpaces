@@ -381,6 +381,12 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 		evt.Data = data
 	case map[string]string:
 		data["internal_session_id"] = harnessID
+	case session.InputRequest:
+		// #1817 piece 2: agent.question / agent.permission carry a
+		// STRUCT payload (inputRequestFromABI) whose fields already
+		// carry the session id — replacing it with a synthetic map
+		// clobbers the contract payload the frontend renders. The wire
+		// session_id above is the phrase, the payload keeps its own.
 	default:
 		evt.Data = map[string]any{"internal_session_id": harnessID}
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -144,4 +145,46 @@ func TestUserStreamSessionEvents_JoinableWithSessionList(t *testing.T) {
 		iid, _ = d["internal_session_id"].(string)
 	}
 	assert.Equal(t, harnessID, iid, "the harness id stays reachable (additive internal_session_id)")
+}
+
+// #1817 piece 2: agent.question / agent.permission carry a STRUCT
+// payload (session.InputRequest), not a map. The phrase translation's
+// default branch used to replace the Data with a synthetic
+// {"internal_session_id": harness}, clobbering the contract payload the
+// frontend renders. The translation must key on the phrase and PRESERVE
+// the struct payload intact.
+func TestTranslatePreservesInputRequestPayload(t *testing.T) {
+	const harnessID = "ses_clobber_1817"
+	const phraseID = "delta-lake-3"
+
+	h, si := newBridgeIndexHandler(t)
+	si.phrases["ws-1/"+harnessID] = phraseID
+
+	broker := eventbroker.NewUserEventBroker()
+	h.SetUserBrokerForTest(broker)
+	broker.RecordWorkspaceOwner("ws-1", "user-clobber")
+	sub, err := broker.SubscribeUser("user-clobber")
+	require.NoError(t, err)
+	defer broker.UnsubscribeUser("user-clobber", sub)
+
+	req := &abiv1.InputRequest{
+		Id: "req-clobber", SessionId: harnessID,
+		Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "which env?",
+		Header: "Pick one", Multiple: false, Custom: true,
+		Options: []*abiv1.InputOption{{Label: "prod", Description: "live"}},
+		Tool:    &abiv1.ToolRef{MessageId: "msg_1", CallId: "call_1"},
+	}
+	(&usageBridge{h: h}).InputRequested("ws-1", req)
+	evt := <-sub.Ch
+
+	assert.Equal(t, phraseID, evt.SessionID, "the wire id is the phrase")
+	ir, ok := evt.Data.(session.InputRequest)
+	require.True(t, ok, "the agent.question payload must stay the session.InputRequest struct — it was clobbered by the translation's synthetic map")
+	assert.Equal(t, "req-clobber", ir.ID, "the payload's request id survives the translation")
+	assert.Equal(t, "which env?", ir.Question, "the question survives the translation")
+	assert.True(t, ir.Custom, "the custom flag survives the translation")
+	require.Len(t, ir.Options, 1)
+	assert.Equal(t, "prod", ir.Options[0].Label)
+	require.NotNil(t, ir.Tool)
+	assert.Equal(t, "call_1", ir.Tool.CallID)
 }
