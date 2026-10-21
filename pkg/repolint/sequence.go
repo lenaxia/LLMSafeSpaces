@@ -506,9 +506,16 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 
 	// Sentinel pass: assign real numbers to all NNNN_ files first, in
 	// lexical order, so duplicate-resolution runs against an
-	// already-numbered tree. Sentinels never appear on origin/main
-	// (the post-merge bot rewrites them on every merge), so every
-	// sentinel is a newcomer by definition.
+	// already-numbered tree. Sentinels CAN appear on origin/main — the
+	// bot-lag window between a merge and the post-merge numbering
+	// commit (#1795: the 25ed1853 rebase carried four) — and the
+	// ruling-c semantics deliberately renumber them anyway: the pass is
+	// the distributed self-healing that closes the lag window, and
+	// every assignment skips both local and remote occupied numbers so
+	// the heal cannot itself collide with either writer. The safety
+	// net for what two lag-window writers can still independently
+	// produce is the runWorklogUniqueness invariant (duplicate numbers
+	// = red CI), not this pass.
 	sentinelRenames, err := assignSentinels(dir, remoteByVersion)
 	if err != nil {
 		return renames, err

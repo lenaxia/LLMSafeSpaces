@@ -92,6 +92,7 @@ func main() {
 	failures := 0
 	failures += runMigrations(root)
 	failures += runWorklogSentinels(root)
+	failures += runWorklogUniqueness(root)
 	failures += runChartDrift(root)
 	failures += runCRDDrift(root)
 	failures += runGinSetMode(root)
@@ -224,6 +225,38 @@ func runWorklogSentinels(root string) int {
 		return 0
 	}
 	fmt.Println("ok    worklogs no NNNN_ sentinels (all numbered)")
+	return 0
+}
+
+// runWorklogUniqueness — the #1795 ruling-c invariant: duplicate
+// worklog numbers redden CI. The sentinel-era assumption that
+// collisions "cannot occur" (authors never pick numbers; the bot
+// assigns atomically) was falsified by the bot-lag window: origin/main
+// can carry unnumbered sentinels between a merge and the bot's
+// numbering commit, and the post-rewrite hook's sanctioned renumber-all
+// semantics then lets a rebasing lane and the bot independently mint
+// the same number. Gaps stay warnings (the sentinel scheme makes them
+// transient bot-lag artifacts); DUPLICATES are the real corruption.
+func runWorklogUniqueness(root string) int {
+	dir := filepath.Join(root, "worklogs")
+	rep, err := repolint.SequenceCheck(repolint.SequenceConfig{
+		Dir:       dir,
+		Pattern:   repolint.WorklogPattern,
+		AllowGaps: true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  worklogs uniqueness: %v\n", err)
+		return 1
+	}
+	if len(rep.Duplicates) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL  worklogs uniqueness in %s:\n%s\n", dir, rep.String())
+		return 1
+	}
+	if rep.HasWarnings() {
+		fmt.Printf("WARN  worklogs uniqueness: %d gap(s) (bot-lag artifacts; the next merge heals them)\n", len(rep.MissingVersions))
+		return 0
+	}
+	fmt.Printf("ok    worklogs unique (%d numbered, max %d)\n", len(rep.SeenVersions), rep.MaxVersion)
 	return 0
 }
 
