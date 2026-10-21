@@ -1,7 +1,7 @@
 # Worklog: the five missing builder digests — the残 gap in main's 1.26.10 remediation
 
 **Date:** 2026-10-21
-**Session: Final re-scope of #1819. The original security carry was progressively absorbed by main itself (owner's #1828: workflows + go.mod + vite 8.1.6; then 43a7ba29's toolchain bump) — this branch's surviving unique value is the FIVE Dockerfile builder digests, which every main-side carry missed, leaving main's Build matrix broken (go.mod requires 1.26.10; the pinned images run 1.26.9 with GOTOOLCHAIN=local → 'go mod download' refuses).
+**Session: Final re-scope of #1819. Main absorbed the original security carry piecewise — 43a7ba29 carried go.mod 1.26.10 plus 19 go-version pin lines across 12 workflow files, and 57495a4c (#1828) carried security-scan.yml's govulncheck go-version pin (the 20th) plus the frontend vite files (8.1.6, CVE-fixed) — but every carry missed the FIVE Dockerfile builder digests: the images run 1.26.9 with GOTOOLCHAIN=local against go.mod's 1.26.10, so 'go mod download' refuses and ten Build jobs (five services x two arches) stay red. This branch's surviving unique value is exactly those five digest lines.
 **Status:** Complete
 
 ---
@@ -19,7 +19,7 @@ Green main's Build jobs: re-pin the five golang builder images to the 1.26.10-er
 
 ## Key Decisions
 
-- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks (heal raced by the bot → carry → five digests). The r4 review caught my stale second-version PR body (a silently-failed edit) and the #1828/43a7ba29 misattribution in this worklog — both corrected in this commit.
+- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks (heal raced by the bot → carry → five digests). The r4/r5 reviews caught, in turn: my stale second-version PR body (a silently-failed edit), the #1828/43a7ba29 misattribution (this worklog's Session line originally credited #1828 with workflows+go.mod; git shows 57495a4c touched only security-scan.yml + the frontend files), a 20-vs-19 pin miscount, and my first correction's replace silently no-opping on the Session line. All corrected in this commit with asserted edits.
 
 ## Blockers
 
