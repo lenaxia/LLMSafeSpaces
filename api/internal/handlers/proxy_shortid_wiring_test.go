@@ -44,6 +44,10 @@ func (s *shortIDSeamIndex) Register(_ context.Context, _, sessionID, _ string) s
 	return id
 }
 
+func (s *shortIDSeamIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
+
 func (s *shortIDSeamIndex) registerCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

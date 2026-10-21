@@ -34,6 +34,10 @@ import (
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
 
+func (r *recordingIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
+
 // reconcileSpyAdapter lists ONE session and records the call.
 type reconcileSpyAdapter struct {
 	nullTestAdapter

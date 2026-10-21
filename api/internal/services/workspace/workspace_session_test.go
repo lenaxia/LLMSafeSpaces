@@ -277,3 +277,7 @@ func TestSetSessionArchived_NotIndexed_NotFoundPropagates(t *testing.T) {
 func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
 	return m.Called(ctx, workspaceID, sessionID, harnessType).String(0)
 }
+
+func (m *mockSessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}

@@ -558,6 +558,10 @@ func (m *mockDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessi
 	return "", nil
 }
 
+func (m *mockDB) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
+
 func (m *mockDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
 	return "", nil
 }

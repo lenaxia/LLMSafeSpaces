@@ -469,6 +469,10 @@ func (d *recordingDB) EnsureSessionRegistered(ctx context.Context, workspaceID, 
 	return "", nil
 }
 
+func (d *recordingDB) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
+
 func (d *recordingDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
 	return "", nil
 }

@@ -37,6 +37,10 @@ func (r *recordingSessionIndex) RecordMessage(_, _, _ string, _ time.Time) {}
 func (r *recordingSessionIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
+
+func (r *recordingSessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
 func (r *recordingSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
 func (r *recordingSessionIndex) DeleteSession(_ context.Context, _, _ string) error  { return nil }
 func (r *recordingSessionIndex) UpsertTitle(_ context.Context, _, sessionID, title string) error {

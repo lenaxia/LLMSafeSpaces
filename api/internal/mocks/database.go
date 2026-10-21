@@ -270,6 +270,19 @@ func (m *MockDatabaseService) EnsureSessionRegistered(ctx context.Context, works
 	return args.String(0), args.Error(1)
 }
 
+// PhraseFor is the #1817 read-only harness→phrase lookup. Auto-generated
+// stub body — the mock framework records the call and returns zero values
+// unless a test drives it.
+func (m *MockDatabaseService) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	args := m.Called(ctx, workspaceID, sessionID)
+	var r0 string
+	if v, ok := args.Get(0).(string); ok {
+		r0 = v
+	}
+	r1 := args.Bool(1)
+	return r0, r1
+}
+
 func (m *MockDatabaseService) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
 	args := m.Called(ctx, workspaceID, shortID)
 	return args.String(0), args.Error(1)

@@ -525,6 +525,10 @@ func (m *apiKeyAwareDB) EnsureSessionRegistered(ctx context.Context, workspaceID
 	return "", nil
 }
 
+func (m *apiKeyAwareDB) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
+
 func (m *apiKeyAwareDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
 	return "", nil
 }
@@ -545,6 +549,10 @@ func (m *apiKeyAwareDB) FindRefCandidatesAcrossWorkspaces(ctx context.Context, w
 // surface — no-op stubs for this fixture.
 func (m *fullMockDB) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
 	return "", nil
+}
+
+func (m *fullMockDB) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
 }
 
 func (m *fullMockDB) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {

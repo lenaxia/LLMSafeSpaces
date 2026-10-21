@@ -904,6 +904,10 @@ func (r *recordingDeleteSessionIndex) RecordMessage(_, _, _ string, _ time.Time)
 func (r *recordingDeleteSessionIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
+
+func (r *recordingDeleteSessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
+}
 func (r *recordingDeleteSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error {
 	return nil
 }
@@ -946,6 +950,10 @@ type failingDeleteSessionIndex struct{}
 func (f *failingDeleteSessionIndex) RecordMessage(_, _, _ string, _ time.Time) {}
 func (f *failingDeleteSessionIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
 	return nil, nil
+}
+
+func (f *failingDeleteSessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
 }
 func (f *failingDeleteSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
 func (f *failingDeleteSessionIndex) DeleteSession(_ context.Context, _, _ string) error {
@@ -1456,6 +1464,10 @@ func TestProxy_DeleteSession_PublishesUserStreamEvent(t *testing.T) {
 // Register: design 0066 registration seam — no-op stub for this fixture.
 func (r *recordingActivitySessionIndex) Register(_ context.Context, _, _, _ string) string {
 	return ""
+}
+
+func (r *recordingActivitySessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	return "", false
 }
 
 // Register: design 0066 registration seam — no-op stub for this fixture.

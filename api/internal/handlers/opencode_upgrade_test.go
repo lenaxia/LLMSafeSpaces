@@ -228,3 +228,15 @@ func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID,
 	}
 	return m.phrases[workspaceID+"/"+sessionID]
 }
+
+// PhraseFor (#1817 r2): read-only lookup — mirrors the seeded dual-id
+// fixture map. ok=false when not planted (the passthrough arm).
+func (m *mockSessionIndex) PhraseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.phrases == nil {
+		return "", false
+	}
+	p, ok := m.phrases[workspaceID+"/"+sessionID]
+	return p, ok
+}
