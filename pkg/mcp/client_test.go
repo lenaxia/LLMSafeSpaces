@@ -994,4 +994,13 @@ func TestHTTPClient_BoardListTasks_EncodesStageFilter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/api/v1/me/projects/prj-aaaa1111/tasks", gotPath)
 	assert.Equal(t, "stage=in_progress", gotQuery)
+
+	// #1813 (r10, review-8): the failed filter ENCODES — deleting
+	// query.Set("failed", …) must go red here.
+	_, err = client.BoardListTasks(context.Background(), "prj-aaaa1111", "", "true")
+	require.NoError(t, err)
+	assert.Equal(t, "failed=true", gotQuery, "the failed filter rides the query alone")
+	_, err = client.BoardListTasks(context.Background(), "prj-aaaa1111", "backlog", "false")
+	require.NoError(t, err)
+	assert.Equal(t, "failed=false&stage=backlog", gotQuery, "failed composes with stage (alphabetical encoding)")
 }

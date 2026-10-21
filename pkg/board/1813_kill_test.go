@@ -401,3 +401,39 @@ func (s *BoardSuite) TestKill_1813_FailedExhaustionKeepsMarker() {
 	rows.Close()
 	s.True(evtOK, "the reclaim event carries the overlay fields + timestamp")
 }
+
+// KILL-TEST 1813-k (r10's regression gate, review-8): the TaskStart
+// escalation must leave rc1's overlay untouched — seed a FAILED row at
+// cap (timestamp + count), escalate through TaskStart, assert the
+// timestamp is still the reclaim's (red if a restamp is reintroduced).
+func (s *BoardSuite) TestKill_1813_TaskStartDoesNotRestampOverlay() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "manual-crashloop", nil, false)
+
+	// One real failure (reclaim), then hand the row to the cap.
+	c := s.claimOrFail(ws)
+	s.Equal(t1.ID, c.TaskID)
+	s.expireLease(t1.ID)
+	s.sweep()
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE tasks SET attempts=$2 WHERE id=$1`, t1.ID, s.cfg.AttemptsCap)
+	s.Require().NoError(err)
+	s.clearTaskBackoff(t1.ID)
+
+	pre := s.reloadTask(t1.ID)
+	s.True(pre.LastAttemptFailed)
+	s.Require().NotNil(pre.LastFailureAt)
+
+	c2, err := s.svc.TaskStart(context.Background(), s.owner(), t1.ID, "", "")
+	s.Require().NoError(err)
+	s.Require().True(c2.Escalated)
+
+	after := s.reloadTask(t1.ID)
+	s.Equal(board.StagePendingInput, after.Stage)
+	s.True(after.LastAttemptFailed, "the marker survives the manual escalation")
+	s.Equal(1, after.FailureCount, "the count survives")
+	s.Equal(pre.LastFailureAt.Format(time.RFC3339Nano), after.LastFailureAt.Format(time.RFC3339Nano),
+		"TaskStart's escalation leaves rc1's failure timestamp untouched (the restamp regression pin)")
+}

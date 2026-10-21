@@ -88,10 +88,12 @@ type Task struct {
 	// received a HALT directive and finishes its current turn.
 	Paused bool `json:"paused"`
 	// The failed-state attribute overlay (#1813): a task whose worker
-	// attempt failed (lease-lapse reclaim; attempts-cap exhaustion)
+	// attempt failed (lease-lapse reclaim — the overlay's ONLY writer)
 	// carries a VISIBLE failure marker — NEVER a stage (the five-stage
-	// vocabulary is binding). Engine-set; reset by any successful turn
-	// (in_review/done entry) and the pending_input human exit.
+	// vocabulary is binding). An all-success attempts-cap exhaustion
+	// carries NO marker (its signal: pending_origin='escalated').
+	// Reset by any successful turn (in_review/done entry) and the
+	// pending_input human exit.
 	LastAttemptFailed bool       `json:"last_attempt_failed"`
 	FailureCount      int        `json:"failure_count"`
 	LastFailureAt     *time.Time `json:"last_failure_at,omitempty"`

@@ -13,13 +13,15 @@ preserves the just-landed five-stage contract.
 
 - Migration 000040 (api + helm mirrors): `tasks.last_attempt_failed`,
   `failure_count`, `last_failure_at`.
-- Engine sets the overlay at the two failure points:
-  - `rc1Reclaims` (lease lapse): `failure_count+1`, `last_failure_at`,
-    `cooldown_until = now() + base << (n-1)` (doubling, cap 1h) —
-    auto-return-to-ready rides the EXISTING cooldown candidacy gate.
-  - Claim-time escalation (attempts >= cap): the pending_input row
-    carries the overlay (`failure_count >= attempts`) so the human
-    sees WHY.
+- The overlay's ONLY writer is `rc1Reclaims` (lease lapse):
+  `failure_count+1`, `last_failure_at`, `cooldown_until = now() +
+  base << (n-1)` (doubling, cap 1h) — auto-return-to-ready rides the
+  EXISTING cooldown candidacy gate.
+- Claim-time/TaskStart escalation (attempts >= cap): NO overlay write
+  (r10 removed it — it was provably inert against the marker invariant
+  and its timestamp clause replaced the reclaim's real moment). The
+  exhaustion signal: pending_origin='escalated' + attempts at cap +
+  an `exhausted=true` audit event.
 - Reset on success: in_review/done entry (`reset_overlay` clause) and
   both pending_input human exits (attempts-reset statements also clear
   the overlay + count).
@@ -30,15 +32,17 @@ preserves the just-landed five-stage contract.
   `GET /me/projects/{id}/tasks?failed=true|false` (400 otherwise);
   MCP `board_read {failed: true}`; openapi BoardTask fields + query
   param; UI `FAILED ×n` badge on the task card (never a column move);
-  reclaim/escalate audit events carry the overlay fields.
+  reclaim audit events carry the overlay fields (escalate events
+  carry exhausted=true).
 
 ## Red-first pins
 
 - `pkg/board/1813_kill_test.go` (integration, Postgres-gated):
   1813-a reclaim marks overlay + backoff; 1813-b backoff delays then
   permits redispatch; 1813-c consecutive doubling + success reset;
-  1813-d escalation marks the pending_input row; 1813-e the human exit
-  clears the overlay with the attempts reset.
+  1813-d the all-success escalation carries NO marker (the truthful
+  invariant) + the exhausted event; 1813-e the human exit clears the
+  overlay with the attempts reset.
 - Unit tiers (runnable locally, green): REST tri-state filter pin
   (board_rest_test), MCP `failed` arg threading pin
   (board_tools_test), UI badge pin (BoardPage.test — FAILED ×2 on a
@@ -65,6 +69,16 @@ preserves the just-landed five-stage contract.
   exhausted=true (symmetric); the reclaim event carries the timestamp.
   boardApi failed-branch pins; helm chart knob pins (defaults +
   overrides, the seventh knob).
+
+- r10 (review-7/8): deleted the no-op escalation overlay writes (the
+  invariant last_attempt_failed == (failure_count > 0) is rc1's alone;
+  the old timestamp clause replaced the reclaim's real failure
+  moment). 1813-j upgraded to the restamp discriminator (pre/post
+  timestamps equal); 1813-k pins TaskStart's non-restamp (seeds a
+  FAILED row at cap); 1813-f/i seed last_failure_at so the reset
+  nil-assertions discriminate; the MCP client failed-encoding pin;
+  claims aligned (CHANGELOG/PR body/mcp.md/schema comments/config
+  env docs).
 
 ## Verification
 

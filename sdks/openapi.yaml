@@ -12382,7 +12382,7 @@ components:
           description: Claims granted (the claim statement is the ONLY increment; the human pending_input exit is the ONE reset)
         last_attempt_failed:
           type: boolean
-          description: "#1813 failed-state overlay — the last worker attempt failed (lease-lapse reclaim or attempts-cap exhaustion). NEVER a stage; reset by any successful turn (in_review/done entry) and the pending_input human exit."
+          description: "#1813 failed-state overlay — the last worker attempt failed (lease-lapse reclaim is the ONLY writer). NEVER a stage; an all-success attempts-cap exhaustion carries no marker (signal: pending_origin=escalated); reset by any successful turn (in_review/done entry) and the pending_input human exit."
         failure_count:
           type: integer
           minimum: 0
@@ -12396,7 +12396,7 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Provider-throttle cooldown on this task
+          description: Cooldown gating claim candidacy — provider-throttle 429s and #1813 failure backoff (doubling per consecutive failure)
         stage_entered_at:
           type: string
           format: date-time

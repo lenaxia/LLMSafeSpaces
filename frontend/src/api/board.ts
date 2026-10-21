@@ -74,7 +74,8 @@ export interface BoardTask {
   attempts: number;
   claim_incremented_attempts: boolean;
   /** #1813 failed-state overlay: the last worker attempt failed (lease
-   * lapse → reclaim, or attempts-cap exhaustion). Never a stage. */
+   * lapse → reclaim, the overlay's only writer). Never a stage; an
+   * all-success exhaustion carries no marker. */
   last_attempt_failed: boolean;
   /** Consecutive failures — the doubling backoff driver. */
   failure_count: number;

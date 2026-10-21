@@ -311,7 +311,8 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_ENABLED             ("true" | unset; default true — the engine dark-runs harmlessly with zero projects)
 	//   LLMSAFESPACES_BOARD_ATTEMPTSCAP         (default 3 — the (N+1)th claim attempt escalates to pending_input)
 	//   LLMSAFESPACES_BOARD_LEASESECONDS        (default 900 — evidence-gated lease window, #1685 semantics)
-	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS (default 300 — 429 cooldown on the task AND the project's slots)
+	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
+	//   LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS  (default 60 — #1813 failed-attempt backoff base) (default 300 — 429 cooldown on the task AND the project's slots)
 	//   LLMSAFESPACES_BOARD_DRRQUANTUM          (default 1 — deficit-round-robin round allowance)
 	//   LLMSAFESPACES_BOARD_SWEEPSECONDS        (default 30 — reconciler cadence)
 	//   LLMSAFESPACES_BOARD_USERCLAIMCAP        (default 8 — #1747 per-user concurrent-claim cap)
