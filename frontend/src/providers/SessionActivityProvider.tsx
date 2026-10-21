@@ -5,7 +5,12 @@ import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
 import type { InputRequest } from "../api/types";
-import { eventInternalSessionId, translateSessionIds } from "../session/sessionAliases";
+import {
+  eventInternalSessionId,
+  resolveSessionAlias,
+  subscribeSessionAliases,
+  translateSessionIds,
+} from "../session/sessionAliases";
 
 /** Provider-local extension: the envelope's whileAway marker rides the stored object (D3). */
 // #1365: receivedAt is stamped on store entry — the whileAway staleness
@@ -122,6 +127,59 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
     const oldest = tombs.keys().next().value;
     if (oldest !== undefined) tombs.delete(oldest);
   }
+}
+
+// #1824: a late-learned harness→phrase pair must re-key the provider's
+// session-keyed activity maps — the contract fold's re-key alone leaves the
+// sidebar unbadged. Only keys that resolve through the changed workspace's
+// alias table move; a phrase key that already exists wins (it is the same
+// live session, so the move never drops its state).
+function rekeyWorkspaceValueMap<V>(
+  prev: Map<string, V>,
+  workspaceId: string,
+  belongs: (value: V) => boolean,
+): Map<string, V> | null {
+  let next: Map<string, V> | null = null;
+  for (const [sessionId, value] of Array.from(prev.entries())) {
+    if (!belongs(value)) continue;
+    const phrase = resolveSessionAlias(workspaceId, sessionId);
+    if (!phrase || phrase === sessionId) continue;
+    if (!next) next = new Map(prev);
+    next.delete(sessionId);
+    if (!next.has(phrase)) next.set(phrase, value);
+  }
+  return next;
+}
+
+function rekeyPendingContent(
+  prev: Map<string, StoredInputRequest>,
+  workspaceId: string,
+  workspaceOf: (sessionId: string) => string | undefined,
+): Map<string, StoredInputRequest> | null {
+  let next: Map<string, StoredInputRequest> | null = null;
+  for (const [requestId, request] of Array.from(prev.entries())) {
+    // Never move a request known to belong to another workspace.
+    const owner =
+      (request.sessionId !== undefined ? workspaceOf(request.sessionId) : undefined) ??
+      (request.rootSessionId !== undefined ? workspaceOf(request.rootSessionId) : undefined);
+    if (owner !== undefined && owner !== workspaceId) continue;
+    const phrase = request.sessionId
+      ? resolveSessionAlias(workspaceId, request.sessionId)
+      : request.sessionId;
+    const rootPhrase = request.rootSessionId
+      ? resolveSessionAlias(workspaceId, request.rootSessionId)
+      : request.rootSessionId;
+    const sessionMoved = phrase !== undefined && phrase !== request.sessionId;
+    const rootMoved = rootPhrase !== undefined && rootPhrase !== request.rootSessionId;
+    if (!sessionMoved && !rootMoved) continue;
+    if (!next) next = new Map(prev);
+    next.set(requestId, {
+      ...request,
+      ...(sessionMoved ? { sessionId: phrase } : {}),
+      ...(rootMoved ? { rootSessionId: rootPhrase } : {}),
+    });
+  }
+  return next;
 }
 
 // wipeBusyForEventLoss is the shared reconciliation core for
@@ -484,6 +542,71 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
     return unsubscribe;
   }, [queryClient]);
+
+  // #1824: a pair learned after a harness-keyed event already latched is
+  // joined here. Aliases are per-workspace, so resolving a key through the
+  // changed workspace's table can never translate another workspace's id.
+  useEffect(() => {
+    const unsubscribe = subscribeSessionAliases((workspaceId) => {
+      // Snapshot the ownership table before the pendingActions updater
+      // rewrites it — content updaters run in the same render pass.
+      const workspaceOf = new Map(pendingActionWsRef.current);
+      setBusySessions(
+        (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
+      );
+      setPendingUnread(
+        (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
+      );
+      setAbortedSessions((prev) => {
+        let next: Set<string> | null = null;
+        for (const sessionId of Array.from(prev)) {
+          const phrase = resolveSessionAlias(workspaceId, sessionId);
+          if (!phrase || phrase === sessionId) continue;
+          if (!next) next = new Set(prev);
+          next.delete(sessionId);
+          next.add(phrase);
+        }
+        return next ?? prev;
+      });
+      setPendingActions((prev) => {
+        let next: Map<string, Set<string>> | null = null;
+        for (const [sessionId, requestIds] of Array.from(prev.entries())) {
+          if (pendingActionWsRef.current.get(sessionId) !== workspaceId) continue;
+          const phrase = resolveSessionAlias(workspaceId, sessionId);
+          if (!phrase || phrase === sessionId) continue;
+          if (!next) next = new Map(prev);
+          next.delete(sessionId);
+          const existing = next.get(phrase);
+          const merged = new Set(existing ?? []);
+          for (const requestId of requestIds) merged.add(requestId);
+          next.set(phrase, merged);
+          pendingActionWsRef.current.delete(sessionId);
+          pendingActionWsRef.current.set(phrase, workspaceId);
+          for (const requestId of requestIds) {
+            if (requestToSessionRef.current.get(requestId) === sessionId) {
+              requestToSessionRef.current.set(requestId, phrase);
+            }
+          }
+        }
+        return next ?? prev;
+      });
+      const ownerOf = (sessionId: string) => workspaceOf.get(sessionId);
+      setPendingQuestionContent(
+        (prev) => rekeyPendingContent(prev, workspaceId, ownerOf) ?? prev,
+      );
+      setPendingPermissionContent(
+        (prev) => rekeyPendingContent(prev, workspaceId, ownerOf) ?? prev,
+      );
+      for (const [sessionId, wsId] of Array.from(clearedRef.current)) {
+        if (wsId !== workspaceId) continue;
+        const phrase = resolveSessionAlias(workspaceId, sessionId);
+        if (!phrase || phrase === sessionId) continue;
+        clearedRef.current.delete(sessionId);
+        if (!clearedRef.current.has(phrase)) clearedRef.current.set(phrase, wsId);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   useUserEventStream({
     onReconnect: () => {

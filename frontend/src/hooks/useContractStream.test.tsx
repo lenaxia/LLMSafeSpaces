@@ -12,6 +12,7 @@ import {
   resetSessionAliases,
   resolveSessionAlias,
   sessionAliasRekeyCount,
+  subscribeSessionAliases,
 } from "../session/sessionAliases";
 import { useContractStream } from "./useContractStream";
 
@@ -238,6 +239,41 @@ describe("useContractStream", () => {
     await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
     expect(rekeysAtSnapshot).toBeGreaterThanOrEqual(0);
     expect(sessionAliasRekeyCount()).toBe(rekeysAtSnapshot);
+  });
+
+  // #1824: snapshot learning must be batched. A snapshot carrying N pairs
+  // used to notify subscribers (and therefore re-key + publish) once per
+  // pair, inside the snapshot loop. The batched path must notify once for
+  // the workspace and run at most one re-key after the loop.
+  it("a multi-pair snapshot notifies aliases and re-keys at most once", async () => {
+    const pairs = [
+      { phrase: "batch-phrase-1", harness: "ses_batch_1" },
+      { phrase: "batch-phrase-2", harness: "ses_batch_2" },
+      { phrase: "batch-phrase-3", harness: "ses_batch_3" },
+    ];
+    const mock = makeMockFetch([
+      snapshotFrame(6, pairs.map(({ phrase, harness }) => ({
+        sessionId: phrase,
+        internalSessionId: harness,
+        status: "SESSION_STATUS_IDLE",
+      }))),
+    ]);
+    globalThis.fetch = mock;
+
+    const beforeRekeys = sessionAliasRekeyCount();
+    const notifications: string[] = [];
+    const unsubscribe = subscribeSessionAliases((ws) => notifications.push(ws));
+    const onSnapshot = vi.fn();
+
+    const { result } = renderHook(() => useContractStream("ws-batch", { onSnapshot }));
+    await waitFor(() => expect(onSnapshot).toHaveBeenCalledTimes(1));
+    unsubscribe();
+
+    // One end-of-batch notification → one rekey/publish in the subscriber.
+    expect(notifications.filter((ws) => ws === "ws-batch")).toHaveLength(1);
+    expect(sessionAliasRekeyCount() - beforeRekeys).toBeLessThanOrEqual(1);
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(result.current.sessions.size).toBe(3);
   });
 
   // #1817: only APPLIED frames may teach the alias map. A stale/duplicate

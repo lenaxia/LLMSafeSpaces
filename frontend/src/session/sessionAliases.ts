@@ -52,6 +52,13 @@ let rekeyCount = 0;
 type SessionAliasListener = (workspaceId: string) => void;
 const aliasListeners = new Set<SessionAliasListener>();
 
+/** #1824: snapshot application learns many pairs at once. While a batch is
+ * open, per-pair listener notifications are collapsed into one end-of-batch
+ * notification per changed workspace, so consumers re-key/publish once
+ * instead of once per pair. */
+let aliasBatchDepth = 0;
+const batchedAliasNotifications = new Set<string>();
+
 /** Monotonic generation of the alias map (test/observability hook). */
 export function sessionAliasVersion(): number {
   return aliasVersion;
@@ -70,6 +77,26 @@ export function subscribeSessionAliases(listener: SessionAliasListener): () => v
 /** Test/introspection hook: number of full re-key passes run. */
 export function sessionAliasRekeyCount(): number {
   return rekeyCount;
+}
+
+function notifyAliasListeners(workspaceId: string): void {
+  for (const listener of Array.from(aliasListeners)) listener(workspaceId);
+}
+
+/** Opens a batch: learnSessionAlias bumps the version but defers listener
+ * notifications. endSessionAliasBatch flushes one notification per changed
+ * workspace. Nested batches flush only when the outermost closes. */
+export function beginSessionAliasBatch(): void {
+  aliasBatchDepth++;
+}
+
+export function endSessionAliasBatch(): void {
+  if (aliasBatchDepth === 0) return;
+  aliasBatchDepth--;
+  if (aliasBatchDepth > 0) return;
+  const changed = Array.from(batchedAliasNotifications);
+  batchedAliasNotifications.clear();
+  for (const workspaceId of changed) notifyAliasListeners(workspaceId);
 }
 
 /** Rejects ids that cannot be a session/workspace id: empty, overlong, or
@@ -122,7 +149,11 @@ export function learnSessionAlias(
   }
 
   aliasVersion++;
-  for (const listener of Array.from(aliasListeners)) listener(workspaceId);
+  if (aliasBatchDepth > 0) {
+    batchedAliasNotifications.add(workspaceId);
+  } else {
+    notifyAliasListeners(workspaceId);
+  }
   return true;
 }
 
@@ -171,6 +202,8 @@ export function translateSessionIds(
 export function resetSessionAliases(): void {
   aliasesByWorkspace.clear();
   aliasListeners.clear();
+  aliasBatchDepth = 0;
+  batchedAliasNotifications.clear();
 }
 
 /** Reads the additive harness id off a user-stream event payload (both the

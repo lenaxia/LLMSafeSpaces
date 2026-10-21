@@ -8,6 +8,8 @@ import { createSSEConnection, type SSEConnection } from "../lib/sseConnection";
 import { wsLog } from "../lib/wsLog";
 import { applySequenced, applySnapshot, cloneSessionSnapshot, newFold, type SessionFold } from "../session/fold";
 import {
+  beginSessionAliasBatch,
+  endSessionAliasBatch,
   rekeySessionMap,
   sessionAliasVersion,
   subscribeSessionAliases,
@@ -56,6 +58,11 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
 
     let hasConnectedOnce = false;
     let seeded = false;
+    // #1824: a snapshot learns many pairs in one pass. The batch defers
+    // listener notifications; this flag keeps the local subscriber from
+    // re-keying/publishing mid-snapshot — the handler does it once after
+    // applying the snapshot.
+    let applyingSnapshot = false;
     const conn: { current: SSEConnection | undefined } = { current: undefined };
     const { apiBaseUrl } = getEnv();
     const url = `${apiBaseUrl}/workspaces/${workspaceId}/contract-events`;
@@ -79,6 +86,7 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
         aliasVersionRef.current = sessionAliasVersion();
         return;
       }
+      if (applyingSnapshot) return;
       if (rekeyIfAliasesChanged()) publish();
     });
 
@@ -105,13 +113,20 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
             // internal) teaches the alias map; a legacy harness-keyed row
             // resolves to the phrase through it. Post-fix rows pass through
             // unchanged (the seam is the identity for a phrase wire id).
-            for (const s of frame.frame.value.snapshot?.sessions ?? []) {
-              const ids = translateSessionIds(workspaceId, s.sessionId, s.internalSessionId);
-              if (ids.sessionId) s.sessionId = ids.sessionId;
-              if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
+            applyingSnapshot = true;
+            beginSessionAliasBatch();
+            try {
+              for (const s of frame.frame.value.snapshot?.sessions ?? []) {
+                const ids = translateSessionIds(workspaceId, s.sessionId, s.internalSessionId);
+                if (ids.sessionId) s.sessionId = ids.sessionId;
+                if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
+              }
+            } finally {
+              endSessionAliasBatch();
             }
-            rekeyIfAliasesChanged();
             applySnapshot(foldRef.current, frame.frame.value);
+            applyingSnapshot = false;
+            rekeyIfAliasesChanged();
             seeded = true;
             publish();
             optionsRef.current.onSnapshot?.(projectState(foldRef.current));
