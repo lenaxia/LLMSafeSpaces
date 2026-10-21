@@ -105,14 +105,18 @@ func ResolveSessionRef(ctx context.Context, r RefResolver, workspaceID, ref stri
 		}
 		// Miss (or transient error): id-shaped → pass through. The
 		// adapter stays the authority; its 404-class verdict carries
-		// the suggestions.
-		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
+		// the suggestions. A LEGACY (#1745 hash) form is still a
+		// deprecated input on the miss path — the §2 notice attaches.
+		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough, DeprecatedInput: deprecated}
 	}
 	if shortid.IsLegacyIDForm(ref) {
 		// Precedence 2: byte-equal acceptance. A lookup here could
 		// only "confirm" what the adapter will confirm anyway, and a
 		// miss must NOT downgrade addressing (index lag ≠ absent).
-		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough}
+		// ses_ full ids are the PRIMARY deprecated form (#1756 §2) —
+		// the notice must fire on this branch, or the only header
+		// attach point (the middleware) never sees it.
+		return RefResolution{CanonicalID: ref, MatchedBy: MatchPassthrough, DeprecatedInput: true}
 	}
 	// Alias-form: must resolve or refuse — EXCEPT on a DB error,
 	// which degrades to passthrough exactly like the short-id branch
@@ -158,7 +162,13 @@ func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref
 		cands := make([]sessionref.Candidate, 0, len(rows))
 		for _, row := range rows {
 			cands = append(cands, sessionref.Candidate{
-				SessionID:  row.ID,
+				// InternalID (the harness full id): the legacy-form
+				// edit-distance leg compares the caller's ses_-shaped
+				// input against this — the wire phrase (row.ID) never
+				// matches a full id and the leg would be dead. Also
+				// gives degraded (unminted) rows a ranking identifier
+				// instead of an empty one.
+				SessionID:  row.InternalID,
 				ShortID:    row.ShortID,
 				Title:      row.Title,
 				Workspace:  workspaceID,

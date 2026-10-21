@@ -22,7 +22,7 @@
 
 ### Resolution + deprecation (sessionindex, middleware)
 
-- Precedence step 1 accepts BOTH phrase and hash form (same column/index) with `DeprecatedInput` flagged for the hash form; step 2 passthrough flags full-id inputs. Truncated full ids still never silently resolve (#1691 pin).
+- Precedence step 1 accepts BOTH phrase and hash form (same column/index) with `DeprecatedInput` flagged for the hash form. [CORRECTED by the post-union review: step 2's full-id passthrough did NOT flag — fixed in the #1756 post-union remediation PR, which also flags the hash-miss passthrough.] Truncated full ids still never silently resolve (#1691 pin).
 - The edge middleware attaches the #1756 notice on deprecated inputs: `Deprecation: true` + a `Sunset` header naming the phrase form. 503 degrade behavior unchanged.
 
 ### Short-only emission (REST + agentd)
@@ -81,5 +81,5 @@ None.
 - api/internal/middleware/session_ref.go
 - api/internal/server/{router.go, router_session_ref_test.go, router_frontend_workspace_test.go, router_session_reconcile_test.go}
 - api/internal/handlers/{proxy_session_index.go, opencode_upgrade_test.go, proxy_shortid_wiring_test.go}
-- cmd/workspace-agentd/{session_ref.go, session_shortids.go, mcp_tools.go, mcp_server.go, session_ref_test.go, mcp_tools_test.go}
+- cmd/workspace-agentd/{session_ref.go, mcp_tools.go, mcp_server.go, session_ref_test.go} [CORRECTED by the post-union review: session_shortids.go and mcp_tools_test.go were NOT in the shipped tree — record now reflects the final diff.]
 - sdks/openapi.yaml, CHANGELOG.md, this worklog

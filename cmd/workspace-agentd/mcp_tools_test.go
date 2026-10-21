@@ -2686,3 +2686,29 @@ func TestMCPSendMessage_EmissionDuplicationGuard_AbsentOnCleanIDs(t *testing.T) 
 	assert.NotContains(t, err.Error(), "fragment", "clean bogus ids take the plain not-found path")
 	assert.Contains(t, err.Error(), "ses_CLEAN_BOGUS", "the error names the clean id")
 }
+
+// #1756 §1 (post-union verify find): origin is a canonical harness id
+// post-resolution — the result must emit the PHRASE when the replica
+// knows it and the raw id FLAGGED (origin_deprecated) when cold, never
+// a silent full-id leak.
+func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	caller := f.newSession("ses_live_origin_x")
+	withAgentServer(t, f.handler(t))
+
+	// Cold replica: raw id ships, but FLAGGED.
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
+	assert.Contains(t, out, `"origin_deprecated":"true"`, "cold replica: the raw origin id must be flagged, never silent")
+
+	// Warm replica (phrase known for the origin): the phrase ships,
+	// unflagged.
+	store := withShortIDStore(t)
+	store.put("calm-otter-naps", caller)
+	out2, err2 := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi again", caller, "")
+	require.NoError(t, err2)
+	assert.Contains(t, out2, `"origin":"calm-otter-naps"`)
+	assert.NotContains(t, out2, `"origin_deprecated"`, "warm replica: the phrase needs no flag")
+}

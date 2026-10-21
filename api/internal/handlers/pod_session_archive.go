@@ -226,7 +226,12 @@ func (h *PodSessionArchiveHandler) ArchivedSet(c *gin.Context) {
 	archived := make([]string, 0)
 	for _, it := range items {
 		if it.Archived {
-			archived = append(archived, it.ID)
+			// The archived set is consumed by the agentd replica
+			// against RAW harness row ids — InternalID, never the
+			// post-#1756 wire phrase (it.ID), or the filter never
+			// matches and archived sessions leak back into the
+			// default session_list (#1735 regression).
+			archived = append(archived, it.InternalID)
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"archived": archived})

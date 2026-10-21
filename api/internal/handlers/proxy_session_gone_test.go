@@ -24,6 +24,7 @@ import (
 
 	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func goneAdapterErr() error {
@@ -261,4 +262,37 @@ func TestGetSession_Harness404_NilIndex_UncertainMessage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Contains(t, body.Error, "short while")
 	assert.NotContains(t, body.Error, "has been removed")
+}
+
+// #1756 post-union finding 4 pin: the reap verdict must match on
+// InternalID, not the post-mint row ID (the phrase). A row minted to
+// amber-falcon-glides with harness id ses_ghost must still reap when
+// the canonicalized path id is ses_ghost — the r1-era code compared
+// row.ID, so minted rows never matched and every reap reported
+// "uncertain".
+func TestGetSession_Harness404_ReapMatchesInternalIDNotPhrase(t *testing.T) {
+	idx := newMockSessionIndex()
+	idx.mu.Lock()
+	idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+		ID: "amber-falcon-glides", InternalID: "ses_ghost", MessageCount: 0,
+	})
+	idx.mu.Unlock()
+
+	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, goneAdapterErr()
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_ghost"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.GetSession(c)
+
+	require.Equal(t, http.StatusGone, w.Code)
+	assert.True(t, idx.deletedTree["ws-1/ses_ghost"],
+		"reap must match the row by InternalID even when its ID is the phrase")
 }

@@ -97,6 +97,17 @@ func emitID(canonical string) string {
 	return canonical
 }
 
+// emitIDFields is emitID plus the degraded marker parity session_list
+// rows already carry ("id_deprecated"): when the replica does not
+// know the phrase (cold), the harness id ships FLAGGED on single-id
+// results instead of silently raw (#1756 §1 consistency).
+func emitIDFields(canonical string) (id string, degraded bool) {
+	if short := currentSessionShortIDs().shortIDFor(canonical); short != "" {
+		return short, false
+	}
+	return canonical, true
+}
+
 // deprecationNote returns the #1756 one-release input-deprecation
 // clause for a ref addressed in a deprecated form ("" for canonical
 // phrase/alias inputs).

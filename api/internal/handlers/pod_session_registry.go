@@ -86,9 +86,19 @@ func (h *PodSessionRegistryHandler) List(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to list session registry"})
 		return
 	}
+	// The registry pull feeds the agentd replica's phrase→harness-id
+	// mapping: `sessionID` is the CANONICAL harness id (InternalID —
+	// the post-#1756 wire `ID` is the phrase and would poison the
+	// replica phrase→phrase), `shortID` is the phrase. Rows without a
+	// minted phrase stay unknown to the replica until registered —
+	// the replica's install rejects an empty short id, so they are
+	// skipped here rather than shipped as degenerate entries.
 	out := make([]gin.H, 0, len(items))
 	for _, it := range items {
-		out = append(out, gin.H{"sessionID": it.ID, "shortID": it.ShortID})
+		if it.ShortID == "" {
+			continue
+		}
+		out = append(out, gin.H{"sessionID": it.InternalID, "shortID": it.ShortID})
 	}
 	c.JSON(http.StatusOK, gin.H{"sessions": out})
 }

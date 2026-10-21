@@ -354,9 +354,12 @@ func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
 	ws.On("SetSessionArchived", mock.Anything, "test-user", "ws-1", ghost, true).
 		Return(apierrors.NewNotFoundError("session", ghost, nil)).Once()
 	// SuggestionsFor ranks the workspace's live rows: a one-edit
-	// neighbor must be offered.
+	// neighbor must be offered. Post-#1756 row shape (finding 8):
+	// the id-leg ranks against InternalID — a phrase-keyed rank
+	// never fires for a ses_-shaped input and the payload goes
+	// silent.
 	db.On("ListSessionIndex", mock.Anything, "ws-1").Return([]types.SessionListItem{
-		{ID: "ses_gho00000000000000000B", ShortID: "amber-falcon-glides", Title: "Ghost Neighbor"},
+		{ID: "amber-falcon-glides", InternalID: "ses_gho00000000000000000B", ShortID: "amber-falcon-glides", Title: "Ghost Neighbor"},
 	}, nil).Once()
 	db.On("ListWorkspaceIDsByOwner", mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 
@@ -371,7 +374,31 @@ func TestArchivedRoute_Unindexed404CarriesSuggestions(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"suggestions"`, "the unindexed-session 404 must carry the did-you-mean payload")
 	// #1756 §1: the payload's re-copy affordance is the PHRASE; the
 	// harness id appears only inside the service's error TEXT (an
-	// input echo, not an identifier field).
+	// input echo, not an identifier field) — and the CANDIDATE's
+	// harness id never leaks into the payload.
 	assert.Contains(t, rec.Body.String(), "amber-falcon-glides", "the neighbor's PHRASE is the re-copy affordance")
+	assert.NotContains(t, rec.Body.String(), "ses_gho00000000000000000B",
+		"the candidate's harness id must not leak — the phrase is the only copyable id")
 	ws.AssertExpectations(t)
+}
+
+// #1756 §2 (post-union review finding 1): a ses_ full-id input is the
+// PRIMARY deprecated form — the response must carry the notice:
+// Deprecation: true plus an RFC 8594 HTTP-date Sunset (free text is
+// not a valid Sunset). The pre-remediation tree flagged DeprecatedInput
+// only on a RESOLVING hash id; this pin holds the passthrough flag.
+func TestSessionRef_LegacyInputCarriesDeprecationNotice(t *testing.T) {
+	router, ws, _ := newRouterFixtureWithDB(t)
+
+	ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", refLiveID).Return(nil).Once()
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/"+refLiveID+"/seen")
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Equal(t, "true", rec.Header().Get("Deprecation"),
+		"a ses_ full-id input must attach the one-release notice")
+	sunset := rec.Header().Get("Sunset")
+	assert.NotEmpty(t, sunset, "Sunset header must be present on deprecated input")
+	if _, err := http.ParseTime(sunset); err != nil {
+		t.Fatalf("Sunset must be an RFC 8594 HTTP-date, got %q: %v", sunset, err)
+	}
 }

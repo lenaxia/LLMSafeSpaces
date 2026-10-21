@@ -63,7 +63,12 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 			// addressed by a deprecated form (full id or #1745 hash).
 			if res.DeprecatedInput {
 				c.Header("Deprecation", "true")
-				c.Header("Sunset", "session full-id and hash-short-id input is deprecated; address sessions by the 3-word phrase (see GET /sessions)")
+				// RFC 8594: Sunset is an HTTP-date, not free text.
+				// The deprecation window is one release (#1756 §2):
+				// deprecated in v0.40.0, removed in v0.41.0. The
+				// "address by the 3-word phrase" guidance lives in
+				// the agentd deprecation notes and the CHANGELOG.
+				c.Header("Sunset", "Tue, 01 Dec 2026 00:00:00 GMT")
 			}
 			setParam(c, "sessionId", res.CanonicalID)
 			c.Next()
@@ -111,9 +116,12 @@ func aliasSuggestions(workspaceID string, rows []types.SessionListItem) []sessio
 	out := make([]sessionref.Suggestion, 0, len(rows))
 	for _, row := range rows {
 		s := sessionref.Suggestion{
-			Title:     row.Title,
-			ShortID:   row.ShortID,
-			SessionID: row.ID,
+			Title:   row.Title,
+			ShortID: row.ShortID,
+			// InternalID: SessionID is ranking/clause internals only
+			// (json:"-") — carry the canonical harness key, not the
+			// wire phrase, for parity with the resolver's candidates.
+			SessionID: row.InternalID,
 			Workspace: workspaceID,
 		}
 		if t := sessionindex.LastActiveOf(row); !t.IsZero() {

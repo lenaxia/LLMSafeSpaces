@@ -182,10 +182,15 @@ func TestPodSessionArchivedSet_ReturnsArchivedIDs(t *testing.T) {
 	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:" + testRenameNamespace + ":workspace-ws-1"}
 	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-1", UserID: "user-7"}}
 	lister := &mockSessionIndexForPod{
+		// Post-#1756 row shape: ID is the wire PHRASE, InternalID the
+		// harness id. The archived set must carry the HARNESS id —
+		// the agentd replica filters raw harness rows; a phrase here
+		// never matches and archived sessions leak back into the
+		// default session_list (#1735 regression).
 		items: []types.SessionListItem{
-			{ID: "ses-1", Archived: true},
-			{ID: "ses-2"},
-			{ID: "ses-3", Archived: true},
+			{ID: "amber-falcon-glides", InternalID: "ses-1", Archived: true},
+			{ID: "bold-tiger-7-rests", InternalID: "ses-2"},
+			{ID: "calm-otter-2-naps", InternalID: "ses-3", Archived: true},
 		},
 	}
 	r := newPodSessionArchiveRouter(t, reviewer, lookup, &fakePodArchiver{}, &fakePodSessionProxy{}, lister)

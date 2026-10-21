@@ -78,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
-### Added — Task Board: the four #1699 engine-seam closings (design 0067)
+#### Added — Task Board: the four #1699 engine-seam closings (design 0067)
 
 - **Board search + health + epic listing — the board_read projections
   Lane 2 could not surface.** `GET /api/v1/me/board/search?q=…` (short
@@ -120,7 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
-### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
+### Changed
+
+#### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
 - **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
   `trusted_app_bots: '["agentic-actor-coder[bot]"]'`.** App-bot accounts
@@ -146,7 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins without touching tests — the shape is the contract, not the
   literal; same relaxation applied to the renovate-analysis pin test).
 
-### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
+#### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
 - **Workspace pods now carry a dedicated disk-backed emptyDir for the
   regenerable Go caches.** `GOCACHE=/sandbox-cache/go-build` and
@@ -164,7 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is network-expensive to rebuild and valuable across suspend/resume
   (the disk-recovery lever sweeps it under pressure). Storage docs
   updated with the sixth volume and its trade-offs.
-### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
+#### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
 
 - **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
   The opencode config writer's platform permission floor now carries
@@ -185,7 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts every deny entry survives the amendment.
 
 
-### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
+#### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
 
 - **`agentdDelivery.updatePolicy: Rolling | OnRefresh` (default
   `OnRefresh`) on the Workspace CRD + controller** (owner ruling
@@ -231,7 +233,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
   volumes pointer), `docs/architecture/components.md` (controller policy
   + the versioned board seam contract).
-### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
+#### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
 
 - **The workspace pod's disk-recovery allowlist now covers the caches
   that actually fill the PVC.** Nine classes covered ~2G of the
@@ -270,6 +272,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `in_use` verdict (pinned bytes shown, excluded from the reclaimable
   total); the REST contract documents the classes and gates.
 
+### Fixed
+
+#### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 review @ `6c024f10`)
+
+- **Five production regressions from the re-key, all re-keyed to the canonical harness id (`InternalID`):** the agentd registry pull no longer poisons the replica phrase→phrase (unminted rows are skipped — the replica install rejects empty short ids); the archived set matches harness row ids again (the #1735 leak is re-closed); session-gone reap verdicts fire (no more blanket "uncertain"); `RebuildMessageCount` no longer mints phrase-keyed ghost rows; the `context_used` self-heal fires (and the workspace CRD stops being fetched on every session-list call).
+- **§2 deprecation notice now fires for the PRIMARY deprecated form:** `ses_…` full-id passthrough (and a #1745 hash-id miss) set `DeprecatedInput`, so API routes attach `Deprecation: true` + `Sunset` — now an RFC 8594 HTTP-date (`Tue, 01 Dec 2026 00:00:00 GMT`, the v0.41.0 removal), not free text. Did-you-mean candidates carry the harness id for the ses_-form edit-distance leg (near-miss full ids suggest again; degraded rows get a ranking identifier).
+- **Mint determinism per the ruling:** the base is drawn ONCE; a 23505 retry suffixes the SAME base (`-2`, `-3`, …) — two concurrent minters of one base converge, as the record always claimed.
+- **agentd §1 surfaces completed:** `send_message` results, `session_metadata` rows, `session_read` bodies (session-id values rewritten best-effort), and `compact_session` results emit the phrase, with the `session_id_deprecated` marker when the replica is cold (parity with `session_list`) and the input-deprecation note when addressed by a full/hashed id. The tool catalog no longer advertises the retired `oc-…` short ids.
+- **Test hygiene:** the birthday-bomb mint test (P(collision) ≈ 6.2%/run, reproduced 3/40) is replaced by prefix-coverage + distinct-fraction asserts (40× stable); the mandated levels added — middleware Deprecation/Sunset pin, registry-pull→replica + archived-set integration, reap/ghost/heal unit pins, `EnsureSession` minted/degraded paths, e2e happy+unhappy phrase addressing.
 ## [0.39.0] - 2026-10-19
 
 ### Added — Automation: routine triggers can target other workspaces, owner-scoped (#1729)

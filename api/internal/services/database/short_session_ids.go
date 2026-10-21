@@ -31,14 +31,19 @@ const registerRetries = 5
 func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
 	// #1756: the mint is a 3-word phrase; a collision (the partial
 	// unique index raises 23505) re-mints with the DETERMINISTIC
-	// counter suffix — base-2, then base-3, … — never a re-roll.
+	// counter suffix — base-2, then base-3, … — never a re-roll. The
+	// BASE is drawn ONCE, outside the loop: two concurrent minters of
+	// the same base converge on the same suffixed form (that is the
+	// determinism the ruling buys — a fresh base per attempt would
+	// diverge the racers for no benefit).
+	base, err := shortid.MintPhrase()
+	if err != nil {
+		return "", err
+	}
 	for attempt := 0; attempt < registerRetries; attempt++ {
-		minted, err := shortid.MintPhrase()
-		if err != nil {
-			return "", err
-		}
+		minted := base
 		if attempt > 0 {
-			minted = shortid.WithCounterSuffix(minted, attempt+1)
+			minted = shortid.WithCounterSuffix(base, attempt+1)
 		}
 		tag, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)

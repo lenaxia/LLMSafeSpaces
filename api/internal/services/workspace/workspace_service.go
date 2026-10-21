@@ -1957,12 +1957,16 @@ func (s *Service) backfillContextUsed(ctx context.Context, workspaceID string, s
 
 	for i := range sessions {
 		if sessions[i].ContextUsed == nil {
-			if v, ok := ctxBySession[sessions[i].ID]; ok {
+			// ctxBySession is keyed by the CRD's harness ids; the
+			// list item's wire ID is the phrase post-#1756 — match on
+			// InternalID or the heal never fires, needsBackfill stays
+			// true, and the CRD is fetched on every session-list call.
+			if v, ok := ctxBySession[sessions[i].InternalID]; ok {
 				val := v
 				sessions[i].ContextUsed = &val
-				if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].ID, v); uErr != nil {
+				if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].InternalID, v); uErr != nil {
 					s.logger.Warn("backfillContextUsed: failed to persist backfilled value",
-						"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].ID)
+						"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].InternalID)
 				}
 			}
 		}

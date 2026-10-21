@@ -210,3 +210,29 @@ func TestSessionIndexReconcile_TruncatedWalkNeverPersistsUndercount(t *testing.T
 	assert.Empty(t, idx.rebuiltCounts,
 		"a truncated walk is a floor — persisting it would authoritatively undercount a possibly-correct row")
 }
+
+// #1756 post-union finding 5 pin: RebuildMessageCount is a row-creating
+// upsert keyed by the id passed — it MUST receive the harness id
+// (InternalID). Passing the phrase (row.ID) minted a ghost row keyed by
+// the phrase while the real row never converged. The row here is
+// minted (ID=phrase, InternalID=harness) so a phrase-keyed write lands
+// in rebuiltCounts under the phrase and the assertion fails.
+func TestSessionIndexReconcile_RebuildWritesInternalIDNotPhrase(t *testing.T) {
+	now := time.Now().UTC()
+	h, idx, _ := countTestHandler(t,
+		[]string{"ses_drift"},
+		map[string]int{"ses_drift": 5}, nil)
+	idx.mu.Lock()
+	idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+		ID: "amber-falcon-glides", InternalID: "ses_drift",
+		MessageCount: 7, LastMessageAt: &now,
+	})
+	idx.mu.Unlock()
+
+	runReconcile(t, h, "ws-1")
+
+	require.Equal(t, map[string]int{"ws-1/ses_drift": 5}, idx.rebuiltCounts,
+		"the rebuild write must be keyed by the harness id, never the phrase")
+	require.NotContains(t, idx.rebuiltCounts, "ws-1/amber-falcon-glides",
+		"a phrase-keyed rebuild would mint a ghost row")
+}
