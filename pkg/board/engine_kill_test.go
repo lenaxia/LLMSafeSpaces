@@ -453,6 +453,10 @@ func (s *BoardSuite) TestKill_WorkerDiedMidLeaseTaskReclaims() {
 	s.Equal(1, row.Attempts, "reclaim NEVER increments (the increment belongs to the next claim)")
 	s.Equal(1, s.countTransitions(task.ID, board.StageBacklog))
 
+	// #1813: drop the reclaim's failure backoff — this arm pins the
+	// re-claim's increment semantics, not the park (1813-b owns it).
+	s.clearTaskBackoff(task.ID)
+
 	// The next claim increments and grants.
 	c2 := s.claimOrFail(ws)
 	s.Equal(task.ID, c2.TaskID)
