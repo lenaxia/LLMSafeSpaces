@@ -102,6 +102,49 @@ func TestMintPhrase_HighEntropyNotSequential(t *testing.T) {
 	}
 }
 
+// The r1-era "no duplicate in 500 draws" pin was a birthday bomb:
+// P(collision) ≈ 6.2% per run over the ~1.97M phrase space (reproduced
+// 3/40 in CI review) — a ~1-in-16 flake, violating the no-flake rule.
+// Uniqueness is the partial unique index's job (pinned at the seam);
+// what the MINT must guarantee is uniform coverage of the space, so a
+// suffixed re-draw has the same collision probability as any draw.
+// Prefix-coverage + distinct-fraction asserts do that without the
+// birthday dependence. Thresholds sized so P(fail) ≤ ~1.4e-4 per run
+// (verified by 2M-trial Monte Carlo in review): with uniform draws,
+// E[unseen prefixes] = 160·(159/160)^1000 ≈ 0.30 (allowed 5); expected
+// duplicate pairs ≈ Poisson(λ=C(1000,2)/N ≈ 0.254), and distinct ≥ 996
+// tolerates λ≈2 with P(X≥5) ≈ 1.4e-4 — the 998 threshold carried a
+// ~1-in-430 flake.
+func TestMintPhrase_CoverageAndDistinctness(t *testing.T) {
+	const draws = 1000
+	seen := make(map[string]bool, draws)
+	prefixes := make(map[string]bool, 160)
+	for i := 0; i < draws; i++ {
+		id, err := MintPhrase()
+		if err != nil {
+			t.Fatalf("MintPhrase: %v", err)
+		}
+		seen[id] = true
+		prefixes[id[:adjectivePrefixLen(id)]] = true
+	}
+	if d := len(seen); d < draws*996/1000 {
+		t.Fatalf("distinct fraction too low: %d/%d — selection is not uniform", d, draws)
+	}
+	const adjectives = 160
+	if missed := adjectives - len(prefixes); missed > 5 {
+		t.Fatalf("adjective prefix coverage too thin: %d of %d prefixes unseen — selection is skewed", missed, adjectives)
+	}
+}
+
+func adjectivePrefixLen(id string) int {
+	for i := 0; i < len(id); i++ {
+		if id[i] == '-' {
+			return i
+		}
+	}
+	return len(id)
+}
+
 func TestCounterSuffix_DeterministicCollisionForm(t *testing.T) {
 	// "deterministic counter suffix on collision": the suffix is a
 	// plain -N (N >= 2), never a re-rolled random phrase-fragment.

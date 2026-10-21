@@ -79,6 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
+### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 post-union review; PR #1806)
+
+- **Five production regressions from the re-key, all re-keyed to the canonical harness id (`InternalID`):** the agentd registry pull no longer poisons the replica phrase→phrase (unminted rows are skipped — the replica install rejects empty short ids); the archived set matches harness row ids again (the #1735 leak is re-closed); session-gone reap verdicts fire (no more blanket "uncertain"); `RebuildMessageCount` no longer mints phrase-keyed ghost rows; the `context_used` self-heal fires (and the workspace CRD stops being fetched on every session-list call). `PlanReconciliation`'s error-path miss-carriers are keyed by `InternalID` too (reap convergence survives transient list errors).
+- **§2 deprecation notice now fires for the PRIMARY deprecated form:** `ses_…` full-id passthrough (and a #1745 hash-id miss) set `DeprecatedInput`, so API routes attach `Deprecation: true` + `Sunset` — now an RFC 8594 HTTP-date (`Tue, 01 Dec 2026 00:00:00 GMT`, the v0.41.0 removal), not free text. Did-you-mean candidates carry the harness id for the ses_-form edit-distance leg (near-miss full ids suggest again; degraded rows get a ranking identifier).
+- **Mint determinism per the ruling:** the base is drawn ONCE; a 23505 retry suffixes the SAME base (`-2`, `-3`, …) — two concurrent minters of one base converge, as the record always claimed.
+- **agentd §1 surfaces completed:** `send_message` results (including `origin`), `session_metadata` rows, `session_read` bodies (session-id values rewritten best-effort), and `compact_session` results emit the phrase, flagged when the replica is cold — `session_id_deprecated` on single-id results, `id_deprecated` on `session_list` AND `session_metadata` rows (parity across every surface) and the input-deprecation note when addressed by a full/hashed id. The tool catalog no longer advertises the retired `oc-…` short ids.
+- **Test hygiene:** the birthday-bomb mint test (P(collision) ≈ 6.2%/run, reproduced 3/40) is replaced by prefix-coverage + distinct-fraction asserts sized by Monte Carlo (P(fail) ≈ 1.4e-4/run); the mandated levels added — middleware Deprecation/Sunset pin, registry pull + archived set handler pins (emission contract; the agentd replica consumes both), reap/ghost/heal unit pins, `EnsureSession` minted/degraded paths, e2e happy+unhappy phrase addressing.
+
 ### Added — Task Board: the four #1699 engine-seam closings (design 0067)
 
 - **Board search + health + epic listing — the board_read projections

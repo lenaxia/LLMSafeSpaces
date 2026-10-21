@@ -135,7 +135,10 @@ func TestResolveSessionRef_AliasMissRefuses(t *testing.T) {
 func TestSuggestionsFor_WorkspaceScopedFirst(t *testing.T) {
 	when := time.Now().Add(-time.Hour)
 	r := &fakeRefResolver{list: []types.SessionListItem{
-		{ID: "ses_ed9183a46ffeRiNw2PddpL5dAA", ShortID: "amber-falcon-glides", Title: "Worker: #1648 mobile viewport fix", LastMessageAt: &when},
+		// Post-#1756 shape: ID is the wire phrase; the id-form
+		// edit-distance leg ranks against InternalID (finding 8) —
+		// a phrase-keyed rank never fires for a ses_-shaped input.
+		{ID: "amber-falcon-glides", InternalID: "ses_ed9183a46ffeRiNw2PddpL5dAA", ShortID: "amber-falcon-glides", Title: "Worker: #1648 mobile viewport fix", LastMessageAt: &when},
 	}}
 	got := SuggestionsFor(context.Background(), r, "user-1", "ws", "ses_ed9183a46ffeRiNw2PddpL5dA")
 	if len(got) != 1 || got[0].SessionID != "ses_ed9183a46ffeRiNw2PddpL5dAA" {

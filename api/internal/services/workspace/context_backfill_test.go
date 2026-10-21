@@ -32,9 +32,11 @@ func TestListWorkspaceSessions_BackfillsContextUsedFromCRD(t *testing.T) {
 		ID: "ws-1", UserID: "user-1",
 	}, nil)
 
+	// Post-#1756 shape: the list rows' wire ID is the PHRASE; the
+	// harness id rides InternalID. The CRD is keyed by harness ids.
 	sessionsFromDB := []types.SessionListItem{
-		{ID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
-		{ID: "ses_b", Title: "B", MessageCount: 10, Status: "idle"},
+		{ID: "amber-falcon-glides", InternalID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
+		{ID: "calm-otter-2-naps", InternalID: "ses_b", Title: "B", MessageCount: 10, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(sessionsFromDB, nil)
 
@@ -49,7 +51,11 @@ func TestListWorkspaceSessions_BackfillsContextUsedFromCRD(t *testing.T) {
 		},
 	}
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
-	si.On("UpsertContextUsed", mock.Anything, "ws-1", mock.Anything, mock.Anything).Return(nil)
+	// #1756 finding 6 pin: the heal matches and persists by the
+	// HARNESS id — a phrase-keyed match never fires (ContextUsed
+	// stays nil) and a phrase-keyed upsert fails this explicit mock.
+	si.On("UpsertContextUsed", mock.Anything, "ws-1", "ses_a", int64(75043)).Return(nil)
+	si.On("UpsertContextUsed", mock.Anything, "ws-1", "ses_b", int64(325355)).Return(nil)
 
 	result, err := f.svc.ListWorkspaceSessions(context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
@@ -77,8 +83,8 @@ func TestListWorkspaceSessions_PreservesDBContextUsed(t *testing.T) {
 
 	dbValue := int64(99999)
 	sessionsFromDB := []types.SessionListItem{
-		{ID: "ses_a", Title: "A", MessageCount: 5, Status: "idle", ContextUsed: &dbValue},
-		{ID: "ses_b", Title: "B", MessageCount: 10, Status: "idle"},
+		{ID: "amber-falcon-glides", InternalID: "ses_a", Title: "A", MessageCount: 5, Status: "idle", ContextUsed: &dbValue},
+		{ID: "calm-otter-2-naps", InternalID: "ses_b", Title: "B", MessageCount: 10, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(sessionsFromDB, nil)
 
@@ -149,7 +155,7 @@ func TestListWorkspaceSessions_CRDFetchFails_ReturnsDBValuesFailOpen(t *testing.
 	}, nil)
 
 	sessionsFromDB := []types.SessionListItem{
-		{ID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
+		{ID: "amber-falcon-glides", InternalID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(sessionsFromDB, nil)
 
@@ -203,7 +209,7 @@ func TestListWorkspaceSessions_BackfillPersistsToDB(t *testing.T) {
 	}, nil)
 
 	sessionsFromDB := []types.SessionListItem{
-		{ID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
+		{ID: "amber-falcon-glides", InternalID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(sessionsFromDB, nil)
 
@@ -241,7 +247,7 @@ func TestListWorkspaceSessions_BackfillUpsertFails_NoError(t *testing.T) {
 	}, nil)
 
 	sessionsFromDB := []types.SessionListItem{
-		{ID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
+		{ID: "amber-falcon-glides", InternalID: "ses_a", Title: "A", MessageCount: 5, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(sessionsFromDB, nil)
 

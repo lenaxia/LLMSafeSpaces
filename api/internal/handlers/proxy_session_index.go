@@ -81,7 +81,11 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", listErr.Error())
 		}
 		for _, row := range rows {
-			if row.ID != sessionID {
+			// The middleware canonicalizes to the harness id; index
+			// rows carry the phrase in ID post-#1756 — compare on
+			// InternalID or minted rows never match and every
+			// 404-class session reports an "uncertain" reap verdict.
+			if row.InternalID != sessionID {
 				continue
 			}
 			if sessionindex.DefaultReapGuard(row) {
@@ -308,8 +312,11 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		// shape — register through the seam first (review r1 finding 1;
 		// the loop's own budget bounds the mint cost).
 		h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode")
-		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.ID, count); err != nil {
-			h.logger.Warn("session reconcile: count rebuild write failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+		// InternalID here too — RebuildMessageCount is a row-creating
+		// upsert; passing the phrase (row.ID) mints a ghost row keyed
+		// by the phrase while the real row never converges.
+		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.InternalID, count); err != nil {
+			h.logger.Warn("session reconcile: count rebuild write failed", "workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
 			continue
 		}
 		sessionindex.ReconcileOutcome("count_rebuilt")

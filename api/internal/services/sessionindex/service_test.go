@@ -236,6 +236,21 @@ func TestPlanReconciliation(t *testing.T) {
 			wantMiss:   map[string]int{"ses_maybe": 1},
 		},
 		{
+			// #1756 post-union review finding 1b: on a transient
+			// harness-list error the frozen counters must carry by
+			// INTERNALID — a minted row's ID is the phrase, and a
+			// phrase-keyed carry drops the counter (reap convergence
+			// resets every time the list errors mid-window).
+			name: "harness error carries minted rows' counters by InternalID",
+			indexRows: []types.SessionListItem{
+				{ID: "amber-falcon-glides", InternalID: "ses_cold", Title: "Cold", MessageCount: 0},
+			},
+			harnessErr: true,
+			prevMiss:   map[string]int{"ses_cold": 1},
+			threshold:  2,
+			wantMiss:   map[string]int{"ses_cold": 1},
+		},
+		{
 			name:       "mixed: keep, reap, operator-keep, stale counters dropped",
 			indexRows:  []types.SessionListItem{row("ses_keep", 3), row("ses_gone", 0), row("ses_vanished", 7)},
 			harness:    map[string]bool{"ses_keep": true},

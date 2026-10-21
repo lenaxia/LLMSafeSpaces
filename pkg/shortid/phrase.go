@@ -57,7 +57,9 @@ var (
 // MintPhrase returns a fresh 3-word adjective-noun-verb phrase from
 // the frozen lists — the #1756 canonical session short id. Collisions
 // are NOT retried here; the registration seam's check-and-retry loop
-// applies WithCounterSuffix deterministically.
+// applies WithCounterSuffix deterministically. The error is always
+// nil (crypto/rand failure is treated as a process-level fault at the
+// seed source); the error slot is kept for signature stability only.
 func MintPhrase() (string, error) {
 	return pickFrom(adjectiveWords) + "-" +
 		pickFrom(nounWords) + "-" +

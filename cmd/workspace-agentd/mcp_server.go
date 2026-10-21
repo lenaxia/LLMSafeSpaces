@@ -328,7 +328,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session to read — its ID (from session_list), its short id (oc-…, case-insensitive), or an unambiguous title/slug alias (e.g. 'sunny-wolf')"},
+					"session_id": map[string]any{"type": "string", "description": "The session to read — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
 					"limit":      map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
 				},
 				"required": []string{"session_id"},
@@ -432,7 +432,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id":      map[string]any{"type": "string", "description": "The target session — its ID (from session_list / session_metadata), its short id (oc-…, case-insensitive), or an unambiguous title/slug alias"},
+					"session_id":      map[string]any{"type": "string", "description": "The target session — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
 					"message":         map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
 					"from_session_id": map[string]any{"type": "string", "description": "Optional fallback: YOUR own session — ID, short id, or unambiguous alias — used only when the platform could not inject it automatically (the result tells you). Find yours via session_metadata — your title identifies you. Lets the recipient reply to you."},
 				},
@@ -1079,7 +1079,59 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 	}
 	// #1307: image data URLs never cross this surface either — strip
 	// them to metadata + omission markers (the seam owns the wire rule).
-	return string(opencode.StripImageDataURLs(body)), nil
+	// #1756 §1: full ids leave tool output — rewrite the body's
+	// session-id values to the replica-known phrases (best-effort,
+	// same never-break-the-payload rule as the list rewrite).
+	return emitShortOnlyRawBody(opencode.StripImageDataURLs(body)), nil
+}
+
+// emitShortOnlyRawBody rewrites session-id VALUES inside a raw seam
+// payload to the replica-known phrase (#1756 §1: full ids leave tool
+// output). Rows whose id the replica does not know keep the harness
+// id — a raw body carries no per-row marker surface, and breaking
+// the payload shape is worse than a degraded id.
+func emitShortOnlyRawBody(raw []byte) string {
+	store := currentSessionShortIDs()
+	if store == nil || store.size() == 0 {
+		return string(raw)
+	}
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return string(raw)
+	}
+	rewritten := false
+	var walk func(v any) any
+	walk = func(v any) any {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, val := range t {
+				if k == "sessionID" || k == "session_id" || k == "sessionId" {
+					if id, ok := val.(string); ok && id != "" {
+						if short := store.shortIDFor(id); short != "" {
+							t[k] = short
+							rewritten = true
+							continue
+						}
+					}
+				}
+				t[k] = walk(val)
+			}
+		case []any:
+			for i, val := range t {
+				t[i] = walk(val)
+			}
+		}
+		return v
+	}
+	doc = walk(doc)
+	if !rewritten {
+		return string(raw)
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return string(raw)
+	}
+	return string(out)
 }
 
 func mcpDevPreviewURL(port int, path string) (string, error) {

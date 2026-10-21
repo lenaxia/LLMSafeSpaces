@@ -287,9 +287,13 @@ func PlanReconciliation(indexRows []types.SessionListItem, harnessList func() (m
 	nextMiss = map[string]int{}
 	present, err := harnessList()
 	if err != nil {
+		// Keyed by InternalID like every other path below: a minted
+		// row's ID is the phrase — carrying miss counters under the
+		// phrase would drop them on a transient list error and delay
+		// reap convergence (found by the #1756 post-union verify).
 		for _, r := range indexRows {
-			if n, ok := prevMiss[r.ID]; ok {
-				nextMiss[r.ID] = n
+			if n, ok := prevMiss[r.InternalID]; ok {
+				nextMiss[r.InternalID] = n
 			}
 		}
 		return nil, nil, nextMiss
