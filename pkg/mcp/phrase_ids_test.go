@@ -433,3 +433,113 @@ func TestSessionHistory_MissingWorkspaceCarriesNotice(t *testing.T) {
 	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "workspace_id is required")
 	assert.Contains(t, result.Content[1].(mcp.TextContent).Text, "DEPRECATED")
 }
+
+// TestHTTPClient_SendMessage_CallerRefOnlyMatch (r3 missing-test 1):
+// the bridge header RESOLVES the canonical harness id (a = harness),
+// the frames are phrase-keyed, and the additive internal id belongs to
+// a DIFFERENT session — the CALLER-REF key (b) is the ONLY possible
+// match. This is the exact branch the r3 review proved unexercised
+// (the r2 fixtures all carried internalSessionId == canonical, so the
+// additive leg carried them; and a no-header fixture collapses a == b,
+// which the r3 first draft of this pin got wrong the same way).
+func TestHTTPClient_SendMessage_CallerRefOnlyMatch(t *testing.T) {
+	mux := http.NewServeMux()
+	// The header resolves a canonical id DIFFERENT from the frame keys.
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(types.HeaderSessionRefResolved, "ses_resolved_canonical")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, &abiv1.SessionSnapshot{
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: "ses_SOMEONE_ELSE_ENTIRELY", // non-matching additive
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+		}))
+		flusher.Flush()
+		evt := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: "ses_SOMEONE_ELSE_ENTIRELY",
+			Delta:             "caller-ref",
+		}
+		writeContractFrame(t, w, eventFrame(2, evt))
+		flusher.Flush()
+		idle := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: "ses_SOMEONE_ELSE_ENTIRELY",
+			Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}
+		writeContractFrame(t, w, eventFrame(3, idle))
+		flusher.Flush()
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/message", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", "amber-falcon-glides", "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "caller-ref", resp)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"the caller-ref key alone must complete the wait when the resolved id and the additive id both miss")
+}
+
+// TestHTTPClient_SendMessage_PhraseKeyedForeignFrameIgnored (r3
+// missing-test 2): a phrase-keyed/additive frame for a DIFFERENT
+// session must never bleed into this call — the dual-key widening
+// must not over-match in the phrase space.
+func TestHTTPClient_SendMessage_PhraseKeyedForeignFrameIgnored(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(types.HeaderSessionRefResolved, "ses_canonical_mine")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1,
+			sessionSnap("ses_canonical_mine", abiv1.SessionStatus_SESSION_STATUS_BUSY),
+			&abiv1.SessionSnapshot{
+				SessionId:         "quiet-marmot-glints", // a DIFFERENT session, phrase-keyed
+				InternalSessionId: "ses_someone_else",
+				Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+			}))
+		flusher.Flush()
+		foreign := &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId:         "quiet-marmot-glints",
+			InternalSessionId: "ses_someone_else",
+			Delta:             "foreign text",
+		}
+		writeContractFrame(t, w, eventFrame(2, foreign))
+		flusher.Flush()
+		mine := &abiv1.Event{
+			Type:      abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId: "ses_canonical_mine",
+			Delta:     "mine",
+		}
+		writeContractFrame(t, w, eventFrame(3, mine))
+		flusher.Flush()
+		idle := &abiv1.Event{
+			Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId: "ses_canonical_mine",
+			Status:    abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}
+		writeContractFrame(t, w, eventFrame(4, idle))
+		flusher.Flush()
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "amber-falcon-glides", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "mine", resp)
+	assert.NotContains(t, resp, "foreign", "a phrase-keyed foreign frame must not bleed in")
+}

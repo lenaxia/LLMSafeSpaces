@@ -428,15 +428,17 @@ func TestSessionRef_HashMissPassthroughCarriesDeprecationNotice(t *testing.T) {
 	}
 }
 
-// #1816: a RESOLVED ref (phrase or alias rewrite, or deprecated-id
-// passthrough) tells the caller which canonical id it mapped to via
-// X-Session-Ref-Resolved — the platform MCP client's bridge for
-// matching the ABI contract stream (whose frames still carry harness
-// ids until the deferred short_id M2 cutover) without burning the wait
-// timeout. Correlation for a caller that just addressed the session
-// under authz — not a new default-output surface (#1756 §1 governs
-// session-bearing payload bodies; this rides the same response the
-// caller already receives).
+// #1816: a RESOLVED ref (a phrase or alias REWRITE — never the
+// byte-identical deprecated-id passthrough, which resolves nothing)
+// tells the caller which canonical id it mapped to via
+// X-Session-Ref-Resolved. The platform MCP client consumes it as one
+// key of its dual-space contract-stream match — post-#1824 frames are
+// phrase-keyed on refreshed pods (harness additive) and harness-keyed
+// on heal-window/legacy pods — so a single-space filter would burn the
+// wait timeout on one regime or the other. Correlation for a caller
+// that just addressed the session under authz — not a new
+// default-output surface (#1756 §1 governs session-bearing payload
+// bodies; this rides the same response the caller already receives).
 func TestSessionRef_ResolvedRefCarriesCanonicalHeader(t *testing.T) {
 	router, ws, db := newRouterFixtureWithDB(t)
 

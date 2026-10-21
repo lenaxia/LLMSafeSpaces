@@ -232,10 +232,12 @@ type questionEventResult struct {
 }
 
 // rewriteQuestionSessionID replaces the marshaled InputRequest's
-// sessionId value with the caller-facing ref (#1816 §1). The ABI frame
-// carries the harness id; the tool result must not leak it on the
-// phrase path. Best-effort shape guard: only rewrites when the field
-// is present as a string.
+// sessionId value with the caller-facing ref (#1816 §1). Post-#1824,
+// refreshed pods carry the PHRASE in the frame's session_id (harness
+// additive as internal_session_id) and legacy/heal-window frames carry
+// the harness id — either space's id must not leak into tool output on
+// the phrase path; the caller sees the form it typed. Best-effort
+// shape guard: only rewrites when the field is present as a string.
 func rewriteQuestionSessionID(raw []byte, callerRef string) ([]byte, error) {
 	if callerRef == "" {
 		return raw, nil

@@ -204,3 +204,42 @@ deprecated window stays functional).
 - Reviewer's agentd-create wording note (prose `deprecation` vs
   `session_id_deprecated`) acknowledged — pre-existing #1756 design;
   the PR body's "agentd parity" phrasing softened in this worklog.
+
+---
+
+## r3 review (CHANGES_REQUESTED) — remediated
+
+- **Untested caller-ref branch (blocking)**: the r2 phrase-keyed fixtures
+  all carried internalSessionId == canonical, so the ADDITIVE leg carried
+  the match — removing the caller-ref key left the suite green (reviewer
+  mutation-proven). New pin `TestHTTPClient_SendMessage_CallerRefOnlyMatch`
+  isolates the branch: bridge header resolves a DIFFERENT canonical, frames
+  phrase-keyed, additive id belongs to another session — the caller-ref key
+  is the ONLY match. Mutation-verified: dropping `b` redds it (3.00s burn),
+  restoring greens. (The pin's own first draft repeated the reviewer's
+  observation trap — a no-header fixture collapses a == b — caught and
+  fixed before commit.)
+- **Negative bleed pin (missing-test 2)**:
+  `TestHTTPClient_SendMessage_PhraseKeyedForeignFrameIgnored` — a
+  phrase-keyed/additive frame of a DIFFERENT session never bleeds in;
+  mutation-verified (admit-all matchWithInternal redds it).
+- **e2e tightened**: the alias-miss leg now asserts the did-you-mean
+  CLAUSE (token-overlap miss against a real title, so ranking produces a
+  suggestion); the unresolvable-phrase leg asserts NO DELIVERY (the body
+  appears in exactly ONE transcript — the caller's own tool args; a
+  second session containing it is a leaked delivery).
+- **Doc truth (Rule 4)**: router_session_ref_test.go's header comment
+  corrected (deprecated passthrough sets NO header; dual-regime frames);
+  rewriteQuestionSessionID's doc corrected; this worklog's r0 Objective
+  section describes the PRE-#1824 world and is historical — the post-#1824
+  adaptation section above is the current truth; "Files touched" gains
+  pkg/types/session.go + api/internal/middleware/session_ref_bridge_test.go
+  + pkg/mcp/phrase_ids_test.go; the e2e count is now FIVE legs.
+- PR body rewritten for the post-#1824 reality.
+
+## e2e count
+
+Five legs at head: PhraseTargetedSendMessage, PhraseTargetedAbort,
+DeprecatedFullIDCarriesNotice, UnresolvablePhraseRefusesCleanly (now with
+the no-delivery assertion), AliasMissRefusesWithDidYouMean (now asserting
+the clause).

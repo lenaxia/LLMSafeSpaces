@@ -171,29 +171,53 @@ func TestOriginE2E1816_UnresolvablePhraseRefusesCleanly(t *testing.T) {
 		"an unresolvable phrase must REFUSE, not deliver: %s", first)
 	assert.Contains(t, first, "quiet-marmot-glints",
 		"the refusal names the requested phrase (the caller's own input, echoed back)")
+
+	// NO DELIVERY (r3): the message body appears in exactly ONE
+	// transcript — the caller's own (its tool-call arguments echo the
+	// body). Any SECOND session containing it is a leaked delivery.
+	require.Eventually(t, func() bool {
+		sessions, err := client.SessionList(ctx)
+		if err != nil {
+			return false
+		}
+		hits := 0
+		for _, s := range sessions {
+			raw, _, err := client.SessionMessagesRaw(ctx, s.ID, 5, "")
+			if err == nil && strings.Contains(string(raw), "anyone?") {
+				hits++
+			}
+		}
+		return hits == 1
+	}, 10*time.Second, 500*time.Millisecond,
+		"the refused message must appear only in the caller's own transcript (its tool args), never delivered to a second session")
 }
 
 // TestOriginE2E1816_AliasMissRefusesWithDidYouMean (the resolver-side
 // unhappy leg): an alias-form target that matches nothing fails at the
 // RESOLVER with the #1663-class did-you-mean clause — no seam call, no
-// delivery — through the real dispatch.
+// delivery — through the real dispatch. The miss shares tokens with
+// the caller's real title so the ranking actually produces a
+// suggestion (r3: the first draft only asserted "not found").
 func TestOriginE2E1816_AliasMissRefusesWithDidYouMean(t *testing.T) {
 	client, toolResults, provider := bootOriginE2E1627(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	callerID := createWithBootstrapRetry(t, client, "e21816-aliasmiss-caller")
+	callerID := createWithBootstrapRetry(t, client, "gamma relay worker nine")
+	_ = callerID
 
 	provider.mu.Lock()
 	provider.tool = "llmsafespaces_send_message"
-	provider.args = `{"session_id":"no such session titled this","message":"x"}`
+	provider.args = `{"session_id":"gamma relay nowhere","message":"x"}`
 	provider.mu.Unlock()
 
-	_, err := client.SessionSend(ctx, callerID, "send by a made-up title", "", nil)
+	_, err := client.SessionSend(ctx, callerID, "send by a near-miss title", "", nil)
 	require.NoError(t, err, "the caller's turn must complete (the refusal is a tool error)")
 
 	require.NotEmpty(t, *toolResults)
 	first := (*toolResults)[0]
 	assert.True(t, strings.HasPrefix(first, "ERROR: "), "an alias miss must refuse: %s", first)
 	assert.Contains(t, first, "not found", "the refusal names the miss")
+	assert.Contains(t, first, "did you mean",
+		"the token-overlap miss must produce a did-you-mean suggestion through the real chain")
 }
