@@ -113,7 +113,7 @@ var sessionMessageTool = mcp.NewTool("session_message",
 		"[llmsafespaces:attachment path=\"/workspace/uploads/<uuid>-<name>\" name=\"<name>\"] — "+
 		"any trailing block like this in the message is replaced, not duplicated."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
-	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID")),
+	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID — the session's 3-word phrase (preferred; case-insensitive), or (deprecated, one release) the full/hashed id")),
 	mcp.WithString("message", mcp.Required(), mcp.Description("The message/prompt to send")),
 	mcp.WithArray("files", mcp.WithStringItems(),
 		mcp.Description("Optional attachment paths (/workspace/uploads/<uuid>-<name>, max 10, no duplicates); appended to the message as a v1 attachment manifest")),
@@ -122,7 +122,7 @@ var sessionMessageTool = mcp.NewTool("session_message",
 var sessionHistoryTool = mcp.NewTool("session_history",
 	mcp.WithDescription("Get the message history of a session"),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
-	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID")),
+	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID — the session's 3-word phrase (preferred; case-insensitive), or (deprecated, one release) the full/hashed id")),
 )
 
 // --- Tool handlers ---
@@ -231,7 +231,47 @@ func (h *handlers) sessionCreate(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	out, _ := json.Marshal(resp)
+	// #1816 degraded-window parity with agentd's create_session: the
+	// API's registration-degraded fallback ships the harness id in
+	// sessionId AND echoes it in deprecatedSessionId — the platform
+	// MCP result FLAGs it (never silently raw) and carries the
+	// address-by-phrase guidance as a second content block.
+	if resp != nil && resp.DeprecatedSessionID != "" {
+		flagged := sessionCreateResult{
+			SessionID:           resp.ID,
+			DeprecatedSessionID: resp.DeprecatedSessionID,
+			SessionIDDeprecated: true,
+		}
+		out, _ = json.Marshal(flagged)
+		return newToolResultTextWithNotice(string(out),
+			"DEPRECATED: this session was registered without a phrase (platform seam unavailable); "+
+				"the full id shown is a degraded fallback — address the session by its 3-word phrase "+
+				"once the platform converges (re-list sessions)."), nil
+	}
 	return mcp.NewToolResultText(string(out)), nil
+}
+
+// sessionCreateResult is session_create's flagged degraded output: the
+// harness id rides sessionId with the explicit deprecated marker set
+// (#1816 — degraded rows surface flagged, never silently wrong).
+type sessionCreateResult struct {
+	SessionID           string `json:"sessionId"`
+	DeprecatedSessionID string `json:"deprecatedSessionId,omitempty"`
+	SessionIDDeprecated bool   `json:"session_id_deprecated"`
+}
+
+// newToolResultTextWithNotice appends the §2 deprecation notice as a
+// SECOND text content block (#1816): the tool's payload shape stays
+// byte-compatible for consumers reading the first block, while the
+// notice stays model-visible — parity with the REST Deprecation/Sunset
+// headers and agentd's envelope note.
+func newToolResultTextWithNotice(text, notice string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent(text),
+			mcp.NewTextContent(notice),
+		},
+	}
 }
 
 func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -272,6 +312,12 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError(fmt.Sprintf("failed to send message: %v", err)), nil
 	}
 
+	// #1816 §2 parity: a deprecated-form session ref (full/hashed id)
+	// carries the one-release deprecation notice as a second content
+	// block — the MCP twin of the REST Deprecation/Sunset headers.
+	if note := sessionRefDeprecationNotice(sessionID); note != "" {
+		return newToolResultTextWithNotice(response, note), nil
+	}
 	return mcp.NewToolResultText(response), nil
 }
 
@@ -293,6 +339,11 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	out, _ := json.Marshal(msgs)
+	// #1816 §2 parity (session_message's twin): deprecated-form inputs
+	// carry the notice; the payload shape stays byte-compatible.
+	if note := sessionRefDeprecationNotice(sessionID); note != "" {
+		return newToolResultTextWithNotice(string(out), note), nil
+	}
 	return mcp.NewToolResultText(string(out)), nil
 }
 

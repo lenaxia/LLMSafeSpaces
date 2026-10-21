@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 const (
@@ -162,9 +163,14 @@ type RefreshWorkspaceResp struct {
 // SessionResp is the response from session creation. The production
 // route POST /workspaces/:id/sessions/new returns
 // types.EnsureSessionResponse, whose session identifier is serialized
-// as "sessionId" (#1033).
+// as "sessionId" (#1033) and IS the minted phrase (#1756 §1). In the
+// registration-degraded window the API falls back to the harness id
+// in sessionId AND echoes it in deprecatedSessionId — captured here so
+// the tool layer can flag the degraded id instead of shipping it
+// silently (#1816 parity with agentd's create_session).
 type SessionResp struct {
-	ID string `json:"sessionId"`
+	ID                  string `json:"sessionId"`
+	DeprecatedSessionID string `json:"deprecatedSessionId,omitempty"`
 }
 
 // Message is one entry of session history, in the platform session
@@ -224,6 +230,25 @@ type questionEventResult struct {
 	Request json.RawMessage `json:"request"`
 }
 
+// rewriteQuestionSessionID replaces the marshaled InputRequest's
+// sessionId value with the caller-facing ref (#1816 §1). The ABI frame
+// carries the harness id; the tool result must not leak it on the
+// phrase path. Best-effort shape guard: only rewrites when the field
+// is present as a string.
+func rewriteQuestionSessionID(raw []byte, callerRef string) ([]byte, error) {
+	if callerRef == "" {
+		return raw, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw, err
+	}
+	if _, ok := doc["sessionId"].(string); ok {
+		doc["sessionId"] = callerRef
+	}
+	return json.Marshal(doc)
+}
+
 // questionReplyRequest is the body for POST /question/:id/reply.
 type questionReplyRequest struct {
 	Answers [][]string `json:"answers"`
@@ -265,6 +290,15 @@ type HTTPClient struct {
 }
 
 func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, result any) error {
+	_, err := c.doJSONHeaders(ctx, method, path, body, result)
+	return err
+}
+
+// doJSONHeaders is doJSON returning the response headers — the #1816
+// resolved-id bridge reads X-Session-Ref-Resolved off the prompt
+// response (and the §2 Deprecation/Sunset pair is caller-visible for
+// notice parity).
+func (c *HTTPClient) doJSONHeaders(ctx context.Context, method, path string, body any, result any) (http.Header, error) {
 	// Apply per-request timeout if context has no deadline
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -276,14 +310,14 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
+			return nil, fmt.Errorf("marshal request: %w", err)
 		}
 		reqBody = bytes.NewReader(b)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reqBody)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
@@ -292,7 +326,7 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -306,15 +340,15 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 		if len(errMsg) > 512 {
 			errMsg = errMsg[:512] + "...(truncated)"
 		}
-		return fmt.Errorf("API error %d: %s", resp.StatusCode, errMsg)
+		return resp.Header, fmt.Errorf("API error %d: %s", resp.StatusCode, errMsg)
 	}
 
 	if result != nil {
 		if err := json.NewDecoder(limited).Decode(result); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+			return resp.Header, fmt.Errorf("decode response: %w", err)
 		}
 	}
-	return nil
+	return resp.Header, nil
 }
 
 // doRequestRaw executes an HTTP request and returns the status code + raw JSON body.
@@ -442,6 +476,15 @@ func (c *HTTPClient) GetHistory(ctx context.Context, workspaceID, sessionID stri
 // ABI contract stream (GET /workspaces/:id/contract-events — protojson
 // StreamFrames, US-69.11) until the target session goes IDLE or the
 // agent asks for input.
+//
+// #1816 phrase addressing: the session ref may be the 3-word phrase
+// (or, in the one-release deprecation window, the full/hashed id —
+// the REST edge resolves every form). The ABI stream frames still
+// carry harness ids (the short_id M2 cutover is deferred), so the
+// resolved canonical id is learned from the prompt response's
+// X-Session-Ref-Resolved header and drives the stream matching —
+// without it a phrase-typed filter would never match a frame and the
+// wait would burn its whole budget before the history fallback.
 func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error) {
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return "", err
@@ -452,13 +495,21 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 
 	// 1. Fire prompt_async. The /prompt handler accepts the parts-based
 	// body shape ({parts:[{type:text,...}]}) — a bare {"message": ...}
-	// key extracts no text and is rejected (#1034).
+	// key extracts no text and is rejected (#1034). The response's
+	// X-Session-Ref-Resolved (set when the edge REWROTE the ref —
+	// phrase/alias inputs) carries the canonical harness id the stream
+	// frames are keyed on (#1816 bridge).
+	origRef := sessionID
 	body := map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": message}},
 	}
 	path := fmt.Sprintf("/api/v1/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID)
-	if err := c.doJSON(ctx, http.MethodPost, path, body, nil); err != nil {
+	promptHeaders, err := c.doJSONHeaders(ctx, http.MethodPost, path, body, nil)
+	if err != nil {
 		return "", err
+	}
+	if resolved := strings.TrimSpace(promptHeaders.Get("X-Session-Ref-Resolved")); resolved != "" {
+		sessionID = resolved
 	}
 
 	// 2. Consume the contract stream until the turn completes. The
@@ -468,7 +519,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	sseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	text, question, _ := c.awaitTurnCompletion(sseCtx, ctx, workspaceID, sessionID)
+	text, question, _ := c.awaitTurnCompletion(sseCtx, ctx, workspaceID, sessionID, origRef)
 	if question != nil {
 		out, merr := json.Marshal(question)
 		if merr == nil {
@@ -486,6 +537,20 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	return c.fallbackHistory(ctx, workspaceID, sessionID)
 }
 
+// sessionRefDeprecationNotice is the #1756 §2 one-release notice the
+// tool layer attaches when the caller addressed a session by a
+// deprecated form (full/hashed id) — parity with the REST
+// Deprecation/Sunset headers and agentd's envelope note (#1816).
+// Empty for canonical phrase inputs.
+func sessionRefDeprecationNotice(ref string) string {
+	if !shortid.IsDeprecatedInputForm(ref) {
+		return ""
+	}
+	return "DEPRECATED: you addressed this session by its full/hashed id; " +
+		"use the 3-word phrase (see the workspace session list). " +
+		"Full-id session inputs are accepted through one release, then rejected."
+}
+
 // errContractUnseeded marks a stream that ended before delivering its
 // snapshot frame — a broken endpoint (or a pre-snapshot cut). Retrying
 // cannot help within a call; the history fallback answers instead.
@@ -500,8 +565,11 @@ const contractReconnectPause = 200 * time.Millisecond
 // SendMessage cares about: the target session going IDLE (done), an
 // input request (question result / headless permission auto-approve),
 // and PART_DELTA accumulation for live text. replyCtx outlives the
-// stream context and backs the async permission replies.
-func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID string) (string, *questionEventResult, error) {
+// stream context and backs the async permission replies. callerRef is
+// the caller-facing session id (the phrase when addressed by phrase) —
+// the question result reports THAT, never the harness id the ABI frame
+// carries (#1816 §1).
+func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID, callerRef string) (string, *questionEventResult, error) {
 	var response strings.Builder
 	var lastSeq uint64
 
@@ -527,7 +595,7 @@ func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspac
 			return response.String(), nil, err
 		}
 
-		read := c.readContractStream(resp.Body, workspaceID, sessionID, &lastSeq, &response, replyCtx)
+		read := c.readContractStream(resp.Body, workspaceID, sessionID, callerRef, &lastSeq, &response, replyCtx)
 		_ = resp.Body.Close()
 
 		if read.question != nil || read.idle {
@@ -571,8 +639,10 @@ type contractStreamRead struct {
 // per the SSE framing) and folds ABI StreamFrames until the target
 // session goes IDLE, an input request arrives, or the body ends.
 // Parse errors on individual frames are tolerated (skipped) — one bad
-// frame never kills the wait.
-func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
+// frame never kills the wait. callerRef rewrites the question result's
+// session id to the caller-facing form (#1816 §1: the harness id the
+// ABI frame carries never leaks into tool output on the phrase path).
+func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID, callerRef string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
 	var read contractStreamRead
 	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
 
@@ -641,7 +711,13 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID s
 					}
 					// QUESTION (or unspecified — surface it rather than
 					// hang the turn): structured result for the caller.
+					// The session id is rewritten to the CALLER-FACING ref
+					// (#1816 §1): on the phrase path the harness id the
+					// ABI frame carries must not leak into tool output.
 					if raw, merr := protojson.Marshal(in); merr == nil {
+						if rewritten, rerr := rewriteQuestionSessionID(raw, callerRef); rerr == nil {
+							raw = rewritten
+						}
 						read.question = &questionEventResult{Type: "question", Request: raw}
 					}
 				}
