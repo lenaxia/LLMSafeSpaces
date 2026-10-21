@@ -44,6 +44,28 @@ preserves the just-landed five-stage contract.
   (board_tools_test), UI badge pin (BoardPage.test — FAILED ×2 on a
   backlog card, data-stage stays backlog).
 
+## r6-r9 (review rounds)
+
+- r6: claim-path escalation overlay (the dominant automatic site) +
+  helm env threading + MCP explicit false + all-four-SDK sync +
+  MoveStage doc restore + coverage (drift-done regression pin 1813-f,
+  ListTasks DB pin 1813-g, backoff boundary unit pins, REST semantic
+  filter pin, worker-semantics seam e2e arm).
+- r7: the read-path pin seeded FIFO-wrong (clean first) — fixed.
+- r8: Go SDK variadic options (3-arg call sites keep compiling — the
+  migration path), UI FAILED filter toggle, TaskStart-at-cap pin
+  (1813-h), exitPendingReclaim reset pin (1813-i), Python/Java edge
+  arms.
+- r9 (truthful semantics, review-5): escalation sets the marker ONLY
+  when failures exist (`last_attempt_failed = failure_count > 0`) —
+  all-success exhaustion escalates WITHOUT a failure claim (no FAILED
+  ×0; 1813-d/h flipped to the truthful assertions; new contrast pin
+  1813-j keeps the crash-loop marker). Every reset site clears
+  last_failure_at (migration contract). Escalate events carry
+  exhausted=true (symmetric); the reclaim event carries the timestamp.
+  boardApi failed-branch pins; helm chart knob pins (defaults +
+  overrides, the seventh knob).
+
 ## Verification
 
 Local: build + vet (unit + integration tags) green; pkg/board,

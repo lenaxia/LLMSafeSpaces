@@ -284,7 +284,8 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		}
 		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
 			"reclaim", "task", v.id, sys,
-			map[string]any{"task_id": v.id, "failure_count": v.failures + 1, "last_attempt_failed": true})
+			map[string]any{"task_id": v.id, "failure_count": v.failures + 1,
+				"last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
 		if err != nil {
 			return 0, err
 		}
@@ -529,7 +530,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
 						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false,
-						failure_count=0, last_attempt_failed=false
+						failure_count=0, last_attempt_failed=false, last_failure_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

@@ -202,13 +202,12 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
 	if cur.Attempts >= s.cfg.AttemptsCap {
-		// #1813: exhaustion carries the failure overlay onto the
-		// pending_input row — the human sees WHY it escalated. Marker +
-		// timestamp only; failure_count stays rc1's consecutive count
-		// (a withheld grant is not an attempt — see claimOnce).
+		// #1813: exhaustion carries the overlay only when failures
+		// exist (see claimOnce — no FAILED ×0 on all-success exhaustion).
 		if _, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated',
-				last_attempt_failed=true, last_failure_at=now()
+				last_attempt_failed=failure_count > 0,
+				last_failure_at=CASE WHEN failure_count > 0 THEN now() ELSE last_failure_at END
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
 			return nil, err
 		}
@@ -218,7 +217,7 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 		}
 		evt, err := recordEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
 			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"},
-			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
+			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "exhausted": true})
 		if err != nil {
 			return nil, err
 		}
@@ -337,16 +336,19 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	if attempts >= s.cfg.AttemptsCap {
 		// #1813: exhaustion carries the failure overlay onto the
 		// pending_input row — the human sees WHY it escalated (the
-		// DOMINANT automatic site; TaskStart mirrors this). The marker
-		// + timestamp only: failure_count is CONSECUTIVE failed
-		// attempts and belongs to rc1's reclaims alone — a withheld
-		// grant is not an attempt, and attempts may include succeeded
-		// turns (in_review preserves them), so deriving a count here
-		// would fabricate failures (the r8 review's validated defect).
+		// DOMINANT automatic site; TaskStart mirrors this). TRUTHFUL
+		// marker semantics: last_attempt_failed means an attempt
+		// actually failed, so the marker lands only when rc1's reclaims
+		// put failures on the row — an all-success exhaustion (attempts
+		// preserved through in_review, cap reached with zero failures)
+		// escalates WITHOUT claiming a failure (no FAILED ×0 — the r9
+		// review's defect). failure_count stays rc1's consecutive count;
+		// a withheld grant is not an attempt.
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
 				pending_origin='escalated',
-				last_attempt_failed=true, last_failure_at=now()
+				last_attempt_failed=failure_count > 0,
+				last_failure_at=CASE WHEN failure_count > 0 THEN now() ELSE last_failure_at END
 			WHERE id=$1 AND stage='backlog'`, taskID)
 		if err != nil {
 			return nil, "", "", err
@@ -359,7 +361,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
 			"task", taskID, sysActor,
-			map[string]any{"task_id": taskID, "attempts": attempts, "last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
+			map[string]any{"task_id": taskID, "attempts": attempts, "exhausted": true})
 		if err != nil {
 			return nil, "", "", err
 		}

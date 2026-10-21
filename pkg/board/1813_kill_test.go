@@ -106,6 +106,7 @@ func (s *BoardSuite) TestKill_1813_ConsecutiveAccumulateAndResetOnSuccess() {
 	done := s.reloadTask(t1.ID)
 	s.False(done.LastAttemptFailed, "success clears the overlay")
 	s.Equal(0, done.FailureCount)
+	s.Nil(done.LastFailureAt, "the reset clears the failure timestamp too (the migration's contract)")
 }
 
 // KILL-TEST 1813-d (r8 rework — the review's red-first pin for the
@@ -156,26 +157,29 @@ func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	s.True(after.LastAttemptFailed, "the ESCALATION write carries the overlay (this pin goes red without a8dc072d's SET)")
-	s.Require().NotNil(after.LastFailureAt)
-	// r8 semantics: a withheld grant is not an attempt — the count stays
-	// the CONSECUTIVE-failures count (zero here: every attempt succeeded).
-	s.Equal(0, after.FailureCount, "escalation never fabricates failure_count (attempts included successes)")
+	// r9 TRUTHFUL semantics: every attempt on this row SUCCEEDED, so the
+	// escalation does NOT claim a failure — the marker stays false and
+	// no FAILED ×0 can ever render (the exhaustion itself is visible as
+	// pending_origin='escalated' + attempts at cap).
+	s.False(after.LastAttemptFailed, "all-success exhaustion carries NO failure marker (truthful overlay)")
+	s.Nil(after.LastFailureAt)
+	s.Equal(0, after.FailureCount)
 
-	// The escalate event carries the marker + timestamp symmetrically.
+	// The escalate event carries the exhaustion marker.
 	var evtOK bool
 	rows, err := s.pool.Query(context.Background(),
-		`SELECT payload->>'last_attempt_failed', payload->>'last_failure_at' IS NOT NULL
-		 FROM board_events WHERE action='escalate' AND item_id=$1`, t1.ID)
+		`SELECT payload->>'exhausted' FROM board_events WHERE action='escalate' AND item_id=$1`, t1.ID)
 	s.Require().NoError(err)
 	for rows.Next() {
-		var marker string
-		var hasTS bool
-		s.Require().NoError(rows.Scan(&marker, &hasTS))
-		evtOK = marker == "true" && hasTS
+		var exhausted string
+		s.Require().NoError(rows.Scan(&exhausted))
+		evtOK = exhausted == "true"
 	}
 	rows.Close()
-	s.True(evtOK, "the escalate event payload carries last_attempt_failed + last_failure_at")
+	s.True(evtOK, "the escalate event payload carries exhausted=true")
+
+	// Contrast arm: a FAILED exhaustion (reclaims on the count) keeps the
+	// marker — the crash-loop shape the overlay exists for.
 }
 
 // KILL-TEST 1813-e: the pending_input human exit clears the overlay
@@ -203,6 +207,7 @@ func (s *BoardSuite) TestKill_1813_PendingResolutionClearsOverlay() {
 	after := s.reloadTask(t1.ID)
 	s.False(after.LastAttemptFailed, "the human exit clears the overlay with the attempts reset")
 	s.Equal(0, after.FailureCount)
+	s.Nil(after.LastFailureAt, "the reset clears the failure timestamp too")
 	s.Equal(0, after.Attempts, "attempts reset (the existing semantic)")
 	require.True(s.T(), after.Stage == board.StageInProgress || after.Stage == board.StageBacklog)
 }
@@ -237,6 +242,7 @@ func (s *BoardSuite) TestKill_1813_DriftDoneClearsOverlay() {
 	s.Equal(board.StageDone, after.Stage)
 	s.False(after.LastAttemptFailed, "the drift-done entry clears the overlay (a done row never renders FAILED)")
 	s.Equal(0, after.FailureCount)
+	s.Nil(after.LastFailureAt, "the reset clears the failure timestamp too")
 }
 
 // KILL-TEST 1813-g (the review's read-path gate): ListTasks honors the
@@ -299,8 +305,9 @@ func (s *BoardSuite) TestKill_1813_TaskStartEscalationMarksOverlay() {
 
 	after := s.reloadTask(t1.ID)
 	s.Equal(board.StagePendingInput, after.Stage)
-	s.True(after.LastAttemptFailed, "TaskStart's escalation write sets the overlay")
-	s.Require().NotNil(after.LastFailureAt)
+	// Truthful semantics: zero failures on the row → no marker.
+	s.False(after.LastAttemptFailed, "all-success exhaustion carries NO failure marker")
+	s.Nil(after.LastFailureAt)
 	s.Equal(0, after.FailureCount, "no fabricated count")
 }
 
@@ -332,4 +339,33 @@ func (s *BoardSuite) TestKill_1813_PendingReclaimExitClearsOverlay() {
 	s.Equal(board.StageInProgress, after.Stage)
 	s.False(after.LastAttemptFailed, "the re-claim arm clears the overlay with the attempts reset")
 	s.Equal(0, after.FailureCount)
+	s.Nil(after.LastFailureAt, "the reset clears the failure timestamp too")
+}
+
+// KILL-TEST 1813-j (r9): the crash-loop exhaustion — failures on the
+// count — keeps the marker through escalation (the overlay's raison
+// d'être; the contrast to 1813-d's all-success arm).
+func (s *BoardSuite) TestKill_1813_FailedExhaustionKeepsMarker() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "crashloop", nil, false)
+
+	for i := 0; i < s.cfg.AttemptsCap; i++ {
+		c := s.claimOrFail(ws)
+		s.Equal(t1.ID, c.TaskID)
+		s.expireLease(t1.ID)
+		s.sweep()
+		s.clearTaskBackoff(t1.ID)
+	}
+
+	c, err := s.svc.ClaimNext(context.Background(), "w", ws)
+	s.Require().NoError(err)
+	s.Require().True(c.Escalated)
+
+	after := s.reloadTask(t1.ID)
+	s.Equal(board.StagePendingInput, after.Stage)
+	s.True(after.LastAttemptFailed, "a FAILED exhaustion carries the marker")
+	s.Equal(s.cfg.AttemptsCap, after.FailureCount)
+	s.Require().NotNil(after.LastFailureAt)
 }

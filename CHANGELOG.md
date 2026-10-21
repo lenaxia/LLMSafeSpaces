@@ -23,12 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reset on success**: any completed turn (in_review / done entry)
   and the pending_input human exit clear the overlay and count with
   the attempts reset.
+- **Truthful marker semantics**: the overlay means an attempt
+  actually failed. A crash-loop exhaustion carries
+  `last_attempt_failed` + the consecutive count; an all-success
+  exhaustion (attempts preserved through in_review, cap reached with
+  zero failures) escalates WITHOUT the marker — `FAILED ×0` cannot
+  render (the exhaustion itself is visible as pending_input with
+  `pending_origin=escalated` + attempts at cap).
 - **Surfaces**: `GET /me/projects/{id}/tasks?failed=true|false`
   (tri-state filter); `board_read`'s `failed` argument (MCP); the UI
-  task card carries a `FAILED ×n` badge; the overlay renders on every
-  task read (REST/SDK/MCP) and in reclaim/escalate audit events.
-
-(nothing yet)
+  task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
+  the overlay renders on every task read (REST/SDK/MCP) and in
+  reclaim/escalate audit events.
 
 ## [0.40.1] - 2026-10-21
 

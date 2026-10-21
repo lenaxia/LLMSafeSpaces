@@ -8,6 +8,8 @@
 --     filter surface);
 --   * failure_count — CONSECUTIVE failures (doubling backoff driver);
 --   * last_failure_at — when the latest failure landed.
+-- Truthful-marker note (r9): last_attempt_failed means an attempt
+-- actually FAILED — an all-success exhaustion escalates without it.
 -- Auto-return-to-ready rides the EXISTING cooldown_until gate: the
 -- reclaim sets cooldown_until = now() + doubling backoff (configurable
 -- via the failureBackoffSeconds platform knob). Any successful turn

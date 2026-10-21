@@ -26,7 +26,7 @@ import (
 
 // reset_overlay is the #1813 success clause: a completed turn clears
 // the failure overlay and its consecutive count.
-const reset_overlay = `, failure_count=0, last_attempt_failed=false`
+const reset_overlay = `, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`
 
 // moveStageResult is the event payload + replay outcome.
 type moveStageResult struct {
@@ -214,7 +214,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false`, evidenceURL, actor)
+				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
 		}
 
 	default:
@@ -329,7 +329,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL, attempts=0,
-			failure_count=0, last_attempt_failed=false
+			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
 		WHERE id=$1 AND stage='pending_input'`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
