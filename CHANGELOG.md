@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: agent manager tools + the #1747 amendment set (issue #1747)
 ### Added — workspace phrase IDs (#1757): 2 words + 1 digit, fleet-unique
 
 - **Every workspace gains a minted phrase ID** (`amber-river-7`):
@@ -146,6 +147,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins without touching tests — the shape is the contract, not the
   literal; same relaxation applied to the renovate-analysis pin test).
 
+- **The agent-internal board surface gains the FULL manager set**
+  (design 0067 §4.3c superseded in the manager direction): 21 manager
+  tools at project/epic/task level — create/update/archive/unarchive +
+  pause/resume (projects), create/update/activate/pause/archive/
+  unarchive/delete (epics), create (inline `dependsOn`)/update/delete/
+  pause/resume + add/remove dependency (tasks), and atomic
+  `import_plan` with a dry-run validate mode (graph + warnings +
+  initial ready set — the user's plan-approval moment). Every manager
+  route on the `/internal/v1/automation/board/*` seam is pod-identity
+  authorized and workspace-bound by construction (the caller's own
+  workspace only; agent-side project retargeting refused). Audit
+  events attribute every row to the creating session
+  (`board_events.actor.session_id`). `claim_next` stays engine-internal
+  forever and `task_start` is dropped from agent surfaces — execution
+  is epic/project activation + engine claiming.
+- **Grant differentiation (#1747 §5)**: manager board tools attach to
+  user-collaborator sessions ONLY. agentd fails closed without a
+  harness-attested session identity, refuses sessions its spawn-time
+  registry recorded as board workers (the `board-worker` node
+  dispatch), and the seam belt re-checks the engine's live-assignee
+  answer (`IsWorkerSession`) — a spawned worker never reaches a
+  manager action.
+- **Pause at project/epic/task — PAUSE MUST PAUSE**: a flag (never a
+  stage; the machine is now FIVE stages). Pause blocks claiming (one
+  query-scoped predicate at the choke points), forward stage-writes
+  (409 `task_paused`), and every claim mint; it never cuts a
+  generation — the in-flight worker receives a HALT directive over the
+  platform's own session-message machinery (turn-boundary landing),
+  and resume delivers RESUME. Lease accounting during pause is LAPSE
+  (never frozen): the evidence gate needs no special case; a long
+  pause reclaims naturally and the flag parks the row.
+- **Cancel is ELIMINATED — delete replaces it**: no `cancelled`
+  terminal stage; `delete_task` (clean abort first when in-flight) and
+  `delete_epic` (force required while claims live) remove rows whose
+  delete events embed the full final-state snapshot (per-task on
+  cascade). Orphaned dependents are listed in the response and each
+  gets an `unblocked_by_delete` audit event; NO auto-reconnect
+  (`reconnect=true` optionally inherits upstream edges, cycle-guarded).
+  Dependants unblock in place — blocked is "deps not done", full stop.
+- **Ordering is dependency-only FIFO (final ruling)**: the P0-P3
+  priority fields are REMOVED everywhere (schema, REST, SDKs, UI);
+  claim order is deterministic creation order over the ready set,
+  implemented in exactly one place (pkg/board's candidate ORDER BY).
+- **DAG spec**: edges cross epics within a workspace, never
+  workspaces; duplicate edges are idempotent no-ops; blast-radius
+  caps (16 edges/node, 64 tasks/epic — platform knobs
+  `board.maxEdgesPerNode`/`board.maxNodesPerEpic`).
+  `epic_activate` refuses dependencies entering inactive epics unless
+  acknowledged and reports the initial ready set.
+- **Backpressure from day one**: per-user (default 8) + per-instance
+  (default 64) concurrent-claim caps at the claim choke point —
+  over-cap is never an error; reads surface
+  `waiting_on: "concurrency_limit"` (`board.userClaimCap`/
+  `board.globalClaimCap`). Resource backpressure: agentd reports pod
+  CPU/memory/disk (static thresholds + hysteresis) over the new
+  `/internal/v1/automation/board/resource-pressure` route; the engine
+  stops claiming into pressured workspaces and surfaces
+  `backpressure: "disk 92%"` on rows.
+- REST + external MCP mirror the full vocabulary (parity matrix
+  green on all three surfaces); SDKs (Go/Python/TypeScript/Java) and
+  the OpenAPI spec updated; migration 000039 drops the cancelled
+  stage + priority columns, adds the pause flags, relaxes the
+  dependency guard to workspace scope, and keeps transition history
+  alive across deletes.
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
 - **Workspace pods now carry a dedicated disk-backed emptyDir for the

@@ -15,8 +15,8 @@ import (
 // control, with exactly one enumerated backward transition — in_review →
 // in_progress (the review bounce or RC2 closed-unmerged drift; both are
 // re-claim-class writes). pending_input is enterable from in_progress/
-// in_review, from the claim path (escalation), and from cancel; its exits
-// are manager-surface-only human writes and are the ONE attempts reset.
+// in_review and from the claim path (escalation); its exits are
+// manager-surface-only human writes and are the ONE attempts reset.
 //
 // Lease lifecycle totality (§4.4): every write landing a row in
 // in_progress sets/re-arms the lease in the same statement and stamps the
@@ -98,9 +98,22 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 
 	// The pending_input exits are manager-surface-only (a delegated worker
 	// is not the human the exit exists for; its token does not unlock
-	// self-exit).
+	// self-exit). This is the ONE remaining agent-surface manager denial
+	// (#1747 keeps it: the human exit stays human).
 	if from == StagePendingInput && actor.Surface == SurfaceAgent {
 		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human decisions (manager surfaces only)"}
+	}
+
+	// #1747 pause-must-pause: FORWARD stage-writes refuse on a
+	// paused task (its worker was halted; the flag gates progress until
+	// resume). Backward/review moves and pending_input entry stay legal —
+	// pause gates claiming and forward progress, never the question path.
+	if toStage == StageInReview || toStage == StageDone {
+		if paused, perr := s.effectivePausedTx(ctx, tx, cur); perr != nil {
+			return res, nudge{}, perr
+		} else if paused {
+			return res, nudge{}, &GuardError{Code: GuardPaused, Detail: "the task is paused — forward stage-writes refuse until resume (its worker was halted)"}
+		}
 	}
 
 	// Enumerated-transition check FIRST (an illegal drag reports its own
@@ -154,7 +167,11 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// The bounce: re-claim for the recorded assignee — fresh token +
 		// lease minted in the same statement, flag=false (its 429 never
 		// decrements), attempts unchanged. No identity → refuse (a
-		// token-less in_progress row is never created).
+		// token-less in_progress row is never created). A paused row
+		// refuses the MINT (#1747: no re-entry while paused).
+		if cur.Paused {
+			return res, nudge{}, &GuardError{Code: GuardPaused, Detail: "the task is paused — the bounce re-claim refuses until resume"}
+		}
 		if cur.AssigneeSession == "" {
 			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "bounce requires a recorded assignee (no token-less in_progress rows)"}
 		}
@@ -179,7 +196,13 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// re-queue is a fresh judgment). Identity present → re-claim
 		// branch (fresh token+lease, nudge); none → backlog branch (the
 		// dead worker is never re-nudged). The branch keys on identity
-		// presence, never token presence.
+		// presence, never token presence. The re-claim MINT refuses on a
+		// paused row (#1747: no re-entry while paused — resume first);
+		// the backlog exit stays open (parking is exactly what a paused
+		// row wants).
+		if toStage == StageInProgress && cur.Paused {
+			return res, nudge{}, &GuardError{Code: GuardPaused, Detail: "the task is paused — the re-claim exit refuses until resume (backlog remains open)"}
+		}
 		if toStage == StageInProgress && cur.AssigneeSession != "" {
 			resulting, reclaimed, postNudge, err = s.exitPendingReclaim(ctx, tx, actor, cur)
 		} else {
@@ -252,7 +275,7 @@ func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, to
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
-		WHERE id=$1 AND stage=$3 AND stage <> 'cancelled'`, taskID, toStage, from)
+		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
 	if err != nil {
 		return "", err
 	}
@@ -277,7 +300,7 @@ func (s *Service) reclaimTx(ctx context.Context, tx pgx.Tx, taskID, assignee str
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL
-		WHERE id=$1 AND stage <> 'cancelled'`,
+		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
 		return "", nudge{}, err
@@ -312,192 +335,6 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 		return "", false, nudge{}, err
 	}
 	return StageInProgress, true, nudge{taskID: cur.ID, token: token, spawn: true, abortAssignee: cur.AssigneeSession}, nil
-}
-
-// --- Cancel (terminal write) ------------------------------------------------------
-
-// CancelTask is terminal: revokes lease (token AND assignee), issues the
-// worker abort, stages non-terminal dependents to
-// pending_input/dependency_abandoned (skipping rows already pending —
-// origin preserved). The terminal stage is immutable (RC5; the DB guard
-// belt). Cancel presents no token: it REVOKES it (§4.2's named override).
-func (s *Service) CancelTask(ctx context.Context, actor Actor, taskID, shortIDOrID, reason, requestID string) (*Task, error) {
-	ref := pick(taskID, shortIDOrID)
-	t, err := s.store.resolveTask(ctx, s.q(), "", ref)
-	if err != nil {
-		return nil, err
-	}
-	p, err := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireOwner(actor, p.UserID); err != nil {
-		return nil, err
-	}
-	if err := requireManagerSurface(actor); err != nil {
-		return nil, err
-	}
-	if t.Stage == StageCancelled {
-		return t, nil // already terminal: idempotent
-	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "cancel_task", itemKind: "task", itemID: t.ID, actor: actor}
-	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		cur, err := s.store.taskForUpdate(ctx, tx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		if cur.Stage == StageCancelled {
-			return map[string]any{"task_id": t.ID, "stage": StageCancelled}, nil
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='cancelled', stage_entered_at=now(),
-				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				claim_incremented_attempts=false, pending_origin=NULL
-			WHERE id=$1 AND stage <> 'cancelled'`, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		if tag.RowsAffected() == 0 {
-			return nil, &GuardError{Code: GuardStage, Detail: "already terminal"}
-		}
-		if err := writeTransition(ctx, txQ{tx}, t.ID, cur.Stage, StageCancelled, "", actor); err != nil {
-			return nil, err
-		}
-		if err := s.cancelDependentsTx(ctx, tx, t.ID, actor); err != nil {
-			return nil, err
-		}
-		return map[string]any{"task_id": t.ID, "stage": StageCancelled}, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	_ = dup
-	// Abort the worker AFTER commit (the interrupt seam; log-only failure
-	// is acceptable — the lease/token revocation is already authoritative).
-	if s.aborter != nil && t.AssigneeSession != "" {
-		_ = s.aborter(ctx, t.ID, t.AssigneeSession)
-	}
-	return s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
-}
-
-// cancelDependentsTx stages non-terminal dependents of a just-terminal
-// task to pending_input/dependency_abandoned — skipping rows already
-// pending (their origin is preserved; no oscillation).
-func (s *Service) cancelDependentsTx(ctx context.Context, tx pgx.Tx, taskID string, actor Actor) error {
-	rows, err := tx.Query(ctx, `
-		SELECT d.task_id, t.stage FROM board_dependencies d
-		JOIN tasks t ON t.id = d.task_id
-		WHERE d.depends_on_task_id = $1 AND t.stage NOT IN ('cancelled','pending_input','done')
-		FOR UPDATE OF t`, taskID)
-	if err != nil {
-		return err
-	}
-	type victim struct {
-		id, stage string
-	}
-	var victims []victim
-	for rows.Next() {
-		var v victim
-		if err := rows.Scan(&v.id, &v.stage); err != nil {
-			rows.Close()
-			return err
-		}
-		victims = append(victims, v)
-	}
-	rows.Close()
-	for _, v := range victims {
-		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='dependency_abandoned'
-			WHERE id=$1 AND stage NOT IN ('cancelled','pending_input','done')`, v.id)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() > 0 {
-			// NOTE (r13 §4.1): the cancel cascade stages a CLAIMED dependent
-			// without touching its token or assignee — the worker is alive
-			// and still holds the work; only the edge is broken. Its exit
-			// therefore takes the re-claim branch.
-			if err := writeTransition(ctx, txQ{tx}, v.id, v.stage, StagePendingInput, "", actor); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// CancelEpic pauses the epic (the epic enum has no terminal value — a canceled
-// epic is paused with an all-terminal task set, never completed) and
-// cancels its non-terminal tasks, cascading dependency abandonment.
-func (s *Service) CancelEpic(ctx context.Context, actor Actor, epicID, shortIDOrID, reason, requestID string) (*Epic, error) {
-	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
-	if err != nil {
-		return nil, err
-	}
-	p, err := s.store.resolveProject(ctx, s.q(), "", e.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireOwner(actor, p.UserID); err != nil {
-		return nil, err
-	}
-	if err := requireManagerSurface(actor); err != nil {
-		return nil, err
-	}
-	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "cancel_epic", itemKind: "epic", itemID: e.ID, actor: actor}
-	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		// Collect non-terminal tasks for cascade + abort.
-		rows, err := tx.Query(ctx, `
-			SELECT id, stage, assignee_session FROM tasks
-			WHERE epic_id=$1 AND stage <> 'done' AND stage <> 'cancelled' FOR UPDATE`, e.ID)
-		if err != nil {
-			return nil, err
-		}
-		type victim struct {
-			id, stage, assignee string
-		}
-		var victims []victim
-		for rows.Next() {
-			var v victim
-			if err := rows.Scan(&v.id, &v.stage, &v.assignee); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			victims = append(victims, v)
-		}
-		rows.Close()
-		for _, v := range victims {
-			tag, err := tx.Exec(ctx, `
-				UPDATE tasks SET stage='cancelled', stage_entered_at=now(),
-					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-					claim_incremented_attempts=false, pending_origin=NULL
-				WHERE id=$1 AND stage NOT IN ('cancelled','done')`, v.id)
-			if err != nil {
-				return nil, err
-			}
-			if tag.RowsAffected() > 0 {
-				if err := writeTransition(ctx, txQ{tx}, v.id, v.stage, StageCancelled, "", actor); err != nil {
-					return nil, err
-				}
-				if err := s.cancelDependentsTx(ctx, tx, v.id, actor); err != nil {
-					return nil, err
-				}
-				if s.aborter != nil && v.assignee != "" {
-					_ = s.aborter(ctx, v.id, v.assignee)
-				}
-			}
-		}
-		// The epic itself pauses (never completed — RC4's trigger requires
-		// a done transition).
-		if _, err := tx.Exec(ctx, `UPDATE epics SET status='paused' WHERE id=$1 AND status <> 'archived'`, e.ID); err != nil {
-			return nil, err
-		}
-		return map[string]any{"id": e.ID, "status": EpicPaused}, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	_ = dup
-	return s.GetEpic(ctx, e.ID, "")
 }
 
 // --- Heartbeat + throttle -----------------------------------------------------------
@@ -601,6 +438,24 @@ func (s *Service) resolveTaskForActor(ctx context.Context, actor Actor, ref stri
 		return s.store.resolveTaskInWorkspace(ctx, s.q(), actor.WorkspaceID, ref)
 	}
 	return s.store.resolveTask(ctx, s.q(), "", ref)
+}
+
+// effectivePausedTx reports the #1744 pause state as ONE predicate: a
+// task is effectively paused when IT is paused, its EPIC is paused, or
+// its PROJECT is paused (query scoping — no duplicated flags; the claim
+// predicates and the write guards read the same rule).
+func (s *Service) effectivePausedTx(ctx context.Context, tx pgx.Tx, t *Task) (bool, error) {
+	var epicStatus string
+	var projectPaused bool
+	if err := tx.QueryRow(ctx, `
+		SELECT e.status, COALESCE(p.paused, false)
+		FROM tasks t
+		JOIN epics e ON e.id = t.epic_id
+		JOIN projects p ON p.id = t.project_id
+		WHERE t.id = $1`, t.ID).Scan(&epicStatus, &projectPaused); err != nil {
+		return false, err
+	}
+	return t.Paused || epicStatus == EpicPaused || projectPaused, nil
 }
 
 // writeAudit persists a non-mutating action's audit row (reads/heartbeat).

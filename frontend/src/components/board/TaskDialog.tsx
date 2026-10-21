@@ -9,7 +9,7 @@ import { TagInput } from "../ui/TagInput";
 import { BoardErrorNotice } from "./BoardErrorNotice";
 import { Plus, X, Check, Link2Off } from "lucide-react";
 import type { BoardAcceptanceCriterion, BoardEpic, BoardTask } from "../../api/board";
-import { validateBoardTags, BOARD_PRIORITIES, doneReadiness, type DescribedBoardError } from "../../lib/boardRules";
+import { validateBoardTags, doneReadiness, type DescribedBoardError } from "../../lib/boardRules";
 
 interface TaskDialogProps {
   open: boolean;
@@ -26,7 +26,6 @@ interface TaskDialogProps {
   onSubmit: (fields: {
     title: string;
     description: string;
-    priority: string;
     tags: string[];
     acceptanceCriteria: BoardAcceptanceCriterion[];
   }) => Promise<boolean>;
@@ -35,7 +34,7 @@ interface TaskDialogProps {
    * (r1: the failed id is recoverable, not cleared). */
   onAddDependency?: (dependsOn: string) => Promise<boolean>;
   onRemoveDependency?: (dependsOnShortId: string) => Promise<void>;
-  onCancel?: () => Promise<boolean>;
+  onDelete?: () => Promise<boolean>;
   /** Rendered inline when a submit/dependency call fails. */
   error?: DescribedBoardError | null;
   onDismissError?: () => void;
@@ -43,7 +42,7 @@ interface TaskDialogProps {
 
 /**
  * TaskDialog — the create/edit surface (§4.8): title/description (the
- * description seeds the worker charter, R2), priority, tags with the OR4
+ * description seeds the worker charter, R2), tags with the OR4
  * pr:N anchor validated client-side (^pr:[1-9][0-9]*$), acceptance
  * criteria with reviewer check-off (Done preparation — the engine's Done
  * guard consumes the flags; Done itself is only ever the server's call),
@@ -59,15 +58,14 @@ export function TaskDialog({
   onSubmit,
   onAddDependency,
   onRemoveDependency,
-  onCancel,
+  onDelete,
   error,
   onDismissError,
 }: TaskDialogProps) {
   const editing = !!task;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState<string>("P2");
-  const [tags, setTags] = useState<string[]>([]);
+    const [tags, setTags] = useState<string[]>([]);
   const [criteria, setCriteria] = useState<BoardAcceptanceCriterion[]>([]);
   const [newCriterion, setNewCriterion] = useState("");
   const [depInput, setDepInput] = useState("");
@@ -78,7 +76,6 @@ export function TaskDialog({
     if (!open) return;
     setTitle(task?.title ?? "");
     setDescription(task?.description ?? "");
-    setPriority(task?.priority ?? "P2");
     setTags(task?.tags ?? []);
     setCriteria(task?.acceptance_criteria ? task.acceptance_criteria.map((c) => ({ ...c })) : []);
     setDepInput("");
@@ -100,7 +97,6 @@ export function TaskDialog({
       const ok = await onSubmit({
         title: title.trim(),
         description,
-        priority,
         tags,
         acceptanceCriteria: criteria,
       });
@@ -164,19 +160,6 @@ export function TaskDialog({
             </label>
 
             <div className="flex gap-3">
-              <label className="flex flex-1 flex-col gap-1 text-xs">
-                <span className="font-medium">Priority</span>
-                <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                  data-testid="task-priority"
-                >
-                  {BOARD_PRIORITIES.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
-              </label>
               <div className="flex flex-1 flex-col gap-1 text-xs">
                 <span className="font-medium">Tags</span>
                 <TagInput value={tags} onChange={handleTagsChange} placeholder="pr:123, backend…" id="task-tags" />
@@ -311,21 +294,22 @@ export function TaskDialog({
           </div>
 
           <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3">
-            {editing && onCancel ? (
+            {editing && onDelete ? (
               <Button
                 variant="destructive"
                 size="sm"
-                data-testid="cancel-task"
+                data-testid="delete-task"
+                title="Destructive: removes the task; the audit keeps the full snapshot (#1747)"
                 onClick={async () => {
                   try {
-                    const ok = await onCancel();
+                    const ok = await onDelete();
                     if (ok) onOpenChange(false);
                   } catch {
                     // stay open — the notice carries the guard outcome
                   }
                 }}
               >
-                Cancel task
+                Delete task
               </Button>
             ) : (
               <span />

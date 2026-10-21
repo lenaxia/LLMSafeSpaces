@@ -187,9 +187,17 @@ type Failpoint func(where string) error
 // the engine with an injected spawner or the synthetic default.
 type WorkerSpawner func(ctx context.Context, claim *Claim) (sessionID string, err error)
 
-// WorkerAborter aborts a worker session whose claim was revoked (cancel).
-// Rides the existing interrupt seam in production; no-op by default.
+// WorkerAborter aborts a worker session whose claim was revoked (delete
+// of an in-flight claim, superseded-claim cleanup). Rides the existing
+// interrupt seam in production; no-op by default.
 type WorkerAborter func(ctx context.Context, taskID, assigneeSession string) error
+
+// WorkerMessenger delivers a pause/resume DIRECTIVE to an in-flight
+// worker's session (#1747 pause-must-pause): it lands at the current
+// turn's boundary (finish the thought, then stop) — NOT an abort. Rides
+// the orchestrator↔worker message machinery in production; no-op by
+// default.
+type WorkerMessenger func(ctx context.Context, sessionID, directive, taskShortID string) error
 
 // PRState is the external-truth drift source's answer for one PR anchor.
 type PRState struct {

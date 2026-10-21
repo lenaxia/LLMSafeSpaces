@@ -76,11 +76,11 @@ describe("validateBoardTags", () => {
 
 describe("stage vocabulary", () => {
   it("carries the six enumerated stages (ruling R2)", () => {
-    expect(BOARD_STAGES).toEqual(["backlog", "in_progress", "in_review", "done", "pending_input", "cancelled"]);
+    expect(BOARD_STAGES).toEqual(["backlog", "in_progress", "in_review", "done", "pending_input"]);
   });
   it("splits four through-flow columns from the two side columns", () => {
     expect(MAIN_STAGES).toEqual(["backlog", "in_progress", "in_review", "done"]);
-    expect(SIDE_STAGES).toEqual(["pending_input", "cancelled"]);
+    expect(SIDE_STAGES).toEqual(["pending_input"]);
   });
 });
 
@@ -105,7 +105,7 @@ describe("isManagerDragAllowed (stage.go's legal map, manager view)", () => {
 
   it("refuses no-ops, backward jumps, and terminal entries", () => {
     expect(isManagerDragAllowed("done", "backlog")).toBe(false);
-    expect(isManagerDragAllowed("cancelled", "backlog")).toBe(false);
+    expect(isManagerDragAllowed("done", "backlog")).toBe(false);
     expect(isManagerDragAllowed("backlog", "backlog")).toBe(false);
   });
 });
@@ -175,9 +175,9 @@ describe("BOARD_GUARD_MESSAGES parity with the backend's emittable codes", () =>
     expect(BOARD_GUARD_MESSAGES[code]?.length).toBeGreaterThan(0);
   });
 
-  it("carries the DependencyError codes the server actually emits (R4a)", () => {
+  it("carries the DependencyError codes the server actually emits (R4a, #1747: workspace-scoped)", () => {
     expect(BOARD_GUARD_MESSAGES.cycle).toBeDefined();
-    expect(BOARD_GUARD_MESSAGES.cross_project).toBeDefined();
+    expect(BOARD_GUARD_MESSAGES.cross_workspace).toBeDefined();
     expect(BOARD_GUARD_MESSAGES.self).toBeDefined();
     expect(BOARD_GUARD_MESSAGES.dependency).toBeUndefined();
   });

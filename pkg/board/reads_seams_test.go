@@ -49,12 +49,12 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	if _, err := s.svc.MoveStage(ctx, s.owner(), t1.ID, "", board.StageDone, "https://example.com/proof", ""); err != nil {
 		s.T().Fatalf("move to done: %v", err)
 	}
-	if _, err := s.svc.CancelTask(ctx, s.owner(), t2.ID, "", "superseded", ""); err != nil {
-		s.T().Fatalf("cancel: %v", err)
+	// #1747: cancel is eliminated — the "superseded" row is deleted
+	// instead (the read seams don't care; the row simply vanishes).
+	if _, err := s.svc.DeleteTask(ctx, s.owner(), t2.ID, "", false, ""); err != nil {
+		s.T().Fatalf("delete: %v", err)
 	}
-	if _, err := s.svc.CancelTask(ctx, s.owner(), t2.ID, "", "superseded", ""); err != nil {
-		s.T().Fatalf("cancel: %v", err)
-	}
+	_ = t2
 
 	epics, err := s.svc.ListEpics(ctx, p.ID)
 	require.NoError(s.T(), err)
@@ -74,7 +74,9 @@ func (s *BoardSuite) TestReads_ListEpics() {
 	assert.Equal(s.T(), board.EpicActive, got1.Status)
 	assert.True(s.T(), got1.ProgressDerived, "progress is derived, never stored")
 	assert.Equal(s.T(), 1, got1.ProgressDone)
-	assert.Equal(s.T(), 3, got1.ProgressTotal, "denominator counts ALL tasks (#1747 ruling — PR #1763 semantics)")
+	// 3 seeded − 1 deleted (cancel is eliminated; the deleted row is no
+	// longer a denominator member — objects leave the board entirely).
+	assert.Equal(s.T(), 2, got1.ProgressTotal, "denominator counts the LIVE tasks (#1747: deleted rows leave; done/living rows count)")
 	// LIST/GET parity (r1 review): the same epic through GetEpic renders
 	// the identical denominator — one semantic, two reads.
 	viaGet := s.reloadEpic(e1.ID)
@@ -258,12 +260,12 @@ func (s *BoardSuite) seedForeignTask(title string) *board.Task {
 			VALUES (gen_random_uuid(), 'prj-ffff0001', $1, 'foreign board', $2, 2, '{}', 'active')
 			RETURNING id
 		), e AS (
-			INSERT INTO epics (id, project_id, short_id, title, status, priority, project_name, tags)
-			VALUES (gen_random_uuid(), (SELECT id FROM p), 'epc-ffff0001', 'foreign epic', 'active', 'P2', 'foreign board', '{}')
+			INSERT INTO epics (id, project_id, short_id, title, status, project_name, tags)
+			VALUES (gen_random_uuid(), (SELECT id FROM p), 'epc-ffff0001', 'foreign epic', 'active', 'foreign board', '{}')
 			RETURNING id
 		)
-		INSERT INTO tasks (id, project_id, epic_id, short_id, title, stage, priority, project_name, epic_name, tags, acceptance_criteria)
-		VALUES (gen_random_uuid(), (SELECT id FROM p), (SELECT id FROM e), 'tsk-ffff0001', $3, 'backlog', 'P2', 'foreign board', 'foreign epic', '{}', '[]')
+		INSERT INTO tasks (id, project_id, epic_id, short_id, title, stage, project_name, epic_name, tags, acceptance_criteria)
+		VALUES (gen_random_uuid(), (SELECT id FROM p), (SELECT id FROM e), 'tsk-ffff0001', $3, 'backlog', 'foreign board', 'foreign epic', '{}', '[]')
 		RETURNING id`, otherUser, ws, title).Scan(&tID)
 	s.Require().NoError(err)
 	s.Require().NoError(s.pool.QueryRow(ctx, `SELECT short_id FROM tasks WHERE id=$1`, tID).Scan(&shortID))

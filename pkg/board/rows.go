@@ -5,6 +5,8 @@ package board
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,8 +29,14 @@ type Project struct {
 	SlotCooldownUntil *time.Time `json:"slot_cooldown_until,omitempty"`
 	Tags              []string   `json:"tags"`
 	Status            string     `json:"status"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	Paused            bool       `json:"paused"` // #1747: the scheduling lever — blocks claiming, never interrupts leases
+	// Backpressure is the derived informational note when the project's
+	// target workspace pod is under resource pressure (#1747 round 3:
+	// "backpressure: disk 92%" — the engine stops claiming into the
+	// workspace; the row says why).
+	Backpressure string    `json:"backpressure,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Epic is the DB row shape for epics, including the DRR fairness state
@@ -40,7 +48,6 @@ type Epic struct {
 	Title       string    `json:"title"`
 	Outcome     string    `json:"outcome"`
 	Status      string    `json:"status"`
-	Priority    string    `json:"priority"`
 	ProjectName string    `json:"project_name"`
 	Tags        []string  `json:"tags"`
 	VFT         int64     `json:"vft"`
@@ -48,10 +55,11 @@ type Epic struct {
 	Quantum     int       `json:"quantum"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-	// Derived progress (never stored): Done over ALL tasks — the #1747
-	// owner ruling (design authority: PR #1763) supersedes the original
-	// design's canceled exclusion. Rendered by board_read only. A zero
-	// denominator renders no-progress (IsNull true), never 0/0.
+	// Backpressure (derived, informational — see Project.Backpressure).
+	Backpressure string `json:"backpressure,omitempty"`
+	// Derived progress (never stored, ruling R2): Done over ALL tasks
+	// (#1747). A zero denominator renders no-progress (IsNull true),
+	// never 0/0.
 	ProgressDone    int  `json:"progress_done"`
 	ProgressTotal   int  `json:"progress_total"`
 	ProgressDerived bool `json:"progress_derived"`
@@ -68,23 +76,34 @@ type Task struct {
 	Description        string                `json:"description"`
 	Stage              string                `json:"stage"`
 	PendingOrigin      *string               `json:"pending_origin,omitempty"`
-	Priority           string                `json:"priority"`
 	ProjectName        string                `json:"project_name"`
 	EpicName           string                `json:"epic_name"`
 	Tags               []string              `json:"tags"`
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria"`
 	IsBlocked          bool                  `json:"is_blocked"`
 	BlockedBy          []string              `json:"blocked_by,omitempty"` // derived: non-done dependency short IDs
-	AssigneeSession    string                `json:"assignee_session,omitempty"`
-	ClaimToken         string                `json:"claim_token,omitempty"`
-	LeaseExpiresAt     *time.Time            `json:"lease_expires_at,omitempty"`
-	LastProgressAt     *time.Time            `json:"last_progress_at,omitempty"`
-	Attempts           int                   `json:"attempts"`
-	ClaimIncremented   bool                  `json:"claim_incremented_attempts"`
-	CooldownUntil      *time.Time            `json:"cooldown_until,omitempty"`
-	StageEnteredAt     time.Time             `json:"stage_entered_at"`
-	CreatedAt          time.Time             `json:"created_at"`
-	UpdatedAt          time.Time             `json:"updated_at"`
+	// Paused is the task-level scheduling lever (#1747): blocks claim
+	// candidacy, claim mints, and forward stage-writes. Never a stage —
+	// the five-stage vocabulary is binding; a paused in-flight worker
+	// received a HALT directive and finishes its current turn.
+	Paused           bool       `json:"paused"`
+	AssigneeSession  string     `json:"assignee_session,omitempty"`
+	ClaimToken       string     `json:"claim_token,omitempty"`
+	LeaseExpiresAt   *time.Time `json:"lease_expires_at,omitempty"`
+	LastProgressAt   *time.Time `json:"last_progress_at,omitempty"`
+	Attempts         int        `json:"attempts"`
+	ClaimIncremented bool       `json:"claim_incremented_attempts"`
+	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	// WaitingOn (derived, informational): "concurrency_limit" when the
+	// row is ready but the per-user or per-instance concurrent-claim cap
+	// is saturated (#1747 round 3 — over-cap is never an error; the row
+	// says why it waits). Empty when not waiting.
+	WaitingOn string `json:"waiting_on,omitempty"`
+	// Backpressure (derived, informational — see Project.Backpressure).
+	Backpressure   string    `json:"backpressure,omitempty"`
+	StageEnteredAt time.Time `json:"stage_entered_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Transition is the DB row shape for board_transitions (measured actuals —
@@ -217,8 +236,141 @@ type SweepResult struct {
 	DriftReview     int `json:"drift_review"`     // RC2 merged, criteria unmet
 	DriftReentry    int `json:"drift_reentry"`    // RC2 closed-unmerged → in_progress
 	DepRepairs      int `json:"dep_repairs"`      // RC3 is_blocked recomputes
-	AbandonedStaged int `json:"abandoned_staged"` // RC3 canceled-dependency flips
 	PendingStaged   int `json:"pending_staged"`   // pending-input auto-stage (worker origin)
 	Resumes         int `json:"resumes"`          // pending-input resolutions (lease re-armed)
 	EpicCompletions int `json:"epic_completions"` // RC4 net
 }
+
+// DeleteResult is the delete_task/delete_epic outcome (#1747 round 3:
+// cancel is eliminated — delete replaces it). Delete removes the object,
+// NOT the history: every delete event embeds the final object snapshot
+// (per-task on cascade), and each orphaned dependent (a task that lost
+// its depends_on edge) gets its own "unblocked_by_delete" audit event —
+// affected-party visibility, warning-only.
+type DeleteResult struct {
+	ItemKind string `json:"item_kind"`
+	ID       string `json:"id"`
+	ShortID  string `json:"short_id"`
+	// CascadeTasks: epic deletes list every removed task's short id
+	// (each carries its own snapshot event).
+	CascadeTasks []string `json:"cascade_tasks,omitempty"`
+	// OrphanedDependents: dependents that lost an edge to the deleted
+	// row(s) — surfaced so the deleter sees who was affected. NO
+	// auto-reconnect ever (#1747 6261560142): A→B→C, delete B ⇒ C
+	// becomes ready, no A→C is created — the deleter re-adds edges
+	// explicitly, or passes reconnect=true.
+	OrphanedDependents []string `json:"orphaned_dependents,omitempty"`
+	// Reconnected: with reconnect=true, the inherited edges
+	// ("orphan→upstream" short-id pairs) — deduplicated, cycle-guarded.
+	Reconnected []string `json:"reconnected,omitempty"`
+}
+
+// PlanTaskInput is one node of an import_plan payload; DependsOn names
+// OTHER KEYS in the same payload (the graph is self-contained in v1).
+type PlanTaskInput struct {
+	Key                string                `json:"key"`
+	Title              string                `json:"title"`
+	Description        string                `json:"description"`
+	Tags               []string              `json:"tags"`
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptanceCriteria"`
+	DependsOn          []string              `json:"dependsOn"`
+}
+
+// PlanInput is the import_plan payload: one epic + its tasks + edges,
+// materialized atomically (all-or-nothing) or validated dry-run (#1747:
+// the user's plan-approval moment).
+type PlanInput struct {
+	EpicTitle string          `json:"epicTitle"`
+	Outcome   string          `json:"outcome"`
+	Tags      []string        `json:"tags"`
+	Tasks     []PlanTaskInput `json:"tasks"`
+}
+
+// PlanGraph is the rendered graph (dry-run validate mode).
+type PlanGraph struct {
+	Nodes []PlanNode `json:"nodes"`
+	Edges []PlanEdge `json:"edges"` // from → to ("from depends on to")
+}
+
+// PlanNode is one node of the rendered graph (the plan render's shape).
+type PlanNode struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+}
+
+// PlanEdge is one rendered edge: from depends on to.
+type PlanEdge struct {
+	From string `json:"from"` // the dependent (source) task's key
+	To   string `json:"to"`   // the prerequisite's key
+}
+
+// PlanValidation is the dry-run render: graph + warnings + the initial
+// ready set (deps satisfied, claimable once activated), BEFORE any
+// write — the plan-approval moment.
+type PlanValidation struct {
+	Valid           bool      `json:"valid"`
+	Error           string    `json:"error,omitempty"`
+	Graph           PlanGraph `json:"graph"`
+	Warnings        []string  `json:"warnings"`
+	InitialReadySet []string  `json:"initial_ready_set"` // task keys, plan order
+}
+
+// ImportResult is the import_plan outcome (write or dry-run).
+type ImportResult struct {
+	DryRun      bool            `json:"dry_run"`
+	Plan        *PlanValidation `json:"plan,omitempty"` // dry-run render
+	ProjectID   string          `json:"project_id"`
+	EpicID      string          `json:"epic_id,omitempty"`
+	EpicShortID string          `json:"epic_short_id,omitempty"`
+	// TaskKeys maps each payload key to its minted short id (write mode).
+	TaskKeys map[string]string `json:"task_keys,omitempty"`
+	// InitialReadySet mirrors PlanValidation.InitialReadySet with minted
+	// short ids (write mode).
+	InitialReadySet []string `json:"initial_ready_set,omitempty"`
+	Warnings        []string `json:"warnings"`
+}
+
+// PressureSample is one workspace-pod resource-pressure report (#1747
+// round 3: natural backpressure — the pod's agentd reports CPU/memory/
+// disk over the seam; static thresholds + hysteresis live reporter-side).
+type PressureSample struct {
+	CPU      bool      `json:"cpu"`
+	Memory   bool      `json:"memory"`
+	Disk     bool      `json:"disk"`
+	CPURate  float64   `json:"cpu_rate"`
+	MemRate  float64   `json:"mem_rate"`
+	DiskRate float64   `json:"disk_rate"`
+	At       time.Time `json:"at"`
+}
+
+// Pressured reports whether the sample trips any dimension.
+func (p PressureSample) Pressured() bool { return p.CPU || p.Memory || p.Disk }
+
+// Summary renders the informational note ("disk 92%") — the surfaced
+// form on project/epic/task reads.
+func (p PressureSample) Summary() string {
+	var parts []string
+	if p.CPU {
+		parts = append(parts, fmt.Sprintf("cpu %.0f%%", p.CPURate*100))
+	}
+	if p.Memory {
+		parts = append(parts, fmt.Sprintf("memory %.0f%%", p.MemRate*100))
+	}
+	if p.Disk {
+		parts = append(parts, fmt.Sprintf("disk %.0f%%", p.DiskRate*100))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "backpressure: " + strings.Join(parts, ", ")
+}
+
+// Worker directives (#1747 pause-must-pause): the engine→session
+// messages delivered over the existing orchestrator↔worker message
+// machinery at the pause/resume levers. They land at the current turn's
+// boundary — a halt finishes the thought, then stops; it is NOT an
+// abort (delete still uses the abort seam).
+const (
+	DirectiveHalt   = "halt"
+	DirectiveResume = "resume"
+)

@@ -134,15 +134,12 @@ class _BoardAPI:
         *,
         title: str,
         outcome: str = "",
-        priority: str = "",
         tags: list[str] | None = None,
         request_id: str = "",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"title": title}
         if outcome:
             body["outcome"] = outcome
-        if priority:
-            body["priority"] = priority
         if tags is not None:
             body["tags"] = tags
         if request_id:
@@ -155,13 +152,8 @@ class _BoardAPI:
     def update_epic(self, epic_id: str, **kwargs: Any) -> dict[str, Any]:
         return self._c._request("PATCH", f"/me/epics/{epic_id}", json=kwargs)
 
-    def epic_activate(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
-        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
-        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json=body)
-
-    def epic_pause(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
-        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
-        return self._c._request("POST", f"/me/epics/{epic_id}/pause", json=body)
+    def epic_pause(self, epic_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/epics/{epic_id}/pause", json={})
 
     def epic_archive(self, epic_id: str, *, request_id: str = "") -> dict[str, Any]:
         body: dict[str, Any] = {"requestId": request_id} if request_id else {}
@@ -171,11 +163,28 @@ class _BoardAPI:
         body: dict[str, Any] = {"requestId": request_id} if request_id else {}
         return self._c._request("POST", f"/me/epics/{epic_id}/unarchive", json=body)
 
-    def cancel_epic(self, epic_id: str, *, reason: str = "", request_id: str = "") -> dict[str, Any]:
-        body: dict[str, Any] = {"reason": reason} if reason else {}
+    def delete_epic(self, epic_id: str, *, force: bool = False) -> dict[str, Any]:
+        return self._c._request("DELETE", f"/me/epics/{epic_id}" + ("?force=true" if force else ""))
+
+    def epic_activate(self, epic_id: str, *, acknowledge_inactive_deps: bool = False, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"acknowledgeInactiveDeps": acknowledge_inactive_deps}
         if request_id:
             body["requestId"] = request_id
-        return self._c._request("POST", f"/me/epics/{epic_id}/cancel", json=body)
+        return self._c._request("POST", f"/me/epics/{epic_id}/activate", json=body)
+
+    def pause_project(self, project_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/projects/{project_id}/pause", json={})
+
+    def resume_project(self, project_id: str) -> dict[str, Any]:
+        return self._c._request("POST", f"/me/projects/{project_id}/resume", json={})
+
+    def import_plan(self, project_id: str, *, epic_title: str, tasks: list[dict[str, Any]], outcome: str = "", dry_run: bool = False, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"epicTitle": epic_title, "tasks": tasks, "dryRun": dry_run}
+        if outcome:
+            body["outcome"] = outcome
+        if request_id:
+            body["requestId"] = request_id
+        return self._c._request("POST", f"/me/projects/{project_id}/import-plan", json=body)
 
     def create_task(
         self,
@@ -183,16 +192,16 @@ class _BoardAPI:
         *,
         title: str,
         description: str = "",
-        priority: str = "",
         tags: list[str] | None = None,
         acceptance_criteria: list[dict[str, Any]] | None = None,
+        depends_on: list[str] | None = None,
         request_id: str = "",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"title": title}
         if description:
             body["description"] = description
-        if priority:
-            body["priority"] = priority
+        if depends_on is not None:
+            body["dependsOn"] = depends_on
         if tags is not None:
             body["tags"] = tags
         if acceptance_criteria is not None:
@@ -219,11 +228,16 @@ class _BoardAPI:
         body: dict[str, Any] = {"requestId": request_id} if request_id else {}
         return self._c._request("POST", f"/me/tasks/{task_id}/start", json=body)
 
-    def cancel_task(self, task_id: str, *, reason: str = "", request_id: str = "") -> dict[str, Any]:
-        body: dict[str, Any] = {"reason": reason} if reason else {}
-        if request_id:
-            body["requestId"] = request_id
-        return self._c._request("POST", f"/me/tasks/{task_id}/cancel", json=body)
+    def delete_task(self, task_id: str, *, reconnect: bool = False) -> dict[str, Any]:
+        return self._c._request("DELETE", f"/me/tasks/{task_id}" + ("?reconnect=true" if reconnect else ""))
+
+    def pause_task(self, task_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/tasks/{task_id}/pause", json=body)
+
+    def resume_task(self, task_id: str, *, request_id: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"requestId": request_id} if request_id else {}
+        return self._c._request("POST", f"/me/tasks/{task_id}/resume", json=body)
 
     def add_dependency(self, task_id: str, *, depends_on: str, request_id: str = "") -> dict[str, Any]:
         body: dict[str, Any] = {"dependsOn": depends_on}

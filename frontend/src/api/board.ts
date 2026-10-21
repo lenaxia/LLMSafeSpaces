@@ -35,7 +35,6 @@ export interface BoardEpic {
   title: string;
   outcome: string;
   status: string;
-  priority: string;
   project_name?: string;
   tags: string[];
   created_at: string;
@@ -59,7 +58,9 @@ export interface BoardTask {
   description: string;
   stage: string;
   pending_origin?: string | null;
-  priority: string;
+  paused: boolean;
+  waiting_on?: string;
+  backpressure?: string;
   project_name: string;
   epic_name: string;
   tags: string[];
@@ -121,19 +122,58 @@ export interface BoardProjectInput {
 export interface BoardEpicInput {
   title?: string;
   outcome?: string;
-  priority?: string;
   tags?: string[];
 }
 
 export interface BoardTaskInput {
   title?: string;
   description?: string;
-  priority?: string;
   tags?: string[];
   acceptanceCriteria?: BoardAcceptanceCriterion[];
+  /** Prerequisite task short ids — edges added in the same write (#1747). */
+  dependsOn?: string[];
   /** Check off criterion at this 0-based index (one-way on the engine;
    * toggles send the full replacement array instead). */
   setCriteriaMet?: number;
+}
+
+/** #1747: the delete result — snapshot-backed audit; orphaned dependents
+ * are listed (each carries an unblocked_by_delete audit event). */
+export interface BoardDeleteResult {
+  item_kind: string;
+  id: string;
+  short_id: string;
+  cascade_tasks?: string[];
+  orphaned_dependents?: string[];
+  reconnected?: string[];
+}
+
+/** #1747: one plan node (dependsOn names other keys in the payload). */
+export interface BoardPlanTask {
+  key: string;
+  title: string;
+  description?: string;
+  tags?: string[];
+  acceptanceCriteria?: BoardAcceptanceCriterion[];
+  dependsOn?: string[];
+}
+
+export interface BoardPlanInput {
+  epicTitle: string;
+  outcome?: string;
+  dryRun?: boolean;
+  tasks: BoardPlanTask[];
+}
+
+export interface BoardImportResult {
+  dry_run: boolean;
+  plan?: { valid: boolean; error?: string; warnings: string[]; initial_ready_set: string[] };
+  project_id: string;
+  epic_id?: string;
+  epic_short_id?: string;
+  task_keys?: Record<string, string>;
+  initial_ready_set?: string[];
+  warnings: string[];
 }
 
 // --- requestId discipline (§4.2: one UUID per logical operation) ----------------
@@ -181,8 +221,8 @@ export const boardApi = {
     api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/archive`),
   unarchiveEpic: (idOrShort: string): Promise<BoardEpic> =>
     api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/unarchive`),
-  cancelEpic: (idOrShort: string, reason?: string): Promise<BoardEpic> =>
-    api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/cancel`, { reason: reason ?? "", requestId: newBoardRequestId() }),
+  deleteEpic: (idOrShort: string, force?: boolean): Promise<BoardDeleteResult> =>
+    api.delete<BoardDeleteResult>(`/me/epics/${encodeURIComponent(idOrShort)}${force ? "?force=true" : ""}`),
 
   // /me/epics/:id/tasks + /me/tasks
   createTask: (epicIdOrShort: string, input: BoardTaskInput): Promise<BoardTask> =>
@@ -199,8 +239,18 @@ export const boardApi = {
     }),
   startTask: (idOrShort: string): Promise<BoardClaim> =>
     api.post<BoardClaim>(`/me/tasks/${encodeURIComponent(idOrShort)}/start`, { requestId: newBoardRequestId() }),
-  cancelTask: (idOrShort: string, reason?: string): Promise<BoardTask> =>
-    api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/cancel`, { reason: reason ?? "", requestId: newBoardRequestId() }),
+  deleteTask: (idOrShort: string, reconnect?: boolean): Promise<BoardDeleteResult> =>
+    api.delete<BoardDeleteResult>(`/me/tasks/${encodeURIComponent(idOrShort)}${reconnect ? "?reconnect=true" : ""}`),
+  pauseTask: (idOrShort: string): Promise<BoardTask> =>
+    api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/pause`, { requestId: newBoardRequestId() }),
+  resumeTask: (idOrShort: string): Promise<BoardTask> =>
+    api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/resume`, { requestId: newBoardRequestId() }),
+  pauseProject: (idOrShort: string): Promise<BoardProject> =>
+    api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/pause`, { requestId: newBoardRequestId() }),
+  resumeProject: (idOrShort: string): Promise<BoardProject> =>
+    api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/resume`, { requestId: newBoardRequestId() }),
+  importPlan: (projectIdOrShort: string, input: BoardPlanInput): Promise<BoardImportResult> =>
+    api.post<BoardImportResult>(`/me/projects/${encodeURIComponent(projectIdOrShort)}/import-plan`, { ...input, requestId: newBoardRequestId() }),
   addDependency: (idOrShort: string, dependsOn: string): Promise<{ task: BoardTask }> =>
     api.post<{ task: BoardTask }>(`/me/tasks/${encodeURIComponent(idOrShort)}/dependencies`, {
       dependsOn,

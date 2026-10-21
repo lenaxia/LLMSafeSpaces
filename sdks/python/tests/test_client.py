@@ -1159,19 +1159,19 @@ def test_board_project_round_trip():
 def test_board_epic_lifecycle():
     respx.post(f"{BASE}/me/projects/prj-aaaa1111/epics").respond(
         status_code=201,
-        json={"id": "e1", "short_id": "epc-bbbb2222", "status": "draft", "priority": "P2"},
+        json={"id": "e1", "short_id": "epc-bbbb2222", "status": "draft"},
     )
     respx.post(f"{BASE}/me/epics/epc-bbbb2222/activate").respond(
         json={"id": "e1", "status": "active", "progress_derived": True, "progress_done": 1, "progress_total": 2}
     )
     respx.post(f"{BASE}/me/epics/epc-bbbb2222/pause").respond(json={"id": "e1", "status": "paused"})
-    respx.post(f"{BASE}/me/epics/epc-bbbb2222/cancel").respond(json={"id": "e1", "status": "paused"})
+    respx.delete(f"{BASE}/me/epics/epc-bbbb2222").respond(json={"item_kind": "epic", "id": "e1", "short_id": "epc-bbbb2222"})
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     assert client.board.create_epic("prj-aaaa1111", title="E1")["status"] == "draft"
     act = client.board.epic_activate("epc-bbbb2222")
     assert act["status"] == "active" and act["progress_derived"] is True
     assert client.board.epic_pause("epc-bbbb2222")["status"] == "paused"
-    assert client.board.cancel_epic("epc-bbbb2222", reason="r")["status"] == "paused"
+    assert client.board.delete_epic("epc-bbbb2222")["item_kind"] == "epic"
 
 
 @respx.mock
@@ -1192,8 +1192,8 @@ def test_board_task_or4_anchor_and_actions():
     respx.post(f"{BASE}/me/tasks/tsk-cccc3333/start").respond(
         json={"task_id": "t1", "claim_token": "tok-1", "escalated": False}
     )
-    respx.post(f"{BASE}/me/tasks/tsk-cccc3333/cancel").respond(
-        json={"id": "t1", "stage": "cancelled"}
+    respx.delete(f"{BASE}/me/tasks/tsk-cccc3333").respond(
+        json={"item_kind": "task", "id": "t1", "short_id": "tsk-cccc3333"}
     )
     respx.get(f"{BASE}/me/projects/prj-aaaa1111/tasks?stage=backlog").respond(
         json={"tasks": [{"id": "t1", "stage": "backlog"}]}
@@ -1208,7 +1208,7 @@ def test_board_task_or4_anchor_and_actions():
     assert client.board.move_stage("tsk-cccc3333", to_stage="done", evidence_url="https://git/pr/1")["stage"] == "done"
     claim = client.board.start_task("tsk-cccc3333")
     assert claim["claim_token"] == "tok-1" and claim["escalated"] is False
-    assert client.board.cancel_task("tsk-cccc3333", reason="r")["stage"] == "cancelled"
+    assert client.board.delete_task("tsk-cccc3333")["item_kind"] == "task"
     assert len(client.board.list_project_tasks("prj-aaaa1111", stage="backlog")) == 1
 
 

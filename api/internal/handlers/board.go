@@ -40,15 +40,18 @@ type boardManager interface {
 	UpdateProject(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.ProjectInput, requestID string) (*board.Project, error)
 	ArchiveProject(ctx context.Context, actor board.Actor, projectID, requestID string) (*board.Project, error)
 	UnarchiveProject(ctx context.Context, actor board.Actor, projectID, requestID string) (*board.Project, error)
+	PauseProject(ctx context.Context, actor board.Actor, projectID, shortIDOrID, requestID string) (*board.Project, error)
+	ResumeProject(ctx context.Context, actor board.Actor, projectID, shortIDOrID, requestID string) (*board.Project, error)
 
 	GetEpic(ctx context.Context, epicID, shortIDOrID string) (*board.Epic, error)
 	CreateEpic(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.EpicInput, requestID string) (*board.Epic, error)
 	UpdateEpic(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, in board.EpicInput, requestID string) (*board.Epic, error)
-	EpicActivate(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)
+	EpicActivate(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, ackInactiveDeps bool, requestID string) (*board.Epic, error)
 	EpicPause(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)
 	EpicArchive(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)
 	EpicUnarchive(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)
-	CancelEpic(ctx context.Context, actor board.Actor, epicID, shortIDOrID, reason, requestID string) (*board.Epic, error)
+	EpicInitialReadySet(ctx context.Context, epicID string) ([]string, error)
+	DeleteEpic(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, force bool, requestID string) (*board.DeleteResult, error)
 
 	GetTask(ctx context.Context, taskID, shortIDOrID string) (*board.Task, error)
 	ListTasks(ctx context.Context, projectID string, stage string) ([]board.Task, error)
@@ -59,9 +62,13 @@ type boardManager interface {
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
 	TaskStart(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Claim, error)
-	CancelTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, reason, requestID string) (*board.Task, error)
+	DeleteTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, reconnect bool, requestID string) (*board.DeleteResult, error)
+	PauseTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
+	ResumeTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
 	AddDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
 	RemoveDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
+
+	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
 }
 
 // BoardHandler renders the owner's board over REST (user-level, R7).
@@ -84,11 +91,11 @@ func (h *BoardHandler) boardActor(c *gin.Context) board.Actor {
 }
 
 // boardStages is the enumerated stage filter set (ruling R2's binding
-// vocabulary) — the one validation the adapter owns on listings.
+// vocabulary, #1747-amended: five stages — cancel is eliminated).
 func boardStages() map[string]bool {
 	return map[string]bool{
 		board.StageBacklog: true, board.StageInProgress: true, board.StageInReview: true,
-		board.StageDone: true, board.StagePendingInput: true, board.StageCancelled: true,
+		board.StageDone: true, board.StagePendingInput: true,
 	}
 }
 
@@ -197,6 +204,44 @@ func (h *BoardHandler) CreateProject(c *gin.Context) {
 	c.JSON(http.StatusCreated, p)
 }
 
+// boardLifecycleRequest is the pause/resume family's optional body
+// (requestId only; an absent body is fine).
+type boardLifecycleRequest struct {
+	RequestID string `json:"requestId"`
+}
+
+func bindBoardLifecycleBody(c *gin.Context) string {
+	var req boardLifecycleRequest
+	if c.Request.Body == nil {
+		return ""
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return "" // absent/empty body: both fields optional (the StartTask discipline)
+	}
+	return req.RequestID
+}
+
+// PauseProject parks the project (#1747): claim candidacy off for every
+// task under it, halt directives to in-flight workers, leases untouched.
+func (h *BoardHandler) PauseProject(c *gin.Context) {
+	p, err := h.board.PauseProject(c.Request.Context(), h.boardActor(c), "", c.Param("id"), bindBoardLifecycleBody(c))
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+// ResumeProject clears the pause and cascades resume directives.
+func (h *BoardHandler) ResumeProject(c *gin.Context) {
+	p, err := h.board.ResumeProject(c.Request.Context(), h.boardActor(c), "", c.Param("id"), bindBoardLifecycleBody(c))
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
 // UpdateProject patches a project (rename cascades the materialized
 // display inheritance inside the service; tags REPLACE — send the full
 // set, the engine writes them wholesale).
@@ -264,7 +309,7 @@ func (h *BoardHandler) UnarchiveProject(c *gin.Context) {
 }
 
 // ListProjectTasks lists a project's tasks, optionally filtered by one
-// of the six stages (the adapter validates the filter; the engine owns
+// of the five stages (the adapter validates the filter; the engine owns
 // everything else).
 func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 	p, ok := h.ownerProject(c, c.Param("id"))
@@ -273,7 +318,7 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 	}
 	stage := c.Query("stage")
 	if stage != "" && !boardStages()[stage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input, " + board.StageCancelled})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input"})
 		return
 	}
 	tasks, err := h.board.ListTasks(c.Request.Context(), p.ID, stage)
@@ -318,7 +363,7 @@ func (h *BoardHandler) BoardSearch(c *gin.Context) {
 	}
 	stage := c.Query("stage")
 	if stage != "" && !boardStages()[stage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input, " + board.StageCancelled})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages: backlog, in_progress, in_review, done, pending_input"})
 		return
 	}
 	res, err := h.board.SearchTasks(c.Request.Context(), c.GetString("userID"), q, board.SearchFilters{
@@ -359,7 +404,7 @@ func (h *BoardHandler) CreateEpic(c *gin.Context) {
 		return
 	}
 	e, err := h.board.CreateEpic(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Priority: req.Priority, Tags: req.Tags},
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags},
 		req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
@@ -371,7 +416,6 @@ func (h *BoardHandler) CreateEpic(c *gin.Context) {
 type boardEpicRequest struct {
 	Title     string   `json:"title"`
 	Outcome   string   `json:"outcome"`
-	Priority  string   `json:"priority"`
 	Tags      []string `json:"tags"`
 	RequestID string   `json:"requestId"`
 }
@@ -391,7 +435,7 @@ func (h *BoardHandler) UpdateEpic(c *gin.Context) {
 		return
 	}
 	e, err := h.board.UpdateEpic(c.Request.Context(), h.boardActor(c), "", c.Param("id"),
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Priority: req.Priority, Tags: req.Tags},
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags},
 		req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
@@ -413,12 +457,37 @@ func (h *BoardHandler) epicLifecycle(c *gin.Context, call func(ctx context.Conte
 	c.JSON(http.StatusOK, e)
 }
 
-// ActivateEpic starts feeding work to fresh workers (§4.4 dispatch drive).
-func (h *BoardHandler) ActivateEpic(c *gin.Context) {
-	h.epicLifecycle(c, h.board.EpicActivate)
+type boardActivateRequest struct {
+	AcknowledgeInactiveDeps bool   `json:"acknowledgeInactiveDeps"`
+	RequestID               string `json:"requestId"`
 }
 
-// PauseEpic stops new claims, never interrupts in-flight leases.
+// ActivateEpic starts feeding work to fresh workers (§4.4 dispatch
+// drive). #1747: refuses cross-epic deps into inactive epics unless
+// acknowledged, and reports the initial ready set.
+func (h *BoardHandler) ActivateEpic(c *gin.Context) {
+	var req boardActivateRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+			return
+		}
+	}
+	e, err := h.board.EpicActivate(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
+		req.AcknowledgeInactiveDeps, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	ready, rerr := h.board.EpicInitialReadySet(c.Request.Context(), e.ID)
+	if rerr != nil {
+		ready = nil // informational — activation already succeeded
+	}
+	c.JSON(http.StatusOK, gin.H{"epic": e, "initial_ready_set": ready})
+}
+
+// PauseEpic stops new claims, never interrupts in-flight leases —
+// and cascades halt directives to the epic's in-flight workers (#1747).
 func (h *BoardHandler) PauseEpic(c *gin.Context) {
 	h.epicLifecycle(c, h.board.EpicPause)
 }
@@ -433,27 +502,62 @@ func (h *BoardHandler) UnarchiveEpic(c *gin.Context) {
 	h.epicLifecycle(c, h.board.EpicUnarchive)
 }
 
-type boardCancelRequest struct {
-	Reason    string `json:"reason"`
-	RequestID string `json:"requestId"`
-}
-
-// CancelEpic cascades to its tasks (non-terminal ones land the cancel
-// stage); the epic itself lands paused — the epic enum has no cancel
-// value (ruling R2's set is binding; a cancel-landed epic is
-// paused-with-a-canceled-task-set).
-func (h *BoardHandler) CancelEpic(c *gin.Context) {
-	var req boardCancelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
-		return
-	}
-	e, err := h.board.CancelEpic(c.Request.Context(), h.boardActor(c), c.Param("id"), "", req.Reason, req.RequestID)
+// DeleteEpic destructively removes the epic and its tasks (#1747: cancel
+// is eliminated — delete replaces it; every removed row keeps its
+// snapshot in the audit log). force is required while claims are
+// in-flight (the delete commits, then in-flight workers are aborted —
+// post-commit).
+func (h *BoardHandler) DeleteEpic(c *gin.Context) {
+	force := c.Query("force") == "true"
+	out, err := h.board.DeleteEpic(c.Request.Context(), h.boardActor(c), c.Param("id"), "", force, "")
 	if err != nil {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, e)
+	c.JSON(http.StatusOK, out)
+}
+
+// ImportPlan materializes (or, with dryRun=true, validates) an entire
+// plan — one epic + tasks + edges, all-or-nothing (#1747: the user's
+// plan-approval moment).
+func (h *BoardHandler) ImportPlan(c *gin.Context) {
+	var req boardPlanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	in := board.PlanInput{EpicTitle: req.EpicTitle, Outcome: req.Outcome, Tags: req.Tags}
+	for _, t := range req.Tasks {
+		in.Tasks = append(in.Tasks, board.PlanTaskInput{
+			Key: t.Key, Title: t.Title, Description: t.Description, Tags: t.Tags,
+			AcceptanceCriteria: t.AcceptanceCriteria, DependsOn: t.DependsOn,
+		})
+	}
+	out, err := h.board.ImportPlan(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
+		in, req.DryRun, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+type boardPlanTaskRequest struct {
+	Key                string                      `json:"key"`
+	Title              string                      `json:"title"`
+	Description        string                      `json:"description"`
+	Tags               []string                    `json:"tags"`
+	AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
+	DependsOn          []string                    `json:"dependsOn"`
+}
+
+type boardPlanRequest struct {
+	EpicTitle string                 `json:"epicTitle"`
+	Outcome   string                 `json:"outcome"`
+	Tags      []string               `json:"tags"`
+	DryRun    bool                   `json:"dryRun"`
+	Tasks     []boardPlanTaskRequest `json:"tasks"`
+	RequestID string                 `json:"requestId"`
 }
 
 // --- Tasks ---------------------------------------------------------------------
@@ -461,11 +565,13 @@ func (h *BoardHandler) CancelEpic(c *gin.Context) {
 type boardTaskRequest struct {
 	Title              string                      `json:"title"`
 	Description        string                      `json:"description"`
-	Priority           string                      `json:"priority"`
 	Tags               []string                    `json:"tags"`
 	AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
 	SetCriteriaMet     *int                        `json:"setCriteriaMet"`
-	RequestID          string                      `json:"requestId"`
+	// DependsOn (create only, #1747): prerequisite task refs (tsk-… or
+	// UUID); the edges are added in the create's own transaction.
+	DependsOn []string `json:"dependsOn"`
+	RequestID string   `json:"requestId"`
 }
 
 // CreateEpicTask creates a backlog task in an epic. Task tags may carry
@@ -483,8 +589,8 @@ func (h *BoardHandler) CreateEpicTask(c *gin.Context) {
 	}
 	t, err := h.board.CreateTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
 		board.TaskInput{
-			Title: req.Title, Description: req.Description, Priority: req.Priority,
-			Tags: req.Tags, AcceptanceCriteria: req.AcceptanceCriteria,
+			Title: req.Title, Description: req.Description,
+			Tags: req.Tags, AcceptanceCriteria: req.AcceptanceCriteria, DependsOn: req.DependsOn,
 		}, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
@@ -498,7 +604,7 @@ func (h *BoardHandler) GetTask(c *gin.Context) {
 	h.ownerTask(c, c.Param("id"), true)
 }
 
-// UpdateTask patches a task: title/description/priority/tags, criteria
+// UpdateTask patches a task: title/description/tags, criteria
 // edits, and criteria check-off (setCriteriaMet — the reviewer's Done
 // preparation; the engine's Done guard consumes the flags). Tags and
 // criteria REPLACE when present; omitted fields keep existing values.
@@ -510,9 +616,31 @@ func (h *BoardHandler) UpdateTask(c *gin.Context) {
 	}
 	t, err := h.board.UpdateTask(c.Request.Context(), h.boardActor(c), "", c.Param("id"),
 		board.TaskInput{
-			Title: req.Title, Description: req.Description, Priority: req.Priority,
+			Title: req.Title, Description: req.Description,
 			Tags: req.Tags, AcceptanceCriteria: req.AcceptanceCriteria, SetCriteriaMet: req.SetCriteriaMet,
 		}, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
+// PauseTask parks the task (#1747): claim candidacy off, forward writes
+// refused, halt directive to the in-flight worker, lease untouched.
+func (h *BoardHandler) PauseTask(c *gin.Context) {
+	t, err := h.board.PauseTask(c.Request.Context(), h.boardActor(c), "", c.Param("id"), bindBoardLifecycleBody(c))
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
+// ResumeTask clears the pause and delivers the resume directive; a
+// lapsed lease re-enters the FIFO pool.
+func (h *BoardHandler) ResumeTask(c *gin.Context) {
+	t, err := h.board.ResumeTask(c.Request.Context(), h.boardActor(c), "", c.Param("id"), bindBoardLifecycleBody(c))
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -548,13 +676,17 @@ func (h *BoardHandler) MoveStageTask(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+type boardStartRequest struct {
+	RequestID string `json:"requestId"`
+}
+
 // StartTask is the manual one-off dispatch (task_start): claim + fresh
 // spawn into the project's target workspace (R9), explicitly allowed in
 // draft epics; paused/completed/archived epics and archived projects
 // refuse it. Renders the engine's Claim (escalated: true when the
 // attempts cap withheld the grant).
 func (h *BoardHandler) StartTask(c *gin.Context) {
-	var req boardCancelRequest
+	var req boardStartRequest
 	// An absent body is fine (both requestId fields optional); a
 	// present-but-empty one (chunked transfer, ContentLength -1, or a
 	// bare 0-length body) is equally fine — only malformed JSON is a
@@ -573,21 +705,21 @@ func (h *BoardHandler) StartTask(c *gin.Context) {
 	c.JSON(http.StatusOK, claim)
 }
 
-// CancelTask is the terminal write: revokes the lease + claim token,
-// aborts the worker, and stages non-terminal dependents to
-// pending_input ("dependency abandoned"). Idempotent on terminal rows.
-func (h *BoardHandler) CancelTask(c *gin.Context) {
-	var req boardCancelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
-		return
-	}
-	t, err := h.board.CancelTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "", req.Reason, req.RequestID)
+// DeleteTask is the destructive replacement for the eliminated cancel
+// (#1747): an idle row goes straight; an in-flight row's worker is
+// aborted AFTER the delete commits (post-commit). Edges cascade;
+// orphaned dependents are listed and each
+// gets an unblocked_by_delete audit event. reconnect=true lets orphans
+// inherit the deleted node's direct upstream edges (deduplicated,
+// cycle-guarded) — default off (no implicit graph rewrites).
+func (h *BoardHandler) DeleteTask(c *gin.Context) {
+	reconnect := c.Query("reconnect") == "true"
+	out, err := h.board.DeleteTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "", reconnect, "")
 	if err != nil {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, t)
+	c.JSON(http.StatusOK, out)
 }
 
 type boardDependencyRequest struct {
@@ -595,11 +727,12 @@ type boardDependencyRequest struct {
 	RequestID string `json:"requestId"`
 }
 
-// AddDependency adds a structural edge (rulings R3/R4 — the ONLY
-// blocking mechanism): N-ary task→task within a project, cycle-free by
-// construction; violations render the 409 class with did-you-mean
-// suggestions (R4a). Renders the re-derived task (is_blocked converges
-// in the same read).
+// AddDependency adds a structural edge (rulings R3/R4 as amended by
+// #1747 — the ONLY blocking mechanism): N-ary task→task within a
+// WORKSPACE (cross-epic allowed, never cross-workspace), cycle-free by
+// construction, duplicate edges idempotent no-ops, edges-per-node capped;
+// violations render the 409 class with did-you-mean suggestions (R4a).
+// Renders the re-derived task (is_blocked converges in the same read).
 func (h *BoardHandler) AddDependency(c *gin.Context) {
 	var req boardDependencyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
