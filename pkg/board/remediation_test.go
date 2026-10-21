@@ -165,15 +165,18 @@ func (s *BoardSuite) TestKill_DispatchDriveResweepFeedsWork() {
 
 	// Escalation composes with the drive: at the attempts cap the drive
 	// escalates and stops granting (rows leave the candidate set).
+	// #1813: each cycle is reclaim-sweep → clear backoff → drive-sweep
+	// (the reclaim and its cooldown land in ONE sweep; the re-claim
+	// needs the cooldown gone and a fresh sweep).
 	for i := 0; i < s.cfg.AttemptsCap; i++ {
 		s.expireLease(t1.ID)
 		s.expireLease(t2.ID)
 		res, err = drive.Sweep(context.Background())
 		s.Require().NoError(err)
-		// #1813: clear the failure backoff so the NEXT cycle's drive can
-		// claim again (this arm pins escalation composition, not the park).
 		s.clearTaskBackoff(t1.ID)
 		s.clearTaskBackoff(t2.ID)
+		res, err = drive.Sweep(context.Background())
+		s.Require().NoError(err)
 	}
 	s.Equal(2, s.countEvents("escalate"))
 	s.Equal(board.StagePendingInput, s.rawTask(t1.ID).Stage)
@@ -318,6 +321,9 @@ func (s *BoardSuite) TestKill_InterimStateClaimShape() {
 	s.expireLease(task.ID)
 	s.sweep()
 	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage)
+	// #1813: drop the reclaim's failure backoff — this arm pins the
+	// re-spawn, not the park.
+	s.clearTaskBackoff(task.ID)
 	drive := board.NewReconciler(s.pool, s.cfg, board.WithWorkerSpawner(s.spawner.Spawn))
 	res, err := drive.Sweep(context.Background())
 	s.Require().NoError(err)

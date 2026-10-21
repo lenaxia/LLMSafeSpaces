@@ -227,8 +227,9 @@ func (s *BoardSuite) TestKill_ThrottleRollbackIncrementingGrant() {
 	// New claims into the project are paused while the slot cooldown runs.
 	s.expectNoCandidate(ws)
 
-	// Cooldown clears → claimable again, and the grant re-increments.
-	s.clearTaskBackoff(task.ID)
+	// Cooldown clears → claimable again, and the grant re-increments
+	// (BOTH cooldowns: the throttle set the project slot cooldown too).
+	s.clearCooldowns(p, task.ID)
 	c3 := s.claimOrFail(ws)
 	s.Equal(task.ID, c3.TaskID)
 	s.Equal(1, s.rawTask(task.ID).Attempts)
