@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
+
+- **The busy-signal/live-streaming id join is fixed at the user-stream
+  and contract-stream edges, within the heal window.** The
+  #1756/#1775/#1806 phrase re-keys flipped the frontend's session
+  identity (sessions list, history REST) to the phrase space while
+  user-stream `session.status` / `agent.question` /
+  `agent.question.resolved` events kept emitting the harness id — the
+  join missed for every minted row, killing live busy tracking
+  (sporadic busy only on degraded rows) and live streaming.
+  The API now reverse-resolves at the emission surface: the wire
+  `sessionID` is the PHRASE, with the harness id preserved additively
+  as `internal_session_id`; agentd's contract-stream frames carry the
+  same phrase + additive harness id. A degraded index (no phrase
+  minted, or an un-refreshed pod that has not yet learned the phrase)
+  passes the harness id through unchanged — never worse, but the join
+  is only complete once that heal window closes.
+  The API-side consumer also routes the additive harness id through
+  every seam (status, resolved input, context usage) so a refreshed
+  pod's already-translated frames never re-register the phrase (no
+  phantom index rows, context occupancy lands on the harness row).
+  agentd's replica warm was redesigned as ONE sync.Once worker (not a
+  goroutine per emission) fed by a bounded pending set (hard cap 4096;
+  an id already pending is kept, overflow drops the newest id, and a
+  dropped id re-enqueues only on its next emission — so a quiet session
+  may stay harness-keyed until then or until its next refresh), with
+  per-id exponential backoff (1s → 30s cap), a GLOBAL 1s floor between
+  warm pulls (distinct newly-seen ids batch instead of pulling once each,
+  while a new session still warms within a second), and a single-pass
+  prune of the idle TTL and backoff ceiling (the pending cap is enforced
+  on enqueue). The worker is bound to the
+  process background context and is cancelled at shutdown, where
+  runShutdown waits on it for up to 5s; the pull's own 10s context bounds
+  the remainder.
+  Coverage now spans the dual-id fixture class (mock index rows keyed
+  phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
+  T1.6 cross-surface join tripwire), live-goroutine/global-pull-floor/
+  backoff pins, and new Postgres-backed integration levels: translated
+  authority stream → real consumer → real `usageBridge` → real
+  `sessionindex`, the create-via-API registry round trip, the
+  legacy-frame phrase translation, and the agentd replica warm against
+  the real registry contract. A translation miss on the user-stream edge
+  flags the passthrough harness id as `session_id_deprecated` (map-shaped
+  `session.status` / `agent.*.resolved` payloads only; the struct
+  `agent.question` payload is left intact), and the lifecycle clear call
+  sites (idle reconcile, delete, archive, admin abort) are pinned through
+  their real paths.
+- **Frontend heal-window id seam (#1817, additive).** The app now learns
+  per-workspace (harness → phrase) aliases from the additive ids
+  (`data.internal_session_id` on user-stream events, `internalSessionId`
+  on contract frames), bounded at 512 aliases per workspace with FIFO
+  eviction, identity when no pair is known (never worse), with an
+  equal-id decoy guard and late re-key of fold rows that arrived before
+  the pair. This closes the API-new/agentd-old and API-old/agentd-new skew
+  windows. It cannot help when BOTH streams are fully pre-fix (no additive
+  id anywhere) — those workspaces still need a refresh/bounce. The
+  red-first E2.1/E2.6 Playwright pins drive pre-fix wire shapes on the
+  surface under test (composer send + sidebar collapsed-workspace busy
+  count, harness-keyed idle clear, reconnect lost-idle wipe, pre-fix
+  contract frames in the phrase view, and a non-vacuous same-id decoy);
+  they fail on `origin/main` at the predicted assertions and pass with the
+  seam.
+- **Late-learned aliases now re-key provider activity; snapshot learning is
+  batched (#1817, #1824 r10).** When a harness→phrase pair is learned after a
+  harness-keyed user event has already latched, `SessionActivityProvider`
+  re-keys its session-keyed activity maps (busy, unread, aborted, pending
+  actions and prompt content, and the cleared-session ref) through the
+  changed workspace's alias table, so the sidebar badges follow the phrase
+  without waiting for a reconnect. The contract stream learns only applied
+  frames, re-keys the fold only when the alias version moves (PART_DELTA
+  stays off the O(all sessions) path), and collapses a multi-pair snapshot
+  into a single alias notification and publish via
+  `beginSessionAliasBatch`/`endSessionAliasBatch`. The r11 companion commit
+  also hoists provider ref mutations out of state updaters so StrictMode's
+  double-invoked updaters stay pure and resolves staging maps at commit.
+
 (nothing yet)
 
 ## [0.40.0] - 2026-10-21

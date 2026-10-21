@@ -259,16 +259,17 @@ type InputRequest struct {
 // Event is one item on a session's streaming event stream. Type selects which
 // payload fields are meaningful; the rest are omitted.
 type Event struct {
-	Type      EventType     `json:"type"`
-	Timestamp time.Time     `json:"timestamp"`
-	SessionID string        `json:"sessionId,omitempty"`
-	MessageID string        `json:"messageId,omitempty"`
-	PartID    string        `json:"partId,omitempty"`
-	Status    Status        `json:"status,omitempty"`
-	Session   *Session      `json:"session,omitempty"`
-	Message   *Message      `json:"message,omitempty"`
-	Part      *Part         `json:"part,omitempty"`
-	Delta     string        `json:"delta,omitempty"`
-	Input     *InputRequest `json:"input,omitempty"`
-	Error     *Error        `json:"error,omitempty"`
+	Type              EventType     `json:"type"`
+	Timestamp         time.Time     `json:"timestamp"`
+	SessionID         string        `json:"sessionId,omitempty"`
+	MessageID         string        `json:"messageId,omitempty"`
+	PartID            string        `json:"partId,omitempty"`
+	Status            Status        `json:"status,omitempty"`
+	Session           *Session      `json:"session,omitempty"`
+	Message           *Message      `json:"message,omitempty"`
+	Part              *Part         `json:"part,omitempty"`
+	Delta             string        `json:"delta,omitempty"`
+	Input             *InputRequest `json:"input,omitempty"`
+	Error             *Error        `json:"error,omitempty"`
+	InternalSessionID string        `json:"internalSessionId,omitempty"`
 }

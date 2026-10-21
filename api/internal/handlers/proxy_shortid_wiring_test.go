@@ -44,6 +44,14 @@ func (s *shortIDSeamIndex) Register(_ context.Context, _, sessionID, _ string) s
 	return id
 }
 
+// ResolveShortID: the #1817 piece-3 read-only seam — returns a minted id
+// if present (LRU-hit shape), else "" (no mint).
+func (s *shortIDSeamIndex) ResolveShortID(_ string, sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.minted[sessionID]
+}
+
 func (s *shortIDSeamIndex) registerCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

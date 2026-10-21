@@ -301,13 +301,17 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 			// Without this, browsers showing the session keep their busy
 			// indicator until the next page reload. #786: the user-stream
 			// copy reaches tabs outside the workspace view (the provider's
-			// stuck-busy clear).
+			// stuck-busy clear). #1817 piece 3: phrase-key the clear so it
+			// matches the phrase-keyed busy flip (the idle half of the
+			// stuck-busy).
 			if h.userBroker != nil {
-				h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+				evt := apitypes.WorkspaceSSEEvent{
 					Type:      "session.status",
 					SessionID: sess.ID,
 					Status:    "idle",
-				})
+				}
+				h.translateSessionIDToPhrase(ctx, workspaceID, &evt)
+				h.publishWorkspaceAndUserEvent(workspaceID, evt)
 			}
 		}
 	}

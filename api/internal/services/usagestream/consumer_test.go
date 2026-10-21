@@ -63,25 +63,34 @@ func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.Sessio
 	f.onEvent = abiclient.AppliedEventsOf(opts)
 	f.onUpdate = onUpdate
 	f.resynced = abiclient.ResyncedOf(opts)
-	if f.connected != nil {
-		f.connected <- struct{}{}
-	}
-	// Snapshot-first: the protocol's stamp (scripted per #1666 so a
-	// reconnect can carry truth its predecessor's frames lost).
-	f.mu.Lock()
-	seed := f.seedSessions
-	f.mu.Unlock()
-	sessions := map[string]*abiv1.SessionSnapshot{}
-	for sid, s := range seed {
-		sessions[sid] = s
-	}
-	onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
+	// Initialize the kill channel and snapshot the seed BEFORE signaling
+	// connected. The test's requireOpen only waits for connected, then
+	// scripts the next seed and calls killStream; if the kill channel were
+	// created after the signal, killStream could observe nil and silently
+	// miss (no reconnect → the 5s Eventually "never satisfied" flake).
+	// Reading the seed first also makes the initial connection's snapshot
+	// deterministic (the test scripts the RECONNECT's truth after open).
 	f.mu.Lock()
 	if f.kill == nil {
 		f.kill = make(chan struct{})
 	}
 	kill := f.kill
+	seed := f.seedSessions
 	f.mu.Unlock()
+	// Snapshot-first: the protocol's stamp (scripted per #1666 so a
+	// reconnect can carry truth its predecessor's frames lost). Signal
+	// `connected` only AFTER applying it: requireOpen then guarantees the
+	// consumer has finished the initial onState before the test drives
+	// events (otherwise the snapshot fold and a synchronous apply race on
+	// the recording bridge).
+	sessions := map[string]*abiv1.SessionSnapshot{}
+	for sid, s := range seed {
+		sessions[sid] = s
+	}
+	onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
+	if f.connected != nil {
+		f.connected <- struct{}{}
+	}
 	select {
 	case <-ctx.Done():
 		return context.Canceled
@@ -128,12 +137,15 @@ type recordedUsage struct {
 }
 
 type recordedBridge struct {
-	statuses []string // "ws:sid:busy|idle"
-	inputs   []*abiv1.InputRequest
-	resolved []string
-	titles   []string
-	contexts []string // "ws:sid:used"
-	died     []string
+	statuses  []string // "ws:sid:busy|idle"
+	inputs    []*abiv1.InputRequest
+	resolved  []string
+	titles    []string
+	contexts  []string // "ws:sid:used"
+	died      []string
+	statusInt []string // "ws:sid:internal" — the RAW internal id the consumer passed through the additive seam (#1817 r3 finding 1)
+	resInt    []string // "ws:sid:internal" — resolved-input additive seam
+	ctxInt    []string // "ws:sid:internal" — context-usage additive seam
 }
 
 func (r *recordedBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
@@ -153,6 +165,23 @@ func (r *recordedBridge) ContextUsed(workspaceID, sessionID string, used int64) 
 }
 func (r *recordedBridge) AgentDied(workspaceID string) {
 	r.died = append(r.died, workspaceID)
+}
+
+// BridgeWithInternal — records the RAW internal id the consumer threads
+// through the additive seam. The #1817 r3 finding-1 pin asserts this is
+// agentd's internal_session_id verbatim (EMPTY for a legacy frame), NOT the
+// wire session id (which the consumer's consult fallback would substitute).
+func (r *recordedBridge) SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool) {
+	r.statuses = append(r.statuses, workspaceID+":"+sessionID+":"+boolWord(busy))
+	r.statusInt = append(r.statusInt, workspaceID+":"+sessionID+":"+internalID)
+}
+func (r *recordedBridge) InputResolvedWithInternal(workspaceID, sessionID, internalID, inputID string) {
+	r.resolved = append(r.resolved, workspaceID+":"+sessionID+":"+inputID)
+	r.resInt = append(r.resInt, workspaceID+":"+sessionID+":"+internalID)
+}
+func (r *recordedBridge) ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64) {
+	r.contexts = append(r.contexts, workspaceID+":"+sessionID+":"+fmtInt(used))
+	r.ctxInt = append(r.ctxInt, workspaceID+":"+sessionID+":"+internalID)
 }
 
 func boolWord(b bool) string {
@@ -268,6 +297,30 @@ func TestSessionStatusBridgesBusyIdle(t *testing.T) {
 	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
 
 	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:busy", "ws1:s1:idle"}, br.statuses)
+}
+
+// TestAdditiveSeamPassesRawInternalID (#1817 piece 3, r3 finding 1): the
+// additive seam must carry agentd's RAW internal_session_id — EMPTY for a
+// legacy / heal-window / agentd-unresolved frame (wire session_id = the
+// harness id) — NOT consultSessionID, which falls back to the wire id when
+// the internal is empty. If the consumer passed the wire id, a legacy frame
+// would reach the bridge with internalID==sessionID, the bridge's
+// double-translation guard would read it as "already translated" and skip
+// the phrase translation, silently re-breaking the heal-window join this PR
+// claims to preserve. The recordedBridge implements BridgeWithInternal and
+// records the exact internal id threaded through the seam.
+func TestAdditiveSeamPassesRawInternalID(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	// LEGACY frame: wire session_id = the harness id, NO internal_session_id
+	// (agentd un-refreshed / unresolved). The consumer must pass internal="".
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	// REFRESHED frame: wire = the phrase, internal = the harness id.
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "phrase-s2", InternalSessionId: "harness-s2", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+
+	require.Equal(t, []string{"ws1:s1:", "ws1:phrase-s2:harness-s2"}, br.statusInt,
+		"the additive seam must carry the RAW internal_session_id: EMPTY for a legacy frame (so the bridge still translates to the phrase), and the harness id for a refreshed frame — NOT the wire id (which the consult fallback would substitute and which the bridge's guard would misread as already-translated)")
 }
 
 func TestInputLifecycleBridges(t *testing.T) {
@@ -662,6 +715,62 @@ func TestConsultFailureIsObservable(t *testing.T) {
 	require.Equal(t, 2, lg.count(), "the 51st failure warns again (every 50th)")
 }
 
+// --- #1817 piece 2: the consult keys the authority by the INTERNAL
+// (harness) id, not the emitted phrase -------------------------------
+
+// TestConsultResolvesPhraseToHarness: the emission carries the PHRASE as
+// the wire session_id (the #1817/#1821 piece-1 translation) with the
+// harness id riding ADDITIVELY on internal_session_id. The authority's
+// GetSnapshot map is harness-id-keyed, so a consult that passed the
+// phrase would 404 and fail open to the raw status — re-creating the
+// sporadic-busy this fixes. The consult must resolve phrase→harness via
+// the additive field.
+func TestConsultResolvesPhraseToHarness(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const phrase = "amber-river-7"
+	const harness = "ses_harness_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId:         phrase,
+		InternalSessionId: harness,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+	})
+	require.Equal(t, []string{"ws1:" + phrase + ":busy"}, br.statuses,
+		"the consult must key the authority by the harness id (internal_session_id) — a phrase key 404s and fails open to the raw idle")
+}
+
+// TestConsultLegacyEventFallsBackToSessionId: a pre-piece-1 event (no
+// additive field) carries the harness id on the wire session_id. The
+// consult must fall back to it, so legacy emitters keep consulting —
+// never worse than today.
+func TestConsultLegacyEventFallsBackToSessionId(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const harness = "ses_legacy_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: harness, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:" + harness + ":busy"}, br.statuses,
+		"an event without internal_session_id must consult on the wire session_id")
+}
+
+// TestConsultEmptyInternalFallsBack: the additive field present but EMPTY
+// (an un-refreshed emitter that set the field without a value) must fall
+// back to the wire session_id, not consult an empty key.
+func TestConsultEmptyInternalFallsBack(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	const harness = "ses_empty_internal_1817"
+	fc.setSnapshot(harness, true)
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: harness, InternalSessionId: "", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	require.Equal(t, []string{"ws1:" + harness + ":busy"}, br.statuses,
+		"an empty internal_session_id must fall back to the wire session_id, never consult an empty key")
+}
+
 // --- #1666: the reconnect/resync snapshot fold reconciles the BRIDGE
 // onto the post-reconnect busy truth (the backend twin of #1646) ------
 
@@ -735,4 +844,66 @@ func TestReseedSeedReconcilesBridgeFlip(t *testing.T) {
 	})
 	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.snapshot(),
 		"an agreeing fold must not re-emit — the reconcile fires only on disagreement")
+}
+
+// #1817 piece 3 (finding 2): the GATE LATCH. On refreshed pods the
+// subscribe snapshot is phrase-keyed (SessionId=phrase, the harness id
+// additive as internal_session_id). The consumer seeds g.derived from it;
+// consultBusy (the idle clear) keys g.derived by the HARNESS id. If the
+// fold keyed the snapshot by the phrase, the stale phrase entry would
+// survive the harness-keyed idle clear and OR the gate busy forever —
+// the idle-drop never fires (the stuck-busy leak). The fix keys the fold
+// by the internal (harness) id so the snapshot and the consult are the
+// same session. This pin: a phrase-keyed busy snapshot (harness
+// additive) followed by a harness-keyed idle event must leave the gate
+// NOT busy (no stale phrase entry).
+func TestGateNoLatch_PhraseKeyedSnapshotThenIdle(t *testing.T) {
+	const harnessID = "ses_latch_1817"
+	const phraseID = "foxtrot-peak-2"
+
+	c, fc, _, _ := newTestConsumer(t)
+	// The refreshed-pod snapshot: phrase-keyed, the harness id additive.
+	fc.setSeedSessions(map[string]*abiv1.SessionSnapshot{
+		phraseID: {
+			SessionId:         phraseID,
+			InternalSessionId: harnessID,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+			Busy:              &abiv1.BusyComponents{Busy: true, Streaming: true},
+		},
+	})
+	// The authority's truth is keyed by the HARNESS id (consultBusy).
+	fc.setSnapshot(harnessID, true)
+	requireOpen(t, c, fc)
+
+	// The fold seeded the snapshot (phrase-keyed, busy). The derived
+	// baseline must be keyed by the HARNESS id, not the phrase.
+	g := c.gates["ws1"]
+	g.mu.Lock()
+	_, keyedByPhrase := g.derived[phraseID]
+	_, keyedByHarness := g.derived[harnessID]
+	g.mu.Unlock()
+	require.False(t, keyedByPhrase,
+		"the fold's derived baseline must NOT be keyed by the phrase — a phrase entry the harness-keyed idle clear can't remove is the latch")
+	require.True(t, keyedByHarness,
+		"the fold's derived baseline must be keyed by the harness id (the consult's key) so the idle clear reaches it")
+
+	// Now the session goes idle: the authority says idle, the event is
+	// phrase-keyed with the harness id additive. The consult clears the
+	// harness-keyed entry, and the fold (all-idle) must drop the gate.
+	fc.setSnapshot(harnessID, false)
+	fc.apply(1, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId:         phraseID,
+		InternalSessionId: harnessID,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+	})
+
+	// The gate must NOT stay latched busy. Wait briefly for the fold to
+	// recompute (the idle-drop settle window is 50ms in this fixture).
+	require.Eventually(t, func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return !g.busyNow
+	}, 2*time.Second, 10*time.Millisecond,
+		"the gate must drop to idle after the idle event — a stale phrase-keyed derived entry would hold it busy forever (the latch)")
 }

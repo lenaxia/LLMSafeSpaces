@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,6 +190,8 @@ func TestAgentz_GenerationReArm_NoOpenEpisode_Noop(t *testing.T) {
 // completes healthy → the episode must stay cleared.
 func TestAgentz_GenerationReArm_SurvivesInFlightRefresh(t *testing.T) {
 	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release // hold the poll open past the generation bump
 		_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v"})
@@ -217,7 +220,7 @@ func TestAgentz_GenerationReArm_SurvivesInFlightRefresh(t *testing.T) {
 	c.noteAgentGeneration()
 	require.True(t, c.Snapshot().UnhealthyEpisodeStartedAt.IsZero(),
 		"pre-condition: the generation bump cleared the episode")
-	close(release)
+	releaseOnce()
 	<-done
 
 	s := c.Snapshot()

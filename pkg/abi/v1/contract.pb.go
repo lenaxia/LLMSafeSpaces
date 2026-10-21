@@ -1755,21 +1755,27 @@ func (x *InputRequest) GetTool() *ToolRef {
 // Event is one item on a session's streaming event stream. type selects
 // which payload fields are meaningful; the rest stay unset.
 type Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          EventType              `protobuf:"varint,1,opt,name=type,proto3,enum=llmsafespaces.abi.v1.EventType" json:"type,omitempty"`
-	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	MessageId     string                 `protobuf:"bytes,4,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	PartId        string                 `protobuf:"bytes,5,opt,name=part_id,json=partId,proto3" json:"part_id,omitempty"`
-	Status        SessionStatus          `protobuf:"varint,6,opt,name=status,proto3,enum=llmsafespaces.abi.v1.SessionStatus" json:"status,omitempty"`
-	Session       *Session               `protobuf:"bytes,7,opt,name=session,proto3" json:"session,omitempty"`
-	Message       *Message               `protobuf:"bytes,8,opt,name=message,proto3" json:"message,omitempty"`
-	Part          *Part                  `protobuf:"bytes,9,opt,name=part,proto3" json:"part,omitempty"`
-	Delta         string                 `protobuf:"bytes,10,opt,name=delta,proto3" json:"delta,omitempty"`
-	Input         *InputRequest          `protobuf:"bytes,11,opt,name=input,proto3" json:"input,omitempty"`
-	Error         *Error                 `protobuf:"bytes,12,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Type      EventType              `protobuf:"varint,1,opt,name=type,proto3,enum=llmsafespaces.abi.v1.EventType" json:"type,omitempty"`
+	Timestamp *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	SessionId string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	MessageId string                 `protobuf:"bytes,4,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	PartId    string                 `protobuf:"bytes,5,opt,name=part_id,json=partId,proto3" json:"part_id,omitempty"`
+	Status    SessionStatus          `protobuf:"varint,6,opt,name=status,proto3,enum=llmsafespaces.abi.v1.SessionStatus" json:"status,omitempty"`
+	Session   *Session               `protobuf:"bytes,7,opt,name=session,proto3" json:"session,omitempty"`
+	Message   *Message               `protobuf:"bytes,8,opt,name=message,proto3" json:"message,omitempty"`
+	Part      *Part                  `protobuf:"bytes,9,opt,name=part,proto3" json:"part,omitempty"`
+	Delta     string                 `protobuf:"bytes,10,opt,name=delta,proto3" json:"delta,omitempty"`
+	Input     *InputRequest          `protobuf:"bytes,11,opt,name=input,proto3" json:"input,omitempty"`
+	Error     *Error                 `protobuf:"bytes,12,opt,name=error,proto3" json:"error,omitempty"`
+	// #1817/#1821 piece 1: on EMISSION (never ingest) the wire
+	// session_id is the platform phrase; the harness id rides here,
+	// ADDITIVE, so the fold's join key and the platform's join key are
+	// one space. Absent on ingest-path events and on un-refreshed
+	// emitters (heal window) — consumers must not require it.
+	InternalSessionId string `protobuf:"bytes,13,opt,name=internal_session_id,json=internalSessionId,proto3" json:"internal_session_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Event) Reset() {
@@ -1884,6 +1890,13 @@ func (x *Event) GetError() *Error {
 		return x.Error
 	}
 	return nil
+}
+
+func (x *Event) GetInternalSessionId() string {
+	if x != nil {
+		return x.InternalSessionId
+	}
+	return ""
 }
 
 var File_llmsafespaces_abi_v1_contract_proto protoreflect.FileDescriptor
@@ -2019,7 +2032,7 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x04tool\x18\x0e \x01(\v2\x1d.llmsafespaces.abi.v1.ToolRefR\x04tool\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xaf\x04\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xdf\x04\n" +
 	"\x05Event\x123\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1f.llmsafespaces.abi.v1.EventTypeR\x04type\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x1d\n" +
@@ -2035,7 +2048,8 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x05delta\x18\n" +
 	" \x01(\tR\x05delta\x128\n" +
 	"\x05input\x18\v \x01(\v2\".llmsafespaces.abi.v1.InputRequestR\x05input\x121\n" +
-	"\x05error\x18\f \x01(\v2\x1b.llmsafespaces.abi.v1.ErrorR\x05error*\xd3\x01\n" +
+	"\x05error\x18\f \x01(\v2\x1b.llmsafespaces.abi.v1.ErrorR\x05error\x12.\n" +
+	"\x13internal_session_id\x18\r \x01(\tR\x11internalSessionId*\xd3\x01\n" +
 	"\rSessionStatus\x12\x1e\n" +
 	"\x1aSESSION_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SESSION_STATUS_UNKNOWN\x10\x01\x12\x17\n" +

@@ -371,6 +371,8 @@ func TestSecretsResync_FullJSONRPCDispatch(t *testing.T) {
 // tool call forever.
 func TestSecretsResync_BoundedWait(t *testing.T) {
 	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
 	rec := startResyncRecorder(t, func(w http.ResponseWriter) {
 		<-release
 		_, _ = w.Write([]byte(`{"status":"not_modified","appliedRev":"1:mh-1"}`))
@@ -390,7 +392,7 @@ func TestSecretsResync_BoundedWait(t *testing.T) {
 		t.Fatal("the tool must not return while the endpoint hangs")
 	case <-time.After(300 * time.Millisecond):
 	}
-	close(release)
+	releaseOnce()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):

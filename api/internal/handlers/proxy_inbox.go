@@ -132,13 +132,18 @@ func (h *ProxyHandler) emitInboxOnlyRecords(ctx context.Context, workspaceID str
 		if rec.Kind == inbox.KindPermission {
 			evtType = "agent.permission"
 		}
-		h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		evt := apitypes.WorkspaceSSEEvent{
 			Type:      evtType,
 			SessionID: rec.SessionID,
 			RequestID: rec.ID,
 			Data:      inputRequestFromRecord(rec, root),
 			WhileAway: &away,
-		})
+		}
+		// #1817 piece 3: phrase-key the inbox re-present so the
+		// whileAway prompt joins on the same id space as the live ask
+		// (the input half of the stuck-busy).
+		h.translateSessionIDToPhrase(ctx, workspaceID, &evt)
+		h.publishWorkspaceAndUserEvent(workspaceID, evt)
 	}
 }
 
@@ -305,6 +310,18 @@ func (h *ProxyHandler) publishInputResolved(c *gin.Context, workspaceID, session
 			"reason":     reason,
 		},
 	}
+	// #1817 piece 1 (r4 finding 2): every user-stream session-keyed event
+	// (session.status, agent.*, resolved) carries the PHRASE on the wire.
+	// This API-originated resolved publish used to skip translation entirely
+	// (a mixed-id-space emission) — the frontend removes resolved prompts by
+	// request_id so the impact is bounded, but the envelope must still be
+	// phrase-keyed to honor the #1821 piece-1 contract and the additive
+	// "never dropped" harness id.
+	// #1817 piece 1 (r5 finding 3): detached context — the request context
+	// is canceled if the browser aborts/navigates mid-reply, which would
+	// cancel the Register seam and re-emit this envelope harness-keyed. The
+	// other user-stream emitters use a detached context for the same reason.
+	h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 	targets := make([]string, 0, 2)
 	if owner := h.userBroker.WorkspaceOwner(workspaceID); owner != "" {
 		targets = append(targets, owner)

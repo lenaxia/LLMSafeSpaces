@@ -824,11 +824,20 @@ func (h *ProxyHandler) removeActiveSessionEvents(parent context.Context, workspa
 			// #786: deleted must reach the USER stream too (the
 			// activity provider's stream) — the workspace-scoped copy
 			// alone left every other tab rendering a live session.
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			// #1817 piece 3: phrase-key the clear so it matches the
+			// phrase-keyed busy flip (the delete half of the stuck-busy).
+			// #1817 piece 3 (r2 finding 4): the READ-ONLY twin — the row
+			// was just deleted, so the minting translate would Register →
+			// INSERT a ghost row for the deleted session. ResolveShortID
+			// is LRU-only (no mint); the LRU survives DeleteSession so the
+			// clear matches the busy flip's phrase key.
+			evt := apitypes.WorkspaceSSEEvent{
 				Type:      "session.status",
 				SessionID: sessionID,
 				Status:    "deleted",
-			})
+			}
+			h.translateSessionIDToPhraseNoMint(workspaceID, &evt)
+			h.publishWorkspaceAndUserEvent(workspaceID, evt)
 		}
 	}()
 }

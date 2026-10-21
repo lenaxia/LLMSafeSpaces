@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +67,11 @@ func pullSessionShortIDs(ctx context.Context) bool {
 	return true
 }
 
-// pullSessionShortIDsRateLimited is the on-miss pull behind the TTL.
+// pullSessionShortIDsRateLimited is the on-miss pull behind the TTL (the
+// MCP ref-resolution path — the caller loops on a typo, so a fixed window
+// bounds platform hammering). The EMISSION warm uses a different gate: the
+// queue+worker+backoff in this file — see its doc for why the fixed TTL is
+// wrong for the multi-session warm case.
 func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	shortIDPullMu.Lock()
 	if time.Since(shortIDLastPull) < shortIDPullTTL {
@@ -76,6 +81,275 @@ func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	shortIDLastPull = time.Now()
 	shortIDPullMu.Unlock()
 	return pullSessionShortIDs(ctx)
+}
+
+// Emission-path warm worker (#1817 r6 findings 1-4). The per-emission
+// goroutine and its in-flight CAS could not bound a hot stream: every
+// unresolved frame forked a goroutine, an overlapping id was dropped, and
+// without the TTL a registry that never resolved an id pulled once per
+// frame. This is ONE long-lived worker (sync.Once) fed by a bounded wake
+// channel: misses only enqueue an id and signal; the worker coalesces a
+// batch into one pull and applies per-id exponential backoff (1s → 30s)
+// to ids the registry still does not resolve, so pulls stay bounded. Ids
+// arriving while a pull is in flight stay pending and are pulled on the
+// next loop — never dropped.
+const (
+	shortIDWarmBackoffMin = time.Second
+	shortIDWarmBackoffMax = 30 * time.Second
+	// Entries idle this long are pruned (a session deleted/renamed away
+	// cannot pin a queue slot forever).
+	shortIDWarmEntryTTL = 10 * time.Minute
+	// Hard ceiling on the backoff map: prune the oldest entries past it.
+	shortIDWarmMaxEntries = 4096
+	// Hard ceiling on the pending set. Overflow drops the NEWEST id (the
+	// enqueue that found the set full) and keeps the existing retry backlog
+	// intact; a dropped id re-enqueues only on its next emission.
+	shortIDWarmMaxPending = 4096
+)
+
+// shortIDWarmMinPullInterval is the GLOBAL floor between emission-path warm
+// pulls. Per-id backoff alone still let N DISTINCT newly-seen ids (each
+// immediately due on first sight) trigger ~N pulls; the floor batches them.
+// It is deliberately short (not the 30s MCP TTL): a new session that appears
+// just after a pull still warms within a second. It is a variable so tests
+// can inject a floor without depending on wall-clock scheduling.
+var shortIDWarmMinPullInterval = time.Second
+
+var (
+	warmWorkerOnce   sync.Once
+	warmWorkerCancel context.CancelFunc
+	warmWorkerWg     sync.WaitGroup
+
+	warmWake = make(chan struct{}, 1)
+	warmMu   sync.Mutex
+	// warmPending holds ids awaiting a pull. warmBackoff holds per-id
+	// negative-cache state (absent = due now). Both are guarded by warmMu.
+	warmPending = map[string]struct{}{}
+	warmBackoff = map[string]shortIDWarmBackoff{}
+	// warmFloorWaitNotify is a test-only observer signaled when the worker
+	// parks on the global pull floor. Nil in production.
+	warmFloorWaitNotify chan time.Duration
+)
+
+type shortIDWarmBackoff struct {
+	delay     time.Duration
+	notBefore time.Time
+	lastSeen  time.Time
+}
+
+// ensureShortIDWarmWorker starts the singleton worker. The caller's
+// context governs its lifetime. Production calls it at the TOP of
+// startBackgroundLoops with the process bgCtx and registers the worker on
+// bgWg, so runShutdown cancels it and waits on it for up to 5s; the pull's
+// own 10s context bounds the remainder. Tests pass nil for the lifecycle
+// group and join via warmWorkerWg. The first caller wins; no
+// lazy/Background fallback exists because the boot path always starts it
+// before any emitter can run.
+func ensureShortIDWarmWorker(ctx context.Context, lifecycle *sync.WaitGroup) {
+	warmWorkerOnce.Do(func() {
+		workerCtx, cancel := context.WithCancel(ctx)
+		warmWorkerCancel = cancel
+		if lifecycle != nil {
+			lifecycle.Add(1)
+		}
+		warmWorkerWg.Add(1)
+		go func(ctx context.Context) {
+			defer warmWorkerWg.Done()
+			if lifecycle != nil {
+				defer lifecycle.Done()
+			}
+			shortIDWarmWorker(ctx)
+		}(workerCtx)
+	})
+}
+
+// warmSessionShortIDsOnMiss records one unresolved emission id and wakes
+// the worker. It NEVER spawns a goroutine and never blocks on the pull.
+// The worker is started once at boot (ensureShortIDWarmWorker); a miss
+// before that (only possible in tests that bypass boot) simply queues and
+// the boot start drains it.
+func warmSessionShortIDsOnMiss(harnessID string) {
+	if harnessID == "" {
+		return
+	}
+	now := time.Now()
+	warmMu.Lock()
+	shortIDWarmAddPendingLocked(harnessID)
+	if b, ok := warmBackoff[harnessID]; ok {
+		b.lastSeen = now
+		warmBackoff[harnessID] = b
+	}
+	warmMu.Unlock()
+	select {
+	case warmWake <- struct{}{}:
+	default:
+	}
+}
+
+// shortIDWarmAddPendingLocked enqueues one id under the hard pending
+// ceiling. An id already pending is a no-op. On overflow the NEWEST id is
+// dropped (the caller returns without enqueueing) so the existing backlog
+// survives; a dropped id re-enqueues only on its next emission. Caller
+// holds warmMu.
+func shortIDWarmAddPendingLocked(id string) {
+	if _, ok := warmPending[id]; ok {
+		return
+	}
+	if len(warmPending) >= shortIDWarmMaxPending {
+		return
+	}
+	warmPending[id] = struct{}{}
+}
+
+func shortIDWarmWorker(ctx context.Context) {
+	// lastPull is worker-local: the global floor resets with the worker,
+	// and there is exactly one worker at a time.
+	var lastPull time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-warmWake:
+		}
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			due, wait := shortIDWarmDue()
+			if len(due) == 0 {
+				if wait <= 0 {
+					break // nothing pending — park on warmWake
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-warmWake:
+					timer.Stop()
+				case <-timer.C:
+				}
+				continue
+			}
+			if !lastPull.IsZero() {
+				if remaining := shortIDWarmMinPullInterval - time.Since(lastPull); remaining > 0 {
+					if warmFloorWaitNotify != nil {
+						select {
+						case warmFloorWaitNotify <- remaining:
+						default:
+						}
+					}
+					timer := time.NewTimer(remaining)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+			}
+			lastPull = time.Now()
+			_ = pullSessionShortIDs(ctx)
+			shortIDWarmSettle(due)
+		}
+	}
+}
+
+// shortIDWarmDue takes the currently due ids out of pending and returns the
+// wait until the earliest still-backed-off id (0 when none are waiting).
+func shortIDWarmDue() ([]string, time.Duration) {
+	now := time.Now()
+	warmMu.Lock()
+	defer warmMu.Unlock()
+	shortIDWarmPruneLocked(now)
+	var due []string
+	var next time.Time
+	for id := range warmPending {
+		b, backedOff := warmBackoff[id]
+		if !backedOff || !now.Before(b.notBefore) {
+			due = append(due, id)
+			delete(warmPending, id)
+			continue
+		}
+		if next.IsZero() || b.notBefore.Before(next) {
+			next = b.notBefore
+		}
+	}
+	if len(due) == 0 && !next.IsZero() {
+		return nil, time.Until(next)
+	}
+	return due, 0
+}
+
+// shortIDWarmSettle records the outcome of one pull for the ids it covered:
+// resolved ids leave both maps; unresolved ids stay pending under a doubled
+// (capped) backoff. The store is consulted before taking warmMu — the store's
+// lock is never nested under the warm lock.
+func shortIDWarmSettle(ids []string) {
+	resolved := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if currentSessionShortIDs().shortIDFor(id) != "" {
+			resolved[id] = struct{}{}
+		}
+	}
+	now := time.Now()
+	warmMu.Lock()
+	defer warmMu.Unlock()
+	for _, id := range ids {
+		if _, ok := resolved[id]; ok {
+			delete(warmPending, id)
+			delete(warmBackoff, id)
+			continue
+		}
+		b := warmBackoff[id]
+		if b.delay <= 0 {
+			b.delay = shortIDWarmBackoffMin
+		} else {
+			b.delay *= 2
+			if b.delay > shortIDWarmBackoffMax {
+				b.delay = shortIDWarmBackoffMax
+			}
+		}
+		b.notBefore = now.Add(b.delay)
+		if b.lastSeen.IsZero() {
+			b.lastSeen = now
+		}
+		warmBackoff[id] = b
+		shortIDWarmAddPendingLocked(id)
+	}
+	shortIDWarmPruneLocked(now)
+}
+
+// shortIDWarmPruneLocked drops idle entries and enforces both hard
+// ceilings in a single pass: it collects the expired keys and, when over
+// the backoff ceiling, the excess oldest by lastSeen, then deletes them in
+// one loop. No repeated full-map scan per deletion. Caller holds warmMu.
+func shortIDWarmPruneLocked(now time.Time) {
+	cutoff := now.Add(-shortIDWarmEntryTTL)
+	type warmEntry struct {
+		id       string
+		lastSeen time.Time
+	}
+	expired := make([]warmEntry, 0)
+	live := make([]warmEntry, 0, len(warmBackoff))
+	for id, b := range warmBackoff {
+		if b.lastSeen.Before(cutoff) {
+			expired = append(expired, warmEntry{id: id, lastSeen: b.lastSeen})
+			continue
+		}
+		live = append(live, warmEntry{id: id, lastSeen: b.lastSeen})
+	}
+	victims := expired
+	if excess := len(live) - shortIDWarmMaxEntries; excess > 0 {
+		sort.Slice(live, func(i, j int) bool {
+			return live[i].lastSeen.Before(live[j].lastSeen)
+		})
+		victims = append(victims, live[:excess]...)
+	}
+	for _, v := range victims {
+		delete(warmBackoff, v.id)
+		delete(warmPending, v.id)
+	}
 }
 
 // bootPullSessionShortIDs warms the replica at agentd start (§4.3

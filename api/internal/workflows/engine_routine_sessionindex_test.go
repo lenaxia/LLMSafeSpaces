@@ -258,6 +258,9 @@ func (r *recordingSessionIndex) Register(_ context.Context, _, sessionID, _ stri
 	return ""
 }
 
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (r *recordingSessionIndex) ResolveShortID(_ string, _ string) string { return "" }
+
 // TestIndexPreservedSession_RegistersThroughSeamFirst is design 0066
 // §6's wiring pin for the routine-fire row-creating path (review r1
 // finding 1): every preserved fire-session mints its short id before
