@@ -612,6 +612,23 @@ func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID, triggerID stri
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
 }
 
+// validateUpdateScriptConflict enforces the #1812 routine-only rule on
+// the POST-PATCH MERGED view: a patch that would leave a gate script on
+// a workflow-targeted trigger 400s, in either direction (scripting onto
+// a DAG target, or retargeting a scripted routine to a DAG). Extracted
+// from update() — the function exceeded the repo's gocyclo ceiling.
+func (h *TriggersHandler) validateUpdateScriptConflict(c *gin.Context, existing *wf.TriggerRow, scriptPatch *wf.TriggerScript, scriptKeyPresent bool, mergedWorkflowID string) bool {
+	mergedHasScript := existing != nil && (existing.ScriptLanguage != "" || existing.ScriptHandler != "")
+	if scriptKeyPresent {
+		mergedHasScript = scriptPatch.Present()
+	}
+	if mergedHasScript && mergedWorkflowID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; clear script (null) or drop the workflowId patch"})
+		return false
+	}
+	return true
+}
+
 // validateUpdateMapping runs the 0059 V7 wiring/mapping rules for
 // patches that touch the mapping surface. Extracted from update() —
 // the function exceeded the repo's gocyclo ceiling.
@@ -805,12 +822,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	// a script on a workflow-targeted trigger 400s, in either direction:
 	// scripting onto a DAG target, or retargeting a scripted routine to
 	// a DAG.
-	mergedHasScript := existing != nil && (existing.ScriptLanguage != "" || existing.ScriptHandler != "")
-	if scriptKeyPresent {
-		mergedHasScript = scriptPatch.Present()
-	}
-	if mergedHasScript && mergedWorkflowID != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; clear script (null) or drop the workflowId patch"})
+	if !h.validateUpdateScriptConflict(c, existing, scriptPatch, scriptKeyPresent, mergedWorkflowID) {
 		return
 	}
 
