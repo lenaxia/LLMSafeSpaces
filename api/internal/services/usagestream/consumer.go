@@ -98,6 +98,30 @@ type Bridge interface {
 	AgentDied(workspaceID string)
 }
 
+// BridgeWithInternal is the #1817 piece-3 optional extension: a bridge
+// that carries the ADDITIVE harness id (agentd's internal_session_id)
+// through the busy emission so its phrase translation can detect an
+// already-translated frame and avoid the double-translation phantom row
+// (the refreshed-pod defect). Bridges that do not implement it fall back
+// to the plain SessionStatus (the harness-keyed legacy path — still
+// correct, just without the additive guard).
+type BridgeWithInternal interface {
+	Bridge
+	SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool)
+}
+
+// emitSessionStatus routes the busy emission through the additive seam
+// when the bridge supports it, else the plain one. The internal id is
+// consultSessionID(evt) — the harness id (agentd's internal_session_id,
+// or the wire session_id for legacy frames).
+func (c *Consumer) emitSessionStatus(workspaceID string, evt *abiv1.Event, busy bool) {
+	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
+		b.SessionStatusWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), busy)
+		return
+	}
+	c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
+}
+
 // Logger is the minimal seam (the API's LoggerInterface satisfies it).
 type Logger interface {
 	Warn(msg string, keysAndValues ...interface{})
@@ -395,8 +419,22 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		g.seededFold = true
 		rebuilt := map[string]bool{}
 		for sid, s := range st.Sessions {
+			// #1817 piece 3: key the fold's derived baseline by the INTERNAL
+			// (harness) id, consistent with consultBusy (which records under
+			// consultSessionID = the internal id). On refreshed pods the
+			// snapshot is phrase-keyed (SessionId=phrase, the harness id
+			// additive) — keying the fold by the phrase would leave a stale
+			// phrase entry that the idle clear (consultBusy, harness-keyed)
+			// never removes, OR-ing the gate busy forever (the latch). Keying
+			// by the harness id makes the snapshot and the consult the same
+			// session; legacy/harness-keyed frames (internal empty) fall
+			// through to the wire key.
+			key := s.GetInternalSessionId()
+			if key == "" {
+				key = sid
+			}
 			if sessionSeedBusy(s) {
-				rebuilt[sid] = true
+				rebuilt[key] = true
 			}
 		}
 		g.derived = rebuilt
@@ -531,7 +569,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			if derived, ok := c.consultBusy(workspaceID, g, consultSessionID(evt)); ok {
 				busy = derived
 			}
-			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
+			c.emitSessionStatus(workspaceID, evt, busy)
 			// #1666: the emission is the reconcile baseline — record it.
 			g.mu.Lock()
 			g.bridged[evt.GetSessionId()] = busy
@@ -551,7 +589,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		prev := g.derived[evt.GetSessionId()]
 		g.mu.Unlock()
 		if derived, ok := c.consultBusy(workspaceID, g, consultSessionID(evt)); ok && derived != prev {
-			c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), derived)
+			c.emitSessionStatus(workspaceID, evt, derived)
 			// #1666: the emission is the reconcile baseline — record it.
 			g.mu.Lock()
 			g.bridged[evt.GetSessionId()] = derived

@@ -206,11 +206,15 @@ func (h *ProxyHandler) PublishSessionArchived(workspaceID, sessionID string, arc
 	if !archived {
 		status = sessionStatusUnarchived
 	}
-	h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+	// #1817 piece 3: phrase-key the clear so it matches the phrase-keyed
+	// busy flip (the archive half of the stuck-busy).
+	evt := apitypes.WorkspaceSSEEvent{
 		Type:      "session.status",
 		SessionID: sessionID,
 		Status:    status,
-	})
+	}
+	h.translateSessionIDToPhrase(workspaceID, &evt)
+	h.publishWorkspaceAndUserEvent(workspaceID, evt)
 }
 
 func (h *ProxyHandler) GetAllKnownPhases() map[string]string {

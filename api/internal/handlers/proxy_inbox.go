@@ -132,13 +132,18 @@ func (h *ProxyHandler) emitInboxOnlyRecords(ctx context.Context, workspaceID str
 		if rec.Kind == inbox.KindPermission {
 			evtType = "agent.permission"
 		}
-		h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		evt := apitypes.WorkspaceSSEEvent{
 			Type:      evtType,
 			SessionID: rec.SessionID,
 			RequestID: rec.ID,
 			Data:      inputRequestFromRecord(rec, root),
 			WhileAway: &away,
-		})
+		}
+		// #1817 piece 3: phrase-key the inbox re-present so the
+		// whileAway prompt joins on the same id space as the live ask
+		// (the input half of the stuck-busy).
+		h.translateSessionIDToPhrase(workspaceID, &evt)
+		h.publishWorkspaceAndUserEvent(workspaceID, evt)
 	}
 }
 

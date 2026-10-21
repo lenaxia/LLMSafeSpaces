@@ -75,11 +75,16 @@ func (h *AdminSessionHandler) ForceAbortSession(c *gin.Context) {
 
 	// #786: aborted must reach the USER stream too (the activity
 	// provider's stream) so the busy indicator clears in every open tab.
-	h.proxyHandler.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+	// #1817 piece 3: the clear is keyed by the PHRASE so it matches the
+	// phrase-keyed busy flip (a harness-keyed clear would never clear a
+	// phrase-keyed latch — the lifecycle half of the stuck-busy).
+	evt := apitypes.WorkspaceSSEEvent{
 		Type:      "session.status",
 		SessionID: sessionID,
 		Status:    "aborted",
-	})
+	}
+	h.proxyHandler.translateSessionIDToPhrase(workspaceID, &evt)
+	h.proxyHandler.publishWorkspaceAndUserEvent(workspaceID, evt)
 
 	actorID, _ := extractAuth(c)
 	h.logAudit(c.Request.Context(), actorID, workspaceID, sessionID)

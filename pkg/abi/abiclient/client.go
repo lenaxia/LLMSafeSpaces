@@ -470,6 +470,11 @@ func cloneSessionSnapshot(s *abiv1.SessionSnapshot) *abiv1.SessionSnapshot {
 		// recompute it. Dropping it here served busy-status sessions
 		// with nil components (#1602).
 		Busy: cloneBusy(s.GetBusy()),
+		// #1817 piece 3: the additive harness id (the phrase-keyed
+		// snapshot's internal_session_id) must survive the fold or the
+		// "never dropped" contract is broken and the consumer can't
+		// key its derived baseline by the harness id.
+		InternalSessionId: s.GetInternalSessionId(),
 	}
 	return out
 }

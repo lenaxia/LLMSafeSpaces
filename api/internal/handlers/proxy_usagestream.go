@@ -180,6 +180,15 @@ func (b *usageBridge) kindOf(id string) abiv1.InputKind {
 }
 
 func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
+	b.SessionStatusWithInternal(workspaceID, sessionID, "", busy)
+}
+
+// SessionStatusWithInternal is the #1817 piece-3 seam: the consumer passes
+// the ADDITIVE harness id (agentd's internal_session_id) so the bridge's
+// translation can detect an already-phrase-keyed frame and avoid the
+// double-translation phantom row. A harness-keyed frame (heal window /
+// legacy) has an empty internal and still translates normally.
+func (b *usageBridge) SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool) {
 	if b.h.userBroker == nil {
 		return
 	}
@@ -193,11 +202,20 @@ func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
 		// harness id rides along ADDITIVELY as internal_session_id.
 		// Degraded index (no phrase) passes the harness id through —
 		// never worse than the pre-fix behavior.
+		// #1817 piece 3: if the frame already carries an internal id (a
+		// refreshed agentd put the phrase on the wire), seed it onto the
+		// event so translateSessionIDToPhrase's guard sees it and does not
+		// re-register the phrase (the phantom-row defect).
+		var data map[string]any
+		if internalID != "" {
+			data = map[string]any{"internal_session_id": internalID}
+		}
 		evt := apitypes.WorkspaceSSEEvent{
 			Type:        "session.status",
 			WorkspaceID: workspaceID,
 			SessionID:   sessionID,
 			Status:      status,
+			Data:        data,
 		}
 		b.h.translateSessionIDToPhrase(workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
@@ -365,6 +383,35 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 	if h.sessionIndex == nil || harnessID == "" {
 		return
 	}
+	// #1817 piece 3 — double-translation guard (the refreshed-pod defect):
+	// on refreshed pods the agentd emission already translated the frame to
+	// the phrase and left the harness id ADDITIVELY as internal_session_id
+	// (authority.go wireEvent / projection.go podSnapshotsLocked). If the
+	// consumer passes that already-phrase wire id back through this
+	// translation, the Register below would treat the PHRASE as a session_id
+	// and MINT a new short-id row (sessionindex.Service.Register →
+	// EnsureSessionRegistered — the INSERT keys on session_id, but a phrase
+	// lives in short_id, so the phrase is never found and a ghost row is
+	// created). That re-broke the busy join this PR exists to fix and
+	// produced a phantom sessions-list row. The additive internal id is the
+	// marker that the frame was already translated: resolve from it (the
+	// harness id) and leave the phrase untouched — Register on an already-
+	// resolved session is a no-op (the row exists), and the internal id
+	// stays the harness id. A harness-keyed frame (heal window / legacy)
+	// has no internal id and still translates: phrase = Register(harness).
+	internalID := internalSessionIDFromData(evt.Data)
+	if internalID != "" {
+		if phrase := h.resolvePhrase(workspaceID, harnessID); phrase == harnessID {
+			// Already translated (agentd put the phrase on the wire).
+			// Re-affirm the additive id and pass through — no re-register.
+			setInternalSessionID(evt, internalID)
+			return
+		}
+		// Defensive: a non-phrase wire id that carries a harness internal —
+		// resolve from the harness id so the additive stays authoritative.
+		harnessID = internalID
+		evt.SessionID = internalID
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	phrase := h.sessionIndex.Register(ctx, workspaceID, harnessID, "")
@@ -389,5 +436,51 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 		// session_id above is the phrase, the payload keeps its own.
 	default:
 		evt.Data = map[string]any{"internal_session_id": harnessID}
+	}
+}
+
+// resolvePhrase is the read-only seam for the double-translation guard:
+// it returns the phrase a session is already registered to WITHOUT
+// minting a new row (unlike Register, which EnsureSessionRegisters). A
+// healthy DB returns the existing phrase for a registered session — the
+// guard uses that to detect an already-translated frame.
+func (h *ProxyHandler) resolvePhrase(workspaceID, sessionID string) string {
+	if h.sessionIndex == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return h.sessionIndex.Register(ctx, workspaceID, sessionID, "")
+}
+
+// internalSessionIDFromData reads the additive internal_session_id the
+// #1817 piece-1 emission leaves on the wire (the harness id) across both
+// map payload shapes. The session.InputRequest struct has no such field
+// — the nested payload keeps its own session id (agentd translates only
+// the top-level frame field), so struct payloads return "".
+func internalSessionIDFromData(data any) string {
+	switch m := data.(type) {
+	case map[string]any:
+		if v, ok := m["internal_session_id"].(string); ok {
+			return v
+		}
+	case map[string]string:
+		return m["internal_session_id"]
+	}
+	return ""
+}
+
+// setInternalSessionID writes the additive internal_session_id on the two
+// map payload shapes (the struct payload keeps its own id field).
+func setInternalSessionID(evt *apitypes.WorkspaceSSEEvent, harnessID string) {
+	switch d := evt.Data.(type) {
+	case map[string]any:
+		if d == nil {
+			d = map[string]any{}
+		}
+		d["internal_session_id"] = harnessID
+		evt.Data = d
+	case map[string]string:
+		d["internal_session_id"] = harnessID
 	}
 }

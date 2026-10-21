@@ -792,3 +792,65 @@ func TestReseedSeedReconcilesBridgeFlip(t *testing.T) {
 	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:idle"}, br.snapshot(),
 		"an agreeing fold must not re-emit — the reconcile fires only on disagreement")
 }
+
+// #1817 piece 3 (finding 2): the GATE LATCH. On refreshed pods the
+// subscribe snapshot is phrase-keyed (SessionId=phrase, the harness id
+// additive as internal_session_id). The consumer seeds g.derived from it;
+// consultBusy (the idle clear) keys g.derived by the HARNESS id. If the
+// fold keyed the snapshot by the phrase, the stale phrase entry would
+// survive the harness-keyed idle clear and OR the gate busy forever —
+// the idle-drop never fires (the stuck-busy leak). The fix keys the fold
+// by the internal (harness) id so the snapshot and the consult are the
+// same session. This pin: a phrase-keyed busy snapshot (harness
+// additive) followed by a harness-keyed idle event must leave the gate
+// NOT busy (no stale phrase entry).
+func TestGateNoLatch_PhraseKeyedSnapshotThenIdle(t *testing.T) {
+	const harnessID = "ses_latch_1817"
+	const phraseID = "foxtrot-peak-2"
+
+	c, fc, _, _ := newTestConsumer(t)
+	// The refreshed-pod snapshot: phrase-keyed, the harness id additive.
+	fc.setSeedSessions(map[string]*abiv1.SessionSnapshot{
+		phraseID: {
+			SessionId:         phraseID,
+			InternalSessionId: harnessID,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+			Busy:              &abiv1.BusyComponents{Busy: true, Streaming: true},
+		},
+	})
+	// The authority's truth is keyed by the HARNESS id (consultBusy).
+	fc.setSnapshot(harnessID, true)
+	requireOpen(t, c, fc)
+
+	// The fold seeded the snapshot (phrase-keyed, busy). The derived
+	// baseline must be keyed by the HARNESS id, not the phrase.
+	g := c.gates["ws1"]
+	g.mu.Lock()
+	_, keyedByPhrase := g.derived[phraseID]
+	_, keyedByHarness := g.derived[harnessID]
+	g.mu.Unlock()
+	require.False(t, keyedByPhrase,
+		"the fold's derived baseline must NOT be keyed by the phrase — a phrase entry the harness-keyed idle clear can't remove is the latch")
+	require.True(t, keyedByHarness,
+		"the fold's derived baseline must be keyed by the harness id (the consult's key) so the idle clear reaches it")
+
+	// Now the session goes idle: the authority says idle, the event is
+	// phrase-keyed with the harness id additive. The consult clears the
+	// harness-keyed entry, and the fold (all-idle) must drop the gate.
+	fc.setSnapshot(harnessID, false)
+	fc.apply(1, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId:         phraseID,
+		InternalSessionId: harnessID,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+	})
+
+	// The gate must NOT stay latched busy. Wait briefly for the fold to
+	// recompute (the idle-drop settle window is 50ms in this fixture).
+	require.Eventually(t, func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return !g.busyNow
+	}, 2*time.Second, 10*time.Millisecond,
+		"the gate must drop to idle after the idle event — a stale phrase-keyed derived entry would hold it busy forever (the latch)")
+}

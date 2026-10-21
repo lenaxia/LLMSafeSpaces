@@ -550,22 +550,21 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 		// events are droppable (busy-gated stream, broker replay bounds);
 		// this is the recovering write.
 		h.recordInboxAskFromSession(ctx, workspaceID, ir)
-		switch ir.Kind {
-		case session.InputQuestion:
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "agent.question",
-				SessionID: ir.SessionID,
-				RequestID: ir.ID,
-				Data:      h.resolveInputRequestRoot(ctx, workspaceID, ir),
-			})
-		case session.InputPermission:
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "agent.permission",
-				SessionID: ir.SessionID,
-				RequestID: ir.ID,
-				Data:      h.resolveInputRequestRoot(ctx, workspaceID, ir),
-			})
+		evtType := "agent.question"
+		if ir.Kind == session.InputPermission {
+			evtType = "agent.permission"
 		}
+		evt := apitypes.WorkspaceSSEEvent{
+			Type:      evtType,
+			SessionID: ir.SessionID,
+			RequestID: ir.ID,
+			Data:      h.resolveInputRequestRoot(ctx, workspaceID, ir),
+		}
+		// #1817 piece 3: phrase-key the pending-input snapshot so the
+		// prompt the user answers joins on the same id space as the
+		// live ask (the input half of the stuck-busy).
+		h.translateSessionIDToPhrase(workspaceID, &evt)
+		h.publishWorkspaceAndUserEvent(workspaceID, evt)
 	}
 	// #1313 S5 extension: pending UI = live asks ∪ inbox. Inbox-only
 	// records re-present as whileAway prompts with choices still active.

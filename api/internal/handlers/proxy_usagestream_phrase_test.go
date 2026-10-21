@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -157,6 +158,82 @@ func TestUserStreamSessionEvents_JoinableWithSessionList(t *testing.T) {
 		iid, _ = d["internal_session_id"].(string)
 	}
 	assert.Equal(t, harnessID, iid, "the harness id stays reachable (additive internal_session_id)")
+}
+
+// #1817 piece 3 (finding 3): the LIFECYCLE CLEARS. A busy flip emitted by
+// the usagestream consumer is keyed by the PHRASE; the matching clear
+// (idle reconcile, delete, archive, abort, pending-input, inbox) must be
+// keyed by the SAME phrase or the busy latch is never cleared (the
+// lifecycle half of the stuck-busy). These sites build a harness-keyed
+// session.status and must run it through the same translation. This pin:
+// a harness-keyed idle clear resolves to the phrase on the wire.
+func TestLifecycleClearIsPhraseKeyed(t *testing.T) {
+	const harnessID = "ses_lifecycle_1817"
+	const phraseID = "golf-delta-8"
+
+	h, si := newBridgeIndexHandler(t)
+	si.phrases["ws-1/"+harnessID] = phraseID
+
+	// The idle reconcile path (proxy_events.go) builds a harness-keyed
+	// session.status=idle and runs it through the same translation.
+	evt := apitypes.WorkspaceSSEEvent{
+		Type:      "session.status",
+		SessionID: harnessID,
+		Status:    "idle",
+	}
+	h.translateSessionIDToPhrase("ws-1", &evt)
+
+	assert.Equal(t, phraseID, evt.SessionID,
+		"the lifecycle clear must be keyed by the phrase so it clears the phrase-keyed busy flip — a harness-keyed clear would leave the latch (the stuck-busy)")
+	if d, ok := evt.Data.(map[string]any); ok {
+		assert.Equal(t, harnessID, d["internal_session_id"],
+			"the harness id rides additively on the clear too (never dropped)")
+	}
+}
+
+// #1817 piece 3 (finding 1): on refreshed pods agentd already translated
+// the frame to the phrase and left the harness id ADDITIVELY as
+// internal_session_id (wireEvent / podSnapshotsLocked). If the bridge
+// re-translated that already-phrase wire id, the Register below it would
+// treat the PHRASE as a session_id and MINT a new short-id row (the
+// phantom-row defect — re-breaking the busy join). The double-translation
+// guard detects the additive internal id and passes the phrase through
+// without re-registering. This pin asserts the wire id stays the (single)
+// phrase, the harness id stays additive, and no phantom row is minted
+// (the mock Register is only ever called for the harness id, never the
+// phrase).
+func TestTranslateNoDoubleTranslation_OnRefreshedPod(t *testing.T) {
+	const harnessID = "ses_double_1817"
+	const phraseID = "echo-creek-5"
+
+	h, si := newBridgeIndexHandler(t)
+	// Seed the existing phrase so the guard's resolvePhrase(harness)
+	// returns the phrase — confirming the frame was already translated.
+	si.phrases["ws-1/"+harnessID] = phraseID
+
+	broker := eventbroker.NewUserEventBroker()
+	h.SetUserBrokerForTest(broker)
+	broker.RecordWorkspaceOwner("ws-1", "user-double")
+	sub, err := broker.SubscribeUser("user-double")
+	require.NoError(t, err)
+	defer broker.UnsubscribeUser("user-double", sub)
+
+	// The refreshed-pod shape: agentd put the PHRASE on the wire and the
+	// HARNESS id in internal_session_id. The consumer routes it through the
+	// additive seam (emitSessionStatus) carrying exactly this.
+	(&usageBridge{h: h}).SessionStatusWithInternal("ws-1", phraseID, harnessID, true)
+	evt := <-sub.Ch
+
+	// THE JOIN: the wire id stays the single phrase — a double
+	// translation would register the phrase and mint a phantom third id.
+	assert.Equal(t, phraseID, evt.SessionID,
+		"an already-phrase-keyed frame must not be re-translated — re-registering the phrase mints a phantom short-id row and re-breaks the busy join")
+	var iid string
+	if d, ok := evt.Data.(map[string]any); ok {
+		iid, _ = d["internal_session_id"].(string)
+	}
+	assert.Equal(t, harnessID, iid,
+		"the additive harness id is preserved (the 'never dropped' contract)")
 }
 
 // #1817 piece 2: agent.question / agent.permission carry a STRUCT

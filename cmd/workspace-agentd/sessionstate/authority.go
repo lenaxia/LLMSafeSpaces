@@ -416,8 +416,10 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 // 1): the frame's session id becomes the platform PHRASE with the
 // harness id preserved ADDITIVELY as internal_session_id — one id
 // space for the frontend fold's join. The internal projection (and
-// State()/statusz) keep the harness id; only this COPY translates.
-// Shallow struct copy: nested messages are read-only downstream. Nil
+// State()/statusz) keep the harness id; only this clone translates.
+// proto.Clone (not a struct copy): Event embeds protoimpl.MessageState
+// (a lock — govet copylocks), and the clone detaches nested messages so
+// the wire copy can never alias mutable projection state. Nil
 // translator / unresolved id → the original event (the heal window —
 // consumers must not require the phrase).
 func (a *Authority) wireEvent(evt *abiv1.Event) *abiv1.Event {

@@ -824,11 +824,15 @@ func (h *ProxyHandler) removeActiveSessionEvents(parent context.Context, workspa
 			// #786: deleted must reach the USER stream too (the
 			// activity provider's stream) — the workspace-scoped copy
 			// alone left every other tab rendering a live session.
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			// #1817 piece 3: phrase-key the clear so it matches the
+			// phrase-keyed busy flip (the delete half of the stuck-busy).
+			evt := apitypes.WorkspaceSSEEvent{
 				Type:      "session.status",
 				SessionID: sessionID,
 				Status:    "deleted",
-			})
+			}
+			h.translateSessionIDToPhrase(workspaceID, &evt)
+			h.publishWorkspaceAndUserEvent(workspaceID, evt)
 		}
 	}()
 }
