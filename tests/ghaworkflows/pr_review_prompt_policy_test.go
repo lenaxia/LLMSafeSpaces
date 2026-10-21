@@ -22,11 +22,11 @@ import (
 // head — ci.yml's `go vet ./...`, full `-race` suite, `-short` coverage and
 // vitest (ci.yml:145/264/304/487/514) plus the NAMED `-tags integration`
 // pins (ci.yml:617-629, pkg/agent/opencode/ and cmd/workspace-agentd) and,
-// when its path filters match, the secrets-integration.yml board-manager
-// `-tags integration` suites (secrets-integration.yml:65,144-179: pkg/board/,
-// api/internal/handlers/board*, board_manager_e2e) — plus 101-152s of
-// `sleep N; gh pr checks` idle waits. The reviewer-unique residue (board/
-// agentd integration suites when secrets-integration did not run, agentd
+// when the path-filtered `pkg/secrets integration` JOB matched and ran
+// (secrets-integration.yml:65,144-179: pkg/board/, api/internal/handlers/
+// board*, board_manager_e2e), its board-manager `-tags integration` suites —
+// plus 101-152s of `sleep N; gh pr checks` idle waits. The reviewer-unique
+// residue (board/agentd integration suites when that job did not run, agentd
 // E2E, mutation/red-checks; 494s + ~45s across the sample) stays mandatory.
 //
 // The wait rule is deadlock-aware: `gh pr checks --watch` watches ALL checks
@@ -64,11 +64,14 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"the CI-green skip evidence must be bound to the exact head SHA under review"},
 		{`a SKIPPED check is not evidence`,
 			"skipped checks (docs-only paths, path-filtered suites) must not count as coverage — the reviewer runs those suites locally when the diff touches them"},
-		// (a) conditional board coverage via the secrets-integration JOB.
-		{`secrets-integration.yml`,
-			"the path-filtered board-manager integration suites are covered when the secrets-integration JOB ran green on the head — without this the prompt double-mandates them (PR #1833 review finding 2)"},
+		// (a) the operative skip action: skipped => run it yourself.
+		{`execute that suite locally yourself`,
+			"the skip action is mandatory local execution — the sentence carrying the SKIPPED rule must direct the reviewer to run the suite, not merely note that evidence is missing (r2 mutation: 'do not bother running that suite locally' passed)"},
+		// (a) conditional board coverage keys on the JOB, bound structurally.
+		{`JOB (in secrets-integration.yml) ran and concluded SUCCESS`,
+			"board coverage binds 'ran and concluded SUCCESS' to the pkg/secrets integration JOB token — the parenthesized filename cannot absorb the verb (r2 mutation: 'when secrets-integration.yml ran and concluded SUCCESS' — workflow-level — passed while the warning sentence stayed)"},
 		{`judge the JOB/CHECK itself, never the workflow-level conclusion`,
-			"board coverage keys on the pkg/secrets integration JOB concluding SUCCESS — a path-skipped job still shows a green workflow run while the board suites never executed (PR #1833 r1 review finding 1; e.g. board_manager_tools.go changes are NOT matched by the job filter while the E2E suite exercising them is)"},
+			"the workflow always runs and a path-skipped job still shows a green workflow run — the explicit warning must stay (e.g. board_manager_tools.go changes are NOT matched by the job filter while TestIntegrationBoardManagerE2E dispatches tools from that file)"},
 		// (b) the must-stay residue: CI-uncovered suites stay mandatory local work.
 		{`-tags integration`,
 			"the integration-tagged surface CI did not run on this head must stay a local execution obligation"},
@@ -108,6 +111,12 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"inversion phrase: CI-green suites must not be re-run locally"},
 		{"when that workflow RAN and is GREEN",
 			"workflow-level coverage condition: the secrets-integration workflow ALWAYS runs and a path-skipped job still yields a green workflow run — coverage must key on the JOB/CHECK, not the workflow conclusion (PR #1833 r1 review finding 1)"},
+		{"secrets-integration.yml ran and concluded",
+			"workflow-level paraphrase: the verb must bind to the JOB token ('JOB (in secrets-integration.yml) ran'), not the workflow filename (PR #1833 r2 mutation)"},
+		{"secrets-integration.yml ran green",
+			"workflow-level paraphrase class: 'ran green' keyed on the workflow file — the workflow conclusion stays green even when the board job is path-skipped"},
+		{"do not bother running that suite locally",
+			"skip-action inversion: the SKIPPED rule must mandate local execution, never discourage it (PR #1833 r2 mutation)"},
 	} {
 		if strings.Contains(body, strings.Join(strings.Fields(forbidden.needle), " ")) {
 			t.Errorf("pr-review.md CI-first execution policy contains forbidden phrase %q: %s", forbidden.needle, forbidden.why)
