@@ -310,7 +310,7 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 					SessionID: sess.ID,
 					Status:    "idle",
 				}
-				h.translateSessionIDToPhrase(workspaceID, &evt)
+				h.translateSessionIDToPhrase(ctx, workspaceID, &evt)
 				h.publishWorkspaceAndUserEvent(workspaceID, evt)
 			}
 		}

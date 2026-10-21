@@ -217,7 +217,7 @@ func (b *usageBridge) SessionStatusWithInternal(workspaceID, sessionID, internal
 			Status:      status,
 			Data:        data,
 		}
-		b.h.translateSessionIDToPhrase(workspaceID, &evt)
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -255,7 +255,7 @@ func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
-		b.h.translateSessionIDToPhrase(workspaceID, &evt)
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -279,7 +279,7 @@ func (b *usageBridge) InputResolved(workspaceID, sessionID, inputID string) {
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
-		b.h.translateSessionIDToPhrase(workspaceID, &evt)
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -378,7 +378,11 @@ func (t *usageAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 // the event passes through UNCHANGED — the pre-fix behavior, never
 // worse. The Register seam is idempotent and LRU-cached after first
 // sight, so the hot emission path costs one map lookup.
-func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apitypes.WorkspaceSSEEvent) {
+// translateSessionIDToPhrase translates the wire session id to the phrase
+// (ctx is the caller's context — it is threaded to the Register seam so
+// cancellations/deadlines propagate; the hot emission path is LRU-cached
+// after first sight).
+func (h *ProxyHandler) translateSessionIDToPhrase(ctx context.Context, workspaceID string, evt *apitypes.WorkspaceSSEEvent) {
 	harnessID := evt.SessionID
 	if h.sessionIndex == nil || harnessID == "" {
 		return
@@ -399,11 +403,16 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 	// resolved session is a no-op (the row exists), and the internal id
 	// stays the harness id. A harness-keyed frame (heal window / legacy)
 	// has no internal id and still translates: phrase = Register(harness).
-	internalID := internalSessionIDFromData(evt.Data)
-	if internalID != "" {
-		if phrase := h.resolvePhrase(workspaceID, harnessID); phrase == harnessID {
-			// Already translated (agentd put the phrase on the wire).
-			// Re-affirm the additive id and pass through — no re-register.
+	regCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	// #1817 piece 3 — double-translation guard (the refreshed-pod defect):
+	// the additive internal id is the marker that agentd already translated
+	// the frame. If the harness id (the additive) already resolves to the
+	// CURRENT wire id, the frame was already translated — re-registering the
+	// phrase would MINT a phantom short-id row and re-break the busy join, so
+	// pass through (no re-register).
+	if internalID := internalSessionIDFromData(evt.Data); internalID != "" {
+		if phrase := h.sessionIndex.Register(regCtx, workspaceID, internalID, ""); phrase == harnessID {
 			setInternalSessionID(evt, internalID)
 			return
 		}
@@ -412,9 +421,7 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 		harnessID = internalID
 		evt.SessionID = internalID
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	phrase := h.sessionIndex.Register(ctx, workspaceID, harnessID, "")
+	phrase := h.sessionIndex.Register(regCtx, workspaceID, harnessID, "")
 	if phrase == "" || phrase == harnessID {
 		return
 	}
@@ -437,20 +444,6 @@ func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apity
 	default:
 		evt.Data = map[string]any{"internal_session_id": harnessID}
 	}
-}
-
-// resolvePhrase is the read-only seam for the double-translation guard:
-// it returns the phrase a session is already registered to WITHOUT
-// minting a new row (unlike Register, which EnsureSessionRegisters). A
-// healthy DB returns the existing phrase for a registered session — the
-// guard uses that to detect an already-translated frame.
-func (h *ProxyHandler) resolvePhrase(workspaceID, sessionID string) string {
-	if h.sessionIndex == nil {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	return h.sessionIndex.Register(ctx, workspaceID, sessionID, "")
 }
 
 // internalSessionIDFromData reads the additive internal_session_id the

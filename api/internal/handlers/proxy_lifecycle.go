@@ -213,7 +213,7 @@ func (h *ProxyHandler) PublishSessionArchived(workspaceID, sessionID string, arc
 		SessionID: sessionID,
 		Status:    status,
 	}
-	h.translateSessionIDToPhrase(workspaceID, &evt)
+	h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 	h.publishWorkspaceAndUserEvent(workspaceID, evt)
 }
 

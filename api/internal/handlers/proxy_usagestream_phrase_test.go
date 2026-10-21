@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -181,7 +182,7 @@ func TestLifecycleClearIsPhraseKeyed(t *testing.T) {
 		SessionID: harnessID,
 		Status:    "idle",
 	}
-	h.translateSessionIDToPhrase("ws-1", &evt)
+	h.translateSessionIDToPhrase(context.Background(), "ws-1", &evt)
 
 	assert.Equal(t, phraseID, evt.SessionID,
 		"the lifecycle clear must be keyed by the phrase so it clears the phrase-keyed busy flip — a harness-keyed clear would leave the latch (the stuck-busy)")
@@ -207,9 +208,15 @@ func TestTranslateNoDoubleTranslation_OnRefreshedPod(t *testing.T) {
 	const phraseID = "echo-creek-5"
 
 	h, si := newBridgeIndexHandler(t)
-	// Seed the existing phrase so the guard's resolvePhrase(harness)
-	// returns the phrase — confirming the frame was already translated.
+	// Seed the existing phrase so the guard's Register(harness) returns the
+	// phrase — confirming the frame was already translated. MINT mode models
+	// production's EnsureSessionRegistered: an unknown session (the phrase)
+	// would be minted a NEW row — exactly the phantom-row defect. The pin
+	// asserts the phrase is never registered, so no mint happens.
 	si.phrases["ws-1/"+harnessID] = phraseID
+	si.mu.Lock()
+	si.mint = true
+	si.mu.Unlock()
 
 	broker := eventbroker.NewUserEventBroker()
 	h.SetUserBrokerForTest(broker)
@@ -234,6 +241,13 @@ func TestTranslateNoDoubleTranslation_OnRefreshedPod(t *testing.T) {
 	}
 	assert.Equal(t, harnessID, iid,
 		"the additive harness id is preserved (the 'never dropped' contract)")
+
+	// THE PHANTOM-ROW GUARD: the phrase was never registered (a double
+	// translation would Register(phrase) and mint a new row in mint mode).
+	// Only the harness id may have been consulted (the guard's resolve).
+	calls := si.registeredCalls()
+	assert.Zero(t, calls["ws-1/"+phraseID],
+		"the phrase must never be registered — registering it mints a phantom short-id row (the double-translation defect)")
 }
 
 // #1817 piece 2: agent.question / agent.permission carry a STRUCT

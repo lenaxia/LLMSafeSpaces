@@ -831,7 +831,7 @@ func (h *ProxyHandler) removeActiveSessionEvents(parent context.Context, workspa
 				SessionID: sessionID,
 				Status:    "deleted",
 			}
-			h.translateSessionIDToPhrase(workspaceID, &evt)
+			h.translateSessionIDToPhrase(ctx, workspaceID, &evt)
 			h.publishWorkspaceAndUserEvent(workspaceID, evt)
 		}
 	}()

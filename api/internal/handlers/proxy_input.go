@@ -563,7 +563,7 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 		// #1817 piece 3: phrase-key the pending-input snapshot so the
 		// prompt the user answers joins on the same id space as the
 		// live ask (the input half of the stuck-busy).
-		h.translateSessionIDToPhrase(workspaceID, &evt)
+		h.translateSessionIDToPhrase(ctx, workspaceID, &evt)
 		h.publishWorkspaceAndUserEvent(workspaceID, evt)
 	}
 	// #1313 S5 extension: pending UI = live asks ∪ inbox. Inbox-only

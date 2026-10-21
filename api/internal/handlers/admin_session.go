@@ -83,7 +83,7 @@ func (h *AdminSessionHandler) ForceAbortSession(c *gin.Context) {
 		SessionID: sessionID,
 		Status:    "aborted",
 	}
-	h.proxyHandler.translateSessionIDToPhrase(workspaceID, &evt)
+	h.proxyHandler.translateSessionIDToPhrase(c.Request.Context(), workspaceID, &evt)
 	h.proxyHandler.publishWorkspaceAndUserEvent(workspaceID, evt)
 
 	actorID, _ := extractAuth(c)
