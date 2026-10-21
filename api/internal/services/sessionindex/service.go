@@ -112,14 +112,13 @@ func (s *Service) markRegistered(workspaceID, sessionID, shortID string) {
 // ResolveShortID is the #1817 piece-3 READ-ONLY seam: it returns the
 // short id a session is registered to WITHOUT minting a new row (unlike
 // Register, which EnsureSessionRegisters). It consults only the
-// known-registered LRU (no DB write, no DB read) — the right scope for
-// the lifecycle clear path (delete/abort/archive), where a mint would
-// RESURRECT a deleted/terminated session's row (the delete-tail ghost
-// row: DeleteSession does not evict the LRU, so a cold/evicted cache
-// would re-INSERT a ghost row and the clear would carry a new phrase the
-// frontend does not recognize). Returns "" when unknown (the clear then
-// passes the harness id through — never worse; the frontend removes the
-// session by identity either way).
+// known-registered LRU (no DB write, no DB read). Today's caller is the
+// delete tail (translateSessionIDToPhraseNoMint), where a mint would
+// RESURRECT a deleted session's row: DeleteSession does not evict the LRU,
+// so a minting translate would re-INSERT a ghost row and the `deleted`
+// clear would carry a new phrase the frontend does not recognize. Returns
+// "" when unknown (the clear then passes the harness id through — never
+// worse; the frontend removes the session by identity either way).
 func (s *Service) ResolveShortID(workspaceID, sessionID string) string {
 	if s.db == nil || workspaceID == "" || sessionID == "" {
 		return ""

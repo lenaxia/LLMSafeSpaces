@@ -128,12 +128,15 @@ type recordedUsage struct {
 }
 
 type recordedBridge struct {
-	statuses []string // "ws:sid:busy|idle"
-	inputs   []*abiv1.InputRequest
-	resolved []string
-	titles   []string
-	contexts []string // "ws:sid:used"
-	died     []string
+	statuses  []string // "ws:sid:busy|idle"
+	inputs    []*abiv1.InputRequest
+	resolved  []string
+	titles    []string
+	contexts  []string // "ws:sid:used"
+	died      []string
+	statusInt []string // "ws:sid:internal" — the RAW internal id the consumer passed through the additive seam (#1817 r3 finding 1)
+	resInt    []string // "ws:sid:internal" — resolved-input additive seam
+	ctxInt    []string // "ws:sid:internal" — context-usage additive seam
 }
 
 func (r *recordedBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
@@ -153,6 +156,23 @@ func (r *recordedBridge) ContextUsed(workspaceID, sessionID string, used int64) 
 }
 func (r *recordedBridge) AgentDied(workspaceID string) {
 	r.died = append(r.died, workspaceID)
+}
+
+// BridgeWithInternal — records the RAW internal id the consumer threads
+// through the additive seam. The #1817 r3 finding-1 pin asserts this is
+// agentd's internal_session_id verbatim (EMPTY for a legacy frame), NOT the
+// wire session id (which the consumer's consult fallback would substitute).
+func (r *recordedBridge) SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool) {
+	r.statuses = append(r.statuses, workspaceID+":"+sessionID+":"+boolWord(busy))
+	r.statusInt = append(r.statusInt, workspaceID+":"+sessionID+":"+internalID)
+}
+func (r *recordedBridge) InputResolvedWithInternal(workspaceID, sessionID, internalID, inputID string) {
+	r.resolved = append(r.resolved, workspaceID+":"+sessionID+":"+inputID)
+	r.resInt = append(r.resInt, workspaceID+":"+sessionID+":"+internalID)
+}
+func (r *recordedBridge) ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64) {
+	r.contexts = append(r.contexts, workspaceID+":"+sessionID+":"+fmtInt(used))
+	r.ctxInt = append(r.ctxInt, workspaceID+":"+sessionID+":"+internalID)
 }
 
 func boolWord(b bool) string {
@@ -268,6 +288,30 @@ func TestSessionStatusBridgesBusyIdle(t *testing.T) {
 	fc.apply(3, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
 
 	require.Equal(t, []string{"ws1:s1:busy", "ws1:s1:busy", "ws1:s1:idle"}, br.statuses)
+}
+
+// TestAdditiveSeamPassesRawInternalID (#1817 piece 3, r3 finding 1): the
+// additive seam must carry agentd's RAW internal_session_id — EMPTY for a
+// legacy / heal-window / agentd-unresolved frame (wire session_id = the
+// harness id) — NOT consultSessionID, which falls back to the wire id when
+// the internal is empty. If the consumer passed the wire id, a legacy frame
+// would reach the bridge with internalID==sessionID, the bridge's
+// double-translation guard would read it as "already translated" and skip
+// the phrase translation, silently re-breaking the heal-window join this PR
+// claims to preserve. The recordedBridge implements BridgeWithInternal and
+// records the exact internal id threaded through the seam.
+func TestAdditiveSeamPassesRawInternalID(t *testing.T) {
+	c, fc, _, br := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	// LEGACY frame: wire session_id = the harness id, NO internal_session_id
+	// (agentd un-refreshed / unresolved). The consumer must pass internal="".
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	// REFRESHED frame: wire = the phrase, internal = the harness id.
+	fc.apply(2, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "phrase-s2", InternalSessionId: "harness-s2", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+
+	require.Equal(t, []string{"ws1:s1:", "ws1:phrase-s2:harness-s2"}, br.statusInt,
+		"the additive seam must carry the RAW internal_session_id: EMPTY for a legacy frame (so the bridge still translates to the phrase), and the harness id for a refreshed frame — NOT the wire id (which the consult fallback would substitute and which the bridge's guard would misread as already-translated)")
 }
 
 func TestInputLifecycleBridges(t *testing.T) {

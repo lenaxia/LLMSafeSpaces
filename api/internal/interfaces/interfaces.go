@@ -224,8 +224,9 @@ type SessionIndexService interface {
 	Register(ctx context.Context, workspaceID, sessionID, harnessType string) string
 	// ResolveShortID is the READ-ONLY seam (#1817 piece 3): returns the
 	// registered short id WITHOUT minting (LRU-only, no DB write) — the
-	// lifecycle clear path (delete/abort/archive) uses it so a clear does
-	// not resurrect a deleted session's row. "" when unknown.
+	// delete tail uses it so the `deleted` clear does not resurrect a
+	// deleted session's row. "" when unknown (the caller passes the
+	// harness id through — never worse).
 	ResolveShortID(workspaceID, sessionID string) string
 	Start() error
 	Stop() error

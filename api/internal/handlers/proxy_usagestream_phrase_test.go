@@ -339,3 +339,35 @@ func TestDeleteClearIsPhraseKeyedWithoutMint(t *testing.T) {
 	assert.Zero(t, si.registeredCalls()["ws-1/"+harnessID],
 		"the delete-tail clear must not mint — it must resolve the phrase from the surviving LRU without a Register (no ghost row for a deleted session)")
 }
+
+// #1817 piece 3 (r3 finding 2): a late context-usage event on a refreshed pod
+// carries the PHRASE on the wire and the harness id additively, AFTER a
+// delete. The delete tombstone is recorded under the HARNESS id, so guarding
+// only on the wire phrase would miss it and Register(rowID=harness) would
+// re-create the just-deleted index row (the delete-tail ghost-row class,
+// re-opening on the context-usage path). This pin deletes the harness, then
+// fires a phrase-keyed context-usage event and asserts NO row is
+// re-created (no Register, no UpsertContextUsed for the deleted session).
+func TestContextUsedNoWrite_AfterDelete_TombstoneHarnessKeyed(t *testing.T) {
+	const harnessID = "ses_ctxdeleted_1817"
+	const phraseID = "kilo-lima-4"
+
+	h, si := newBridgeIndexHandler(t)
+	si.phrases["ws-1/"+harnessID] = phraseID
+	// Record the delete tombstone under the HARNESS id (the delete path's
+	// key space).
+	h.MarkSessionDeletedForTest("ws-1", harnessID)
+	// MINT mode: if the guard were bypassed, Register(harness) would mint /
+	// re-create the deleted row. The pin asserts no register happens.
+	si.mu.Lock()
+	si.mint = true
+	si.mu.Unlock()
+
+	// The refreshed-pod shape: phrase on the wire, harness additive.
+	(&usageBridge{h: h}).ContextUsedWithInternal("ws-1", phraseID, harnessID, 1234)
+
+	// THE GHOST-ROW GUARD: the deleted session's row must NOT be re-created —
+	// no Register on the harness id (the tombstone key).
+	assert.Zero(t, si.registeredCalls()["ws-1/"+harnessID],
+		"a context-usage write for a deleted session must be suppressed — the tombstone is harness-keyed, so the guard must check the harness id (not just the phrase) before the Register")
+}

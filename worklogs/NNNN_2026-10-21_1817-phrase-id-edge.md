@@ -220,3 +220,73 @@ Tests Run (r2):
 - `golangci-lint run --new-from-rev origin/main` (all 7 changed pkgs) — 0 issues.
 - `go test ./api/internal/{handlers,services/sessionindex,services/usagestream,server,services/workspace,workflows}/ -count=1` — all green.
 - `go test ./api/... -count=1` — green EXCEPT `outbox.TestRollbackDrill_UnderLoad`, a pre-existing FLAKY load test (count drifts 38/40/49 per run, machine-load dependent) — reproduced FAILING on the pre-change baseline (stashed diff), so unrelated to this PR.
+
+## Piece 3 (continued) — r3 review (2026-10-21, findings 1–3)
+
+The r3 reviewer re-opened the additive-seam design itself: the consumer's
+`emitSessionStatus/emitInputResolved/emitContextUsed` passed
+`consultSessionID(evt)` as the additive internal id. But `consultSessionID`
+FALLS BACK to the wire session id when `internal_session_id` is empty — so a
+legacy / heal-window / agentd-unresolved frame (wire = harness, no internal)
+reached the bridge with `internalID == sessionID`, the guard read that as
+"already translated" and SKIPPED the phrase translation. A real regression
+the piece-1 comment ("legacy still translates normally") had asserted but the
+r2 consumer fallback disproved.
+
+### Finding 1 — CRITICAL: legacy / heal-window path stops translating (regression)
+Fix: the three `emit*` seams now pass the RAW `evt.GetInternalSessionID()`
+(empty when absent) as the additive id, and keep `consultSessionID(evt)` ONLY
+as the busy-consult key. A legacy frame therefore carries `internalID=""`
+through the seam and the bridge's guard passes through to the normal
+harness→phrase translation. RED-first pin: `TestAdditiveSeamPassesRawInternalID`
+(the recordedBridge fake now implements `BridgeWithInternal` and records the
+exact internal threaded through the seam — with the bug, a legacy frame carries
+`internal=s1` (the wire id) and the bridge guard would misread it; the pin
+asserts `internal=""` for legacy and the harness id for refreshed).
+
+### Finding 2 — HIGH: ContextUsed checks the tombstone in the wrong id space
+`ContextUsedWithInternal` guarded on `isSessionDeleted(workspaceID, sessionID)`
+(the WIRE phrase), but delete tombstones are recorded under the HARNESS id
+(proxy_handlers.go delete path). A late context-usage event on a refreshed pod
+(phrase on the wire, harness additive) passed the phrase check, then
+`Register(rowID=harness)` re-created the just-deleted index row — the
+delete-tail ghost-row class r2 finding 4 closed, re-opening on the
+context-usage path. Fix: guard against BOTH id spaces (`rowID` and
+`sessionID`) before the write. RED-first pin:
+`TestContextUsedNoWrite_AfterDelete_TombstoneHarnessKeyed` (deletes the
+harness, fires a phrase-keyed context event, asserts no Register on the
+harness id).
+
+### Finding 3 — agent.question payload ids (documented follow-up, NOT this PR)
+The `agent.question`/`agent.permission` payload's `SessionID`/`RootSessionID`
+are the harness ids (`inputRequestFromABI` / `inputRequestFromRecord`); the
+frontend's `pendingQuestionsForSession` matches `q.sessionId`/`q.rootSessionId`
+against the route phrase, so on refreshed pods the payload ids do not join the
+phrase. The r3 reviewer marks this **not a new regression** (the pre-PR
+envelope was harness too) — it is a separate cross-surface prompt-identity
+slice. Translating the payload's ids (vs the envelope) is a different
+contract change; doing it here risks the `session.InputRequest` struct
+contract and is out of the T0.1 scope ruling. #1817's "agent.question joins
+in the phrase space" claim is therefore still PARTIAL and is recorded as such.
+
+### Style (r3)
+- Merged the two consecutive stale doc blocks on
+  `translateSessionIDToPhrase` into one.
+- Corrected the `ResolveShortID` doc (interfaces + service) to say "the delete
+  tail" (its only caller) instead of the over-broad "delete/abort/archive".
+
+### Rule-7 correction (disproved assumption)
+The r2 worklog still recorded "a harness-keyed/legacy frame still translates
+normally" as a property of the piece-1 seam. The r2 consumer fallback
+(passing `consultSessionID`) DISPROVED it — that was finding 1. The fix
+above restores the property by passing the RAW internal id; the worklog's
+"never worse" claim was only true for the refreshed-pod shape, not the legacy
+one, until this fix.
+
+Tests Run (r3):
+- `go build ./...` — clean; `gofmt -l api/ cmd/ pkg/` — clean.
+- `golangci-lint run --new-from-rev origin/main` (all 7 changed pkgs) — 0 issues.
+- `go test ./api/internal/{handlers,services/usagestream,services/sessionindex,server,services/workspace,workflows}/ -count=1` — all green, incl. the two new RED-first pins.
+- RED-first verified for both new pins by reverting each fix and confirming the
+  pin fails (finding 1: legacy frame carries `internal=s1`; finding 2: Register
+  called once on the deleted harness id).

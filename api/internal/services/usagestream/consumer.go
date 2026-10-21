@@ -114,36 +114,44 @@ type BridgeWithInternal interface {
 }
 
 // emitSessionStatus routes the busy emission through the additive seam
-// when the bridge supports it, else the plain one. The internal id is
-// consultSessionID(evt) — the harness id (agentd's internal_session_id,
-// or the wire session_id for legacy frames).
+// when the bridge supports it, else the plain one. The ADDITIVE id is
+// evt.GetInternalSessionId() — the RAW agentd field, EMPTY for legacy /
+// heal-window / agentd-unresolved frames (wire session_id = the harness
+// id, no internal). Passing the raw field (NOT consultSessionID, which
+// falls back to the wire id) is what lets the bridge's guard distinguish
+// an already-phrase-translated frame (internal present) from a legacy
+// harness frame (internal empty) — the latter must still translate to the
+// phrase. A legacy frame with an empty internal therefore passes
+// internalID="" through the seam and the bridge translates normally
+// (the heal-window / "never worse" path).
 func (c *Consumer) emitSessionStatus(workspaceID string, evt *abiv1.Event, busy bool) {
 	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
-		b.SessionStatusWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), busy)
+		b.SessionStatusWithInternal(workspaceID, evt.GetSessionId(), evt.GetInternalSessionId(), busy)
 		return
 	}
 	c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
 }
 
 // emitInputResolved routes the resolved-input emission through the
-// additive seam (carrying the harness id so the bridge's translation can
-// detect an already-translated frame — finding 2) when the bridge
-// supports it, else the plain one.
+// additive seam (carrying the RAW internal id so the bridge's translation
+// can detect an already-translated frame — empty for legacy frames, which
+// still translate normally) when the bridge supports it, else the plain one.
 func (c *Consumer) emitInputResolved(workspaceID string, evt *abiv1.Event, inputID string) {
 	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
-		b.InputResolvedWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), inputID)
+		b.InputResolvedWithInternal(workspaceID, evt.GetSessionId(), evt.GetInternalSessionId(), inputID)
 		return
 	}
 	c.cfg.Bridge.InputResolved(workspaceID, evt.GetSessionId(), inputID)
 }
 
 // emitContextUsed routes the context-usage write through the additive
-// seam (carrying the harness id so the bridge writes the row against the
-// real session, not a minted phantom — finding 1) when the bridge
-// supports it, else the plain one.
+// seam (carrying the RAW internal id so the bridge writes the row against
+// the real session, not a minted phantom — empty for legacy frames, which
+// key by the wire id as before) when the bridge supports it, else the
+// plain one.
 func (c *Consumer) emitContextUsed(workspaceID string, evt *abiv1.Event, used int64) {
 	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
-		b.ContextUsedWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), used)
+		b.ContextUsedWithInternal(workspaceID, evt.GetSessionId(), evt.GetInternalSessionId(), used)
 		return
 	}
 	c.cfg.Bridge.ContextUsed(workspaceID, evt.GetSessionId(), used)

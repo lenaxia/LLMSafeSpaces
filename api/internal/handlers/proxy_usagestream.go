@@ -322,7 +322,7 @@ func (b *usageBridge) ContextUsed(workspaceID, sessionID string, used int64) {
 // internal) so the existing row is updated. A harness-keyed frame (legacy)
 // has an empty internal and keys by sessionID as before.
 func (b *usageBridge) ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64) {
-	if b.h.sessionIndex == nil || sessionID == "" || b.h.isSessionDeleted(workspaceID, sessionID) || used <= 0 {
+	if b.h.sessionIndex == nil || sessionID == "" || used <= 0 {
 		return
 	}
 	// #1817 piece 3: the row is keyed by the session id the index knows
@@ -332,6 +332,19 @@ func (b *usageBridge) ContextUsedWithInternal(workspaceID, sessionID, internalID
 	rowID := internalID
 	if rowID == "" {
 		rowID = sessionID
+	}
+	// #1817 piece 3 (r3 finding 2): the delete tombstone is recorded under
+	// the HARNESS id (proxy_handlers.go delete path → MarkSessionDeleted
+	// with the harness sessionID), not the phrase. A late context-usage
+	// event on a refreshed pod carries the phrase on the wire and the
+	// harness id additively; guarding only on the phrase (sessionID) would
+	// MISS the tombstone, and the Register(rowID=harness) below would
+	// RE-CREATE the just-deleted index row (the delete-tail ghost-row class
+	// r2 finding 4 closed, re-opening here). Guard against BOTH id spaces:
+	// the harness id (rowID, where the tombstone lives) and the wire id
+	// (a legacy frame where wire = harness).
+	if b.h.isSessionDeleted(workspaceID, rowID) || b.h.isSessionDeleted(workspaceID, sessionID) {
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
