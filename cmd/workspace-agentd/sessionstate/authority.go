@@ -115,13 +115,6 @@ type Config struct {
 	Passwords   []string
 	RateLimit   RateLimitConfig
 	Logger      *zap.Logger
-	// IDTranslator (#1817/#1821 piece 1): maps a harness session id to
-	// the platform PHRASE at the EMISSION surface (contract-stream
-	// frames), mirroring the API's user-broker translation. Nil or a ""
-	// return passes the harness id through — the heal-window behavior
-	// of an un-refreshed emitter; consumers must not require the phrase.
-	// The internal state machine stays keyed by the harness id.
-	IDTranslator func(harnessID string) string
 	// ABIVersion is reported in the capability report snapshot frame.
 	ABIVersion string
 	// Capabilities, when set, is the capability report served on the
@@ -411,7 +404,6 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: next, Event: evt}}}
 	a.fanoutLocked(frame)
 }
-
 
 func (a *Authority) projectLocked(evt *abiv1.Event) {
 	a.applyContractLocked(evt)
