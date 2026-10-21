@@ -40,4 +40,4 @@ jobs:
       # Trusted app-bot authors (ai-workflows #51): app bots can never be
       # collaborators, so the CLI assert refuses their PRs pre-LLM without
       # this. Must match canonicalTrustedAppBots (gha_callers_test.go).
-      trusted_app_bots: '["agentic-actor-coder[bot]"]'
+      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'

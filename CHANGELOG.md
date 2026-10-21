@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — trust `ai-workflows-propagation[bot]` for AI review + slash commands (#1810)
+
+- `ai-workflows-propagation[bot]` (the ai-workflows propagation pipeline's
+  own bot; authenticates with that repo's app credentials) is added to the
+  canonical trusted-app-bot allowlist (`canonicalTrustedAppBots`,
+  tests/ghaworkflows/gha_callers_test.go) and every gate copy:
+  - `pr-review.yml` `trusted_app_bots` — its authored sync PRs (e.g. #1809)
+    become AI-reviewable without a per-PR human `/review`.
+  - `ai-comment.yml` comment-admission arm + `trusted_app_bots` — **trust
+    expansion disclosure (#1710 discipline): this grants the bot the
+    repo's slash-command surface** (`/review`, `/fix`, `/implement`, …)
+    on PR and issue threads, not just PR review. The bot only authors
+    sync PRs today (it does not post comments), so the practical new
+    reach is nil; the canonical single-source contract requires all gates
+    to carry the identical list, which is why the command gate moves too.
+  - ai-workflows intends to default-trust this bot fleet-wide
+    (ai-workflows#65); this list then becomes redundant on the next sync.
+
 ### Added — Task Board: agent manager tools + the #1747 amendment set (issue #1747)
 ### Added — workspace phrase IDs (#1757): 2 words + 1 digit, fleet-unique
 
