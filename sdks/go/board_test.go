@@ -95,28 +95,19 @@ func TestBoard_ProjectRoundTrip(t *testing.T) {
 
 func TestBoard_EpicLifecyclePaths(t *testing.T) {
 	c, _ := boardTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		// Activation returns the handler's wrapper ({"epic", "initial_ready_set"});
-		// the other lifecycle verbs return the bare epic.
-		if strings.HasSuffix(r.URL.Path, "/activate") {
-			_, _ = w.Write([]byte(`{"epic":{"id":"e1","short_id":"epc-bbbb2222","project_id":"p1","status":"active","progress_done":1,"progress_total":2,"progress_derived":true},"initial_ready_set":["tsk-cccc3333"]}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":"e1","short_id":"epc-bbbb2222","project_id":"p1","status":"active","progress_done":1,"progress_total":2,"progress_derived":true}`))
+		_, _ = w.Write([]byte(`{"id":"e1","short_id":"epc-bbbb2222","project_id":"p1","status":"active","priority":"P2","progress_done":1,"progress_total":2,"progress_derived":true}`))
 	})
 	ctx := context.Background()
 
 	if _, err := c.Board.CreateEpic(ctx, "prj-aaaa1111", BoardEpicInput{Title: "E1"}); err != nil {
 		t.Fatalf("create epic: %v", err)
 	}
-	epic, err := c.Board.EpicActivate(ctx, "epc-bbbb2222", BoardActivateOptions{AcknowledgeInactiveDeps: true})
+	epic, err := c.Board.EpicActivate(ctx, "epc-bbbb2222")
 	if err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	if !epic.ProgressDerived || epic.ProgressDone != 1 || epic.ProgressTotal != 2 {
-		t.Fatalf("derived progress decode (embedded epic): %+v", epic)
-	}
-	if len(epic.InitialReadySet) != 1 || epic.InitialReadySet[0] != "tsk-cccc3333" {
-		t.Fatalf("initial_ready_set decode: %+v", epic.InitialReadySet)
+		t.Fatalf("derived progress decode: %+v", epic)
 	}
 	for _, fn := range []struct {
 		name string
@@ -125,8 +116,8 @@ func TestBoard_EpicLifecyclePaths(t *testing.T) {
 		{"pause", func() error { _, err := c.Board.EpicPause(ctx, "epc-bbbb2222"); return err }},
 		{"archive", func() error { _, err := c.Board.EpicArchive(ctx, "epc-bbbb2222"); return err }},
 		{"unarchive", func() error { _, err := c.Board.EpicUnarchive(ctx, "epc-bbbb2222"); return err }},
-		{"delete", func() error {
-			_, err := c.Board.DeleteEpic(ctx, "epc-bbbb2222", false)
+		{"cancel", func() error {
+			_, err := c.Board.CancelEpic(ctx, "epc-bbbb2222", BoardCancelInput{Reason: "r"})
 			return err
 		}},
 	} {
@@ -169,11 +160,11 @@ func TestBoard_TaskAndOR4Anchor(t *testing.T) {
 		t.Fatalf("move-stage: %v %+v", err, moved)
 	}
 
-	if _, err := c.Board.StartTask(ctx, "tsk-cccc3333", BoardLifecycleInput{}); err != nil {
+	if _, err := c.Board.StartTask(ctx, "tsk-cccc3333", BoardCancelInput{}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := c.Board.DeleteTask(ctx, "tsk-cccc3333", false); err != nil {
-		t.Fatalf("delete: %v", err)
+	if _, err := c.Board.CancelTask(ctx, "tsk-cccc3333", BoardCancelInput{Reason: "r"}); err != nil {
+		t.Fatalf("cancel: %v", err)
 	}
 	met := 0
 	if _, err := c.Board.UpdateTask(ctx, "tsk-cccc3333", BoardTaskInput{SetCriteriaMet: &met}); err != nil {
@@ -208,7 +199,7 @@ func TestBoard_DependencyAndClaimDecode(t *testing.T) {
 	if err != nil || rem.Task == nil || rem.Task.IsBlocked {
 		t.Fatalf("remove dependency: %v %+v", err, rem)
 	}
-	claim, err := c.Board.StartTask(ctx, "tsk-cccc3333", BoardLifecycleInput{})
+	claim, err := c.Board.StartTask(ctx, "tsk-cccc3333", BoardCancelInput{})
 	if err != nil || claim.ClaimToken != "tok-1" || claim.Escalated || claim.Task == nil {
 		t.Fatalf("claim decode: %v %+v", err, claim)
 	}
@@ -273,7 +264,7 @@ func TestBoard_SeamsReadsAndReplayKeys(t *testing.T) {
 		t.Fatalf("health: %v %+v", err, h)
 	}
 
-	if _, err := c.Board.EpicActivate(ctx, "epc-bbbb2222", BoardActivateOptions{RequestID: "key-1"}); err != nil {
+	if _, err := c.Board.EpicActivate(ctx, "epc-bbbb2222", BoardLifecycleOptions{RequestID: "key-1"}); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	if _, err := c.Board.RemoveDependency(ctx, "tsk-cccc3333", "tsk-aaaa0000", BoardLifecycleOptions{RequestID: "key-3"}); err != nil {

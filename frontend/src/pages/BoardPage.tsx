@@ -111,11 +111,12 @@ export function BoardPage() {
           title: t.epic_name,
           outcome: "",
           status: "active",
+          priority: "P2",
           tags: [],
           created_at: "",
           updated_at: "",
           progress_done: tasks.filter((x) => x.epic_id === t.epic_id && x.stage === "done").length,
-          progress_total: tasks.filter((x) => x.epic_id === t.epic_id).length,
+          progress_total: tasks.filter((x) => x.epic_id === t.epic_id && x.stage !== "cancelled").length,
           progress_derived: tasks.some((x) => x.epic_id === t.epic_id),
         });
       }
@@ -287,6 +288,7 @@ export function BoardPage() {
   const [showCreateEpic, setShowCreateEpic] = useState(false);
   const [epicTitle, setEpicTitle] = useState("");
   const [epicOutcome, setEpicOutcome] = useState("");
+  const [epicPriority, setEpicPriority] = useState("P2");
   const [epicTags, setEpicTags] = useState<string[]>([]);
 
   const [taskDialog, setTaskDialog] = useState<{ mode: "create"; epic: BoardEpic } | { mode: "edit"; task: BoardTask } | null>(null);
@@ -308,7 +310,7 @@ export function BoardPage() {
 
   const createEpicMutation = useMutation({
     mutationFn: (projectId: string) =>
-      boardApi.createEpic(projectId, { title: epicTitle.trim(), outcome: epicOutcome, tags: epicTags }),
+      boardApi.createEpic(projectId, { title: epicTitle.trim(), outcome: epicOutcome, priority: epicPriority, tags: epicTags }),
     onSuccess: (epic) => {
       setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
       setShowCreateEpic(false);
@@ -321,7 +323,7 @@ export function BoardPage() {
   });
 
   const submitTask = useCallback(
-    async (fields: { title: string; description: string; tags: string[]; acceptanceCriteria: Array<{ text: string; met: boolean }> }): Promise<boolean> => {
+    async (fields: { title: string; description: string; priority: string; tags: string[]; acceptanceCriteria: Array<{ text: string; met: boolean }> }): Promise<boolean> => {
       setDialogError(null);
       try {
         if (taskDialog?.mode === "create") {
@@ -736,6 +738,20 @@ export function BoardPage() {
               <span className="font-medium">Outcome <span className="text-muted-foreground">(the steering wheel)</span></span>
               <Input value={epicOutcome} onChange={(e) => setEpicOutcome(e.target.value)} data-testid="epic-outcome" />
             </label>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-medium">Priority</span>
+              <select
+                value={epicPriority}
+                onChange={(e) => setEpicPriority(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                data-testid="epic-priority"
+              >
+                {["P0", "P1", "P2", "P3"].map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+              <span className="text-[10px] text-muted-foreground">display/filter only</span>
+            </div>
             <div className="flex flex-col gap-1 text-xs">
               <span className="font-medium">Tags</span>
               <TagInput value={epicTags} onChange={setEpicTags} id="epic-tags" />
@@ -798,12 +814,12 @@ export function BoardPage() {
               }
             : undefined
         }
-        onDelete={
+        onCancel={
           taskDialogTask
             ? async (): Promise<boolean> => {
                 setDialogError(null);
                 try {
-                  await boardApi.deleteTask(taskDialogTask.short_id);
+                  await boardApi.cancelTask(taskDialogTask.short_id);
                   await queryClient.invalidateQueries({ queryKey: ["board"] });
                   return true;
                 } catch (err) {

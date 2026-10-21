@@ -115,23 +115,8 @@ public class BoardService {
 
     public Map<String, Object> epicUnarchive(String id, String requestId) { return epicVerb(id, "unarchive", requestId); }
 
-    /** #1747: destructive delete (cancel is eliminated); force required
-     * while claims are in-flight. */
-    public Map<String, Object> deleteEpic(String id, boolean force) {
-        return c.request("DELETE", "/me/epics/" + id + (force ? "?force=true" : ""), null, MAP.getType());
-    }
-
-    public Map<String, Object> epicActivate(String id, boolean ackInactiveDeps) {
-        return c.request("POST", "/me/epics/" + id + "/activate",
-                Map.of("acknowledgeInactiveDeps", ackInactiveDeps), MAP.getType());
-    }
-
-    public Map<String, Object> pauseProject(String id) { return projectVerb(id, "pause"); }
-
-    public Map<String, Object> resumeProject(String id) { return projectVerb(id, "resume"); }
-
-    private Map<String, Object> projectVerb(String id, String verb) {
-        return c.request("POST", "/me/projects/" + id + "/" + verb, Map.of(), MAP.getType());
+    public Map<String, Object> cancelEpic(String id, Map<String, Object> req) {
+        return c.request("POST", "/me/epics/" + id + "/cancel", req, MAP.getType());
     }
 
     public Map<String, Object> createTask(String epicId, Map<String, Object> req) {
@@ -155,22 +140,9 @@ public class BoardService {
                 req != null ? req : Map.of(), MAP.getType());
     }
 
-    /** #1747: destructive delete; reconnect lets orphans inherit the
-     * deleted node's upstream edges (default off). */
-    public Map<String, Object> deleteTask(String id, boolean reconnect) {
-        return c.request("DELETE", "/me/tasks/" + id + (reconnect ? "?reconnect=true" : ""), null, MAP.getType());
-    }
-
-    public Map<String, Object> pauseTask(String id) { return taskVerb(id, "pause"); }
-
-    public Map<String, Object> resumeTask(String id) { return taskVerb(id, "resume"); }
-
-    private Map<String, Object> taskVerb(String id, String verb) {
-        return c.request("POST", "/me/tasks/" + id + "/" + verb, Map.of(), MAP.getType());
-    }
-
-    public Map<String, Object> importPlan(String projectId, Map<String, Object> req) {
-        return c.request("POST", "/me/projects/" + projectId + "/import-plan", req, MAP.getType());
+    public Map<String, Object> cancelTask(String id, Map<String, Object> req) {
+        return c.request("POST", "/me/tasks/" + id + "/cancel",
+                req != null ? req : Map.of(), MAP.getType());
     }
 
     public Map<String, Object> addDependency(String id, Map<String, Object> req) {

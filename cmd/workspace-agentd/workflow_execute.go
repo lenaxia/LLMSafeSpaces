@@ -463,12 +463,6 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 			return
 		}
 		createdEphemeral = true
-		// #1747 grant differentiation: a session minted by the BOARD
-		// worker dispatch (the spawner's NodeID) is a spawned worker —
-		// recorded at spawn so the manager board tools refuse it.
-		if req.NodeID == "board-worker" {
-			boardWorkerSessions.record(sessionID)
-		}
 	}
 
 	// #1470: every failure past this point knows the session, and the

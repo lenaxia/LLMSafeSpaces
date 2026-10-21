@@ -155,14 +155,8 @@ END $$;
 -- Ready-set scan: STABLE predicates only (§4.1 — the time-varying cooldown
 -- predicate filters at scan time; an index predicated on cooldown_until IS
 -- NULL would exclude exactly the post-throttle rows the query must re-serve).
--- #1747 correction (same-day, pre-any-deployed-divergence): priority is
--- ELIMINATED — claim order is FIFO by creation. Postgres binds an index's
--- column list before CREATE INDEX IF NOT EXISTS skips on name, so a
--- re-apply of this file against a #1747 schema (priority dropped) would
--- error on the old column list; already-applied databases never re-run
--- this file and receive the swap from 000039's DROP+CREATE instead.
 CREATE INDEX IF NOT EXISTS idx_tasks_ready_set
-    ON public.tasks USING btree (project_id, created_at, id)
+    ON public.tasks USING btree (project_id, priority, created_at)
     WHERE (stage = 'backlog'::text AND is_blocked = false);
 -- Reclaim scan (RC1): pending_input rows are excluded by the stage predicate.
 CREATE INDEX IF NOT EXISTS idx_tasks_reclaim

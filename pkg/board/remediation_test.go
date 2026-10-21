@@ -48,14 +48,15 @@ func (s *BoardSuite) TestKill_RemoveDependencyShortID() {
 	s.Require().NoError(s.svc.RemoveDependency(ctx, s.owner(), b.ID, "", a.ID, ""))
 	s.False(s.reloadTask(b.ID).IsBlocked)
 
-	// #1747: deleting a prerequisite unblocks the dependent directly —
-	// the edge vanishes (listed as an orphan; never staged pending).
+	// Removing an edge off a pending_input dependency-abandoned row
+	// unblocks it (the §4.2 resolution path).
 	c := s.seedTask(e, "dep-cxl", nil, false)
 	s.Require().NoError(s.svc.AddDependency(ctx, s.owner(), b.ID, "", c.ID, ""))
-	out, err := s.svc.DeleteTask(ctx, s.owner(), c.ID, "", false, "")
+	_, err := s.svc.CancelTask(ctx, s.owner(), c.ID, "", "abandon", "")
 	s.Require().NoError(err)
-	s.Contains(out.OrphanedDependents, b.ShortID)
-	s.False(s.reloadTask(b.ID).IsBlocked, "edge deleted → ready (no pending staging, no re-queue needed)")
+	s.Equal(board.StagePendingInput, s.rawTask(b.ID).Stage)
+	s.Require().NoError(s.svc.RemoveDependency(ctx, s.owner(), b.ID, "", c.ShortID, ""))
+	s.False(s.reloadTask(b.ID).IsBlocked, "edge removed → ready (the human re-queue is the move_stage exit)")
 }
 
 // KILL-TEST 38 (§6 r3 residues, r1): task_start's three enumerated pins —
@@ -350,7 +351,7 @@ func (s *BoardSuite) TestKill_EventDrivenDispatchDrive() {
 	// Activation pokes again; the consumer now claims BOTH ready tasks
 	// (slots permitting) with fresh spawns — identical in shape to the
 	// sweep path.
-	_, err = driven.EpicActivate(context.Background(), s.owner(), e.ID, "", false, "")
+	_, err = driven.EpicActivate(context.Background(), s.owner(), e.ID, "", "")
 	s.Require().NoError(err)
 	select {
 	case pid := <-driveCh:

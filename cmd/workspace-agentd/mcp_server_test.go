@@ -1671,3 +1671,35 @@ func mcpMustMarshal(t *testing.T, v any) json.RawMessage {
 	require.NoError(t, err)
 	return b
 }
+
+// TestMCPSessionRead_WarmReplicaRewritesSessionIDs pins the #1756 §1
+// raw-body rewrite's WARM path (post-union review finding 2): every
+// prior SessionRead test ran with an empty replica, so
+// emitShortOnlyRawBody short-circuited and the rewrite itself had zero
+// coverage. Warm store: sessionID fields (all three spellings, nested)
+// come back as the PHRASE; unknown ids ride untouched.
+func TestMCPSessionRead_WarmReplicaRewritesSessionIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[
+			{"info":{"id":"m1","role":"user"},"sessionID":"ses_warm"},
+			{"info":{"id":"m2"},"nested":{"session_id":"ses_warm"}},
+			{"info":{"id":"m3"},"meta":{"sessionId":"ses_warm"}},
+			{"info":{"id":"m4"},"other":{"sessionID":"ses_cold"}}
+		]`))
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	store := withShortIDStore(t)
+	store.put("amber-falcon-glides", "ses_warm")
+
+	body, err := mcpSessionRead(context.Background(), "test-pw", "ses_warm", 50)
+	assert.NoError(t, err)
+	assert.Contains(t, body, "amber-falcon-glides", "the warm replica's phrase must replace the harness id")
+	assert.NotContains(t, body, "ses_warm", "no harness id survives the rewrite when the phrase is known")
+	assert.Contains(t, body, "ses_cold", "an id the replica does not know rides untouched (degraded passthrough)")
+}

@@ -131,27 +131,24 @@ func (s *BoardSuite) TestKill_TwoLevelRollover() {
 	s.Equal(int64(1), def2, "the granting claim consumed one unit after the reset")
 }
 
-// KILL-TEST 15 (#1747 final ruling — the FIFO pin): claim order is
-// deterministic FIFO (creation order) over the ready set — the ONLY
-// ordering rule, implemented in exactly ONE place (pkg/board
-// candidateSQL). No priority field exists; a future ordering lever
-// changes that ORDER BY alone.
-func (s *BoardSuite) TestKill_ClaimOrderFIFO() {
+// KILL-TEST 15 (engine pin "priority-respected-first"): the ready-set order
+// is (priority, virtual_finish_time, created_at) — priority is read fresh
+// every claim ("UI priority changes enter the queue legitimately").
+func (s *BoardSuite) TestKill_PriorityRespectedFirst() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	first := s.seedTask(e, "first", nil, false)
-	second := s.seedTask(e, "second", nil, false)
-	third := s.seedTask(e, "third", nil, false)
+	low := s.seedTask(e, "low", nil, false) // P2 default
+	high := s.seedTask(e, "high", nil, false)
+	_, err := s.svc.UpdateTask(context.Background(), s.owner(), high.ID, "",
+		board.TaskInput{Title: "high", Priority: board.PriorityP0}, "")
+	s.Require().NoError(err)
 
 	c := s.claimOrFail(ws)
-	s.Equal(first.ID, c.TaskID, "creation order wins — dependency-only FIFO (#1747)")
+	s.Equal(high.ID, c.TaskID, "P0 beats the older P2 — no cached order to invalidate")
 	s.finishClaim(c)
 	c2 := s.claimOrFail(ws)
-	s.Equal(second.ID, c2.TaskID)
-	s.finishClaim(c2)
-	c3 := s.claimOrFail(ws)
-	s.Equal(third.ID, c3.TaskID)
+	s.Equal(low.ID, c2.TaskID)
 }
 
 // KILL-TEST 16 (engine pin "cooldown exclusion"): task-level cooldown

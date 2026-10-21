@@ -258,9 +258,11 @@ func WorkspaceRefResolution(resolver WorkspaceRefResolver) gin.HandlerFunc {
 				setParam(c, "workspaceId", id)
 				// The name form is in its #1757 deprecation window:
 				// mirror the session lane's one-release notice on the
-				// response when the rewrite fires.
+				// response when the rewrite fires — RFC 8594 shape
+				// (Deprecation: true + HTTP-date Sunset), never free
+				// text (#1756 §2 finding 1 parity).
 				c.Header("Deprecation", "true")
-				c.Header("Sunset", "workspace name input is deprecated; address workspaces by the 2-word+digit phrase (see GET /workspaces)")
+				c.Header("Sunset", "Tue, 01 Dec 2026 00:00:00 GMT")
 			}
 			// Absent or ambiguous name: passthrough UNREWRITTEN — the
 			// gate answers with its ordinary verdict (no suggestions

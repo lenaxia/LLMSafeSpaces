@@ -52,8 +52,8 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 }
 
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
-	t.stage, t.pending_origin, t.project_name, t.epic_name, t.tags,
-	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.claim_token::text,
+	t.stage, t.pending_origin, t.priority, t.project_name, t.epic_name, t.tags,
+	t.acceptance_criteria, t.is_blocked, t.assignee_session, t.claim_token::text,
 	t.lease_expires_at, t.last_progress_at, t.attempts, t.claim_incremented_attempts,
 	t.cooldown_until, t.stage_entered_at, t.created_at, t.updated_at`
 
@@ -62,8 +62,8 @@ func scanTask(row pgx.Row) (*Task, error) {
 	var criteria []byte
 	var token, assignee *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
-		&t.Stage, &t.PendingOrigin, &t.ProjectName, &t.EpicName, &t.Tags,
-		&criteria, &t.IsBlocked, &t.Paused, &assignee, &token,
+		&t.Stage, &t.PendingOrigin, &t.Priority, &t.ProjectName, &t.EpicName, &t.Tags,
+		&criteria, &t.IsBlocked, &assignee, &token,
 		&t.LeaseExpiresAt, &t.LastProgressAt, &t.Attempts, &t.ClaimIncremented,
 		&t.CooldownUntil, &t.StageEnteredAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
@@ -84,13 +84,13 @@ func scanTask(row pgx.Row) (*Task, error) {
 }
 
 const projectColumns = `id, short_id, user_id, name, target_workspace_id::text, worker_slots,
-	slot_cooldown_until, tags, status, paused, created_at, updated_at`
+	slot_cooldown_until, tags, status, created_at, updated_at`
 
 func scanProject(row pgx.Row) (*Project, error) {
 	var p Project
 	var ws *string
 	err := row.Scan(&p.ID, &p.ShortID, &p.UserID, &p.Name, &ws, &p.WorkerSlots,
-		&p.SlotCooldownUntil, &p.Tags, &p.Status, &p.Paused, &p.CreatedAt, &p.UpdatedAt)
+		&p.SlotCooldownUntil, &p.Tags, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +100,12 @@ func scanProject(row pgx.Row) (*Project, error) {
 	return &p, nil
 }
 
-const epicColumns = `id, project_id, short_id, title, outcome, status, project_name,
+const epicColumns = `id, project_id, short_id, title, outcome, status, priority, project_name,
 	tags, vft, deficit, quantum, created_at, updated_at`
 
 func scanEpic(row pgx.Row) (*Epic, error) {
 	var e Epic
-	err := row.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status,
+	err := row.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status, &e.Priority,
 		&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum, &e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -355,7 +355,7 @@ func unblockDependents(ctx context.Context, q Queryer, taskID string, targetDone
 		sql += `true`
 	}
 	sql += `
-		WHERE t.stage <> 'done'
+		WHERE t.stage <> 'cancelled'
 		  AND EXISTS(SELECT 1 FROM board_dependencies d WHERE d.depends_on_task_id = $1 AND d.task_id = t.id)`
 	tag, err := q.Exec(ctx, sql, taskID)
 	if err != nil {
@@ -373,7 +373,7 @@ func epicCompletionCheck(ctx context.Context, q Queryer, epicID string) (bool, e
 		WHERE e.id = $1 AND e.status='active'
 		  AND EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id = e.id AND t.stage='done')
 		  AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id = e.id
-		                 AND t.stage <> 'done')`, epicID)
+		                 AND t.stage NOT IN ('done','cancelled'))`, epicID)
 	if err != nil {
 		return false, err
 	}
@@ -388,15 +388,10 @@ type actorView struct {
 	Surface     string `json:"surface,omitempty"`
 	ClaimToken  string `json:"claim_token,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
-	// SessionID attributes agent-surface actions to the creating session
-	// (#1747 audit ruling). Empty on session-less surfaces.
-	SessionID string `json:"session_id,omitempty"`
 }
 
 func actorViewOf(a Actor) []byte {
-	v := actorView(a) //nolint:staticcheck // ST1016 opt-out: the struct exists for the JSON field tags/omitempty
-	v.SessionID = a.SessionID
-	b, _ := json.Marshal(v)
+	b, _ := json.Marshal(actorView(a)) //nolint:staticcheck // ST1016 opt-out: the struct exists for the JSON field tags/omitempty, the conversion is the whole point
 	return b
 }
 

@@ -57,24 +57,16 @@ func (f *fakeSpawner) failWith(err error) {
 	f.err = err
 }
 
-// fakeAborter records worker aborts (#1747: delete replaces cancel;
-// aborts fire post-commit). onAbort, when set, runs AT FIRE TIME —
-// the hook the ordering pins use to observe the database while the
-// abort is happening (the row must already be gone there).
+// fakeAborter records worker aborts (cancel mid-flight).
 type fakeAborter struct {
-	mu      sync.Mutex
-	calls   []string
-	onAbort func(taskID, assignee string)
+	mu    sync.Mutex
+	calls []string
 }
 
 func (f *fakeAborter) Abort(_ context.Context, taskID, assignee string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, taskID+"/"+assignee)
-	hook := f.onAbort
-	f.mu.Unlock()
-	if hook != nil {
-		hook(taskID, assignee)
-	}
 	return nil
 }
 
@@ -368,6 +360,12 @@ func (s *BoardSuite) reloadEpic(id string) *board.Epic {
 	e, err := s.svc.GetEpic(context.Background(), id, "")
 	s.Require().NoError(err)
 	return e
+}
+
+func (s *BoardSuite) reloadProject(id string) *board.Project {
+	p, err := s.svc.GetProject(context.Background(), id, "")
+	s.Require().NoError(err)
+	return p
 }
 
 // taskRow reads raw columns the read model may not expose.

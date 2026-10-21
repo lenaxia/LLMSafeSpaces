@@ -79,3 +79,21 @@ standard applies before anything is pushed.
   my CoverageAndDistinctness added.
 - Rebased on fb687084, suites green, pushed:
   origin/fix/1756-post-union-remediation @ e71fc021. PR #1806.
+
+## Review r1 (PR #1806, CHANGES_REQUESTED) — remediated
+
+- 1a mint determinism: TestEnsureSessionRegistered_RetriesSuffixTheSameBase
+  (bind-recording arg; attempt N binds base-N — red on a re-roll revert).
+- 1b PlanReconciliation: discriminating error-path case (ID=phrase,
+  InternalID=ses_cold; counter must carry by InternalID).
+- 2 session_read rewrite: TestMCPSessionRead_WarmReplicaRewritesSessionIDs
+  (warm store; three id spellings rewritten, cold id untouched).
+- 3 hash-miss passthrough: TestSessionRef_HashMissPassthroughCarriesDeprecationNotice
+  (oc- miss still attaches Deprecation + RFC 8594 Sunset).
+- 4 records: CHANGELOG rebuilt from origin/main + ONE flat entry (the
+  umbrella restructure had orphaned main's #1747 Task-Board heading —
+  dropped in favor of main's canonical structure); integration claim
+  reworded to "handler pins"; worklog renumbered 1160→1161 (collision
+  with main's 1160_2026-10-19_1747).
+- 5 workspace-name lane Sunset now the RFC 8594 HTTP-date (same v0.41.0
+  window); TestWorkspaceRef_UnambiguousNameRewrites pins ParseTime.

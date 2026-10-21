@@ -44,10 +44,6 @@ var guardConstValues = map[string]string{
 	"GuardDependency":       board.GuardDependency,
 	"GuardProjectState":     board.GuardProjectState,
 	"GuardAuthz":            board.GuardAuthz,
-	"GuardPaused":           board.GuardPaused,
-	"GuardConcurrency":      board.GuardConcurrency,
-	"GuardGraphLimit":       board.GuardGraphLimit,
-	"GuardBackpressure":     board.GuardBackpressure,
 	"GuardInput":            board.GuardInput,
 }
 

@@ -1,19 +1,15 @@
 [
   "authz",
-  "backpressure",
   "claim_token",
-  "concurrency_limit",
-  "cross_workspace",
+  "cross_project",
   "cycle",
   "done_guard",
   "epic_state",
-  "graph_limit",
   "invalid_input",
   "manager_surface_only",
   "project_state",
   "self",
   "stage_transition",
-  "task_paused",
   "validation",
   "workspace_binding"
 ]

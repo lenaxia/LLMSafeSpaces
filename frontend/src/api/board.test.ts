@@ -92,19 +92,16 @@ describe("boardApi wire shapes", () => {
     expect(typeof body.requestId).toBe("string");
   });
 
-  it("task start, pause/resume, and delete ride their action routes (#1747)", async () => {
+  it("task start and cancel ride their action routes", async () => {
     mockPost.mockResolvedValue({ escalated: false });
     await boardApi.startTask("tsk-cccc3333");
     expect(mockPost.mock.calls[0]![0]).toBe("/me/tasks/tsk-cccc3333/start");
 
-    mockPost.mockClear();
-    mockPost.mockResolvedValue({ paused: true });
-    await boardApi.pauseTask("tsk-cccc3333");
-    expect(mockPost.mock.calls[0]![0]).toBe("/me/tasks/tsk-cccc3333/pause");
-
-    mockDelete.mockResolvedValue({ item_kind: "task" });
-    await boardApi.deleteTask("tsk-cccc3333", true);
-    expect(mockDelete.mock.calls[0]![0]).toBe("/me/tasks/tsk-cccc3333?reconnect=true");
+    mockPost.mockResolvedValue({ stage: "cancelled" });
+    await boardApi.cancelTask("tsk-cccc3333", "dup");
+    const [path2, body2] = mockPost.mock.calls[1] as [string, Record<string, unknown>];
+    expect(path2).toBe("/me/tasks/tsk-cccc3333/cancel");
+    expect(body2.reason).toBe("dup");
   });
 
   it("dependencies POST/DELETE with their bodies/params", async () => {

@@ -10,7 +10,6 @@ package llmsafespaces
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +31,10 @@ const (
 	BoardStageInReview     = "in_review"
 	BoardStageDone         = "done"
 	BoardStagePendingInput = "pending_input"
+	// Composed so misspell's fixer never rewrites the literal (the stage
+	// value is the design-verbatim term; the DB CHECK + engine rows
+	// depend on it — same dodge as pkg/board's StageCancelled).
+	BoardStageCancelled = "cancel" + "led" //nolint:misspell
 )
 
 // BoardProject is a board project row (swimlane; user-level per R7,
@@ -59,6 +62,7 @@ type BoardEpic struct {
 	Title     string   `json:"title"`
 	Outcome   string   `json:"outcome"`
 	Status    string   `json:"status"`
+	Priority  string   `json:"priority"`
 	Tags      []string `json:"tags"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
@@ -86,9 +90,7 @@ type BoardTask struct {
 	Description        string                     `json:"description"`
 	Stage              string                     `json:"stage"`
 	PendingOrigin      string                     `json:"pending_origin,omitempty"`
-	Paused             bool                       `json:"paused"`
-	WaitingOn          string                     `json:"waiting_on,omitempty"`
-	Backpressure       string                     `json:"backpressure,omitempty"`
+	Priority           string                     `json:"priority"`
 	Tags               []string                   `json:"tags"`
 	AcceptanceCriteria []BoardAcceptanceCriterion `json:"acceptance_criteria"`
 	IsBlocked          bool                       `json:"is_blocked"`
@@ -122,6 +124,39 @@ type BoardProjectInput struct {
 	RequestID         string   `json:"requestId,omitempty"`
 }
 
+// BoardEpicInput is the create/patch body for epics.
+type BoardEpicInput struct {
+	Title     string   `json:"title,omitempty"`
+	Outcome   string   `json:"outcome,omitempty"`
+	Priority  string   `json:"priority,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	RequestID string   `json:"requestId,omitempty"`
+}
+
+// BoardTaskInput is the create/patch body for tasks.
+type BoardTaskInput struct {
+	Title              string                     `json:"title,omitempty"`
+	Description        string                     `json:"description,omitempty"`
+	Priority           string                     `json:"priority,omitempty"`
+	Tags               []string                   `json:"tags,omitempty"`
+	AcceptanceCriteria []BoardAcceptanceCriterion `json:"acceptanceCriteria,omitempty"`
+	SetCriteriaMet     *int                       `json:"setCriteriaMet,omitempty"`
+	RequestID          string                     `json:"requestId,omitempty"`
+}
+
+// BoardMoveStageInput is the move-stage body.
+type BoardMoveStageInput struct {
+	ToStage     string `json:"toStage"`
+	EvidenceURL string `json:"evidenceUrl,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+}
+
+// BoardCancelInput is the cancel body (task or epic).
+type BoardCancelInput struct {
+	Reason    string `json:"reason,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
 // BoardLifecycleOptions carries the optional replay key on otherwise-
 // empty lifecycle bodies (clientMessageID discipline: one id per logical
 // operation, reused on retry).
@@ -139,49 +174,6 @@ func lifecycleBody(opts []BoardLifecycleOptions) struct {
 		body.RequestID = opts[0].RequestID
 	}
 	return body
-}
-
-// BoardEpicInput is the create/patch body for epics.
-type BoardEpicInput struct {
-	Title     string   `json:"title,omitempty"`
-	Outcome   string   `json:"outcome,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
-	RequestID string   `json:"requestId,omitempty"`
-}
-
-// BoardTaskInput is the create/patch body for tasks.
-type BoardTaskInput struct {
-	Title              string                     `json:"title,omitempty"`
-	Description        string                     `json:"description,omitempty"`
-	Tags               []string                   `json:"tags,omitempty"`
-	AcceptanceCriteria []BoardAcceptanceCriterion `json:"acceptanceCriteria,omitempty"`
-	SetCriteriaMet     *int                       `json:"setCriteriaMet,omitempty"`
-	DependsOn          []string                   `json:"dependsOn,omitempty"`
-	RequestID          string                     `json:"requestId,omitempty"`
-}
-
-// BoardMoveStageInput is the move-stage body.
-type BoardMoveStageInput struct {
-	ToStage     string `json:"toStage"`
-	EvidenceURL string `json:"evidenceUrl,omitempty"`
-	RequestID   string `json:"requestId,omitempty"`
-}
-
-// BoardLifecycleInput is the pause/resume/start body (requestId only).
-type BoardLifecycleInput struct {
-	RequestID string `json:"requestId,omitempty"`
-}
-
-// BoardDeleteResult is the delete_task/delete_epic outcome (#1747):
-// orphaned dependents are listed; every removal keeps a full snapshot
-// in the audit log.
-type BoardDeleteResult struct {
-	ItemKind           string   `json:"item_kind"`
-	ID                 string   `json:"id"`
-	ShortID            string   `json:"short_id"`
-	CascadeTasks       []string `json:"cascade_tasks,omitempty"`
-	OrphanedDependents []string `json:"orphaned_dependents,omitempty"`
-	Reconnected        []string `json:"reconnected,omitempty"`
 }
 
 // BoardDependencyInput is the add-dependency body (structural edges are
@@ -296,52 +288,8 @@ func (s *BoardService) epicLifecycle(ctx context.Context, id, verb string, opts 
 	return &e, nil
 }
 
-// BoardActivateOptions carries epic-activation's acknowledge flag
-// (the engine's 409 instructs it) plus the replay key.
-type BoardActivateOptions struct {
-	AcknowledgeInactiveDeps bool
-	RequestID               string
-}
-
-// BoardEpicActivateResult is the activation response wrapper: the epic
-// plus its initial ready set (handler shape; the bare epic the SDK
-// once decoded was binding drift).
-type BoardEpicActivateResult struct {
-	BoardEpic
-	InitialReadySet []string `json:"initial_ready_set"`
-}
-
-// UnmarshalJSON decodes the {"epic": {...}, "initial_ready_set": [...]}
-// wrapper into the embedded epic (embedding alone cannot map it).
-func (r *BoardEpicActivateResult) UnmarshalJSON(b []byte) error {
-	var wire struct {
-		Epic            BoardEpic `json:"epic"`
-		InitialReadySet []string  `json:"initial_ready_set"`
-	}
-	if err := json.Unmarshal(b, &wire); err != nil {
-		return err
-	}
-	r.BoardEpic = wire.Epic
-	r.InitialReadySet = wire.InitialReadySet
-	return nil
-}
-
-func (s *BoardService) EpicActivate(ctx context.Context, id string, opts ...BoardActivateOptions) (*BoardEpicActivateResult, error) {
-	var body struct {
-		AcknowledgeInactiveDeps bool   `json:"acknowledgeInactiveDeps"`
-		RequestID               string `json:"requestId,omitempty"`
-	}
-	for _, o := range opts {
-		body.AcknowledgeInactiveDeps = body.AcknowledgeInactiveDeps || o.AcknowledgeInactiveDeps
-		if o.RequestID != "" {
-			body.RequestID = o.RequestID
-		}
-	}
-	var out BoardEpicActivateResult
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/activate", id), body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+func (s *BoardService) EpicActivate(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
+	return s.epicLifecycle(ctx, id, "activate", opts)
 }
 
 func (s *BoardService) EpicPause(ctx context.Context, id string, opts ...BoardLifecycleOptions) (*BoardEpic, error) {
@@ -356,18 +304,12 @@ func (s *BoardService) EpicUnarchive(ctx context.Context, id string, opts ...Boa
 	return s.epicLifecycle(ctx, id, "unarchive", opts)
 }
 
-// DeleteEpic destructively removes the epic and its tasks (#1747: cancel
-// is eliminated); force is required while claims are in-flight.
-func (s *BoardService) DeleteEpic(ctx context.Context, id string, force bool) (*BoardDeleteResult, error) {
-	path := fmt.Sprintf("/me/epics/%s", id)
-	if force {
-		path += "?force=true"
-	}
-	var out BoardDeleteResult
-	if err := s.c.do(ctx, http.MethodDelete, path, nil, &out); err != nil {
+func (s *BoardService) CancelEpic(ctx context.Context, id string, req BoardCancelInput) (*BoardEpic, error) {
+	var e BoardEpic
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/epics/%s/cancel", id), req, &e); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &e, nil
 }
 
 func (s *BoardService) CreateTask(ctx context.Context, epicID string, req BoardTaskInput) (*BoardTask, error) {
@@ -402,7 +344,7 @@ func (s *BoardService) MoveStage(ctx context.Context, id string, req BoardMoveSt
 	return &t, nil
 }
 
-func (s *BoardService) StartTask(ctx context.Context, id string, req BoardLifecycleInput) (*BoardClaim, error) {
+func (s *BoardService) StartTask(ctx context.Context, id string, req BoardCancelInput) (*BoardClaim, error) {
 	var cl BoardClaim
 	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/start", id), req, &cl); err != nil {
 		return nil, err
@@ -410,55 +352,12 @@ func (s *BoardService) StartTask(ctx context.Context, id string, req BoardLifecy
 	return &cl, nil
 }
 
-// DeleteTask destructively removes a task (#1747); reconnect lets
-// orphaned dependents inherit the deleted node's upstream edges.
-func (s *BoardService) DeleteTask(ctx context.Context, id string, reconnect bool) (*BoardDeleteResult, error) {
-	path := fmt.Sprintf("/me/tasks/%s", id)
-	if reconnect {
-		path += "?reconnect=true"
-	}
-	var out BoardDeleteResult
-	if err := s.c.do(ctx, http.MethodDelete, path, nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// PauseTask parks a task (#1747): claims off, forward writes refused,
-// HALT to the in-flight worker; the lease keeps running.
-func (s *BoardService) PauseTask(ctx context.Context, id string) (*BoardTask, error) {
+func (s *BoardService) CancelTask(ctx context.Context, id string, req BoardCancelInput) (*BoardTask, error) {
 	var t BoardTask
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/pause", id), struct{}{}, &t); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/cancel", id), req, &t); err != nil {
 		return nil, err
 	}
 	return &t, nil
-}
-
-// ResumeTask clears the pause and delivers the RESUME directive.
-func (s *BoardService) ResumeTask(ctx context.Context, id string) (*BoardTask, error) {
-	var t BoardTask
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/tasks/%s/resume", id), struct{}{}, &t); err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-// PauseProject parks every task under the project (#1747).
-func (s *BoardService) PauseProject(ctx context.Context, id string) (*BoardProject, error) {
-	var p BoardProject
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/pause", id), struct{}{}, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// ResumeProject clears the project pause.
-func (s *BoardService) ResumeProject(ctx context.Context, id string) (*BoardProject, error) {
-	var p BoardProject
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/projects/%s/resume", id), struct{}{}, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
 }
 
 func (s *BoardService) AddDependency(ctx context.Context, id string, req BoardDependencyInput) (*BoardDependencyMutation, error) {

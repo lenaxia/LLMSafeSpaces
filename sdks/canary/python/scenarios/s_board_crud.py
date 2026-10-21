@@ -77,7 +77,7 @@ def run(r: Runner, cfg: Config) -> None:
 
         # P5: epic create (draft default) → activate → double-pause guard
         ok, epic = r.assert_no_error(
-            lambda: c.board.create_epic(project_sid, title="E1", outcome="canary"),
+            lambda: c.board.create_epic(project_sid, title="E1", outcome="canary", priority="P1"),
             "create-epic: no error",
         )
         if not ok or not epic:
@@ -97,6 +97,7 @@ def run(r: Runner, cfg: Config) -> None:
             lambda: c.board.create_task(
                 epic_sid,
                 title="Task A",
+                priority="P0",
                 tags=["pr:1234"],
                 acceptance_criteria=[{"text": "c1", "met": True}, {"text": "c2", "met": False}],
             ),
@@ -151,18 +152,47 @@ def run(r: Runner, cfg: Config) -> None:
             r.assert_(len(listed) == 2, "list-tasks: two backlog", str(len(listed)))
         r.assert_error(lambda: c.board.list_project_tasks(project_sid, stage="wip"), "list-tasks-bad-stage: error")
 
-        # P11 (#1747): delete task + delete epic (cancel is eliminated —
-        # the result lists orphaned dependents; no stage/status comes back)
-        ok, deleted = r.assert_no_error(
-            lambda: c.board.delete_task(task_b_sid), "delete-task: no error"
+        # P10b (#1699 seams): epic listing carries derived progress
+        ok, epics = r.assert_no_error(
+            lambda: c.board.list_board_epics(project_sid), "list-epics: no error"
         )
-        if ok and deleted:
-            r.assert_(deleted.get("item_kind") == "task", "delete-task: item kind", str(deleted.get("item_kind")))
-        ok, de = r.assert_no_error(
-            lambda: c.board.delete_epic(epic_sid), "delete-epic: no error"
+        if ok and epics is not None:
+            r.assert_(len(epics) == 1, "list-epics: one epic", str(len(epics)))
+            r.assert_(epics[0].get("progress_derived") is True, "list-epics: progress derived", "")
+
+        # P10c (#1699 seams): board search — hit + near-miss suggestions
+        # (the missing-q 400 is pinned at the contract tier; the SDK
+        # always sends q — the near-miss arm is the canary's share)
+        ok, hits = r.assert_no_error(
+            lambda: c.board.search_board("Task A"), "search-hit: no error"
         )
-        if ok and de:
-            r.assert_(de.get("item_kind") == "epic", "delete-epic: item kind", str(de.get("item_kind")))
+        if ok and hits:
+            r.assert_(len(hits.get("results", [])) == 1, "search-hit: one result", "")
+        ok, near = r.assert_no_error(
+            lambda: c.board.search_board(mutate_sid(task_a_sid)), "search-nearmiss: no error"
+        )
+        if ok and near:
+            r.assert_(len(near.get("results", [])) == 0, "search-nearmiss: zero results", "")
+            r.assert_(task_a_sid in (near.get("suggestions") or []), "search-nearmiss: suggested", "")
+
+        # P10d (#1699 seams): the health snapshot renders
+        ok, health = r.assert_no_error(lambda: c.board.get_board_health(), "board-health: no error")
+        if ok and health:
+            r.assert_("active_leases" in health, "board-health: leases key", "")
+            r.assert_("pending_input_by_origin" in health, "board-health: origins key", "")
+
+
+        # P11: cancel task (terminal) + cancel epic (→ paused)
+        ok, cancelled = r.assert_no_error(
+            lambda: c.board.cancel_task(task_b_sid, reason="canary cleanup"), "cancel-task: no error"
+        )
+        if ok and cancelled:
+            r.assert_(cancelled.get("stage") == "cancelled", "cancel-task: cancelled", str(cancelled.get("stage")))
+        ok, ce = r.assert_no_error(
+            lambda: c.board.cancel_epic(epic_sid, reason="canary cleanup"), "cancel-epic: no error"
+        )
+        if ok and ce:
+            r.assert_(ce.get("status") == "paused", "cancel-epic: paused", str(ce.get("status")))
 
         # P12: read perimeter — a near-miss id is a plain 404
         r.assert_error(lambda: c.board.get_project("prj-zzzzzzzz"), "get-project-nearmiss: 404")

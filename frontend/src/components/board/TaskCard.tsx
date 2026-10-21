@@ -4,10 +4,25 @@
 import { useState } from "react";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
+import type { BadgeVariant } from "../ui/Badge";
 import { Link2, Play, AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { BoardTask } from "../../api/board";
 import { STAGE_LABELS, PENDING_ORIGIN_LABELS, prAnchorOf, type BoardStage } from "../../lib/boardRules";
+
+/** Priority chip color scale — P0 hottest. */
+export function priorityVariant(priority: string): BadgeVariant {
+  switch (priority) {
+    case "P0":
+      return "destructive";
+    case "P1":
+      return "warning";
+    case "P3":
+      return "muted";
+    default:
+      return "default";
+  }
+}
 
 /**
  * The attempts-cap preview threshold — the R6 platform knob's DOCUMENTED
@@ -52,7 +67,7 @@ interface TaskCardProps {
 }
 
 /**
- * TaskCard — §4.8's card: short ID (mono), pause/waiting chips, tags, the
+ * TaskCard — §4.8's card: short ID (mono), priority chip, tags, the
  * structural blocked badge (🔗 N with live dependency stage chips, ruling
  * R3 — no evaluator, no Evaluate-now), the assignee busy indicator (the
  * #1687-hardened spinner on evidence the worker holds the claim), the
@@ -109,16 +124,9 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
               <Play className="h-3 w-3" />
             </button>
           )}
-          {task.paused && (
-            <Badge variant="warning" className="px-1.5 py-0 text-[10px]" title="Paused — claim candidacy off, forward writes refused (#1747)">
-              paused
-            </Badge>
-          )}
-          {task.waiting_on === "concurrency_limit" && (
-            <Badge variant="muted" className="px-1.5 py-0 text-[10px]" title="Ready but the per-user/global concurrency cap is saturated (#1747)">
-              waiting: concurrency
-            </Badge>
-          )}
+          <Badge variant={priorityVariant(task.priority)} className="px-1.5 py-0 text-[10px]">
+            {task.priority}
+          </Badge>
         </div>
       </div>
       <p className="mt-0.5 line-clamp-2 text-xs font-medium">{task.title}</p>

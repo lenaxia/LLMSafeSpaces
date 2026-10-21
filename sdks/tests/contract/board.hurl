@@ -127,12 +127,14 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 {
   "title": "Epic one",
-  "outcome": "the contract suite passes"
+  "outcome": "the contract suite passes",
+  "priority": "P1"
 }
 HTTP 201
 [Asserts]
 jsonpath "$.short_id" matches /^epc-[0-9a-z]{8}$/
 jsonpath "$.status" == "draft"
+jsonpath "$.priority" isString
 [Captures]
 epic_id: jsonpath "$.id"
 epic_sid: jsonpath "$.short_id"
@@ -156,14 +158,12 @@ HTTP 200
 [Asserts]
 jsonpath "$.outcome" isString
 
-# Epic lifecycle: activate → pause (r5: the activate 200 is the
-# {"epic", "initial_ready_set"} wrapper — handler shape, spec'd)
+# Epic lifecycle: activate → pause
 POST {{base_url}}/me/epics/{{epic_sid}}/activate
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.epic.status" isString
-jsonpath "$.initial_ready_set" isCollection
+jsonpath "$.status" isString
 
 POST {{base_url}}/me/epics/{{epic_sid}}/pause
 Authorization: Bearer {{token}}
@@ -192,6 +192,7 @@ Content-Type: application/json
 {
   "title": "Task A",
   "description": "markdown charter",
+  "priority": "P0",
   "tags": ["pr:1234"],
   "acceptanceCriteria": [
     {"text": "tests green", "met": true},
@@ -202,6 +203,7 @@ HTTP 201
 [Asserts]
 jsonpath "$.short_id" matches /^tsk-[0-9a-z]{8}$/
 jsonpath "$.stage" == "backlog"
+jsonpath "$.priority" isString
 jsonpath "$.tags[0]" matches /^pr:[1-9][0-9]*$/
 jsonpath "$.acceptance_criteria[0].met" isBoolean
 [Captures]
@@ -327,24 +329,39 @@ Prefer: code=409
 }
 HTTP 409
 
-# Delete task B (#1747: cancel is eliminated — delete replaces it; the
-# result lists orphaned dependents. The gone-row-replay 404 is an
-# engine-state behavior pinned by the kill-tests — this Prism-mocked
-# contract tier is stateless (every matched route 200s), so only the
-# contract shape is asserted here.)
-DELETE {{base_url}}/me/tasks/{{task_b_sid}}
+# Cancel task B from backlog — terminal write (cancelled is
+# immutable-terminal and cancel is idempotent on it: 200 both calls)
+POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
 Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "reason": "contract cleanup"
+}
 HTTP 200
 [Asserts]
-jsonpath "$.item_kind" isString
+jsonpath "$.stage" isString
 
-# Delete epic: cascades to its tasks (#1747; the audit keeps every
-# snapshot)
-DELETE {{base_url}}/me/epics/{{epic_sid}}
+POST {{base_url}}/me/tasks/{{task_b_sid}}/cancel
 Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "reason": "again"
+}
 HTTP 200
 [Asserts]
-jsonpath "$.item_kind" isString
+jsonpath "$.stage" isString
+
+# Cancel epic: cascades to tasks; the epic itself lands paused (R2's set
+# has no cancelled epic value)
+POST {{base_url}}/me/epics/{{epic_sid}}/cancel
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "reason": "contract cleanup"
+}
+HTTP 200
+[Asserts]
+jsonpath "$.status" isString
 
 # Authz arm: unauthenticated reads are 401 (Prism enforces security
 # schemes; the live API rejects the missing bearer)
@@ -412,7 +429,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.epic.status" isString
+jsonpath "$.status" isString
 
 # The replay: SAME requestId — 200-with-original, never an error
 POST {{base_url}}/me/epics/{{epic_sid}}/activate
@@ -423,7 +440,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.epic.status" isString
+jsonpath "$.status" isString
 
 # DELETE replay key rides the query parameter
 DELETE {{base_url}}/me/tasks/{{task_b_sid}}/dependencies/{{task_a_sid}}?requestId=11111111-2222-3333-4444-555555555566

@@ -98,220 +98,8 @@ func decodeOneDocument(r io.Reader, v any) error {
 // tool this workspace serves. Extracted from mcpHandler (funlen);
 // the descriptions are the agent's only documentation — the
 // ToolDescriptionGuidance test pins them.
-// boardManagerTools returns the #1747 Task Board MANAGER catalog
-// entries (extracted from mcpToolCatalog — funlen): the full manager
-// set at project/epic/task level for user-collaborator sessions.
-func boardManagerTools() []mcpTool {
-	return []mcpTool{
-		{
-			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
-			// amended): the collaboration-to-execution loop — take a
-			// user-approved design, create the epics/tasks, activate the
-			// epic, and the engine's claim-then-spawn executes. Manager
-			// tools attach to USER-COLLABORATOR sessions only: a spawned
-			// claim-token worker holds no manager grant (prompt-injection
-			// blast radius), and every call carries the calling session's
-			// identity. claim_next is engine-internal forever; task_start
-			// is owner-surface only; cancel is ELIMINATED (delete
-			// replaces it); ordering is dependency-only FIFO — no
-			// priority fields exist.
-			Name:        "board_create_project",
-			Description: "Create a Task Board project in THIS workspace: a swimlane with a worker-slot budget (max concurrent in-flight workers, default 2). The project targets your own workspace by construction — you manage THIS workspace's board only (ruling #1747). Use when the user wants a new board/campaign for structured multi-agent work. Not for: repeated scheduled jobs (create a workflow instead — boards are one-shot sprints). Manager tool: your session must be a user-collaborator session (spawned workers are refused).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"name":        map[string]any{"type": "string", "description": "Project name"},
-				"workerSlots": map[string]any{"type": "integer", "description": "Max concurrent in-flight claims (default 2)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
-			}, "required": []string{"name"}},
-		},
-		{
-			Name:        "board_update_project",
-			Description: "Patch a board project (name, worker slots, tags). A pod cannot retarget a project's workspace — it is bound to this workspace structurally (ruling #1747). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId":   map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"name":        map[string]any{"type": "string", "description": "New name (rename cascades display inheritance)"},
-				"workerSlots": map[string]any{"type": "integer", "description": "Worker-slot budget"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
-			}, "required": []string{"projectId"}},
-		},
-		{
-			Name:        "board_project_archive",
-			Description: "Archive a board project (reversible storage): stops ALL claims into it. Not deletion — archive_project keeps every row; unarchive restores. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-			}, "required": []string{"projectId"}},
-		},
-		{
-			Name:        "board_project_unarchive",
-			Description: "Unarchive a board project: restores it to active (claims resume). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-			}, "required": []string{"projectId"}},
-		},
-		{
-			Name:        "board_project_pause",
-			Description: "Pause a board project — the scheduling lever (\"pause this project so another moves forward\"): claim candidacy turns off for every task under it, in-flight workers receive HALT directives (they finish their current thought, then stop — never a mid-generation cut), and leases keep running. Use when the user wants work in this project to yield resources to another project. resume_project clears it. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-			}, "required": []string{"projectId"}},
-		},
-		{
-			Name:        "board_project_resume",
-			Description: "Resume a paused board project: clears the pause and delivers RESUME directives to held workers; a worker whose lease lapsed while paused re-enters the FIFO pool (a fresh worker may take the task). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-			}, "required": []string{"projectId"}},
-		},
-		{
-			Name:        "board_create_epic",
-			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"title":     map[string]any{"type": "string", "description": "Epic title"},
-				"outcome":   map[string]any{"type": "string", "description": "What this epic exists to achieve"},
-				"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
-			}, "required": []string{"projectId", "title"}},
-		},
-		{
-			Name:        "board_update_epic",
-			Description: "Patch an epic (title, outcome, tags). The outcome is the steering wheel for every worker under the epic. A title rename cascades to its tasks' display. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":  map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":   map[string]any{"type": "string", "description": "New title"},
-				"outcome": map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
-				"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_epic_activate",
-			Description: "Activate an epic — the publish/start lever: ready tasks start feeding to fresh workers via the engine's claim-then-spawn. Refuses while cross-epic dependencies enter INACTIVE epics unless acknowledged (pass acknowledgeInactiveDeps after the user accepts the blockage); reports the initial ready set in the response. Held workers under the epic receive RESUME directives. Not for: assigning a specific task NOW (there is no such agent tool — the engine claims in FIFO order; ruling #1747). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":                  map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"acknowledgeInactiveDeps": map[string]any{"type": "boolean", "description": "Acknowledge deps entering inactive epics (they stay blocking until those epics activate)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_epic_pause",
-			Description: "Pause an epic: stops NEW claims for its tasks and cascades HALT directives to the epic's in-flight workers (they finish the current thought, then stop). In-flight leases are never interrupted mid-generation; forward stage-writes refuse while paused. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_epic_archive",
-			Description: "Archive an epic (reversible storage): it leaves the claimable set. Not deletion — unarchive restores active. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_epic_unarchive",
-			Description: "Unarchive an epic — always restores it to active (the resumable default). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_delete_epic",
-			Description: "Destructively delete an epic AND its tasks (#1747: cancel is eliminated — delete replaces it). The audit log keeps every removal: each deleted row's event embeds its full final-state snapshot. REFUSES while any claim under the epic is in-flight unless force=true (the delete commits, then in-flight workers are aborted — post-commit) — confirm with the user before forcing. Tasks with dependents outside the epic: those dependents lose their edges (listed in the response, each gets an unblocked_by_delete audit event — visible, never a refusal). Not for reversible shelving — archive instead. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"force":  map[string]any{"type": "boolean", "description": "Abort in-flight workers and delete anyway (confirm with the user first)"},
-			}, "required": []string{"epicId"}},
-		},
-		{
-			Name:        "board_create_task",
-			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":      map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "Task title"},
-				"description": map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor)"},
-				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"text": map[string]any{"type": "string"},
-						"met":  map[string]any{"type": "boolean"},
-					}, "required": []string{"text"}}, "description": "Checkable criteria [{text, met}]"},
-				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Prerequisite task short ids — edges added in the same transaction"},
-			}, "required": []string{"epicId", "title"}},
-		},
-		{
-			Name:        "board_update_task",
-			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":      map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "New title"},
-				"description": map[string]any{"type": "string", "description": "New description (REPLACE)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
-				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"text": map[string]any{"type": "string"},
-						"met":  map[string]any{"type": "boolean"},
-					}, "required": []string{"text"}}, "description": "Criteria (REPLACE when present)"},
-				"setCriteriaMet": map[string]any{"type": "integer", "description": "Check off the criterion at this 0-based index"},
-			}, "required": []string{"taskId"}},
-		},
-		{
-			Name:        "board_add_dependency",
-			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
-			}, "required": []string{"taskId", "dependsOn"}},
-		},
-		{
-			Name:        "board_remove_dependency",
-			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
-			}, "required": []string{"taskId", "dependsOn"}},
-		},
-		{
-			Name:        "board_delete_task",
-			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
-				"reconnect": map[string]any{"type": "boolean", "description": "Orphans inherit the deleted node's direct upstream edges (default off — the graph never rewrites itself implicitly)"},
-			}, "required": []string{"taskId"}},
-		},
-		{
-			Name:        "board_pause_task",
-			Description: "Pause one task — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
-			}, "required": []string{"taskId"}},
-		},
-		{
-			Name:        "board_resume_task",
-			Description: "Resume a paused task: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
-			}, "required": []string{"taskId"}},
-		},
-		{
-			Name:        "board_import_plan",
-			Description: "Materialize an ENTIRE plan atomically (#1747): one epic + its tasks + dependency edges from a single payload, all-or-nothing. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. Tasks address each other by payload key. Nodes-per-epic and edges-per-node caps apply. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"epicTitle": map[string]any{"type": "string", "description": "The created epic's title"},
-				"outcome":   map[string]any{"type": "string", "description": "The epic's outcome (steering wheel)"},
-				"dryRun":    map[string]any{"type": "boolean", "description": "Validate + render only — nothing is written (the plan-approval moment)"},
-				"tasks": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"key":                map[string]any{"type": "string"},
-						"title":              map[string]any{"type": "string"},
-						"description":        map[string]any{"type": "string"},
-						"tags":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"acceptanceCriteria": map[string]any{"type": "array"},
-						"dependsOn":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					}, "required": []string{"key", "title"}}, "description": "Plan nodes (dependsOn names other KEYS in this payload)"},
-			}, "required": []string{"projectId", "epicTitle"}},
-		},
-	}
-}
-
 func mcpToolCatalog() []mcpTool {
-	return append(boardManagerTools(), []mcpTool{
+	return []mcpTool{
 		{
 			Name:        "session_list",
 			Description: "List past agent sessions (conversations) from this workspace — NON-ARCHIVED sessions by default (archived history is opt-in: pass include_archived:true to add it back). This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session. Archive status is NOT included here — use session_metadata (its entries carry archived) when you need to know which sessions are archived.",
@@ -637,7 +425,7 @@ func mcpToolCatalog() []mcpTool {
 				"required": []string{},
 			},
 		},
-	}...)
+	}
 }
 
 func mcpHandler(password string) http.HandlerFunc {
@@ -880,19 +668,9 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
 		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
-		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
-		"board_create_project", "board_update_project",
-		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
-		"board_create_epic", "board_update_epic",
-		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
-		"board_delete_epic",
-		"board_create_task", "board_update_task",
-		"board_add_dependency", "board_remove_dependency",
-		"board_delete_task", "board_pause_task", "board_resume_task",
-		"board_import_plan":
+		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage":
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
-		// #1747: the manager set joins them, session-gated at dispatch.
 		return mcpAutomation(ctx, name, args)
 	case "get_datetime":
 		timezoneArg, _ := args["timezone"].(string)

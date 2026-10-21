@@ -21,13 +21,8 @@ import type {
   BoardClaim,
   BoardDependencyMutation,
   BoardDependencyRequest,
-  BoardDeleteResult,
-  BoardImportResult,
-  BoardLifecycleRequest,
-  BoardPlanRequest,
+  BoardCancelRequest,
   BoardMoveStageRequest,
-  BoardEpicActivateRequest,
-  BoardEpicActivateResponse,
   BoardRequestIdOnly,
   BoardSearchFilters,
   BoardSearchResult,
@@ -924,8 +919,8 @@ class BoardAPI {
     return this.client.request<BoardEpic>("PATCH", `/me/epics/${id}`, req);
   }
 
-  activateEpic(id: string, req: BoardEpicActivateRequest = {}) {
-    return this.client.request<BoardEpicActivateResponse>("POST", `/me/epics/${id}/activate`, req);
+  activateEpic(id: string, req: BoardRequestIdOnly = {}) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/activate`, req);
   }
 
   pauseEpic(id: string, req: BoardRequestIdOnly = {}) {
@@ -940,20 +935,8 @@ class BoardAPI {
     return this.client.request<BoardEpic>("POST", `/me/epics/${id}/unarchive`, req);
   }
 
-  deleteEpic(id: string, force = false) {
-    return this.client.request<BoardDeleteResult>("DELETE", `/me/epics/${id}${force ? "?force=true" : ""}`);
-  }
-
-  pauseProject(id: string, req: BoardLifecycleRequest = {}) {
-    return this.client.request<BoardProject>("POST", `/me/projects/${id}/pause`, req);
-  }
-
-  resumeProject(id: string, req: BoardLifecycleRequest = {}) {
-    return this.client.request<BoardProject>("POST", `/me/projects/${id}/resume`, req);
-  }
-
-  importPlan(projectId: string, req: BoardPlanRequest) {
-    return this.client.request<BoardImportResult>("POST", `/me/projects/${projectId}/import-plan`, req);
+  cancelEpic(id: string, req: BoardCancelRequest) {
+    return this.client.request<BoardEpic>("POST", `/me/epics/${id}/cancel`, req);
   }
 
   createTask(epicId: string, req: BoardTaskCreateRequest) {
@@ -972,20 +955,12 @@ class BoardAPI {
     return this.client.request<BoardTask>("POST", `/me/tasks/${id}/move-stage`, req);
   }
 
-  startTask(id: string, req: BoardLifecycleRequest = {}) {
+  startTask(id: string, req: BoardRequestIdOnly = {}) {
     return this.client.request<BoardClaim>("POST", `/me/tasks/${id}/start`, req);
   }
 
-  deleteTask(id: string, reconnect = false) {
-    return this.client.request<BoardDeleteResult>("DELETE", `/me/tasks/${id}${reconnect ? "?reconnect=true" : ""}`);
-  }
-
-  pauseTask(id: string, req: BoardLifecycleRequest = {}) {
-    return this.client.request<BoardTask>("POST", `/me/tasks/${id}/pause`, req);
-  }
-
-  resumeTask(id: string, req: BoardLifecycleRequest = {}) {
-    return this.client.request<BoardTask>("POST", `/me/tasks/${id}/resume`, req);
+  cancelTask(id: string, req: BoardCancelRequest) {
+    return this.client.request<BoardTask>("POST", `/me/tasks/${id}/cancel`, req);
   }
 
   addDependency(id: string, req: BoardDependencyRequest) {

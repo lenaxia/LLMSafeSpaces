@@ -162,15 +162,6 @@ spec:
               value: {{ dig "drrQuantum" 1 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_SWEEPSECONDS
               value: {{ dig "sweepSeconds" 30 .Values.board | quote }}
-            # #1747 backpressure caps + DAG blast-radius bounds.
-            - name: LLMSAFESPACES_BOARD_USERCLAIMCAP
-              value: {{ dig "userClaimCap" 8 .Values.board | quote }}
-            - name: LLMSAFESPACES_BOARD_GLOBALCLAIMCAP
-              value: {{ dig "globalClaimCap" 64 .Values.board | quote }}
-            - name: LLMSAFESPACES_BOARD_MAXEDGESPERNODE
-              value: {{ dig "maxEdgesPerNode" 16 .Values.board | quote }}
-            - name: LLMSAFESPACES_BOARD_MAXNODESPEREPIC
-              value: {{ dig "maxNodesPerEpic" 64 .Values.board | quote }}
             - name: LLMSAFESPACES_KUBERNETES_PODNAME
               valueFrom:
                 fieldRef:

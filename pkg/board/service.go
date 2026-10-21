@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,19 +38,9 @@ func WithWorkerSpawner(sp WorkerSpawner) Option {
 	return func(s *Service) { s.spawner = sp }
 }
 
-// WithWorkerAborter installs the abort seam (delete of an in-flight
-// claim, superseded-claim cleanup).
+// WithWorkerAborter installs the abort seam (cancel mid-flight).
 func WithWorkerAborter(ab WorkerAborter) Option {
 	return func(s *Service) { s.aborter = ab }
-}
-
-// WithWorkerMessenger installs the engine→session directive seam
-// (#1747 pause-must-pause): halt/resume delivery to in-flight workers
-// rides the SAME orchestrator↔worker message machinery the platform
-// already uses (the spawner's transport, existing-session spec) — no
-// new transport.
-func WithWorkerMessenger(m WorkerMessenger) Option {
-	return func(s *Service) { s.messenger = m }
 }
 
 // WithPRDriftSource installs the RC2 external-truth source.
@@ -78,17 +67,7 @@ type Service struct {
 	aborter    WorkerAborter
 	drift      PRDriftSource
 	pending    PendingInputSource
-	// messenger delivers halt/resume directives to in-flight workers
-	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
-	// authoritative; tests pin the nil-seam behavior).
-	messenger WorkerMessenger
-	// pressureMu guards the last resource-pressure sample per workspace
-	// (#1747 round 3): agentd pushes over the seam; the claim choke
-	// point skips pressured workspaces; reads surface the note.
-	pressureMu sync.RWMutex
-	pressure   map[string]PressureSample
-	// publisher is the #1699 (#1772) §4.6 event projection.
-	publisher EventPublisher
+	publisher  EventPublisher
 }
 
 // SetEventPublisher installs or replaces the §4.6 event projection at
@@ -124,22 +103,7 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 	if cfg.SweepInterval <= 0 {
 		cfg.SweepInterval = 30 * time.Second
 	}
-	if cfg.UserClaimCap <= 0 {
-		cfg.UserClaimCap = 8
-	}
-	if cfg.GlobalClaimCap <= 0 {
-		cfg.GlobalClaimCap = 64
-	}
-	if cfg.MaxEdgesPerNode <= 0 {
-		cfg.MaxEdgesPerNode = 16
-	}
-	if cfg.MaxNodesPerEpic <= 0 {
-		cfg.MaxNodesPerEpic = 64
-	}
-	if cfg.PressureSampleTTL <= 0 {
-		cfg.PressureSampleTTL = 2 * time.Minute
-	}
-	s := &Service{store: NewStore(pool), cfg: cfg, pressure: map[string]PressureSample{}}
+	s := &Service{store: NewStore(pool), cfg: cfg}
 	for _, o := range opts {
 		o(s)
 	}
@@ -161,22 +125,21 @@ type ProjectInput struct {
 
 // EpicInput is the create/update payload for epics.
 type EpicInput struct {
-	Title   string
-	Outcome string
-	Tags    []string
+	Title    string
+	Outcome  string
+	Priority string
+	Tags     []string
 }
 
-// TaskInput is the create/update payload for tasks. DependsOn (create
-// only, #1747) names prerequisite tasks by short id or UUID — the edges
-// are added in the SAME transaction (a bad ref rolls the create back).
+// TaskInput is the create/update payload for tasks.
 type TaskInput struct {
 	Title              string
 	Description        string
+	Priority           string
 	Tags               []string
 	AcceptanceCriteria []AcceptanceCriterion
 	// SetCriteriaMet checks off the criterion at this 0-based index.
 	SetCriteriaMet *int
-	DependsOn      []string
 }
 
 // --- Shared guard helpers ------------------------------------------------------
@@ -193,31 +156,9 @@ func requireOwner(actor Actor, userID string) error {
 	return nil
 }
 
-// requireManagerAction enforces the #1747 manager-action scope on the
-// agent surface: the acting pod's resolved workspace must be the
-// project's target workspace (§4.4 caller-workspace binding extended to
-// manager rows — a pod manages ITS OWN workspace's board only). Manager
-// surfaces (REST/external MCP) scope by ownership alone (requireOwner,
-// R7); the engine never routes here.
-func requireManagerAction(actor Actor, p *Project) error {
-	if actor.Surface != SurfaceAgent {
-		return nil
-	}
-	if actor.WorkspaceID == "" || actor.WorkspaceID != p.TargetWorkspaceID {
-		return &GuardError{Code: GuardWorkspaceBinding, Detail: "agent manager actions are workspace-scoped: the project must target the caller's workspace (ruling #1747)"}
-	}
-	return nil
-}
-
-// requireAgentWorkspaceTarget enforces the binding on CREATE (no project
-// row exists yet): on the agent surface the payload's target workspace
-// must be the caller's resolved workspace.
-func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
-	if actor.Surface != SurfaceAgent {
-		return nil
-	}
-	if actor.WorkspaceID == "" || actor.WorkspaceID != targetWorkspaceID {
-		return &GuardError{Code: GuardWorkspaceBinding, Detail: "agent manager actions are workspace-scoped: a project created here targets the caller's workspace only (ruling #1747)"}
+func requireManagerSurface(actor Actor) error {
+	if actor.Surface == SurfaceAgent {
+		return &GuardError{Code: GuardManagerSurface, Detail: "manager-only action: agents are workers, not managers (§4.3c)"}
 	}
 	return nil
 }
@@ -242,14 +183,23 @@ func tagsOrEmpty(t []string) []string {
 	return t
 }
 
+// validatePriority normalizes a P0-P3 (default P2).
+func validatePriority(p string) (string, error) {
+	switch p {
+	case "":
+		return PriorityP2, nil
+	case PriorityP0, PriorityP1, PriorityP2, PriorityP3:
+		return p, nil
+	default:
+		return "", &GuardError{Code: "validation", Detail: "priority must be P0-P3"}
+	}
+}
+
 // --- Projects -------------------------------------------------------------------
 
-// CreateProject creates a user-level board project (ruling R7). On the
-// agent surface the target workspace is bound to the caller's resolved
-// workspace (#1747 — structural, no pod creates boards for another
-// tenant's workspace).
+// CreateProject creates a user-level board project (ruling R7).
 func (s *Service) CreateProject(ctx context.Context, actor Actor, in ProjectInput, requestID string) (*Project, error) {
-	if err := requireAgentWorkspaceTarget(actor, in.TargetWorkspaceID); err != nil {
+	if err := requireManagerSurface(actor); err != nil {
 		return nil, err
 	}
 	if in.Name == "" {
@@ -315,11 +265,6 @@ func (s *Service) UpdateProject(ctx context.Context, actor Actor, projectID, sho
 			ws = p.TargetWorkspaceID
 		}
 		if ws != p.TargetWorkspaceID {
-			// #1747: the agent surface never retargets — a pod's board
-			// targets its own workspace structurally.
-			if actor.Surface == SurfaceAgent {
-				return nil, &GuardError{Code: GuardWorkspaceBinding, Detail: "agent manager actions cannot retarget a project's workspace (ruling #1747)"}
-			}
 			var wsOwner string
 			if err := tx.QueryRow(ctx, `SELECT user_id FROM workspaces WHERE id=$1`, ws).Scan(&wsOwner); err != nil || wsOwner != actor.UserID {
 				return nil, &GuardError{Code: GuardWorkspaceBinding, Detail: "retargeting requires a workspace the owning user can access"}
@@ -378,7 +323,7 @@ func (s *Service) projectLifecycle(ctx context.Context, actor Actor, projectID, 
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
+	if err := requireManagerSurface(actor); err != nil {
 		return nil, err
 	}
 	// Replay-first (a caller key that already landed renders the
@@ -418,11 +363,12 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
-		return nil, err
-	}
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "epic title is required"}
+	}
+	prio, err := validatePriority(in.Priority)
+	if err != nil {
+		return nil, err
 	}
 	epicID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_epic", itemKind: "epic", itemID: epicID, actor: actor}
@@ -432,9 +378,9 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO epics (id, project_id, short_id, title, outcome, status, project_name, tags, quantum)
-			VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8)`,
-			epicID, p.ID, shortID, in.Title, in.Outcome, p.Name, tagsOrEmpty(in.Tags), s.cfg.DRRQuantum); err != nil {
+			INSERT INTO epics (id, project_id, short_id, title, outcome, status, priority, project_name, tags, quantum)
+			VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9)`,
+			epicID, p.ID, shortID, in.Title, in.Outcome, prio, p.Name, tagsOrEmpty(in.Tags), s.cfg.DRRQuantum); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": epicID, "short_id": shortID}, nil
@@ -451,7 +397,7 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	return s.GetEpic(ctx, epicID, "")
 }
 
-// UpdateEpic updates title/outcome/tags (outcome is the human's
+// UpdateEpic updates title/outcome/priority/tags (outcome is the human's
 // steering wheel, ruling R2). A title rename cascades tasks.epic_name.
 func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOrID string, in EpicInput, requestID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
@@ -465,7 +411,8 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
+	prio, err := validatePriority(in.Priority)
+	if err != nil {
 		return nil, err
 	}
 	title := in.Title
@@ -475,8 +422,8 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "update_epic", itemKind: "epic", itemID: e.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `
-			UPDATE epics SET title=$2, outcome=$3, tags=$4 WHERE id=$1`,
-			e.ID, title, in.Outcome, tagsOrEmpty(in.Tags)); err != nil {
+			UPDATE epics SET title=$2, outcome=$3, priority=$4, tags=$5 WHERE id=$1`,
+			e.ID, title, in.Outcome, prio, tagsOrEmpty(in.Tags)); err != nil {
 			return nil, err
 		}
 		if title != e.Title {
@@ -496,84 +443,13 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 // EpicActivate starts feeding. The immediate RC4 re-check applies to
 // draft/paused/archived-origin activations (a finished epic completes at
 // activation); the completed→active re-open is exempt (r13 pin).
-// #1747: activation refuses cross-epic edges into INACTIVE epics unless
-// acknowledged (structurally-broken subgraph guard) and resumes any
-// in-flight workers paused under the epic (the pause-must-pause lever).
-// #1699 (#1772): requestID threads the lifecycle replay (Duplicate→200).
-func (s *Service) EpicActivate(ctx context.Context, actor Actor, epicID, shortIDOrID string, ackInactiveDeps bool, requestID string) (*Epic, error) {
-	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
-	if err != nil {
-		return nil, err
-	}
-	if !ackInactiveDeps {
-		n, err := s.countInactiveEpicDeps(ctx, e.ID)
-		if err != nil {
-			return nil, err
-		}
-		if n > 0 {
-			return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("%d cross-epic dependenc(ies) enter inactive epics — acknowledge (acknowledgeInactiveDeps) or resolve them first", n)}
-		}
-	}
-	e, err = s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true, requestID)
-	if err != nil {
-		return nil, err
-	}
-	// Resume directives: in-flight workers held under the epic's pause
-	// continue (post-commit, best-effort — the flag is authoritative).
-	s.deliverToEpicWorkers(ctx, e.ID, DirectiveResume)
-	return e, nil
+func (s *Service) EpicActivate(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicActive, "epic_activate", true, requestID)
 }
 
-// countInactiveEpicDeps counts the epic's dependency edges whose
-// prerequisite task lives in an inactive (draft/paused/archived) epic —
-// the structurally-broken-subgraph predicate for epic_activate (#1747).
-func (s *Service) countInactiveEpicDeps(ctx context.Context, epicID string) (int, error) {
-	var n int
-	err := s.q().QueryRow(ctx, `
-		SELECT count(*) FROM board_dependencies d
-		JOIN tasks t ON t.id = d.task_id AND t.epic_id = $1
-		JOIN tasks dep ON dep.id = d.depends_on_task_id
-		JOIN epics de ON de.id = dep.epic_id
-		WHERE de.status IN ('draft','paused','archived')`, epicID).Scan(&n)
-	return n, err
-}
-
-// EpicInitialReadySet renders the epic's initial ready set (backlog,
-// unblocked, unpaused, not cooling down) — epic_activate's report and
-// import_plan's plan-approval render share it (#1747).
-func (s *Service) EpicInitialReadySet(ctx context.Context, epicID string) ([]string, error) {
-	rows, err := s.q().Query(ctx, `
-		SELECT t.short_id FROM tasks t
-		WHERE t.epic_id = $1 AND t.stage = 'backlog'
-		  AND NOT t.is_blocked AND NOT t.paused
-		  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
-		ORDER BY t.created_at, t.id`, epicID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
-// EpicPause stops new claims, never interrupts in-flight leases — and,
-// per #1747's pause-must-pause ruling, delivers HALT directives to every
-// in-flight worker under the epic (they land at the current turn's
-// boundary; forward writes refuse while the epic is paused).
+// EpicPause stops new claims, never interrupts in-flight leases.
 func (s *Service) EpicPause(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
-	e, err := s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false, requestID)
-	if err != nil {
-		return nil, err
-	}
-	s.deliverToEpicWorkers(ctx, e.ID, DirectiveHalt)
-	return e, nil
+	return s.epicLifecycle(ctx, actor, epicID, shortIDOrID, EpicPaused, "epic_pause", false, requestID)
 }
 
 // EpicArchive is reversible storage.
@@ -599,7 +475,7 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
+	if err := requireManagerSurface(actor); err != nil {
 		return nil, err
 	}
 	// Replay-first: the allowed-map below reads the status the ORIGINAL
@@ -669,23 +545,10 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
-		return nil, err
-	}
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "task title is required"}
 	}
-	// #1747 DAG blast-radius bound: nodes per epic.
-	var nodes int
-	if err := s.q().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&nodes); err != nil {
-		return nil, err
-	}
-	if nodes >= s.cfg.MaxNodesPerEpic {
-		return nil, &GuardError{Code: GuardGraphLimit, Detail: fmt.Sprintf("epic holds %d tasks (max %d) — the blast-radius bound refuses more", nodes, s.cfg.MaxNodesPerEpic)}
-	}
-	// Inline dependsOn (#1747): the edges are added in the create's OWN
-	// transaction (a bad ref or guard rolls the create back).
-	deps, err := s.resolveDepRefs(ctx, p, in.DependsOn)
+	prio, err := validatePriority(in.Priority)
 	if err != nil {
 		return nil, err
 	}
@@ -697,19 +560,11 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO tasks (id, project_id, epic_id, short_id, title, description,
+			INSERT INTO tasks (id, project_id, epic_id, short_id, title, description, priority,
 			                   project_name, epic_name, tags, acceptance_criteria)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			taskID, p.ID, e.ID, shortID, in.Title, in.Description,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			taskID, p.ID, e.ID, shortID, in.Title, in.Description, prio,
 			p.Name, e.Title, tagsOrEmpty(in.Tags), criteriaJSON(in.AcceptanceCriteria)); err != nil {
-			return nil, err
-		}
-		for _, dep := range deps {
-			if err := s.insertDependencyTx(ctx, tx, p, taskID, dep); err != nil {
-				return nil, err
-			}
-		}
-		if err := rederiveBlocked(ctx, txQ{tx}, taskID); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": taskID, "short_id": shortID}, nil
@@ -729,8 +584,9 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	return s.store.resolveTask(ctx, s.q(), p.ID, taskID)
 }
 
-// UpdateTask patches fields; criteria check-off rides here (the
-// reviewer's Done preparation).
+// UpdateTask patches fields; priority changes are ordinary writes (the
+// dispatcher reads priority fresh each claim); criteria check-off rides
+// here (the reviewer's Done preparation).
 func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOrID string, in TaskInput, requestID string) (*Task, error) {
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
@@ -743,7 +599,8 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
+	prio, err := validatePriority(in.Priority)
+	if err != nil {
 		return nil, err
 	}
 	title, desc := t.Title, t.Description
@@ -767,9 +624,9 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "update_task", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `
-			UPDATE tasks SET title=$2, description=$3, tags=$4, acceptance_criteria=$5
+			UPDATE tasks SET title=$2, description=$3, priority=$4, tags=$5, acceptance_criteria=$6
 			WHERE id=$1`,
-			t.ID, title, desc, tagsOrEmpty(tags), criteriaJSON(criteria)); err != nil {
+			t.ID, title, desc, prio, tagsOrEmpty(tags), criteriaJSON(criteria)); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": t.ID}, nil
@@ -802,12 +659,9 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return err
 	}
-	if err := requireManagerAction(actor, p); err != nil {
-		return err
-	}
-	// The target resolves UNSCOPED: a cross-workspace target must surface
-	// as the trigger's 409-class (R4a), not a scoped 404 — the guard is
-	// the authority, authz rides the SOURCE task's project.
+	// The target resolves UNSCOPED: a cross-project target must surface as
+	// the trigger's 409-class (R4a), not a scoped 404 — the guard is the
+	// authority, authz rides the SOURCE task's project.
 	dep, err := s.store.resolveTask(ctx, s.q(), "", dependsOnID)
 	if err != nil {
 		var nf *NotFoundError
@@ -820,21 +674,20 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 		return &DependencyError{Code: "self", Detail: "a task cannot depend on itself",
 			Suggestions: s.store.scopeCandidates(ctx, q2(s), "task", p.ID, "")}
 	}
-	// #1747 DAG spec: edges may cross epics (and projects) WITHIN a
-	// workspace, never across workspaces. Pre-check in Go (r1-S2): the DB
-	// trigger's RAISE carries identifiers a 409 has no business
-	// disclosing; the trigger remains the race belt via mapDepErr.
-	if err := s.checkEdgeWorkspace(ctx, p, dep); err != nil {
-		return err
-	}
-	// #1747 blast-radius bound: max edges per node.
-	if err := s.checkEdgeCaps(ctx, t.ID, dep.ID); err != nil {
-		return err
+	// Pre-check cross-project in Go (r1-S2): the DB trigger's RAISE
+	// carries both tasks' and projects' UUIDs — identifier disclosure a
+	// 409 has no business making. Clean detail here; the trigger remains
+	// the race belt via mapDepErr's sanitized mapping.
+	if dep.ProjectID != p.ID {
+		return &DependencyError{Code: "cross_project",
+			Detail: "cross-project dependency rejected (edges live within a project, ruling R4)"}
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "add_dependency", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		if err := s.insertDependencyTx(ctx, tx, p, t.ID, dep); err != nil {
-			return nil, err
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO board_dependencies (task_id, depends_on_task_id, created_by)
+			VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, t.ID, dep.ID, actor.UserID); err != nil {
+			return nil, mapDepErr(err, p.ID)
 		}
 		if err := rederiveBlocked(ctx, tx, t.ID); err != nil {
 			return nil, err
@@ -848,73 +701,6 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 	return nil
 }
 
-// insertDependencyTx adds one edge inside an open transaction (the
-// shared writer for add_dependency, create_task's inline dependsOn, and
-// delete_task's reconnect) — duplicate edges are an idempotent no-op
-// (ON CONFLICT DO NOTHING, #1747), the DB trigger is the cycle/shape
-// belt, mapDepErr sanitizes its violations.
-func (s *Service) insertDependencyTx(ctx context.Context, tx pgx.Tx, p *Project, taskID string, dep *Task) error {
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO board_dependencies (task_id, depends_on_task_id, created_by)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, taskID, dep.ID, p.UserID); err != nil {
-		return mapDepErr(err, p.ID)
-	}
-	return nil
-}
-
-// checkEdgeWorkspace enforces "cross-epic within a workspace, never
-// cross-workspace" (#1747): the dep task's project must target the SAME
-// workspace as the source's.
-func (s *Service) checkEdgeWorkspace(ctx context.Context, source *Project, dep *Task) error {
-	var depWS string
-	if err := s.q().QueryRow(ctx, `SELECT target_workspace_id::text FROM projects WHERE id=$1`, dep.ProjectID).Scan(&depWS); err != nil {
-		return err
-	}
-	if depWS != source.TargetWorkspaceID {
-		return &DependencyError{Code: "cross_workspace",
-			Detail: "cross-workspace dependency rejected (edges live within a workspace, #1747)"}
-	}
-	return nil
-}
-
-// checkEdgeCaps enforces the per-node edge bound (#1747: 16 default) —
-// counted over BOTH directions of each node.
-func (s *Service) checkEdgeCaps(ctx context.Context, sourceID, depID string) error {
-	var srcEdges, depEdges int
-	if err := s.q().QueryRow(ctx, `
-		SELECT
-		  (SELECT count(*) FROM board_dependencies WHERE task_id=$1 OR depends_on_task_id=$1),
-		  (SELECT count(*) FROM board_dependencies WHERE task_id=$2 OR depends_on_task_id=$2)`,
-		sourceID, depID).Scan(&srcEdges, &depEdges); err != nil {
-		return err
-	}
-	if srcEdges >= s.cfg.MaxEdgesPerNode || depEdges >= s.cfg.MaxEdgesPerNode {
-		return &GuardError{Code: GuardGraphLimit, Detail: fmt.Sprintf("edge cap reached (max %d per node) — the blast-radius bound refuses more", s.cfg.MaxEdgesPerNode)}
-	}
-	return nil
-}
-
-// resolveDepRefs resolves inline dependsOn references (short id or UUID)
-// for create_task/import_plan: every ref must resolve to a task in the
-// same workspace; self/cycle guards ride the writers.
-func (s *Service) resolveDepRefs(ctx context.Context, p *Project, refs []string) ([]*Task, error) {
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	out := make([]*Task, 0, len(refs))
-	for _, ref := range refs {
-		dep, err := s.store.resolveTask(ctx, s.q(), "", ref)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.checkEdgeWorkspace(ctx, p, dep); err != nil {
-			return nil, err
-		}
-		out = append(out, dep)
-	}
-	return out, nil
-}
-
 // mapDepErr translates the BEFORE INSERT trigger's violations into the
 // R4a 409 shape with did-you-mean suggestions.
 func mapDepErr(err error, projectID string) error {
@@ -926,9 +712,9 @@ func mapDepErr(err error, projectID string) error {
 		switch {
 		case strings.Contains(msg, "cannot depend on itself"):
 			return &DependencyError{Code: "self", Detail: "a task cannot depend on itself"}
-		case strings.Contains(msg, "cross-workspace dependency"):
-			return &DependencyError{Code: "cross_workspace",
-				Detail: "cross-workspace dependency rejected (edges live within a workspace, #1747)"}
+		case strings.Contains(msg, "cross-project dependency"):
+			return &DependencyError{Code: "cross_project",
+				Detail: "cross-project dependency rejected (edges live within a project, ruling R4)"}
 		case strings.Contains(msg, "would create a cycle"):
 			return &DependencyError{Code: "cycle",
 				Detail: "dependency edge would create a cycle (ruling R4a)"}
@@ -945,7 +731,7 @@ func rederiveBlocked(ctx context.Context, q Queryer, taskID string) error {
 			SELECT 1 FROM board_dependencies d
 			JOIN tasks dep ON dep.id = d.depends_on_task_id
 			WHERE d.task_id = t.id AND dep.stage <> 'done')
-		WHERE t.id = $1`, taskID)
+		WHERE t.id = $1 AND t.stage <> 'cancelled'`, taskID)
 	return err
 }
 
@@ -962,9 +748,6 @@ func (s *Service) RemoveDependency(ctx context.Context, actor Actor, taskID, sho
 		return err
 	}
 	if err := requireOwner(actor, p.UserID); err != nil {
-		return err
-	}
-	if err := requireManagerAction(actor, p); err != nil {
 		return err
 	}
 	// Resolve the target like AddDependency does (r1-C1): every
@@ -1007,30 +790,5 @@ func q2(s *Service) Queryer { return s.q() }
 // GetTaskInWorkspace is the agent surface's reader (r1-S1): resolution,
 // row, and did-you-mean suggestions all scoped to the caller's workspace.
 func (s *Service) GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*Task, error) {
-	t, err := s.store.resolveTaskInWorkspace(ctx, s.q(), workspaceID, pick(taskID, shortIDOrID))
-	if err != nil {
-		return nil, err
-	}
-	s.decorateTask(ctx, t, nil)
-	return t, nil
-}
-
-// inFlightCountsForProject feeds the #1747 concurrency caps at the
-// claim choke point: the project's owner (R7 — the per-USER cap is
-// per-board-owner), the owner's and the instance's in_progress counts,
-// and the project's target workspace (the pressure gate's key). It
-// lives in service.go, NOT engine.go/reconciler.go: the engine and
-// reconciler are ownership-agnostic by construction (§4.7 forward-compat
-// note, source-pinned by TestKill_SourceLevelOwnershipPins) — the
-// owner column is this helper's business alone.
-func (s *Service) inFlightCountsForProject(ctx context.Context, tx pgx.Tx, projectID string) (ConcurrencyCounts, string, error) {
-	var targetWS string
-	var c ConcurrencyCounts
-	err := tx.QueryRow(ctx, `
-		SELECT p.target_workspace_id::text,
-		  (SELECT count(*) FROM tasks ti JOIN projects pi ON pi.id = ti.project_id
-		   WHERE ti.stage='in_progress' AND pi.user_id = p.user_id),
-		  (SELECT count(*) FROM tasks WHERE stage='in_progress')
-		FROM projects p WHERE p.id = $1`, projectID).Scan(&targetWS, &c.UserInFlight, &c.GlobalInFlight)
-	return c, targetWS, err
+	return s.store.resolveTaskInWorkspace(ctx, s.q(), workspaceID, pick(taskID, shortIDOrID))
 }

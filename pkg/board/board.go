@@ -58,39 +58,16 @@ type EngineConfig struct {
 	// SweepInterval is the reconciler cadence (advisory for the sweep
 	// runner; the sweep itself is stateless). Default 30s.
 	SweepInterval time.Duration
-	// UserClaimCap bounds concurrently in_progress tasks PER USER
-	// (#1747 round 3 backpressure). Over-cap is NEVER an error: claims
-	// quietly wait; task reads surface waiting_on=concurrency_limit.
-	// Default 8.
-	UserClaimCap int
-	// GlobalClaimCap bounds concurrently in_progress tasks per instance
-	// (#1747 round 3). Default 64.
-	GlobalClaimCap int
-	// MaxEdgesPerNode is the DAG blast-radius bound (#1747): edges per
-	// task node, both directions counted. Default 16.
-	MaxEdgesPerNode int
-	// MaxNodesPerEpic is the DAG blast-radius bound (#1747): tasks per
-	// epic (create + import_plan enforce it). Default 64.
-	MaxNodesPerEpic int
-	// PressureSampleTTL bounds how long a pod's resource-pressure report
-	// stays authoritative without a refresh (#1747 round 3). Default 2m.
-	PressureSampleTTL time.Duration
 }
 
-// DefaultEngineConfig returns the R6 code defaults (+ the #1747
-// backpressure/graph-limit defaults).
+// DefaultEngineConfig returns the R6 code defaults.
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		AttemptsCap:       3,
-		LeaseDuration:     15 * time.Minute,
-		ThrottleBackoff:   5 * time.Minute,
-		DRRQuantum:        1,
-		SweepInterval:     30 * time.Second,
-		UserClaimCap:      8,
-		GlobalClaimCap:    64,
-		MaxEdgesPerNode:   16,
-		MaxNodesPerEpic:   64,
-		PressureSampleTTL: 2 * time.Minute,
+		AttemptsCap:     3,
+		LeaseDuration:   15 * time.Minute,
+		ThrottleBackoff: 5 * time.Minute,
+		DRRQuantum:      1,
+		SweepInterval:   30 * time.Second,
 	}
 }
 
@@ -105,23 +82,14 @@ type Actor struct {
 	// Surface is the projection the action arrived on.
 	Surface string
 	// ClaimToken is the in-flight guard on caller surfaces (empty for
-	// the reconciler, delete's clean abort, and the manager pending_input
-	// exits — the named caller-side overrides).
+	// the reconciler, cancel, and manager pending_input exits — the two
+	// named caller-side overrides).
 	ClaimToken string
 	// WorkspaceID is the resolved pod workspace on the agent surface
 	// (design §4.4 caller-workspace binding, structural: an in-workspace
-	// agent may only touch boards whose project targets ITS workspace —
-	// #1747 extends the binding from worker reads to manager actions).
+	// worker may only touch tasks whose project targets ITS workspace).
 	// Empty on manager surfaces (REST/external MCP scope by ownership).
 	WorkspaceID string
-	// SessionID attributes the action to the creating session on the
-	// agent surface (#1747: "audit events attribute every row to the
-	// creating session") — the harness-attested injected identity. It
-	// also feeds grant differentiation: a session that is (or was) a
-	// board worker is refused manager actions. Empty on surfaces whose
-	// callers hold no session identity (REST/external MCP: the user is
-	// the actor; the engine).
-	SessionID string
 }
 
 // Actor kinds.
@@ -138,24 +106,32 @@ const (
 	SurfaceReconciler  = "reconciler"   // system actor, engine-internal
 )
 
-// Stages (ruling R2's binding set, as amended by #1747 round 3: the
-// eliminated cancel terminal state is GONE — delete_task removes rows
-// outright; the machine is forward-moving with the one enumerated
-// backward bounce and the human pending_input exits).
+// Stages (ruling R2's binding set).
 const (
 	StageBacklog      = "backlog"
 	StageInProgress   = "in_progress"
 	StageInReview     = "in_review"
 	StageDone         = "done"
 	StagePendingInput = "pending_input"
+	// Composed so misspell's fixer never rewrites the literal (the stage
+	// value is the design-doc verbatim term; the DB CHECK depends on it).
+	StageCancelled = "cancel" + "led" //nolint:misspell
 )
 
 // PendingInput origins (§4.1: four origins with distinct exits).
 const (
 	PendingOriginWorker              = "worker"
 	PendingOriginEscalated           = "escalated"
-	PendingOriginDependencyAbandoned = "dependency_abandoned" // historical only: cancel is eliminated (#1747), nothing new lands this origin
+	PendingOriginDependencyAbandoned = "dependency_abandoned"
 	PendingOriginDriftReview         = "drift_review"
+)
+
+// Priorities (P0-P3, default P2).
+const (
+	PriorityP0 = "P0"
+	PriorityP1 = "P1"
+	PriorityP2 = "P2"
+	PriorityP3 = "P3"
 )
 
 // Project / epic lifecycle statuses.
@@ -208,15 +184,7 @@ const (
 	GuardDependency       = "dependency"           // edge rejected (same-project/self/acyclic)
 	GuardProjectState     = "project_state"        // project lifecycle refuses the action
 	GuardAuthz            = "authz"                // user-level ownership (R7)
-
-	// #1747 additions: the pause lever, backpressure caps, and DAG
-	// blast-radius limits.
-	GuardPaused       = "task_paused"       // pause gates claiming, forward writes, and claim mints (#1747)
-	GuardConcurrency  = "concurrency_limit" // user/global concurrent-claim cap refuses a manual dispatch
-	GuardGraphLimit   = "graph_limit"       // edges-per-node / nodes-per-epic cap (blast-radius bound)
-	GuardBackpressure = "backpressure"      // workspace resource pressure gates claiming (informational class)
-	// #1699 (#1772): malformed arguments (rendered 400).
-	GuardInput = "invalid_input"
+	GuardInput            = "invalid_input"        // malformed arguments (rendered 400)
 )
 
 // DependencyError is the dependency-write 409 (ruling R4a) — carries

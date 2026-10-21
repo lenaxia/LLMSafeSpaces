@@ -247,43 +247,52 @@ func (s *BoardSuite) TestKill_RC3DependencyConsistency() {
 	s.False(s.reloadTask(nary.ID).IsBlocked, "ALL deps done → ready (instant, event-driven)")
 
 	// Canceled dependency: dependents flip to pending_input/dependency_
-	// #1747: delete replaces cancel — deleting a prerequisite removes its
-	// edges, so dependents UNBLOCK (no pending staging anywhere); each
-	// orphan is listed in the response and carries an unblocked_by_delete
-	// audit event.
+	// abandoned; rows already pending keep their origin (no oscillation).
 	c := s.seedTask(e, "c-prereq", nil, true)
 	d1 := s.seedTask(e, "d1", nil, false)
 	d2 := s.seedTask(e, "d2", nil, false)
 	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), d1.ID, "", c.ID, ""))
 	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), d2.ID, "", c.ID, ""))
-
-	out, err := s.svc.DeleteTask(context.Background(), s.owner(), c.ID, "", false, "")
-	s.Require().NoError(err)
-	s.Len(out.OrphanedDependents, 2, "both dependents are listed (affected-party visibility)")
-	s.Equal(2, s.countEvents("unblocked_by_delete"), "one audit event per orphan (uniform action; ids ride the payload)")
-	s.False(s.rawTask(d1.ID).IsBlocked, "the edge vanished → ready, full stop")
-	s.False(s.rawTask(d2.ID).IsBlocked)
-	s.Equal(board.StageBacklog, s.rawTask(d1.ID).Stage, "dependents unblock in place — never staged pending")
-
-	// The sweep's convergence net stays quiet: the in-tx rederive already
-	// converged the rows (zero-write guarantee on a clean graph).
-	res = s.sweep()
-	s.Equal(0, res.DepRepairs, "RC3 finds nothing to repair after the in-tx rederive")
-
-	// Done-row stability: a DONE dependent of a not-done task never gets
-	// is_blocked writes (RC3's stage predicate). The done stage is set
-	// directly (the machine has no path from blocked-backlog to done —
-	// TaskStart refuses blocked rows, correctly); the pin is RC3's
-	// predicate, not the machine's.
-	x := s.seedTask(e, "x", nil, true)
-	doneDep := s.seedTask(e, "done-dep", nil, false)
-	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), doneDep.ID, "", x.ID, ""))
+	// d2 starts already pending_input (worker origin): the cascade must
+	// SKIP it, preserving origin.
 	_, err = s.pool.Exec(context.Background(),
-		`UPDATE tasks SET stage='done', is_blocked=false WHERE id=$1`, doneDep.ID)
+		`UPDATE tasks SET stage='pending_input', pending_origin='worker' WHERE id=$1`, d2.ID)
+	s.Require().NoError(err)
+
+	_, err = s.svc.CancelTask(context.Background(), s.owner(), c.ID, "", "abandoned", "")
+	s.Require().NoError(err)
+
+	row := s.rawTask(d1.ID)
+	s.Equal(board.StagePendingInput, row.Stage)
+	s.Require().NotNil(row.PendingOrigin)
+	s.Equal(board.PendingOriginDependencyAbandoned, *row.PendingOrigin)
+	row2 := s.rawTask(d2.ID)
+	s.Equal(board.StagePendingInput, row2.Stage)
+	s.Equal("worker", *row2.PendingOrigin, "already-pending rows keep their origin")
+
+	// The sweep's convergence net finds the same class without the event.
+	// (Simulate a missed cascade: reset d1 to backlog, keep the canceled
+	// dep, sweep → restaged pending_input exactly once.)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET stage='backlog', pending_origin=NULL WHERE id=$1`, d1.ID)
 	s.Require().NoError(err)
 	res = s.sweep()
-	s.Equal(0, res.DepRepairs, "RC3 never writes is_blocked on done rows (zero-write guarantee)")
-	s.Equal(board.StageDone, s.rawTask(doneDep.ID).Stage)
+	s.Equal(1, res.AbandonedStaged)
+	s.Equal(board.StagePendingInput, s.rawTask(d1.ID).Stage)
+
+	// Terminal-row stability: a canceled dependent of a
+	// not-done task never gets unblock writes.
+	x := s.seedTask(e, "x", nil, true)
+	victim := s.seedTask(e, "victim-dep", nil, false)
+	s.Require().NoError(s.svc.AddDependency(context.Background(), s.owner(), victim.ID, "", x.ID, ""))
+	_, err = s.svc.CancelTask(context.Background(), s.owner(), victim.ID, "", "gone", "")
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET is_blocked=false WHERE id=$1`, victim.ID)
+	s.Require().NoError(err)
+	res = s.sweep()
+	s.Equal(0, res.DepRepairs, "RC3 never writes is_blocked on terminal rows (zero-write guarantee)")
+	s.Equal(board.StageCancelled, s.rawTask(victim.ID).Stage)
 }
 
 // doneDirect drives a criteria-met task to done via the service (fixture
@@ -329,10 +338,9 @@ func (s *BoardSuite) TestKill_RC4EpicCompletion() {
 	s.doneDirect(t1)
 	s.Equal(board.EpicActive, s.epicStatus(e.ID), "non-terminal tasks remain — epic still feeds")
 
-	// Delete t2 (#1747: cancel is eliminated): the remaining non-terminal
-	// task is gone; t1's done transition already fired... the RC4 net
-	// catches the new terminal set.
-	_, err := s.svc.DeleteTask(context.Background(), s.owner(), t2.ID, "", false, "")
+	// Cancel t2: the remaining non-terminal task is canceled; t1's done
+	// transition already fired... the RC4 net catches the new terminal set.
+	_, err := s.svc.CancelTask(context.Background(), s.owner(), t2.ID, "", "not needed", "")
 	s.Require().NoError(err)
 	res := s.sweep()
 	s.Equal(1, res.EpicCompletions, "the watermark net completes the epic once no non-terminal tasks remain")
@@ -342,18 +350,17 @@ func (s *BoardSuite) TestKill_RC4EpicCompletion() {
 
 	// Re-open (completed→active): exempt from the immediate re-check —
 	// stays active with zero follow-up work.
-	reopened, err := s.svc.EpicActivate(context.Background(), s.owner(), e.ID, "", false, "")
+	reopened, err := s.svc.EpicActivate(context.Background(), s.owner(), e.ID, "", "")
 	s.Require().NoError(err)
 	s.Equal(board.EpicActive, reopened.Status)
 
-	// All-deleted epic never completes (RC4 requires a done task —
-	// deletion leaves no rows at all).
+	// All-canceled epic never completes.
 	e2 := s.seedEpic(p, board.EpicActive)
 	c1 := s.seedTask(e2, "c1", nil, false)
-	_, err = s.svc.DeleteTask(context.Background(), s.owner(), c1.ID, "", false, "")
+	_, err = s.svc.CancelTask(context.Background(), s.owner(), c1.ID, "", "abandon", "")
 	s.Require().NoError(err)
 	res = s.sweep()
-	s.NotEqual(board.EpicCompleted, s.epicStatus(e2.ID), "an all-deleted epic never satisfies the completion trigger")
+	s.NotEqual(board.EpicCompleted, s.epicStatus(e2.ID), "an all-canceled epic never satisfies the completion trigger")
 
 	// Task-less epic never completes.
 	e3 := s.seedEpic(p, board.EpicActive)
@@ -365,7 +372,7 @@ func (s *BoardSuite) TestKill_RC4EpicCompletion() {
 	e4 := s.seedEpic(p, board.EpicDraft)
 	dt := s.seedTask(e4, "done-while-draft", nil, true)
 	s.doneDirect(dt)
-	act, err := s.svc.EpicActivate(context.Background(), s.owner(), e4.ID, "", false, "")
+	act, err := s.svc.EpicActivate(context.Background(), s.owner(), e4.ID, "", "")
 	s.Require().NoError(err)
 	s.Equal(board.EpicCompleted, act.Status, "draft-origin activation of an all-terminal epic completes immediately")
 }
@@ -385,45 +392,41 @@ func (s *BoardSuite) TestKill_CancelMidFlightNeverResurrects() {
 	s.Equal(task.ID, c.TaskID)
 	assignee := s.reloadTask(task.ID).AssigneeSession
 
-	// #1747: delete replaces cancel — the in-flight row gets a clean
-	// abort FIRST (the interrupt seam), then the row vanishes; the
-	// dependent's edge vanishes with it (listed + audited as orphan).
-	_, err := s.svc.DeleteTask(context.Background(), s.owner(), task.ID, "", false, "")
+	_, err := s.svc.CancelTask(context.Background(), s.owner(), task.ID, "", "obsolete", "")
 	s.Require().NoError(err)
 	s.Equal(1, s.aborter.count(), "worker abort issued (rides the interrupt seam)")
 	s.Equal(task.ID+"/"+assignee, s.aborter.callsSlice()[0])
 
-	var gone int
-	s.Require().NoError(s.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM tasks WHERE id=$1`, task.ID).Scan(&gone))
-	s.Equal(0, gone, "delete removes the object")
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageCancelled, row.Stage)
+	s.Nil(row.ClaimToken, "cancel revokes the token")
+	s.Nil(row.Assignee)
+	s.Nil(row.LeaseExp)
 	dRow := s.rawTask(dep.ID)
-	s.Equal(board.StageBacklog, dRow.Stage, "the orphan unblocks in place — never staged pending")
-	s.False(dRow.IsBlocked)
-
-	// Content preservation (#1747 6261349020): the delete event embeds
-	// the FULL final-state snapshot — the only content-history a deleted
-	// task body has.
-	var snap int
-	s.Require().NoError(s.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM board_events WHERE action='delete_task' AND item_id=$1
-		 AND payload ? 'snapshot' AND payload->'snapshot'->>'title' = $2`,
-		task.ID, task.Title).Scan(&snap))
-	s.Equal(1, snap, "one delete_task event with the full snapshot")
+	s.Equal(board.StagePendingInput, dRow.Stage)
+	s.Require().NotNil(dRow.PendingOrigin)
+	s.Equal(board.PendingOriginDependencyAbandoned, *dRow.PendingOrigin)
 
 	eventsBefore := s.countEvents("")
 	transitionsBefore := s.countTransitions(task.ID, "")
 
-	// Arm drift on a pr tag, run every reconciler path — nothing
-	// resurrects or writes the gone row (the history rows stay intact).
+	// Expire the (already-revoked) lease, arm drift on a pr tag, run every
+	// reconciler path — nothing writes to the terminal row.
+	s.expireLease(task.ID)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET tags = tags || '{pr:99}' WHERE id=$1`, task.ID)
+	s.Require().NoError(err)
 	s.drift.set(99, board.PRState{Merged: true, URL: "https://git.example/pr/99"})
 	res := s.sweep()
-	s.Require().NoError(s.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM tasks WHERE id=$1`, task.ID).Scan(&gone))
-	s.Equal(0, gone, "never resurrects")
-	s.Equal(0, res.Reclaims, "RC1 skips gone rows")
-	s.Equal(0, res.DriftDone, "RC2 skips gone rows")
-	s.Equal(transitionsBefore, s.countTransitions(task.ID, ""), "zero writes on the gone row (history intact)")
+	s.Equal(board.StageCancelled, s.rawTask(task.ID).Stage, "never resurrects")
+	s.Equal(0, res.Reclaims, "RC1 skips terminal rows")
+	s.Equal(0, res.DriftDone, "RC2 skips terminal rows (stage predicate is in_review)")
+	s.Equal(transitionsBefore, s.countTransitions(task.ID, ""), "zero writes on the terminal row")
+
+	// The DB-level belt: even a direct SQL stage write is rejected.
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET stage='backlog' WHERE id=$1`, task.ID)
+	s.Require().Error(err, "stage_update_guard rejects any stage mutation on a terminal row")
 	s.Equal(eventsBefore, s.countEvents(""), "no system writes either")
 }
 

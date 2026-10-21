@@ -39,7 +39,7 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
   async function openCreateTaskDialog() {
     mockGetEpic.mockResolvedValue({
       id: "epic-uuid-1", project_id: PROJECT_A.id, short_id: "epc-eeee1111", title: "E1",
-      outcome: "Ship it", status: "active", tags: [], created_at: "", updated_at: "",
+      outcome: "Ship it", status: "active", priority: "P2", tags: [], created_at: "", updated_at: "",
       progress_done: 1, progress_total: 4, progress_derived: true,
     });
     renderBoard();
@@ -168,10 +168,10 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     await screen.findByTestId("board-error-suggestions");
   });
 
-  it("epic creation threads title/outcome (the steering wheel)", async () => {
+  it("epic creation threads title/outcome/priority (the steering wheel)", async () => {
     mockCreateEpic.mockResolvedValue({
       id: "epic-new", project_id: PROJECT_A.id, short_id: "epc-new11111", title: "Epic Next",
-      outcome: "Ship board UI", status: "draft", tags: [], created_at: "", updated_at: "",
+      outcome: "Ship board UI", status: "draft", priority: "P1", tags: [], created_at: "", updated_at: "",
       progress_done: 0, progress_total: 0, progress_derived: false,
     });
     renderBoard();
@@ -187,7 +187,7 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
   it("task creation rides the epic route (create mode)", async () => {
     mockGetEpic.mockResolvedValue({
       id: "epic-uuid-2", project_id: PROJECT_A.id, short_id: "epc-ffff2222", title: "E2",
-      outcome: "", status: "active", tags: [], created_at: "", updated_at: "",
+      outcome: "", status: "active", priority: "P2", tags: [], created_at: "", updated_at: "",
       progress_done: 0, progress_total: 1, progress_derived: true,
     });
     mockCreateTask.mockResolvedValue({});

@@ -402,3 +402,28 @@ func TestSessionRef_LegacyInputCarriesDeprecationNotice(t *testing.T) {
 		t.Fatalf("Sunset must be an RFC 8594 HTTP-date, got %q: %v", sunset, err)
 	}
 }
+
+// #1756 §2 (post-union review finding 3): the #1745 hash form is a
+// deprecated input EVEN ON THE MISS PATH — an oc-… ref that fails to
+// resolve must still passthrough with the notice attached (the flag
+// lives on the resolution, not the happy path).
+func TestSessionRef_HashMissPassthroughCarriesDeprecationNotice(t *testing.T) {
+	router, ws, db := newRouterFixtureWithDB(t)
+
+	missHash := "oc-deadbeef"
+	// The hash misses the index: passthrough byte-identical.
+	db.On("FindSessionByShortID", mock.Anything, "ws-1", missHash).Return("", nil).Once()
+	// The adapter then arbitrates the unknown id: not found.
+	ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", missHash).
+		Return(apierrors.NewNotFoundError("session", missHash, nil)).Once()
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/"+missHash+"/seen")
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Equal(t, "true", rec.Header().Get("Deprecation"),
+		"an oc- hash input is deprecated input even when it misses")
+	sunset := rec.Header().Get("Sunset")
+	assert.NotEmpty(t, sunset, "Sunset header must be present on deprecated input")
+	if _, err := http.ParseTime(sunset); err != nil {
+		t.Fatalf("Sunset must be an RFC 8594 HTTP-date, got %q: %v", sunset, err)
+	}
+}

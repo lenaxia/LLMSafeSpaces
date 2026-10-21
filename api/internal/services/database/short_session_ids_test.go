@@ -5,6 +5,7 @@ package database
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"regexp"
 	"strings"
@@ -253,5 +254,65 @@ func TestFindRefCandidatesAcrossWorkspaces_MixedCaseLegacyID(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != mixed {
 		t.Fatalf("mixed-case legacy id must byte-equal match: %+v", rows)
+	}
+}
+
+// recordingArg captures the bound short_id on every attempt and matches
+// anything — the determinism pin below constrains the SEQUENCE.
+type recordingArg struct{ seen *[]string }
+
+func (r recordingArg) Match(v driver.Value) bool {
+	if s, ok := v.(string); ok {
+		*r.seen = append(*r.seen, s)
+	}
+	return true
+}
+
+// #1756 finding 7 (post-union review hard gate): the mint base is
+// drawn ONCE and retries suffix the SAME base — attempt 2 must bind
+// base+"-2", attempt 3 base+"-3" (two racers on one base converge on
+// the identical sequence). A revert to a fresh mint per attempt binds
+// three unrelated phrases and fails.
+func TestEnsureSessionRegistered_RetriesSuffixTheSameBase(t *testing.T) {
+	s, mock, done := setupMockDB(t)
+	defer done()
+
+	var binds []string
+	uniq := &pgconn.PgError{Code: "23505", ConstraintName: "idx_session_index_short"}
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)`)).
+			WithArgs(regWS, regLiveID, recordingArg{seen: &binds}).
+			WillReturnError(uniq)
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)`)).
+		WithArgs(regWS, regLiveID, recordingArg{seen: &binds}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	got, err := s.EnsureSessionRegistered(context.Background(), regWS, regLiveID, "opencode")
+	if err != nil {
+		t.Fatalf("EnsureSessionRegistered after retries: %v", err)
+	}
+	if len(binds) != 4 {
+		t.Fatalf("expected 4 bound inserts, saw %d (%v)", len(binds), binds)
+	}
+	for i, b := range binds {
+		if !shortid.IsShortIDForm(b) {
+			t.Fatalf("bind %d %q is not a phrase form", i, b)
+		}
+	}
+	if binds[1] != binds[0]+"-2" {
+		t.Errorf("attempt 2 bound %q; want base-2 (%q-2) — the base must not re-roll", binds[1], binds[0])
+	}
+	if binds[2] != binds[0]+"-3" {
+		t.Errorf("attempt 3 bound %q; want base-3 (%q-3)", binds[2], binds[0])
+	}
+	if binds[3] != binds[0]+"-4" {
+		t.Errorf("attempt 4 bound %q; want base-4 (%q-4)", binds[3], binds[0])
+	}
+	if got != binds[3] {
+		t.Errorf("returned %q; want the last bound %q", got, binds[3])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
 	}
 }

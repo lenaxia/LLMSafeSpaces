@@ -260,8 +260,8 @@ func (m *MockAPIClient) BoardUpdateEpic(ctx context.Context, epicID string, body
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardEpicActivate(ctx context.Context, epicID string, ackInactiveDeps bool, requestID string) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID, ackInactiveDeps, requestID)
+func (m *MockAPIClient) BoardEpicActivate(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -280,38 +280,8 @@ func (m *MockAPIClient) BoardEpicUnarchive(ctx context.Context, epicID, requestI
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) BoardProjectPause(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID, requestID)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardProjectResume(ctx context.Context, projectID, requestID string) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID, requestID)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
-	args := m.Called(ctx, taskID, requestID)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
-	args := m.Called(ctx, taskID, requestID)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardDeleteEpic(ctx context.Context, epicID string, force bool) (json.RawMessage, error) {
-	args := m.Called(ctx, epicID, force)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardDeleteTask(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error) {
-	args := m.Called(ctx, taskID, reconnect)
-	return json.RawMessage(args.String(0)), args.Error(1)
-}
-
-func (m *MockAPIClient) BoardImportPlan(ctx context.Context, projectID string, body BoardPlanBody) (json.RawMessage, error) {
-	args := m.Called(ctx, projectID, body)
+func (m *MockAPIClient) BoardCancelEpic(ctx context.Context, epicID, reason, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, epicID, reason, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -337,6 +307,11 @@ func (m *MockAPIClient) BoardMoveStage(ctx context.Context, taskID, toStage, evi
 
 func (m *MockAPIClient) BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	args := m.Called(ctx, taskID, requestID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardCancelTask(ctx context.Context, taskID, reason, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskID, reason, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 

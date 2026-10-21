@@ -86,7 +86,13 @@ func TestWorkspaceRef_UnambiguousNameRewrites(t *testing.T) {
 	// r1: the name form is in its #1757 deprecation window — the
 	// rewrite attaches the one-release notice on the response.
 	assert.Equal(t, "true", rec.Header().Get("Deprecation"))
-	assert.NotEmpty(t, rec.Header().Get("Sunset"), "the Sunset header must point at the phrase form")
+	// #1756 §2 finding 1 parity (post-union review finding 5): Sunset
+	// is an RFC 8594 HTTP-date — the free-text form was the exact
+	// defect this remediation retired on the session lane.
+	sunset := rec.Header().Get("Sunset")
+	require.NotEmpty(t, sunset, "the Sunset header must be present")
+	_, err := http.ParseTime(sunset)
+	require.NoError(t, err, "Sunset must parse as an RFC 8594 HTTP-date, got %q", sunset)
 }
 
 // r1 §4.3 masking: a phrase that resolves to a REAL but FOREIGN

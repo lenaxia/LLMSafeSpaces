@@ -20,7 +20,7 @@ export const mockCreateEpic = vi.fn();
 export const mockGetEpic = vi.fn();
 export const mockCreateTask = vi.fn();
 export const mockUpdateTask = vi.fn();
-export const mockDeleteTask = vi.fn();
+export const mockCancelTask = vi.fn();
 export const mockAddDependency = vi.fn();
 export const mockRemoveDependency = vi.fn();
 export const mockStartTask = vi.fn();
@@ -39,7 +39,7 @@ vi.mock("../api/board", () => ({
     getEpic: (id: string) => mockGetEpic(id),
     createTask: (eid: string, input: unknown) => mockCreateTask(eid, input),
     updateTask: (id: string, input: unknown) => mockUpdateTask(id, input),
-    deleteTask: (id: string, reconnect?: boolean) => mockDeleteTask(id, reconnect),
+    cancelTask: (id: string, reason?: string) => mockCancelTask(id, reason),
     addDependency: (id: string, dep: string) => mockAddDependency(id, dep),
     removeDependency: (id: string, dep: string) => mockRemoveDependency(id, dep),
     activateEpic: (id: string) => mockActivateEpic(id),
@@ -80,7 +80,7 @@ export const PROJECT_B: BoardProject = {
 
 const base = {
   description: "",
-  paused: false,
+  priority: "P2",
   project_name: "Apollo",
   epic_name: "E1",
   tags: [] as string[],

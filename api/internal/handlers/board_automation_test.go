@@ -13,7 +13,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,15 +80,8 @@ func (f *fakeBoardService) GetTaskInWorkspace(_ context.Context, workspaceID, ta
 
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
-// workspace lookup — the auth chain is exercised, not stubbed). #1747:
-// the manager half rides the fakeBoardManager projection.
+// workspace lookup — the auth chain is exercised, not stubbed).
 func newBoardAutomationRouter(t *testing.T, svc *fakeBoardService) *gin.Engine {
-	return newBoardAutomationRouterWithManager(t, svc, newFakeBoardManager())
-}
-
-// newBoardAutomationRouterWithManager mounts the FULL seam (worker +
-// manager routes) with independent fakes for the two projections.
-func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mgr *fakeBoardManager) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	h := &PodAutomationHandler{
@@ -98,7 +90,6 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 		expectedNamespace: testRenameNamespace,
 		board:             svc,
 		boardEngine:       board.EngineConfig{ThrottleBackoff: 5 * time.Minute},
-		boardMgr:          mgr,
 	}
 	r := gin.New()
 	b := r.Group("/internal/v1/automation/board")
@@ -106,28 +97,6 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
-	b.POST("/projects", h.BoardCreateProject)
-	b.PATCH("/projects/:id", h.BoardUpdateProject)
-	b.POST("/projects/:id/archive", h.BoardArchiveProject)
-	b.POST("/projects/:id/unarchive", h.BoardUnarchiveProject)
-	b.POST("/projects/:id/pause", h.BoardPauseProject)
-	b.POST("/projects/:id/resume", h.BoardResumeProject)
-	b.POST("/projects/:id/epics", h.BoardCreateEpic)
-	b.POST("/projects/:id/import-plan", h.BoardImportPlan)
-	b.PATCH("/epics/:id", h.BoardUpdateEpic)
-	b.POST("/epics/:id/activate", h.BoardEpicActivate)
-	b.POST("/epics/:id/pause", h.BoardEpicPause)
-	b.POST("/epics/:id/archive", h.BoardEpicArchive)
-	b.POST("/epics/:id/unarchive", h.BoardEpicUnarchive)
-	b.DELETE("/epics/:id", h.BoardDeleteEpic)
-	b.POST("/epics/:id/tasks", h.BoardCreateTask)
-	b.PATCH("/tasks/:id", h.BoardUpdateTask)
-	b.POST("/tasks/:id/pause", h.BoardPauseTask)
-	b.POST("/tasks/:id/resume", h.BoardResumeTask)
-	b.DELETE("/tasks/:id", h.BoardDeleteTask)
-	b.POST("/tasks/:id/dependencies", h.BoardAddDependency)
-	b.DELETE("/tasks/:id/dependencies/:dependsOnId", h.BoardRemoveDependency)
-	b.POST("/resource-pressure", h.BoardResourcePressure)
 	return r
 }
 
@@ -231,109 +200,4 @@ func TestBoardAutomation_WorkspaceIdentityMismatch(t *testing.T) {
 	r.ServeHTTP(w, req)
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Zero(t, svc.calls["get"], "resolve rejects before the service sees anything")
-}
-
-// --- #1747 manager seam: actor stamping, session attribution, grant belt --------
-
-// TestBoardAutomation_ManagerActorStamping: a manager call stamps the
-// full #1747 delegation — the pod's resolved owner (ws-1 → user-7), the
-// agent surface, the structural workspace binding, AND the creating
-// session's identity (audit attribution) — on the manager projection.
-func TestBoardAutomation_ManagerActorStamping(t *testing.T) {
-	mgr := newFakeBoardManager()
-	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
-
-	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_author1","title":"T1","dependsOn":["tsk-aaaa1111"]}`)
-	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
-	assert.Equal(t, 1, mgr.calls["create_task"], "the manager projection serves the route")
-	require.NotNil(t, mgr.lastActor)
-	assert.Equal(t, board.ActorUser, mgr.lastActor.Kind)
-	assert.Equal(t, "user-7", mgr.lastActor.UserID, "the pod's resolved owner (R7 delegation)")
-	assert.Equal(t, board.SurfaceAgent, mgr.lastActor.Surface)
-	assert.Equal(t, "ws-1", mgr.lastActor.WorkspaceID, "the structural caller-workspace binding")
-	assert.Equal(t, "ses_author1", mgr.lastActor.SessionID, "audit attribution to the creating session (#1747)")
-	assert.Empty(t, mgr.lastActor.ClaimToken, "manager actions hold no claim token")
-}
-
-// TestBoardAutomation_ManagerGrantBelt (#1747 §5, tier 2): a manager
-// route whose calling session currently holds a board worker role
-// (live assignee) is refused at the seam — the engine-authoritative
-// second gate behind agentd's spawn-time registry.
-func TestBoardAutomation_ManagerGrantBelt(t *testing.T) {
-	mgr := newFakeBoardManager()
-	mgr.workerSession = "ses_liveworker"
-	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
-
-	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_liveworker","title":"T1"}`)
-	assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface, "the refusal names the grant rule")
-	assert.Zero(t, mgr.calls["create_task"], "the manager projection is never reached")
-
-	// The SAME registry stays silent for collaborator sessions.
-	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_collaborator","title":"T1"}`)
-	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
-	assert.Equal(t, 1, mgr.calls["create_task"])
-}
-
-// TestBoardAutomation_ManagerCreateProjectScoping: the seam stamps the
-// project's target workspace to the caller's OWN workspace — a caller
-// spelling for another tenant's workspace is overwritten (structural
-// scope, the scopeTriggerCreateBody discipline).
-func TestBoardAutomation_ManagerCreateProjectScoping(t *testing.T) {
-	mgr := newFakeBoardManager()
-	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
-
-	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/projects",
-		`{"workspaceID":"ws-1","sessionId":"ses_author1","name":"B","targetWorkspaceId":"ws-someone-else"}`)
-	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
-	assert.Equal(t, 1, mgr.calls["create_project"])
-	require.NotNil(t, mgr.lastCreateProjectInput)
-	assert.Equal(t, "ws-1", mgr.lastCreateProjectInput.TargetWorkspaceID,
-		"the pod's own workspace wins over any caller spelling")
-}
-
-// TestBoardAutomation_ResourcePressureTelemetry: agentd's push route
-// records the sample on the engine (the #1747 round-3 backpressure
-// seam — the claim choke point consumes it).
-func TestBoardAutomation_ResourcePressureTelemetry(t *testing.T) {
-	mgr := newFakeBoardManager()
-	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
-
-	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/resource-pressure",
-		`{"workspaceID":"ws-1","cpu":false,"memory":false,"disk":true,"disk_rate":0.92}`)
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.NotNil(t, mgr.lastPressureSample)
-	assert.True(t, mgr.lastPressureSample.Disk)
-	assert.InDelta(t, 0.92, mgr.lastPressureSample.DiskRate, 0.001)
-}
-
-// TestBoardAutomation_ManagerBeltFailClosed (r2, the review's Security-1
-// fix pins): the seam belt REFUSES an omitted sessionId (the hostile
-// spawned worker is the caller who lies by omission) and treats a belt
-// ERROR as a refusal — never a pass-through.
-func TestBoardAutomation_ManagerBeltFailClosed(t *testing.T) {
-	mgr := newFakeBoardManager()
-	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
-
-	// No sessionId anywhere → 403 fail-closed (previously 201 — the hole).
-	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","title":"T1"}`)
-	assert.Equal(t, http.StatusForbidden, w.Code, "an unidentified caller holds no manager grant — fail closed")
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
-	assert.Zero(t, mgr.calls["create_task"], "the manager projection is never reached")
-
-	// Belt DB error → 503 refusal (never a silent pass-through).
-	mgr.beltErr = fmt.Errorf("db blip")
-	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_anyone","title":"T1"}`)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "a belt error refuses the call (fail closed)")
-	assert.Zero(t, mgr.calls["create_task"])
-
-	// DELETE-class routes carry the session on the QUERY — same rule.
-	mgr.beltErr = nil
-	w = doBoard(t, r, http.MethodDelete, "/internal/v1/automation/board/tasks/tsk-cccc3333?workspaceID=ws-1", "")
-	assert.Equal(t, http.StatusForbidden, w.Code, "query-carried identity omission refuses too")
 }

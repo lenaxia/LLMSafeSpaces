@@ -12,7 +12,7 @@ import {
   mockListProjects,
   mockWorkspacesList,
   mockStartTask,
-  mockDeleteTask,
+  mockCancelTask,
   mockActivateEpic,
   mockPauseEpic,
   mockGetEpic,
@@ -46,46 +46,51 @@ function dragCardTo(shortId: string, stage: string) {
 
 const EPIC_ROW = {
   id: "epic-uuid-1", project_id: PROJECT_A.id, short_id: "epc-eeee1111", title: "E1",
-  outcome: "Ship it", status: "active", tags: [], created_at: "", updated_at: "",
+  outcome: "Ship it", status: "active", priority: "P2", tags: [], created_at: "", updated_at: "",
   progress_done: 1, progress_total: 4, progress_derived: true,
 };
 
-describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () => {
+describe("BoardPage r1 — cancel / lifecycle / start / feed / concurrency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     seedBoard();
   });
 
-  // --- Delete flow (#1747: cancel is eliminated — delete replaces it) ------
+  // --- Cancel flow (design §4.8's cancel arm; previously untested) ---------
 
-  it("deletes a task from the dialog: destructive write + invalidation + card gone", async () => {
+  it("cancels a task from the dialog: terminal write + invalidation + card lands Cancelled", async () => {
     const seeded = seedBoard();
-    mockDeleteTask.mockImplementation(async () => {
-      seedBoard(seeded.filter((t) => t.short_id !== TASK_IN_PROGRESS.short_id));
-      return { item_kind: "task", id: TASK_IN_PROGRESS.id, short_id: TASK_IN_PROGRESS.short_id };
+    mockCancelTask.mockImplementation(async () => {
+      const updated = { ...TASK_IN_PROGRESS, stage: "cancelled" };
+      seedBoard(seeded.map((t) => (t.short_id === updated.short_id ? updated : t)));
+      return updated;
     });
     renderBoard();
     fireEvent.click(await screen.findByTestId("task-card-tsk-bbbb0002"));
-    fireEvent.click(await screen.findByTestId("delete-task"));
+    fireEvent.click(await screen.findByTestId("cancel-task"));
 
-    await waitFor(() => expect(mockDeleteTask).toHaveBeenCalledWith("tsk-bbbb0002", undefined));
-    // dialog closed on success; the card is GONE (delete removes the object)
-    await waitFor(() => expect(screen.queryByTestId("delete-task")).toBeNull());
-    await waitFor(() => expect(screen.queryByTestId("task-card-tsk-bbbb0002")).toBeNull());
+    await waitFor(() => expect(mockCancelTask).toHaveBeenCalledWith("tsk-bbbb0002", undefined));
+    // dialog closed on success
+    await waitFor(() => expect(screen.queryByTestId("cancel-task")).toBeNull());
+    // card visible in the Cancelled side column
+    fireEvent.click(screen.getAllByTestId("side-columns-toggle")[0]!);
+    await waitFor(() =>
+      expect(screen.getByTestId("task-card-tsk-bbbb0002").closest('[data-stage-drop="cancelled"]')).not.toBeNull(),
+    );
   });
 
-  it("delete failure renders the guard code and the dialog STAYS open", async () => {
-    mockDeleteTask.mockRejectedValue(
-      boardError(409, { error: "board: guard epic_state: claims in flight — force required", code: "epic_state" }),
+  it("cancel failure renders the guard code and the dialog STAYS open", async () => {
+    mockCancelTask.mockRejectedValue(
+      boardError(409, { error: "board: guard stage_transition: already terminal", code: "stage_transition" }),
     );
     renderBoard();
     fireEvent.click(await screen.findByTestId("task-card-tsk-bbbb0002"));
-    fireEvent.click(await screen.findByTestId("delete-task"));
+    fireEvent.click(await screen.findByTestId("cancel-task"));
 
-    await waitFor(() => expect(mockDeleteTask).toHaveBeenCalled());
+    await waitFor(() => expect(mockCancelTask).toHaveBeenCalled());
     const notice = await screen.findByRole("alert");
-    expect(notice.getAttribute("data-board-error")).toBe("epic_state");
-    expect(screen.getByTestId("delete-task")).toBeInTheDocument();
+    expect(notice.getAttribute("data-board-error")).toBe("stage_transition");
+    expect(screen.getByTestId("cancel-task")).toBeInTheDocument();
   });
 
   // --- Epic lifecycle (activate/pause; the r1 onError path) ------------------
