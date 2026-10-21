@@ -834,3 +834,185 @@ func TestArchiveSession_AcceptsAlias(t *testing.T) {
 		t.Fatalf("platform must receive the canonical harness id: %q", archivedBody)
 	}
 }
+
+// --- warm worker lifecycle + bounds (#1817 r9 findings 1-2) ----------------
+
+// TestShortIDWarm_ShutdownJoinsWorker pins the JOIN, not the goroutine
+// start: the lifecycle WaitGroup must be released only when the worker LOOP
+// exits. The registry pull is held in flight and the replica write lock is
+// held, so the worker cannot finish after cancellation. lifecycle.Wait must
+// stay blocked until both are released; moving Done ahead of
+// shortIDWarmWorker makes it return immediately and this pin fails.
+func TestShortIDWarm_ShutdownJoinsWorker(t *testing.T) {
+	resetShortIDWarmForTest(t)
+	s := newSessionShortIDStore(t.TempDir() + "/session-shortids.json")
+	old := sessionShortIDsAtomic.Load().(*sessionShortIDStore)
+	sessionShortIDsAtomic.Store(s)
+	t.Cleanup(func() { sessionShortIDsAtomic.Store(old) })
+	t.Cleanup(stopShortIDWarmForTest)
+
+	pullStarted := make(chan struct{})
+	releasePull := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePull) }) }
+	var startedOnce sync.Once
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/session-registry" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		startedOnce.Do(func() { close(pullStarted) })
+		<-releasePull
+		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
+	})
+	setupPodSessionEnv(t, platform)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var lifecycle sync.WaitGroup
+	ensureShortIDWarmWorker(ctx, &lifecycle)
+
+	s.mu.Lock()
+	unlocked := false
+	t.Cleanup(func() {
+		if !unlocked {
+			s.mu.Unlock()
+		}
+		release()
+		cancel()
+	})
+
+	warmSessionShortIDsOnMiss("ses_join_probe")
+	select {
+	case <-pullStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the warm pull never started")
+	}
+
+	cancel()
+
+	joined := make(chan struct{})
+	go func() {
+		lifecycle.Wait()
+		close(joined)
+	}()
+
+	// The worker is still in flight (blocked in the pull handler, then on
+	// the replica lock). A Done-before-loop releases lifecycle here.
+	select {
+	case <-joined:
+		t.Fatal("lifecycle.Wait returned while the warm worker was still in flight: shutdown does not join it")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	s.mu.Unlock()
+	unlocked = true
+	release()
+
+	select {
+	case <-joined:
+	case <-time.After(3 * time.Second):
+		t.Fatal("lifecycle.Wait did not return after the worker exited")
+	}
+
+	exited := make(chan struct{})
+	go func() {
+		warmWorkerWg.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the warm worker did not exit")
+	}
+}
+
+// TestShortIDWarm_PendingCap pins the hard pending-set ceiling: many
+// distinct unresolved ids cannot grow warmPending without bound, and an
+// emission after an overflow reset is still enqueued.
+func TestShortIDWarm_PendingCap(t *testing.T) {
+	resetShortIDWarmForTest(t)
+	total := shortIDWarmMaxPending * 3
+	for i := 0; i < total; i++ {
+		warmSessionShortIDsOnMiss(fmt.Sprintf("ses_pending_cap_%d", i))
+	}
+	warmMu.Lock()
+	got := len(warmPending)
+	warmMu.Unlock()
+	if got > shortIDWarmMaxPending {
+		t.Fatalf("warmPending = %d, want <= %d: the pending set is unbounded", got, shortIDWarmMaxPending)
+	}
+	if got == 0 {
+		t.Fatal("warmPending is empty after a burst; the overflow reset dropped the newest emission")
+	}
+
+	warmSessionShortIDsOnMiss("ses_pending_cap_after_reset")
+	warmMu.Lock()
+	_, ok := warmPending["ses_pending_cap_after_reset"]
+	warmMu.Unlock()
+	if !ok {
+		t.Fatal("an emission after an overflow reset must be enqueued again")
+	}
+}
+
+// TestShortIDWarm_Prune pins the single-pass prune: expired entries leave
+// both maps while live ones survive, and the backoff ceiling evicts the
+// oldest surplus in one call.
+func TestShortIDWarm_Prune(t *testing.T) {
+	resetShortIDWarmForTest(t)
+	now := time.Now()
+	expired := now.Add(-shortIDWarmEntryTTL - time.Minute)
+	live := now.Add(-time.Minute)
+
+	warmMu.Lock()
+	warmBackoff = map[string]shortIDWarmBackoff{
+		"ses_old_a": {lastSeen: expired},
+		"ses_old_b": {lastSeen: expired},
+		"ses_live":  {lastSeen: live},
+	}
+	warmPending = map[string]struct{}{
+		"ses_old_a": {},
+		"ses_old_b": {},
+		"ses_live":  {},
+	}
+	shortIDWarmPruneLocked(now)
+	_, oldA := warmBackoff["ses_old_a"]
+	_, oldB := warmBackoff["ses_old_b"]
+	_, liveKept := warmBackoff["ses_live"]
+	_, pendOldA := warmPending["ses_old_a"]
+	_, pendOldB := warmPending["ses_old_b"]
+	_, pendLive := warmPending["ses_live"]
+	warmMu.Unlock()
+
+	if oldA || oldB || pendOldA || pendOldB {
+		t.Fatal("expired entries must be pruned from both warmBackoff and warmPending")
+	}
+	if !liveKept || !pendLive {
+		t.Fatal("the live entry must survive the prune")
+	}
+
+	// Ceiling: keep exactly shortIDWarmMaxEntries, evicting the oldest.
+	warmMu.Lock()
+	warmBackoff = make(map[string]shortIDWarmBackoff, shortIDWarmMaxEntries+16)
+	warmPending = make(map[string]struct{}, shortIDWarmMaxEntries+16)
+	for i := 0; i < shortIDWarmMaxEntries+16; i++ {
+		id := fmt.Sprintf("ses_ceiling_%05d", i)
+		warmBackoff[id] = shortIDWarmBackoff{lastSeen: now.Add(time.Duration(i) * time.Second)}
+		warmPending[id] = struct{}{}
+	}
+	shortIDWarmPruneLocked(now)
+	n := len(warmBackoff)
+	nPending := len(warmPending)
+	_, oldest := warmBackoff["ses_ceiling_00000"]
+	_, newest := warmBackoff[fmt.Sprintf("ses_ceiling_%05d", shortIDWarmMaxEntries+15)]
+	warmMu.Unlock()
+
+	if n != shortIDWarmMaxEntries || nPending != shortIDWarmMaxEntries {
+		t.Fatalf("after ceiling prune: warmBackoff=%d warmPending=%d, want both %d", n, nPending, shortIDWarmMaxEntries)
+	}
+	if oldest {
+		t.Fatal("the oldest surplus entry must be evicted")
+	}
+	if !newest {
+		t.Fatal("the newest entry must survive the ceiling prune")
+	}
+}

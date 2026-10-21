@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,10 @@ const (
 	shortIDWarmEntryTTL = 10 * time.Minute
 	// Hard ceiling on the backoff map: prune the oldest entries past it.
 	shortIDWarmMaxEntries = 4096
+	// Hard ceiling on the pending set. Overflow drops the whole pending
+	// batch (O(1), deterministic) rather than evicting one-by-one; ids stay
+	// in warmBackoff and later emissions re-enqueue them.
+	shortIDWarmMaxPending = 4096
 	// shortIDWarmMinPullInterval is the GLOBAL floor between emission-path
 	// warm pulls. Per-id backoff alone still let N DISTINCT newly-seen ids
 	// (each immediately due on first sight) trigger ~N pulls; the floor
@@ -145,7 +150,7 @@ func ensureShortIDWarmWorker(ctx context.Context, lifecycle *sync.WaitGroup) {
 		go func(ctx context.Context) {
 			defer warmWorkerWg.Done()
 			if lifecycle != nil {
-				lifecycle.Done()
+				defer lifecycle.Done()
 			}
 			shortIDWarmWorker(ctx)
 		}(workerCtx)
@@ -163,7 +168,7 @@ func warmSessionShortIDsOnMiss(harnessID string) {
 	}
 	now := time.Now()
 	warmMu.Lock()
-	warmPending[harnessID] = struct{}{}
+	shortIDWarmAddPendingLocked(harnessID)
 	if b, ok := warmBackoff[harnessID]; ok {
 		b.lastSeen = now
 		warmBackoff[harnessID] = b
@@ -173,6 +178,17 @@ func warmSessionShortIDsOnMiss(harnessID string) {
 	case warmWake <- struct{}{}:
 	default:
 	}
+}
+
+// shortIDWarmAddPendingLocked enqueues one id under the hard pending
+// ceiling. On overflow the whole batch is dropped rather than evicted
+// one-by-one: deterministic and O(1), while the ids stay in warmBackoff
+// and later emissions re-enqueue them. Caller holds warmMu.
+func shortIDWarmAddPendingLocked(id string) {
+	if _, ok := warmPending[id]; !ok && len(warmPending) >= shortIDWarmMaxPending {
+		warmPending = make(map[string]struct{}, shortIDWarmMaxPending)
+	}
+	warmPending[id] = struct{}{}
 }
 
 func shortIDWarmWorker(ctx context.Context) {
@@ -283,31 +299,43 @@ func shortIDWarmSettle(ids []string) {
 			b.lastSeen = now
 		}
 		warmBackoff[id] = b
-		warmPending[id] = struct{}{}
+		shortIDWarmAddPendingLocked(id)
 	}
 	shortIDWarmPruneLocked(now)
 }
 
-// shortIDWarmPruneLocked drops idle entries and enforces the hard ceiling.
-// Caller holds warmMu.
+// shortIDWarmPruneLocked drops idle entries and enforces both hard
+// ceilings in a single pass: it collects the expired keys and, when over
+// the backoff ceiling, the excess oldest by lastSeen, then deletes them in
+// one loop. No repeated full-map scan per deletion. Caller holds warmMu.
 func shortIDWarmPruneLocked(now time.Time) {
 	cutoff := now.Add(-shortIDWarmEntryTTL)
+	type warmEntry struct {
+		id       string
+		lastSeen time.Time
+	}
+	expired := make([]warmEntry, 0)
+	live := make([]warmEntry, 0, len(warmBackoff))
 	for id, b := range warmBackoff {
 		if b.lastSeen.Before(cutoff) {
-			delete(warmBackoff, id)
-			delete(warmPending, id)
+			expired = append(expired, warmEntry{id: id, lastSeen: b.lastSeen})
+			continue
 		}
+		live = append(live, warmEntry{id: id, lastSeen: b.lastSeen})
 	}
-	for len(warmBackoff) > shortIDWarmMaxEntries {
-		var oldestID string
-		var oldest time.Time
-		for id, b := range warmBackoff {
-			if oldestID == "" || b.lastSeen.Before(oldest) {
-				oldestID, oldest = id, b.lastSeen
-			}
-		}
-		delete(warmBackoff, oldestID)
-		delete(warmPending, oldestID)
+	victims := expired
+	if excess := len(live) - shortIDWarmMaxEntries; excess > 0 {
+		sort.Slice(live, func(i, j int) bool {
+			return live[i].lastSeen.Before(live[j].lastSeen)
+		})
+		victims = append(victims, live[:excess]...)
+	}
+	for _, v := range victims {
+		delete(warmBackoff, v.id)
+		delete(warmPending, v.id)
+	}
+	if len(warmPending) > shortIDWarmMaxPending {
+		warmPending = make(map[string]struct{}, shortIDWarmMaxPending)
 	}
 }
 

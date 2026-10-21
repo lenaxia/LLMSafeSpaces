@@ -29,12 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pod's already-translated frames never re-register the phrase (no
   phantom index rows, context occupancy lands on the harness row).
   agentd's replica warm was redesigned as ONE sync.Once worker (not a
-  goroutine per emission) fed by a queued pending set, with per-id
-  exponential backoff (1s → 30s cap) and a GLOBAL 1s floor between warm
-  pulls (distinct newly-seen ids batch instead of pulling once each,
-  while a new session still warms within a second). The worker is bound
-  to the process background context and joined at shutdown, so no warm
-  goroutine outlives agentd.
+  goroutine per emission) fed by a bounded pending set (hard cap 4096;
+  overflow drops the batch deterministically and later emissions
+  re-enqueue), with per-id exponential backoff (1s → 30s cap), a GLOBAL
+  1s floor between warm pulls (distinct newly-seen ids batch instead of
+  pulling once each, while a new session still warms within a second),
+  and a single-pass prune of the idle TTL and both ceilings. The worker
+  is bound to the process background context and joined at shutdown
+  (the lifecycle Done fires when the worker loop exits, not when its
+  goroutine starts), so no warm worker outlives agentd.
   Coverage now spans the dual-id fixture class (mock index rows keyed
   phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
   T1.6 cross-surface join tripwire), live-goroutine/global-pull-floor/

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r8 review rounds closed; r7 also closed the Go-side CI findings and r8 the merge-hygiene minors).
+**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 findings addressed; r8 merge-hygiene minors and r9 lifecycle/bounds fixes below).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -611,8 +611,15 @@ package). Workflow edits count as changed, so the workflow validates itself.
 - Per-id exponential backoff: pinned behaviorally by
   `TestEmissionTranslator_ThrottlesUnresolvedPulls`, but r7 did NOT
   mutation-verify that pin.
-- Prune / 4096-entry ceiling (`shortIDWarmPruneLocked`): UNTESTED — no pin
-  exists for the idle-TTL prune or the hard ceiling.
+- Prune / ceilings (`shortIDWarmPruneLocked`): r7 had no pin. r9 adds
+  `TestShortIDWarm_Prune` (expired keys leave both maps, live entries
+  survive, the oldest surplus is evicted at the 4096 backoff ceiling). It
+  pins correctness; the single-pass rewrite is structural (no
+  timing-based pin asserts the absence of repeated scans).
+- Pending-set hard cap (`shortIDWarmMaxPending`): r9 pin
+  `TestShortIDWarm_PendingCap`, mutation-verified (cap removed → red).
+- Shutdown join: r9 pin `TestShortIDWarm_ShutdownJoinsWorker`,
+  mutation-verified (`Done` moved ahead of the loop → red).
 
 ### Tests Run (r7)
 - `go build ./...` — clean; `go vet` on the changed packages — clean.
@@ -682,3 +689,60 @@ added.
 - `make repolint` — all checks passed (the NNNN sentinel warning is the
   expected post-merge numbering note).
 - Mutation evidence for every new pin is recorded in the findings above.
+
+## Piece 3 (continued) — r9 review (2026-10-21, shutdown join + pending bounds)
+
+r9 audited the r8 head and found two verified defects in the warm worker
+plus a false status claim. Both defects are fixed here; the claims in r7's
+Finding 4 and the CHANGELOG are now true in code, not aspirational.
+
+### Finding 1 — shutdown join released before the worker ran
+`ensureShortIDWarmWorker` registered `lifecycle.Add(1)` but called
+`lifecycle.Done()` at the TOP of the goroutine, before
+`shortIDWarmWorker(ctx)`. `bgWg.Wait()` therefore returned immediately at
+shutdown while the worker kept running — the opposite of the comment,
+worklog, and CHANGELOG. Fixed by deferring `lifecycle.Done()` alongside
+`defer warmWorkerWg.Done()`, so release happens when the loop exits.
+
+Pin: `TestShortIDWarm_ShutdownJoinsWorker` holds a registry pull in flight
+and the replica write lock, cancels the worker context, then asserts
+`lifecycle.Wait()` stays blocked while the worker is alive and returns only
+after both are released (3s timeout; `warmWorkerWg` independently confirms
+exit). Mutation evidence (run, not assumed): moving `lifecycle.Done()` back
+ahead of `shortIDWarmWorker` makes the pin fail with "lifecycle.Wait
+returned while the warm worker was still in flight".
+
+### Finding 2 — pending set unbounded; prune O(n²)
+`warmPending` was an uncapped map (the 4096 ceiling only bounded
+`warmBackoff`), and the ceiling loop rescanned the whole map once per
+deletion while holding `warmMu`.
+
+- `shortIDWarmMaxPending = 4096`. `shortIDWarmAddPendingLocked` enforces it
+  on every enqueue (including settle re-enqueues). Overflow drops the whole
+  pending batch deterministically (O(1)); ids remain in `warmBackoff` and
+  later emissions re-enqueue them.
+- `shortIDWarmPruneLocked` is now one pass: collect expired keys and, when
+  over the backoff ceiling, the excess oldest by `lastSeen`; delete the
+  collected victims in one loop. A pending-ceiling backstop resets the
+  batch if it is still over after the pass.
+
+Pins: `TestShortIDWarm_PendingCap` (3x the cap of distinct ids never
+exceeds it; an emission after an overflow reset is enqueued again) and
+`TestShortIDWarm_Prune` (expired removed from both maps, live preserved,
+oldest surplus evicted). Mutation evidence: removing the cap check makes
+the pending pin fail ("warmPending = 12288, want <= 4096").
+
+### Finding 3 — stale status wording
+The header claimed "r1–r8 review rounds closed"; it now says r1–r7 findings
+addressed with r8/r9 fixes below, which matches the record. The r7
+mutation-coverage bullet no longer calls the prune UNTESTED.
+
+### Tests Run (r9)
+- `go build ./...` — clean.
+- `golangci-lint run ./cmd/workspace-agentd/...` — 0 issues.
+- `go test -race -timeout 180s ./cmd/workspace-agentd/ -run 'TestEmissionTranslator|TestWarm|TestShortIDStore|TestShortIDWarm' -count=5` — green.
+- `go test -timeout 600s ./cmd/workspace-agentd/ -count=1` — green (411s;
+  the 180s cap is below the package's pre-existing full-suite runtime, not a
+  regression from this change).
+- `make repolint` — all checks passed (the NNNN sentinel warning is the
+  expected post-merge numbering note).
