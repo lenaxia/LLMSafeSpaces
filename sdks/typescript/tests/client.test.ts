@@ -785,17 +785,19 @@ describe("userPrompts", () => {
       expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/projects/prj-aaaa1111/epics");
       expect(epic.status).toBe("draft");
 
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active", progress_derived: true, progress_done: 1, progress_total: 2 }));
-      const act = await client.board.activateEpic("epc-bbbb2222");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ epic: { id: "e1", status: "active", progress_derived: true, progress_done: 1, progress_total: 2 }, initial_ready_set: ["tsk-cccc3333"] }));
+      const act = await client.board.activateEpic("epc-bbbb2222", { acknowledgeInactiveDeps: true });
       expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/activate");
-      expect(act.progress_derived).toBe(true);
+      expect((mockFetch.mock.calls[1][1] as any).body).toContain('"acknowledgeInactiveDeps":true');
+      expect(act.epic.progress_derived).toBe(true);
+      expect(act.initial_ready_set).toEqual(["tsk-cccc3333"]);
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
       await client.board.pauseEpic("epc-bbbb2222");
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "paused" }));
-      const ce = await client.board.cancelEpic("epc-bbbb2222", { reason: "r" });
-      expect(mockFetch.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222/cancel");
-      expect(ce.status).toBe("paused");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ item_kind: "epic", id: "e1", short_id: "epc-bbbb2222" }));
+      const del = await client.board.deleteEpic("epc-bbbb2222", true);
+      expect(mockFetch.mock.calls[3][0]).toBe("http://localhost:8080/api/v1/me/epics/epc-bbbb2222?force=true");
+      expect(del.item_kind).toBe("epic");
     });
 
     it("creates tasks with the OR4 pr:N anchor tag form", async () => {
@@ -821,7 +823,7 @@ describe("userPrompts", () => {
       expect(rem.task?.is_blocked).toBe(false);
     });
 
-    it("moves stage, starts, cancels, and patches criteria", async () => {
+    it("moves stage, starts, deletes, and patches criteria", async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "done" }));
       const moved = await client.board.moveStage("tsk-cccc3333", { toStage: "done", evidenceUrl: "https://git/pr/1" });
       expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/move-stage");
@@ -833,9 +835,10 @@ describe("userPrompts", () => {
       expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333/start");
       expect(claim.claim_token).toBe("tok-1");
 
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", stage: "cancelled" }));
-      const cancelled = await client.board.cancelTask("tsk-cccc3333", { reason: "r" });
-      expect(cancelled.stage).toBe("cancelled");
+      mockFetch.mockResolvedValueOnce(jsonResponse({ item_kind: "task", id: "t1", short_id: "tsk-cccc3333" }));
+      const deleted = await client.board.deleteTask("tsk-cccc3333", true);
+      expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/me/tasks/tsk-cccc3333?reconnect=true");
+      expect(deleted.item_kind).toBe("task");
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", acceptance_criteria: [{ text: "c", met: true }] }));
       const patched = await client.board.updateTask("tsk-cccc3333", { setCriteriaMet: 0 });
@@ -879,7 +882,7 @@ describe("userPrompts", () => {
     });
 
     it("threads lifecycle replay keys (body requestId + DELETE query param)", async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({ id: "e1", status: "active" }));
+      mockFetch.mockResolvedValueOnce(jsonResponse({ epic: { id: "e1", status: "active" }, initial_ready_set: [] }));
       await client.board.activateEpic("epc-bbbb2222", { requestId: "key-1" });
       expect((mockFetch.mock.calls[0][1] as any).body).toContain('"requestId":"key-1"');
 

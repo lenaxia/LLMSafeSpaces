@@ -145,6 +145,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # #1747: the canary scenarios are their own Go module (a separate
+      # go.mod) — the main-tree vet cannot see them. Compile-gate them
+      # explicitly so an SDK surface change cannot leave a broken
+      # scenario behind (the CancelTask class the r2 review caught).
+      - name: go vet (canary scenarios module)
+        run: go vet ./...
+        working-directory: sdks/canary/go
+
       # context.TODO() in production code is forbidden (US-46.5). It means
       # "I don't know what context belongs here" and silently drops deadline
       # propagation. context.Background() is allowed in main/init/background

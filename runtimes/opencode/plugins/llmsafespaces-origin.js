@@ -32,11 +32,36 @@
  *  server's tools (server "llmsafespaces" + "_" + tool). send_message
  *  carries the origin for attribution (#1465); session_metadata and
  *  delete_session carry the CALLING session for the current-session
- *  default and the self-delete guard (#1627). */
+ *  default and the self-delete guard (#1627). The 21 board MANAGER
+ *  tools (#1747 §5) carry the calling session's identity the same way:
+ *  the seam stamps it into the audit actor, and injection OVERWRITES
+ *  any model-supplied copy. Kept in lockstep with the agentd registry
+ *  by TestMCPBoard_ManagerInjectionSupply (both directions). */
 const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_send_message",
   "llmsafespaces_session_metadata",
   "llmsafespaces_delete_session",
+  "llmsafespaces_board_create_project",
+  "llmsafespaces_board_update_project",
+  "llmsafespaces_board_project_archive",
+  "llmsafespaces_board_project_unarchive",
+  "llmsafespaces_board_project_pause",
+  "llmsafespaces_board_project_resume",
+  "llmsafespaces_board_create_epic",
+  "llmsafespaces_board_update_epic",
+  "llmsafespaces_board_epic_activate",
+  "llmsafespaces_board_epic_pause",
+  "llmsafespaces_board_epic_archive",
+  "llmsafespaces_board_epic_unarchive",
+  "llmsafespaces_board_delete_epic",
+  "llmsafespaces_board_create_task",
+  "llmsafespaces_board_update_task",
+  "llmsafespaces_board_add_dependency",
+  "llmsafespaces_board_remove_dependency",
+  "llmsafespaces_board_delete_task",
+  "llmsafespaces_board_pause_task",
+  "llmsafespaces_board_resume_task",
+  "llmsafespaces_board_import_plan",
 ])
 
 /**

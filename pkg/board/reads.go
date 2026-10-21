@@ -6,6 +6,7 @@ package board
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -14,16 +15,22 @@ import (
 
 // reads.go — the board_read projection (§4.2): a read model over the
 // materialized columns. Epic progress is DERIVED here, never stored
-// (Done over ALL tasks — the #1747 owner ruling supersedes the
-// original design's canceled exclusion); a zero denominator renders
-// no-progress, never 0/0.
+// (ruling R2, #1747-amended): Done over ALL tasks; a zero denominator
+// renders no-progress, never 0/0.
 
-// GetTask resolves a task (case-insensitive short ID or UUID).
+// GetTask resolves a task (case-insensitive short ID or UUID) and
+// attaches the derived informational fields (waiting_on, backpressure).
 func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Task, error) {
-	return s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	s.decorateTask(ctx, t, nil)
+	return t, nil
 }
 
-// ListTasks lists a project's tasks (optionally by stage).
+// ListTasks lists a project's tasks (optionally by stage) in creation
+// order — the FIFO claim order's read-side mirror (#1747).
 func (s *Service) ListTasks(ctx context.Context, projectID string, stage string) ([]Task, error) {
 	q := `SELECT ` + taskColumns + ` FROM tasks t WHERE t.project_id=$1`
 	args := []any{projectID}
@@ -31,24 +38,37 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage string)
 		q += ` AND t.stage=$2`
 		args = append(args, stage)
 	}
-	q += ` ORDER BY t.priority, t.created_at`
+	q += ` ORDER BY t.created_at, t.id`
 	rows, err := s.q().Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	// r2 N+1 fix: the project (and its cap census context) resolves ONCE
+	// per list call — every row shares the same waiting_on/backpressure
+	// decoration inputs.
+	var proj *Project
 	var out []Task
 	for rows.Next() {
 		t, err := scanTask(rowScan{rows})
 		if err != nil {
 			return nil, err
 		}
+		if proj == nil || proj.ID != t.ProjectID {
+			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
+			if perr != nil {
+				slog.WarnContext(ctx, "board: project resolve failed (decoration suppressed)",
+					"projectID", t.ProjectID, "error", perr.Error())
+			}
+			proj = p
+		}
+		s.decorateTask(ctx, t, proj)
 		out = append(out, *t)
 	}
 	return out, rows.Err()
 }
 
-// GetEpic resolves an epic with derived progress.
+// GetEpic resolves an epic with derived progress + the backpressure note.
 func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epic, error) {
 	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
 	if err != nil {
@@ -57,13 +77,13 @@ func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epi
 	if err := s.deriveProgress(ctx, e); err != nil {
 		return nil, err
 	}
+	s.decorateEpic(ctx, e)
 	return e, nil
 }
 
 // deriveProgress carries the SAME denominator as ListEpics (the #1747
-// owner ruling: Done over ALL tasks — the canceled exclusion design
-// 0067 R2 carried is superseded by PR #1763's semantics; the one-epic
-// and list reads must agree).
+// owner ruling: Done over ALL live tasks — deleted rows leave the
+// board entirely; the one-epic and list reads must agree).
 func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	err := s.q().QueryRow(ctx, `
 		SELECT
@@ -77,9 +97,14 @@ func (s *Service) deriveProgress(ctx context.Context, e *Epic) error {
 	return nil
 }
 
-// GetProject resolves a project.
+// GetProject resolves a project (+ the backpressure note).
 func (s *Service) GetProject(ctx context.Context, projectID, shortIDOrID string) (*Project, error) {
-	return s.store.resolveProject(ctx, s.q(), "", pick(projectID, shortIDOrID))
+	p, err := s.store.resolveProject(ctx, s.q(), "", pick(projectID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	s.decorateProject(p)
+	return p, nil
 }
 
 // ListProjects lists the owner's boards (user-level, ruling R7).
@@ -95,6 +120,7 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 		if err != nil {
 			return nil, err
 		}
+		s.decorateProject(p)
 		out = append(out, *p)
 	}
 	return out, rows.Err()
@@ -103,12 +129,11 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 // ListEpics lists a project's epics with derived progress (never
 // stored; a zero denominator renders no-progress). One query: the
 // per-epic counts ride a LEFT JOIN over the tasks aggregate (no N+1).
-// Denominator semantics per the #1747 owner ruling (design authority
-// transferred to PR #1763): Done over ALL tasks — the canceled
-// exclusion design 0067 R2 carried is superseded.
+// Denominator semantics per the #1747 owner ruling: Done over ALL live
+// tasks — deleted rows leave the board entirely.
 func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, error) {
 	rows, err := s.q().Query(ctx, `
-		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.priority, e.project_name,
+		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.project_name,
 		       e.tags, e.vft, e.deficit, e.quantum, e.created_at, e.updated_at,
 		       COALESCE(c.done_count, 0), COALESCE(c.total_count, 0)
 		FROM epics e
@@ -127,7 +152,7 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 	var out []Epic
 	for rows.Next() {
 		var e Epic
-		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status, &e.Priority,
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status,
 			&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum, &e.CreatedAt, &e.UpdatedAt,
 			&e.ProgressDone, &e.ProgressTotal); err != nil {
 			return nil, err
@@ -146,11 +171,12 @@ const (
 	searchQueryMaxLength = 200
 )
 
-// searchStages is the stage-filter vocabulary (ruling R2's binding set).
+// searchStages is the stage-filter vocabulary (ruling R2's five-stage
+// set, #1747-amended — the eliminated terminal stage is not searchable).
 func searchStages() map[string]bool {
 	return map[string]bool{
 		StageBacklog: true, StageInProgress: true, StageInReview: true,
-		StageDone: true, StagePendingInput: true, StageCancelled: true,
+		StageDone: true, StagePendingInput: true,
 	}
 }
 
@@ -172,7 +198,7 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 		return nil, &GuardError{Code: GuardInput, Detail: "search query exceeds 200 characters"}
 	}
 	if filters.Stage != "" && !searchStages()[filters.Stage] {
-		return nil, &GuardError{Code: GuardInput, Detail: "stage filter must be one of the six stages"}
+		return nil, &GuardError{Code: GuardInput, Detail: "stage filter must be one of the five stages"}
 	}
 
 	args := []any{userID, trimmed, likeLiteral(trimmed)}

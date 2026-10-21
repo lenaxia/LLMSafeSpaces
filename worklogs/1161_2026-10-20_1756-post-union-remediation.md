@@ -64,7 +64,11 @@ standard applies before anything is pushed.
       TestArchivedRoute_Unindexed404CarriesSuggestions reshaped —
       id-like miss suggests via the InternalID ranking leg AND the
       candidate's harness id asserted ABSENT from the payload).
-- [ ] Pre-push subagent verification + report.
+- [x] Pre-push subagent verification + report (the verify ran pre-push
+      and found 3 gaps, all fixed pre-push: send_message origin leak,
+      PlanReconciliation prevMiss phrase-key, threshold flake — see
+      Completion; the checkbox was left unchecked by oversight, noted
+      by review r2 Project Alignment)..
 
 ## Completion (2026-10-21)
 
@@ -97,3 +101,24 @@ standard applies before anything is pushed.
   with main's 1160_2026-10-19_1747).
 - 5 workspace-name lane Sunset now the RFC 8594 HTTP-date (same v0.41.0
   window); TestWorkspaceRef_UnambiguousNameRewrites pins ParseTime.
+
+## Review r2 (PR #1806, CHANGES_REQUESTED) — the mass-reversion repair
+
+r1's commit 623fac53 carried a tree built from the PRE-merge checkout:
+the branch bot had merged main into the PR branch (f06c129f, bringing
+the #1747/#1763 lane) and my local pointer advanced, but the worktree
+never updated — `git add -A` committed a tree that silently reverted
+101 files of main's merged content. The reviewer caught it; the r1
+commit message and comment disclosed none of it (true failure on my
+part — the push was fast-forward so nothing flagged).
+
+Repair @ this commit: working tree restored to origin/main (8386ce0e)
+via `git restore --source`, my cumulative intended delta
+(fb687084..623fac53, 28 files) reapplied with `git apply --3way`
+(clean; the two NEW files recovered explicitly — restore had removed
+them too), CHANGELOG citation de-SHA'd (PR #1806, not the branch-only
+6c024f10). Diff vs main verified = 28 files, all intended, zero board
+deletions. r2's missing-test 1 closed (TestRegistryPullToReplicaSeam);
+missing-test 2 covered by the existing wiring-tier cold pins
+(OriginEmitsPhraseOrFlaggedID cold leg; WarmReplicaRewrites' ses_cold
+passthrough), cited in the reply.

@@ -79,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
-### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 review @ `6c024f10`)
+### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 post-union review; PR #1806)
 
 - **Five production regressions from the re-key, all re-keyed to the canonical harness id (`InternalID`):** the agentd registry pull no longer poisons the replica phrase→phrase (unminted rows are skipped — the replica install rejects empty short ids); the archived set matches harness row ids again (the #1735 leak is re-closed); session-gone reap verdicts fire (no more blanket "uncertain"); `RebuildMessageCount` no longer mints phrase-keyed ghost rows; the `context_used` self-heal fires (and the workspace CRD stops being fetched on every session-list call). `PlanReconciliation`'s error-path miss-carriers are keyed by `InternalID` too (reap convergence survives transient list errors).
 - **§2 deprecation notice now fires for the PRIMARY deprecated form:** `ses_…` full-id passthrough (and a #1745 hash-id miss) set `DeprecatedInput`, so API routes attach `Deprecation: true` + `Sunset` — now an RFC 8594 HTTP-date (`Tue, 01 Dec 2026 00:00:00 GMT`, the v0.41.0 removal), not free text. Did-you-mean candidates carry the harness id for the ses_-form edit-distance leg (near-miss full ids suggest again; degraded rows get a ranking identifier).

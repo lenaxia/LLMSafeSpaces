@@ -200,10 +200,10 @@ func (s *BoardSuite) TestPublisher_LifecycleRequestIdReplayProtection() {
 
 	const key = "lifecycle-replay-1"
 	before := s.countEvents("epic_activate")
-	_, err := s.svc.EpicActivate(ctx, s.owner(), e.ID, "", key)
+	_, err := s.svc.EpicActivate(ctx, s.owner(), e.ID, "", false, key)
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), before+1, s.countEvents("epic_activate"), "first lifecycle write lands its event row")
-	_, err = s.svc.EpicActivate(ctx, s.owner(), e.ID, "", key)
+	_, err = s.svc.EpicActivate(ctx, s.owner(), e.ID, "", false, key)
 	var dup *board.DuplicateError
 	require.ErrorAs(s.T(), err, &dup, "replayed lifecycle requestId renders 200-with-original, never a second transition")
 	assert.Equal(s.T(), before+1, s.countEvents("epic_activate"), "exactly one epic_activate event row")

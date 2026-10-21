@@ -1926,3 +1926,13 @@ board:
   drrQuantum: 1
   # Reconciler sweep cadence in seconds (lease reclaims, drift, deps).
   sweepSeconds: 30
+  # #1747: per-user concurrent-claim cap (in_progress tasks); over-cap
+  # claims quietly wait (never an error) — reads surface
+  # waiting_on=concurrency_limit.
+  userClaimCap: 8
+  # #1747: per-instance global concurrent-claim cap.
+  globalClaimCap: 64
+  # #1747: DAG blast-radius bound — max dependency edges per task node.
+  maxEdgesPerNode: 16
+  # #1747: DAG blast-radius bound — max tasks per epic.
+  maxNodesPerEpic: 64

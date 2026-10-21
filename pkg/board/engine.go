@@ -23,9 +23,12 @@ import (
 // candidate-less project from winning the lock and starving others; the
 // slot count is read under the project row lock so concurrent claimers
 // serialize; the slot_cooldown predicate pauses throttled projects.
+// #1747: p.paused parks every task under the project (query scoping —
+// the pause lever's claim-side predicate).
 const eligibleProjectsSQL = `
 	SELECT p.id FROM projects p
 	WHERE p.status = 'active'
+	  AND NOT p.paused
 	  AND p.target_workspace_id = $1::uuid
 	  AND (p.slot_cooldown_until IS NULL OR p.slot_cooldown_until < now())
 	  AND (SELECT count(*) FROM tasks t2
@@ -33,26 +36,33 @@ const eligibleProjectsSQL = `
 	  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id = t3.epic_id
 	              WHERE t3.project_id = p.id AND e3.status = 'active'
 	                AND e3.deficit < e3.quantum
-	                AND t3.stage = 'backlog' AND NOT t3.is_blocked
+	                AND t3.stage = 'backlog' AND NOT t3.is_blocked AND NOT t3.paused
 	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))
 	ORDER BY (SELECT min(e.vft) FROM epics e WHERE e.project_id = p.id AND e.status = 'active'
 	          AND e.deficit < e.quantum
 	          AND EXISTS (SELECT 1 FROM tasks t4 WHERE t4.epic_id = e.id
-	                      AND t4.stage = 'backlog' AND NOT t4.is_blocked
+	                      AND t4.stage = 'backlog' AND NOT t4.is_blocked AND NOT t4.paused
 	                      AND (t4.cooldown_until IS NULL OR t4.cooldown_until < now()))), p.id
 	FOR UPDATE OF p SKIP LOCKED LIMIT 1`
 
-// candidateSQL picks the ready-set winner in the locked project:
-// (priority, virtual_finish_time, created_at) — the ruling's order, with
-// the DRR round-eligibility predicate (deficit < quantum).
+// candidateSQL picks the ready-set winner in the locked project.
+//
+// CLAIM ORDER LIVES HERE — THE ONE PLACE (#1747 final ruling): claim
+// order is deterministic FIFO (creation order) over the ready set, the
+// ONLY ordering rule. No priority field, no position field, no ordering
+// tool exists; a future ordering lever changes this ORDER BY alone.
+// The DRR predicates (deficit < quantum; the project's min-vft
+// selection above) are engine-internal EPIC fairness, not an ordering
+// lever. Paused rows (task-level) never qualify; the epic must be
+// active and the project unpaused.
 const candidateSQL = `
 	SELECT t.id, t.attempts FROM tasks t
 	JOIN epics e ON e.id = t.epic_id AND e.status = 'active'
 	WHERE t.project_id = $1::uuid
-	  AND t.stage = 'backlog' AND NOT t.is_blocked
+	  AND t.stage = 'backlog' AND NOT t.is_blocked AND NOT t.paused
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
 	  AND e.deficit < e.quantum
-	ORDER BY t.priority ASC, e.vft ASC, t.created_at ASC
+	ORDER BY t.created_at ASC, t.id ASC
 	LIMIT 1 FOR UPDATE OF t SKIP LOCKED`
 
 // ClaimNext is the dispatch-engine entry (worker surface; engine-internal
@@ -69,6 +79,10 @@ func (s *Service) ClaimNext(ctx context.Context, workerID, workspaceID string) (
 		switch status {
 		case "granted", "escalated":
 			return claim, nil
+		case "capped", "pressured":
+			// #1747 backpressure: the quiet gates — the row stays ready,
+			// the sweep retries; reads carry the informational note.
+			return nil, ErrNoCandidate
 		case "project_empty":
 			// Project-level rollover: the claimer locked p but the
 			// candidate raced away (SKIP LOCKED) — reset THAT project's
@@ -128,6 +142,9 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if p.Status == ProjectArchived {
 		return nil, &GuardError{Code: GuardProjectState, Detail: "archived projects refuse task_start (terminal storage stays closed)"}
 	}
+	if p.Paused {
+		return nil, &GuardError{Code: GuardPaused, Detail: "the project is paused — pause stops new claims of every kind (#1747)"}
+	}
 	var epicStatus string
 	if err := s.q().QueryRow(ctx, `SELECT status FROM epics WHERE id=$1`, t.EpicID).Scan(&epicStatus); err != nil {
 		return nil, err
@@ -136,8 +153,20 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 		return nil, &GuardError{Code: GuardEpicState,
 			Detail: "task_start is scoped to draft∪active epics (paused/completed/archived refuse; pause stops new claims of every kind)"}
 	}
+	if t.Paused {
+		return nil, &GuardError{Code: GuardPaused, Detail: "the task is paused — no re-entry until resume (#1747)"}
+	}
 	if t.Stage != StageBacklog || t.IsBlocked {
 		return nil, &GuardError{Code: GuardStage, Detail: "task_start targets a ready backlog task"}
+	}
+	// #1747 backpressure at the choke point's manual lever: a manual
+	// dispatch over the concurrency caps is a 409 (the claim path's quiet
+	// no-grant has no manual counterpart); workspace pressure likewise.
+	if sample := s.ActivePressure(p.TargetWorkspaceID); sample != nil && sample.Pressured() {
+		return nil, &GuardError{Code: GuardBackpressure, Detail: "the target workspace is under resource pressure (" + sample.Summary() + ") — claiming pauses until it clears"}
+	}
+	if cs := s.concurrencyFor(ctx, p); cs.UserAtCap || cs.GlobalAtCap {
+		return nil, &GuardError{Code: GuardConcurrency, Detail: "concurrency limit reached (per-user or per-instance in_progress cap) — the task stays ready; retry when a claim completes"}
 	}
 
 	tx, err := s.store.pool.Begin(ctx)
@@ -270,6 +299,27 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			return nil, "project_empty", projectID, nil
 		}
 		return nil, "", "", err
+	}
+
+	// #1747 backpressure — the claim choke point's QUIET gates (over-cap
+	// and pressure are never errors; the row stays ready and the sweep
+	// retries; reads surface waiting_on / backpressure informational
+	// notes). (a) workspace resource pressure: agentd's last sample says
+	// the target pod is pressured — stop claiming into it until the
+	// sample clears (hysteresis reporter-side, TTL here). (b) the
+	// concurrency caps: per-owner and per-instance in_progress bounds —
+	// the counts ride inFlightCountsForProject (service.go: the engine
+	// and reconciler stay ownership-agnostic BY CONSTRUCTION, §4.7 —
+	// this file never reads the owner column).
+	counts, targetWS, err := s.inFlightCountsForProject(ctx, tx, projectID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if sample := s.ActivePressure(targetWS); sample != nil && sample.Pressured() {
+		return nil, "pressured", projectID, nil
+	}
+	if counts.UserAtCap(s.cfg.UserClaimCap) || counts.GlobalAtCap(s.cfg.GlobalClaimCap) {
+		return nil, "capped", projectID, nil
 	}
 
 	sysActor := Actor{Kind: ActorSystem, Surface: "engine"}
@@ -427,10 +477,10 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 		claim.Assignee = sessionID
 		return
 	}
-	// The guarded stamp lost the race (canceled, lapsed, or re-claimed
+	// The guarded stamp lost the race (deleted, lapsed, or re-claimed
 	// while the spawn was in flight): the just-spawned session holds a
 	// dead charter — abort it (the merged design's spawn-stamp guard; the
-	// same interrupt seam as cancel/reclaim).
+	// same interrupt seam as delete/reclaim).
 	if s.aborter != nil {
 		_ = s.aborter(ctx, claim.TaskID, sessionID)
 	}

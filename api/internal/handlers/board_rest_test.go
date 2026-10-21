@@ -44,6 +44,20 @@ type fakeBoardManager struct {
 	health       *board.Health
 
 	errFor map[string]error
+
+	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
+	// create-project input capture, and the pressure sample sink.
+	workerSession          string
+	beltErr                error
+	lastCreateProjectInput *board.ProjectInput
+	lastPressureSample     *board.PressureSample
+}
+
+func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
+	if f.beltErr != nil {
+		return false, f.beltErr
+	}
+	return sessionID != "" && sessionID == f.workerSession, nil
 }
 
 func newFakeBoardManager() *fakeBoardManager {
@@ -76,6 +90,8 @@ func (f *fakeBoardManager) GetProject(_ context.Context, _, _ string) (*board.Pr
 }
 
 func (f *fakeBoardManager) CreateProject(_ context.Context, actor board.Actor, in board.ProjectInput, requestID string) (*board.Project, error) {
+	in2 := in
+	f.lastCreateProjectInput = &in2
 	f.call("create_project")
 	f.lastActor, f.lastRequestID = actor, requestID
 	if err := f.errFor["create_project"]; err != nil {
@@ -130,7 +146,7 @@ func (f *fakeBoardManager) CreateEpic(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["create_epic"]; err != nil {
 		return nil, err
 	}
-	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Status: board.EpicDraft, Priority: board.PriorityP2}, nil
+	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Status: board.EpicDraft}, nil
 }
 
 func (f *fakeBoardManager) UpdateEpic(_ context.Context, actor board.Actor, _, idOrShort string, in board.EpicInput, requestID string) (*board.Epic, error) {
@@ -140,7 +156,7 @@ func (f *fakeBoardManager) UpdateEpic(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["update_epic"]; err != nil {
 		return nil, err
 	}
-	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Outcome: in.Outcome, Status: board.EpicActive, Priority: board.PriorityP2}, nil
+	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Outcome: in.Outcome, Status: board.EpicActive}, nil
 }
 
 func (f *fakeBoardManager) epicLifecycle(name, to string) func(context.Context, board.Actor, string, string, string) (*board.Epic, error) {
@@ -154,7 +170,8 @@ func (f *fakeBoardManager) epicLifecycle(name, to string) func(context.Context, 
 	}
 }
 
-func (f *fakeBoardManager) EpicActivate(ctx context.Context, a board.Actor, id, s, r string) (*board.Epic, error) {
+func (f *fakeBoardManager) EpicActivate(ctx context.Context, a board.Actor, id, s string, ack bool, r string) (*board.Epic, error) {
+	_ = ack
 	return f.epicLifecycle("epic_activate", board.EpicActive)(ctx, a, id, s, r)
 }
 func (f *fakeBoardManager) EpicPause(ctx context.Context, a board.Actor, id, s, r string) (*board.Epic, error) {
@@ -167,14 +184,86 @@ func (f *fakeBoardManager) EpicUnarchive(ctx context.Context, a board.Actor, id,
 	return f.epicLifecycle("epic_unarchive", board.EpicActive)(ctx, a, id, s, r)
 }
 
-func (f *fakeBoardManager) CancelEpic(_ context.Context, actor board.Actor, _, _, reason, requestID string) (*board.Epic, error) {
-	f.call("cancel_epic")
+func (f *fakeBoardManager) PauseProject(_ context.Context, actor board.Actor, _, _, requestID string) (*board.Project, error) {
+	f.call("pause_project")
 	f.lastActor, f.lastRequestID = actor, requestID
-	_ = reason
-	if err := f.errFor["cancel_epic"]; err != nil {
+	if err := f.errFor["pause_project"]; err != nil {
 		return nil, err
 	}
-	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Status: board.EpicPaused}, nil
+	p := board.Project{ID: "p1", ShortID: "prj-aaaa1111", UserID: actor.UserID, Status: board.ProjectActive, Paused: true}
+	return &p, nil
+}
+
+func (f *fakeBoardManager) ResumeProject(_ context.Context, actor board.Actor, _, _, requestID string) (*board.Project, error) {
+	f.call("resume_project")
+	f.lastActor, f.lastRequestID = actor, requestID
+	if err := f.errFor["resume_project"]; err != nil {
+		return nil, err
+	}
+	p := board.Project{ID: "p1", ShortID: "prj-aaaa1111", UserID: actor.UserID, Status: board.ProjectActive}
+	return &p, nil
+}
+
+func (f *fakeBoardManager) EpicInitialReadySet(_ context.Context, _ string) ([]string, error) {
+	f.call("epic_ready_set")
+	return []string{"tsk-cccc3333"}, nil
+}
+
+func (f *fakeBoardManager) DeleteEpic(_ context.Context, actor board.Actor, _, _ string, force bool, requestID string) (*board.DeleteResult, error) {
+	f.call("delete_epic")
+	f.lastActor, f.lastRequestID = actor, requestID
+	_ = force
+	if err := f.errFor["delete_epic"]; err != nil {
+		return nil, err
+	}
+	return &board.DeleteResult{ItemKind: "epic", ID: "e1", ShortID: "epc-bbbb2222"}, nil
+}
+
+func (f *fakeBoardManager) DeleteTask(_ context.Context, actor board.Actor, _, _ string, reconnect bool, requestID string) (*board.DeleteResult, error) {
+	f.call("delete_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	_ = reconnect
+	if err := f.errFor["delete_task"]; err != nil {
+		return nil, err
+	}
+	return &board.DeleteResult{ItemKind: "task", ID: "t1", ShortID: "tsk-cccc3333"}, nil
+}
+
+func (f *fakeBoardManager) PauseTask(_ context.Context, actor board.Actor, _, _, requestID string) (*board.Task, error) {
+	f.call("pause_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	if err := f.errFor["pause_task"]; err != nil {
+		return nil, err
+	}
+	if len(f.tasks) > 0 {
+		t := f.tasks[0]
+		t.Paused = true
+		return &t, nil
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", Stage: board.StageBacklog, Paused: true, Tags: []string{}}, nil
+}
+
+func (f *fakeBoardManager) ResumeTask(_ context.Context, actor board.Actor, _, _, requestID string) (*board.Task, error) {
+	f.call("resume_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	if err := f.errFor["resume_task"]; err != nil {
+		return nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", Stage: board.StageBacklog, Tags: []string{}}, nil
+}
+
+func (f *fakeBoardManager) ImportPlan(_ context.Context, actor board.Actor, _, _ string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error) {
+	f.call("import_plan")
+	f.lastActor, f.lastRequestID = actor, requestID
+	_ = in
+	if err := f.errFor["import_plan"]; err != nil {
+		return nil, err
+	}
+	if dryRun {
+		return &board.ImportResult{DryRun: true, ProjectID: "p1", Plan: &board.PlanValidation{Valid: true, InitialReadySet: []string{"a"}}}, nil
+	}
+	return &board.ImportResult{ProjectID: "p1", EpicID: "e1", EpicShortID: "epc-bbbb2222",
+		TaskKeys: map[string]string{"a": "tsk-cccc3333"}, InitialReadySet: []string{"tsk-cccc3333"}}, nil
 }
 
 func (f *fakeBoardManager) GetTask(_ context.Context, _, _ string) (*board.Task, error) {
@@ -233,7 +322,7 @@ func (f *fakeBoardManager) CreateTask(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["create_task"]; err != nil {
 		return nil, err
 	}
-	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Priority: board.PriorityP2, Tags: []string{}}, nil
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, idOrShort string, in board.TaskInput, requestID string) (*board.Task, error) {
@@ -243,7 +332,7 @@ func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["update_task"]; err != nil {
 		return nil, err
 	}
-	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Priority: in.Priority, Tags: []string{}}, nil
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, idOrShort, toStage, evidenceURL, requestID string) (*board.Task, error) {
@@ -265,17 +354,6 @@ func (f *fakeBoardManager) TaskStart(_ context.Context, actor board.Actor, _, id
 		return nil, err
 	}
 	return &board.Claim{TaskID: "t1", ShortID: "tsk-cccc3333", ClaimToken: "tok-1", Escalated: false}, nil
-}
-
-func (f *fakeBoardManager) CancelTask(_ context.Context, actor board.Actor, _, idOrShort, reason, requestID string) (*board.Task, error) {
-	f.call("cancel_task")
-	f.lastActor, f.lastRequestID = actor, requestID
-	_ = idOrShort
-	_ = reason
-	if err := f.errFor["cancel_task"]; err != nil {
-		return nil, err
-	}
-	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageCancelled, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) AddDependency(_ context.Context, actor board.Actor, _, idOrShort, dependsOn, requestID string) error {
@@ -314,8 +392,11 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p.PATCH("/:id", h.UpdateProject)
 	p.POST("/:id/archive", h.ArchiveProject)
 	p.POST("/:id/unarchive", h.UnarchiveProject)
+	p.POST("/:id/pause", h.PauseProject)
+	p.POST("/:id/resume", h.ResumeProject)
 	p.GET("/:id/tasks", h.ListProjectTasks)
 	p.POST("/:id/epics", h.CreateEpic)
+	p.POST("/:id/import-plan", h.ImportPlan)
 	p.GET("/:id/epics", h.ListProjectEpics)
 	bb := g.Group("/board")
 	bb.GET("/search", h.BoardSearch)
@@ -327,14 +408,16 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	e.POST("/:id/pause", h.PauseEpic)
 	e.POST("/:id/archive", h.ArchiveEpic)
 	e.POST("/:id/unarchive", h.UnarchiveEpic)
-	e.POST("/:id/cancel", h.CancelEpic)
+	e.DELETE("/:id", h.DeleteEpic)
 	e.POST("/:id/tasks", h.CreateEpicTask)
 	k := g.Group("/tasks")
 	k.GET("/:id", h.GetTask)
 	k.PATCH("/:id", h.UpdateTask)
 	k.POST("/:id/move-stage", h.MoveStageTask)
 	k.POST("/:id/start", h.StartTask)
-	k.POST("/:id/cancel", h.CancelTask)
+	k.POST("/:id/pause", h.PauseTask)
+	k.POST("/:id/resume", h.ResumeTask)
+	k.DELETE("/:id", h.DeleteTask)
 	k.POST("/:id/dependencies", h.AddDependency)
 	k.DELETE("/:id/dependencies/:dependsOnId", h.RemoveDependency)
 	return r
@@ -384,14 +467,14 @@ func TestBoardREST_ActorStamping(t *testing.T) {
 		{"epic_pause", "epic_pause", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/pause", `{}`)
 		}},
-		{"cancel_epic", "cancel_epic", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
-			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/cancel", `{"reason":"done elsewhere"}`)
+		{"delete_epic", "delete_epic", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
+			return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/epics/epc-bbbb2222?force=true", ``)
 		}},
 		{"create_task", "create_task", http.StatusCreated, func(r *gin.Engine) *httptest.ResponseRecorder {
-			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T1","requestId":"req-5"}`)
+			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks", `{"title":"T1","dependsOn":["tsk-dddd4444"],"requestId":"req-5"}`)
 		}},
 		{"update_task", "update_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
-			return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"priority":"P1","requestId":"req-6"}`)
+			return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"description":"redo","requestId":"req-6"}`)
 		}},
 		{"move_stage", "move_stage", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"in_review","requestId":"req-7"}`)
@@ -399,8 +482,14 @@ func TestBoardREST_ActorStamping(t *testing.T) {
 		{"task_start", "task_start", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", `{"requestId":"req-8"}`)
 		}},
-		{"cancel_task", "cancel_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
-			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/cancel", `{"reason":"obsolete"}`)
+		{"pause_task", "pause_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
+			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/pause", `{}`)
+		}},
+		{"resume_task", "resume_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
+			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/resume", `{}`)
+		}},
+		{"delete_task", "delete_task", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
+			return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333", ``)
 		}},
 		{"add_dependency", "add_dependency", http.StatusOK, func(r *gin.Engine) *httptest.ResponseRecorder {
 			return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":"req-9"}`)
@@ -549,17 +638,26 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 		})
 	}
 
-	// The stage filter accepts exactly the six stages (ruling R2's
-	// binding set) and rejects everything else.
+	// The stage filter accepts exactly the five stages (ruling R2's
+	// binding set, #1747-amended: cancel is eliminated) and rejects
+	// everything else.
 	svc := newFakeBoardManager()
 	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
 	r := newBoardRESTRouter(t, svc)
-	for _, stage := range []string{"backlog", "in_progress", "in_review", "done", "pending_input", board.StageCancelled} {
+	for _, stage := range []string{"backlog", "in_progress", "in_review", "done", "pending_input"} {
 		w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage="+stage, "")
 		assert.Equal(t, http.StatusOK, w.Code, stage)
 	}
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=wip", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code, "unknown stage filter: "+w.Body.String())
+	// #1747 (r2, stage-filter contract pin): the ELIMINATED terminal
+	// stage is not a filter value anymore — same 400 class as a typo
+	// (the openapi enum no longer advertises it either). The \u escape
+	// spells the historical value as DATA without a bare source
+	// occurrence the US-locale fixer would rewrite (r5 doctrine: one
+	// named/escaped site, never concatenation).
+	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel\u006ced", "")
+	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
 }
 
 // TestBoardREST_ListRenders: list endpoints render the owner's boards in
@@ -652,4 +750,12 @@ func TestBoardREST_StartTaskChunkedEmptyBody(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	r.ServeHTTP(w2, req2)
 	assert.Equal(t, http.StatusBadRequest, w2.Code)
+}
+
+// ReportResourcePressure implements the seam's telemetry sink over the
+// fake (the #1747 backpressure route's capture).
+func (f *fakeBoardManager) ReportResourcePressure(_ context.Context, _ string, sample board.PressureSample) error {
+	s := sample
+	f.lastPressureSample = &s
+	return nil
 }

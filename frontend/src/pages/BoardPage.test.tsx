@@ -41,13 +41,12 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     }
   });
 
-  it("places cards in their stage columns (short id mono, title, priority)", async () => {
+  it("places cards in their stage columns (short id mono, title)", async () => {
     renderBoard();
     const card = await screen.findByTestId("task-card-tsk-aaaa0001");
     expect(card.closest('[data-stage-drop="backlog"]')).not.toBeNull();
     expect(card.textContent).toContain("tsk-aaaa0001");
     expect(card.textContent).toContain("Write charter");
-    expect(card.textContent).toContain("P2");
   });
 
   it("shows the assignee busy indicator only on claimed in-progress rows", async () => {
