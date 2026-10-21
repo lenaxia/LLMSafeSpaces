@@ -188,12 +188,19 @@ func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
 		status = "busy"
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
-		b.h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+		// #1817/#1821 piece 1: the wire id is the PHRASE (the id space
+		// the frontend joins on — session list, history, chat); the
+		// harness id rides along ADDITIVELY as internal_session_id.
+		// Degraded index (no phrase) passes the harness id through —
+		// never worse than the pre-fix behavior.
+		evt := apitypes.WorkspaceSSEEvent{
 			Type:        "session.status",
 			WorkspaceID: workspaceID,
 			SessionID:   sessionID,
 			Status:      status,
-		})
+		}
+		b.h.translateSessionIDToPhrase(workspaceID, &evt)
+		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
 
@@ -230,6 +237,7 @@ func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
+		b.h.translateSessionIDToPhrase(workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -253,6 +261,7 @@ func (b *usageBridge) InputResolved(workspaceID, sessionID, inputID string) {
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
+		b.h.translateSessionIDToPhrase(workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -339,4 +348,40 @@ func (t *usageAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r = r.Clone(r.Context())
 	r.SetBasicAuth(agentd.AuthUsername, t.password)
 	return t.inner.RoundTrip(r)
+}
+
+// translateSessionIDToPhrase is the #1821 piece-1 ID-edge translation:
+// the user-stream wire id becomes the PHRASE (the id space the frontend
+// joins on since the #1756/#1775/#1806 re-keys — session list, history
+// REST, chat identity), with the harness id preserved ADDITIVELY as
+// internal_session_id. One id space at the edge; the harness id is
+// never dropped (consumers that need it read the additive field).
+// Degraded seam (index nil, session unknown, or no phrase minted):
+// the event passes through UNCHANGED — the pre-fix behavior, never
+// worse. The Register seam is idempotent and LRU-cached after first
+// sight, so the hot emission path costs one map lookup.
+func (h *ProxyHandler) translateSessionIDToPhrase(workspaceID string, evt *apitypes.WorkspaceSSEEvent) {
+	harnessID := evt.SessionID
+	if h.sessionIndex == nil || harnessID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	phrase := h.sessionIndex.Register(ctx, workspaceID, harnessID, "")
+	if phrase == "" || phrase == harnessID {
+		return
+	}
+	evt.SessionID = phrase
+	switch data := evt.Data.(type) {
+	case map[string]any:
+		if data == nil {
+			data = map[string]any{}
+		}
+		data["internal_session_id"] = harnessID
+		evt.Data = data
+	case map[string]string:
+		data["internal_session_id"] = harnessID
+	default:
+		evt.Data = map[string]any{"internal_session_id": harnessID}
+	}
 }

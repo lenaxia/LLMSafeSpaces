@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
+
+- **The busy-signal/live-streaming id join is fixed at the user-stream
+  edge.** The #1756/#1775/#1806 phrase re-keys flipped the frontend's
+  session identity (sessions list, history REST) to the phrase space
+  while user-stream `session.status` / `agent.question` /
+  `agent.question.resolved` events kept emitting the harness id — the
+  join missed for every minted row, killing live busy tracking
+  (sporadic busy only on degraded rows) and live streaming.
+  The API now reverse-resolves at the emission surface: the wire
+  `sessionID` is the PHRASE, with the harness id preserved additively
+  as `internal_session_id`. A degraded index (no phrase minted) passes
+  the harness id through unchanged — never worse. The dual-id fixture
+  class (mock index rows keyed phrase + ABI events keyed harness id)
+  lands with T0.1 phrase-contract pins and the T1.6 cross-surface join
+  tripwire — the test-shape gap that blinded every suite.
+
 (nothing yet)
 
 ## [0.40.0] - 2026-10-21

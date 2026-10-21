@@ -5,12 +5,14 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // #1817 / #1821 piece 1 (T0.1): the ID-contract pin. The #1756/#1775/
@@ -95,4 +97,51 @@ func TestUserStreamSessionEvents_DegradedIndex_PassthroughHarnessID(t *testing.T
 	evt := <-sub.Ch
 	assert.Equal(t, "ses_never_registered", evt.SessionID,
 		"no phrase → harness id passthrough (never worse; these are the sporadic rows that matched today)")
+}
+
+// T1.6 (the #1817 tripwire): the CROSS-SURFACE JOIN, asserted
+// mechanically — the sessions list row (the frontend's session
+// identity, keyed by phrase since #1756) and the user-stream
+// session.status emission (keyed by the harness id at the ABI edge)
+// must carry ONE joinable key after the piece-1 translation. This is
+// the test class whose absence blinded every suite: mocks injected a
+// single id into both surfaces, so the join could never fail.
+func TestUserStreamSessionEvents_JoinableWithSessionList(t *testing.T) {
+	now := time.Now()
+	const harnessID = "ses_harness_t16"
+	const phraseID = "quiet-mountain-9"
+
+	h, si := newBridgeIndexHandler(t)
+	// Surface 1: the session-index row as the sessions list serves it
+	// (ID = the phrase, InternalID = the harness id — post-#1756 shape).
+	si.mu.Lock()
+	si.rows = map[string][]types.SessionListItem{
+		"ws-1": {{
+			ID: phraseID, InternalID: harnessID,
+			Title: "join test", LastMessageAt: &now,
+		}},
+	}
+	si.phrases["ws-1/"+harnessID] = phraseID
+	si.mu.Unlock()
+
+	broker := eventbroker.NewUserEventBroker()
+	h.SetUserBrokerForTest(broker)
+	broker.RecordWorkspaceOwner("ws-1", "user-1817")
+	sub, err := broker.SubscribeUser("user-1817")
+	require.NoError(t, err)
+	defer broker.UnsubscribeUser("user-1817", sub)
+
+	// Surface 2: the busy emission keyed by the HARNESS id at the ABI
+	// edge — the exact live shape that broke v0.40.0.
+	(&usageBridge{h: h}).SessionStatus("ws-1", harnessID, true)
+	evt := <-sub.Ch
+
+	// THE JOIN: the wire key must equal the list row's key.
+	assert.Equal(t, phraseID, evt.SessionID,
+		"session.status must key on the same id the sessions list serves — the v0.40.0 breakage was exactly this mismatch")
+	var iid string
+	if d, ok := evt.Data.(map[string]any); ok {
+		iid, _ = d["internal_session_id"].(string)
+	}
+	assert.Equal(t, harnessID, iid, "the harness id stays reachable (additive internal_session_id)")
 }
