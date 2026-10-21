@@ -223,7 +223,14 @@ function TriggerScriptEditor({ language, onLanguageChange, source, onSourceChang
             aria-label="Gate script language"
             className="rounded border border-border px-2 py-1 text-sm bg-background"
             value={language}
-            onChange={(e) => onLanguageChange(e.target.value as GateLanguage)}
+            onChange={(e) => {
+              onLanguageChange(e.target.value as GateLanguage);
+              // Deselecting the language drops the stale source too —
+              // a hidden, populated source would keep the form
+              // partially-scripted and block saving with no visible
+              // cause (r2 review minor trap).
+              if (e.target.value === "none") onSourceChange("");
+            }}
           >
             <option value="none">No gate script</option>
             <option value="python">Python</option>
@@ -643,6 +650,13 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [gateLanguage, setGateLanguage] = useState<GateLanguage>(gateLanguageFromScript(trigger.script));
   const [gateSource, setGateSource] = useState(trigger.script?.handler || "");
   const hadGateScript = !!trigger.script;
+  // #1812 r2 Finding 3: a partial gate edit (language without source,
+  // or source without language) must BLOCK the save — translating it
+  // into script:null would silently erase the stored gate script.
+  const gatePartial = (gateLanguage !== "none" && !gateSource.trim()) || (gateLanguage === "none" && !!gateSource.trim());
+  const gateScript = gateLanguage !== "none" && !gatePartial
+    ? { language: gateLanguage, handler: gateSource }
+    : undefined;
   const [scriptPath, setScriptPath] = useState(trigger.scriptPath || "");
   const [scriptArgs, setScriptArgs] = useState((trigger.scriptArgs || []).join(" "));
   const [scriptEnv, setScriptEnv] = useState(scriptEnvToText(trigger.scriptEnv));
@@ -672,11 +686,12 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
 
   const handleSaveTarget = () => {
     if (isRoutine) {
+      if (gatePartial) {
+        // Unreachable with the disabled Save button — belt for any
+        // programmatic caller: never turn a partial edit into a clear.
+        return;
+      }
       const scriptEnvRecord = parseScriptEnvText(scriptEnv);
-      const gatePartial = (gateLanguage !== "none" && !gateSource.trim()) || (gateLanguage === "none" && !!gateSource.trim());
-      const gateScript = gateLanguage !== "none" && !gatePartial
-        ? { language: gateLanguage, handler: gateSource }
-        : undefined;
       // Clearing an existing gate script back to none must PATCH the
       // JSON null (the API's key-presence discrimination) — omitting
       // the key would silently keep the stored script.
@@ -835,7 +850,7 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
           ) : (
             <div className="flex gap-2">
               <button onClick={() => setEditingTarget(false)} className="text-xs text-muted-foreground hover:underline">Cancel</button>
-              <button onClick={handleSaveTarget} className="text-xs text-blue-500 hover:underline">Save</button>
+              <button onClick={handleSaveTarget} disabled={isRoutine && gatePartial} className="text-xs text-blue-500 hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed">Save</button>
             </div>
           )}
         </div>

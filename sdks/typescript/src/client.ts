@@ -836,6 +836,26 @@ export interface WorkflowRunResponse {
  * - a script trigger with NO prompt never calls the LLM at all.
  *
  * Routine targets only — rejected (400) alongside workflowId.
+ *
+ * Worked example — nightly digest, LLM called only when work
+ * accumulated:
+ *
+ * ```ts
+ * await client.triggers.create({
+ *   name: "nightly-digest",
+ *   sourceType: "cron",
+ *   sourceConfig: { expr: "0 2 * * *", tz: "UTC" },
+ *   workspaceId: wsId,
+ *   prompt: "Summarize the {{count}} new items.",
+ *   script: {
+ *     language: "python",
+ *     handler: 'def handler(input):\n    n = count_open_items()\n    return {"proceed": n > 0, "vars": {"count": str(n)}}\n',
+ *   },
+ * });
+ * // proceed=false → fire skipped, no model call
+ * // proceed=true  → prompt fires with {{count}} substituted + all
+ * //                 vars appended as trailing metadata
+ * ```
  */
 export interface TriggerScript {
   /** Runtime: "python" or "node" (the workflow script-node runtimes). */

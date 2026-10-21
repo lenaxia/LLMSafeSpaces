@@ -80,6 +80,30 @@ func TestIssue1812E2EScript_RowsAndAssertions(t *testing.T) {
 		"gate payload fields (proceed/vars) must be asserted, not just fire status")
 }
 
+// TestIssue1812E2EScript_GateFieldEvaluatesFalse pins the jq extractor
+// itself against real jq (the r2 review's Finding 1: `// empty` swallows
+// false, making the closed-gate assertion unreachable). A string-only
+// structural needle cannot catch this class — the pin must EVALUATE the
+// expression. Skips only where jq is unavailable (not on the nightly).
+func TestIssue1812E2EScript_GateFieldEvaluatesFalse(t *testing.T) {
+	raw, err := os.ReadFile(issue1812Script)
+	require.NoError(t, err)
+	src := string(raw)
+	require.Contains(t, src, `| tostring`, "gate_field must not use jq's falsy-swallowing `// empty`")
+
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed — the nightly and dev pods carry it")
+	}
+	// The exact expression shape gate_field builds, evaluated against a
+	// closed-gate audit payload.
+	expr := `.actionResult.gate.proceed | tostring`
+	cmd := exec.Command("bash", "-c", `printf '%s' '{"actionResult":{"gate":{"proceed":false,"vars":{"topic":"nothing-new"}}}}' | jq -r '`+expr+`'`)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "jq evaluation failed: %s", string(out))
+	require.Equal(t, strings.TrimSpace(string(out)), "false",
+		"a closed gate's proceed MUST render as the string false — the R1 exec-mode assertion depends on it")
+}
+
 // TestIssue1812E2EWorkflowRegistered pins the nightly workflow row so
 // the script cannot be dropped from the schedule silently (the #1452
 // lesson: an unregistered harness never runs; found only in review).

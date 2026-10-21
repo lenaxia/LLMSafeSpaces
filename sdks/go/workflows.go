@@ -87,6 +87,20 @@ type Trigger struct {
 }
 
 // CreateTriggerReq is the body for creating a trigger.
+//
+// Worked example (#1812 gate) — nightly digest, LLM called only when
+// work accumulated:
+//
+//	req := workflows.CreateTriggerReq{
+//	    Name: "nightly-digest", SourceType: "cron",
+//	    SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+//	    WorkspaceID: wsID,
+//	    Prompt: "Summarize the {{count}} new items.",
+//	    Script: json.RawMessage(`{"language":"python","handler":"def handler(input):\n    n = count_open_items()\n    return {\"proceed\": n > 0, \"vars\": {\"count\": str(n)}}\n"}`),
+//	}
+//	// proceed=false → the fire is skipped with NO model call;
+//	// proceed=true → the prompt fires with {{count}} substituted and
+//	// all vars appended as trailing metadata.
 type CreateTriggerReq struct {
 	Name         string          `json:"name"`
 	SourceType   string          `json:"sourceType"`

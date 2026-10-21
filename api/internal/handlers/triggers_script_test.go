@@ -119,6 +119,35 @@ func TestTriggerCreate_ScriptPartialRejected(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "language")
 }
 
+// r2 review Finding 2: a present script object that binds NEITHER
+// recognized field (empty {}, or only misspelled keys) must 400 — not
+// silently store no script (create) or erase the stored one (update).
+func TestTriggerCreate_ScriptEmptyAndTypoObjectsRejected(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "gated-empty", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "p",
+		"script": map[string]any{},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "language")
+	assert.Contains(t, w.Body.String(), "handler")
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "gated-typo", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "p",
+		"script": map[string]any{"languagee": "python", "handlr": "def handler(input): pass"},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "misspell")
+}
+
 func TestTriggerUpdate_ScriptLifecycle(t *testing.T) {
 	store := newMockTriggerStore()
 	quota := &mockQuotaChecker{values: map[string]int{}}
@@ -170,6 +199,43 @@ func TestTriggerUpdate_ScriptLifecycle(t *testing.T) {
 	if cleared["script"] != nil {
 		t.Fatalf("cleared script must not appear in the response, got %v", cleared["script"])
 	}
+}
+
+// r2 review Finding 2 (update arm): {} and typo-keyed script objects
+// must 400 instead of erasing the stored script with a 200.
+func TestTriggerUpdate_ScriptEmptyAndTypoObjectsRejected(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name":         "gate-erase-guard",
+		"sourceType":   "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1",
+		"prompt":       "p",
+		"script":       map[string]any{"language": "python", "handler": "def handler(input):\n    return {\"proceed\": True}\n"},
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["id"].(string)
+
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{
+		"script": map[string]any{},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "misspell")
+	assert.Equal(t, "python", store.triggers[id].ScriptLanguage, "the empty object must not erase the stored script")
+
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{
+		"script": map[string]any{"languagee": "python", "handlr": "x"},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "misspell")
+	assert.Equal(t, "python", store.triggers[id].ScriptLanguage, "the typo object must not erase the stored script")
+	assert.Contains(t, store.triggers[id].ScriptHandler, "def handler")
 }
 
 func TestTriggerUpdate_ScriptOnWorkflowTargetRejected(t *testing.T) {

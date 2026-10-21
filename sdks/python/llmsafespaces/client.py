@@ -328,6 +328,26 @@ class _TriggersAPI:
 
         Routine targets only — rejected (400) alongside ``workflow_id``
         (a workflow's DAG carries its own script nodes).
+
+        Worked example — nightly digest, LLM called only when work
+        accumulated::
+
+            triggers.create(
+                name="nightly-digest",
+                source_type="cron",
+                source_config={"expr": "0 2 * * *", "tz": "UTC"},
+                workspace_id=ws_id,
+                prompt="Summarize the {{count}} new items.",
+                script={
+                    "language": "python",
+                    "handler": 'def handler(input):\\n'
+                               '    n = count_open_items()\\n'
+                               '    return {"proceed": n > 0, "vars": {"count": str(n)}}\\n',
+                },
+            )
+            # proceed=False  -> fire skipped, no model call
+            # proceed=True   -> prompt fires with {{count}} substituted
+            #                  + all vars as trailing metadata
         """
         body: dict[str, Any] = {
             "name": name,

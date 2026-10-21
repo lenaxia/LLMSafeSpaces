@@ -384,6 +384,54 @@ describe("TriggersPage", () => {
     });
   });
 
+  // r2 review Finding 3: a partial gate edit must block the target save
+  // — emptying the handler while keeping the language can never submit
+  // (and in particular must not degrade into script:null erasure).
+  it("a partial gate edit blocks Save and never submits script null", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    const editButtons5 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons5[editButtons5.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    // Empty the handler source; language stays python → partial.
+    fireEvent.change(screen.getByLabelText("Gate script handler source"), { target: { value: "" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(/handler source/);
+    const saveButtons = screen.getAllByText("Save");
+    const targetSave = saveButtons[saveButtons.length - 1]!;
+    expect(targetSave).toBeDisabled();
+    // Even a programmatic click must not clear the stored script.
+    fireEvent.click(targetSave);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // r2 review minor trap: deselecting the language drops the stale
+  // source, so the form is cleanly script-less (not hidden-partial).
+  it("deselecting the gate language clears the stale source", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    const editButtons6 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons6[editButtons6.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "none" } });
+    // Language none + source auto-cleared → no alert, Save enabled.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const saveButtons2 = screen.getAllByText("Save");
+    expect(saveButtons2[saveButtons2.length - 1]!).toBeEnabled();
+  });
+
   it("discards edits when cancel clicked without calling onUpdate", async () => {
     mockList.mockResolvedValue([CRON_TRIGGER]);
     mockUpdate.mockResolvedValue({});

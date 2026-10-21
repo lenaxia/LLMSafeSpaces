@@ -20,6 +20,16 @@
 #   R3 — script failure fails CLOSED: a raising handler records a
 #        FAILED fire with the named error in gate.error — ZERO sessions.
 #
+# SCOPE NOTE (r2 review): the open-gate-WITH-PROMPT path ({{key}}
+# substitution into a real agent leg) has NO row here BY DESIGN: this
+# harness is API-only and runs without LLM_MODEL, and that path
+# consumes a model call on exec-mode clusters. It is pinned at engine
+# level instead — TestScheduler_RoutineGateOpenSubstitutesVars captures
+# the exact dispatched agent spec (sentSpecs) and asserts the
+# substituted values, the literal unmatched tokens, and the trailing
+# metadata block. R4 likewise pins create-compat only, not a
+# prompt-only fire, for the same budget reason.
+#
 # ADAPTIVE ARMS (#1455 precedent): the nightly installs
 # controller.agentdSidecar.enabled=true, and in sidecar mode agentd
 # serves script nodes from a scratch container without /tmp or
@@ -98,8 +108,13 @@ wait_fire() {
     return 1
 }
 
-# assert_no_sessions <label> — the no-LLM-call evidence: an agent turn
-# would have created (or attempted) a session on the workspace.
+# assert_no_sessions <label> — CORROBORATING no-LLM evidence (r2
+# review note: not proof — an agent leg with preserveSession:never
+# deletes its ephemeral session, so an empty list does not exclude an
+# LLM call on its own). The engine dispatch-counting pins
+# (api/internal/workflows/engine_gate_test.go — zero "routine-agent"
+# dispatches per path) are the primary no-LLM proof; this row pins the
+# observable end-state a caller sees.
 assert_no_sessions() {
     api GET "/api/v1/workspaces/${WS}/sessions"
     if [[ "${api_status}" != "200" ]]; then
@@ -111,12 +126,16 @@ assert_no_sessions() {
     if [[ "${n}" != "0" ]]; then
         note_fail "$1: expected ZERO agent sessions (no LLM call), found ${n}"
     else
-        ok "$1: zero agent sessions — no LLM call was made"
+        ok "$1: zero agent sessions recorded (corroborates the engine dispatch pins)"
     fi
 }
 
 # gate_action <field-path-in-actionResult> — extract from fire_row.
-gate_field() { printf '%s' "${fire_row}" | jq -r ".actionResult.gate.${1} // empty"; }
+# NOTE: jq's `// empty` swallows FALSE (false is falsy in //), so
+# `gate_field proceed` would return "" for a closed gate — the r2
+# review's Finding 1. `tostring` renders false as "false" and missing
+# paths as "null"; comparisons account for both.
+gate_field() { printf '%s' "${fire_row}" | jq -r ".actionResult.gate.${1} | tostring"; }
 
 # marker_read — 1 if the side-effect file exists in the workspace pod.
 marker_present() {

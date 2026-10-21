@@ -33,6 +33,24 @@ import java.util.Map;
  *
  * <p>Routine targets only — rejected (400) alongside workflowId (a
  * workflow's DAG carries its own script/condition nodes).</p>
+ *
+ * <p>Worked example — nightly digest, LLM called only when work
+ * accumulated:</p>
+ * <pre>{@code
+ * triggers.create(
+ *     "nightly-digest", "cron",
+ *     Map.of("expr", "0 2 * * *", "tz", "UTC"),
+ *     wsId, null,                       // workspace, no workflow
+ *     "Summarize the {{count}} new items.", null,
+ *     null, null, null, null, null, null, null,   // legacy fields
+ *     Map.of("language", "python",
+ *            "handler", "def handler(input):\n"
+ *                     + "    n = count_open_items()\n"
+ *                     + "    return {\"proceed\": n > 0, \"vars\": {\"count\": str(n)}}\n"));
+ * // proceed=false -> fire skipped, no model call
+ * // proceed=true  -> prompt fires with {{count}} substituted
+ * //                + all vars as trailing metadata
+ * }</pre>
  */
 public class TriggersService {
     private final LLMSafeSpacesClient c;

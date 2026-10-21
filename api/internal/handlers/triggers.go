@@ -99,7 +99,11 @@ func hasCreateOnlyTargetKey(raw []byte) bool {
 // nil (absent key) keeps the stored script — (nil, false); the JSON
 // literal null clears it — (zero script, true); a JSON object replaces
 // it — (parsed script, true). A present-but-malformed value is an
-// error naming the expected shape.
+// error naming the expected shape. An object carrying NEITHER
+// recognized field (empty `{}`, or only misspelled keys — the decoder
+// ignores unknown keys) is rejected rather than silently erasing the
+// stored script (r2 review Finding 2): a patch that binds nothing must
+// not answer 200.
 func parseTriggerScriptPatch(raw json.RawMessage) (*wf.TriggerScript, bool, error) {
 	if raw == nil {
 		return nil, false, nil
@@ -110,6 +114,9 @@ func parseTriggerScriptPatch(raw json.RawMessage) (*wf.TriggerScript, bool, erro
 	var script wf.TriggerScript
 	if err := json.Unmarshal(raw, &script); err != nil {
 		return nil, true, fmt.Errorf("script must be an object {language: \"python\"|\"node\", handler: <inline source>} or null (clear) — got %s", string(raw))
+	}
+	if !script.Present() {
+		return nil, true, fmt.Errorf(`script object carries neither "language" nor "handler" (unknown keys are ignored by the decoder — check for misspellings); use null to clear the script or provide both fields`)
 	}
 	return &script, true, nil
 }
@@ -275,6 +282,10 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	// carries its own gating nodes (script/condition) in the DAG.
 	if req.Script.Present() && req.WorkflowID != "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; drop script or use workspaceId"})
+		return
+	}
+	if req.Script != nil && !req.Script.Present() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": `script object carries neither "language" nor "handler" (unknown keys are ignored by the decoder — check for misspellings); omit script entirely for a prompt-only trigger or provide both fields`})
 		return
 	}
 	if err := wf.ValidateTriggerScript(req.Script); err != nil {
