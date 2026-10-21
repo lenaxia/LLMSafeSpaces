@@ -87,7 +87,7 @@ func (s *BoardSuite) TestKill_1813_ConsecutiveAccumulateAndResetOnSuccess() {
 
 	// Cycle 2: fail again — the count is CONSECUTIVE and the backoff
 	// doubles (cooldown window strictly grows).
-	c := s.claimOrFail(ws)
+	s.claimOrFail(ws)
 	s.expireLease(t1.ID)
 	s.sweep()
 	two := s.reloadTask(t1.ID)
@@ -99,7 +99,7 @@ func (s *BoardSuite) TestKill_1813_ConsecutiveAccumulateAndResetOnSuccess() {
 	s.clearCooldowns(p, t1.ID)
 
 	// Cycle 3: a SUCCESSFUL turn — worker drives to in_review — resets.
-	c = s.claimOrFail(ws)
+	c := s.claimOrFail(ws)
 	_, err := s.svc.MoveStage(context.Background(), s.agent("sess-"+c.ShortID, c.ClaimToken), t1.ID, "", board.StageInReview, "", "")
 	s.Require().NoError(err)
 	done := s.reloadTask(t1.ID)

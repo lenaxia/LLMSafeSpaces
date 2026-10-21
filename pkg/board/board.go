@@ -153,15 +153,14 @@ func (c EngineConfig) failureBackoff(n int) time.Duration {
 		n = 1
 	}
 	b := c.FailureBackoff
+	if b <= 0 {
+		b = time.Minute // misconfigured/zero base: the documented default
+	}
 	for i := 1; i < n && b < time.Hour; i++ {
 		b *= 2
 	}
-	if b > time.Hour || b <= 0 {
-		if b <= 0 {
-			b = time.Minute
-		} else {
-			b = time.Hour
-		}
+	if b > time.Hour {
+		b = time.Hour
 	}
 	return b
 }

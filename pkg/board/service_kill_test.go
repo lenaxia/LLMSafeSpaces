@@ -183,12 +183,15 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			s.Require().NoError(err)
 		}},
 		{"escalated", want{"backlog", board.PendingOriginEscalated, false, false}, func(t *board.Task, ws string) {
-			// Drive attempts to cap, then let the claim escalate.
+			// Drive attempts to cap, then let the claim escalate (#1813:
+			// clear the failure backoff each cycle — this arm pins the
+			// escalated origin, not the park).
 			for i := 0; i < s.cfg.AttemptsCap; i++ {
 				c := s.claimOrFail(ws)
 				s.Require().Equal(t.ID, c.TaskID)
 				s.expireLease(t.ID)
 				s.sweep()
+				s.clearTaskBackoff(t.ID)
 			}
 			c, err := s.svc.ClaimNext(context.Background(), "w", ws)
 			s.Require().NoError(err)

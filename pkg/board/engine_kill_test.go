@@ -130,6 +130,10 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 		s.expireLease(tired.ID)
 		res := s.sweep()
 		s.Equal(1, res.Reclaims)
+		// #1813: the reclaim parks the row behind failure backoff — this
+		// test drives N attempts back-to-back, so it clears the cooldown
+		// explicitly (the backoff-delays pin owns the parked behavior).
+		s.clearTaskBackoff(tired.ID)
 	}
 	s.Equal(3, s.rawTask(tired.ID).Attempts)
 	spawnsBeforeEscalation := s.spawner.count()
@@ -224,7 +228,7 @@ func (s *BoardSuite) TestKill_ThrottleRollbackIncrementingGrant() {
 	s.expectNoCandidate(ws)
 
 	// Cooldown clears → claimable again, and the grant re-increments.
-	s.clearCooldowns(p, task.ID)
+	s.clearTaskBackoff(task.ID)
 	c3 := s.claimOrFail(ws)
 	s.Equal(task.ID, c3.TaskID)
 	s.Equal(1, s.rawTask(task.ID).Attempts)
@@ -409,10 +413,13 @@ func (s *BoardSuite) TestKill_SpawnFailureHealsByLeaseLapse() {
 	s.Equal(board.StageInProgress, row.Stage, "the claim stands: spawn failure is not a claim failure")
 	s.NotNil(row.ClaimToken)
 
-	// The claim lapses; the reconciler reclaims; the next claim re-spawns.
+	// The claim lapses; the reconciler reclaims; the next claim re-spawns
+	// (#1813: after clearing the failure backoff — this arm pins the
+	// re-spawn, not the park).
 	s.expireLease(task.ID)
 	res := s.sweep()
 	s.Equal(1, res.Reclaims)
+	s.clearTaskBackoff(task.ID)
 	s.spawner.failWith(nil)
 	c2 := s.claimOrFail(ws)
 	s.Equal(task.ID, c2.TaskID)

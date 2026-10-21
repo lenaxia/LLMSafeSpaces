@@ -147,12 +147,18 @@ func (s *BoardSuite) TestKill_DispatchDriveResweepFeedsWork() {
 	}
 
 	// Lapse everything; the next sweep reclaims (RC1) AND re-drives the
-	// reclaimed rows in one pass — a reclaimed task never sits in backlog.
+	// reclaimed rows in one pass — a reclaimed task never sits in backlog
+	// beyond its #1813 failure backoff (cleared here: this arm pins the
+	// re-feed, not the park — 1813-b owns the parked behavior).
 	s.expireLease(t1.ID)
 	s.expireLease(t2.ID)
 	res, err = drive.Sweep(context.Background())
 	s.Require().NoError(err)
 	s.Equal(2, res.Reclaims)
+	s.clearTaskBackoff(t1.ID)
+	s.clearTaskBackoff(t2.ID)
+	res, err = drive.Sweep(context.Background())
+	s.Require().NoError(err)
 	s.Equal(2, res.Dispatched, "the sweep backstop re-feeds reclaimed work")
 	s.Equal(2, s.inProgressCount(p.ID))
 	s.Equal(4, s.spawner.count(), "a replacement worker is simply the next fresh spawn")
@@ -164,6 +170,10 @@ func (s *BoardSuite) TestKill_DispatchDriveResweepFeedsWork() {
 		s.expireLease(t2.ID)
 		res, err = drive.Sweep(context.Background())
 		s.Require().NoError(err)
+		// #1813: clear the failure backoff so the NEXT cycle's drive can
+		// claim again (this arm pins escalation composition, not the park).
+		s.clearTaskBackoff(t1.ID)
+		s.clearTaskBackoff(t2.ID)
 	}
 	s.Equal(2, s.countEvents("escalate"))
 	s.Equal(board.StagePendingInput, s.rawTask(t1.ID).Stage)
