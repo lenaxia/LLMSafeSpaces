@@ -41,4 +41,4 @@
 ## Files Modified
 
 - frontend/tests/e2e/sidebar-gesture.spec.ts (+22/−4, test-only)
-- worklogs/NNNN_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog
+- worklogs/1161_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog

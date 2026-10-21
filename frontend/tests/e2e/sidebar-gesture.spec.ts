@@ -141,10 +141,13 @@ test.describe("sidebar full-edge gesture (#1629)", () => {
     // to have physically left the toggle exposed: the re-open tap below
     // must hit the button, and while the animating panel still covers
     // it the tap would be swallowed (#1788 — same race, slide-out side).
+    // Pinned to the toggle by name, not just any aria-expanded control:
+    // the topmost element at the point must be THIS button in its
+    // closed-state labeling.
     await page.waitForFunction<boolean, { x: number; y: number }>(
       (pt) => {
         const el = document.elementFromPoint(pt.x, pt.y);
-        return el !== null && el.closest("button[aria-expanded]") !== null;
+        return el !== null && el.closest('button[aria-label="Open menu"]') !== null;
       },
       { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 },
       { timeout: 5_000 },
