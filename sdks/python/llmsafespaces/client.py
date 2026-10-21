@@ -296,6 +296,7 @@ class _TriggersAPI:
         workflow_id: str = "",
         prompt: str = "",
         agent: str = "",
+        script: dict[str, str] | None = None,
         script_path: str = "",
         script_args: list[str] | None = None,
         script_env: dict[str, Any] | None = None,
@@ -303,6 +304,31 @@ class _TriggersAPI:
         capture_mode: str = "",
         preserve_session: str = "",
     ) -> dict[str, Any]:
+        """Create a trigger.
+
+        ``script`` is the #1812 INLINE gate script — a dict
+        ``{"language": "python" | "node", "handler": <inline source>}``
+        whose handler defines ``handler(input) -> {"proceed": <bool>,
+        "vars": {<str>: <str>}}``. It is INLINE SOURCE, never a path
+        (the path form is the separate, legacy ``script_path``). Before
+        every fire's LLM call the handler runs in the routine's target
+        workspace with the fire envelope as input:
+
+        * ``proceed=False`` exits the fire with NO LLM call (cheap
+          deterministic gating — poll checks, thresholds, state diffs);
+        * ``proceed=True`` fires the prompt with vars substituted
+          jinja-style (``{{key}}``; unmatched tokens stay literal) and
+          ALL vars appended as trailing ``[trigger script vars]``
+          metadata;
+        * any script failure — runtime error, unparseable output, or a
+          return violating the schema — fails CLOSED: failed fire, the
+          named error in the fire audit, no LLM call;
+        * a ``script`` trigger with NO prompt never calls the LLM at
+          all (gate + side effects only).
+
+        Routine targets only — rejected (400) alongside ``workflow_id``
+        (a workflow's DAG carries its own script nodes).
+        """
         body: dict[str, Any] = {
             "name": name,
             "sourceType": source_type,
@@ -316,6 +342,8 @@ class _TriggersAPI:
             body["prompt"] = prompt
         if agent:
             body["agent"] = agent
+        if script is not None:
+            body["script"] = script
         if script_path:
             body["scriptPath"] = script_path
         if script_args is not None:
@@ -331,6 +359,14 @@ class _TriggersAPI:
         return self._c._request("POST", "/me/triggers", json=body)
 
     def update(self, trigger_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Partially update a trigger (omitted keys keep their values).
+
+        The #1812 gate script patches with key-presence semantics:
+        ``script=None`` (JSON null) clears it back to no-script, an
+        omitted ``script`` key keeps the stored one, and
+        ``script={"language": ..., "handler": ...}`` replaces it. See
+        :meth:`create` for the {proceed, vars} gate semantics.
+        """
         return self._c._request("PUT", f"/me/triggers/{trigger_id}", json=kwargs)
 
     def delete(self, trigger_id: str) -> None:

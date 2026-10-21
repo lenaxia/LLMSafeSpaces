@@ -57,15 +57,23 @@ type WorkflowRun struct {
 
 // Trigger represents a trigger definition.
 type Trigger struct {
-	ID                  string          `json:"id"`
-	Name                string          `json:"name"`
-	Enabled             bool            `json:"enabled"`
-	SourceType          string          `json:"sourceType"`
-	SourceConfig        json.RawMessage `json:"sourceConfig"`
-	WorkspaceID         string          `json:"workspaceId,omitempty"`
-	WorkflowID          string          `json:"workflowId,omitempty"`
-	Prompt              string          `json:"prompt,omitempty"`
-	Agent               string          `json:"agent,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Enabled      bool            `json:"enabled"`
+	SourceType   string          `json:"sourceType"`
+	SourceConfig json.RawMessage `json:"sourceConfig"`
+	WorkspaceID  string          `json:"workspaceId,omitempty"`
+	WorkflowID   string          `json:"workflowId,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Agent        string          `json:"agent,omitempty"`
+	// Script is the #1812 inline gate script — INLINE SOURCE
+	// ({language: "python"|"node", handler: <source defining
+	// handler(input) -> {"proceed": bool, "vars": {str: str}}>}), never
+	// a path. proceed=false exits the fire with NO LLM call; true fires
+	// the prompt with vars substituted jinja-style ({{key}}) plus a
+	// trailing all-vars metadata block; any failure fails closed. Nil
+	// on prompt-only triggers.
+	Script              json.RawMessage `json:"script,omitempty"`
 	ScriptPath          string          `json:"scriptPath,omitempty"`
 	ScriptArgs          []string        `json:"scriptArgs,omitempty"`
 	ScriptEnv           json.RawMessage `json:"scriptEnv,omitempty"`
@@ -80,13 +88,18 @@ type Trigger struct {
 
 // CreateTriggerReq is the body for creating a trigger.
 type CreateTriggerReq struct {
-	Name            string          `json:"name"`
-	SourceType      string          `json:"sourceType"`
-	SourceConfig    json.RawMessage `json:"sourceConfig"`
-	WorkspaceID     string          `json:"workspaceId,omitempty"`
-	WorkflowID      string          `json:"workflowId,omitempty"`
-	Prompt          string          `json:"prompt,omitempty"`
-	Agent           string          `json:"agent,omitempty"`
+	Name         string          `json:"name"`
+	SourceType   string          `json:"sourceType"`
+	SourceConfig json.RawMessage `json:"sourceConfig"`
+	WorkspaceID  string          `json:"workspaceId,omitempty"`
+	WorkflowID   string          `json:"workflowId,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Agent        string          `json:"agent,omitempty"`
+	// Script is the #1812 inline gate script object — see Trigger.Script
+	// for the {proceed, vars} gate semantics. Routine targets only
+	// (rejected with workflowId). Marshal a TriggerScript-shaped value:
+	// {"language": "python"|"node", "handler": "<inline source>"}.
+	Script          json.RawMessage `json:"script,omitempty"`
 	ScriptPath      string          `json:"scriptPath,omitempty"`
 	ScriptArgs      []string        `json:"scriptArgs,omitempty"`
 	ScriptEnv       json.RawMessage `json:"scriptEnv,omitempty"`
@@ -99,6 +112,10 @@ type CreateTriggerReq struct {
 type UpdateTriggerReq struct {
 	Enabled          *bool `json:"enabled,omitempty"`
 	AutoDisableAfter *int  `json:"autoDisableAfter,omitempty"`
+	// Script patches the #1812 inline gate script with the API's
+	// key-presence discrimination: nil/omitted keeps the stored script,
+	// the JSON literal null clears it, an object replaces it.
+	Script json.RawMessage `json:"script,omitempty"`
 }
 
 // WorkflowsService manages workflow definitions.

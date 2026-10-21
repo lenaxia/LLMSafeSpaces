@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { triggerApi, workflowApi, type Trigger, type TriggerCreateInput, type TriggerUpdateInput, type Workflow } from "../api/workflows";
+import { triggerApi, workflowApi, type Trigger, type TriggerCreateInput, type TriggerUpdateInput, type TriggerScript, type Workflow } from "../api/workflows";
 import { workspacesApi } from "../api/workspaces";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -194,6 +194,75 @@ function scriptEnvToText(env: unknown): string {
   return Object.entries(env).map(([k, v]) => `${k}=${String(v)}`).join("\n");
 }
 
+type GateLanguage = "none" | "python" | "node";
+
+function gateLanguageFromScript(script?: TriggerScript | null): GateLanguage {
+  return script?.language === "python" || script?.language === "node" ? script.language : "none";
+}
+
+/**
+ * #1812: the inline gate-script editor — language selector + inline
+ * source, the gate/substitution explainer, and live validation (a
+ * partial script blocks save with a message naming the missing field).
+ */
+function TriggerScriptEditor({ language, onLanguageChange, source, onSourceChange, promptHint }: {
+  language: GateLanguage;
+  onLanguageChange: (l: GateLanguage) => void;
+  source: string;
+  onSourceChange: (s: string) => void;
+  promptHint?: boolean;
+}) {
+  const hasSource = source.trim().length > 0;
+  const partial = (language !== "none" && !hasSource) || (language === "none" && hasSource);
+  return (
+    <div className="space-y-2 rounded border border-border p-2">
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">Gate Script (optional — runs before the agent, can skip the LLM call)</label>
+        <div className="flex gap-2">
+          <select
+            aria-label="Gate script language"
+            className="rounded border border-border px-2 py-1 text-sm bg-background"
+            value={language}
+            onChange={(e) => onLanguageChange(e.target.value as GateLanguage)}
+          >
+            <option value="none">No gate script</option>
+            <option value="python">Python</option>
+            <option value="node">Node</option>
+          </select>
+        </div>
+      </div>
+      {language !== "none" && (
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">Handler source (inline — defines handler(input) → {"{proceed, vars}"})</label>
+          <textarea
+            aria-label="Gate script handler source"
+            className="w-full rounded border border-border px-2 py-1 font-mono text-xs bg-background h-28 resize-y"
+            spellCheck={false}
+            value={source}
+            onChange={(e) => onSourceChange(e.target.value)}
+            placeholder={'def handler(input):\n    n = 2  # e.g. count open items in the workspace\n    return {"proceed": n > 0, "vars": {"count": str(n)}}'}
+          />
+        </div>
+      )}
+      {partial && (
+        <div className="text-xs text-destructive" role="alert">
+          A gate script needs BOTH a language and non-empty handler source — set the missing{" "}
+          {language !== "none" ? "handler source" : "language (Python or Node)"}.
+        </div>
+      )}
+      <div className="rounded bg-muted p-2 text-xs text-muted-foreground">
+        <p><span className="font-medium">How the gate works:</span> before every fire, the handler runs in the target workspace with the fire envelope as input.</p>
+        <ul className="mt-1 list-disc pl-4 space-y-0.5">
+          <li><code>{'{"proceed": false}'}</code> — the fire exits with <span className="font-medium">no LLM call</span> (recorded as a skipped fire).</li>
+          <li><code>{'{"proceed": true, "vars": {...}}'}</code> — the prompt fires with <code>{"{{key}}"}</code> tokens substituted from vars, and ALL vars appended as trailing metadata.</li>
+          <li>Any script failure fails closed: failed fire, named error in the fire audit, no LLM call.</li>
+          {promptHint === true && <li>With no prompt at all, a gate-script trigger never calls the LLM — the script runs for its side effects.</li>}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function TriggerCreateForm({ workflows, onSave, onCancel }: {
   workflows: Workflow[];
   onSave: (data: TriggerCreateInput) => void;
@@ -207,6 +276,8 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
   const [workspaceId, setWorkspaceId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [agentProfile, setAgentProfile] = useState("");
+  const [gateLanguage, setGateLanguage] = useState<GateLanguage>("none");
+  const [gateSource, setGateSource] = useState("");
   const [scriptPath, setScriptPath] = useState("");
   const [scriptArgs, setScriptArgs] = useState("");
   const [scriptEnv, setScriptEnv] = useState("");
@@ -236,6 +307,11 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
     ? (rawMode ? { expr: rawExpr, tz: friendly.tz } : friendlyToCron(friendly))
     : { expr: "", tz: "UTC" };
 
+  const gatePartial = (gateLanguage !== "none" && !gateSource.trim()) || (gateLanguage === "none" && !!gateSource.trim());
+  const gateScript = gateLanguage !== "none" && !gatePartial
+    ? { language: gateLanguage, handler: gateSource }
+    : undefined;
+
   const handleCreate = async () => {
     const scriptEnvRecord = parseScriptEnvText(scriptEnv);
     const data: TriggerCreateInput = {
@@ -251,6 +327,7 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
             workspaceId,
             prompt,
             ...(agentProfile ? { agent: agentProfile } : {}),
+            ...(gateScript ? { script: gateScript } : {}),
             ...(scriptPath
               ? {
                   scriptPath,
@@ -324,9 +401,9 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
     );
   }
 
-  const canCreate = name && (
+  const canCreate = name && !gatePartial && (
     mode === "workflow" ? workflowId :
-    workspaceId && (prompt || scriptPath)
+    workspaceId && (prompt || scriptPath || gateScript)
   );
 
   return (
@@ -400,7 +477,7 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
         <div className="space-y-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">Workspace</label>
-            <select className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>
+            <select aria-label="Workspace" className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>
               <option value="">Select workspace...</option>
               {(workspaces?.items || []).map((ws) => (<option key={ws.id} value={ws.id}>{ws.name} ({ws.phase})</option>))}
             </select>
@@ -413,6 +490,7 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
             <label className="mb-1 block text-xs text-muted-foreground">Agent Profile (optional)</label>
             <input className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} placeholder="default" />
           </div>
+          <TriggerScriptEditor language={gateLanguage} onLanguageChange={setGateLanguage} source={gateSource} onSourceChange={setGateSource} promptHint />
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">Script Path (optional — runs before agent)</label>
             <input className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background" placeholder="/workspace/scripts/fetch.sh" value={scriptPath} onChange={(e) => setScriptPath(e.target.value)} />
@@ -562,6 +640,9 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(trigger.workspaceId || "");
   const [promptStr, setPromptStr] = useState(trigger.prompt || "");
   const [agentProfile, setAgentProfile] = useState(trigger.agent || "");
+  const [gateLanguage, setGateLanguage] = useState<GateLanguage>(gateLanguageFromScript(trigger.script));
+  const [gateSource, setGateSource] = useState(trigger.script?.handler || "");
+  const hadGateScript = !!trigger.script;
   const [scriptPath, setScriptPath] = useState(trigger.scriptPath || "");
   const [scriptArgs, setScriptArgs] = useState((trigger.scriptArgs || []).join(" "));
   const [scriptEnv, setScriptEnv] = useState(scriptEnvToText(trigger.scriptEnv));
@@ -592,6 +673,18 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const handleSaveTarget = () => {
     if (isRoutine) {
       const scriptEnvRecord = parseScriptEnvText(scriptEnv);
+      const gatePartial = (gateLanguage !== "none" && !gateSource.trim()) || (gateLanguage === "none" && !!gateSource.trim());
+      const gateScript = gateLanguage !== "none" && !gatePartial
+        ? { language: gateLanguage, handler: gateSource }
+        : undefined;
+      // Clearing an existing gate script back to none must PATCH the
+      // JSON null (the API's key-presence discrimination) — omitting
+      // the key would silently keep the stored script.
+      const gatePatch = gateScript
+        ? { script: gateScript }
+        : hadGateScript
+          ? { script: null }
+          : {};
       onUpdate({
         workspaceId: selectedWorkspaceId,
         prompt: promptStr,
@@ -599,6 +692,7 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
         captureMode,
         preserveSession,
         ...(agentProfile ? { agent: agentProfile } : {}),
+        ...gatePatch,
         ...(scriptPath
           ? {
               scriptPath,
@@ -766,6 +860,17 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
                 <span>Capture: {trigger.captureMode}</span>
                 <span>Session: {trigger.preserveSession}</span>
               </div>
+              {trigger.script && (
+                <div className="rounded border border-border p-2 space-y-1">
+                  <div className="text-xs font-medium">Gate script ({trigger.script.language})</div>
+                  <pre className="overflow-x-auto rounded bg-muted p-2 text-xs font-mono whitespace-pre-wrap">
+                    {trigger.script.handler}
+                  </pre>
+                  <div className="text-xs text-muted-foreground">
+                    Runs before every LLM call — proceed=false skips the model; true substitutes {"{{key}}"} vars into the prompt.
+                  </div>
+                </div>
+              )}
               {trigger.scriptPath && (
                 <div className="text-xs text-muted-foreground">
                   Script: <code>{trigger.scriptPath}</code>
@@ -807,6 +912,7 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
                   placeholder="default"
                 />
               </div>
+              <TriggerScriptEditor language={gateLanguage} onLanguageChange={setGateLanguage} source={gateSource} onSourceChange={setGateSource} promptHint />
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">Script Path (optional — runs before agent)</label>
                 <input

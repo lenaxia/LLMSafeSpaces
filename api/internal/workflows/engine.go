@@ -72,6 +72,7 @@ type SchedulerStore interface {
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
 	UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error
+	UpdateTriggerFireAction(ctx context.Context, fireID string, actionResult json.RawMessage) error
 	GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error)
 	GetRecentRoutineResults(ctx context.Context, triggerID string, limit int) ([]json.RawMessage, error)
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
@@ -848,6 +849,23 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		return
 	}
 
+	// #1812: the inline gate script runs BEFORE every other leg — the
+	// memory read, the legacy pre-script, and above all the agent (LLM)
+	// leg. proceed=false exits with NO LLM call; any failure is
+	// fail-closed; the outcome lands in the fire's action_result so the
+	// audit self-explains every gated fire.
+	var gateVars map[string]string
+	if trigger.ScriptLanguage != "" {
+		proceed, vars, gateDone := s.runRoutineGate(ctx, logger, trigger, fire, envelopeJSON, workspaceID, podIP)
+		if !gateDone {
+			return
+		}
+		if !proceed {
+			return
+		}
+		gateVars = vars
+	}
+
 	prompt := trigger.Prompt
 	if trigger.MemoryMode == types.MemoryLastResult {
 		maxRuns := trigger.MemoryMaxRuns
@@ -905,6 +923,25 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		}
 	}
 	prompt = strings.ReplaceAll(prompt, "{{.input}}", string(envelopeJSON))
+
+	// #1812: script-only triggers (gate script, no prompt) have no LLM
+	// leg even when the gate opens — the gate ran for its side effects,
+	// which IS the delivery. The prompt-less no-script shape keeps its
+	// legacy behavior (an agent leg fires, as before).
+	if trigger.ScriptLanguage != "" && prompt == "" {
+		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, nil, "delivered")
+		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
+		logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", "delivered", "scriptOnly", true)
+		return
+	}
+
+	// #1812: gate vars substitute LAST and in ONE pass — var values land
+	// verbatim (a value containing {{.input}} or another {{key}} is
+	// never re-processed), unmatched tokens stay literal, and every var
+	// (consumed or not) appends as trailing metadata.
+	if len(gateVars) > 0 {
+		prompt = wf.SubstitutePromptVars(prompt, gateVars) + wf.PromptVarsMetadata(gateVars)
+	}
 
 	// #1327: the routine's logical-execution identity — trigger (the
 	// reusable definition, stable across fires) + fire (this execution,

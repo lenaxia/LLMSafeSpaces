@@ -94,6 +94,26 @@ func hasCreateOnlyTargetKey(raw []byte) bool {
 	return false
 }
 
+// parseTriggerScriptPatch resolves the #1812 script key's
+// presence-discrimination on the update DTO's RawMessage field:
+// nil (absent key) keeps the stored script — (nil, false); the JSON
+// literal null clears it — (zero script, true); a JSON object replaces
+// it — (parsed script, true). A present-but-malformed value is an
+// error naming the expected shape.
+func parseTriggerScriptPatch(raw json.RawMessage) (*wf.TriggerScript, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return &wf.TriggerScript{}, true, nil
+	}
+	var script wf.TriggerScript
+	if err := json.Unmarshal(raw, &script); err != nil {
+		return nil, true, fmt.Errorf("script must be an object {language: \"python\"|\"node\", handler: <inline source>} or null (clear) — got %s", string(raw))
+	}
+	return &script, true, nil
+}
+
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
 	store        triggerStore
@@ -247,6 +267,23 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	if !types.ValidTriggerSourceType(req.SourceType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid source type"})
 		return
+	}
+
+	// #1812: the inline gate script is routine-only — it gates and
+	// templates a PROMPT leg, and its handler needs the routine's
+	// workspace sandbox to run in. A workflow target has no prompt and
+	// carries its own gating nodes (script/condition) in the DAG.
+	if req.Script.Present() && req.WorkflowID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; drop script or use workspaceId"})
+		return
+	}
+	if err := wf.ValidateTriggerScript(req.Script); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	scriptLang, scriptHandler := "", ""
+	if req.Script != nil {
+		scriptLang, scriptHandler = req.Script.Language, req.Script.Handler
 	}
 
 	memoryMode := req.MemoryMode
@@ -448,6 +485,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		InputFrom: inputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		ScriptLanguage: scriptLang, ScriptHandler: scriptHandler,
 		MemoryMode: memoryMode, MemoryMaxRuns: memoryMaxRuns,
 		CaptureMode: captureMode, PreserveSession: preserveSession,
 		AutoDisableAfter: autoDisable,
@@ -614,6 +652,19 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		return
 	}
 
+	// #1812: the script patch key is presence-discriminated on its
+	// RawMessage DTO field — absent (nil) keeps the stored script, the
+	// JSON literal null clears it, an object replaces it.
+	scriptPatch, scriptKeyPresent, serr := parseTriggerScriptPatch(req.Script)
+	if serr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": serr.Error()})
+		return
+	}
+	if serr := wf.ValidateTriggerScript(scriptPatch); serr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": serr.Error()})
+		return
+	}
+
 	upd := &wf.TriggerUpdate{
 		Name: req.Name, Description: req.Description, Enabled: req.Enabled,
 		SourceConfig: req.SourceConfig,
@@ -621,6 +672,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		InputFrom: req.InputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		Script:     scriptPatch,
 		MemoryMode: req.MemoryMode, MemoryMaxRuns: req.MemoryMaxRuns,
 		CaptureMode: req.CaptureMode, PreserveSession: req.PreserveSession,
 		AutoDisableAfter: req.AutoDisableAfter,
@@ -663,7 +715,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	targetlessAfterPatch := false
 	var existing *wf.TriggerRow
 	now := time.Now().UTC()
-	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget || touchesMemoryCapture {
+	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget || touchesMemoryCapture || scriptKeyPresent {
 		var err error
 		existing, err = h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 		if err != nil {
@@ -746,6 +798,20 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		if req.WorkflowID != nil {
 			mergedWorkflowID = *req.WorkflowID
 		}
+	}
+
+	// #1812: the inline gate script is routine-only (create-arm rule,
+	// enforced on the POST-PATCH MERGED view) — a patch that would leave
+	// a script on a workflow-targeted trigger 400s, in either direction:
+	// scripting onto a DAG target, or retargeting a scripted routine to
+	// a DAG.
+	mergedHasScript := existing != nil && (existing.ScriptLanguage != "" || existing.ScriptHandler != "")
+	if scriptKeyPresent {
+		mergedHasScript = scriptPatch.Present()
+	}
+	if mergedHasScript && mergedWorkflowID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; clear script (null) or drop the workflowId patch"})
+		return
 	}
 
 	// Input mapping (0059 V7): only patches that touch workflowId, input,
@@ -1041,6 +1107,9 @@ func triggerRowToResponse(r *wf.TriggerRow) types.TriggerResponse {
 		ConsecutiveFailures: r.ConsecutiveFailures, AutoDisableAfter: r.AutoDisableAfter,
 		LastFiredAt: r.LastFiredAt, NextFireAt: r.NextFireAt,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}
+	if r.ScriptLanguage != "" || r.ScriptHandler != "" {
+		resp.Script = &types.TriggerScript{Language: r.ScriptLanguage, Handler: r.ScriptHandler}
 	}
 	if r.OwnerID != "" && r.OwnerID != "_platform" {
 		resp.OwnerID = r.OwnerID

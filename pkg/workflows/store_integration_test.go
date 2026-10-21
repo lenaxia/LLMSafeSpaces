@@ -312,6 +312,97 @@ func (s *StoreIntegrationSuite) TestTriggerInputMappingRoundtrip() {
 	require.Error(s.T(), err, "triggers_input_from_check must reject unknown modes")
 }
 
+// TestTriggerScriptGateRoundtrip pins the #1812 columns: create/read
+// with script_language + script_handler, the DB defaults (” = no
+// script) on legacy rows, and the update keep-vs-replace-vs-clear
+// discrimination (nil pointer keeps; non-nil replaces; empty strings
+// clear back to the no-script state).
+func (s *StoreIntegrationSuite) TestTriggerScriptGateRoundtrip() {
+	ctx := context.Background()
+	id := uuid.New().String()
+	now := time.Now()
+
+	created := &TriggerRow{
+		ID: id, OwnerType: "user", OwnerID: "u1",
+		Name: "gated-routine", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+		ScriptLanguage:   "python",
+		ScriptHandler:    "def handler(input):\n    return {\"proceed\": True, \"vars\": {}}\n",
+		AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, created))
+
+	got, err := s.store.GetTrigger(ctx, "user", "u1", id)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "python", got.ScriptLanguage)
+	assert.Equal(s.T(), created.ScriptHandler, got.ScriptHandler)
+
+	// Nil pointers keep the stored script.
+	renamed := "renamed"
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Name: &renamed})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "python", updated.ScriptLanguage, "nil Script keeps the stored language")
+	assert.Equal(s.T(), created.ScriptHandler, updated.ScriptHandler)
+
+	// Replace.
+	repl := TriggerScript{Language: "node", Handler: "exports.handler = (input) => ({proceed: true, vars: {}});"}
+	updated, err = s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Script: &repl})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "node", updated.ScriptLanguage)
+	assert.Equal(s.T(), repl.Handler, updated.ScriptHandler)
+
+	// Clear (empty strings = the no-script state).
+	clear := TriggerScript{}
+	updated, err = s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Script: &clear})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "", updated.ScriptLanguage)
+	assert.Equal(s.T(), "", updated.ScriptHandler)
+
+	// Legacy rows written without the columns read as no-script.
+	legacyID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: legacyID, OwnerType: "user", OwnerID: "u1",
+		Name: "legacy-prompt-only", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 3 * * *"}`),
+		AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
+	}))
+	legacy, err := s.store.GetTrigger(ctx, "user", "u1", legacyID)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "", legacy.ScriptLanguage)
+	assert.Equal(s.T(), "", legacy.ScriptHandler)
+}
+
+// TestUpdateTriggerFireAction pins the #1812 gate-audit column write:
+// action_result on a routine fire row is updatable independently of
+// result/status (the gate outcome lands before the agent leg).
+func (s *StoreIntegrationSuite) TestUpdateTriggerFireAction() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	fireID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "gate-audit", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *"}`),
+		AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(s.T(), s.store.CreateTriggerFire(ctx, &TriggerFireRow{
+		ID: fireID, TriggerID: triggerID, SourceType: "cron",
+		ActionType: "routine", Status: "fired", FiredAt: now,
+	}))
+
+	require.NoError(s.T(), s.store.UpdateTriggerFireAction(ctx, fireID,
+		json.RawMessage(`{"gate":{"proceed":true,"vars":{"topic":"nightly"}}}`)))
+	require.NoError(s.T(), s.store.UpdateTriggerFireResult(ctx, fireID, nil, "delivered"))
+
+	fires, err := s.store.ListTriggerFires(ctx, triggerID, 10, 0)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), fires, 1)
+	assert.JSONEq(s.T(), `{"gate":{"proceed":true,"vars":{"topic":"nightly"}}}`, string(fires[0].ActionResult))
+	assert.Equal(s.T(), "delivered", fires[0].Status)
+}
+
 // --- Webhook ---------------------------------------------------------------
 
 func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {

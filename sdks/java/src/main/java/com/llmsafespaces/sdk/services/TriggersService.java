@@ -6,6 +6,34 @@ import com.llmsafespaces.sdk.LLMSafeSpacesClient;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Trigger CRUD (/me/triggers).
+ *
+ * <p>The #1812 inline gate script: a trigger may carry {@code script}
+ * — an INLINE script object {@code {"language": "python"|"node",
+ * "handler": <source>}} (never a path; the path form is the separate,
+ * legacy scriptPath). The handler defines
+ * {@code handler(input) -> {"proceed": <bool>, "vars": {<str>: <str>}}}
+ * and runs in the routine's target workspace before every fire's LLM
+ * call, with the fire envelope as input:</p>
+ *
+ * <ul>
+ *   <li>{@code proceed=false} exits the fire with NO LLM call (cheap
+ *       deterministic gating — poll checks, thresholds, state diffs);</li>
+ *   <li>{@code proceed=true} fires the prompt with vars substituted
+ *       jinja-style ({@code {{key}}}; unmatched tokens stay literal) and
+ *       ALL vars appended as trailing {@code [trigger script vars]}
+ *       metadata;</li>
+ *   <li>any script failure — runtime error, unparseable output, or a
+ *       return violating the schema — fails CLOSED: failed fire, the
+ *       named error in the fire audit, no LLM call;</li>
+ *   <li>a script trigger with NO prompt never calls the LLM at all
+ *       (gate + side effects only).</li>
+ * </ul>
+ *
+ * <p>Routine targets only — rejected (400) alongside workflowId (a
+ * workflow's DAG carries its own script/condition nodes).</p>
+ */
 public class TriggersService {
     private final LLMSafeSpacesClient c;
 
@@ -23,9 +51,18 @@ public class TriggersService {
         return List.of();
     }
 
+    /**
+     * Create a trigger.
+     *
+     * @param script the #1812 inline gate script as
+     *               {@code Map.of("language", "python", "handler", src)}
+     *               (see the class javadoc for the {proceed, vars} gate
+     *               semantics), or {@code null} for a prompt-only trigger.
+     *               Routine targets only — rejected alongside workflowId.
+     */
     public Map<String, Object> create(String name, String sourceType, Object sourceConfig,
                                        String workspaceId, String workflowId, String prompt,
-                                       String agent, String scriptPath, List<String> scriptArgs,
+                                       String agent, Object script, String scriptPath, List<String> scriptArgs,
                                        Object scriptEnv, String memoryMode, String captureMode,
                                        String preserveSession) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
@@ -36,6 +73,7 @@ public class TriggersService {
         if (workflowId != null && !workflowId.isEmpty()) body.put("workflowId", workflowId);
         if (prompt != null && !prompt.isEmpty()) body.put("prompt", prompt);
         if (agent != null && !agent.isEmpty()) body.put("agent", agent);
+        if (script != null) body.put("script", script);
         if (scriptPath != null && !scriptPath.isEmpty()) body.put("scriptPath", scriptPath);
         if (scriptArgs != null) body.put("scriptArgs", scriptArgs);
         if (scriptEnv != null) body.put("scriptEnv", scriptEnv);
@@ -46,6 +84,18 @@ public class TriggersService {
                 new TypeToken<Map<String, Object>>(){}.getType());
     }
 
+    /**
+     * Partially update a trigger (omitted keys keep their values).
+     *
+     * <p>The #1812 gate script patches with key-presence semantics: an
+     * absent {@code script} key keeps the stored script, the JSON
+     * literal {@code null} clears it back to no-script, and an object
+     * {@code {"language": ..., "handler": ...}} replaces it. Put exactly
+     * one of those three spellings in the map — never a Java {@code null}
+     * value for "keep" (Gson drops null map values, which is the keep
+     * case anyway; use the string {@code "null"} via a raw JSON body for
+     * the clear case).</p>
+     */
     public Map<String, Object> update(String id, Map<String, Object> updates) {
         return c.request("PUT", "/me/triggers/" + id, updates,
                 new TypeToken<Map<String, Object>>(){}.getType());

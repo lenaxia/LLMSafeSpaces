@@ -115,6 +115,10 @@ func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, 
 	if upd.Input != nil {
 		r.Input = upd.Input
 	}
+	if upd.Script != nil {
+		r.ScriptLanguage = upd.Script.Language
+		r.ScriptHandler = upd.Script.Handler
+	}
 	if upd.NextFireAt != nil {
 		r.NextFireAt = upd.NextFireAt
 	}

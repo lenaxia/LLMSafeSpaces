@@ -1129,6 +1129,19 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"`mapped` (the static `input` document)",                      // spelling 3
 			"rejected with 400 — set `input`",                             // the envelope-wiring guard (#1425), uniquely pinned
 			"set `input`, use `inputFrom: \"body\"`, or relax the schema", // the three remedies
+			// #1812 drift pins — the inline gate script contract: inline
+			// source (not a pointer), the {proceed, vars} schema, the
+			// no-LLM-call semantics, substitution, fail-closed, and the
+			// workflow-target exclusion.
+			"INLINE SOURCE", // the script is source, never a path
+			"handler(input) -> {\"proceed\": <bool>, \"vars\": {<str>: <str>}}", // the return schema, verbatim
+			"EXITS the fire with NO LLM call",                                   // proceed=false semantics
+			"{{key}}",                                                           // jinja-style substitution form
+			"[trigger script vars]",                                             // the trailing metadata block
+			"fails CLOSED",                                                      // failure posture
+			"rejected (400) alongside workflowId",                               // routine-only rule surfaced
+			"never calls the LLM at all",                                        // script-only triggers have no LLM leg
+			"Worked example",                                                    // the doc mandate: a worked example in the description
 		} {
 			assert.Contains(t, d, want)
 		}
@@ -1145,6 +1158,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		// 0059 — the input-mapping fields are patchable here too.
 		assert.Contains(t, d, "`inputFrom` and `input`")
 		assert.Contains(t, d, "are patchable here too")
+		// #1812 — the gate script patch semantics are surfaced here too.
+		assert.Contains(t, d, "so is `script`")
+		assert.Contains(t, d, "JSON null clears it")
 	})
 
 	t.Run("trigger_delete guidance", func(t *testing.T) {
@@ -1166,6 +1182,12 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"actionResult",                         // where the typed violations live
 			"schema_mismatch",                      // the actionResult code
 			"locations only, never payload values", // the §3.5 sanitization contract
+			// #1812 — the gate outcome is diagnosable here.
+			"`skipped` fire",                 // closed-gate status vocabulary
+			"{gate: {proceed: false, vars}}", // closed-gate payload shape
+			"{gate: {proceed: true, vars}}",  // open-gate payload shape
+			"gate.error",                     // fail-closed error location
+			"fail-closed, no LLM call",       // the failure posture restated where it is consumed
 		} {
 			assert.Contains(t, d, want)
 		}
