@@ -340,19 +340,15 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 func emissionIDTranslator(harnessID string) string {
 	phrase := currentSessionShortIDs().shortIDFor(harnessID)
 	if phrase == "" && harnessID != "" {
+		// #1817 r4 finding 1 / r5 finding 2: schedule the warm. The
+		// singleflight flag inside warmSessionShortIDsOnMiss dedups it to
+		// ONE concurrent pull (no goroutine-per-emission), and — unlike the
+		// fixed 30s TTL — a back-to-back UI-created session gets its own
+		// warm once the in-flight one completes (the #1817 dead-streaming
+		// symptom on the common path).
 		go warmSessionShortIDsOnMiss()
 	}
 	return phrase
-}
-
-// warmSessionShortIDsOnMiss is the #1817 r4 finding-1 async replica warm:
-// a detached (survives the authority's context) registry pull bounded by
-// the shared 30s TTL rate limit. Best-effort — a failure degrades to the
-// heal window (harness id passthrough), never worse than pre-fix.
-func warmSessionShortIDsOnMiss() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	pullSessionShortIDsRateLimited(ctx)
 }
 
 // startStateAuthorityReseed drives the boot reseed: opencode may not be

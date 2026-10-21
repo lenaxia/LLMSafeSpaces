@@ -317,7 +317,11 @@ func (h *ProxyHandler) publishInputResolved(c *gin.Context, workspaceID, session
 	// request_id so the impact is bounded, but the envelope must still be
 	// phrase-keyed to honor the #1821 piece-1 contract and the additive
 	// "never dropped" harness id.
-	h.translateSessionIDToPhrase(c.Request.Context(), workspaceID, &evt)
+	// #1817 piece 1 (r5 finding 3): detached context — the request context
+	// is canceled if the browser aborts/navigates mid-reply, which would
+	// cancel the Register seam and re-emit this envelope harness-keyed. The
+	// other user-stream emitters use a detached context for the same reason.
+	h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 	targets := make([]string, 0, 2)
 	if owner := h.userBroker.WorkspaceOwner(workspaceID); owner != "" {
 		targets = append(targets, owner)

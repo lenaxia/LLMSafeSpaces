@@ -6,10 +6,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +203,136 @@ func TestEmissionTranslator_WarmsOnMiss(t *testing.T) {
 	// A subsequent emission for the same session now carries the phrase.
 	if got := emissionIDTranslator(harnessID); got != phraseID {
 		t.Fatalf("post-warm emission: got %q, want the phrase %q", got, phraseID)
+	}
+}
+
+// TestEmissionTranslator_WarmNotLockedByPriorPull (#1817 piece 3, r5
+// finding 1): a UI-created session B created within the 30s TTL window of a
+// prior session A's warm must STILL warm. The r4 design gated the warm on
+// the shared fixed 30s TTL (shortIDLastPull), so B's warm would be
+// suppressed by A's pull and B's whole first turn streamed harness-keyed —
+// #1817's dead-streaming symptom on the common path. The r5 fix gates on an
+// in-flight singleflight instead: B's warm proceeds once A's completes.
+//
+// This pin models the production ordering exactly: the platform registry
+// gains session B's row AFTER A's warm has already pulled (the create
+// flow registers B in the API's session_index before B's first emission
+// reaches agentd). A single re-pull (allowed because no warm is in flight)
+// must learn B.
+func TestEmissionTranslator_WarmNotLockedByPriorPull(t *testing.T) {
+	s := withShortIDStore(t)
+	var mu sync.Mutex
+	reg := map[string]string{} // the platform registry the pull reads
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/session-registry" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		sessions := make([]map[string]string, 0, len(reg))
+		for sid, short := range reg {
+			sessions = append(sessions, map[string]string{"sessionID": sid, "shortID": short})
+		}
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+	})
+	setupPodSessionEnv(t, platform)
+
+	// Session A exists in the registry from the start.
+	mu.Lock()
+	reg["ses_A"] = "alpha-amber-arrow"
+	mu.Unlock()
+
+	// A's first emission warms the replica (learns A).
+	if got := emissionIDTranslator("ses_A"); got != "" {
+		t.Fatalf("A's first emission must be the heal window (\"\"), got %q", got)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.shortIDFor("ses_A") == "alpha-amber-arrow" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := s.shortIDFor("ses_A"); got != "alpha-amber-arrow" {
+		t.Fatalf("A's warm did not populate the replica: %q", got)
+	}
+
+	// Session B is created in the registry AFTER A's warm (the create
+	// flow's ordering) — within A's 30s TTL window, so the OLD fixed-TTL
+	// design would suppress B's warm.
+	mu.Lock()
+	reg["ses_B"] = "bravo-bright-bloom"
+	mu.Unlock()
+
+	// B's first emission (still the heal window) must schedule a FRESH warm
+	// (no warm is in flight now — A's completed) and learn B.
+	if got := emissionIDTranslator("ses_B"); got != "" {
+		t.Fatalf("B's first emission must be the heal window (\"\"), got %q", got)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.shortIDFor("ses_B") == "bravo-bright-bloom" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := s.shortIDFor("ses_B"); got != "bravo-bright-bloom" {
+		t.Fatalf("B's warm was suppressed by A's pull (the r4 30s-TTL defect): shortIDFor(ses_B)=%q, want %q — B's first turn would stream harness-keyed", got, "bravo-bright-bloom")
+	}
+	// A subsequent B emission carries the phrase.
+	if got := emissionIDTranslator("ses_B"); got != "bravo-bright-bloom" {
+		t.Fatalf("B post-warm emission: got %q, want the phrase", got)
+	}
+}
+
+// TestEmissionTranslator_WarmDedupsToSinglePull (#1817 piece 3, r5 finding
+// 2): many unresolved emissions while the replica is cold must NOT spawn an
+// unbounded number of concurrent warm pulls (the r4 draft forked a goroutine
+// per emission frame). The singleflight flag coalesces them to one in-flight
+// pull. This pin makes the platform pull BLOCK so the in-flight window is
+// observable, fires many emissions, and asserts only ONE pull ran.
+func TestEmissionTranslator_WarmDedupsToSinglePull(t *testing.T) {
+	s := withShortIDStore(t)
+	_ = s
+	var mu sync.Mutex
+	pulls := 0
+	var releaseOnce sync.Once
+	release := make(chan struct{})
+	blockPull := true
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/session-registry" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		pulls++
+		block := blockPull
+		mu.Unlock()
+		if block {
+			<-release // block the pull so the in-flight window is observable
+		}
+		releaseOnce.Do(func() { close(release) })
+		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
+	})
+	setupPodSessionEnv(t, platform)
+
+	// Fire many emissions for distinct unresolved sessions. The first spawns
+	// the (blocked) pull; the rest must coalesce onto it (no second pull).
+	for i := 0; i < 20; i++ {
+		emissionIDTranslator(fmt.Sprintf("ses_many_%d", i))
+	}
+	// Give the coalesced warm time to attempt (and block on) the pull.
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	gotPulls := pulls
+	// Release the blocked pull and stop future ones from blocking.
+	blockPull = false
+	mu.Unlock()
+	releaseOnce.Do(func() { close(release) })
+	// One warm goroutine is allowed a little slack, but it must NOT be 20.
+	if gotPulls > 2 {
+		t.Fatalf("expected the singleflight to coalesce the warm to ~1 pull, got %d (the r4 goroutine-per-emission defect)", gotPulls)
 	}
 }
 

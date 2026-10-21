@@ -114,6 +114,12 @@ export function cloneSessionSnapshot(s: SessionSnapshot): SessionSnapshot {
     inFlightParts: s.inFlightParts.map(clonePart),
     queueDepth: s.queueDepth,
     pendingInputs: s.pendingInputs.map((i) => ({ ...i })),
+    // #1817 piece 1 (r4 finding 5): carry the additive internal_session_id
+    // (field 7) — the "never dropped" harness id. The clone explicitly
+    // enumerates fields, so omitting it silently dropped it on every fold
+    // clone (the Go reference clone and applyEvent now preserve it; the TS
+    // port must match).
+    internalSessionId: s.internalSessionId,
   });
 }
 

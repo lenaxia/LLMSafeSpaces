@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
@@ -66,7 +67,11 @@ func pullSessionShortIDs(ctx context.Context) bool {
 	return true
 }
 
-// pullSessionShortIDsRateLimited is the on-miss pull behind the TTL.
+// pullSessionShortIDsRateLimited is the on-miss pull behind the TTL (the
+// MCP ref-resolution path — the caller loops on a typo, so a fixed window
+// bounds platform hammering). The EMISSION warm uses a different gate
+// (pullSessionShortIDSWarm below) — see its doc for why the fixed TTL is
+// wrong for the multi-session warm case.
 func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	shortIDPullMu.Lock()
 	if time.Since(shortIDLastPull) < shortIDPullTTL {
@@ -76,6 +81,44 @@ func pullSessionShortIDsRateLimited(ctx context.Context) bool {
 	shortIDLastPull = time.Now()
 	shortIDPullMu.Unlock()
 	return pullSessionShortIDs(ctx)
+}
+
+// warmPullInFlight dedups the emission-path replica warm: at most ONE warm
+// pull runs at a time (#1817 r5 finding 2 — the r4 draft spawned a
+// goroutine PER unresolved emission frame, unbounded on a session the
+// replica never resolves). A second unresolved emission while a warm is in
+// flight coalesces onto the running pull instead of forking.
+var warmPullInFlight int32
+
+// pullSessionShortIDSWarm is the emission-path async replica warm
+// (#1817 r4 finding 1, r5 finding 1+2). Unlike the MCP on-miss pull it is
+// NOT gated by the fixed 30s TTL: a legitimate UI-created session B created
+// within 30s of session A's warm must still get its own warm (the TTL
+// would lock B out for its whole first turn — the #1817 dead-streaming
+// symptom on the common path). Instead it is gated by an in-flight
+// singleflight: a miss schedules ONE detached pull if none is running, and
+// coalesces if one is. The pull's own 15s context bounds it; the flag is
+// cleared when it completes so the NEXT unresolved id (a newer session) can
+// trigger a fresh warm. Best-effort — a failure degrades to the heal window
+// (harness id passthrough), never worse than pre-fix.
+func pullSessionShortIDSWarm(ctx context.Context) bool {
+	if !atomic.CompareAndSwapInt32(&warmPullInFlight, 0, 1) {
+		// A warm is already running — coalesce onto it. The next unresolved
+		// emission (after it completes) will trigger a fresh pull.
+		return false
+	}
+	defer atomic.StoreInt32(&warmPullInFlight, 0)
+	return pullSessionShortIDs(ctx)
+}
+
+// warmSessionShortIDsOnMiss is the emission-path warm entrypoint: a single
+// detached goroutine (survives the authority's context) running the
+// singleflight pull. Safe to call per-emission — the in-flight flag dedups
+// it to one concurrent pull (#1817 r5 finding 2).
+func warmSessionShortIDsOnMiss() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pullSessionShortIDSWarm(ctx)
 }
 
 // bootPullSessionShortIDs warms the replica at agentd start (§4.3
