@@ -1042,6 +1042,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"create_session",                     // pointer: new sessions go there
 			"self-contained",                     // target inherits no context
 			"Delivery is not retried",            // loss semantics disclosed (finding 2)
+			// #1814 placeholder-guard hardening: the three phrases the
+			// acceptance block requires — never silently droppable.
+			"complete intended content",       // send the whole drafted message
+			"do NOT send — re-compose",        // the corruption counter-instruction
+			"Placeholder/TODO-class payloads", // the auto-reject is advertised
 		} {
 			assert.Contains(t, d, want)
 		}
