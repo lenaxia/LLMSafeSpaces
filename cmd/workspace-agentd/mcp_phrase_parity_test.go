@@ -262,3 +262,25 @@ func TestMCPPhraseInput_CaseInsensitiveNormalization(t *testing.T) {
 	defer f.mu.Unlock()
 	assert.Equal(t, 1, len(f.sentBodies[target]), "mixed-case phrase must resolve to the harness session")
 }
+
+// TestMCPEnvelope_BoardDeclaredSessionIDNotice: the board manager
+// tools' camelCase `sessionId` declared fallback is a caller-typed
+// session ref — a deprecated full-id form carries the envelope notice
+// like every other surface (r1 non-blocking closure).
+func TestMCPEnvelope_BoardDeclaredSessionIDNotice(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("board-declared")
+	withAgentServer(t, f.handler(t))
+
+	// The notice fires at the ENVELOPE layer before any board seam
+	// call (automation deps unset → the tool errors; the notice must
+	// still ride the error result).
+	result := callMCPEnvelope(t, mcpTestPassword, "board_create_project", map[string]any{
+		"name": "p1", "sessionId": s1,
+	})
+	blocks := envelopeTextBlocks(t, result)
+	require.NotEmpty(t, blocks)
+	require.Len(t, blocks, 2, "the camelCase declared sessionId carries the §2 notice on the error path")
+	assert.Contains(t, blocks[0], "Error:")
+	assert.Contains(t, blocks[1], "DEPRECATED")
+}
