@@ -145,3 +145,78 @@ Tests Run:
 - `go test ./api/internal/services/usagestream/ -count=1` — green, incl. the gate-latch pin.
 - `go test ./pkg/abi/abiclient/ -count=1` — green (the clone fix).
 - `go build ./...` — clean.
+
+## Piece 3 (continued) — r2 review (2026-10-21, findings 1–4)
+
+The r2 reviewer re-opened the double-translation surface beyond the
+SessionStatus leg: every OTHER emission that the consumer routes through
+the translation seam can ALSO carry the additive internal id (refreshed
+pods translate EVERY frame, not just status), so each needs the same
+guard OR a key-by-internal fix. Plus a new defect on the delete tail.
+
+### Finding 1 — ContextUsed double-translates (the ghost-row occupancy)
+`emitContextUsed` carried `evt.GetSessionId()` (the phrase) to
+`Bridge.ContextUsed`, which did `Register(workspace, phrase)` →
+EnsureSessionRegistered INSERTs a phantom row and wrote context occupancy
+onto the ghost. Fix: additive seam `ContextUsedWithInternal` + the consumer
+passes `consultSessionID(evt)` (the harness id); the bridge keys
+Register/UpsertContextUsed by the internal when present.
+
+### Finding 2 — InputResolved double-translates (prompt never removed)
+`emitInputResolved` same shape — the resolved event targeted a third id so
+the frontend never cleared the prompt. Fix: additive seam
+`InputResolvedWithInternal` + the bridge seeds `internal_session_id` on the
+Data map so the existing translate guard passes the phrase through.
+
+### Finding 3 — reconnect corrections double-translate
+`reconcileBridgeLocked` emitted `SessionStatus(workspaceID, corr.sessionID,
+busy)` with the phrase as sessionID and NO internal → the bridge minted a
+phantom row on every reconcile. Fix: `bridgeCorrection` gained `internalID`
+(populated from `s.GetInternalSessionId()`), emitted via
+`SessionStatusWithInternal`.
+
+### Finding 4 — delete-tail ghost row (NEW)
+The delete tail (`removeActiveSessionEvents`) ran `DeleteSession` (row
+removed) then the MINTING `translateSessionIDToPhrase` → Register INSERTed
+a ghost row for the just-deleted session, and the `deleted` clear carried a
+freshly-minted phrase the frontend does not recognize. Fix: a READ-ONLY
+`SessionIndexService.ResolveShortID(workspaceID, sessionID)` (LRU-only, no
+mint — the LRU survives DeleteSession which does not evict it) + a
+`translateSessionIDToPhraseNoMint` twin used by the delete tail. The clear
+is still phrase-keyed (joins the busy flip) but never mints.
+
+### Finding 5 — guard downgrade under degraded index
+The first r2 draft of the guard only passed through when `Register(internal)`
+returned a non-empty phrase; a degraded index (Register→"") would FLIP a
+healthy refreshed-pod frame back to harness space. Fixed: if the additive
+internal id is present, `setInternalSessionID` + return UNCONDITIONALLY —
+never downgrade a correct phrase, "never worse" holds for the refreshed-pod
+shape too.
+
+### Finding 6 — flip-leg dedup keyed on the wire (phrase) id
+The `PART_START/END/MESSAGE_START/ERROR` flip-only candidates read
+`g.derived[evt.GetSessionId()]` (the phrase), but consultBusy/onState record
+under the CONSULT key (internal/harness id). On refreshed pods the phrase
+key always missed (prev=false) → re-emitted busy on every candidate,
+breaking the flip-only contract. Fixed: read `g.derived[consultSessionID(evt)]`.
+
+### Red-first pins (r2)
+- `mockSessionIndex` gained `mint`/`registerCalls`/`registeredCalls()` to
+  model production's EnsureSessionRegistered minting; the double-translation
+  pin asserts the phrase is NEVER registered (mint mode → no phantom row).
+- `TestDeleteClearIsPhraseKeyedWithoutMint` — the delete clear is phrase-keyed
+  (joins the busy flip) AND Register is never called (no ghost row for a
+  deleted session).
+- `ResolveShortID` no-op stubs added to every SessionIndexService test mock
+  (handlers ×4, server, workspace, workflows ×2, backfill, shortid seam).
+
+### Out of scope (still follow-ups, not this PR)
+- e2e pins (E2.1/E2.6) and the integration/e2e test levels. #1817 remains
+  PARTIALLY addressed until those land.
+
+Tests Run (r2):
+- `go build ./...` — clean.
+- `gofmt -l api/ cmd/ pkg/` — clean.
+- `golangci-lint run --new-from-rev origin/main` (all 7 changed pkgs) — 0 issues.
+- `go test ./api/internal/{handlers,services/sessionindex,services/usagestream,server,services/workspace,workflows}/ -count=1` — all green.
+- `go test ./api/... -count=1` — green EXCEPT `outbox.TestRollbackDrill_UnderLoad`, a pre-existing FLAKY load test (count drifts 38/40/49 per run, machine-load dependent) — reproduced FAILING on the pre-change baseline (stashed diff), so unrelated to this PR.

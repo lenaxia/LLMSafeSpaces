@@ -291,3 +291,51 @@ func TestTranslatePreservesInputRequestPayload(t *testing.T) {
 	require.NotNil(t, ir.Tool)
 	assert.Equal(t, "call_1", ir.Tool.CallID)
 }
+
+// #1817 piece 3 (r2 finding 4): the delete tail runs AFTER DeleteSession has
+// removed the row. If it used the MINTING translateSessionIDToPhrase,
+// Register(workspace, harness) would EnsureSessionRegister → INSERT a ghost
+// row for the just-deleted session, and the `deleted` clear would carry a
+// freshly-minted phrase the frontend does not recognize. The READ-ONLY twin
+// (translateSessionIDToPhraseNoMint) consults only the surviving LRU —
+// DeleteSession does not evict it — so the clear matches the busy flip's
+// phrase key WITHOUT minting. This pin asserts: the clear is phrase-keyed
+// (joins the busy flip), AND Register was never called (no ghost row).
+func TestDeleteClearIsPhraseKeyedWithoutMint(t *testing.T) {
+	const harnessID = "ses_delete_1817"
+	const phraseID = "hotel-foxtrot-9"
+
+	h, si := newBridgeIndexHandler(t)
+	// Seed the phrase the session was ALREADY registered to. Production's
+	// LRU survives DeleteSession, so the read-only seam still resolves it.
+	si.phrases["ws-1/"+harnessID] = phraseID
+	// MINT mode models production: if the delete tail (wrongly) called the
+	// minting Register, a fresh ghost phrase would be minted. The pin asserts
+	// the delete-tail clear never registers at all.
+	si.mu.Lock()
+	si.mint = true
+	si.mu.Unlock()
+
+	// The delete tail builds a harness-keyed session.status=deleted and runs
+	// it through the READ-ONLY translation.
+	evt := apitypes.WorkspaceSSEEvent{
+		Type:      "session.status",
+		SessionID: harnessID,
+		Status:    "deleted",
+	}
+	h.translateSessionIDToPhraseNoMint("ws-1", &evt)
+
+	// THE JOIN: the clear is keyed by the phrase so it clears the
+	// phrase-keyed busy flip (the delete half of the stuck-busy).
+	assert.Equal(t, phraseID, evt.SessionID,
+		"the delete clear must be phrase-keyed to match the phrase-keyed busy flip — the LRU survives DeleteSession, so the read-only seam resolves the known phrase")
+	if d, ok := evt.Data.(map[string]any); ok {
+		assert.Equal(t, harnessID, d["internal_session_id"],
+			"the harness id rides additively on the delete clear too (never dropped)")
+	}
+
+	// THE GHOST-ROW GUARD: the delete tail must NEVER register (a mint would
+	// INSERT a row for a deleted session — the delete-tail ghost row).
+	assert.Zero(t, si.registeredCalls()["ws-1/"+harnessID],
+		"the delete-tail clear must not mint — it must resolve the phrase from the surviving LRU without a Register (no ghost row for a deleted session)")
+}

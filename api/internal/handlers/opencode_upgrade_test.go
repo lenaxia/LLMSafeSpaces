@@ -251,6 +251,17 @@ func (m *mockSessionIndex) Register(_ context.Context, workspaceID, sessionID, h
 	return ""
 }
 
+// ResolveShortID: the #1817 piece-3 read-only seam — this mock returns the
+// seeded phrase when planted (LRU-hit shape), else "" (no mint).
+func (m *mockSessionIndex) ResolveShortID(workspaceID, sessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.phrases == nil {
+		return ""
+	}
+	return m.phrases[workspaceID+"/"+sessionID]
+}
+
 // registeredCalls returns the number of Register calls seen per
 // "workspaceID/sessionID" (the #1817 piece 3 double-translation pin).
 func (m *mockSessionIndex) registeredCalls() map[string]int {

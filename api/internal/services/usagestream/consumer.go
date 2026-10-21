@@ -100,14 +100,17 @@ type Bridge interface {
 
 // BridgeWithInternal is the #1817 piece-3 optional extension: a bridge
 // that carries the ADDITIVE harness id (agentd's internal_session_id)
-// through the busy emission so its phrase translation can detect an
+// through its emissions so its phrase translation can detect an
 // already-translated frame and avoid the double-translation phantom row
-// (the refreshed-pod defect). Bridges that do not implement it fall back
-// to the plain SessionStatus (the harness-keyed legacy path — still
-// correct, just without the additive guard).
+// (the refreshed-pod defect) on EVERY path — the busy emission, the
+// resolved-input emission, and the context-usage write. Bridges that do
+// not implement it fall back to the plain methods (the harness-keyed
+// legacy path — still correct, just without the additive guard).
 type BridgeWithInternal interface {
 	Bridge
 	SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool)
+	InputResolvedWithInternal(workspaceID, sessionID, internalID, inputID string)
+	ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64)
 }
 
 // emitSessionStatus routes the busy emission through the additive seam
@@ -120,6 +123,30 @@ func (c *Consumer) emitSessionStatus(workspaceID string, evt *abiv1.Event, busy 
 		return
 	}
 	c.cfg.Bridge.SessionStatus(workspaceID, evt.GetSessionId(), busy)
+}
+
+// emitInputResolved routes the resolved-input emission through the
+// additive seam (carrying the harness id so the bridge's translation can
+// detect an already-translated frame — finding 2) when the bridge
+// supports it, else the plain one.
+func (c *Consumer) emitInputResolved(workspaceID string, evt *abiv1.Event, inputID string) {
+	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
+		b.InputResolvedWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), inputID)
+		return
+	}
+	c.cfg.Bridge.InputResolved(workspaceID, evt.GetSessionId(), inputID)
+}
+
+// emitContextUsed routes the context-usage write through the additive
+// seam (carrying the harness id so the bridge writes the row against the
+// real session, not a minted phantom — finding 1) when the bridge
+// supports it, else the plain one.
+func (c *Consumer) emitContextUsed(workspaceID string, evt *abiv1.Event, used int64) {
+	if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
+		b.ContextUsedWithInternal(workspaceID, evt.GetSessionId(), consultSessionID(evt), used)
+		return
+	}
+	c.cfg.Bridge.ContextUsed(workspaceID, evt.GetSessionId(), used)
 }
 
 // Logger is the minimal seam (the API's LoggerInterface satisfies it).
@@ -462,6 +489,15 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 	}
 	g.mu.Unlock()
 	for _, corr := range corrections {
+		// #1817 piece 3: route the reconcile correction through the additive
+		// seam (carrying the snapshot's internal/harness id) so a
+		// refreshed-pod (phrase-keyed) correction does not re-register the
+		// phrase (finding 3). Non-implementing bridges fall back to the
+		// plain SessionStatus.
+		if b, ok := c.cfg.Bridge.(BridgeWithInternal); ok {
+			b.SessionStatusWithInternal(workspaceID, corr.sessionID, corr.internalID, corr.busy)
+			continue
+		}
 		c.cfg.Bridge.SessionStatus(workspaceID, corr.sessionID, corr.busy)
 	}
 }
@@ -469,8 +505,9 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 // bridgeCorrection is one reconcile emission: the session whose bridged
 // truth disagrees with the fold, and the fold's answer.
 type bridgeCorrection struct {
-	sessionID string
-	busy      bool
+	sessionID  string
+	internalID string
+	busy       bool
 }
 
 // reconcileBridgeLocked diffs the freshly-seeded fold against the last
@@ -490,7 +527,16 @@ func (c *Consumer) reconcileBridgeLocked(g *gate, sessions map[string]*abiv1.Ses
 		fold := sessionSeedBusy(s)
 		if g.bridged[sid] != fold {
 			g.bridged[sid] = fold
-			corrections = append(corrections, bridgeCorrection{sessionID: sid, busy: fold})
+			corrections = append(corrections, bridgeCorrection{
+				// #1817 piece 3: carry the additive harness id (the
+				// snapshot's internal_session_id) so the bridge's
+				// translation can detect an already-translated (phrase)
+				// frame and not re-register it (finding 3 — the
+				// reconnect-correction phantom row).
+				sessionID:  s.GetSessionId(),
+				internalID: s.GetInternalSessionId(),
+				busy:       fold,
+			})
 		}
 	}
 	sort.Slice(corrections, func(i, j int) bool { return corrections[i].sessionID < corrections[j].sessionID })
@@ -543,7 +589,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 			c.cfg.Billing.RecordUsage(workspaceID, u)
 		}
 		if c.cfg.Bridge != nil {
-			c.cfg.Bridge.ContextUsed(workspaceID, evt.GetSessionId(),
+			c.emitContextUsed(workspaceID, evt,
 				cost.GetInputTokens()+cost.GetCacheReadTokens()+cost.GetCacheWriteTokens())
 		}
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
@@ -585,10 +631,16 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		if c.cfg.Bridge == nil || evt.GetSessionId() == "" {
 			return
 		}
+		// #1817 piece 3: read the flip baseline under the CONSULT key (the
+		// internal/harness id — consultBusy records there and onState seeds
+		// there), not the wire (phrase) key. On refreshed pods the phrase
+		// key would always miss (prev=false), re-emitting busy on every
+		// candidate and breaking the "flip only" contract.
+		consultKey := consultSessionID(evt)
 		g.mu.Lock()
-		prev := g.derived[evt.GetSessionId()]
+		prev := g.derived[consultKey]
 		g.mu.Unlock()
-		if derived, ok := c.consultBusy(workspaceID, g, consultSessionID(evt)); ok && derived != prev {
+		if derived, ok := c.consultBusy(workspaceID, g, consultKey); ok && derived != prev {
 			c.emitSessionStatus(workspaceID, evt, derived)
 			// #1666: the emission is the reconcile baseline — record it.
 			g.mu.Lock()
@@ -601,7 +653,7 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED:
 		if c.cfg.Bridge != nil && evt.GetInput() != nil {
-			c.cfg.Bridge.InputResolved(workspaceID, evt.GetSessionId(), evt.GetInput().GetId())
+			c.emitInputResolved(workspaceID, evt, evt.GetInput().GetId())
 		}
 	case abiv1.EventType_EVENT_TYPE_SESSION_UPDATED:
 		if c.cfg.Bridge != nil {

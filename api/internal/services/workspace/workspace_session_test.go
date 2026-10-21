@@ -277,3 +277,8 @@ func TestSetSessionArchived_NotIndexed_NotFoundPropagates(t *testing.T) {
 func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
 	return m.Called(ctx, workspaceID, sessionID, harnessType).String(0)
 }
+
+// ResolveShortID: the #1817 piece-3 read-only seam (no mint in this mock).
+func (m *mockSessionIndex) ResolveShortID(_ string, _ string) string {
+	return ""
+}

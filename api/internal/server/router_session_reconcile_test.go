@@ -182,3 +182,6 @@ func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 
 // Register: design 0066 registration seam — no-op stub for this fixture.
 func (r *recordingIndex) Register(_ context.Context, _, _, _ string) string { return "" }
+
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (r *recordingIndex) ResolveShortID(_ string, _ string) string { return "" }

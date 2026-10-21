@@ -222,6 +222,11 @@ type SessionIndexService interface {
 	// so the hot per-message path stays registration-free after first
 	// sight. Returns the short id ("" when the seam is degraded).
 	Register(ctx context.Context, workspaceID, sessionID, harnessType string) string
+	// ResolveShortID is the READ-ONLY seam (#1817 piece 3): returns the
+	// registered short id WITHOUT minting (LRU-only, no DB write) — the
+	// lifecycle clear path (delete/abort/archive) uses it so a clear does
+	// not resurrect a deleted session's row. "" when unknown.
+	ResolveShortID(workspaceID, sessionID string) string
 	Start() error
 	Stop() error
 }
