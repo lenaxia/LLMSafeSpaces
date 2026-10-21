@@ -30,15 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phantom index rows, context occupancy lands on the harness row).
   agentd's replica warm was redesigned as ONE sync.Once worker (not a
   goroutine per emission) fed by a queued pending set, with per-id
-  exponential backoff (1s → 30s cap) and a bounded pull rate, so a hot
-  stream neither forks per frame nor pulls per frame.
+  exponential backoff (1s → 30s cap) and a GLOBAL 1s floor between warm
+  pulls (distinct newly-seen ids batch instead of pulling once each,
+  while a new session still warms within a second). The worker is bound
+  to the process background context and joined at shutdown, so no warm
+  goroutine outlives agentd.
   Coverage now spans the dual-id fixture class (mock index rows keyed
   phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
-  T1.6 cross-surface join tripwire), the worker-starts/backoff pins,
-  and new Postgres-backed integration levels: translated authority
-  stream → real consumer → real `usageBridge` → real `sessionindex`,
-  the create-via-API registry round trip, and the agentd replica warm
-  against the real registry contract.
+  T1.6 cross-surface join tripwire), live-goroutine/global-pull-floor/
+  backoff pins, and new Postgres-backed integration levels: translated
+  authority stream → real consumer → real `usageBridge` → real
+  `sessionindex`, the create-via-API registry round trip, the
+  legacy-frame phrase translation, and the agentd replica warm against
+  the real registry contract.
 
 (nothing yet)
 

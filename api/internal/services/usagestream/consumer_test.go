@@ -63,25 +63,34 @@ func (f *fakeClient) Stream(ctx context.Context, onUpdate func(*abiclient.Sessio
 	f.onEvent = abiclient.AppliedEventsOf(opts)
 	f.onUpdate = onUpdate
 	f.resynced = abiclient.ResyncedOf(opts)
-	if f.connected != nil {
-		f.connected <- struct{}{}
-	}
-	// Snapshot-first: the protocol's stamp (scripted per #1666 so a
-	// reconnect can carry truth its predecessor's frames lost).
-	f.mu.Lock()
-	seed := f.seedSessions
-	f.mu.Unlock()
-	sessions := map[string]*abiv1.SessionSnapshot{}
-	for sid, s := range seed {
-		sessions[sid] = s
-	}
-	onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
+	// Initialize the kill channel and snapshot the seed BEFORE signaling
+	// connected. The test's requireOpen only waits for connected, then
+	// scripts the next seed and calls killStream; if the kill channel were
+	// created after the signal, killStream could observe nil and silently
+	// miss (no reconnect → the 5s Eventually "never satisfied" flake).
+	// Reading the seed first also makes the initial connection's snapshot
+	// deterministic (the test scripts the RECONNECT's truth after open).
 	f.mu.Lock()
 	if f.kill == nil {
 		f.kill = make(chan struct{})
 	}
 	kill := f.kill
+	seed := f.seedSessions
 	f.mu.Unlock()
+	// Snapshot-first: the protocol's stamp (scripted per #1666 so a
+	// reconnect can carry truth its predecessor's frames lost). Signal
+	// `connected` only AFTER applying it: requireOpen then guarantees the
+	// consumer has finished the initial onState before the test drives
+	// events (otherwise the snapshot fold and a synchronous apply race on
+	// the recording bridge).
+	sessions := map[string]*abiv1.SessionSnapshot{}
+	for sid, s := range seed {
+		sessions[sid] = s
+	}
+	onUpdate(&abiclient.SessionState{Seq: 0, Sessions: sessions})
+	if f.connected != nil {
+		f.connected <- struct{}{}
+	}
 	select {
 	case <-ctx.Done():
 		return context.Canceled

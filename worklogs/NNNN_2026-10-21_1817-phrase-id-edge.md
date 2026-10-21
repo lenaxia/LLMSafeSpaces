@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r6 review rounds closed).
+**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 review rounds closed; r7 also closed the Go-side CI findings).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -138,7 +138,9 @@ phrase-keyed busy flip (the stuck-busy's lifecycle half).
   prior findings; addressing them (a read-only resolve seam, a
   sessionindex negative cache) is a separate slice. #1817 remains
   PARTIALLY addressed until the e2e pins (E2.1/E2.6) and the
-  integration/e2e test levels land.
+  integration/e2e test levels land. (Updated: integration levels landed in
+  r6; the frontend E2E pins land in the separate frontend commit
+  `bce1579c`.)
 
 Tests Run:
 - `go test ./api/internal/handlers/ -count=1` — FULL suite green (89s), incl. the three new pins.
@@ -212,7 +214,8 @@ breaking the flip-only contract. Fixed: read `g.derived[consultSessionID(evt)]`.
 
 ### Out of scope (still follow-ups, not this PR)
 - e2e pins (E2.1/E2.6) and the integration/e2e test levels. #1817 remains
-  PARTIALLY addressed until those land.
+  PARTIALLY addressed until those land. (Integration levels landed in r6;
+  frontend E2E pins land in `bce1579c`.)
 
 Tests Run (r2):
 - `go build ./...` — clean.
@@ -356,7 +359,8 @@ so the fix is contract-preserving, not behavior-changing.
 ### Out of scope (follow-ups, not this PR)
 - E2.1/E2.6 e2e pins and the integration test level (translated authority
   stream → consumer → real bridge → real sessionindex/DB). #1817 remains
-  PARTIALLY addressed until those land.
+  PARTIALLY addressed until those land. (Integration level landed in r6;
+  frontend E2E pins land in `bce1579c`.)
 - TS fold clone `internalSessionId` (finding 5 frontend half).
 
 Tests Run (r4):
@@ -446,8 +450,10 @@ one pull. An id that arrives while a pull is in flight stays pending and is
 pulled on the next loop — never dropped. Unresolved ids stay pending under
 per-id exponential backoff (1s, doubling, 30s cap), with idle-entry pruning
 (10m) and a hard map ceiling (4096), so a hot stream neither forks a
-goroutine per frame nor pulls once per frame. Production passes `bgCtx` so
-shutdown joins the worker.
+goroutine per frame nor pulls once per frame. At the r6 commit the worker
+was started with `bgCtx`, but it was NOT registered on `bgWg` and
+`runShutdown` waited only on `bgWg` — so the "shutdown joins the worker"
+claim was not yet true. r7 fixes the join (see the r7 section below).
 
 ### Correction (i) — "no goroutine-per-emission" was FALSE before this commit
 The r5 worklog claimed the singleflight replaced the per-emission fork. It
@@ -456,15 +462,20 @@ singleflight only coalesced the *pull*, not the goroutine. That claim is true
 ONLY after the r6 worker commit (56afc7251); the earlier wording is annotated
 here as disproved rather than silently rewritten.
 
-### Correction (ii) — the old dedup pin was vacuous
+### Correction (ii) — both dedup pins were vacuous (r7)
 The r5 `TestEmissionTranslator_WarmDedupsToSinglePull` counted PULLS while
-the pull was blocked, not goroutine STARTS. The old implementation already
-coalesced pulls, so the pin passed against the very code it was supposed to
-reject. The r6 pin counts worker starts (`shortIDWarmWorkerStarts`): 50
-unresolved emissions must start exactly ONE worker. Mutation evidence: the
-pin FAILS against the prior per-emission implementation (50 starts) and
-passes against the single `sync.Once` worker (1 start) — the mutation was
-run, not assumed.
+the pull was blocked, not goroutines; the old implementation already
+coalesced pulls, so it passed against the code it was meant to reject.
+The r6 replacement counted worker STARTS via the test-only
+`shortIDWarmWorkerStarts`. That counter stays at 1 even if a per-emission
+`go` is reintroduced, so it was vacuous too, and the counter has been
+REMOVED from production. r7 replaces it with a real live-goroutine pin:
+the registry pull blocks in `httptest`, 50 distinct unresolved ids are
+emitted, and a peak sampler plus a blocked-pull barrier assert the
+goroutine delta stays <= baseline+8. Mutation evidence (run, not assumed):
+- reintroducing `go warmSessionShortIDsOnMiss(harnessID)` makes the peak
+  sample 51–54 goroutines from a baseline of 4 → the pin FAILS;
+- the single `sync.Once` worker stays inside the bound → the pin PASSES.
 
 ### Correction (iii) — the contract-stream half DID ship
 The header previously scoped it "for ruling"; Ruling A executed it in piece
@@ -472,9 +483,11 @@ The header previously scoped it "for ruling"; Ruling A executed it in piece
 is corrected; the historical ruling-request section is retained as history,
 not as current status.
 
-### Correction (iv) — new integration + E2E levels
-The earlier "integration/e2e levels are a follow-up" notes are now closed
-for this slice:
+### Correction (iv) — new integration levels; E2E is a separate frontend commit
+The earlier "integration levels are a follow-up" notes are now closed for
+this slice by the Postgres-backed tests below. The frontend E2E pins
+(E2.1/E2.6) land in the separate frontend commit `bce1579c` on this branch;
+this Go-side work neither adds nor claims red-first E2E coverage.
 - `api/internal/handlers/usagestream_phrase_integration_test.go` — real
   Postgres, real `sessionindex`, real `sessionstate.Authority`, real
   `abiclient`, real `usagestream.Consumer`, real `usageBridge`, real
@@ -499,3 +512,85 @@ for this slice:
 - `go test -tags=integration -count=1 -race -run 'TestIntegrationEmissionWarm' ./cmd/workspace-agentd/` — PASS.
 - `go test ./cmd/workspace-agentd/ -run 'TestEmissionTranslator|TestWarm|TestShortIDStore' -count=1` — green.
 - `go test ./api/internal/handlers/ -count=1` — green.
+
+
+## Piece 3 (continued) — r7 review (2026-10-21, Go-side CI + findings 3–7)
+
+r7 closed the automated reviewer's Go-side findings and the two red CI
+checks.
+
+### CI 1 — contextcheck (agentd)
+`ensureShortIDWarmWorker` no longer takes a nil/`context.Background()`
+fallback: the worker is bound once to the process `bgCtx` at boot and the
+context is passed as a parameter through the goroutine closure. The miss
+path (`warmSessionShortIDsOnMiss`) only enqueues + signals — it never
+starts the worker, so there is no non-inherited `Background` context.
+Tests start the worker explicitly with `t.Context()` / join via
+`warmWorkerWg`.
+
+### CI 2 — reconnect test flake (`TestReconnectSeedReconcilesBridgeTruth`)
+Root cause was in the `fakeClient.Stream` test double, not the production
+consumer: `requireOpen` returns as soon as `connected` is signalled, but the
+fake created its `kill` channel AFTER that signal. If the test's
+`killStream()` won that race it saw a nil channel and silently did nothing —
+no reconnect, and the 5s `Eventually` failed. The fake now (a) creates the
+kill channel and snapshots the seed BEFORE signalling `connected`, and
+(b) signals only AFTER applying the initial snapshot, so `requireOpen` also
+guarantees the initial `onState` finished. No timeout was raised; the
+synchronisation is deterministic. `-race -count=10` on the package is green.
+
+### Finding 3 — real goroutine-per-emission pin
+See Correction (ii): the vacuous `shortIDWarmWorkerStarts` counter and its
+test are gone; the replacement measures live goroutines under a blocked
+pull and fails against the reintroduced per-emission `go`.
+
+### Finding 4 — worker joined at shutdown
+The warm worker is now started at the TOP of `startBackgroundLoops`,
+before any emitter goroutine, via
+`ensureShortIDWarmWorker(bgCtx, bgWg)`: `bgWg.Add(1)` + `Done` in the
+worker goroutine, so `runShutdown`'s `bgCancel` + `bgWg.Wait` cancels and
+joins it. Source comments were updated to match.
+
+### Finding 5 — global emission-path pull-rate bound
+Per-id backoff bounds a repeated id, but N DISTINCT newly-seen ids are each
+immediately due and caused ~N pulls. Added
+`shortIDWarmMinPullInterval = 1s`: a global floor between warm pulls that
+batches distinct ids while still letting a new session warm within a
+second (NOT the retired 30s cross-session lockout). New pin:
+`TestEmissionTranslator_GlobalPullRateBound` (25 distinct ids over ~250ms
+must produce <=2 pulls). Mutation evidence: setting the interval to 0
+yields 25 pulls and the pin FAILS; 1s yields 1 and it PASSES.
+
+### Finding 6 — legacy-frame translation pin at the live-DB level
+Added `TestIntegrationUsageStream_LegacyFrameTranslatesToPhrase`: a real
+Postgres `sessionindex`, real authority/consumer/bridge, and a LEGACY
+harness-keyed frame with NO additive internal id. The user-stream event's
+`session_id` must become the PHRASE, with the harness id preserved
+additively and no phantom row. Mutation evidence: deleting
+`evt.SessionID = phrase` in `proxy_usagestream.go` makes the test fail
+(the user event never arrives phrase-keyed); restoring it passes.
+
+### Finding 7 — CI change gate
+`secrets-integration.yml`'s diff gate now includes
+`api/internal/handlers/pod_session_registry.go` (guarded registry test),
+plus `pkg/shortid/` (transitively imported by the guarded sessionindex
+tests), `pkg/abi/v1/` (the phrase integration test's event types), and
+`api/internal/handlers/proxy_handlers.go` (part of the guarded handlers
+package). Workflow edits count as changed, so the workflow validates itself.
+
+### Mutation coverage — what is and is not pinned
+- Per-emission goroutine pin: mutation-verified (see above).
+- Global pull-rate floor: mutation-verified (interval 0 → red).
+- Legacy phrase translation: mutation-verified (line removal → red).
+- Per-id exponential backoff: pinned behaviorally by
+  `TestEmissionTranslator_ThrottlesUnresolvedPulls`, but r7 did NOT
+  mutation-verify that pin.
+- Prune / 4096-entry ceiling (`shortIDWarmPruneLocked`): UNTESTED — no pin
+  exists for the idle-TTL prune or the hard ceiling.
+
+### Tests Run (r7)
+- `go build ./...` — clean; `go vet` on the changed packages — clean.
+- `golangci-lint run ./cmd/workspace-agentd/... ./api/internal/...` — 0 issues.
+- `go test -race -timeout 300s ./api/internal/services/usagestream/ -count=10` — green.
+- `go test -timeout 180s ./cmd/workspace-agentd/ -run 'TestEmissionTranslator|TestWarm|TestShortIDStore' -count=1` — green.
+- `go test -tags=integration -race -count=1 -run 'TestIntegrationUsageStream' ./api/internal/handlers/` (real Postgres) — green.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ func withShortIDStore(t *testing.T) *sessionShortIDStore {
 	sessionShortIDsAtomic.Store(s)
 	t.Cleanup(func() { sessionShortIDsAtomic.Store(old) })
 	t.Cleanup(stopShortIDWarmForTest)
+	// Production starts the worker at boot; tests start it explicitly so
+	// the miss path has no lazy/Background fallback.
+	ensureShortIDWarmWorker(t.Context(), nil)
 	return s
 }
 
@@ -45,7 +49,6 @@ func resetShortIDWarmForTest(t *testing.T) {
 	warmPending = map[string]struct{}{}
 	warmBackoff = map[string]shortIDWarmBackoff{}
 	warmMu.Unlock()
-	atomic.StoreInt32(&shortIDWarmWorkerStarts, 0)
 }
 
 // stopShortIDWarmForTest cancels the singleton worker and joins it.
@@ -55,7 +58,6 @@ func stopShortIDWarmForTest() {
 	}
 	warmWorkerWg.Wait()
 	warmWorkerCancel = nil
-	warmWorkerCtx = nil
 }
 
 func TestShortIDStore_RoundTripPersists(t *testing.T) {
@@ -315,37 +317,123 @@ func TestEmissionTranslator_WarmNotLockedByPriorPull(t *testing.T) {
 	}
 }
 
-// TestEmissionTranslator_NoGoroutinePerEmission (#1817 r6 finding 1): the
-// per-emission `go warmSessionShortIDsOnMiss()` forked one goroutine PER
-// unresolved frame (text deltas included) — unbounded on a hot stream. The
-// replacement is ONE long-lived worker started via sync.Once; warm signals
-// only enqueue ids. This pin counts worker goroutine STARTS (not pulls, which
-// the old in-flight CAS also coalesced): 50 unresolved emissions must start
-// exactly one worker.
+// TestEmissionTranslator_NoGoroutinePerEmission (#1817 r7, replacing the
+// vacuous r6 pin): the r6 test counted worker STARTS, which stays 1 even if
+// a per-emission `go` is reintroduced. This pin measures the thing that
+// actually leaked: LIVE goroutines. The registry pull is blocked inside
+// httptest, then N=50 distinct unresolved ids are emitted. A single worker
+// parks in that one pull; a per-emission goroutine that performs a pull
+// leaves one blocked goroutine PER emission. With the barrier held we assert
+// the goroutine delta stays a handful. Mutation: reintroducing a
+// per-emission `go` (either the literal `go warmSessionShortIDsOnMiss(id)`
+// wrapper or a per-emission pull) spikes the peak to ~50 and the pin fails;
+// the single worker passes.
 func TestEmissionTranslator_NoGoroutinePerEmission(t *testing.T) {
 	withShortIDStore(t)
+	pullStarted := make(chan struct{})
+	releasePull := make(chan struct{})
+	var startedOnce sync.Once
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/v1/session-registry" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		startedOnce.Do(func() { close(pullStarted) })
+		<-releasePull
 		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
 	})
 	setupPodSessionEnv(t, platform)
 
+	baseline := runtime.NumGoroutine()
+	// Sample the PEAK live count while the emissions run: a per-emission
+	// `go` can be short-lived (an enqueue) or blocked (a pull); the peak
+	// catches both, the blocked-pull barrier makes the pull variant stick.
+	var peak atomic.Int32
+	peak.Store(int32(baseline))
+	stopSampler := make(chan struct{})
+	samplerDone := make(chan struct{})
+	go func() {
+		defer close(samplerDone)
+		for {
+			n := int32(runtime.NumGoroutine())
+			for {
+				old := peak.Load()
+				if n <= old || peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			select {
+			case <-stopSampler:
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+	}()
 	for i := 0; i < 50; i++ {
 		if got := emissionIDTranslator(fmt.Sprintf("ses_unresolved_%d", i)); got != "" {
 			t.Fatalf("unknown session must stay in the heal window, got %q", got)
 		}
 	}
-	// Let the worker actually start (and let any per-emission fork show up).
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&shortIDWarmWorkerStarts) == 0 && time.Now().Before(deadline) {
+	// Barrier: the one worker pull is now blocked inside httptest. Any
+	// per-emission goroutine that also pulls is blocked here too.
+	select {
+	case <-pullStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the warm pull never started")
+	}
+	// Let all 50 emissions' goroutines (if any) reach the blocked pull.
+	time.Sleep(200 * time.Millisecond)
+	close(stopSampler)
+	<-samplerDone
+	got := int(peak.Load())
+	if cur := runtime.NumGoroutine(); cur > got {
+		got = cur
+	}
+	close(releasePull)
+
+	// A single worker + its HTTP transport helpers stay well under this.
+	// 50 per-emission goroutines (the regression) blow through it.
+	const slack = 8
+	if got > baseline+slack {
+		t.Fatalf("goroutines peaked at %d from a baseline of %d while one warm pull was blocked (max +%d): a per-emission goroutine is present", got, baseline, slack)
+	}
+}
+
+// TestEmissionTranslator_GlobalPullRateBound (#1817 r7 finding 5): per-id
+// backoff bounds a REPEATED id, but N DISTINCT newly-seen ids are each
+// immediately due, so without a global floor the worker pulls ~once per new
+// id. The floor (shortIDWarmMinPullInterval) batches them. 25 distinct ids
+// arriving one per 10ms must yield at most 2 pulls inside the first floor
+// window; the same drive against a zero floor yields ~25.
+func TestEmissionTranslator_GlobalPullRateBound(t *testing.T) {
+	withShortIDStore(t)
+	var pulls int32
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/session-registry" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&pulls, 1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
+	})
+	setupPodSessionEnv(t, platform)
+
+	for i := 0; i < 25; i++ {
+		if got := emissionIDTranslator(fmt.Sprintf("ses_distinct_%d", i)); got != "" {
+			t.Fatalf("unknown session must stay in the heal window, got %q", got)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if got := atomic.LoadInt32(&shortIDWarmWorkerStarts); got != 1 {
-		t.Fatalf("worker starts = %d, want 1: a hot stream forked a goroutine per emission", got)
+	// Well inside the global floor window (1s), after the first pull and
+	// the burst of distinct ids. Without the floor this is ~25 pulls.
+	time.Sleep(100 * time.Millisecond)
+	got := atomic.LoadInt32(&pulls)
+	if got < 1 {
+		t.Fatal("no warm pull ran")
+	}
+	if got > 2 {
+		t.Fatalf("pulls = %d for 25 distinct ids inside the floor window, want <=2: distinct ids are not globally throttled", got)
 	}
 }
 

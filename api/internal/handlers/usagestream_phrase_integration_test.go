@@ -270,6 +270,43 @@ func TestIntegrationUsageStream_TranslatedFramesJoinPhraseAndWriteHarnessRow(t *
 	require.Equal(t, env.phrase, rows[0].ShortID)
 }
 
+// TestIntegrationUsageStream_LegacyFrameTranslatesToPhrase is the r7
+// weak-spot pin: a LEGACY frame (harness id on the wire, NO additive
+// internal_session_id) must still be translated by the bridge's
+// translateSessionIDToPhrase — the user-stream session_id becomes the
+// PHRASE. The authority's IDTranslator deliberately returns "" for this
+// session (an un-refreshed agentd / heal window), so the harness id reaches
+// the bridge untouched; only the bridge's Register translation can key it
+// to the phrase the frontend joins on. Deleting `evt.SessionID = phrase`
+// in proxy_usagestream.go must make this test fail.
+func TestIntegrationUsageStream_LegacyFrameTranslatesToPhrase(t *testing.T) {
+	env := newPhraseIntegrationEnv(t)
+
+	legacyHarness := "ses_legacy_" + env.h.ID()
+	legacyPhrase := env.session.Register(env.h.NewContext(), env.workspace, legacyHarness, "opencode")
+	require.NotEmpty(t, legacyPhrase, "the legacy harness id must have a real index row")
+	require.NotEqual(t, env.phrase, legacyPhrase)
+
+	env.openAndWait(t)
+	env.ingest(t, &abiv1.Event{
+		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId: legacyHarness, // harness-keyed wire id, no internal_session_id
+		Status:    abiv1.SessionStatus_SESSION_STATUS_BUSY,
+	})
+
+	busy := env.waitUserEvent(t, func(evt apitypes.WorkspaceSSEEvent) bool {
+		return evt.Type == "session.status" && evt.Status == "busy" && evt.SessionID == legacyPhrase
+	})
+	require.Equal(t, legacyPhrase, busy.SessionID,
+		"a legacy harness-keyed frame must be translated to the phrase at the user-stream edge")
+	data, ok := busy.Data.(map[string]any)
+	require.True(t, ok, "session.status data must be a map")
+	require.Equal(t, legacyHarness, data["internal_session_id"],
+		"the harness id must be preserved additively after translation")
+	require.Equal(t, 0, env.sessionRowCount(t, legacyPhrase), "phrase-named phantom row was minted")
+	require.Equal(t, 1, env.sessionRowCount(t, legacyHarness))
+}
+
 func TestIntegrationUsageStream_ReconnectCorrectionMintsNothing(t *testing.T) {
 	env := newPhraseIntegrationEnv(t)
 	atomic.StoreInt32(&env.db.ensureCalls, 0)

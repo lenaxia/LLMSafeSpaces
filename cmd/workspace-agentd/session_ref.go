@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
@@ -101,11 +100,16 @@ const (
 	shortIDWarmEntryTTL = 10 * time.Minute
 	// Hard ceiling on the backoff map: prune the oldest entries past it.
 	shortIDWarmMaxEntries = 4096
+	// shortIDWarmMinPullInterval is the GLOBAL floor between emission-path
+	// warm pulls. Per-id backoff alone still let N DISTINCT newly-seen ids
+	// (each immediately due on first sight) trigger ~N pulls; the floor
+	// batches them. It is deliberately short (not the 30s MCP TTL): a new
+	// session that appears just after a pull still warms within a second.
+	shortIDWarmMinPullInterval = time.Second
 )
 
 var (
 	warmWorkerOnce   sync.Once
-	warmWorkerCtx    context.Context
 	warmWorkerCancel context.CancelFunc
 	warmWorkerWg     sync.WaitGroup
 
@@ -115,10 +119,6 @@ var (
 	// negative-cache state (absent = due now). Both are guarded by warmMu.
 	warmPending = map[string]struct{}{}
 	warmBackoff = map[string]shortIDWarmBackoff{}
-
-	// shortIDWarmWorkerStarts is a test hook: incremented exactly once,
-	// when the singleton worker goroutine starts.
-	shortIDWarmWorkerStarts int32
 )
 
 type shortIDWarmBackoff struct {
@@ -127,30 +127,40 @@ type shortIDWarmBackoff struct {
 	lastSeen  time.Time
 }
 
-// ensureShortIDWarmWorker starts the singleton worker. The first caller's
-// context governs its lifetime (production passes bgCtx so shutdown joins
-// it; the emission path falls back to a process-lifetime context).
-func ensureShortIDWarmWorker(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// ensureShortIDWarmWorker starts the singleton worker. The caller's
+// context governs its lifetime. Production calls it at the TOP of
+// startBackgroundLoops with the process bgCtx and registers the worker on
+// bgWg, so runShutdown cancels and JOINS it. Tests pass nil for the
+// lifecycle group and join via warmWorkerWg. The first caller wins; no
+// lazy/Background fallback exists because the boot path always starts it
+// before any emitter can run.
+func ensureShortIDWarmWorker(ctx context.Context, lifecycle *sync.WaitGroup) {
 	warmWorkerOnce.Do(func() {
-		warmWorkerCtx, warmWorkerCancel = context.WithCancel(ctx)
+		workerCtx, cancel := context.WithCancel(ctx)
+		warmWorkerCancel = cancel
+		if lifecycle != nil {
+			lifecycle.Add(1)
+		}
 		warmWorkerWg.Add(1)
-		go func() {
+		go func(ctx context.Context) {
 			defer warmWorkerWg.Done()
-			shortIDWarmWorker(warmWorkerCtx)
-		}()
+			if lifecycle != nil {
+				lifecycle.Done()
+			}
+			shortIDWarmWorker(ctx)
+		}(workerCtx)
 	})
 }
 
 // warmSessionShortIDsOnMiss records one unresolved emission id and wakes
 // the worker. It NEVER spawns a goroutine and never blocks on the pull.
+// The worker is started once at boot (ensureShortIDWarmWorker); a miss
+// before that (only possible in tests that bypass boot) simply queues and
+// the boot start drains it.
 func warmSessionShortIDsOnMiss(harnessID string) {
 	if harnessID == "" {
 		return
 	}
-	ensureShortIDWarmWorker(context.Background())
 	now := time.Now()
 	warmMu.Lock()
 	warmPending[harnessID] = struct{}{}
@@ -166,7 +176,9 @@ func warmSessionShortIDsOnMiss(harnessID string) {
 }
 
 func shortIDWarmWorker(ctx context.Context) {
-	atomic.AddInt32(&shortIDWarmWorkerStarts, 1)
+	// lastPull is worker-local: the global floor resets with the worker,
+	// and there is exactly one worker at a time.
+	var lastPull time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,6 +205,18 @@ func shortIDWarmWorker(ctx context.Context) {
 				}
 				continue
 			}
+			if !lastPull.IsZero() {
+				if remaining := shortIDWarmMinPullInterval - time.Since(lastPull); remaining > 0 {
+					timer := time.NewTimer(remaining)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+			}
+			lastPull = time.Now()
 			_ = pullSessionShortIDs(ctx)
 			shortIDWarmSettle(due)
 		}

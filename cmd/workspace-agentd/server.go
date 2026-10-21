@@ -750,11 +750,17 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 }
 
 // startBackgroundLoops launches the agentd background goroutines:
-// SSE session-status subscriber, memory-pressure monitor, periodic ops
-// metrics collector, the fillGaps prompt-token backfiller, and the
-// eager-refresh health cache. All are tracked on bgWg so shutdown can
-// join them.
+// the short-id warm worker, SSE session-status subscriber,
+// memory-pressure monitor, periodic ops metrics collector, the fillGaps
+// prompt-token backfiller, and the eager-refresh health cache. All are
+// tracked on bgWg so shutdown cancels and JOINS them.
 func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
+	// #1817 r7: start the emission-warm singleton FIRST, bound to the
+	// process bgCtx and registered on bgWg, before any emitter goroutine
+	// (SSE subscriber, boot pull) can run. runShutdown's bgCancel then
+	// cancels it and bgWg.Wait joins it — no orphan worker past shutdown.
+	ensureShortIDWarmWorker(bgCtx, bgWg)
+
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
@@ -769,11 +775,6 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 		defer bgWg.Done()
 		bootPullSessionShortIDs(bgCtx)
 	}()
-
-	// #1817 r6: bind the emission-warm singleton to bgCtx so shutdown
-	// cancels/joins it. It is started here (before serving) so the first
-	// emission never pins it to a process-lifetime context.
-	ensureShortIDWarmWorker(bgCtx)
 
 	// US-44.5: memory pressure monitor checks cgroup usage against the
 	// 85% threshold and surfaces the state via statusz.

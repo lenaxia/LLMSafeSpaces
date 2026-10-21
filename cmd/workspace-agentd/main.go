@@ -621,8 +621,9 @@ func relayKillWithMarker(kill func()) func() {
 }
 
 // runShutdown gracefully stops both HTTP servers, cancels the
-// background context, waits (up to 5s) for background goroutines to
-// exit, then stops the opencode supervisor.
+// background context, waits (up to 5s) for background goroutines —
+// including the short-id warm worker registered on bgWg — to exit, then
+// stops the opencode supervisor.
 func runShutdown(adminSrv, userSrv *http.Server, bgCancel context.CancelFunc, bgWg *sync.WaitGroup, proc *managedProcess) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer shutdownCancel()
