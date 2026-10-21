@@ -50,14 +50,32 @@ standard applies before anything is pushed.
 - [ ] Integration: registry payload → pullSessionShortIDs →
       resolveSessionRef-by-phrase → harness id; ArchivedSet →
       filterArchivedFromSessionList.
-- [ ] Unit: reap phrase-keyed row; RebuildMessageCount InternalID;
-      backfillContextUsed heal. (NEXT WINDOW: handler fixtures at
-      api/internal/handlers/proxy_session_index_test.go and the
-      workspace list path; the fixes are at proxy_session_index.go:84
-      + :311 region and workspace_service.go:1918 region.)
+- [x] Unit: reap phrase-keyed row; RebuildMessageCount InternalID;
+      backfillContextUsed heal (reap + rebuild pins in the gone/count
+      test files with ID≠InternalID seeds; four backfill tests
+      reseeded to the post-#1756 shape — the fix had exposed their
+      pre-union seeds, which was the red-first evidence).
 - [x] EnsureSession minted + degraded paths
       (TestEnsureSession_MintedPath_SessionIDIsThePhrase /
       TestEnsureSession_DegradedPath_CarriesDeprecatedSessionID —
       both PASS; shared backend harness factored out).
-- [ ] E2E happy+unhappy phrase addressing. (NEXT WINDOW.)
+- [x] E2E happy+unhappy phrase addressing (happy:
+      TestSessionRef_ShortIDCaseInsensitive pre-existed; unhappy:
+      TestArchivedRoute_Unindexed404CarriesSuggestions reshaped —
+      id-like miss suggests via the InternalID ranking leg AND the
+      candidate's harness id asserted ABSENT from the payload).
 - [ ] Pre-push subagent verification + report.
+
+## Completion (2026-10-21)
+
+- Pre-push adversarial verify (subagent) verdict: findings 1-8,10 OK;
+  finding 9 PARTIAL (send_message `origin` raw leak) — FIXED +
+  `TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID`. Verify also
+  found: PlanReconciliation error-path prevMiss keyed phrase — FIXED;
+  distinctness threshold 998 carried ~1/430 flake — re-sized to 996
+  (P(fail)≈1.4e-4, 60× loop clean).
+- #1799 (deterministic-seed entropy test) landed mid-flight: resolved
+  by UNION at rebase — their seeded HighEntropyNotSequential kept,
+  my CoverageAndDistinctness added.
+- Rebased on fb687084, suites green, pushed:
+  origin/fix/1756-post-union-remediation @ e71fc021. PR #1806.
