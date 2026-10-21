@@ -24,7 +24,7 @@
 ## Fix (spec restructure only — zero production diff; name kept)
 
 - Close via backdrop tap at (350,400) — beyond the 256px panel's reach at every transform position; deterministic at any animation age.
-- Before the re-open tap, `waitForFunction` until the toggle is again the topmost element at its own center (`elementFromPoint` + `closest('button[aria-expanded]')`) — kills the slide-out race with no sleeps and no loosened assertions (left-half opens, closes, center opens; label flips verified both ways).
+- Before the re-open tap, `waitForFunction` until the toggle is again the topmost element at its own center (`elementFromPoint` + `closest('button[aria-label="Open menu"]')` — name-pinned to the toggle in its closed-state labeling per review r2) — kills the slide-out race with no sleeps and no loosened assertions (left-half opens, closes, center opens; label flips verified both ways).
 
 ## Tests Run
 
@@ -40,5 +40,5 @@
 
 ## Files Modified
 
-- frontend/tests/e2e/sidebar-gesture.spec.ts (+22/−4, test-only)
-- worklogs/1161_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog
+- frontend/tests/e2e/sidebar-gesture.spec.ts (+25/−4, test-only)
+- worklogs/NNNN_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog
