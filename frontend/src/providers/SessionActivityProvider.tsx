@@ -5,6 +5,7 @@ import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
 import type { InputRequest } from "../api/types";
+import { eventInternalSessionId, translateSessionIds } from "../session/sessionAliases";
 
 /** Provider-local extension: the envelope's whileAway marker rides the stored object (D3). */
 // #1365: receivedAt is stamped on store entry — the whileAway staleness
@@ -505,7 +506,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       flightsRef.current.clear();
     },
     onEvent: (data) => {
-      const evt = data as {
+      const rawEvt = data as {
         type: string;
         workspace_id?: string;
         request_id?: string;
@@ -514,6 +515,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         phase?: string;
         snapshot_id?: string;
         data?: { alert?: string };
+      };
+      // #1817 heal window: a legacy harness-keyed frame resolves to the
+      // phrase through the additive pair learned from the other stream (or
+      // an earlier event). A post-fix frame is already phrase-keyed and the
+      // seam is the identity. Learning is side-effectful by design — the
+      // same call that resolves this event teaches later ones.
+      const evt = {
+        ...rawEvt,
+        session_id: translateSessionIds(
+          rawEvt.workspace_id,
+          rawEvt.session_id,
+          eventInternalSessionId(rawEvt),
+        ).sessionId,
       };
 
       // D6 (#998): hung-session alert bookkeeping (workspace-scoped).

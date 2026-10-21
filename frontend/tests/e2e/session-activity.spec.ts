@@ -36,6 +36,9 @@ async function setupBase(page: Page, opts: {
   sessALastSeenAt?: string;
   sessAMessages?: unknown[];
   sessAId?: string;
+  /** Models a post-fix agentd contract snapshot carrying the harness id
+   * additively (the pair the heal-window seam learns from). */
+  contractInternalSessionId?: string;
 } = {}) {
   const sessAStatus = opts.sessAStatus ?? "idle";
   const sessBHasUnread = opts.sessBHasUnread ?? false;
@@ -88,9 +91,20 @@ async function setupBase(page: Page, opts: {
   await page.route(`${API}/workspaces/*/sessions/*/seen`, (r: Route) =>
     r.fulfill({ status: 204, body: "" }));
 
+  // Send path (E2.1 drives a real composer submit; the turn itself is fed
+  // over the deferred user stream).
+  await page.route(`${API}/workspaces/${WS_A}/sessions/${sessAId}/prompt`, (r: Route) =>
+    r.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+
   // Contract stream (US-69.10 cutover: ChatPage consumes session state via
   // /contract-events) — minimal idle snapshot, delivered then held.
-  await mockIdleContractStream(page, `${API}/workspaces/*/contract-events`, sessAId);
+  await mockIdleContractStream(
+    page,
+    `${API}/workspaces/*/contract-events`,
+    sessAId,
+    [],
+    opts.contractInternalSessionId,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -138,46 +152,91 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
     await expect(page.locator(".animate-spin").first()).toBeVisible({ timeout: 5_000 });
   });
 
-  // Test 40b (#1817 E2.1): the phrase is the wire/join id; the harness id
-  // rides additively as data.internal_session_id. A busy event keyed by the
-  // phrase must badge within a bounded window, and the badge must clear on
-  // the matching idle — divergent ids must not split the session.
-  test("40b — busy badge with divergent phrase/harness ids clears on idle", async ({ page }) => {
+  // Test 40b (#1817 E2.1): RED-FIRST heal-window scenario.
+  //
+  // Wire shape under test is PRE-FIX: the session list/route are keyed by the
+  // PHRASE (the id the user opened), but the user stream still emits
+  // `session_id` = HARNESS with no additive id. The contract stream models a
+  // post-fix agentd (phrase wire + additive internalSessionId) — the pair the
+  // frontend seam learns from. On main this test is red: the harness-keyed
+  // busy never joins the phrase-keyed sidebar row. On this branch the seam
+  // translates it, and the same-session badge appears, clears on idle, and
+  // survives the reconnect reconciliation.
+  test("40b — pre-fix harness-keyed busy joins the phrase session (send, badge, idle, reconnect)", async ({ page }) => {
     const PHRASE_ID = "quiet-mountain-9";
     const HARNESS_ID = "ses_sa_a1_harness";
-    await setupBase(page, { sessAId: PHRASE_ID });
+    const DECOY_ID = "ses_decoy_other";
+    await setupBase(page, { sessAId: PHRASE_ID, contractInternalSessionId: HARNESS_ID });
 
     // The fulfilled response ends, so the hook reconnects. Re-stamping the
-    // current status on every connection keeps the busy window open until
-    // the test flips it to idle (a reconnect wipe must not clear it early).
-    let userStatus: "busy" | "idle" = "busy";
+    // current status on every connection keeps the busy window open until the
+    // test flips it (a reconnect wipe must not clear it early).
+    type Phase = "empty" | "busy" | "idle" | "decoyBusy" | "decoyIdle";
+    let phase: Phase = "empty";
     let userStreamHits = 0;
     await page.route(`${API}/events`, async (r: Route) => {
       userStreamHits++;
+      const status = (sessionId: string, s: string) =>
+        `data: ${JSON.stringify({ type: "session.status", workspace_id: WS_A, session_id: sessionId, status: s })}\n\n`;
+      const body =
+        phase === "busy" ? status(HARNESS_ID, "busy")
+        : phase === "idle" ? status(HARNESS_ID, "idle")
+        : phase === "decoyBusy" ? status(DECOY_ID, "busy")
+        : phase === "decoyIdle" ? status(DECOY_ID, "idle")
+        : ": keepalive\n\n";
       await r.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-        body: `data: ${JSON.stringify({ type: "session.status", workspace_id: WS_A, session_id: PHRASE_ID, status: userStatus, data: { internal_session_id: HARNESS_ID } })}\n\n`,
+        body,
       });
     });
 
     await page.goto(`/chat/${WS_A}/${PHRASE_ID}`);
     await expect(page.getByText("Task Alpha")).toBeVisible({ timeout: 10_000 });
 
-    await expect(page.getByLabel("Agent working").first()).toBeVisible({ timeout: 2_000 });
+    // (i) A real composer submit over the mocked send route.
+    const promptRequest = page.waitForRequest(
+      (req) => req.method() === "POST" && new URL(req.url()).pathname.endsWith(`/sessions/${PHRASE_ID}/prompt`),
+    );
+    await page.getByPlaceholder("Type a message...").fill("stream the busy badge");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await promptRequest;
 
-    const alphaHeader = page.getByRole("button", { name: "Alpha", exact: true });
-    await alphaHeader.click();
-    // The collapsed header's accessible name gains the indicator's label
-    // ("Alpha Agent working"), so re-locate by prefix after the click.
+    // (ii)/(iii) PRE-FIX harness-keyed busy for the SAME session must badge —
+    // this is the seam's job. On main this assertion is the red one.
+    phase = "busy";
+    const alphaRow = page.getByRole("button", { name: /Task Alpha/ }).first();
+    await expect(alphaRow.locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
+
+    // Sidebar busy COUNT, not just the row: collapse the workspace and
+    // assert the collapsed header's busy indicator (busyCount > 0).
+    await page.getByRole("button", { name: "Alpha", exact: true }).click();
     const collapsedAlpha = page.getByRole("button", { name: /^Alpha/ }).first();
-    await expect(collapsedAlpha.locator("[data-busy]")).toBeVisible({ timeout: 2_000 });
+    await expect(collapsedAlpha.locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
 
-    const hitsBeforeIdle = userStreamHits;
-    userStatus = "idle";
-    await expect.poll(async () => userStreamHits, { timeout: 5_000 }).toBeGreaterThan(hitsBeforeIdle);
+    // (iv) Idle clear: a harness-keyed idle for the same session clears it.
+    phase = "idle";
+    await expect(collapsedAlpha.locator("[data-busy]")).toHaveCount(0, { timeout: 6_000 });
 
-    await expect(collapsedAlpha.locator("[data-busy]")).toHaveCount(0, { timeout: 5_000 });
+    // (iii) Unhappy path: a busy for an UNRELATED harness id must not be
+    // translated onto the phrase row. (The workspace count may legitimately
+    // include another session; the phrase row must stay clean.)
+    await page.getByRole("button", { name: /^Alpha/ }).first().click();
+    phase = "decoyBusy";
+    await expect(alphaRow.locator("[data-busy]")).toHaveCount(0, { timeout: 4_000 });
+    phase = "decoyIdle";
+    await page.getByRole("button", { name: /^Alpha/ }).first().click();
+    await expect(collapsedAlpha.locator("[data-busy]")).toHaveCount(0, { timeout: 6_000 });
+
+    // (v) Lost idle + reconnect: latch the mapped busy, then let the stream
+    // reconnect with no events. The provider's reconnect reconciliation wipes
+    // the stale badge even though no idle frame ever arrives.
+    phase = "busy";
+    await expect(collapsedAlpha.locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
+    const hitsBeforeReconnect = userStreamHits;
+    phase = "empty";
+    await expect.poll(async () => userStreamHits, { timeout: 8_000 }).toBeGreaterThan(hitsBeforeReconnect);
+    await expect(collapsedAlpha.locator("[data-busy]")).toHaveCount(0, { timeout: 6_000 });
     await expect(page.getByLabel("Agent working")).toHaveCount(0, { timeout: 2_000 });
   });
 

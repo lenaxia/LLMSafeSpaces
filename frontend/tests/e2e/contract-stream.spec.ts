@@ -113,6 +113,9 @@ interface HarnessOptions {
   wireSessionId?: string;
   /** Additive harness id emitted as data.internal_session_id. */
   internalId?: string;
+  /** Fired after every fulfilled user-stream response (lets a spec gate
+   * another mock on the additive pair having been delivered). */
+  onUserStream?: () => void;
 }
 
 async function setupChatMocks(page: Page, opts: HarnessOptions) {
@@ -169,6 +172,7 @@ async function setupChatMocks(page: Page, opts: HarnessOptions) {
     const body = opts.userStream ? opts.userStream() : (opts.userStreamBody ?? busy);
     void busy; void idle;
     await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+    opts.onUserStream?.();
   });
 }
 
@@ -351,10 +355,26 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     await expect(bounce).toHaveCount(0);
   });
 
-  test("divergent_phrase_ids_e2e: phrase-keyed stream renders once; harness-keyed decoy is ignored", async ({ page }) => {
+  // #1817 E2.6 — RED-FIRST heal-window contract-stream scenario.
+  //
+  // The contract frames under test are PRE-FIX: `sessionId` = HARNESS with no
+  // internalSessionId. The user stream models a post-fix API (phrase wire +
+  // additive harness) — the pair the frontend seam learns from. On main the
+  // fold keys the harness rows while the route/list are phrase-keyed, so the
+  // streaming text never reaches the viewed session. On this branch the seam
+  // re-keys the legacy frames to the phrase, the turn renders once, and a
+  // decoy frame whose additive id merely repeats its wire id is NOT aliased
+  // onto the phrase (asserted BEFORE idle so it cannot pass vacuously).
+  test("divergent_phrase_ids_e2e: pre-fix harness-keyed stream joins the phrase session; decoy is ignored", async ({ page }) => {
     const PHRASE_ID = "quiet-mountain-9";
     const HARNESS_ID = "ses_sa_a1_harness";
     let turnOver = false;
+
+    let releaseContract!: () => void;
+    const contractGate = new Promise<void>((resolve) => {
+      releaseContract = resolve;
+    });
+
     await setupChatMocks(page, {
       wireSessionId: PHRASE_ID,
       internalId: HARNESS_ID,
@@ -365,6 +385,9 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
       userStream: () => (turnOver
         ? `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: PHRASE_ID, status: "idle", data: { internal_session_id: HARNESS_ID } })}\n\n`
         : `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: PHRASE_ID, status: "busy", data: { internal_session_id: HARNESS_ID } })}\n\n`),
+      // The additive pair is the seam's only mapping source: never serve the
+      // contract frames before the user stream has taught it.
+      onUserStream: () => releaseContract(),
     });
 
     // Phase-based so React StrictMode's double-mount cannot consume the
@@ -374,27 +397,31 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     let finalDelivered = false;
     let contractHits = 0;
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, async (route: Route) => {
+      await contractGate;
       contractHits++;
       if (!turnOver) {
         const body =
-          snapshotFrame(5, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello" }], queueDepth: 0, pendingInputs: [] }]) +
+          snapshotFrame(5, [{ sessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello" }], queueDepth: 0, pendingInputs: [] }]) +
+          // Decoy: wire id == additive id (a stale/pre-fix frame pretending to
+          // be already translated). The seam must leave it out of the phrase
+          // session — asserted while the turn is still live.
           partEnd(6, "p2", "SHOULD-NOT-RENDER", "msg_decoy", HARNESS_ID, HARNESS_ID) +
-          partDelta(7, "p1", " wor", "msg_a1", PHRASE_ID, HARNESS_ID) +
-          partEnd(8, "p1", "Hello wor", "msg_a1", PHRASE_ID, HARNESS_ID);
+          partDelta(7, "p1", " wor", "msg_a1", HARNESS_ID) +
+          partEnd(8, "p1", "Hello wor", "msg_a1", HARNESS_ID);
         await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
         return;
       }
       if (!finalDelivered) {
         finalDelivered = true;
         const body =
-          snapshotFrame(9, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello wor" }], queueDepth: 0, pendingInputs: [] }]) +
-          partDelta(10, "p1", "ld", "msg_a1", PHRASE_ID, HARNESS_ID) +
-          partEnd(11, "p1", "Hello world", "msg_a1", PHRASE_ID, HARNESS_ID) +
-          sessionStatus(12, "SESSION_STATUS_IDLE", PHRASE_ID, HARNESS_ID);
+          snapshotFrame(9, [{ sessionId: HARNESS_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [{ id: "p1", type: "PART_TYPE_TEXT", text: "Hello wor" }], queueDepth: 0, pendingInputs: [] }]) +
+          partDelta(10, "p1", "ld", "msg_a1", HARNESS_ID) +
+          partEnd(11, "p1", "Hello world", "msg_a1", HARNESS_ID) +
+          sessionStatus(12, "SESSION_STATUS_IDLE", HARNESS_ID);
         await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
         return;
       }
-      const body = snapshotFrame(12, [{ sessionId: PHRASE_ID, internalSessionId: HARNESS_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }]);
+      const body = snapshotFrame(12, [{ sessionId: HARNESS_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }]);
       await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
     });
 
@@ -404,7 +431,14 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     // The user-stream busy must badge the sidebar while the turn is live
     // (the final frame is phase-gated above, so this window is stable).
     await expect(page.locator("[data-busy]").first()).toBeVisible({ timeout: 10000 });
+    // This is the red-on-main assertion: the legacy harness-keyed frames must
+    // render in the phrase-keyed view through the seam.
     await expect(page.getByText("Hello wor").first()).toBeVisible({ timeout: 10000 });
+
+    // Non-vacuous decoy check BEFORE turn-over/idle: the decoy frame was
+    // delivered (seq 6) while the turn is live, so an over-eager translation
+    // would already have rendered it.
+    await expect(page.getByText("SHOULD-NOT-RENDER")).toHaveCount(0);
 
     const hitsBeforeTurnOver = contractHits;
     turnOver = true;

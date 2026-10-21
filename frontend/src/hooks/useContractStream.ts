@@ -7,6 +7,7 @@ import { getEnv } from "../env";
 import { createSSEConnection, type SSEConnection } from "../lib/sseConnection";
 import { wsLog } from "../lib/wsLog";
 import { applySequenced, applySnapshot, cloneSessionSnapshot, newFold, type SessionFold } from "../session/fold";
+import { rekeySessionMap, translateSessionIds } from "../session/sessionAliases";
 
 const MIN_RECONNECT_MS = 2_000;
 const MAX_RECONNECT_MS = 30_000;
@@ -73,6 +74,16 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
         }
         switch (frame.frame.case) {
           case "snapshot": {
+            // #1817 heal window: an additive pair (phrase wire + harness
+            // internal) teaches the alias map; a legacy harness-keyed row
+            // resolves to the phrase through it. Post-fix rows pass through
+            // unchanged (the seam is the identity for a phrase wire id).
+            for (const s of frame.frame.value.snapshot?.sessions ?? []) {
+              const ids = translateSessionIds(workspaceId, s.sessionId, s.internalSessionId);
+              if (ids.sessionId) s.sessionId = ids.sessionId;
+              if (ids.internalSessionId) s.internalSessionId = ids.internalSessionId;
+            }
+            rekeySessionMap(workspaceId, foldRef.current.sessions);
             applySnapshot(foldRef.current, frame.frame.value);
             seeded = true;
             publish();
@@ -87,6 +98,18 @@ export function useContractStream(workspaceId: string | undefined, options: Cont
               return;
             }
             const seqed = frame.frame.value;
+            if (seqed.event) {
+              // #1817 heal window: same normalization for live events —
+              // a harness-keyed legacy frame joins the phrase-keyed fold.
+              const ids = translateSessionIds(
+                workspaceId,
+                seqed.event.sessionId,
+                seqed.event.internalSessionId,
+              );
+              if (ids.sessionId) seqed.event.sessionId = ids.sessionId;
+              if (ids.internalSessionId) seqed.event.internalSessionId = ids.internalSessionId;
+            }
+            rekeySessionMap(workspaceId, foldRef.current.sessions);
             if (applySequenced(foldRef.current, seqed)) {
               if (seqed.event?.type !== EventType.PART_DELTA) publish();
               optionsRef.current.onEvent?.(seqed.event!, seqed.seq);
