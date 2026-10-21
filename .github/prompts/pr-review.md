@@ -19,13 +19,18 @@ Before running ANY test, vet, or lint command locally:
    `go test -race -count=1 ./...` suite, the `-short` coverage run, the
    frontend vitest suite, and the NAMED `-tags integration` pins CI lists
    explicitly (origin-plugin, permission-tier, origin E2E, #1722, harness
-   synthetic-data-home, and every other named pin CI runs). Additionally the
-   path-filtered secrets-integration.yml workflow runs `-tags integration`
-   board-manager suites (kill-tests, worker/manager semantics, board-manager
-   E2E) when its filters match (pkg/board/, api/internal/handlers/board*,
-   cmd/workspace-agentd/board_manager_e2e*) — when that workflow RAN and is
-   GREEN on the head, those suites are covered; when it was skipped, run them
-   locally (a RED run goes through rule 3's triage first — re-run locally
+   synthetic-data-home, and every other named pin CI runs). Additionally,
+   when the path-filtered `pkg/secrets integration` JOB in
+   secrets-integration.yml ran and concluded SUCCESS on the head, its
+   `-tags integration` board-manager suites (kill-tests, worker/manager
+   semantics, board-manager E2E) are covered — but judge the JOB/CHECK
+   itself, never the workflow-level conclusion: the workflow always runs
+   (its changes-detect job), and a path-skipped job still shows a green
+   workflow run while the board suites never executed. When that job was
+   skipped (its path filter did not match the diff — e.g. a
+   cmd/workspace-agentd/board_manager_tools.go change is NOT matched while
+   the E2E suite that exercises it IS) or failed, run the board suites
+   locally (a RED job goes through rule 3's triage first — re-run locally
    only when the failure was infra/transient AND the diff touches what the
    suite exercises). Re-running covered suites locally is measured
    duplication — a mean 3.1 min and up to 11.2 min per review round for zero
@@ -45,10 +50,10 @@ Before running ANY test, vet, or lint command locally:
    (`sleep N; gh pr checks` loops idle 100-150s per round for nothing).
 5. ALWAYS still run locally what CI does NOT cover — this residue is yours and
    stays mandatory on every review whose diff touches code it exercises:
-   - the `-tags integration` suites not covered above — when
-     secrets-integration.yml did not run (path-skipped), the board manager
-     semantics/E2E and agentd-handler suites are yours; CI's plain `./...`
-     and `-race` runs never compile or execute the integration-tagged
+   - the `-tags integration` suites not covered above — when the
+     secrets-integration board-manager JOB was skipped or failed, the board
+     manager semantics/E2E and agentd-handler suites are yours; CI's plain
+     `./...` and `-race` runs never compile or execute the integration-tagged
      surface;
    - agentd E2E beyond the named CI pins;
    - mutation/red-checks for bug-fix pins: in a scratch worktree, revert or

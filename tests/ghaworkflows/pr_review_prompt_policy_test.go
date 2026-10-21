@@ -64,9 +64,11 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"the CI-green skip evidence must be bound to the exact head SHA under review"},
 		{`a SKIPPED check is not evidence`,
 			"skipped checks (docs-only paths, path-filtered suites) must not count as coverage — the reviewer runs those suites locally when the diff touches them"},
-		// (a) conditional board coverage via secrets-integration.yml.
+		// (a) conditional board coverage via the secrets-integration JOB.
 		{`secrets-integration.yml`,
-			"the path-filtered board-manager integration suites are CI-covered when that workflow RAN green on the head — without this the prompt double-mandates them (PR #1833 review finding 2)"},
+			"the path-filtered board-manager integration suites are covered when the secrets-integration JOB ran green on the head — without this the prompt double-mandates them (PR #1833 review finding 2)"},
+		{`judge the JOB/CHECK itself, never the workflow-level conclusion`,
+			"board coverage keys on the pkg/secrets integration JOB concluding SUCCESS — a path-skipped job still shows a green workflow run while the board suites never executed (PR #1833 r1 review finding 1; e.g. board_manager_tools.go changes are NOT matched by the job filter while the E2E suite exercising them is)"},
 		// (b) the must-stay residue: CI-uncovered suites stay mandatory local work.
 		{`-tags integration`,
 			"the integration-tagged surface CI did not run on this head must stay a local execution obligation"},
@@ -104,6 +106,8 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"inversion phrase: sleep-polling is the measured waste this policy removes"},
 		{"always re-run",
 			"inversion phrase: CI-green suites must not be re-run locally"},
+		{"when that workflow RAN and is GREEN",
+			"workflow-level coverage condition: the secrets-integration workflow ALWAYS runs and a path-skipped job still yields a green workflow run — coverage must key on the JOB/CHECK, not the workflow conclusion (PR #1833 r1 review finding 1)"},
 	} {
 		if strings.Contains(body, strings.Join(strings.Fields(forbidden.needle), " ")) {
 			t.Errorf("pr-review.md CI-first execution policy contains forbidden phrase %q: %s", forbidden.needle, forbidden.why)

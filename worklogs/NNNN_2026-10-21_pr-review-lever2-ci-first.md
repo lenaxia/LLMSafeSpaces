@@ -1,45 +1,66 @@
 # Worklog: PR-review runtime lever 2 — CI-first execution policy in the consumer review prompt
 
 **Date:** 2026-10-21
-**Session:** PR-review runtime-optimization lane (worker wt-perf2), evidence base LLMSafeSpaces PR #1763 comments 6306721273 / 6308423248 / 6309172907.
-**Status:** r1 — incorporating the PR #1833 first review (CHANGES_REQUESTED: --watch self-deadlock, secrets-integration.yml conditional coverage, skipped-check semantics, red triage, sentinel worklog naming, pin hardening).
+**Session:** PR-review runtime-optimization lane (worker wt-perf2): implement lever 2 of the #1763 drill-down in the consumer review prompt, iterate PR #1833 to approval.
+**Status:** Complete
 
 ---
 
 ## Objective
 
-Cut the reviewer's measured double-execution and idle-wait waste without touching the quality floor. The revalidation table (comment 6309172907, n=11 runs) sized lever 2 at **mean 3.1 min/run (median 2.6, max 11.2) on suite-running rounds**: 1782s of reviewer-local runs of suites CI already executes on the same head (`go vet ./...`, full `-race` suite, `-short` coverage, vitest) plus 260s of `sleep N; gh pr checks` idling. The reviewer-unique residue — `-tags integration` board/agentd suites when CI did not run them, agentd E2E, mutation/red-checks (494s + ~45s across the sample) — stays mandatory. Owner constraints: no model change, no tool removal, findings quality identical.
+Cut the reviewer's measured double-execution and idle-wait waste without touching the quality floor. Evidence: PR #1763 comments 6306721273 / 6308423248 / 6309172907 (revalidation, n=11 runs) — lever 2 sized at mean 3.1 min/run (median 2.6, max 11.2) on suite-running rounds: 1782s of reviewer-local re-runs of suites CI already executes on the same head, plus 260s of `sleep N; gh pr checks` idling. The reviewer-unique residue (board/agentd `-tags integration` suites when CI did not run them, agentd E2E, mutation/red-checks; 494s + ~45s across the sample) stays mandatory. Owner constraints: no model change, no tool removal, findings quality identical.
 
-## Change
+---
 
-`.github/prompts/pr-review.md` (consumer prompt) gains a `VERIFICATION EXECUTION POLICY — CI FIRST` section between the intro and the review checklist:
+## Work Completed
 
-1. `gh run list --commit <head SHA>` FIRST (or `gh pr checks` for summary), bound to the exact head SHA under review;
-2. CI-green (conclusion: SUCCESS) on the same head ⇒ do NOT re-run that suite locally; cite the check name as execution evidence. A SKIPPED check is not evidence — when a check was skipped and the diff touches what it would have run, execute it locally. CI-covered list grounded at ci.yml:145/264/304/487/514 plus the NAMED `-tags integration` pins at ci.yml:617-629 (origin-plugin, permission-tier incl. TestIntegrationHarness_ChildHonorsSyntheticDataHome, origin E2E in cmd/workspace-agentd, #1722 in cmd/workspace-agentd);
-3. **Conditional board coverage:** the path-filtered secrets-integration.yml workflow (filters at secrets-integration.yml:65: pkg/board/, api/internal/handlers/board*, cmd/workspace-agentd/board_manager_e2e_integration_test.go; suites at :144-179) runs `-tags integration` board-manager kill-tests, worker/manager semantics, and board-manager E2E — when it RAN and is green on the head, those suites are covered; when path-skipped or red, they are the reviewer's local obligation (PR #1833 review finding 2);
-4. red triage: `gh run view --log-failed`, classify infra/transient (runner eviction, network 5xx, provider 429, snapshot flake) as CI noise vs diff-related failures as review findings (finding: robustness);
-5. in-flight CI: wait on the CI workflow runs ONLY — `gh run list --workflow ci.yml --commit <sha>` + `gh run watch <id>` once; NEVER `gh pr checks --watch` (watches ALL checks including THIS review job — self-deadlock until job timeout; finding 1); never sleep-poll;
-6. always still run locally the CI-uncovered residue: `-tags integration` suites not covered above, agentd E2E beyond named pins, mutation/red-checks in a scratch worktree;
-7. explicit non-waiver: CI-green is execution evidence only — it does NOT waive any TESTS-gate requirement; the diff must still ADD the mandated test levels.
+### `.github/prompts/pr-review.md` — VERIFICATION EXECUTION POLICY — CI FIRST section (additive-only, all existing gates intact)
 
-Quality floor unchanged: no gate weakened, no model/tool change; the policy only changes where execution evidence comes from.
+- `gh run list --commit <head SHA>` FIRST; skip-evidence bound to the exact head SHA.
+- CI-green (conclusion: SUCCESS) on the same head ⇒ do NOT re-run locally; only SUCCESS counts — a SKIPPED check is not evidence; path-skipped suites are the reviewer's obligation when the diff touches them. CI-covered list grounded at ci.yml:145/264/304/487/514 + the NAMED `-tags integration` pins at ci.yml:617-629 (TestOriginPlugin, TestPermissionTier + TestIntegrationHarness_ChildHonorsSyntheticDataHome, TestOriginE2E, TestIntegration1722 — pkg/agent/opencode/ and cmd/workspace-agentd).
+- Board-manager conditional coverage keys on the `pkg/secrets integration` JOB (secrets-integration.yml path filter :65, suites :144-179) concluding SUCCESS — never the workflow-level conclusion (the workflow always runs; a path-skipped job still shows a green run).
+- Deadlock-safe wait: CI workflow runs only (`gh run list --workflow ci.yml --commit <sha>` + `gh run watch` once); NEVER `gh pr checks --watch` (watches THIS review job's own check — self-deadlock); never sleep-poll.
+- Red triage: infra/transient failures (runner eviction, 5xx, provider 429, snapshot flake) are CI noise; only diff-related failures are findings.
+- Non-waiver: CI-green is execution evidence only — does NOT waive any TESTS-gate requirement.
 
-## Red-first pin
+### Red-first pin — `tests/ghaworkflows/pr_review_prompt_policy_test.go`
 
-`tests/ghaworkflows/pr_review_prompt_policy_test.go` — `TestPrReviewPromptCIFirstExecutionPolicy`: 12 whitespace-normalized positive markers (incl. `gh run watch`, `a SKIPPED check is not evidence`, `secrets-integration.yml`, `infra/transient failure`), 4 negative inversion markers (the exact phrases an adversarial edit used to defeat a Contains-only pin in the #1833 review), a count-based deadlock guard (`gh pr checks --watch` may appear ONLY inside its NEVER-prohibition — red-checked by appending a bare instruction), and an ordering assertion (policy precedes the review checklist). Red on the pre-edit prompt (all markers missing), green at the r1 head.
+`TestPrReviewPromptCIFirstExecutionPolicy`: 12 whitespace-normalized positive markers, 5 negative forbidden-phrase markers, a count guard (`gh pr checks --watch` may appear only inside its NEVER-prohibition), and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked (bare `--watch` instruction, inversion phrases, workflow-level board condition).
 
-## Evidence
+---
 
-- Prompt edit + pin: this PR's diff.
-- CI grounding verified in-repo: ci.yml:145/264/304/487/514 (vet, `-race -short`, vet, `-race -count=1 ./...`, vitest); ci.yml:617-629 named `-tags=integration` pins (TestOriginPlugin / TestPermissionTier + TestIntegrationHarness_ChildHonorsSyntheticDataHome / TestOriginE2E / TestIntegration1722); secrets-integration.yml:65,144-179 path filters + board-manager `-tags integration` suites.
-- Savings basis: PR #1763 comment 6309172907 (revalidation, n=11 runs).
+## Key Decisions
 
-## Conventions notes
+- Job-level (not workflow-level) board coverage condition: adopted after the r1 review demonstrated a real hole — the secrets-integration workflow ALWAYS runs (changes-detect job) and a path-skipped suite job still yields a green workflow run; e.g. a `cmd/workspace-agentd/board_manager_tools.go` change is NOT matched by the job's path filter while `TestIntegrationBoardManagerE2E` (which dispatches tools from that file) IS the suite you need. Coverage keys on the check itself.
+- Worklog named with the `NNNN_` sentinel (README-LLM:826-843; manual numbers race — main's 1163 was taken by 1817-phrase-id-edge mid-flight).
+- CHANGELOG [Unreleased] entry kept per the orchestrator's standing lane instruction ("CHANGELOG [Unreleased]"); flagged non-blocking by both reviews (README-LLM:1006 assigns release trains to the orchestrator) — the orchestrator may drop it at merge.
 
-- Worklog named with the `NNNN_` sentinel per README-LLM §Worklog Requirements (number assigned by the repolint bot post-merge; main's 1163 was already taken by 1817-phrase-id-edge at r0 time).
-- The CHANGELOG [Unreleased] entry is kept per the orchestrator's standing convention for this lane (explicit lane instruction "CHANGELOG [Unreleased]"); flagged non-blocking by the r0 review (README-LLM:1006 assigns release trains to the orchestrator) — orchestrator may drop or keep at merge.
+---
 
-## Not done here (per lane discipline)
+## Blockers
 
-- Lever 1 (subagent cap): SHELVED by owner ruling.
-- Lever 4 (debounce): owner-approved 10-min quiet-window variant, sequenced after this + ai-workflows #69 — separate change in ai-workflows.
+None.
+
+---
+
+## Tests Run
+
+- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (12 positives / 5 negatives); red-verified against the pre-policy prompt and against each mutation (bare `--watch` instruction; workflow-level board phrasing; inversion phrases).
+- `go test ./tests/ghaworkflows/ -count=1` — ok. `go vet ./tests/ghaworkflows/` — clean.
+- CI on the branch head: Lint, Test (-short), Test (full suite, race), Frontend, Origin plugin freeze pin, Harness ABI, Gitleaks — SUCCESS (five docker build-push jobs fail `go mod download` — pre-existing on main at 43a7ba29, no build inputs touched).
+
+---
+
+## Next Steps
+
+- PR #1833 r2 review verdict; address any further findings, then orchestrator merges.
+- Lever 4 (debounce, 10-min quiet window) is committed locally on feat/pr-review-debounce in ai-workflows (c3293b7...3110c12), pushed only after this + #69 sequence completes per the owner ruling.
+
+---
+
+## Files Modified
+
+- `.github/prompts/pr-review.md` (additive policy section)
+- `tests/ghaworkflows/pr_review_prompt_policy_test.go` (new)
+- `worklogs/NNNN_2026-10-21_pr-review-lever2-ci-first.md` (this worklog)
+- `CHANGELOG.md` ([Unreleased] entry)
