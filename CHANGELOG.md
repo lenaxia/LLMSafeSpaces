@@ -10,19 +10,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
 
 - **The busy-signal/live-streaming id join is fixed at the user-stream
-  edge.** The #1756/#1775/#1806 phrase re-keys flipped the frontend's
-  session identity (sessions list, history REST) to the phrase space
-  while user-stream `session.status` / `agent.question` /
+  and contract-stream edges, within the heal window.** The
+  #1756/#1775/#1806 phrase re-keys flipped the frontend's session
+  identity (sessions list, history REST) to the phrase space while
+  user-stream `session.status` / `agent.question` /
   `agent.question.resolved` events kept emitting the harness id — the
   join missed for every minted row, killing live busy tracking
   (sporadic busy only on degraded rows) and live streaming.
   The API now reverse-resolves at the emission surface: the wire
   `sessionID` is the PHRASE, with the harness id preserved additively
-  as `internal_session_id`. A degraded index (no phrase minted) passes
-  the harness id through unchanged — never worse. The dual-id fixture
-  class (mock index rows keyed phrase + ABI events keyed harness id)
-  lands with T0.1 phrase-contract pins and the T1.6 cross-surface join
-  tripwire — the test-shape gap that blinded every suite.
+  as `internal_session_id`; agentd's contract-stream frames carry the
+  same phrase + additive harness id. A degraded index (no phrase
+  minted, or an un-refreshed pod that has not yet learned the phrase)
+  passes the harness id through unchanged — never worse, but the join
+  is only complete once that heal window closes.
+  The API-side consumer also routes the additive harness id through
+  every seam (status, resolved input, context usage) so a refreshed
+  pod's already-translated frames never re-register the phrase (no
+  phantom index rows, context occupancy lands on the harness row).
+  agentd's replica warm was redesigned as ONE sync.Once worker (not a
+  goroutine per emission) fed by a queued pending set, with per-id
+  exponential backoff (1s → 30s cap) and a bounded pull rate, so a hot
+  stream neither forks per frame nor pulls per frame.
+  Coverage now spans the dual-id fixture class (mock index rows keyed
+  phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
+  T1.6 cross-surface join tripwire), the worker-starts/backoff pins,
+  and new Postgres-backed integration levels: translated authority
+  stream → real consumer → real `usageBridge` → real `sessionindex`,
+  the create-via-API registry round trip, and the agentd replica warm
+  against the real registry contract.
 
 (nothing yet)
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** user-broker half complete; the contract-stream half scoped for ruling (see Next).
+**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r6 review rounds closed).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -428,3 +428,74 @@ other user-stream emitters).
   (type-correct — field 7 on the SessionSnapshot schema type); node_modules
   is not installed in this worktree so `tsc` is not run locally (the CI
   Frontend job typechecks).
+
+## Piece 3 (continued) — r6 review (2026-10-21, findings 1–4,6)
+
+r6 verified the r5 convergence story but found the emission warm itself was
+still the wrong shape: it fired a goroutine per unresolved emission and its
+"dedup" pin did not measure what it claimed. The contract-stream half was
+already shipped (Ruling A); the remaining work was bounding the replica
+warm and telling the truth about its test coverage.
+
+### Finding 1/3/4 — one worker, queued pending ids, bounded pulls
+Replaced the per-emission `go warmSessionShortIDsOnMiss(...)` (and its
+in-flight CAS, which DROPPED overlapping ids) with ONE long-lived worker
+started via `sync.Once` (`session_ref.go`). Misses now only enqueue the id
+and signal a bounded wake channel; the worker coalesces the pending set into
+one pull. An id that arrives while a pull is in flight stays pending and is
+pulled on the next loop — never dropped. Unresolved ids stay pending under
+per-id exponential backoff (1s, doubling, 30s cap), with idle-entry pruning
+(10m) and a hard map ceiling (4096), so a hot stream neither forks a
+goroutine per frame nor pulls once per frame. Production passes `bgCtx` so
+shutdown joins the worker.
+
+### Correction (i) — "no goroutine-per-emission" was FALSE before this commit
+The r5 worklog claimed the singleflight replaced the per-emission fork. It
+did not: `warmSessionShortIDsOnMiss` still ran `go ...` per emission, and the
+singleflight only coalesced the *pull*, not the goroutine. That claim is true
+ONLY after the r6 worker commit (56afc7251); the earlier wording is annotated
+here as disproved rather than silently rewritten.
+
+### Correction (ii) — the old dedup pin was vacuous
+The r5 `TestEmissionTranslator_WarmDedupsToSinglePull` counted PULLS while
+the pull was blocked, not goroutine STARTS. The old implementation already
+coalesced pulls, so the pin passed against the very code it was supposed to
+reject. The r6 pin counts worker starts (`shortIDWarmWorkerStarts`): 50
+unresolved emissions must start exactly ONE worker. Mutation evidence: the
+pin FAILS against the prior per-emission implementation (50 starts) and
+passes against the single `sync.Once` worker (1 start) — the mutation was
+run, not assumed.
+
+### Correction (iii) — the contract-stream half DID ship
+The header previously scoped it "for ruling"; Ruling A executed it in piece
+3 (agentd `IDTranslator` + `wireEvent` + snapshot translation). The header
+is corrected; the historical ruling-request section is retained as history,
+not as current status.
+
+### Correction (iv) — new integration + E2E levels
+The earlier "integration/e2e levels are a follow-up" notes are now closed
+for this slice:
+- `api/internal/handlers/usagestream_phrase_integration_test.go` — real
+  Postgres, real `sessionindex`, real `sessionstate.Authority`, real
+  `abiclient`, real `usagestream.Consumer`, real `usageBridge`, real
+  `UserEventBroker`: phrase-keyed user event + additive harness id,
+  context_used=115 on the HARNESS row, zero phrase-keyed phantom, the
+  three-surface join, the reconnect correction minting nothing, and the
+  dead-index legacy/translated guard.
+- `api/internal/handlers/session_registry_integration_test.go` — POST
+  `/internal/v1/session-register` mints, GET `/internal/v1/session-registry`
+  returns `{sessionID: harness, shortID: phrase}`, and the index row joins.
+- `cmd/workspace-agentd/session_warm_integration_test.go` — the real
+  replica + warm worker against an `httptest` registry contract over real
+  Postgres: heal window → worker pull → phrase; a 500 leaves the replica
+  cold with no panic.
+- These run in `secrets-integration.yml` alongside the board integration
+  steps; the unit-level worker pins remain in `session_ref_test.go`.
+
+### Tests Run (r6):
+- `go build ./...` — clean.
+- `go test -tags=integration -count=1 -race -run 'TestIntegrationUsageStream' ./api/internal/handlers/` — PASS.
+- `go test -tags=integration -count=1 -race -run 'TestIntegrationSessionRegistry' ./api/internal/handlers/` — PASS.
+- `go test -tags=integration -count=1 -race -run 'TestIntegrationEmissionWarm' ./cmd/workspace-agentd/` — PASS.
+- `go test ./cmd/workspace-agentd/ -run 'TestEmissionTranslator|TestWarm|TestShortIDStore' -count=1` — green.
+- `go test ./api/internal/handlers/ -count=1` — green.
