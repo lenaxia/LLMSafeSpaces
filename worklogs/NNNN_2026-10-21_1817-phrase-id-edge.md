@@ -290,3 +290,75 @@ Tests Run (r3):
 - RED-first verified for both new pins by reverting each fix and confirming the
   pin fails (finding 1: legacy frame carries `internal=s1`; finding 2: Register
   called once on the deleted harness id).
+
+## Piece 3 (continued) — r4 review (2026-10-21, findings 1–3 + minor 5)
+
+r4 verified the r3 fixes are genuine but found the agentd-replica staleness
+that defeats the streaming half for UI-created sessions.
+
+### Finding 1 — HIGH / blocking: UI-created sessions never warm the replica
+The emission translator (`emissionIDTranslator`) is a PURE replica read
+(`shortIDFor`). The replica is populated only by (a) the boot pull, (b) the
+on-miss pull invoked ONLY from MCP ref resolution, and (c) the agentd-MCP
+create_session round trip. The NORMAL frontend path (POST /sessions/new →
+EnsureSession → createSessionOnWorkspace) registers only in the API's
+session_index and never pushes to the pod (the platform registry endpoint is
+pull-only). So a UI-created session after agentd boot is unknown to the
+replica: every contract-stream frame emitted the harness id and the fold join
+this PR fixes STILL missed — the headline symptom persisted for the common
+path. The "same TTL-cached registry the MCP surfaces read" claim was true of
+the MCP path but NOT emission (no pull on emission).
+Fix: warm on miss — an unresolved id in the LIVE emission path schedules a
+detached, TTL-rate-limited replica pull (async, because wireEvent runs under
+the authority lock; the store's put/putAll + the pull's rate-limit mutex are
+independent of that lock, so the off-lock goroutine is safe). The current
+frame still passes the harness id through (heal window — never worse); the
+pull converges the replica so subsequent frames carry the phrase.
+RED-first pin: `TestEmissionTranslator_WarmsOnMiss` (first call for an
+unknown session returns "" = heal window; the async warm populates the
+replica from the registry; a second call returns the phrase). Verified RED by
+removing the warm (the replica never learns the UI-created session).
+
+### Finding 2 — MEDIUM: publishInputResolved harness-keyed
+The single seam for API-originated `agent.*.resolved` events built a
+harness-keyed WorkspaceSSEEvent and published it directly, skipping the
+translation every other user-stream session-keyed event gets. Fix: add
+`translateSessionIDToPhrase` so the envelope is phrase-keyed (the #1821
+piece-1 contract; impact was bounded because the frontend removes resolved
+prompts by request_id, but the mixed-id-space emission violated the
+contract). RED-first pin: `TestPublishInputResolvedIsPhraseKeyed` (drives the
+real `publishInputResolved` with a minted session; the published envelope is
+phrase-keyed, the payload keeps its own harness session_id). Verified RED by
+removing the translate.
+
+### Finding 3 — agent.question payload ids (still the documented follow-up)
+r4 re-confirmed the `agent.question`/`agent.permission` payload `SessionID`/
+`RootSessionID` stay harness-space (the envelope is phrase-keyed; the
+payload-internal prompt-identity join is a separate cross-surface slice).
+Kept in the PR body's Remaining list; the T0.1 scope ruling does not cover
+it.
+
+### Minor 5 — Go applyEvent dropped InternalSessionId
+The Go `applyEvent` synthesized a fresh snapshot (a session observed before
+any status event) WITHOUT `InternalSessionId`, contradicting the "never
+dropped" contract the clone fix honored. Fix: carry
+`evt.GetInternalSessionId()` into the synthesized snapshot. The TS fold
+clone (`frontend/src/session/fold.ts`) also omits it, but the frontend
+schema has no `internalSessionId` field (the frontend does not read it
+today) — a frontend contract change beyond this PR's API/agentd scope, left
+as a documented minor.
+
+### Out of scope (follow-ups, not this PR)
+- E2.1/E2.6 e2e pins and the integration test level (translated authority
+  stream → consumer → real bridge → real sessionindex/DB). #1817 remains
+  PARTIALLY addressed until those land.
+- TS fold clone `internalSessionId` (finding 5 frontend half).
+
+Tests Run (r4):
+- `go build ./...` — clean; `gofmt -l api/ cmd/ pkg/` — clean.
+- `golangci-lint run --new-from-rev origin/main` (handlers, sessionindex,
+  usagestream, workspace-agentd, abiclient) — 0 issues.
+- `go test ./api/internal/{handlers,services/usagestream,services/sessionindex,server,services/workspace,workflows}/ + ./pkg/abi/abiclient/ -count=1` — all green, incl. the two new API pins.
+- `go test ./cmd/workspace-agentd/ -run 'TestEmissionTranslator_WarmsOnMiss' -race` — green (the async warm has no data race).
+- The full `cmd/workspace-agentd` main-package suite times out (>300s) both WITH and WITHOUT this diff — pre-existing slowness (last-running test before the baseline timeout is a relay-liveness test, unrelated); the sub-packages (sessionstate, faultmatrix) pass.
+- RED-first verified for all three new r4 pins by reverting each fix.

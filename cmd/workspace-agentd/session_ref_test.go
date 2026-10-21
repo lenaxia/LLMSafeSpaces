@@ -150,6 +150,60 @@ func TestResolveSessionRef_ShortIDMissOnMissPull(t *testing.T) {
 	}
 }
 
+// TestEmissionTranslator_WarmsOnMiss (#1817 piece 3, r4 finding 1): a session
+// created through the UI (not the agentd-MCP round trip) is unknown to the
+// replica, so the emission translator returns "" for it (heal window). The
+// fix schedules an ASYNC replica warm on that miss, so a SUBSEQUENT emission
+// for the same session resolves to the phrase. Without the warm, the
+// replica never learns UI-created sessions and their contract-stream frames
+// stay harness-keyed forever (the headline symptom). This pin:
+//   - first call for an unknown harness id returns "" (heal window — never worse),
+//   - the async pull populates the replica from the platform registry,
+//   - a second call for the same id returns the phrase.
+func TestEmissionTranslator_WarmsOnMiss(t *testing.T) {
+	s := withShortIDStore(t)
+	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-registry" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sessions": []map[string]string{{"sessionID": "ses_uicreated", "shortID": "ultra-violet-drift"}},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	setupPodSessionEnv(t, platform)
+
+	const harnessID = "ses_uicreated"
+	const phraseID = "ultra-violet-drift"
+
+	// Isolate the shared TTL rate limiter — a prior test in the package may
+	// have set shortIDLastPull, which would suppress this test's on-miss
+	// warm (the rate limit is the very mechanism the fix relies on).
+	shortIDPullMu.Lock()
+	shortIDLastPull = time.Time{}
+	shortIDPullMu.Unlock()
+
+	// First emission for a UI-created (replica-unknown) session: heal window.
+	if got := emissionIDTranslator(harnessID); got != "" {
+		t.Fatalf("first emission for an unknown session must return \"\" (heal window), got %q", got)
+	}
+	// The async warm must have populated the replica from the registry.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.shortIDFor(harnessID) == phraseID {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := s.shortIDFor(harnessID); got != phraseID {
+		t.Fatalf("the on-miss async warm did not populate the replica: shortIDFor(%q)=%q, want %q (a UI-created session would emit harness-keyed frames forever)", harnessID, got, phraseID)
+	}
+	// A subsequent emission for the same session now carries the phrase.
+	if got := emissionIDTranslator(harnessID); got != phraseID {
+		t.Fatalf("post-warm emission: got %q, want the phrase %q", got, phraseID)
+	}
+}
+
 // newPlatServer stands up a fake platform internal API.
 func newPlatServer(t *testing.T, fn http.HandlerFunc) *httptest.Server {
 	t.Helper()

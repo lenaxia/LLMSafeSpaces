@@ -313,11 +313,46 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 // emissionIDTranslator is the sessionstate Config.IDTranslator
 // (#1817/#1821 piece 1, ruling A): harness session id → the platform
 // PHRASE at the contract-stream emission surface, from the same
-// short-id store the MCP surfaces read (session_shortids.go — the
-// registry pull with TTL caching). Unresolved ids return "" — the
-// authority passes the harness id through (the heal window).
+// short-id store the MCP surfaces read (session_shortids.go). Unresolved
+// ids return "" — the authority passes the harness id through (the heal
+// window) — and trigger an ASYNC warm of the replica.
+//
+// #1817 piece 3 (r4 finding 1): the replica is populated ONLY by (a) the
+// boot pull, (b) the on-miss pull that is invoked from MCP ref resolution,
+// and (c) the agentd-MCP create_session round trip. The NORMAL frontend
+// path (POST /sessions/new → EnsureSession → createSessionOnWorkspace)
+// registers only in the API's session_index and never pushes to the pod —
+// the platform registry endpoint is pull-only. So a session created
+// through the UI AFTER agentd boot is unknown to the replica: every
+// contract-stream frame for it emitted the harness id and the fold join
+// this PR fixes still missed (the headline symptom persisted for the
+// common path). The "same TTL-cached registry the MCP surfaces read" was
+// true of the MCP path but NOT of emission — there was no pull on emission.
+//
+// Fix: warm on miss. A miss here is an unresolved id in the LIVE emission
+// path (not a caller looping on a typo), so schedule a detached, TTL-rate-
+// limited replica pull. The pull is ASYNC because wireEvent runs under the
+// authority lock (a synchronous HTTP pull would stall every emission); the
+// store's put/putAll + the pull's rate-limit mutex are independent of that
+// lock, so the off-lock goroutine is safe. The current frame still passes
+// the harness id through (heal window — never worse); the pull converges
+// the replica so subsequent frames for the session carry the phrase.
 func emissionIDTranslator(harnessID string) string {
-	return currentSessionShortIDs().shortIDFor(harnessID)
+	phrase := currentSessionShortIDs().shortIDFor(harnessID)
+	if phrase == "" && harnessID != "" {
+		go warmSessionShortIDsOnMiss()
+	}
+	return phrase
+}
+
+// warmSessionShortIDsOnMiss is the #1817 r4 finding-1 async replica warm:
+// a detached (survives the authority's context) registry pull bounded by
+// the shared 30s TTL rate limit. Best-effort — a failure degrades to the
+// heal window (harness id passthrough), never worse than pre-fix.
+func warmSessionShortIDsOnMiss() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pullSessionShortIDsRateLimited(ctx)
 }
 
 // startStateAuthorityReseed drives the boot reseed: opencode may not be

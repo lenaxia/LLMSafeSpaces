@@ -310,6 +310,14 @@ func (h *ProxyHandler) publishInputResolved(c *gin.Context, workspaceID, session
 			"reason":     reason,
 		},
 	}
+	// #1817 piece 1 (r4 finding 2): every user-stream session-keyed event
+	// (session.status, agent.*, resolved) carries the PHRASE on the wire.
+	// This API-originated resolved publish used to skip translation entirely
+	// (a mixed-id-space emission) — the frontend removes resolved prompts by
+	// request_id so the impact is bounded, but the envelope must still be
+	// phrase-keyed to honor the #1821 piece-1 contract and the additive
+	// "never dropped" harness id.
+	h.translateSessionIDToPhrase(c.Request.Context(), workspaceID, &evt)
 	targets := make([]string, 0, 2)
 	if owner := h.userBroker.WorkspaceOwner(workspaceID); owner != "" {
 		targets = append(targets, owner)

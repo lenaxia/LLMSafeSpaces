@@ -5,9 +5,11 @@ package handlers
 
 import (
 	"context"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -370,4 +372,49 @@ func TestContextUsedNoWrite_AfterDelete_TombstoneHarnessKeyed(t *testing.T) {
 	// no Register on the harness id (the tombstone key).
 	assert.Zero(t, si.registeredCalls()["ws-1/"+harnessID],
 		"a context-usage write for a deleted session must be suppressed — the tombstone is harness-keyed, so the guard must check the harness id (not just the phrase) before the Register")
+}
+
+// #1817 piece 1 (r4 finding 2): publishInputResolved — the single seam for
+// API-originated agent.*.resolved events — used to build a HARNESS-keyed
+// WorkspaceSSEEvent and publish it directly, skipping the phrase translation
+// every other user-stream session-keyed event gets. The frontend removes
+// resolved prompts by request_id (so the impact is bounded), but the #1821
+// piece-1 contract is "all user-stream session-keyed events carry the
+// phrase", and a mixed-id-space emission violates it. This pin drives the
+// REAL publishInputResolved with a minted session and asserts the published
+// envelope is phrase-keyed (harness id additive).
+func TestPublishInputResolvedIsPhraseKeyed(t *testing.T) {
+	const harnessID = "ses_resolved_1817"
+	const phraseID = "mike-november-6"
+
+	h, si := newBridgeIndexHandler(t)
+	si.phrases["ws-1/"+harnessID] = phraseID
+
+	broker := eventbroker.NewUserEventBroker()
+	h.SetUserBrokerForTest(broker)
+	broker.RecordWorkspaceOwner("ws-1", "user-resolved")
+	sub, err := broker.SubscribeUser("user-resolved")
+	require.NoError(t, err)
+	defer broker.UnsubscribeUser("user-resolved", sub)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/permission/per_1/reply", nil)
+
+	// The API-originated resolved publish: harness session id, a request id.
+	h.publishInputResolved(c, "ws-1", harnessID, "per_1", "permission", "answered")
+	evt := <-sub.Ch
+
+	assert.Equal(t, phraseID, evt.SessionID,
+		"publishInputResolved must carry the PHRASE on the wire (the #1821 piece-1 contract) — it used to skip the translation and emit a harness-keyed envelope")
+	if d, ok := evt.Data.(map[string]string); ok {
+		// The payload's session_id stays the harness id (the contract payload
+		// shape); the JOIN is the wire session_id above. The harness id is
+		// not dropped — it rides in the payload and as the join's additive
+		// source.
+		assert.Equal(t, harnessID, d["session_id"],
+			"the payload keeps its own harness session_id (the contract shape); the join is the wire phrase")
+	}
+	assert.Equal(t, "per_1", evt.RequestID)
 }
