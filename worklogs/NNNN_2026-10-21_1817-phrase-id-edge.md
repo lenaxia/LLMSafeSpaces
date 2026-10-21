@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 findings addressed; r8 merge-hygiene minors and r9 lifecycle/bounds fixes below).
+**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 findings addressed; r8 merge-hygiene minors, r9 lifecycle/bounds fixes, and r10 test-determinism/retention corrections below).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -477,7 +477,8 @@ the registry pull blocks in `httptest`, 50 distinct unresolved ids are
 emitted, and a peak sampler plus a blocked-pull barrier assert the
 goroutine delta stays <= baseline+8. Mutation evidence (run, not assumed):
 - reintroducing `go warmSessionShortIDsOnMiss(harnessID)` makes the peak
-  sample 51–54 goroutines from a baseline of 4 → the pin FAILS;
+  sample well above the +8 bound (observed 18–27 goroutines on the audit
+  host) → the pin FAILS;
 - the single `sync.Once` worker stays inside the bound → the pin PASSES.
 
 ### Correction (iii) — the contract-stream half DID ship
@@ -570,12 +571,13 @@ See Correction (ii): the vacuous `shortIDWarmWorkerStarts` counter and its
 test are gone; the replacement measures live goroutines under a blocked
 pull and fails against the reintroduced per-emission `go`.
 
-### Finding 4 — worker joined at shutdown
+### Finding 4 — worker cancelled and bounded at shutdown
 The warm worker is now started at the TOP of `startBackgroundLoops`,
 before any emitter goroutine, via
 `ensureShortIDWarmWorker(bgCtx, bgWg)`: `bgWg.Add(1)` + `Done` in the
-worker goroutine, so `runShutdown`'s `bgCancel` + `bgWg.Wait` cancels and
-joins it. Source comments were updated to match.
+worker goroutine, so `runShutdown`'s `bgCancel` + `bgWg.Wait` cancels it
+and waits on it for up to 5s; the pull's own 10s context bounds the
+remainder. Source comments were updated to match.
 
 ### Finding 5 — global emission-path pull-rate bound
 Per-id backoff bounds a repeated id, but N DISTINCT newly-seen ids are each
@@ -583,9 +585,11 @@ immediately due and caused ~N pulls. Added
 `shortIDWarmMinPullInterval = 1s`: a global floor between warm pulls that
 batches distinct ids while still letting a new session warm within a
 second (NOT the retired 30s cross-session lockout). New pin:
-`TestEmissionTranslator_GlobalPullRateBound` (25 distinct ids over ~250ms
-must produce <=2 pulls). Mutation evidence: setting the interval to 0
-yields 25 pulls and the pin FAILS; 1s yields 1 and it PASSES.
+`TestEmissionTranslator_GlobalPullRateBound` (with an injected hour-long
+floor, 25 distinct ids yield exactly one pull; with a zero floor,
+sequentially emitted distinct ids pull once each). Mutation evidence:
+removing the worker's floor wait makes the floor subtest fail; the
+zero-floor subtest still passes.
 
 ### Finding 6 — legacy-frame translation pin at the live-DB level
 Added `TestIntegrationUsageStream_LegacyFrameTranslatesToPhrase`: a real
@@ -718,23 +722,24 @@ returned while the warm worker was still in flight".
 deletion while holding `warmMu`.
 
 - `shortIDWarmMaxPending = 4096`. `shortIDWarmAddPendingLocked` enforces it
-  on every enqueue (including settle re-enqueues). Overflow drops the whole
-  pending batch deterministically (O(1)); ids remain in `warmBackoff` and
-  later emissions re-enqueue them.
+  on every enqueue (including settle re-enqueues): an id already pending is
+  a no-op, and on overflow the NEWEST id is dropped so the existing pending
+  backlog survives. A dropped id re-enqueues only on its next emission;
+  per-id backoff alone never re-enqueues it.
 - `shortIDWarmPruneLocked` is now one pass: collect expired keys and, when
   over the backoff ceiling, the excess oldest by `lastSeen`; delete the
-  collected victims in one loop. A pending-ceiling backstop resets the
-  batch if it is still over after the pass.
+  collected victims in one loop. It never clears `warmPending` wholesale.
 
 Pins: `TestShortIDWarm_PendingCap` (3x the cap of distinct ids never
-exceeds it; an emission after an overflow reset is enqueued again) and
+exceeds it; a queued id survives the overflow while the newest is refused)
+and
 `TestShortIDWarm_Prune` (expired removed from both maps, live preserved,
 oldest surplus evicted). Mutation evidence: removing the cap check makes
-the pending pin fail ("warmPending = 12288, want <= 4096").
+the pending pin fail (warmPending grows to 12288, want exactly 4096).
 
 ### Finding 3 — stale status wording
 The header claimed "r1–r8 review rounds closed"; it now says r1–r7 findings
-addressed with r8/r9 fixes below, which matches the record. The r7
+addressed with r8/r9/r10 fixes below, which matches the record. The r7
 mutation-coverage bullet no longer calls the prune UNTESTED.
 
 ### Tests Run (r9)
@@ -746,3 +751,52 @@ mutation-coverage bullet no longer calls the prune UNTESTED.
   regression from this change).
 - `make repolint` — all checks passed (the NNNN sentinel warning is the
   expected post-merge numbering note).
+
+## Piece 3 (continued) — r10 review (2026-10-21, barrier safety + retention)
+
+r10 found three remaining robustness defects in the r9 head: agentd tests
+could hang their own cleanup, pending overflow discarded the retry backlog,
+and the global pull-floor pin still raced wall-clock sleeps.
+
+### Finding 1 — barrier release must survive `t.Fatal`
+Several blocked-handler tests closed their release channel only on the
+success path. A `t.Fatal` before that point ran `t.Cleanup`, whose
+`httptest.Server.Close` waits for the handler, which waited forever on the
+unclosed channel — so a failure became a package timeout. Every such
+barrier now uses `sync.OnceFunc` + `defer` (the release is idempotent and
+runs on both success and Goexit): `agentz_test.go`,
+`control_socket_test.go`, `control_socket_concurrency_test.go`,
+`mcp_secrets_resync_test.go`, `readyz_d4_test.go`, and both blocked-pull
+tests in `session_ref_test.go`. Verified by forcing an early failure after
+the pull barrier in a scratch worktree: the failing test process cleaned up
+in 0.04s instead of hanging to the timeout.
+
+### Finding 2 — pending overflow must keep the retry backlog
+The r9 overflow path replaced the whole `warmPending` map, dropping every
+id already queued (the reverse of what the code comment claimed). It now
+enqueues only when there is room: an id already pending is a no-op, and on
+overflow the NEWEST id is refused while the existing backlog survives. A
+refused id re-enqueues only on its next emission — `warmBackoff` alone never
+re-enqueues it. `shortIDWarmPruneLocked` no longer clears `warmPending`
+wholesale (enqueue owns the cap). `TestShortIDWarm_PendingCap` now asserts
+an existing id survives, the newest is refused, and the refused id requeues
+once room frees; `TestShortIDWarm_Prune` no longer expects the old reset.
+
+### Finding 3 — deterministic pull-floor pin
+`TestEmissionTranslator_GlobalPullRateBound` slept 10ms per id and 100ms
+afterwards, racing the 1s floor. The floor is now an injectable variable
+(`shortIDWarmMinPullInterval`, still 1s in production) with a test-only
+`warmFloorWaitNotify` observer. The test waits on positive signals: with an
+injected hour-long floor, 25 distinct ids yield exactly one pull; with a
+zero floor, sequentially emitted distinct ids pull once each. No wall-clock
+sleeps remain in the assertion.
+
+### Tests Run (r10)
+- `gofmt -l` on changed files — empty.
+- `go build ./...` — clean.
+- `golangci-lint run ./cmd/workspace-agentd/... ./api/internal/...` — 0 issues.
+- `go test -race -timeout 300s ./cmd/workspace-agentd/ -run 'TestShortIDWarm|TestEmissionTranslator|TestWarm|TestShortIDStore' -count=5` — green.
+- `go test -timeout 600s ./cmd/workspace-agentd/ -count=1` — green (416s).
+- `go test -race -timeout 300s ./api/internal/services/usagestream/ -count=1` — green.
+- `make repolint` — all checks passed (same NNNN sentinel note).
+- Postgres integration: skipped (no database available in this environment).

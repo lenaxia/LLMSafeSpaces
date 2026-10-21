@@ -60,6 +60,32 @@ func stopShortIDWarmForTest() {
 	warmWorkerCancel = nil
 }
 
+// withShortIDWarmPullInterval injects the global warm-pull floor. It must
+// run before withShortIDStore starts the worker; cleanup restores the floor
+// after the worker is stopped.
+func withShortIDWarmPullInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := shortIDWarmMinPullInterval
+	shortIDWarmMinPullInterval = d
+	t.Cleanup(func() {
+		stopShortIDWarmForTest()
+		shortIDWarmMinPullInterval = old
+	})
+}
+
+// withShortIDWarmFloorNotify installs the worker's floor-wait observer so
+// the test can wait on a positive signal instead of a wall-clock sleep.
+func withShortIDWarmFloorNotify(t *testing.T) <-chan time.Duration {
+	t.Helper()
+	ch := make(chan time.Duration, 8)
+	warmFloorWaitNotify = ch
+	t.Cleanup(func() {
+		stopShortIDWarmForTest()
+		warmFloorWaitNotify = nil
+	})
+	return ch
+}
+
 func TestShortIDStore_RoundTripPersists(t *testing.T) {
 	path := t.TempDir() + "/session-shortids.json"
 	s := newSessionShortIDStore(path)
@@ -332,6 +358,8 @@ func TestEmissionTranslator_NoGoroutinePerEmission(t *testing.T) {
 	withShortIDStore(t)
 	pullStarted := make(chan struct{})
 	releasePull := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releasePull) })
+	defer release()
 	var startedOnce sync.Once
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/v1/session-registry" {
@@ -352,6 +380,11 @@ func TestEmissionTranslator_NoGoroutinePerEmission(t *testing.T) {
 	peak.Store(int32(baseline))
 	stopSampler := make(chan struct{})
 	samplerDone := make(chan struct{})
+	stopSampling := sync.OnceFunc(func() {
+		close(stopSampler)
+		<-samplerDone
+	})
+	defer stopSampling()
 	go func() {
 		defer close(samplerDone)
 		for {
@@ -384,13 +417,12 @@ func TestEmissionTranslator_NoGoroutinePerEmission(t *testing.T) {
 	}
 	// Let all 50 emissions' goroutines (if any) reach the blocked pull.
 	time.Sleep(200 * time.Millisecond)
-	close(stopSampler)
-	<-samplerDone
+	stopSampling()
 	got := int(peak.Load())
 	if cur := runtime.NumGoroutine(); cur > got {
 		got = cur
 	}
-	close(releasePull)
+	release()
 
 	// A single worker + its HTTP transport helpers stay well under this.
 	// 50 per-emission goroutines (the regression) blow through it.
@@ -400,41 +432,73 @@ func TestEmissionTranslator_NoGoroutinePerEmission(t *testing.T) {
 	}
 }
 
-// TestEmissionTranslator_GlobalPullRateBound (#1817 r7 finding 5): per-id
-// backoff bounds a REPEATED id, but N DISTINCT newly-seen ids are each
-// immediately due, so without a global floor the worker pulls ~once per new
-// id. The floor (shortIDWarmMinPullInterval) batches them. 25 distinct ids
-// arriving one per 10ms must yield at most 2 pulls inside the first floor
-// window; the same drive against a zero floor yields ~25.
+// TestEmissionTranslator_GlobalPullRateBound (#1817 r7 finding 5, r10
+// deterministic rewrite): per-id backoff bounds a REPEATED id, but N
+// DISTINCT newly-seen ids are each immediately due, so without a global
+// floor the worker pulls once per new id. The floor
+// (shortIDWarmMinPullInterval) batches them. This test injects the floor
+// and waits on positive worker/counter signals — no wall-clock sleeps whose
+// elapsed time races the floor.
 func TestEmissionTranslator_GlobalPullRateBound(t *testing.T) {
-	withShortIDStore(t)
-	var pulls int32
-	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/v1/session-registry" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		atomic.AddInt32(&pulls, 1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
-	})
-	setupPodSessionEnv(t, platform)
+	t.Run("floor batches distinct ids", func(t *testing.T) {
+		withShortIDWarmPullInterval(t, time.Hour)
+		floorWait := withShortIDWarmFloorNotify(t)
+		withShortIDStore(t)
+		var pulls int32
+		platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/internal/v1/session-registry" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			atomic.AddInt32(&pulls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
+		})
+		setupPodSessionEnv(t, platform)
 
-	for i := 0; i < 25; i++ {
-		if got := emissionIDTranslator(fmt.Sprintf("ses_distinct_%d", i)); got != "" {
+		if got := emissionIDTranslator("ses_distinct_0"); got != "" {
 			t.Fatalf("unknown session must stay in the heal window, got %q", got)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Well inside the global floor window (1s), after the first pull and
-	// the burst of distinct ids. Without the floor this is ~25 pulls.
-	time.Sleep(100 * time.Millisecond)
-	got := atomic.LoadInt32(&pulls)
-	if got < 1 {
-		t.Fatal("no warm pull ran")
-	}
-	if got > 2 {
-		t.Fatalf("pulls = %d for 25 distinct ids inside the floor window, want <=2: distinct ids are not globally throttled", got)
-	}
+		assert.Eventually(t, func() bool { return atomic.LoadInt32(&pulls) == 1 },
+			3*time.Second, 5*time.Millisecond, "the first warm pull never ran")
+		for i := 1; i < 25; i++ {
+			if got := emissionIDTranslator(fmt.Sprintf("ses_distinct_%d", i)); got != "" {
+				t.Fatalf("unknown session must stay in the heal window, got %q", got)
+			}
+		}
+		select {
+		case <-floorWait:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the worker never reached the global floor wait: the 24 distinct ids were not batched behind it")
+		}
+		if got := atomic.LoadInt32(&pulls); got != 1 {
+			t.Fatalf("pulls = %d for 25 distinct ids inside the floor window, want 1: distinct ids are not globally throttled", got)
+		}
+	})
+
+	t.Run("zero floor pulls distinct ids", func(t *testing.T) {
+		withShortIDWarmPullInterval(t, 0)
+		withShortIDStore(t)
+		var pulls int32
+		platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/internal/v1/session-registry" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			atomic.AddInt32(&pulls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]string{}})
+		})
+		setupPodSessionEnv(t, platform)
+
+		for i := 0; i < 5; i++ {
+			if got := emissionIDTranslator(fmt.Sprintf("ses_distinct_zero_%d", i)); got != "" {
+				t.Fatalf("unknown session must stay in the heal window, got %q", got)
+			}
+			want := int32(i + 1)
+			assert.Eventually(t, func() bool { return atomic.LoadInt32(&pulls) >= want },
+				3*time.Second, 5*time.Millisecond,
+				"pull %d never ran: a zero floor must not batch a sequentially emitted distinct id", want)
+		}
+	})
 }
 
 // TestEmissionTranslator_ThrottlesUnresolvedPulls (#1817 r6 finding 3):
@@ -490,6 +554,8 @@ func TestEmissionTranslator_OverlappingWarmQueued(t *testing.T) {
 	pulls := 0
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseFirst) })
+	defer release()
 	var startedOnce sync.Once
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/v1/session-registry" {
@@ -527,7 +593,7 @@ func TestEmissionTranslator_OverlappingWarmQueued(t *testing.T) {
 	if got := emissionIDTranslator("ses_B"); got != "" {
 		t.Fatalf("B's first emission must be the heal window, got %q", got)
 	}
-	close(releaseFirst)
+	release()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -926,31 +992,45 @@ func TestShortIDWarm_ShutdownJoinsWorker(t *testing.T) {
 	}
 }
 
-// TestShortIDWarm_PendingCap pins the hard pending-set ceiling: many
-// distinct unresolved ids cannot grow warmPending without bound, and an
-// emission after an overflow reset is still enqueued.
+// TestShortIDWarm_PendingCap pins the hard pending-set ceiling and the
+// drop-newest overflow policy: a full set keeps every id already queued
+// (the retry backlog survives) and refuses new ids instead of clearing the
+// batch. A refused id re-enqueues only on its next emission.
 func TestShortIDWarm_PendingCap(t *testing.T) {
 	resetShortIDWarmForTest(t)
-	total := shortIDWarmMaxPending * 3
-	for i := 0; i < total; i++ {
+	for i := 0; i < shortIDWarmMaxPending; i++ {
 		warmSessionShortIDsOnMiss(fmt.Sprintf("ses_pending_cap_%d", i))
 	}
+	survivor := "ses_pending_cap_0"
+	for i := 0; i < shortIDWarmMaxPending*2; i++ {
+		warmSessionShortIDsOnMiss(fmt.Sprintf("ses_pending_cap_overflow_%d", i))
+	}
+	newest := fmt.Sprintf("ses_pending_cap_overflow_%d", shortIDWarmMaxPending*2-1)
 	warmMu.Lock()
 	got := len(warmPending)
+	_, survivorOK := warmPending[survivor]
+	_, newestOK := warmPending[newest]
 	warmMu.Unlock()
-	if got > shortIDWarmMaxPending {
-		t.Fatalf("warmPending = %d, want <= %d: the pending set is unbounded", got, shortIDWarmMaxPending)
+	if got != shortIDWarmMaxPending {
+		t.Fatalf("warmPending = %d, want exactly %d: the pending set is unbounded or was cleared", got, shortIDWarmMaxPending)
 	}
-	if got == 0 {
-		t.Fatal("warmPending is empty after a burst; the overflow reset dropped the newest emission")
+	if !survivorOK {
+		t.Fatal("an id already pending must survive the overflow (the batch was cleared)")
+	}
+	if newestOK {
+		t.Fatalf("the newest id %q must be dropped on overflow", newest)
 	}
 
-	warmSessionShortIDsOnMiss("ses_pending_cap_after_reset")
+	// A dropped id re-enqueues when it is emitted again after space frees.
 	warmMu.Lock()
-	_, ok := warmPending["ses_pending_cap_after_reset"]
+	delete(warmPending, survivor)
 	warmMu.Unlock()
-	if !ok {
-		t.Fatal("an emission after an overflow reset must be enqueued again")
+	warmSessionShortIDsOnMiss(newest)
+	warmMu.Lock()
+	_, requeued := warmPending[newest]
+	warmMu.Unlock()
+	if !requeued {
+		t.Fatal("a dropped id must re-enqueue on its next emission once there is room")
 	}
 }
 
@@ -991,23 +1071,22 @@ func TestShortIDWarm_Prune(t *testing.T) {
 	}
 
 	// Ceiling: keep exactly shortIDWarmMaxEntries, evicting the oldest.
+	// Pending is not cleared wholesale here; enqueue enforces its own cap.
 	warmMu.Lock()
 	warmBackoff = make(map[string]shortIDWarmBackoff, shortIDWarmMaxEntries+16)
-	warmPending = make(map[string]struct{}, shortIDWarmMaxEntries+16)
+	warmPending = map[string]struct{}{}
 	for i := 0; i < shortIDWarmMaxEntries+16; i++ {
 		id := fmt.Sprintf("ses_ceiling_%05d", i)
 		warmBackoff[id] = shortIDWarmBackoff{lastSeen: now.Add(time.Duration(i) * time.Second)}
-		warmPending[id] = struct{}{}
 	}
 	shortIDWarmPruneLocked(now)
 	n := len(warmBackoff)
-	nPending := len(warmPending)
 	_, oldest := warmBackoff["ses_ceiling_00000"]
 	_, newest := warmBackoff[fmt.Sprintf("ses_ceiling_%05d", shortIDWarmMaxEntries+15)]
 	warmMu.Unlock()
 
-	if n != shortIDWarmMaxEntries || nPending != shortIDWarmMaxEntries {
-		t.Fatalf("after ceiling prune: warmBackoff=%d warmPending=%d, want both %d", n, nPending, shortIDWarmMaxEntries)
+	if n != shortIDWarmMaxEntries {
+		t.Fatalf("after ceiling prune: warmBackoff=%d, want %d", n, shortIDWarmMaxEntries)
 	}
 	if oldest {
 		t.Fatal("the oldest surplus entry must be evicted")

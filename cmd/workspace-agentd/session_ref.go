@@ -101,17 +101,19 @@ const (
 	shortIDWarmEntryTTL = 10 * time.Minute
 	// Hard ceiling on the backoff map: prune the oldest entries past it.
 	shortIDWarmMaxEntries = 4096
-	// Hard ceiling on the pending set. Overflow drops the whole pending
-	// batch (O(1), deterministic) rather than evicting one-by-one; ids stay
-	// in warmBackoff and later emissions re-enqueue them.
+	// Hard ceiling on the pending set. Overflow drops the NEWEST id (the
+	// enqueue that found the set full) and keeps the existing retry backlog
+	// intact; a dropped id re-enqueues only on its next emission.
 	shortIDWarmMaxPending = 4096
-	// shortIDWarmMinPullInterval is the GLOBAL floor between emission-path
-	// warm pulls. Per-id backoff alone still let N DISTINCT newly-seen ids
-	// (each immediately due on first sight) trigger ~N pulls; the floor
-	// batches them. It is deliberately short (not the 30s MCP TTL): a new
-	// session that appears just after a pull still warms within a second.
-	shortIDWarmMinPullInterval = time.Second
 )
+
+// shortIDWarmMinPullInterval is the GLOBAL floor between emission-path warm
+// pulls. Per-id backoff alone still let N DISTINCT newly-seen ids (each
+// immediately due on first sight) trigger ~N pulls; the floor batches them.
+// It is deliberately short (not the 30s MCP TTL): a new session that appears
+// just after a pull still warms within a second. It is a variable so tests
+// can inject a floor without depending on wall-clock scheduling.
+var shortIDWarmMinPullInterval = time.Second
 
 var (
 	warmWorkerOnce   sync.Once
@@ -124,6 +126,9 @@ var (
 	// negative-cache state (absent = due now). Both are guarded by warmMu.
 	warmPending = map[string]struct{}{}
 	warmBackoff = map[string]shortIDWarmBackoff{}
+	// warmFloorWaitNotify is a test-only observer signaled when the worker
+	// parks on the global pull floor. Nil in production.
+	warmFloorWaitNotify chan time.Duration
 )
 
 type shortIDWarmBackoff struct {
@@ -135,8 +140,9 @@ type shortIDWarmBackoff struct {
 // ensureShortIDWarmWorker starts the singleton worker. The caller's
 // context governs its lifetime. Production calls it at the TOP of
 // startBackgroundLoops with the process bgCtx and registers the worker on
-// bgWg, so runShutdown cancels and JOINS it. Tests pass nil for the
-// lifecycle group and join via warmWorkerWg. The first caller wins; no
+// bgWg, so runShutdown cancels it and waits on it for up to 5s; the pull's
+// own 10s context bounds the remainder. Tests pass nil for the lifecycle
+// group and join via warmWorkerWg. The first caller wins; no
 // lazy/Background fallback exists because the boot path always starts it
 // before any emitter can run.
 func ensureShortIDWarmWorker(ctx context.Context, lifecycle *sync.WaitGroup) {
@@ -181,12 +187,16 @@ func warmSessionShortIDsOnMiss(harnessID string) {
 }
 
 // shortIDWarmAddPendingLocked enqueues one id under the hard pending
-// ceiling. On overflow the whole batch is dropped rather than evicted
-// one-by-one: deterministic and O(1), while the ids stay in warmBackoff
-// and later emissions re-enqueue them. Caller holds warmMu.
+// ceiling. An id already pending is a no-op. On overflow the NEWEST id is
+// dropped (the caller returns without enqueueing) so the existing backlog
+// survives; a dropped id re-enqueues only on its next emission. Caller
+// holds warmMu.
 func shortIDWarmAddPendingLocked(id string) {
-	if _, ok := warmPending[id]; !ok && len(warmPending) >= shortIDWarmMaxPending {
-		warmPending = make(map[string]struct{}, shortIDWarmMaxPending)
+	if _, ok := warmPending[id]; ok {
+		return
+	}
+	if len(warmPending) >= shortIDWarmMaxPending {
+		return
 	}
 	warmPending[id] = struct{}{}
 }
@@ -223,6 +233,12 @@ func shortIDWarmWorker(ctx context.Context) {
 			}
 			if !lastPull.IsZero() {
 				if remaining := shortIDWarmMinPullInterval - time.Since(lastPull); remaining > 0 {
+					if warmFloorWaitNotify != nil {
+						select {
+						case warmFloorWaitNotify <- remaining:
+						default:
+						}
+					}
 					timer := time.NewTimer(remaining)
 					select {
 					case <-ctx.Done():
@@ -333,9 +349,6 @@ func shortIDWarmPruneLocked(now time.Time) {
 	for _, v := range victims {
 		delete(warmBackoff, v.id)
 		delete(warmPending, v.id)
-	}
-	if len(warmPending) > shortIDWarmMaxPending {
-		warmPending = make(map[string]struct{}, shortIDWarmMaxPending)
 	}
 }
 

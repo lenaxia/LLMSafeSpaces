@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,6 +156,8 @@ func TestProviderCache_LastKnownNeverBlocksOnCacheMu(t *testing.T) {
 	c.readySnapshot.Store(&providerReadySnapshot{connected: []string{"prov-x"}, configured: 1})
 
 	unblocked := make(chan struct{})
+	release := sync.OnceFunc(func() { close(unblocked) })
+	defer release()
 	go func() {
 		c.mu.Lock()
 		<-unblocked // hold mu as a concurrent cachedState fetch would
@@ -176,7 +179,7 @@ func TestProviderCache_LastKnownNeverBlocksOnCacheMu(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("lastKnown blocked on providerCache.mu — readyz is not starvation-immune (regression)")
 	}
-	close(unblocked)
+	release()
 }
 
 // TestOpencodeTCPReady_ProductionAddrForm (review round 1 on #895,

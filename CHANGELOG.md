@@ -30,14 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phantom index rows, context occupancy lands on the harness row).
   agentd's replica warm was redesigned as ONE sync.Once worker (not a
   goroutine per emission) fed by a bounded pending set (hard cap 4096;
-  overflow drops the batch deterministically and later emissions
-  re-enqueue), with per-id exponential backoff (1s → 30s cap), a GLOBAL
-  1s floor between warm pulls (distinct newly-seen ids batch instead of
-  pulling once each, while a new session still warms within a second),
-  and a single-pass prune of the idle TTL and both ceilings. The worker
-  is bound to the process background context and joined at shutdown
-  (the lifecycle Done fires when the worker loop exits, not when its
-  goroutine starts), so no warm worker outlives agentd.
+  an id already pending is kept, overflow drops the newest id, and a
+  dropped id re-enqueues only on its next emission — so a quiet session
+  may stay harness-keyed until then or until its next refresh), with
+  per-id exponential backoff (1s → 30s cap), a GLOBAL 1s floor between
+  warm pulls (distinct newly-seen ids batch instead of pulling once each,
+  while a new session still warms within a second), and a single-pass
+  prune of the idle TTL and backoff ceiling (the pending cap is enforced
+  on enqueue). The worker is bound to the
+  process background context and is cancelled at shutdown, where
+  runShutdown waits on it for up to 5s; the pull's own 10s context bounds
+  the remainder.
   Coverage now spans the dual-id fixture class (mock index rows keyed
   phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
   T1.6 cross-surface join tripwire), live-goroutine/global-pull-floor/
