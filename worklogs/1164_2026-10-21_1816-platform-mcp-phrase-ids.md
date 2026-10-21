@@ -141,6 +141,9 @@ Two concrete surfaces remained:
 
 - api/internal/middleware/session_ref.go (+ header, tests in
   api/internal/server/router_session_ref_test.go)
+- api/internal/middleware/session_ref_bridge_test.go (the r1/r3
+  continuity legs — real middleware ↔ real client)
+- pkg/types/session.go (HeaderSessionRefResolved — the shared constant)
 - pkg/mcp/client.go, pkg/mcp/server.go, pkg/mcp/phrase_ids_test.go
 - cmd/workspace-agentd/mcp_server.go, mcp_tools.go, session_ref.go,
   session_suggest.go, board_manager_tools.go,
