@@ -47,7 +47,7 @@ Ship the six proposed defaults from #1812 as written: inline script (not pointer
 
 - `local/issue-1812-trigger-gate-e2e.sh`: R0 self-teaching 400s; R1 false-gate (skipped + payload); R2 true-gate script-only (delivered + vars + in-workspace side-effect marker); R3 fail-closed; R4 prompt-only compat. Every execution row asserts ZERO workspace sessions (the no-LLM evidence). **Adaptive arms per #1455**: the nightly's agentd sidecar mode cannot execute script nodes (script_env_unavailable, named) — those clusters assert the fail-closed arm + zero sessions; exec-mode clusters assert the real gate outcomes. No LLM_MODEL needed (script-only triggers).
 - `local/issue_1812_trigger_gate_e2e_script_test.go`: bash-syntax + row/assertion pins + nightly registration pin (the #1452 lesson).
-- Registered in `.github/workflows/e2e-nightly.yml` (PORTFWD_PORT 18092 — the us72 sweep's unique-port pin caught my first choice colliding with 18089).
+- Registered in `.github/workflows/e2e-nightly.yml` (PORTFWD_PORT **18093**). **r1 correction:** my first port choice (18089) collided with the US-72 rogue-agent sweep's EXCLUSIVE port (the `TestUS72SweepWiring_PortIsolated` pin requires 18089 to appear exactly once — it is the sweep's own reserved port, not a free one). The first "fix" was worse than the collision: a global sed moved the sweep itself to 18092 alongside my step, breaking the pin on the pushed head (caught by the r1 review as the blocking finding). Corrected: sweep restored to 18089, the #1812 step moved to the genuinely unused 18093; `go test -run 'TestUS72|TestIssue1812' ./local/` green on the corrected head.
 
 ---
 
@@ -77,10 +77,12 @@ None. One observation for the orchestrator: the FULL `./cmd/workspace-agentd/` s
 
 ## Tests Run
 
+(On the final corrected head unless noted; the intermediate gocyclo-fix head briefly carried the sweep-port break below — r1's review caught it, and the r1 push corrected it.)
+
 - `go test ./pkg/workflows/` — ok (gate units + integration suite compile; PG rows skip without TEST_DATABASE_URL).
 - `go test ./api/internal/workflows/` — ok (75s; engine gate pins false/true/error/schema/script-only/compat).
 - `go test ./api/internal/handlers/` — ok (80s; script validation + lifecycle).
-- `go test ./pkg/mcp/ ./local/` — ok (script passthrough + description pins; e2e structural pins).
+- `go test ./pkg/mcp/` — ok (script passthrough + description pins). `go test -run 'TestUS72|TestIssue1812' ./local/` — ok **after the r1 port correction** (the pre-correction head FAILED TestUS72SweepWiring_PortIsolated — my sed had moved the sweep off its reserved 18089; see the e2e section's correction note).
 - `go test -run 'TestMCPHandler_ToolsList' ./cmd/workspace-agentd/` — ok (description pins).
 - `cd sdks && go run ./validate/main.go openapi.yaml && (cd validate && go test .)` — ok.
 - `cd frontend && npx vitest run src/pages/TriggersPage.test.tsx` — 24/24.

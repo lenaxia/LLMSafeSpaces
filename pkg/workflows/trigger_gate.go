@@ -64,7 +64,7 @@ func ValidateTriggerScript(s *TriggerScript) error {
 		return fmt.Errorf("trigger script requires 'handler' (the inline %s source defining handler(input) -> {proceed, vars}) alongside 'language'", s.Language)
 	}
 	if len(s.Handler) > MaxTriggerScriptBytes {
-		return fmt.Errorf("trigger script handler exceeds the %d-byte (%s) cap", MaxTriggerScriptBytes, "64 KiB")
+		return fmt.Errorf("trigger script handler exceeds the %s cap", humanBytesCap(MaxTriggerScriptBytes))
 	}
 	return nil
 }
@@ -73,7 +73,9 @@ func ValidateTriggerScript(s *TriggerScript) error {
 // against the {proceed: bool, vars: {str: str}} schema. Every violation
 // returns an error naming the field, the expected shape, and the rule
 // (self-teaching per the #1812 documentation mandate). Unknown
-// top-level keys are tolerated (forward compatibility).
+// top-level keys are tolerated (forward compatibility), and an absent
+// or JSON-null vars is treated as "no vars" (proceed-only returns are
+// legal — vars is optional in practice even though proceed is not).
 func ParseGateScriptOutput(raw []byte) (proceed bool, vars map[string]string, err error) {
 	var probe any
 	if uerr := json.Unmarshal(raw, &probe); uerr != nil {
@@ -119,11 +121,21 @@ func ParseGateScriptOutput(raw []byte) (proceed bool, vars map[string]string, er
 			// Size cap on the serialized dict — an unbounded gate return
 			// would bloat the prompt it feeds.
 			if reencoded, merr := json.Marshal(decoded["vars"]); merr == nil && len(reencoded) > MaxTriggerScriptVarsBytes {
-				return false, nil, fmt.Errorf("gate script vars exceed the %d-byte (%s) cap", MaxTriggerScriptVarsBytes, "64 KiB")
+				return false, nil, fmt.Errorf("gate script vars exceed the %s cap", humanBytesCap(MaxTriggerScriptVarsBytes))
 			}
 		}
 	}
 	return proceed, vars, nil
+}
+
+// humanBytesCap renders a byte cap for self-teaching errors, derived
+// from the constant so the two cannot drift (a literal "64 KiB" beside
+// a movable constant lies the day someone changes the constant).
+func humanBytesCap(n int) string {
+	if n >= 1024 && n%1024 == 0 {
+		return fmt.Sprintf("%d KiB", n/1024)
+	}
+	return fmt.Sprintf("%d-byte", n)
 }
 
 // SubstitutePromptVars replaces literal {{key}} tokens with the vars

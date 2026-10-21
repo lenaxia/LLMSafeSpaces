@@ -59,12 +59,14 @@ public class TriggersService {
      *               (see the class javadoc for the {proceed, vars} gate
      *               semantics), or {@code null} for a prompt-only trigger.
      *               Routine targets only — rejected alongside workflowId.
+     *               Appended AFTER preserveSession so existing positional
+     *               callers keep compiling.
      */
     public Map<String, Object> create(String name, String sourceType, Object sourceConfig,
                                        String workspaceId, String workflowId, String prompt,
-                                       String agent, Object script, String scriptPath, List<String> scriptArgs,
+                                       String agent, String scriptPath, List<String> scriptArgs,
                                        Object scriptEnv, String memoryMode, String captureMode,
-                                       String preserveSession) {
+                                       String preserveSession, Object script) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("name", name);
         body.put("sourceType", sourceType);
@@ -73,13 +75,13 @@ public class TriggersService {
         if (workflowId != null && !workflowId.isEmpty()) body.put("workflowId", workflowId);
         if (prompt != null && !prompt.isEmpty()) body.put("prompt", prompt);
         if (agent != null && !agent.isEmpty()) body.put("agent", agent);
-        if (script != null) body.put("script", script);
         if (scriptPath != null && !scriptPath.isEmpty()) body.put("scriptPath", scriptPath);
         if (scriptArgs != null) body.put("scriptArgs", scriptArgs);
         if (scriptEnv != null) body.put("scriptEnv", scriptEnv);
         if (memoryMode != null && !memoryMode.isEmpty()) body.put("memoryMode", memoryMode);
         if (captureMode != null && !captureMode.isEmpty()) body.put("captureMode", captureMode);
         if (preserveSession != null && !preserveSession.isEmpty()) body.put("preserveSession", preserveSession);
+        if (script != null) body.put("script", script);
         return c.request("POST", "/me/triggers", body,
                 new TypeToken<Map<String, Object>>(){}.getType());
     }

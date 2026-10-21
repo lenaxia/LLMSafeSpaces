@@ -541,7 +541,7 @@ jobs:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
-          PORTFWD_PORT: 18092
+          PORTFWD_PORT: 18093
           FIRE_WAIT_S: 300
         run: bash local/issue-1812-trigger-gate-e2e.sh
 
@@ -764,7 +764,7 @@ jobs:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
-          PORTFWD_PORT: 18092
+          PORTFWD_PORT: 18089
         run: |
           if [[ ! -f local/us-72-rogue-agent-sweep.sh ]]; then
             echo "SKIP: local/us-72-rogue-agent-sweep.sh not on this branch yet (lands with #1537, the US-72.6 scrub+sweep vehicle) — the #820 exit-criterion sweep is UNVERIFIED this run; not gating the teardown that follows."

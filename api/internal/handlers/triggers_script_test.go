@@ -157,7 +157,6 @@ func TestTriggerUpdate_ScriptLifecycle(t *testing.T) {
 	require.True(t, ok, "update response must carry the script")
 	assert.Equal(t, "node", script["language"])
 	assert.Equal(t, "node", store.triggers[id].ScriptLanguage)
-
 	// JSON null clears.
 	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{
 		"script": nil,
@@ -171,7 +170,6 @@ func TestTriggerUpdate_ScriptLifecycle(t *testing.T) {
 	if cleared["script"] != nil {
 		t.Fatalf("cleared script must not appear in the response, got %v", cleared["script"])
 	}
-	_ = resp
 }
 
 func TestTriggerUpdate_ScriptOnWorkflowTargetRejected(t *testing.T) {
