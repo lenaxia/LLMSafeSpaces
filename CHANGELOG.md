@@ -69,6 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract frames in the phrase view, and a non-vacuous same-id decoy);
   they fail on `origin/main` at the predicted assertions and pass with the
   seam.
+- **Late-learned aliases now re-key provider activity; snapshot learning is
+  batched (#1817, #1824 r10).** When a harness→phrase pair is learned after a
+  harness-keyed user event has already latched, `SessionActivityProvider`
+  re-keys its session-keyed activity maps (busy, unread, aborted, pending
+  actions and prompt content, and the cleared-session ref) through the
+  changed workspace's alias table, so the sidebar badges follow the phrase
+  without waiting for a reconnect. The contract stream learns only applied
+  frames, re-keys the fold only when the alias version moves (PART_DELTA
+  stays off the O(all sessions) path), and collapses a multi-pair snapshot
+  into a single alias notification and publish via
+  `beginSessionAliasBatch`/`endSessionAliasBatch`. The r11 companion commit
+  also hoists provider ref mutations out of state updaters so StrictMode's
+  double-invoked updaters stay pure and resolves staging maps at commit.
 
 (nothing yet)
 

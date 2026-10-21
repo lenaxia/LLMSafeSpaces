@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Session:** continuation worker (orchestrator rapid-fix dispatch after the #1821 root-cause ruling). Worktree `wt-1817`, branch `fix/1817-streaming-busy-regression` off main @ 644446fa.
-**Status:** complete (pieces 1–3; contract-stream half shipped under Ruling A; r1–r7 findings addressed; r8 merge-hygiene minors, r9 lifecycle/bounds fixes, and r10 test-determinism/retention corrections below).
+**Status:** complete for pieces 1–3 (contract-stream half shipped under Ruling A); r1–r7 findings addressed; r8 merge-hygiene minors; r9 observable-alias/hot-path frontend work and lifecycle/bounds agentd fixes; r10 provider activity re-key + batched snapshot learning and test-determinism/retention corrections. r11 frontend fixes applied in the companion commit on this branch (see the r9/r10 frontend section at the end).
 
 ## Root cause (adopted from #1821, investigator file:line-verified)
 SSE session.status legs keyed by HARNESS id (proxy_usagestream.go:182) vs the frontend identity flipped to PHRASE (sessionindex rows) — the join misses for every minted row. One root cause, both symptoms: sporadic busy + dead live streaming (ChatPage.tsx:720 vs fold.ts:39 — same join, the contract-stream consumer). E2E mocks injected ONE id into both surfaces — every suite blind.
@@ -800,3 +800,138 @@ sleeps remain in the assertion.
 - `go test -race -timeout 300s ./api/internal/services/usagestream/ -count=1` — green.
 - `make repolint` — all checks passed (same NNNN sentinel note).
 - Postgres integration: skipped (no database available in this environment).
+
+## Piece 3 (continued) — r9/r10 frontend: observable alias graph + activity re-key (2026-10-21)
+
+The r9/r10 sections above document only the agentd worker/pending/prune/
+pull-floor work. This section is the frontend half of those two rounds.
+Commit split: `9ac402f0` is r9 (observable alias learning + hot-path guard)
+and `ef9fdb52` is r10 (provider activity re-key + batched snapshot
+learning). The r11 companion re-key/purity fixes are called out separately
+at the end because they are a sibling commit, not part of r9/r10.
+
+### `frontend/src/session/sessionAliases.ts` — the observable alias graph
+
+- **Additive-pair learning.** `translateSessionIds` accepts the pair shape
+  emitted by the fixed API/agentd (wire id = phrase, additive internal id =
+  harness) and teaches it through `learnSessionAlias`. A legacy frame with
+  no additive id resolves through the learned table and carries the harness
+  id additively, so downstream consumers never lose it.
+- **Per-workspace bounded map.** `aliasesByWorkspace` is keyed
+  workspace → (harness → phrase), insertion-ordered. Each workspace holds at
+  most 512 aliases with FIFO eviction (`MAX_ALIASES_PER_WORKSPACE`), and at
+  most 1024 workspaces with oldest-workspace eviction (`MAX_WORKSPACES`).
+  One workspace's ids can never resolve in another.
+- **Input guards.** `isBoundedId` rejects empty ids, ids over 256 chars
+  (`MAX_SESSION_ID_LENGTH`), and ids containing whitespace or control
+  characters (including DEL), because frame fields are untrusted input.
+- **Equal-id decoy guard.** A "pair" whose wire and internal ids are equal
+  teaches nothing. If that id is a known harness, the frame is left alone so
+  it cannot alias a stale/decoy frame onto the phrase session.
+- **Identity when no pair is known.** With no additive id and no learned
+  mapping, translation is the identity — exactly the pre-fix behavior, never
+  worse.
+- **Monotonic version + listeners.** `learnSessionAlias` returns `changed`,
+  bumps the process-wide `sessionAliasVersion()`, and notifies
+  `subscribeSessionAliases` listeners synchronously with the changed
+  workspace. Re-learning the same pair, or a malformed/equal pair, is a
+  no-op and does not bump the version.
+- **Batched learning.** `beginSessionAliasBatch` / `endSessionAliasBatch`
+  collapse per-pair listener notifications into one notification per changed
+  workspace at the outermost close (nested batches flush only at depth 0).
+  The version still advances per learned pair.
+- **Late fold re-key.** `rekeySessionMap` moves a legacy row from its
+  harness key to the phrase when a pair is learned afterwards, preserving the
+  harness id on the snapshot. It skips the same-id decoy and does not
+  overwrite an existing phrase row (that row is the newer projection). It
+  returns whether the map changed, and callers publish only on true.
+
+### `frontend/src/hooks/useContractStream.ts` — applied-only learning + hot path
+
+- **Applied frames only.** The event path checks `seq <= fold.seq` BEFORE
+  translating, so a stale or duplicate frame can never overwrite a newer
+  harness→phrase mapping. Snapshot rows are translated only when the
+  snapshot is applied.
+- **Alias-version hot-path guard.** `rekeyIfAliasesChanged` compares
+  `sessionAliasVersion()` against `aliasVersionRef`; the O(all sessions)
+  walk runs only when the version moved. PART_DELTA and other alias-free
+  frames therefore do not re-key. The subscriber also consumes unrelated
+  workspace changes without touching this workspace's fold.
+- **Snapshot ordering.** r9 re-keyed the fold before applying the snapshot.
+  r10 changed this to: translate all snapshot rows inside one alias batch,
+  apply the snapshot, then run at most one re-key and publish one state —
+  the subscriber is suppressed while `applyingSnapshot` is true, so a
+  multi-pair snapshot no longer re-keys/publishes once per pair. The batch
+  is closed in `finally`, so a translation throw cannot leave it open.
+- **Single publish.** The snapshot path calls `publish()` once after the
+  batch/re-key and then `onSnapshot`; it does not publish per learned pair.
+
+### `frontend/src/providers/SessionActivityProvider.tsx` — late-learn activity re-key
+
+r10 subscribes to `subscribeSessionAliases`. When the changed workspace
+matches, it re-keys the provider's session-keyed activity projections
+through that workspace's alias table:
+
+- `busySessions` and `pendingUnread` (`rekeyWorkspaceValueMap`, scoped by
+  the map's workspace value; an existing phrase key wins);
+- `abortedSessions`;
+- `pendingActions`, including `pendingActionWsRef` and
+  `requestToSessionRef` (request-id sets merge into the phrase key);
+- `pendingQuestionContent` and `pendingPermissionContent`
+  (`rekeyPendingContent` resolves both `sessionId` and `rootSessionId`, and
+  refuses to move a request known to belong to another workspace);
+- `clearedRef` entries for that workspace.
+
+### r11 companion commit — StrictMode purity, deleted/staging re-key
+
+The r11 frontend review found two gaps in the r10 shape: some provider refs
+were mutated inside `setState` updaters (which React StrictMode may invoke
+twice), and `deletedSessions` was not re-keyed. The code fix is a sibling
+commit, **r11 frontend fixes applied in the companion commit on this
+branch** (this docs commit changes no code):
+
+- ref mutations are hoisted OUT of the state updaters — the next map/set and
+  any ref updates are computed from refs first, then the updater only
+  returns state, so a double-invoked updater stays pure/idempotent;
+- `deletedSessions` is re-keyed on a late-learned pair;
+- per-flight and legacy staging maps are resolved at commit before their
+  rows are handed to the pending-action updater.
+
+### Tests / pins
+
+- `sessionAliases.test.ts`: additive learning, legacy translation,
+  identity-before-pair, same-id decoy, empty/equal rejection, workspace
+  scoping, re-mint, the 512/1024 bounds, version/listener semantics, input
+  guards, late `rekeySessionMap` (including decoy/existing-phrase), and the
+  hot-path re-key counter.
+- `useContractStream.test.tsx`: a late user-stream learn re-keys and
+  publishes the fold; PART_DELTA runs no re-key when the version is
+  unchanged; a multi-pair snapshot produces one alias notification and at
+  most one re-key; a stale duplicate cannot overwrite the mapping.
+- `SessionActivityProvider.aliasRekey.test.tsx`: harness-keyed busy moves to
+  the phrase and idle then clears it; unread/aborted/pending-action keys
+  move too; another workspace's alias does not move the key.
+- E2E E2.1/E2.6 remain the genuinely red-first pins recorded under r8: they
+  drive pre-fix wire shapes on the surface under test and were verified
+  failing on `origin/main` (tests only, no seam) at the predicted
+  assertions, then passing on the branch. This docs change did not re-run
+  them.
+- r11 pins reported by the companion commit: StrictMode pending-action,
+  deleted-session re-key, staging/commit ordering, fold reseed. They are
+  attributed to that commit and were not independently run by this docs
+  change.
+
+No mutation verification is claimed for the frontend pins in this section.
+The agentd mutation evidence recorded in the r9/r10 sections above stands.
+
+### Sidebar-only healing limitation
+
+Learning happens wherever a translator observes the pair. The contract
+stream is mounted by ChatPage only; sidebar-only pages run just the user
+stream. With a pre-fix API (harness-keyed user events, no additive id) and a
+post-fix agentd (phrase-keyed contract rows carrying `internalSessionId`), a
+sidebar-only page has no source for the pair, so it cannot heal until a chat
+view has been opened once in this tab (the alias map is module-level and
+outlives the page). Healing sidebar-only pages requires hoisting the single
+contract-stream connection to the shell — not a second SSE connection — an
+architectural change outside this seam.
