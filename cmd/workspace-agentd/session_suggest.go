@@ -72,11 +72,15 @@ func suggestSessionID(requested string, ids []string) string {
 		return ""
 	case 1:
 		return fmt.Sprintf(" — did you mean %s? (your id differs by %d character%s; re-copy the exact id from session_list / session_metadata)",
-			atMin[0], minDist, pluralEdits(minDist))
+			emitID(atMin[0]), minDist, pluralEdits(minDist))
 	default:
 		sort.Strings(atMin)
+		shown := make([]string, 0, len(atMin))
+		for _, id := range atMin {
+			shown = append(shown, emitID(id))
+		}
 		return fmt.Sprintf(" — %d workspace sessions are within %d edits of that id (%s); none was used — re-copy the exact id from session_list / session_metadata",
-			len(atMin), suggestMaxEdits, strings.Join(atMin, ", "))
+			len(atMin), suggestMaxEdits, strings.Join(shown, ", "))
 	}
 }
 

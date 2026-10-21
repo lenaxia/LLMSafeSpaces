@@ -1093,12 +1093,13 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 	if scope != "" && len(metas) == 0 {
 		// The scope id failed to match ANY live session — the #1663
 		// near-miss clause rides along (ids are already in hand; no
-		// extra fetch).
+		// extra fetch). The echoed id is caller-facing (phrase when
+		// the replica knows it — #1816 emission closure).
 		ids := make([]string, 0, len(sessions))
 		for _, s := range sessions {
 			ids = append(ids, s.ID)
 		}
-		return "", fmt.Errorf("session %s not found%s", scope, suggestSessionID(scope, ids))
+		return "", fmt.Errorf("session %s not found%s", emitID(scope), suggestSessionID(scope, ids))
 	}
 
 	version := ""
@@ -1164,7 +1165,7 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 			}
 		}
 		if providerID == "" {
-			return "", fmt.Errorf("session %s has no current model — pass model explicitly", sessionID)
+			return "", fmt.Errorf("session %s has no current model — pass model explicitly", emitID(sessionID))
 		}
 	}
 
@@ -1246,7 +1247,14 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 	case 0:
 		return "", fmt.Errorf("no session is currently running — pass session_id explicitly (find IDs with session_metadata)")
 	default:
-		return "", fmt.Errorf("multiple sessions are busy (%s) — pass session_id explicitly", strings.Join(busyIDs, ", "))
+		// #1816 emission closure: the caller sees PHRASES when the
+		// replica knows them — the raw harness ids never surface in
+		// the refusal text.
+		shown := make([]string, 0, len(busyIDs))
+		for _, id := range busyIDs {
+			shown = append(shown, emitID(id))
+		}
+		return "", fmt.Errorf("multiple sessions are busy (%s) — pass session_id explicitly", strings.Join(shown, ", "))
 	}
 }
 
@@ -1289,14 +1297,22 @@ func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok boo
 		return "", "", false
 	}
 	target = v[:i]
-	if !sesIDPattern.MatchString(target) {
+	if !recoverableRefForm(target) {
 		return "", "", false
 	}
 	rest := strings.TrimSuffix(strings.TrimSuffix(v[i+len(dupFragmentMark):], "}"), `"`)
-	if !sesIDPattern.MatchString(rest) {
+	if !recoverableRefForm(rest) {
 		return "", "", false
 	}
 	return target, rest, true
+}
+
+// recoverableRefForm is the #1530 recovery's ref acceptance: a
+// harness-id or a 3-word phrase (#1816 — phrases are the canonical
+// address now, and the emission slip follows the address form the
+// caller sees in context; the recovery must keep working for them).
+func recoverableRefForm(v string) bool {
+	return sesIDPattern.MatchString(v) || shortid.IsShortIDForm(v)
 }
 
 // mcpSendMessage delivers a text message to another session in this
@@ -1395,11 +1411,14 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	for _, id := range []string{sessionID, origin} {
 		exists, err := client.SessionExists(ctx, id)
 		if err != nil {
-			return "", fmt.Errorf("failed to resolve session %s: %w", id, err)
+			return "", fmt.Errorf("failed to resolve session %s: %w", emitID(id), err)
 		}
 		if !exists {
+			// #1816: the visible id is caller-facing (phrase when
+			// known); the suggest clause still RANKS on the canonical
+			// id (#1806 f8 discipline).
 			return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)%s",
-				id, sessionSuggestClause(ctx, client, id))
+				emitID(id), sessionSuggestClause(ctx, client, id))
 		}
 	}
 
@@ -1427,10 +1446,14 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 			"target is your own session — this message will come back to you as your next turn, not reach another agent. If you meant a different session, re-check the ID (session_list / session_metadata); if this is an intentional self-note, carry on.")
 	}
 	if recovered {
-		warn := "session_id carried a duplicated-argument fragment (emission slip): recovered target " + sessionID +
+		// #1816 emission closure: the warning's ids are caller-facing
+		// text — phrases when the replica knows them (parity with the
+		// session_id/origin fields emitted below), never raw harness
+		// ids on the warm path.
+		warn := "session_id carried a duplicated-argument fragment (emission slip): recovered target " + emitID(sessionID) +
 			" from the leading id and delivered there — re-check the ID you pass (session_list / session_metadata)."
 		if embeddedOrigin != origin {
-			warn += " The fragment's embedded origin " + embeddedOrigin + " differs from the resolved origin " + origin + " — treated as cosmetic (the embedded copy is not trusted; the resolved origin wins attribution)."
+			warn += " The fragment's embedded origin " + emitID(embeddedOrigin) + " differs from the resolved origin " + emitID(origin) + " — treated as cosmetic (the embedded copy is not trusted; the resolved origin wins attribution)."
 		}
 		warnParts = append(warnParts, warn)
 	}
@@ -1568,7 +1591,7 @@ func automationDeps() (saToken, apiURL, workspaceID string, err error) {
 // mcpAutomation executes one automation seam call and wraps the result
 // for the tool surface. Body/patch JSON is passed through verbatim —
 // the platform validates and its error text names invalid fields.
-func mcpAutomation(ctx context.Context, name string, body map[string]any) (string, error) {
+func mcpAutomation(ctx context.Context, password, name string, body map[string]any) (string, error) {
 	saToken, apiURL, workspaceID, err := automationDeps()
 	if err != nil {
 		return "", err
@@ -1644,7 +1667,7 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task",
 		"board_import_plan":
-		res, err = dispatchBoardManagerTool(ctx, client, name, body, saToken, workspaceID)
+		res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)
 	}

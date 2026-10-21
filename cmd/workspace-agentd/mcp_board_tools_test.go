@@ -118,7 +118,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1","stage":"in_progress"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		out, err := mcpAutomation(context.Background(), "board_read", map[string]any{"shortId": "tsk-aaaa1111"})
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_read", map[string]any{"shortId": "tsk-aaaa1111"})
 		require.NoError(t, err)
 		assert.Contains(t, out, `"stage":"in_progress"`, "platform body passes through verbatim")
 		assert.Equal(t, http.MethodGet, rec.method)
@@ -131,7 +131,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 	t.Run("board_read prefers taskId in the path", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), "board_read", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_read", map[string]any{
 			"taskId": "11111111-1111-1111-1111-111111111111", "shortId": "tsk-aaaa1111"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/tasks/11111111-1111-1111-1111-111111111111", rec.path)
@@ -141,7 +141,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"extended":true}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		out, err := mcpAutomation(context.Background(), "board_heartbeat", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_heartbeat", map[string]any{
 			"shortId": "tsk-aaaa1111", "claimToken": "tok-1",
 			"observedProgressAt": "2026-10-18T12:00:00Z"})
 		require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"stage":"backlog"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_report_throttle", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_report_throttle", map[string]any{
 			"shortId": "tsk-aaaa1111", "claimToken": "tok-1", "retryAfterSeconds": 90})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/tasks/throttle", rec.path)
@@ -181,7 +181,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"stage":"in_review"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_move_stage", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_move_stage", map[string]any{
 			"shortId": "tsk-aaaa1111", "claimToken": "tok-1",
 			"toStage": "in_review", "evidenceUrl": "https://example.test/pr/9",
 			"requestId": "11111111-2222-3333-4444-555555555555"})
@@ -200,7 +200,7 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_heartbeat", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_heartbeat", map[string]any{
 			"task": map[string]any{"shortId": "tsk-aaaa1111", "claimToken": "tok-2"}})
 		require.NoError(t, err)
 		var wire map[string]json.RawMessage
@@ -221,7 +221,7 @@ func TestMCPBoard_ErrorPassthrough(t *testing.T) {
 			`{"error":"board: guard claim_token: heartbeat requires a live claim (stage + token)","code":"claim_token"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_heartbeat", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_heartbeat", map[string]any{
 			"shortId": "tsk-aaaa1111", "claimToken": "stale", "observedProgressAt": "2026-10-18T12:00:00Z"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "409", "status class visible")
@@ -234,7 +234,7 @@ func TestMCPBoard_ErrorPassthrough(t *testing.T) {
 			`{"error":"board: task \"tsk-aaa\" not found","suggestions":["tsk-aaaa1111"]}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_read", map[string]any{"shortId": "tsk-aaa"})
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_read", map[string]any{"shortId": "tsk-aaa"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "404")
 		assert.Contains(t, err.Error(), "tsk-aaaa1111", "did-you-mean suggestion survives the hop")
@@ -251,7 +251,7 @@ func TestMCPBoard_RefValidation(t *testing.T) {
 	setupRenameWorkspaceEnv(t, api)
 
 	for _, ref := range []string{"", "../../etc/passwd", "tsk-a;b", "a b", "tsk/%2e%2e"} {
-		_, err := mcpAutomation(context.Background(), "board_read", map[string]any{"shortId": ref})
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_read", map[string]any{"shortId": ref})
 		require.Error(t, err, "ref %q must be refused pre-wire", ref)
 	}
 	assert.Empty(t, rec.method, "no wire call may happen for a refused ref")
@@ -315,7 +315,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-cccc3333"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		out, err := mcpAutomation(context.Background(), "board_create_task", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
 			"epicId": "epc-bbbb2222", "title": "T1", "description": "do",
 			"dependsOn":            []any{"tsk-aaaa1111"},
 			"lsp_injected_session": "ses_workercaller1",
@@ -339,7 +339,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"epic":{"status":"active"}}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_epic_activate", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_epic_activate", map[string]any{
 			"epicId": "epc-bbbb2222", "acknowledgeInactiveDeps": true, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/epics/epc-bbbb2222/activate", rec.path)
@@ -352,7 +352,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"item_kind":"task"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_delete_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_task", map[string]any{
 			"taskId": "tsk-cccc3333", "reconnect": true, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, http.MethodDelete, rec.method)
@@ -366,7 +366,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"item_kind":"epic"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_delete_epic", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_epic", map[string]any{
 			"epicId": "epc-bbbb2222", "force": true, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, http.MethodDelete, rec.method)
@@ -377,7 +377,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"dry_run":true}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_import_plan", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_import_plan", map[string]any{
 			"projectId": "prj-aaaa1111", "epicTitle": "E", "dryRun": true,
 			"lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
@@ -390,12 +390,12 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 	t.Run("board_pause_task / board_pause_project wire", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"paused":true}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), "board_pause_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
 			"taskId": "tsk-cccc3333", "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
 
-		_, err = mcpAutomation(context.Background(), "board_project_pause", map[string]any{
+		_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_project_pause", map[string]any{
 			"projectId": "prj-aaaa1111", "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/pause", rec.path)
@@ -410,7 +410,7 @@ func TestMCPBoard_ManagerGrantGate(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
 			"epicId": "epc-bbbb2222", "title": "T1"})
 		require.Error(t, err, "an unidentified caller holds no manager grant")
 		assert.Contains(t, err.Error(), "#1747")
@@ -422,14 +422,14 @@ func TestMCPBoard_ManagerGrantGate(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 		boardWorkerSessions.record("ses_spawnedworker")
 
-		_, err := mcpAutomation(context.Background(), "board_epic_activate", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_epic_activate", map[string]any{
 			"epicId": "epc-bbbb2222", "lsp_injected_session": "ses_spawnedworker"})
 		require.Error(t, err, "a spawned worker never gains manager tools")
 		assert.Contains(t, err.Error(), "user-collaborator")
 		assert.Empty(t, rec.method)
 
 		// The declared fallback does not bypass the registry either.
-		_, err = mcpAutomation(context.Background(), "board_pause_task", map[string]any{
+		_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
 			"taskId": "tsk-cccc3333", "sessionId": "ses_spawnedworker"})
 		require.Error(t, err)
 		assert.Empty(t, rec.method)
@@ -439,7 +439,7 @@ func TestMCPBoard_ManagerGrantGate(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_create_epic", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_epic", map[string]any{
 			"projectId": "prj-aaaa1111", "title": "E",
 			"sessionId": "ses_spawnedworker", "lsp_injected_session": "sessi-2feellha"})
 		require.NoError(t, err, "the harness-attested injection is authoritative (the send_message pattern)")
@@ -450,7 +450,7 @@ func TestMCPBoard_ManagerGrantGate(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"extended":true}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), "board_heartbeat", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_heartbeat", map[string]any{
 			"shortId": "tsk-cccc3333", "claimToken": "tok", "observedProgressAt": "2026-10-19T12:00:00Z"})
 		require.NoError(t, err)
 		assert.NotEmpty(t, rec.method)

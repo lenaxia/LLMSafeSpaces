@@ -782,18 +782,38 @@ func mcpHandler(password string) http.HandlerFunc {
 			}
 			result, err := callMCPTool(r.Context(), password, params.Name, params.Arguments)
 			if err != nil {
-				writeMCPResult(w, req.ID, map[string]any{
+				res := map[string]any{
 					"content": []map[string]any{
 						{"type": "text", "text": fmt.Sprintf("Error: %v", err)},
 					},
 					"isError": true,
-				})
+				}
+				// #1816 §2 parity: the notice rides the error envelope
+				// too — a deprecated-form ref that FAILS still tells
+				// the caller the address form is going away.
+				if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+					res["content"] = append(res["content"].([]map[string]any),
+						map[string]any{"type": "text", "text": note})
+				}
+				writeMCPResult(w, req.ID, res)
 				return
 			}
+			content := []map[string]any{
+				{"type": "text", "text": result},
+			}
+			// #1816 §2 parity with the REST Deprecation/Sunset
+			// headers: a caller addressing a session by a deprecated
+			// form (full/hashed id) gets the one-release notice as a
+			// SECOND content block on the tools/call result — the
+			// envelope-level carrier covers every session tool
+			// uniformly, including array-shaped outputs (session_read)
+			// that have no object field to carry it (#1806's round
+			// left those shape-constrained).
+			if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+				content = append(content, map[string]any{"type": "text", "text": note})
+			}
 			writeMCPResult(w, req.ID, map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": result},
-				},
+				"content": content,
 			})
 
 		default:
@@ -893,7 +913,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
 		// #1747: the manager set joins them, session-gated at dispatch.
-		return mcpAutomation(ctx, name, args)
+		return mcpAutomation(ctx, password, name, args)
 	case "get_datetime":
 		timezoneArg, _ := args["timezone"].(string)
 		return mcpGetDatetime(timezoneArg)
