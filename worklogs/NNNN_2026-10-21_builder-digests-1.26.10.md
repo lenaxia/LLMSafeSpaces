@@ -19,7 +19,7 @@ Green main's Build jobs: re-pin the five golang builder images to the 1.26.10-er
 
 ## Key Decisions
 
-- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks; the PR title/body track every re-scope honestly (heal raced → carry → five digests).
+- Minimal-surviving-diff discipline: as main absorbed each piece, this branch shrank to only what main still lacks (heal raced by the bot → carry → five digests). The r4 review caught my stale second-version PR body (a silently-failed edit) and the #1828/43a7ba29 misattribution in this worklog — both corrected in this commit.
 
 ## Blockers
 
