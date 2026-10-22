@@ -777,18 +777,24 @@ describe("SessionActivityProvider — ordering/partial-join findings (#1848 r2)"
     await advanceHealthy(stream, 2_000);
     expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
 
-    // The authority is down: the flight answers ok=false. With no
-    // latched evidence left, the pending-recheck path must own the
-    // retry — one more request per lease window, not a hammer.
+    // The authority is down: the flight answers ok=false. The wipe's
+    // memory re-latches as UNKNOWN (the charter hold — the badge never
+    // reads idle) and the pending-recheck path owns the retry — one
+    // more request per lease window, not a hammer.
     stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-down"}\n\n`);
     stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-down","snapshot_ok":false}\n\n`);
+    await settle(500);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
     await advanceHealthy(stream, 80_000);
     expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
 
     await advanceHealthy(stream, 20_000);
     expect(mockRequestStatusSnapshot.mock.calls.length).toBe(2);
 
-    // The retry's flight answers authoritatively: busy restored.
+    // The retry's flight answers authoritatively: the unknown-held
+    // badge is CONFIRMED busy (it was re-latched by the ok=false
+    // unknown-hold, so "yes" never flickered).
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
     stream.push(`id: 30\ndata: {"event_id":30,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-up"}\n\n`);
     stream.push(`id: 31\ndata: {"event_id":31,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-up","data":{"cursor":31,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
     stream.push(`id: 32\ndata: {"event_id":32,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-up","snapshot_ok":true}\n\n`);
@@ -796,9 +802,246 @@ describe("SessionActivityProvider — ordering/partial-join findings (#1848 r2)"
     await settle(100);
 
     expect(screen.getByTestId("busy").textContent).toBe("yes");
-    // The authoritative answer cleared the pending retry — no more
-    // requests after another full window.
-    await advanceHealthy(stream, 95_000);
+    // The authoritative answer cleared the pending retry. The
+    // confirmed-busy lease then ticks at its designed cadence — one
+    // recheck per ~90s window (sweep-tick jitter ≤15s) for as long as
+    // the session stays genuinely busy. Pin the SPACING: nothing fires
+    // inside an 85s quiet window, and the next one lands within a
+    // window + jitter.
+    await advanceHealthy(stream, 85_000);
     expect(mockRequestStatusSnapshot.mock.calls.length).toBe(2);
+    await advanceHealthy(stream, 30_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(3);
+  });
+});
+
+// ===== Round-5 review findings (PR #1848 r3) =====
+//
+// Z1: same-chunk dispatch staleness — a busy delta and an idle
+//     snapshot commit delivered in ONE chunk must reconcile against
+//     the chunk's own state (the newer evidence wins), in both orders.
+// Z2: a REST-seeded phrase entry with an unrelated degraded busy row
+//     in the flight is cleared by its own resolved idle answer.
+// Z3: a resolved idle row wins over an older overlapping busy flight.
+// Z4: agent_died with an outstanding pending recheck stops the
+//     retry loop.
+describe("SessionActivityProvider — commit-path correctness (#1848 r3)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let stream: ReturnType<typeof pushedReader>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    mockGetAlerts.mockResolvedValue([]);
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
+    stream = pushedReader([]);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: { getReader: () => stream.reader },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderProbe(sessionId?: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe sessionId={sessionId} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("Z1 same-chunk delta + snapshot commit reconciles against the chunk's own state (both orders)", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Order A: the flight's frames AND a newer busy delta (id 30) for
+    // the session arrive in ONE chunk. The idle rows must not delete
+    // the newer busy evidence.
+    stream.push(
+      `id: 9\ndata: {"event_id":9,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-chunk"}\n\n` +
+      `id: 10\ndata: {"event_id":10,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-chunk","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false}]}}\n\n` +
+      `id: 11\ndata: {"event_id":11,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-chunk","snapshot_ok":true}\n\n` +
+      `id: 30\ndata: {"event_id":30,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`,
+    );
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // Order B: one chunk carrying a newer idle delta (id 50) after the
+    // flight confirmed busy at cursor 40 — ends idle.
+    stream.push(
+      `id: 41\ndata: {"event_id":41,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-chunk2"}\n\n` +
+      `id: 42\ndata: {"event_id":42,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-chunk2","data":{"cursor":40,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n` +
+      `id: 43\ndata: {"event_id":43,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-chunk2","snapshot_ok":true}\n\n` +
+      `id: 50\ndata: {"event_id":50,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"idle"}\n\n`,
+    );
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z1b a same-chunk newer busy re-confirm survives an older-cursor idle commit (the stale-closure regression)", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Pre-chunk: busy latched at confirm id 5.
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // ONE chunk: a NEWER busy delta (id 30 — re-confirm) followed by
+    // an idle flight at cursor 10. The newer evidence must win: the
+    // commit's cursor (10) is below the delta's confirm (30), so the
+    // entry survives. The r3 regression computed doom from the stale
+    // pre-chunk state (confirm=5 ≤ 10) and deleted the fresh signal.
+    stream.push(
+      `id: 30\ndata: {"event_id":30,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n` +
+      `id: 31\ndata: {"event_id":31,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-z1b"}\n\n` +
+      `id: 32\ndata: {"event_id":32,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-z1b","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false}]}}\n\n` +
+      `id: 33\ndata: {"event_id":33,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-z1b","snapshot_ok":true}\n\n`,
+    );
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  it("Z2 a REST-seeded entry is cleared by its resolved idle answer despite an unrelated degraded busy row", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([
+      { id: "phrase-one", title: "t", messageCount: 0, status: "active", hasUnread: false },
+    ] as SessionListItem[]);
+    renderProbe();
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // phrase-one's row RESOLVED idle (registered server-side); an
+    // unrelated session's row degraded busy. The resolved answer owns
+    // the entry — cleared.
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-z2"}\n\n`);
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-z2","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false},{"session_id":"h-B","derived_busy":true,"session_id_deprecated":true}]}}\n\n`);
+    stream.push(`id: 11\ndata: {"event_id":11,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-z2","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z3 a resolved idle row wins over an older overlapping busy flight", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Newer flight (cursor 30) answers idle; older flight (cursor 20)
+    // completes after with a busy row — idle wins.
+    stream.push(`id: 31\ndata: {"event_id":31,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-new"}\n\n`);
+    stream.push(`id: 32\ndata: {"event_id":32,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-new","data":{"cursor":30,"sessions":[{"session_id":"phrase-one","derived_busy":false}]}}\n\n`);
+    stream.push(`id: 33\ndata: {"event_id":33,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-new","snapshot_ok":true}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-old"}\n\n`);
+    stream.push(`id: 22\ndata: {"event_id":22,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-old","data":{"cursor":20,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 34\ndata: {"event_id":34,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-old","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z4 agent_died with an outstanding pending recheck stops the retry loop", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Nothing latched and no wipe memory → the ok=false answer takes
+    // the PENDING-recheck branch (scheduled at +90s).
+    stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-d"}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-d","snapshot_ok":false}\n\n`);
+    await settle(300);
+
+    // Terminal event: the workspace is dead — the pending recheck must
+    // be dropped; zero POSTs ever (pre-fix: the loop re-arms forever).
+    stream.push(`id: 22\ndata: {"event_id":22,"type":"agent_died","workspace_id":"ws-1"}\n\n`);
+    await advanceHealthy(stream, 190_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(0);
+  });
+
+  it("Z4b a LATE ok=false after the terminal event cannot re-arm the recheck loop", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // ok=false with nothing latched and no wipe memory → the pending
+    // recheck is armed at +90s.
+    stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-d"}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-d","snapshot_ok":false}\n\n`);
+    await settle(300);
+
+    // Terminal: agent_died drops the pending recheck…
+    stream.push(`id: 22\ndata: {"event_id":22,"type":"agent_died","workspace_id":"ws-1"}\n\n`);
+    await settle(300);
+
+    // …and a LATE ok=false flight (its begin predates the death — the
+    // fetch raced the agent's death and the pod cannot answer) must not
+    // re-arm it: the sweep would POST every window forever for a corpse.
+    stream.push(`id: 23\ndata: {"event_id":23,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-late"}\n\n`);
+    stream.push(`id: 24\ndata: {"event_id":24,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-late","snapshot_ok":false}\n\n`);
+    await advanceHealthy(stream, 190_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(0);
+  });
+
+  it("Z3b a degraded harness-keyed idle answer beats an older phrase-keyed busy flight", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Newer flight (cursor 30): the idle row DEGRADED server-side —
+    // harness-keyed, flagged, no pair learnable from it. Older flight
+    // (cursor 20): healthy busy row, phrase key + additive harness id.
+    // The newer answer must win (idle): the busy row's own harness id
+    // carries the newer evidence the phrase key never saw.
+    stream.push(`id: 31\ndata: {"event_id":31,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-new"}\n\n`);
+    stream.push(`id: 32\ndata: {"event_id":32,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-new","data":{"cursor":30,"sessions":[{"session_id":"h-1","derived_busy":false,"session_id_deprecated":true}]}}\n\n`);
+    stream.push(`id: 33\ndata: {"event_id":33,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-new","snapshot_ok":true}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-old"}\n\n`);
+    stream.push(`id: 22\ndata: {"event_id":22,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-old","data":{"cursor":20,"sessions":[{"session_id":"phrase-one","internal_session_id":"h-1","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 34\ndata: {"event_id":34,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-old","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z6 a same-chunk busy delta + resync still triggers the post-wipe authority recheck", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // ONE chunk: the busy delta lands and the broker signals resync in
+    // the same synchronous dispatch. A render-closure read of the busy
+    // set never sees the delta (stale within the chunk) — the capture
+    // must ride the updater queue, or the wiped workspace is never
+    // re-checked and reads idle forever.
+    stream.push(
+      `id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n` +
+      `data: {"type":"resync"}\n\n`,
+    );
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+
+    await advanceHealthy(stream, 110_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+    expect(mockRequestStatusSnapshot.mock.calls[0][0]).toBe("ws-1");
   });
 });

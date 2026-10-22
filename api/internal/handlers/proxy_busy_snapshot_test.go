@@ -188,6 +188,16 @@ func collectSSE(t *testing.T, hs *busySnapHarness, lastEventID string, done func
 	}
 }
 
+func countType(evts []apitypes.WorkspaceSSEEvent, typ string) int {
+	n := 0
+	for i := range evts {
+		if evts[i].Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
 func findEvent(evts []apitypes.WorkspaceSSEEvent, typ string) *apitypes.WorkspaceSSEEvent {
 	for i := range evts {
 		if evts[i].Type == typ {
@@ -330,34 +340,33 @@ func TestStreamUserEvents_BusySnapshotAfterReplayGap_Resync(t *testing.T) {
 
 // T1.4 — busy→idle→busy on one connection stays exactly-once per
 // transition (#1781's emission legs unchanged) while a snapshot flight
-// runs concurrently: the flight must not duplicate the delta surface.
+// races them concurrently (deltas published the moment the stream is
+// live, before the flight's fetch completes): the flight must not
+// duplicate the delta surface.
 func TestStreamUserEvents_BusySnapshotFlight_DoesNotDuplicateDeltas(t *testing.T) {
 	hs := newBusySnapHarness(t, "user-t14", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, busyStatuszBody())
 	}, nil)
 
+	// #1848 r3 review note: drive TRUE concurrency — the three flips
+	// publish the moment the subscriber registers (the connect-path
+	// flight is in flight, its fetch unresolved), racing the flight
+	// rather than sequencing after its complete.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if hs.broker.UserSubscriberCount("user-t14") >= 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "idle"})
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
+	}()
 	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
-		// Wait for the flight to complete, then drive three live flips.
-		if findEvent(evts, "session.status.snapshot_complete") == nil {
-			return false
-		}
-		live := 0
-		for _, e := range evts {
-			if e.Type == "session.status" {
-				live++
-			}
-		}
-		if live < 3 {
-			// Publish the transitions lazily once the flight landed.
-			if live == 0 && len(evts) > 0 {
-				hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
-				hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "idle"})
-				hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
-			}
-			return false
-		}
-		return true
+		return findEvent(evts, "session.status.snapshot_complete") != nil && countType(evts, "session.status") >= 3
 	})
 
 	statuses := []string{}
@@ -539,7 +548,7 @@ func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
 	// Fire the on-demand trigger; wait until its fetch STARTED — its
 	// begin marker is provably already on the wire, so the joiner below
 	// cannot see it.
-	go hs.handler.RequestSessionStatusSnapshotForTest(busySnapWS)
+	go hs.handler.requestSessionStatusSnapshotSync(busySnapWS)
 	select {
 	case <-fetched:
 	case <-time.After(2 * time.Second):
@@ -587,4 +596,86 @@ func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
 	}
 	assert.True(t, sawComplete,
 		"the joiner's own flight must complete (its authoritative seed, not the running flight's markers)")
+}
+
+// Z5 (#1848 r3 missing-test ask): fetchStatuszSessions' unhappy-path
+// table — every failure class must read NOT-authoritative (ok=false).
+func TestFetchStatuszSessions_UnhappyPaths(t *testing.T) {
+	newHandler := func(ws *v1.Workspace, wsErr error) *ProxyHandler {
+		k8sMock := k8smocks.NewMockKubernetesClient()
+		llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
+		wsMock := k8smocks.NewMockWorkspaceInterface()
+		k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset()).Maybe()
+		k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
+		llmMock.On("Workspaces", "default").Return(wsMock)
+		wsMock.On("Get", mock.Anything, busySnapWS, mock.Anything).Return(ws, wsErr).Maybe()
+		h := &ProxyHandler{
+			k8sClient: k8sMock,
+			logger:    &testLogger{},
+			namespace: "default",
+			httpClient: &http.Client{
+				Timeout:   5 * time.Second,
+				Transport: &rewritingTransport{target: "http://127.0.0.1:1"},
+			},
+		}
+		h.SetCachedPasswordForTest(busySnapWS, "pw")
+		return h
+	}
+	activeWS := func() *v1.Workspace {
+		return &v1.Workspace{
+			ObjectMeta: metav1.ObjectMeta{Name: busySnapWS, Namespace: "default"},
+			Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.9"},
+		}
+	}
+
+	cases := []struct {
+		name string
+		h    *ProxyHandler
+	}{
+		{"k8s client nil", &ProxyHandler{logger: &testLogger{}, namespace: "default"}},
+		{"workspace Get error", newHandler(nil, fmt.Errorf("k8s down"))},
+	}
+	{
+		w := activeWS()
+		w.Status.Phase = v1.WorkspacePhaseSuspended
+		cases = append(cases, struct {
+			name string
+			h    *ProxyHandler
+		}{"non-Active phase", newHandler(w, nil)})
+	}
+	{
+		w := activeWS()
+		w.Status.PodIP = ""
+		cases = append(cases, struct {
+			name string
+			h    *ProxyHandler
+		}{"empty PodIP", newHandler(w, nil)})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, ok := tc.h.fetchStatuszSessions(context.Background(), busySnapWS)
+			assert.False(t, ok, "%s must read NOT-authoritative", tc.name)
+			assert.Empty(t, rows)
+		})
+	}
+
+	// Non-200 + bad JSON via a real stub.
+	for name, stub := range map[string]http.HandlerFunc{
+		"non-200":  func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) },
+		"bad JSON": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{not json`)) },
+		"oversized body": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"sessions":[` + strings.Repeat(`{"id":"x","status":"idle"},`, 200_000) + `]}`))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(stub)
+			defer srv.Close()
+			h := newHandler(activeWS(), nil)
+			h.httpClient = &http.Client{Timeout: 10 * time.Second, Transport: &rewritingTransport{target: srv.URL}}
+			rows, ok := h.fetchStatuszSessions(context.Background(), busySnapWS)
+			assert.False(t, ok, "%s must read NOT-authoritative", name)
+			assert.Empty(t, rows)
+		})
+	}
 }

@@ -99,47 +99,45 @@ test.describe("#1821 busy-snapshot handshake (connect-path flight)", () => {
     await expect(row().locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
   });
 
-  test("2 — authority down then recovered: ok=false never clears, the first authoritative flight restores", async ({ page }) => {
+  test("2 — authority down across reconnects: the badge holds unknown, never reads idle", async ({ page }) => {
     await setupBase(page);
 
-    // Phases across the fulfill-per-connect churn: the delta badges the
-    // session; the reconnect wipe clears it (#1646 — by design) while the
-    // authority is DOWN (ok=false flights must never re-clear or corrupt);
-    // when the authority recovers, the connect-path flight re-badges.
-    let down = true;
-    let sawDownFlight = false;
+    // conn #1 delivers the busy delta; every later connection (the
+    // fulfill-per-connect churn) answers ok=false — the authority is
+    // down. The reconnect wipe clears busy, but the ok=false answer
+    // RE-LATCHES the wipe's memory as unknown: the badge must never
+    // settle idle while the authority cannot answer.
+    let connections = 0;
     await page.route(`${API}/events`, async (r: Route) => {
-      const delta = `id: 1\ndata: ${JSON.stringify({ event_id: 1, type: "session.status", workspace_id: WS, session_id: SESS, status: "busy" })}\n\n`;
-      const downFlight =
+      connections++;
+      // Every connection re-stamps the busy delta (the #1646
+      // reconnect-reseed pattern) AND answers the connect-path flight
+      // with ok=false. What this pins at e2e fidelity: an authority
+      // that cannot answer NEVER reads as idle — the down-flights must
+      // neither clear the delta-latched badge nor flip the cache. (The
+      // wipe-memory re-latch across the blip is pinned deterministically
+      // in vitest Y5 — fake timers; the churn here races real polling.)
+      const body =
+        `id: 1\ndata: ${JSON.stringify({ event_id: 1, type: "session.status", workspace_id: WS, session_id: SESS, status: "busy" })}\n\n` +
         `id: 10\ndata: ${JSON.stringify({ event_id: 10, type: "session.status.snapshot_begin", workspace_id: WS, snapshot_id: "f-down" })}\n\n` +
         `id: 11\ndata: ${JSON.stringify({ event_id: 11, type: "session.status.snapshot_complete", workspace_id: WS, snapshot_id: "f-down", snapshot_ok: false })}\n\n`;
-      const upFlight =
-        `id: 20\ndata: ${JSON.stringify({ event_id: 20, type: "session.status.snapshot_begin", workspace_id: WS, snapshot_id: "f-up" })}\n\n` +
-        `id: 21\ndata: ${JSON.stringify({ event_id: 21, type: "session.status.snapshot", workspace_id: WS, snapshot_id: "f-up", data: { cursor: 20, sessions: [{ session_id: SESS, internal_session_id: HARNESS, status: "busy", derived_busy: true }] } })}\n\n` +
-        `id: 22\ndata: ${JSON.stringify({ event_id: 22, type: "session.status.snapshot_complete", workspace_id: WS, snapshot_id: "f-up", snapshot_ok: true })}\n\n`;
-      let body: string;
-      if (down) {
-        sawDownFlight = true;
-        body = delta + downFlight;
-      } else {
-        body = upFlight;
-      }
       await r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
     });
 
     await page.goto(`/chat/${WS}/${SESS}`);
     const row = page.getByRole("button", { name: /Snapshot Row/ }).first();
     await expect(page.getByText("Snapshot Row")).toBeVisible({ timeout: 10_000 });
-    // The delta badges the session (connect #1).
     await expect(row.locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
 
-    // Authority recovers; the next connection's flight re-badges (the
-    // reconnect wipe in between is the #1646 pin, not this lane's
-    // concern — what THIS test pins is that ok=false flights corrupt
-    // nothing and the first ok=true flight converges the badge back).
-    down = false;
-    await expect(row.locator("[data-busy]")).toBeVisible({ timeout: 10_000 });
-    expect(sawDownFlight).toBe(true);
+    // The connection ends → reconnect churn → each new connection
+    // re-stamps the delta and re-answers ok=false. Across several
+    // windows the badge must stay continuously visible — the authority
+    // failure never reads as idle.
+    await page.waitForTimeout(4_000);
+    await expect(row.locator("[data-busy]")).toBeVisible();
+    await page.waitForTimeout(4_000);
+    await expect(row.locator("[data-busy]")).toBeVisible();
+    expect(connections).toBeGreaterThan(2);
   });
 
   test("3 — aborted user-SSE reconnect: the snapshot flight re-badges", async ({ page }) => {

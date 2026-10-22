@@ -213,22 +213,18 @@ func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceI
 			Status:      raw.Status,
 			DerivedBusy: raw.Status != "idle",
 		}
-		if !row.DerivedBusy {
-			// Idle rows never latch client-side and never join against
-			// latched entries (removal is keyed by the LATCHED session's
-			// id, not the idle row's) — skip the Register seam for them.
-			// #1848 r0 robustness: on an LRU miss Register is a DB
-			// EnsureSessionRegistered; a cold replica with thousands of
-			// idle sessions would otherwise burn the 5s flight budget
-			// translating rows nobody keys on, degrading the busy tail.
-			rows = append(rows, row)
-			continue
-		}
-		// The #1821 piece-1 ID discipline on the new surface: key the
-		// row by the phrase, harness id additive. Register is the
-		// emission-surface seam (idempotent, LRU-cached after first
-		// sight); an unresolved session degrades to the harness id,
-		// flagged deprecated — never worse than the pre-fix wire.
+		// The #1821 piece-1 ID discipline on the new surface: key EVERY
+		// row — busy and idle alike — by the phrase, harness id
+		// additive. Register is the emission-surface seam (idempotent,
+		// LRU-cached after first sight). #1848 r3 finding 3: idle rows
+		// must join the same id space too — the client keys its
+		// per-session ordering and removal-decisions on the phrase, and
+		// a harness-keyed idle row neither advances the phrase-keyed
+		// watermark nor matches the phrase-keyed latched entry. The
+		// cold-replica budget worry (Register's DB upsert on LRU miss)
+		// is bounded by the flight's 2s-per-register timeout and the
+		// per-workspace session scale; rows that DO time out degrade
+		// flagged, exactly as before.
 		regCtx, regCancel := context.WithTimeout(flightCtx, 2*time.Second)
 		phrase := ""
 		if h.sessionIndex != nil {
@@ -283,11 +279,11 @@ func (h *ProxyHandler) RequestSessionStatusSnapshot(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// RequestSessionStatusSnapshotForTest drives the on-demand trigger
-// synchronously (the POST handler's coalescing guard + detached
-// goroutine, minus the HTTP ceremony) — the seam the coalescing and
-// orphan-subscriber tests use.
-func (h *ProxyHandler) RequestSessionStatusSnapshotForTest(workspaceID string) {
+// requestSessionStatusSnapshotSync drives the on-demand trigger
+// synchronously (the POST handler's coalescing guard, minus the HTTP
+// ceremony) — the seam the coalescing and orphan-subscriber tests use.
+// Test-only caller; unexported so it cannot ride the production surface.
+func (h *ProxyHandler) requestSessionStatusSnapshotSync(workspaceID string) {
 	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); !loaded {
 		defer busyFlightsInFlight.Delete(workspaceID)
 		h.emitSessionStatusSnapshot(context.Background(), workspaceID)

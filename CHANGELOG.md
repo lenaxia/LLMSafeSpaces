@@ -89,6 +89,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   route is documented in sdks/openapi.yaml (the router↔spec parity
   gate); Playwright e2e pins the connect-path badge (refresh-mid-busy,
   abort-reconnect, down-then-recovered).
+- **Review-hardened round 4 (PR #1848 r3)**: the snapshot commit
+  reconciles INSIDE the state updater against its fresh `prev` (SSE
+  frames dispatch synchronously per chunk — a render-closure read was
+  stale within the chunk and could delete a same-chunk newer busy
+  re-confirm); idle rows are REGISTERED server-side too (every row
+  joins the phrase id space — a harness-keyed idle row could not
+  advance a phrase-keyed session's ordering watermark); the degraded
+  row blocks removal only of entries it could BE (own harness id,
+  reverse alias of the phrase, or a session with no resolved answer) —
+  a resolved answer always clears; terminal events (agent_died /
+  non-Active phase) also drop the pending recheck and the wipe memory
+  (no 90s retry loop for dead workspaces); a dropped flight
+  (ok=true, staged missing) schedules nothing; and the charter's
+  unknown-hold is delivered end-to-end: the reconnect/resync wipe
+  REMEMBERS what it cleared, and an ok=false answer to the post-wipe
+  re-seed re-latches it as unknown (never idle) with the lease owning
+  a once-per-window recovery cadence — pinned in vitest (fake timers)
+  and at e2e fidelity (authority-down never clears a live badge).
 
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)

@@ -171,6 +171,23 @@ export interface SessionIdPair {
   internalSessionId: string | undefined;
 }
 
+/** Reverse lookup: the harness id a phrase was learned from, if any
+ * (#1821 piece 4 / #1848 r3 finding 2). O(workspace table) — bounded by
+ * MAX_ALIASES_PER_WORKSPACE; used at snapshot-commit cadence, not per
+ * frame. Returns undefined when no pair is known for the phrase. */
+export function reverseSessionAlias(
+  workspaceId: string | undefined,
+  phraseId: string | undefined,
+): string | undefined {
+  if (!workspaceId || !phraseId) return undefined;
+  const table = aliasesByWorkspace.get(workspaceId);
+  if (!table) return undefined;
+  for (const [harness, phrase] of table) {
+    if (phrase === phraseId) return harness;
+  }
+  return undefined;
+}
+
 /**
  * Normalizes one observed id pair to the phrase-keyed wire shape.
  * - pair (wire != internal): already phrase-keyed; learns the alias.

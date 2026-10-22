@@ -99,6 +99,19 @@ Red-first round 4 (observed red via stash-revert): frontend Y2 (same-session inv
 
 Verification at r3 (the FULL set this time): api ./internal/server + ./internal/handlers + ./internal/services/eventbroker green; cmd/workspace-agentd FULL green (360s); frontend vitest 2399/2399 (211 files) + eslint 0 errors + tsc clean; Playwright busy-snapshot-lease 3/3; golangci-lint 0 issues (handlers, server, agentd, pkg/agentd); repolint ok.
 
+## Review round r3 (PR #1848 fourth bot review)
+
+1. **Stale-closure reconcile (BLOCKING, my r2 regression)** — the doomed-decision loop read the render-closure `busySessions`; same-chunk frames (SSE dispatches a chunk's frames synchronously) saw pre-chunk state and an older-cursor idle commit could delete a same-chunk newer busy re-confirm. Fixed: the entire reconcile (removals + watermarks + latches) runs INSIDE the setBusySessions updater against its fresh `prev`; every ref write inside is an IDEMPOTENT max-stamp, so StrictMode double-invocation is harmless (the #1824 r11 hazard is non-idempotent writes). Red pin: Z1b.
+2. **REST entries pinned by any degraded row (BLOCKING, F4 incomplete)** — v2 rule: a session with a RESOLVED answer under its own key (answeredIds) is always clearable; unresolved entries fall back to identity matching (own harness id / reverseSessionAlias of the phrase — new export / protected when no identity exists). Red pin: Z2.
+3. **Harness-keyed idle rows missed the phrase watermark (MEDIUM)** — root-caused to my r1 "Register only busy rows" optimization; idle rows are REGISTERED too (every row joins the phrase space; Register remains idempotent/LRU-cached; per-register 2s budget; degrade path unchanged). Pin: Z3 (+ the wire suite).
+4. **pendingRecheck leak on terminal states (MEDIUM)** — agent_died / non-Active phase now also drop pendingRecheckRef + wipedBusyRef; a DROPPED flight (ok=true, staged missing — backpressure or terminal invalidation) schedules nothing. Red pin: Z4 (0 POSTs across two windows post-terminal).
+5. **Unknown-hold delivered (HIGH — the charter ask)** — the wipe REMEMBERS what it cleared (wipedBusyRef, filled inside the wipe's updater — idempotent); an ok=false answer to the post-wipe re-seed re-latches the memory as unknown (badge never settles idle across the blip) with the freshly-stamped lease owning the once-per-window recovery; when there is no memory (nothing was wiped), the pending recheck owns the identical cadence. The sweep dedupes lease-expiry and pending-recheck per workspace. Pinned: vitest Y5 (fake timers, deterministic, including the steady-state one-per-window cadence while genuinely busy) + e2e test 2 (authority-down across reconnect churn never clears the live badge; the memory re-latch itself stays in vitest because real-clock polling races the ms-scale dip).
+6. **Backend asks** — fetchStatuszSessions unhappy-path table (nil k8s / Get error / non-Active / empty PodIP / non-200 / bad JSON / oversized: all NOT-authoritative); T1.4 now drives TRUE concurrency (deltas publish the moment the subscriber registers, racing the in-flight fetch — 3/3 stable). Style: the test seam went unexported (requestSessionStatusSnapshotSync).
+
+Red-first round 5 (stash-revert of the provider): Z1b (stale-closure deletion), Z2 (REST pin), Z4 (retry leak), Y5 (memory re-latch + cadence) red; Z1/Z3 passed on r3 (they pinned properties r3 partially had — kept as regression pins).
+
+Verification: api handlers (full, 126s) + server + eventbroker green; agentd targeted green; frontend vitest 2404/2404 (211 files); eslint 0 errors; tsc clean; Playwright 3/3; golangci-lint 0 issues.
+
 ## Blockers
 
 None.
