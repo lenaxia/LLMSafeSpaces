@@ -185,7 +185,7 @@ func buildStatuszHandler(
 		if busyTruth != nil {
 			truth = busyTruth()
 		}
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, func() map[string]busyVerdict { return truth })
+		connected, configured, sessions, sessionsOK := cachedState(r.Context(), client, cache, tracker, func() map[string]busyVerdict { return truth })
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -298,6 +298,12 @@ func buildStatuszHandler(
 			Sessions:            sessions,
 			SessionsActive:      activeCnt,
 			SessionsError:       0,
+			// #1821 piece 2 / #1848 r0 finding 4: the session-list
+			// authority signal — false when ListSessions failed and
+			// the slice above is the swallowed empty result. Pointer
+			// so older pods (which never set it) stay interpretable
+			// as "no signal" by API readers, never as false.
+			SessionsOK:          &sessionsOK,
 			LastError:           "",
 			AgentType:           "opencode",
 			AgentVersion:        version,

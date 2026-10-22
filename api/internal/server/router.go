@@ -1983,8 +1983,13 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	session.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
 
 	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
-	// in-workspace session switches where no SSE reconnect fires).
+	// in-workspace switches where no SSE reconnect fires).
 	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)
+
+	// #1821 piece 4: on-demand busy-snapshot flight — the frontend busy
+	// lease's authoritative recheck surface (RequestInputSnapshot
+	// pattern: 202 now, the flight lands on the user-event stream).
+	idGroup.POST("/sessions/status-snapshot", proxyHandler.RequestSessionStatusSnapshot)
 
 	// Epic 68 US-68.2: workspace file upload — streaming multipart ingest
 	// through agentd's user-mux PUT /v1/files, behind the same

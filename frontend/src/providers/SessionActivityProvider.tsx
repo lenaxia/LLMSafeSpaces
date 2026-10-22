@@ -4,10 +4,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
+import { sessionsApi } from "../api/sessions";
 import type { InputRequest } from "../api/types";
 import {
   eventInternalSessionId,
   resolveSessionAlias,
+  reverseSessionAlias,
   subscribeSessionAliases,
   translateSessionIds,
 } from "../session/sessionAliases";
@@ -16,6 +18,38 @@ import {
 // #1365: receivedAt is stamped on store entry — the whileAway staleness
 // bound in ChatPage keys off it, never off the (absent) event stream.
 type StoredInputRequest = InputRequest & { whileAway?: boolean; receivedAt?: number };
+
+// #1821 pieces 3-4 — busy is a LEASED cache of the backend authority's
+// answer, never self-owned truth. Each latched busy entry carries its
+// workspace, the timestamp of its last confirming evidence (delta or
+// snapshot row), and — when orderable — the broker EventID of that
+// evidence so a snapshot commit can tell a fresher delta (survives the
+// commit) from one the authority already superseded (governed by the
+// snapshot's rows).
+export interface BusyEntry {
+  workspaceId: string;
+  confirmedAt: number;
+  // The broker EventID of the confirming evidence. 0 = REST-overlay
+  // evidence (no broker id — governed by ANY later snapshot). undefined
+  // = unorderable legacy frame (no event_id at all — protected from
+  // snapshot removal; unreachable in practice: every PublishToUser
+  // event carries an id).
+  confirmEventId?: number;
+  // The session's HARNESS id when the confirming evidence carried it
+  // additively (#1848 r2 finding 4): lets a degraded (harness-keyed)
+  // snapshot row block removal of exactly the entry it may correspond
+  // to, instead of one degraded row suppressing the whole workspace's
+  // authoritative removals.
+  internalId?: string;
+}
+
+// #1821 piece 4: the lease window. L = 90s ≈ 3× the 25s heartbeat and
+// above the 60s liveness-silence window: only a genuinely
+// confirmation-less span (heartbeats flowing, no busy evidence — the
+// lost-idle case) expires, and expiry buys ONE authoritative recheck,
+// not a self-made answer.
+export const BUSY_LEASE_MS = 90_000;
+const BUSY_LEASE_SWEEP_MS = 15_000;
 
 // useWhileAwayStalenessSweep (#1365) drives the whileAway staleness bound
 // with a TIMER while any whileAway pill is pending. The fold-sync effect's
@@ -103,7 +137,35 @@ const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
   "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
   "resync", "workspace.alert", "workspace.alert_resolved",
+  // #1821 piece 2: the busy-snapshot handshake flight.
+  "session.status.snapshot_begin", "session.status.snapshot", "session.status.snapshot_complete",
 ]);
+
+// #1821 piece 2: one staged busy-snapshot flight — the busy rows and
+// cursor a begin marker opened, committed (or dropped) by the matching
+// complete. hasDegradedRows: the flight carried a busy row that stayed
+// harness-keyed after the client-side heal — its id join is PARTIAL, so
+// the commit may add busy rows but must never remove (#1848 r1 f4).
+interface BusyFlight {
+  busyRowIds: Set<string>;
+  cursor: number;
+  // Degraded busy rows that stayed harness-keyed after the client-side
+  // heal — their harness ids. A removal is blocked only for entries
+  // that could BE one of these rows (matching internalId, or entries
+  // with no known internal id — #1848 r2 finding 4).
+  degradedBusyIds: Set<string>;
+  // Every staged busy row's harness id, keyed by the row's client-side
+  // key (the phrase for resolved rows, the harness id for degraded
+  // ones) — latched entries carry it as BusyEntry.internalId so later
+  // flights can block/protect them precisely.
+  rowInternalIds: Map<string, string>;
+  // EVERY row's client-side key (busy and idle alike) — the set of
+  // sessions the authority ANSWERED. The commit stamps each answered
+  // session's per-session ordering watermark with the cursor: a later
+  // overlapping (older) flight's row for that session cannot latch
+  // over this answer (#1848 r0 finding 2, the per-session form).
+  answeredIds: Set<string>;
+}
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
 // if none matched (avoids needless re-renders).
@@ -134,6 +196,14 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
 // event callbacks via module scope, like wipeBusyForEventLoss.
 function registerFirstSeen(firstSeen: Map<string, number>, requestId: string): void {
   if (!firstSeen.has(requestId)) firstSeen.set(requestId, Date.now());
+}
+
+// stampBusyNow is the lease-stamp seam: Date.now() for BusyEntry writes
+// without calling it from a render-analyzed body (react-hooks/purity —
+// same discipline as registerFirstSeen). Runs from event callbacks and
+// effect timers via module scope.
+function stampBusyNow(): number {
+  return Date.now();
 }
 
 // #1824: a late-learned harness→phrase pair must re-key the provider's
@@ -202,15 +272,93 @@ function rekeyPendingContent(
 function wipeBusyForEventLoss(
   wipeAtRef: { current: number },
   seededRef: { current: Set<string> },
-  setBusySessions: Dispatch<SetStateAction<Map<string, string>>>,
+  setBusySessions: Dispatch<SetStateAction<Map<string, BusyEntry>>>,
+  wipedMemoryRef?: { current: Map<string, Map<string, BusyEntry>> },
 ): void {
   wipeAtRef.current = Date.now();
   seededRef.current.clear();
-  setBusySessions(new Map());
+  setBusySessions((prev) => {
+    // #1848 r3 finding 5: remember what the wipe cleared, per
+    // workspace — an ok=false authority answer to the post-wipe
+    // re-seed re-latches it as UNKNOWN (the charter's "hold unknown,
+    // not idle"); the first ok=true flight reconciles definitively.
+    // Idempotent under StrictMode double-invocation (same prev → same
+    // entries).
+    //
+    // #1848 r5 finding 1: the memory is UNORDERABLE evidence — the
+    // pre-wipe confirmEventId belongs to the OLD replica's id space
+    // (the broker's ids are per-replica; a reconnect may land anywhere).
+    // Carrying it verbatim would let a stale high id block the new
+    // replica's authoritative clears forever (confirm > cursor). Store
+    // orderable-at-zero, exactly like a REST seed — any later snapshot
+    // governs it. internalId is id-space independent and stays.
+    if (wipedMemoryRef) {
+      for (const [sid, entry] of prev) {
+        let wsMem = wipedMemoryRef.current.get(entry.workspaceId);
+        if (!wsMem) {
+          wsMem = new Map();
+          wipedMemoryRef.current.set(entry.workspaceId, wsMem);
+        }
+        wsMem.set(sid, { ...entry, confirmEventId: 0 });
+      }
+    }
+    return new Map();
+  });
 }
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
-  const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
+  // #1821 pieces 3-4: values carry the leased-cache bookkeeping
+  // (BusyEntry) — workspace, last confirming evidence timestamp, and
+  // the confirming delta's EventID when orderable.
+  const [busySessions, setBusySessions] = useState<Map<string, BusyEntry>>(new Map());
+  // #1821 piece 3 — delta-ordering state. The broker assigns monotonic
+  // EventIDs but DELIVERS after releasing the shard lock, so arrival
+  // order is not guaranteed (#1848 r0 finding 3); a snapshot only
+  // covers ITS OWN workspace's rows, so workspace-level bounds are
+  // PER-WORKSPACE (#1848 r1 findings 1-2); and out-of-order delivery
+  // within ONE session (idle 100 before busy 99) can invert the last
+  // transition, so ordering is ultimately enforced PER-SESSION
+  // (#1848 r2 finding 3): a session's delta applies only when its id
+  // exceeds the last id applied for THAT session, and a snapshot's row
+  // for a session only latches when no newer per-session delta
+  // supersedes it. A per-workspace snapshot cursor remains the
+  // workspace-level subsumption bound (a delta ≤ cursor is already
+  // reflected in that workspace's committed rows).
+  const wsSnapshotCursorRef = useRef(new Map<string, number>());
+  // Per-session last-applied evidence id (delta ids and snapshot
+  // cursors). The one true per-session ordering watermark.
+  const sessionLastDeltaIDRef = useRef(new Map<string, number>());
+
+  // #1821 piece 2: open busy-snapshot flights, keyed workspaceId →
+  // Map<flightId, BusyFlight> (the per-flight discipline of the input
+  // snapshots — two flights can run concurrently for one workspace).
+  const busyFlightsRef = useRef(new Map<string, Map<string, BusyFlight>>());
+
+  // #1848 r2 finding 6: workspaces awaiting ONE authority retry after a
+  // non-authoritative (ok=false / dropped) flight — wsId → earliest
+  // next attempt. Without evidence latched (the post-wipe case) there
+  // is no lease to expire, so the sweep drives these instead: one
+  // request per lease window until an authoritative answer lands.
+  const pendingRecheckRef = useRef(new Map<string, number>());
+  // #1848 r3 finding 5: what the last wipe cleared, per workspace — the
+  // unknown-hold memory. An ok=false answer to the post-wipe re-seed
+  // re-latches it (unknown ≠ idle); ok=true / terminal events clear it.
+  const wipedBusyRef = useRef(new Map<string, Map<string, BusyEntry>>());
+  // #1848 r4 (finding 4, the late-complete half): workspaces in a
+  // TERMINAL state (agent_died, non-Active phase). An ok=false answer
+  // arriving AFTER the terminal event must arm nothing — the sweep
+  // would POST every window for a corpse that can never answer. An
+  // Active phase re-arms normal service.
+  const terminalWsRef = useRef(new Set<string>());
+  // #1848 r4 (finding 1, the resync half): recheck workspaces captured
+  // at resync-wipe time. The capture rides the setBusySessions updater
+  // queue (a render-closure read of busySessions is stale within one
+  // chunk); the sweep fires the requests once the queue has settled.
+  const resyncRecheckRef = useRef(new Set<string>());
+  // Re-render trigger for pendingRecheckRef mutations (refs are not
+  // reactive; the sweep effect re-arms on this tick).
+  const [recheckTick, setRecheckTick] = useState(0);
+
   // D6 (#998): workspaces with an active hung-session alert. Set on
   // workspace.alert/session_hung; cleared on that workspace's next
   // session.status=idle (the hang resolved) — the map is workspace-keyed
@@ -329,7 +477,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     // authority (REST enrichment can lag on multi-replica or timing gaps, so a
     // refetch returning status:"idle" must not clear an SSE-tracked busy session).
     function seedBusy() {
-      let busyDelta: Map<string, string> | null = null;
+      let busyDelta: Map<string, BusyEntry> | null = null;
 
       for (const query of queryCache.getAll()) {
         const key = query.queryKey;
@@ -389,7 +537,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // responses and any cache entries written by the SSE handler.
           if (session.status === "busy" || session.status === "active") {
             if (!busyDelta) busyDelta = new Map();
-            busyDelta.set(session.id, wsId);
+            // #1821 piece 4 / #1848 r0 finding 1: REST-overlay evidence
+            // is ORDERABLE-AT-ZERO — no broker id, so any later snapshot
+            // (cursor ≥ 0) governs it. Marking it unorderable made
+            // REST-seeded busy permanently unremovable, defeating the
+            // lease's bounded-staleness guarantee.
+            busyDelta.set(session.id, { workspaceId: wsId, confirmedAt: Date.now(), confirmEventId: 0 });
           }
         }
 
@@ -422,8 +575,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (busyDelta && busyDelta.size > 0) {
         setBusySessions((prev) => {
           const next = new Map(prev);
-          for (const [sid, wid] of busyDelta!) {
-            next.set(sid, wid);
+          for (const [sid, entry] of busyDelta!) {
+            // Never downgrade: a delta-confirmed entry (broker id) is
+            // stronger evidence than the REST overlay's 0.
+            const existing = next.get(sid);
+            if (existing && (existing.confirmEventId ?? 0) > (entry.confirmEventId ?? 0)) continue;
+            next.set(sid, entry);
           }
           return next;
         });
@@ -580,7 +737,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       }
 
       setBusySessions(
-        (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
+        (prev) =>
+          rekeyWorkspaceValueMap(prev, workspaceId, (entry) => entry.workspaceId === workspaceId) ?? prev,
       );
       setPendingUnread(
         (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
@@ -647,8 +805,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // #1646 r3: stamp the wipe. Any sessions data predating this
       // moment is pre-outage state that the full-pass seed must not
       // re-latch (see the guard in seedBusy). The hook's onConnect
-      // invalidates ["sessions"] only after this returns.
-      wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions);
+      // invalidates ["sessions"] only after this returns. The wipe
+      // MEMORIES what it cleared (#1848 r3 f5) for the unknown-hold.
+      wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions, wipedBusyRef);
       // A badge latched by live SSE survives a disconnect only as
       // memory: if the session recovered while the tab was offline,
       // no idle SSE will ever clear it (Last-Event-ID replay is
@@ -661,6 +820,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       legacyStagingRef.current.clear();
       committedWsRef.current.clear();
       flightsRef.current.clear();
+      // #1821 piece 2: open busy flights died with the connection —
+      // the reconnect's connect-path flights rebuild authoritatively.
+      busyFlightsRef.current.clear();
+      // #1848 r1 finding 3: the broker is process-local and its id
+      // space starts at 1 per replica — a reconnect may land on a
+      // fresh replica whose cursors/deltas are all "below" the old
+      // bounds. Reset the ordering state; the connect-path flights
+      // re-establish it.
+      wsSnapshotCursorRef.current.clear();
+      sessionLastDeltaIDRef.current.clear();
     },
     onEvent: (data) => {
       const rawEvt = data as {
@@ -671,6 +840,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         status?: string;
         phase?: string;
         snapshot_id?: string;
+        snapshot_ok?: boolean;
+        event_id?: number;
         data?: { alert?: string };
       };
       // #1817 heal window: a legacy harness-keyed frame resolves to the
@@ -934,9 +1105,276 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // ===== #1821 piece 2: the busy-snapshot flight =====
+      //
+      // D9/D10, the input-snapshot discipline applied to busy: begin
+      // opens a per-flight staging window, the snapshot frame stages
+      // the authority's rows + cursor, complete commits (ok=true) or
+      // keeps state (ok=false — a failed authority read must never
+      // read as an authoritative empty set).
+      if (evt.type === "session.status.snapshot_begin") {
+        const wsId = evt.workspace_id;
+        if (!wsId) return;
+        const flightId = evt.snapshot_id ?? "";
+        let open = busyFlightsRef.current.get(wsId);
+        if (!open) {
+          open = new Map();
+          busyFlightsRef.current.set(wsId, open);
+        }
+        open.set(flightId, { busyRowIds: new Set(), cursor: 0, degradedBusyIds: new Set(), rowInternalIds: new Map(), answeredIds: new Set() });
+        return;
+      }
+
+      if (evt.type === "session.status.snapshot") {
+        const wsId = evt.workspace_id;
+        const flightId = evt.snapshot_id ?? "";
+        // Stage into the named flight only: a snapshot frame with no
+        // open flight had its begin dropped (broker backpressure) — its
+        // complete is non-authoritative by the same rule the input
+        // snapshots apply to unknown flight ids.
+        const flight = wsId ? busyFlightsRef.current.get(wsId)?.get(flightId) : undefined;
+        if (!wsId || !flight) return;
+        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; internal_session_id?: string; derived_busy?: boolean; session_id_deprecated?: boolean }> } }).data;
+        if (!payload || !Array.isArray(payload.sessions)) return;
+        for (const row of payload.sessions) {
+          if (!row.session_id) continue;
+          {
+            const answered = translateSessionIds(wsId, row.session_id, row.internal_session_id || undefined).sessionId;
+            if (answered) flight.answeredIds.add(answered);
+          }
+          if (!row.derived_busy) continue;
+          // #1848 r0 finding 5: a DEGRADED row (Register failed
+          // server-side) carries the harness id on the wire. Run every
+          // row through the alias seam — a healthy row is already the
+          // phrase (identity, and the additive pair teaches the table);
+          // a degraded row resolves through a learned pair or stays
+          // harness-keyed (never worse).
+          const pair = translateSessionIds(wsId, row.session_id, row.internal_session_id || undefined);
+          if (pair.sessionId) {
+            flight.busyRowIds.add(pair.sessionId);
+            // The harness identity of the row: the additive internal id
+            // on a healthy (phrase-keyed) row; the row key itself on a
+            // degraded one.
+            const harness = row.internal_session_id || row.session_id;
+            if (harness) flight.rowInternalIds.set(pair.sessionId, harness);
+          }
+          // #1848 r1/r2 finding 4: a row that degraded AND could not
+          // be healed client-side leaves the flight's id join PARTIAL —
+          // remember the harness id so the commit blocks removal of
+          // exactly the entries it may correspond to (never the whole
+          // workspace's removals).
+          if (row.session_id_deprecated && pair.sessionId === row.session_id) {
+            flight.degradedBusyIds.add(row.session_id);
+          }
+        }
+        flight.cursor = payload.cursor ?? 0;
+        return;
+      }
+
+      if (evt.type === "session.status.snapshot_complete") {
+        const wsId = evt.workspace_id;
+        if (!wsId) return;
+        const ok = rawEvt.snapshot_ok !== false;
+        const flightId = evt.snapshot_id ?? "";
+        const open = busyFlightsRef.current.get(wsId);
+        const staged = open?.get(flightId);
+        if (open) {
+          open.delete(flightId);
+          if (open.size === 0) busyFlightsRef.current.delete(wsId);
+        }
+
+        // D10: ok=false is NON-authoritative in the strongest sense:
+        // latched busy stays, AND busy the last wipe cleared RE-LATCHES
+        // as unknown (#1848 r3 finding 5 — the charter's "hold unknown,
+        // not idle" across a post-reconnect authority failure), and ONE
+        // authority retry per lease window is scheduled. A DROPPED
+        // flight (staged missing — begin/snapshot lost to backpressure,
+        // or invalidated by a terminal event) schedules nothing: there
+        // is no evidence the authority answered (#1848 r3 finding 4).
+        if (!ok) {
+          // #1848 r4 (finding 4, late-complete half): a late ok=false
+          // for a TERMINAL workspace (its begin predates agent_died or
+          // a non-Active flip) must arm nothing — the sweep would POST
+          // every window for a workspace that can never answer.
+          if (terminalWsRef.current.has(wsId)) return;
+          const now = stampBusyNow();
+          const wiped = wipedBusyRef.current.get(wsId);
+          if (wiped && wiped.size > 0) {
+            // Unknown-hold: the wipe's memory re-latches, its lease
+            // freshly stamped — the LEASE now owns the recovery cadence
+            // (one recheck per window); no parallel pending recheck.
+            setBusySessions((prev) => {
+              const next = new Map(prev);
+              for (const [sid, entry] of wiped) {
+                if (!next.has(sid)) {
+                  next.set(sid, { ...entry, confirmedAt: now });
+                }
+              }
+              return next;
+            });
+            pendingRecheckRef.current.delete(wsId);
+          } else {
+            // Nothing to hold (no wipe memory): the pending recheck
+            // owns the retry — one per lease window.
+            pendingRecheckRef.current.set(wsId, now + BUSY_LEASE_MS);
+          }
+          setRecheckTick((t) => t + 1);
+          return;
+        }
+        if (!staged) {
+          return;
+        }
+        // An authoritative answer landed — the wipe's memory and any
+        // pending retry are answered.
+        wipedBusyRef.current.delete(wsId);
+        pendingRecheckRef.current.delete(wsId);
+
+        // The workspace is now seeded from a better source than the
+        // REST overlay; the overlay's later add-only pass is harmless.
+        seededRef.current.add(wsId);
+
+        // #1821 piece 3: the cursor subsumes every delta at or below
+        // it — record THIS workspace's subsumption bound.
+        wsSnapshotCursorRef.current.set(wsId, Math.max(wsSnapshotCursorRef.current.get(wsId) ?? 0, staged.cursor));
+
+        const cursor = staged.cursor;
+        const busyRowIds = staged.busyRowIds;
+        const degradedBusyIds = staged.degradedBusyIds;
+        const rowInternalIds = staged.rowInternalIds;
+        const now = stampBusyNow();
+        // #1848 r3 finding 1: the reconcile runs INSIDE the updater
+        // against its fresh `prev` — SSE frames dispatch synchronously
+        // per chunk, so a render-closure read of busySessions is stale
+        // within the chunk (a same-chunk busy delta had to be visible
+        // to an idle commit's removal decision, and a same-chunk
+        // re-confirm could be deleted by a decision made against the
+        // pre-chunk state). Every ref write below is an IDEMPOTENT
+        // max-stamp, so React 19 StrictMode's double-invocation is
+        // harmless (the #1824 r11 hazard is non-idempotent
+        // move/delete writes).
+        setBusySessions((prev) => {
+          const next = new Map(prev);
+          // Authoritative removal: entries of THIS workspace whose
+          // confirming evidence the cursor supersedes (ordered confirm
+          // ≤ cursor — REST seeds at 0 included) are governed by the
+          // rows, EXCEPT those a degraded busy row may correspond to.
+          for (const [sid, entry] of prev) {
+            if (entry.workspaceId !== wsId) continue;
+            if (entry.confirmEventId === undefined || entry.confirmEventId > cursor) continue;
+            if (busyRowIds.has(sid)) continue;
+            if (degradedBusyIds.size > 0 && !staged.answeredIds.has(sid)) {
+              // #1848 r2 finding 4, v2 (#1848 r3 finding 2): block
+              // ONLY entries the degraded row could BE. A RESOLVED
+              // answer under the entry's own key (answeredIds) proves
+              // the authority spoke for THIS session — clearable. An
+              // unresolved entry falls back to identity matching: its
+              // own harness id, or the REVERSE alias of its phrase
+              // (REST seeds carry no harness id); no identity at all →
+              // protected (cannot disprove).
+              const harness = entry.internalId ?? reverseSessionAlias(wsId, sid);
+              if (harness === undefined || degradedBusyIds.has(harness)) continue;
+            }
+            next.delete(sid);
+            // Idempotent max-stamp: the authority answered this session
+            // (idle) at the cursor.
+            sessionLastDeltaIDRef.current.set(sid, Math.max(sessionLastDeltaIDRef.current.get(sid) ?? 0, cursor));
+          }
+          // Every ANSWERED session's ordering watermark moves to the
+          // cursor: the authority's row (busy or idle) is the newest
+          // per-session truth at this id — an older overlapping flight's
+          // row for the same session cannot latch over it, and an
+          // in-flight per-session delta older than the cursor is
+          // subsumed.
+          for (const sid of staged.answeredIds) {
+            const last = sessionLastDeltaIDRef.current.get(sid) ?? 0;
+            if (cursor > last) sessionLastDeltaIDRef.current.set(sid, cursor);
+          }
+          // Busy rows latch or re-confirm: any busy-bearing snapshot
+          // row refreshes the lease (piece 4). The confirm id is ALWAYS
+          // a number here (cursor 0 included) — a cursor-0 snapshot is
+          // ordering evidence, not an unorderable legacy frame.
+          //
+          // #1848 r2 findings 3+5: a row only latches when no NEWER
+          // per-session delta supersedes it (an idle delta that landed
+          // during the flight, or an overlapping newer flight's commit)
+          // — per-entry guards replace the wholesale stale-flight
+          // discard, so an unrelated session's delta can no longer
+          // starve the recheck's rows for the sessions it knew nothing
+          // about.
+          for (const sid of busyRowIds) {
+            if ((sessionLastDeltaIDRef.current.get(sid) ?? 0) > cursor) continue;
+            // #1848 r4 (finding 3, client half): the row's HARNESS id
+            // may carry a NEWER answer the phrase key never saw — a
+            // degraded idle row (harness-keyed, no learnable pair)
+            // stamps only the harness watermark. Check both keys, or
+            // an older overlapping busy flight re-latches what the
+            // newer idle answer already cleared.
+            const rowHarness = rowInternalIds.get(sid);
+            if (rowHarness !== undefined && (sessionLastDeltaIDRef.current.get(rowHarness) ?? 0) > cursor) continue;
+            sessionLastDeltaIDRef.current.set(sid, cursor);
+            const existing = prev.get(sid);
+            const confirmEventId = Math.max(existing?.confirmEventId ?? 0, cursor);
+            next.set(sid, {
+              workspaceId: wsId,
+              confirmedAt: now,
+              confirmEventId,
+              internalId: rowInternalIds.get(sid) ?? existing?.internalId,
+            });
+          }
+          return next;
+        });
+
+        // Mirror the busy latch's cache flip so sidebar rows read
+        // active for snapshot-busy sessions until the next refetch.
+        const sessionsKey = ["sessions", wsId];
+        const existingCache = queryClient.getQueryData(sessionsKey);
+        if (existingCache && busyRowIds.size > 0) {
+          queryClient.setQueryData(sessionsKey, (old: unknown) => {
+            if (!Array.isArray(old)) return old;
+            return old.map((s: Record<string, unknown>) =>
+              busyRowIds.has(String(s.id)) ? { ...s, status: "active" } : s
+            );
+          });
+        }
+        return;
+      }
+
+      // ===== #1821 piece 3: EventID-ordered deltas =====
+      //
+      // The broker stamps every published event with a monotonic
+      // EventID but delivers after releasing the shard lock, so two
+      // concurrent publishers can deliver id 100 before 99 to the same
+      // subscriber (#1848 r0 finding 3) — including the two halves of
+      // ONE session's transition (idle 100 before busy 99, #1848 r2
+      // finding 3). Ordering is therefore enforced at the finest grain
+      // that exists: PER-SESSION. A delta applies only when its id
+      // exceeds the last evidence id applied for THAT session (and is
+      // not subsumed by its workspace's snapshot cursor). Deltas for
+      // sessions nobody superseded always apply, in any arrival order.
       if (evt.type === "session.status" && evt.session_id && evt.workspace_id) {
+        const deltaID = rawEvt.event_id ?? 0;
+        if (deltaID > 0) {
+          // #1848 r1 finding 1: the subsumption bound is THIS delta's
+          // workspace cursor — another workspace's snapshot never
+          // subsumes this evidence.
+          const wsCursor = wsSnapshotCursorRef.current.get(evt.workspace_id) ?? 0;
+          // #1848 r2 finding 3: the ordering bound is THIS session's
+          // last applied evidence — an older transition for the same
+          // session (delivered late) can never overwrite a newer one.
+          const sessionWatermark = sessionLastDeltaIDRef.current.get(evt.session_id) ?? 0;
+          if (deltaID <= wsCursor || deltaID <= sessionWatermark) {
+            return;
+          }
+          sessionLastDeltaIDRef.current.set(evt.session_id, deltaID);
+        }
         if (evt.status === "busy") {
           clearedRef.current.delete(evt.session_id);
+          // #1848 r5 findings 2+3: fresh live evidence supersedes the
+          // wipe's memory (an ok=false can no longer resurrect this
+          // session) and hands the recheck cadence to the LEASE — the
+          // pending-recheck path exists only for no-evidence workspaces.
+          wipedBusyRef.current.get(evt.workspace_id)?.delete(evt.session_id);
+          pendingRecheckRef.current.delete(evt.workspace_id);
           // #786: a new turn un-aborts — the interrupted marker dies
           // with the session's next activity.
           setAbortedSessions((prev) => {
@@ -947,7 +1385,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           });
           setBusySessions((prev) => {
             const next = new Map(prev);
-            next.set(evt.session_id!, evt.workspace_id!);
+            // #1821 piece 4: the delta is confirming evidence — the
+            // lease stamps now; the orderable delta id lets a later
+            // snapshot commit recognize this entry as fresher-than-
+            // cursor when the flight raced the delta.
+            next.set(evt.session_id!, {
+              workspaceId: evt.workspace_id!,
+              confirmedAt: stampBusyNow(),
+              confirmEventId: deltaID > 0 ? deltaID : undefined,
+              internalId: eventInternalSessionId(rawEvt),
+            });
             return next;
           });
 
@@ -968,6 +1415,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // neither carries a response, so neither marks unread.
           const sid = evt.session_id!;
           const wsId = evt.workspace_id!;
+          // #1848 r5 finding 2: aborted/deleted ends the session —
+          // prune the wipe memory like the idle delta does.
+          wipedBusyRef.current.get(wsId)?.delete(sid);
           // A stopped/deleted session can never emit the idle clear —
           // the hang is over by definition (and deleting a stuck
           // session is precisely what a user does with a hung one).
@@ -1052,6 +1502,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
             setDeletedSessions((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
           }
         } else if (evt.status === "idle") {
+          // #1848 r5 finding 2: a post-wipe idle delta is
+          // authoritative evidence the session recovered — prune the
+          // wipe memory so a later ok=false cannot resurrect it.
+          wipedBusyRef.current.get(evt.workspace_id)?.delete(evt.session_id);
           setBusySessions((prev) => {
             const next = new Map(prev);
             next.delete(evt.session_id!);
@@ -1129,10 +1583,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
       if (evt.type === "agent_died" && evt.workspace_id) {
         const wsId = evt.workspace_id;
+        // #1848 r1 finding 5: the agent is dead — any in-flight
+        // snapshot for this workspace fetched from a corpse or raced
+        // its death; its commit could re-latch busy nothing can clear
+        // (the recheck answers ok=false forever on a dead pod).
+        busyFlightsRef.current.delete(wsId);
+        // #1848 r3 finding 4: terminal state — no recheck, no
+        // unknown-hold memory, no retry loop for a dead workspace.
+        pendingRecheckRef.current.delete(wsId);
+        wipedBusyRef.current.delete(wsId);
+        // #1848 r4: mark terminal so a LATE ok=false complete (its
+        // begin predates the death) cannot re-arm the loop.
+        terminalWsRef.current.add(wsId);
         setBusySessions((prev) => {
           const next = new Map();
-          for (const [sid, wid] of prev) {
-            if (wid !== wsId) next.set(sid, wid);
+          for (const [sid, entry] of prev) {
+            if (entry.workspaceId !== wsId) next.set(sid, entry);
           }
           return next;
         });
@@ -1158,12 +1624,47 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // MUST land BEFORE the sessions invalidation dispatches its
         // refetches, so every re-seed's data birth postdates the wipe —
         // mirror of the onConnect ordering in useUserEventStream.
-        wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions);
+        //
+        // #1848 r1: the re-seed also rides the AUTHORITY path — one
+        // status-snapshot flight per workspace that had latched busy
+        // (the same surface the lease recheck uses) so resync converges
+        // via the snapshot, not only the REST overlay. Capture the
+        // pre-wipe busy workspaces BEFORE the wipe clears them.
+        // #1848 r4 (finding 1, the resync read): capture the pre-wipe
+        // busy workspaces INSIDE the updater queue, BEFORE the wipe's
+        // own updater — one chunk's frames dispatch against the same
+        // render closure, so a busy delta earlier in THIS chunk is
+        // invisible to a closure read here and its workspace would
+        // never be re-checked (reads idle until a manual refresh). The
+        // queued capture sees the chunk's own state; idempotent
+        // set-adds keep StrictMode's double-invocation harmless. The
+        // sweep (post-render, refs settled) fires the requests.
+        setBusySessions((prev) => {
+          for (const entry of prev.values()) {
+            resyncRecheckRef.current.add(entry.workspaceId);
+          }
+          return prev;
+        });
+        wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions, wipedBusyRef);
         queryClient.invalidateQueries({ queryKey: ["sessions"] });
         committedWsRef.current.clear();
         flightsRef.current.clear();
         legacyStagingRef.current.clear();
         setInputSnapshots(new Map());
+        // #1821 piece 2: the dropped set may include a busy flight's
+        // begin or snapshot frame — open flights are unreliable, and
+        // the reconnect-path flights rebuild authoritatively.
+        busyFlightsRef.current.clear();
+        // #1848 r1 finding 3: resync is admitted event loss on a
+        // HEALTHY connection, but the broker's id space is per-replica
+        // — reset the ordering bounds so post-resync flights and deltas
+        // (possibly from another replica) are not suppressed by stale
+        // high-waters.
+        wsSnapshotCursorRef.current.clear();
+        sessionLastDeltaIDRef.current.clear();
+        // #1848 r4: the captured rechecks fire from the sweep, after
+        // the capture updater has settled (bump re-arms the effect).
+        setRecheckTick((t) => t + 1);
         // Events were dropped for this subscriber — possibly including
         // the idle that would have cleared a hung badge. Full clear,
         // like reconnect; the gated seed re-adds genuine hangs.
@@ -1175,10 +1676,20 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         const wsId = evt.workspace_id;
         if (NON_ACTIVE_PHASES.has(evt.phase)) {
           seededRef.current.delete(wsId);
+          // #1848 r1 finding 5: a flight that fetched while Active and
+          // completes after the phase flip would re-latch busy for a
+          // workspace whose recheck always answers ok=false (the phase
+          // gate) — invalidate the workspace's open flights.
+          busyFlightsRef.current.delete(wsId);
+          // #1848 r3 finding 4: same terminal cleanup as agent_died.
+          pendingRecheckRef.current.delete(wsId);
+          wipedBusyRef.current.delete(wsId);
+          // #1848 r4: terminal — a late ok=false cannot re-arm.
+          terminalWsRef.current.add(wsId);
           setBusySessions((prev) => {
             const next = new Map();
-            for (const [sid, wid] of prev) {
-              if (wid !== wsId) next.set(sid, wid);
+            for (const [sid, entry] of prev) {
+              if (entry.workspaceId !== wsId) next.set(sid, entry);
             }
             return next;
           });
@@ -1199,6 +1710,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           clearWorkspacePendingActions(wsId);
         } else if (evt.phase === "Active") {
           seededRef.current.delete(wsId);
+          // #1848 r4: Active re-arms normal snapshot service (e.g. a
+          // suspended workspace resumed).
+          terminalWsRef.current.delete(wsId);
         }
       }
 
@@ -1207,6 +1721,78 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       }
     },
   });
+
+  // #1821 piece 4: the busy lease sweep. Busy entries whose confirming
+  // evidence is older than BUSY_LEASE_MS trigger exactly ONE
+  // authoritative recheck per lease window — a session-status-snapshot
+  // flight per workspace (one flight covers every expired session of
+  // that workspace; the D10 marker on the resulting flight decides
+  // keep-vs-clear). The lease re-arms at trigger time, so an
+  // unreachable authority (request rejects, no flight) holds the badge
+  // as unknown and retries once per window — never a hammering loop,
+  // never a self-made clear.
+  //
+  // #1848 r2 finding 6: pending post-wipe rechecks (an ok=false flight
+  // answered a wipe-initiated re-seed) ride the same cadence — one
+  // request per lease window per workspace until an authoritative
+  // answer lands.
+  useEffect(() => {
+    if (busySessions.size === 0 && pendingRecheckRef.current.size === 0 && resyncRecheckRef.current.size === 0) return;
+    const sweep = () => {
+      const now = Date.now();
+      // #1848 r4: resync-captured rechecks fire here — the sweep runs
+      // post-render, after the capture updater has settled. One-shot
+      // per resync, like the connect-path recheck: the resulting
+      // flight's markers decide keep-vs-clear.
+      const resyncRechecks: string[] = [];
+      for (const wsId of resyncRecheckRef.current) {
+        resyncRecheckRef.current.delete(wsId);
+        resyncRechecks.push(wsId);
+      }
+      const expiredWorkspaces = new Set<string>();
+      for (const entry of busySessions.values()) {
+        if (now - entry.confirmedAt > BUSY_LEASE_MS) {
+          expiredWorkspaces.add(entry.workspaceId);
+        }
+      }
+      const dueRechecks: string[] = [];
+      for (const [wsId, at] of pendingRecheckRef.current) {
+        if (now >= at && !expiredWorkspaces.has(wsId)) dueRechecks.push(wsId);
+      }
+      if (expiredWorkspaces.size === 0 && dueRechecks.length === 0 && resyncRechecks.length === 0) return;
+      for (const wsId of resyncRechecks) {
+        sessionsApi.requestStatusSnapshot(wsId).catch(() => {});
+      }
+      for (const wsId of expiredWorkspaces) {
+        sessionsApi.requestStatusSnapshot(wsId).catch(() => {
+          // Unknown, not idle: the badge holds; the re-armed lease
+          // retries once per window.
+        });
+      }
+      for (const wsId of dueRechecks) {
+        sessionsApi.requestStatusSnapshot(wsId).catch(() => {});
+        // One request per lease window; a subsequent ok=false
+        // re-schedules, an authoritative answer clears the entry.
+        pendingRecheckRef.current.set(wsId, now + BUSY_LEASE_MS);
+      }
+      // Re-arm at trigger (outside any updater — Date.now/refs in
+      // render-analyzed bodies stay pure; this is an event-callback
+      // context like wipeBusyForEventLoss).
+      setBusySessions((prev) => {
+        let next: Map<string, BusyEntry> | null = null;
+        for (const [sid, entry] of prev) {
+          if (now - entry.confirmedAt > BUSY_LEASE_MS) {
+            if (!next) next = new Map(prev);
+            next.set(sid, { ...entry, confirmedAt: now });
+          }
+        }
+        return next ?? prev;
+      });
+    };
+    sweep();
+    const t = setInterval(sweep, BUSY_LEASE_SWEEP_MS);
+    return () => clearInterval(t);
+  }, [busySessions, recheckTick]);
 
   const isSessionBusy = useCallback(
     (sessionId: string) => busySessions.has(sessionId),
@@ -1221,8 +1807,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const workspaceBusyCount = useCallback(
     (workspaceId: string) => {
       let count = 0;
-      for (const wid of busySessions.values()) {
-        if (wid === workspaceId) count++;
+      for (const entry of busySessions.values()) {
+        if (entry.workspaceId === workspaceId) count++;
       }
       return count;
     },
