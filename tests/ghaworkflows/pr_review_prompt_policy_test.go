@@ -6,6 +6,7 @@ package ghaworkflows
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,12 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		// (b) the must-stay residue: CI-uncovered suites stay mandatory local work.
 		{`-tags integration`,
 			"the integration-tagged surface CI did not run on this head must stay a local execution obligation"},
+		{`suites not covered above`,
+			"the residue clause defines itself as NOT covered above — swapping it for 'CI already covered' inverts the mandate (r4 mutation)"},
+		{`agentd-handler suites are yours`,
+			"the residue mandate assigns the agentd-handler suites to the reviewer — 'are NOT yours' breaks this marker (r4 mutation)"},
+		{`stays mandatory on every review`,
+			"the residue mandate is mandatory, never optional — 'stays optional' breaks this marker (r4 mutation)"},
 		{`agentd E2E`,
 			"agentd E2E beyond the named CI pins is reviewer-unique verification and must stay"},
 		{`mutation`,
@@ -117,20 +124,25 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"workflow-level paraphrase class: 'ran green' keyed on the workflow file — the workflow conclusion stays green even when the board job is path-skipped"},
 		{"do not bother running that suite locally",
 			"skip-action inversion: the SKIPPED rule must mandate local execution, never discourage it (PR #1833 r2 mutation)"},
-		{"NOT execute that suite locally",
-			"polarity inversion of the pinned skip action (PR #1833 r3 mutation: 'do NOT execute that suite locally yourself' passed while the positive matched)"},
-		{"never execute that suite locally",
-			"negation-prefix inversion of the pinned skip action (PR #1833 r4 adversarial mutation: 'never execute that suite locally yourself' still contained the positive marker)"},
-		{"do not run the board suites locally",
-			"polarity inversion of the board-suite local obligation (PR #1833 r3 mutation: 'failed, do not run the board suites locally' passed)"},
-		{"never run the board suites locally",
-			"negation-prefix inversion of the board-suite local obligation (same class as the r4 'never execute' survivor)"},
 		{"NOT covered when",
 			"polarity inversion of the coverage claim (PR #1833 r3 mutation: 'are NOT covered when ... JOB ... SUCCESS' passed while the JOB marker matched)"},
 	} {
 		if strings.Contains(body, strings.Join(strings.Fields(forbidden.needle), " ")) {
 			t.Errorf("pr-review.md CI-first execution policy contains forbidden phrase %q: %s", forbidden.needle, forbidden.why)
 		}
+	}
+
+	// Structural polarity guard (r5: literal enumeration is whack-a-mole —
+	// every round converted one spelling into another: lowercase 'do not',
+	// 'must not', "don't", optional-weakening 'may'). No command directing
+	// the reviewer to EXECUTE local verification may be negated or made
+	// optional, case-insensitively, anywhere in the prompt. The legitimate
+	// prohibitions ('do NOT re-run it locally', 'never sleep-poll') do not
+	// match: the alternation requires execute/run directly after the token
+	// ('re-run' is a different token; sleep-poll is not a command here).
+	negatedCommand := regexp.MustCompile(`(?i)\b(do not|don't|must not|never|may)\s+(execute|run)\b`)
+	if m := negatedCommand.FindAllString(body, -1); len(m) > 0 {
+		t.Errorf("pr-review.md: negated/optional local-execution command(s) %q — every 'execute/run that suite locally' directive must be affirmative and mandatory (PR #1833 r4 surviving mutations)", m)
 	}
 
 	// The self-deadlocking watch form (`gh pr checks --watch` includes THIS
