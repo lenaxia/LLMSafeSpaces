@@ -113,6 +113,66 @@ func (s *Service) GetProject(ctx context.Context, projectID, shortIDOrID string)
 	return p, nil
 }
 
+// TaskEvents-window knobs: the audit timeline is a display read over
+// board_events, so it is bounded (heartbeats write a row per call — a
+// long-lived claim would otherwise render unbounded). The window keeps
+// the NEWEST rows; order is always chronological (oldest→newest).
+const (
+	TaskEventsDefaultLimit = 200
+	TaskEventsMaxLimit     = 500
+)
+
+// TaskEvents returns the task's FULL audit timeline as persisted in
+// board_events (#1832 item 4): stage transitions, claims (who/when via
+// the payload), review verdicts when the payload carries one,
+// dependency-graph changes, and orphan/unblock events — every row the
+// write path commits with item_kind='task', item_id=<uuid>, including
+// the reconciler's deterministic-id system rows (reclaim, drift, …).
+// The SSE projection only carries post-subscribe commits (§4.6); this
+// read is the history seam the task-detail drawer renders. Ownership
+// follows the caller's read perimeter (the adapter resolves + checks
+// the row, exactly like GetTask).
+func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, limit int) ([]Event, error) {
+	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = TaskEventsDefaultLimit
+	}
+	if limit > TaskEventsMaxLimit {
+		limit = TaskEventsMaxLimit
+	}
+	rows, err := s.q().Query(ctx, `
+		SELECT id, item_kind, item_id, action, actor, payload, created_at
+		FROM board_events
+		WHERE project_id=$1 AND item_kind='task' AND item_id=$2
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`, t.ProjectID, t.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var newestFirst []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.ItemKind, &e.ItemID, &e.Action, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.ProjectID = t.ProjectID
+		newestFirst = append(newestFirst, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Reverse to chronological order — the timeline's render order.
+	out := make([]Event, len(newestFirst))
+	for i, e := range newestFirst {
+		out[len(newestFirst)-1-i] = e
+	}
+	return out, nil
+}
+
 // ListProjects lists the owner's boards (user-level, ruling R7).
 func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, error) {
 	rows, err := s.q().Query(ctx, `SELECT `+projectColumns+` FROM projects WHERE user_id=$1 ORDER BY created_at`, userID)

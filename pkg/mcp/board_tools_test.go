@@ -45,9 +45,10 @@ import (
 )
 
 // boardToolNames is the exact external surface (design §4.3b + #1832
-// item 5's verdict pair): 26 tools.
+// item 5's verdict pair + the item-4 timeline read): 27 tools.
 var boardToolNames = []string{
 	"board_list_projects", "board_get", "board_read", "board_health",
+	"board_task_events",
 	"board_record_verdict", "board_task_verdicts",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
@@ -139,6 +140,12 @@ func boardAllowCases() []boardToolCase {
 			name: "board_get_task", tool: "board_get", args: map[string]any{"item_id": "tsk-cccc3333"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardGetTask", mock.Anything, "tsk-cccc3333").Return(`{"short_id":"tsk-cccc3333"}`, nil)
+			},
+		},
+		{
+			name: "board_task_events", tool: "board_task_events", args: map[string]any{"task_id": "tsk-cccc3333", "limit": 10},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardTaskEvents", mock.Anything, "tsk-cccc3333", 10).Return(`{"events":[]}`, nil)
 			},
 		},
 		{
@@ -601,6 +608,8 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardGet(ctx, makeReq(name, args))
 	case "board_read":
 		return h.boardRead(ctx, makeReq(name, args))
+	case "board_task_events":
+		return h.boardTaskEvents(ctx, makeReq(name, args))
 	case "board_record_verdict":
 		return h.boardRecordVerdict(ctx, makeReq(name, args))
 	case "board_task_verdicts":

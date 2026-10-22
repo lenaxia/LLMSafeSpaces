@@ -139,6 +139,16 @@ var boardTaskVerdictsTool = mcp.NewTool("board_task_verdicts",
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
+var boardTaskEventsTool = mcp.NewTool("board_task_events",
+	mcp.WithDescription("A task's FULL audit timeline (#1832 item 4): every board_events row scoped to "+
+		"the task — stage transitions, claims (who/when), review verdicts when present, dependency-graph "+
+		"changes, orphan/unblock events — chronologically, behind the same owner perimeter as board_get "+
+		"(foreign rows are plain misses). Optional limit keeps the newest N rows (default 200, max 500)."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithInteger("limit", mcp.Description("Keep the newest N rows (default 200, max 500)")),
+	mcp.WithReadOnlyHintAnnotation(true),
+)
+
 var boardCreateProjectTool = mcp.NewTool("board_create_project",
 	mcp.WithDescription("Create a board project: a swimlane with ONE target workspace the owning user "+
 		"can access (rulings R7/R8) and a worker-slot budget (max concurrent in-flight claims, default 2)."),
@@ -397,6 +407,20 @@ func (h *handlers) boardGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get %s %s: %v", kind, id, err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardTaskEvents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	id := strArg(args, "task_id")
+	if id == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	limit := intArg(args, "limit")
+	resp, err := h.client.BoardTaskEvents(ctx, id, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read task events for %s: %v", id, err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
@@ -1034,6 +1058,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardListProjectsTool, Handler: h.boardListProjects},
 		server.ServerTool{Tool: boardGetTool, Handler: h.boardGet},
 		server.ServerTool{Tool: boardReadTool, Handler: h.boardRead},
+		server.ServerTool{Tool: boardTaskEventsTool, Handler: h.boardTaskEvents},
 		server.ServerTool{Tool: boardHealthTool, Handler: h.boardHealth},
 		server.ServerTool{Tool: boardCreateProjectTool, Handler: h.boardCreateProject},
 		server.ServerTool{Tool: boardCreateEpicTool, Handler: h.boardCreateEpic},

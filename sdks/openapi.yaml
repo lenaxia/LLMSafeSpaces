@@ -5289,6 +5289,50 @@ paths:
         "409":
           $ref: "#/components/responses/BoardConflict"
 
+  /me/tasks/{id}/events:
+    get:
+      tags: [board]
+      summary: The task's full audit timeline (board_events rows)
+      description: |
+        #1832 item 4: every board_events row scoped to the task,
+        chronological (oldest→newest) — stage transitions (move_stage
+        payloads carry from_stage/requested_to/resulting_stage), claims
+        (who claimed — the payload's worker + attempts — and when),
+        review verdicts (the structured verdict payload when the action
+        carries one), dependency-graph changes (add/remove_dependency),
+        orphan/unblock events (unblocked_by_delete rides the ORPHAN's
+        timeline), plus the reconciler's system rows (reclaim, drift,
+        escalate, pending_stage). The SSE board.event projection only
+        carries post-subscribe commits (§4.6 persist-then-publish);
+        this read is the HISTORY seam. Owner perimeter identical to
+        GET /me/tasks/{id} (foreign rows are plain 404s). `?limit=N`
+        keeps the newest N rows (default 200, max 500; heartbeats write
+        a row per call, so the window bounds long-lived claims).
+      operationId: getBoardTaskEvents
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+        - name: limit
+          in: query
+          required: false
+          description: Keep the newest N events (1–500; default 200). Still rendered oldest→newest.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          description: The task's audit timeline (chronological ascending)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/tasks/{id}/dependencies:
     post:
       tags: [board]
@@ -12772,6 +12816,75 @@ components:
       properties:
         task:
           $ref: "#/components/schemas/BoardTask"
+    BoardEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          description: The task's board_events rows, chronological ascending (oldest→newest); the newest-N window per the limit parameter
+          items:
+            $ref: "#/components/schemas/BoardEvent"
+    BoardEvent:
+      type: object
+      required: [id, project_id, action, created_at]
+      properties:
+        id:
+          type: string
+          description: The event row's id — the caller-supplied requestId (a uuid on ordinary writes; deterministic ids like "reconciler:reclaim:<task>:<episode>" on system/replay-convergence writes)
+        project_id:
+          type: string
+          format: uuid
+        item_kind:
+          type: string
+          description: 'The row''s item kind — "task" on task-scoped rows (epic/project rows exist for their own items)'
+        item_id:
+          type: string
+          description: The row's item uuid (the TASK's uuid on a task timeline — note unblocked_by_delete carries the ORPHAN's id, which is what scopes it to this timeline)
+        action:
+          type: string
+          description: |
+            The action vocabulary: create_task, update_task, delete_task,
+            move_stage, claim, task_start, escalate, reclaim,
+            pending_stage, resume, drift_done, drift_review,
+            drift_reentry, add_dependency, remove_dependency,
+            unblocked_by_delete, heartbeat, report_throttle, pause_task,
+            resume_task, import_plan, …
+          example: move_stage
+        actor:
+          $ref: "#/components/schemas/BoardEventActor"
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            The action's committed outcome (the replay payload). Notable
+            shapes: move_stage {task_id, from_stage, requested_to,
+            resulting_stage, reclaimed} (a review-verdict bounce carries
+            the structured verdict too); claim {task_id, worker,
+            attempts}; add_dependency {task_id, depends_on};
+            remove_dependency {task_id, removed}; unblocked_by_delete
+            {of, orphan}; delete_task {snapshot, orphaned_dependents,
+            reconnected}.
+        created_at:
+          type: string
+          format: date-time
+    BoardEventActor:
+      type: object
+      description: The persisted actor view (who performed the action)
+      properties:
+        kind:
+          type: string
+          enum: [user, system]
+        user_id:
+          type: string
+        surface:
+          type: string
+          description: "rest (user UI), agent (worker via claim), engine, reconciler, …"
+        workspace_id:
+          type: string
+        session_id:
+          type: string
+          description: The creating session on the agent surface (#1747 audit ruling)
     BoardEpicList:
       type: object
       required: [epics]

@@ -1,0 +1,9 @@
+diff a/api/internal/server/router.go b/api/internal/server/router.go	(rejected hunks)
+@@ -2363,6 +2363,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
+ 		k := router.Group("/api/v1/me/tasks")
+ 		k.Use(services.GetAuth().AuthMiddleware())
+ 		k.GET("/:id", b.GetTask)
++		k.GET("/:id/events", b.TaskEvents)
+ 		k.PATCH("/:id", b.UpdateTask)
+ 		k.POST("/:id/move-stage", b.MoveStageTask)
+ 		k.POST("/:id/start", b.StartTask)

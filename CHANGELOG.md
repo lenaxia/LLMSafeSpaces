@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
+
+- **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
+  timeline** — every `board_events` row scoped to the task (stage
+  transitions, claims who/when, review verdicts when present,
+  dependency-graph changes, orphan/unblock events), chronological,
+  behind the same owner perimeter as the task read (foreign rows are
+  plain 404s); optional `?limit=N` keeps the newest N (default 200,
+  max 500).
+- **`board_task_events` mirrors the timeline on the external MCP
+  server** (construction parity — the #1747 rule that every board
+  surface lives on every surface): read-only tool, `task_id` +
+  optional `limit`, identical rows.
+- **The task-detail drawer surfaces the timeline in the UI**: header
+  completeness (ids, stage, owner perimeter), criteria, dependencies,
+  and the full event feed on one panel.
+
 ### Changed — Task Board short ids flip to word phrases (issue #1831, the session-ID playbook)
 
 - **Fresh `prj-`/`epc-`/`tsk-` ids are word phrases** over the #1756
@@ -358,6 +375,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `E2E_PORT`-driven (default 5173, `--strictPort`) so concurrent
   sibling worktrees cannot latch a foreign server; this lane runs
   18519 (nightly PORTFWD_PORT registry 18083–18093 untouched).
+### Added — task-detail drawer with the full audit timeline (#1832 item 4)
+
+- **The board's task cards open a detail drawer that renders the task's
+  full history.** Header (title, short id, stage, attempts, claim/lease
+  with assignee and lease-until, blocked-by with live dependency stage
+  chips), the charter and acceptance criteria with met state, and the
+  full audit timeline: stage transitions (from→resulting, reclaimed
+  flag), claims (who/when via the engine claim row's worker + attempt),
+  manual task_start dispatches, structured review verdicts with
+  per-finding severity/pointer/criterion when one rides a review-bounce
+  move, dependency-graph changes, and orphan/unblock events — plus
+  explicit loading/empty/error-with-retry states. The card's primary
+  click keeps its edit-dialog behavior; the drawer opens from a
+  dedicated ⓘ details affordance.
+- The history needed a read seam: the §4.6 SSE board.event projection
+  only carries post-subscribe commits, and no REST read exposed
+  board_events. `GET /api/v1/me/tasks/{id}/events` returns the task's
+  rows chronological ascending behind the same owner perimeter as every
+  task read (foreign rows are plain 404s), with a newest-N window
+  (`?limit=`, default 200, max 500 — lease heartbeats write a row per
+  call, so long-lived claims stay bounded). OpenAPI schemas and the
+  frontend client ship with it.
 
 ## [0.40.1] - 2026-10-21
 
