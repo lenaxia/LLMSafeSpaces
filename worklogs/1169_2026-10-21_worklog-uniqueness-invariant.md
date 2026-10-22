@@ -52,4 +52,4 @@ The r6 review proved the invariant's matcher blind spot with LIVE evidence: `Wor
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins
 - worklogs/0498→1166_relay-leak-fix-implementation.md, 0500→1167_epic-43-verify-pending-invitee.md — the two healed historical duplicates
-- worklogs/1165_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162 pre-empting main; ->1164 past main's bot; ->1165 by our own post-rewrite hook mid-rebase)
+- worklogs/1169_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162; ->1164; ->1165 by our own post-rewrite hook; ->1169 past main's bot-assigned 1165_trigger-script-gate — the fourth lag-window renumber)
