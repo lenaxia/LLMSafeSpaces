@@ -2358,6 +2358,8 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.GET("/:id", b.GetTask)
 		k.PATCH("/:id", b.UpdateTask)
 		k.POST("/:id/move-stage", b.MoveStageTask)
+		k.POST("/:id/verdict", b.RecordTaskVerdict)
+		k.GET("/:id/verdicts", b.ListTaskVerdicts)
 		k.POST("/:id/start", b.StartTask)
 		k.POST("/:id/pause", b.PauseTask)
 		k.POST("/:id/resume", b.ResumeTask)

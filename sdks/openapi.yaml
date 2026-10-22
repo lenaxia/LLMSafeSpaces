@@ -5096,6 +5096,73 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/verdict:
+    post:
+      tags: [board]
+      summary: Record a structured review verdict on a task
+      description: |
+        #1832 item 5 — the forge-agnostic verdict core. Validates the
+        payload (severity enum blocker|major|minor, pointer required,
+        criterionIndex bounds-checked against the task's criteria), then
+        applies the transition through the EXISTING guarded stage
+        machine: `approve` → done STILL passes the Done guard (ALL
+        criteria met + evidenceUrl); a refused transition is a RECORDED
+        outcome (`applied=false`, `transition="refused:<code>"`), not
+        an error — the chain keeps the evidence. `fail` → in_progress
+        rides the bounce: fresh claim minted, attempts UNCHANGED (a
+        bounce is an iteration inside the verdict chain, never a
+        failure-ledger entry). Idempotent per requestId.
+      operationId: recordBoardTaskVerdict
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardVerdictRequest"
+      responses:
+        "200":
+          description: The task row plus the recorded verdict (a refused transition included — applied=false)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardVerdictResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/verdicts:
+    get:
+      tags: [board]
+      summary: A task's ordered verdict chain
+      description: |
+        Every recorded verdict with findings, reviewer, and whether its
+        transition applied — the record the next claimant's charter
+        envelope embeds after a fail-bounce (PR-B2) and the drawer
+        timeline joins (#1832 item 4).
+      operationId: listBoardTaskVerdicts
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      responses:
+        "200":
+          description: The ordered verdict chain (oldest first)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardVerdictList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/tasks/{id}/start:
     post:
       tags: [board]
@@ -12912,6 +12979,81 @@ components:
           description: The artifact link for THIS transition — required on → done (ruling R2)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
+    BoardVerdictFinding:
+      type: object
+      required: [severity, pointer]
+      properties:
+        severity:
+          type: string
+          enum: [blocker, major, minor]
+        pointer:
+          type: string
+          description: file:line, or the criterion text when the finding maps to a criterion
+        criterionIndex:
+          type: integer
+          minimum: 0
+          description: The 0-based acceptance-criterion index the finding refutes (bounds-checked)
+    BoardVerdictRequest:
+      type: object
+      required: [verdict, reviewer]
+      properties:
+        verdict:
+          type: string
+          enum: [approve, fail]
+        reviewer:
+          type: string
+          description: Reviewer identity (the record's author)
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdictFinding"
+          description: Required on fail (what to fix)
+        evidenceUrl:
+          type: string
+          description: The approve transition's artifact link (the Done guard requires it)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardVerdict:
+      type: object
+      required: [verdict, reviewer, timestamp, applied]
+      properties:
+        verdict:
+          type: string
+          enum: [approve, fail]
+        reviewer:
+          type: string
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdictFinding"
+        timestamp:
+          type: string
+          format: date-time
+        taskStage:
+          type: string
+          description: The stage the task was in when the verdict landed
+        applied:
+          type: boolean
+          description: Whether the guarded transition succeeded
+        transition:
+          type: string
+          description: '"done" | "in_progress" | "refused:<guard-code>"'
+    BoardVerdictResponse:
+      type: object
+      required: [task, verdict]
+      properties:
+        task:
+          $ref: "#/components/schemas/BoardTask"
+        verdict:
+          $ref: "#/components/schemas/BoardVerdict"
+    BoardVerdictList:
+      type: object
+      required: [verdicts]
+      properties:
+        verdicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdict"
     BoardDeleteResult:
       type: object
       required: [item_kind, id, short_id]

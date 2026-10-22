@@ -104,6 +104,39 @@ var boardHealthTool = mcp.NewTool("board_health",
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
+var boardRecordVerdictTool = mcp.NewTool("board_record_verdict",
+	mcp.WithDescription("Record a structured review verdict on a task and apply its transition through "+
+		"the guarded stage machine (#1832 item 5 — the forge-agnostic verdict core; forge adapters map "+
+		"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
+		"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
+		"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
+		"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("verdict", mcp.Required(), mcp.Description("approve or fail")),
+	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Reviewer identity (the record's author)")),
+	mcp.WithString("evidence_url", mcp.Description("Artifact link for the approve transition (required by the Done guard)")),
+	mcp.WithArray("findings",
+		mcp.Items(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"severity":       map[string]any{"type": "string", "enum": []string{"blocker", "major", "minor"}},
+				"pointer":        map[string]any{"type": "string"},
+				"criterionIndex": map[string]any{"type": "integer"},
+			},
+			"required": []string{"severity", "pointer"},
+		}),
+		mcp.Description("Findings [{severity, pointer, criterionIndex?}] — required on fail (what to fix); pointer is file:line or criterion text")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
+var boardTaskVerdictsTool = mcp.NewTool("board_task_verdicts",
+	mcp.WithDescription("A task's ordered verdict chain (#1832 item 5): every recorded verdict with its "+
+		"findings, reviewer, and whether its transition applied — the record the next claimant's charter "+
+		"envelope embeds after a fail-bounce."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithReadOnlyHintAnnotation(true),
+)
+
 var boardCreateProjectTool = mcp.NewTool("board_create_project",
 	mcp.WithDescription("Create a board project: a swimlane with ONE target workspace the owning user "+
 		"can access (rulings R7/R8) and a worker-slot budget (max concurrent in-flight claims, default 2)."),
@@ -573,6 +606,94 @@ func (h *handlers) boardMoveStage(ctx context.Context, req mcp.CallToolRequest) 
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+// verdictFindingsArg decodes the findings array from MCP arguments
+// (#1832 item 5). A malformed entry is a tool error BEFORE any client
+// call — the adapter mirrors the server's strict-bind posture.
+func verdictFindingsArg(args map[string]any) ([]BoardVerdictFinding, error) {
+	raw, ok := args["findings"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	decodeFinding := func(e any) (BoardVerdictFinding, bool) {
+		f := BoardVerdictFinding{}
+		m, ok := e.(map[string]any)
+		if !ok {
+			return f, false
+		}
+		f.Severity, _ = m["severity"].(string)
+		f.Pointer, _ = m["pointer"].(string)
+		if v, ok := m["criterionIndex"]; ok && v != nil {
+			if f64, ok := v.(float64); ok {
+				i := int(f64)
+				f.CriterionIndex = &i
+			}
+		}
+		return f, true
+	}
+	var out []BoardVerdictFinding
+	switch arr := raw.(type) {
+	case []any: // the wire shape (JSON round-trip)
+		out = make([]BoardVerdictFinding, 0, len(arr))
+		for _, e := range arr {
+			f, ok := decodeFinding(e)
+			if !ok {
+				return nil, fmt.Errorf("findings entries must be {severity, pointer, criterionIndex?} objects")
+			}
+			out = append(out, f)
+		}
+	case []map[string]any: // the in-process test harness shape
+		out = make([]BoardVerdictFinding, 0, len(arr))
+		for _, m := range arr {
+			f, ok := decodeFinding(map[string]any(m))
+			if !ok {
+				return nil, fmt.Errorf("findings entries must be {severity, pointer, criterionIndex?} objects")
+			}
+			out = append(out, f)
+		}
+	default:
+		return nil, fmt.Errorf("findings must be an array of {severity, pointer, criterionIndex?} objects")
+	}
+	return out, nil
+}
+
+func (h *handlers) boardRecordVerdict(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	verdict := strArg(args, "verdict")
+	reviewer := strArg(args, "reviewer")
+	if taskID == "" || verdict == "" || reviewer == "" {
+		return mcp.NewToolResultError("task_id, verdict, and reviewer are required"), nil
+	}
+	if verdict != "approve" && verdict != "fail" {
+		return mcp.NewToolResultError("verdict must be approve or fail"), nil
+	}
+	findings, err := verdictFindingsArg(args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp, err := h.client.BoardRecordVerdict(ctx, taskID, BoardVerdictBody{
+		Verdict: verdict, Findings: findings, Reviewer: reviewer,
+		EvidenceURL: strArg(args, "evidence_url"), RequestID: strArg(args, "request_id"),
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to record verdict: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardTaskVerdicts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardTaskVerdicts(ctx, taskID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read verdict chain: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	taskID := strArg(args, "task_id")
@@ -917,6 +1038,8 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardCreateTaskTool, Handler: h.boardCreateTask},
 		server.ServerTool{Tool: boardUpdateItemTool, Handler: h.boardUpdateItem},
 		server.ServerTool{Tool: boardMoveStageTool, Handler: h.boardMoveStage},
+		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
+		server.ServerTool{Tool: boardTaskVerdictsTool, Handler: h.boardTaskVerdicts},
 		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},

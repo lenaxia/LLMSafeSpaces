@@ -325,6 +325,16 @@ func (m *MockAPIClient) BoardGetTask(ctx context.Context, taskID string) (json.R
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
+func (m *MockAPIClient) BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error) {
+	args := m.Called(ctx, taskID, body)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
 func (m *MockAPIClient) BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error) {
 	args := m.Called(ctx, taskID, body)
 	return json.RawMessage(args.String(0)), args.Error(1)

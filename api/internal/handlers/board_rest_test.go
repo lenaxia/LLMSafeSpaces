@@ -44,6 +44,9 @@ type fakeBoardManager struct {
 	searchResult *board.SearchResult
 	health       *board.Health
 
+	lastVerdictInput board.VerdictInput
+	verdicts         []board.Verdict
+
 	errFor map[string]error
 
 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
@@ -369,6 +372,28 @@ func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, id
 	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: toStage, Tags: []string{}}, nil
 }
 
+func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _, idOrShort string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
+	f.call("record_verdict")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastVerdictInput = in
+	_ = idOrShort
+	if err := f.errFor["record_verdict"]; err != nil {
+		return nil, nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: "done", Tags: []string{}},
+		&board.Verdict{Verdict: in.Verdict, Reviewer: in.Reviewer, Applied: true, Transition: "done"}, nil
+}
+
+func (f *fakeBoardManager) TaskVerdicts(_ context.Context, actor board.Actor, _, idOrShort string) ([]board.Verdict, error) {
+	f.call("task_verdicts")
+	f.lastActor = actor
+	_ = idOrShort
+	if err := f.errFor["task_verdicts"]; err != nil {
+		return nil, err
+	}
+	return f.verdicts, nil
+}
+
 func (f *fakeBoardManager) TaskStart(_ context.Context, actor board.Actor, _, idOrShort, requestID string) (*board.Claim, error) {
 	f.call("task_start")
 	f.lastActor, f.lastRequestID = actor, requestID
@@ -446,6 +471,8 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.GET("/:id", h.GetTask)
 	k.PATCH("/:id", h.UpdateTask)
 	k.POST("/:id/move-stage", h.MoveStageTask)
+	k.POST("/:id/verdict", h.RecordTaskVerdict)
+	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
 	k.POST("/:id/pause", h.PauseTask)
 	k.POST("/:id/resume", h.ResumeTask)
