@@ -20,8 +20,13 @@ type AcceptanceCriterion struct {
 
 // Project is the DB row shape for projects (swimlane).
 type Project struct {
-	ID                string     `json:"id"`
-	ShortID           string     `json:"short_id"`
+	ID      string `json:"id"`
+	ShortID string `json:"short_id"`
+	// ShortIDDeprecated marks a row still carrying the pre-#1831 random
+	// short-id form (IsDeprecatedBoardID): it keeps resolving through
+	// the dual-accept window but is never minted again — new addressing
+	// is the phrase form. Set at scan time; every read path carries it.
+	ShortIDDeprecated bool       `json:"short_id_deprecated,omitempty"`
 	UserID            string     `json:"user_id"`
 	Name              string     `json:"name"`
 	TargetWorkspaceID string     `json:"target_workspace_id,omitempty"`
@@ -42,19 +47,21 @@ type Project struct {
 // Epic is the DB row shape for epics, including the DRR fairness state
 // (vft/deficit/quantum — Postgres is the only fairness state, §4.4).
 type Epic struct {
-	ID          string    `json:"id"`
-	ProjectID   string    `json:"project_id"`
-	ShortID     string    `json:"short_id"`
-	Title       string    `json:"title"`
-	Outcome     string    `json:"outcome"`
-	Status      string    `json:"status"`
-	ProjectName string    `json:"project_name"`
-	Tags        []string  `json:"tags"`
-	VFT         int64     `json:"vft"`
-	Deficit     int64     `json:"deficit"`
-	Quantum     int       `json:"quantum"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	ShortID   string `json:"short_id"`
+	// ShortIDDeprecated: see Project.ShortIDDeprecated (#1831 window).
+	ShortIDDeprecated bool      `json:"short_id_deprecated,omitempty"`
+	Title             string    `json:"title"`
+	Outcome           string    `json:"outcome"`
+	Status            string    `json:"status"`
+	ProjectName       string    `json:"project_name"`
+	Tags              []string  `json:"tags"`
+	VFT               int64     `json:"vft"`
+	Deficit           int64     `json:"deficit"`
+	Quantum           int       `json:"quantum"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 	// Backpressure (derived, informational — see Project.Backpressure).
 	Backpressure string `json:"backpressure,omitempty"`
 	// Derived progress (never stored, ruling R2): Done over ALL tasks
@@ -68,10 +75,12 @@ type Epic struct {
 // Task is the DB row shape for tasks, including the dispatch state
 // (claim_token, lease, attempts, provenance flag — §4.4).
 type Task struct {
-	ID                 string                `json:"id"`
-	ProjectID          string                `json:"project_id"`
-	EpicID             string                `json:"epic_id"`
-	ShortID            string                `json:"short_id"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	EpicID    string `json:"epic_id"`
+	ShortID   string `json:"short_id"`
+	// ShortIDDeprecated: see Project.ShortIDDeprecated (#1831 window).
+	ShortIDDeprecated  bool                  `json:"short_id_deprecated,omitempty"`
 	Title              string                `json:"title"`
 	Description        string                `json:"description"`
 	Stage              string                `json:"stage"`
@@ -86,14 +95,24 @@ type Task struct {
 	// candidacy, claim mints, and forward stage-writes. Never a stage —
 	// the five-stage vocabulary is binding; a paused in-flight worker
 	// received a HALT directive and finishes its current turn.
-	Paused           bool       `json:"paused"`
-	AssigneeSession  string     `json:"assignee_session,omitempty"`
-	ClaimToken       string     `json:"claim_token,omitempty"`
-	LeaseExpiresAt   *time.Time `json:"lease_expires_at,omitempty"`
-	LastProgressAt   *time.Time `json:"last_progress_at,omitempty"`
-	Attempts         int        `json:"attempts"`
-	ClaimIncremented bool       `json:"claim_incremented_attempts"`
-	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	Paused bool `json:"paused"`
+	// The failed-state attribute overlay (#1813): a task whose worker
+	// attempt failed (lease-lapse reclaim — the overlay's ONLY writer)
+	// carries a VISIBLE failure marker — NEVER a stage (the five-stage
+	// vocabulary is binding). An all-success attempts-cap exhaustion
+	// carries NO marker (its signal: pending_origin='escalated').
+	// Reset by any successful turn (in_review/done entry) and the
+	// pending_input human exit.
+	LastAttemptFailed bool       `json:"last_attempt_failed"`
+	FailureCount      int        `json:"failure_count"`
+	LastFailureAt     *time.Time `json:"last_failure_at,omitempty"`
+	AssigneeSession   string     `json:"assignee_session,omitempty"`
+	ClaimToken        string     `json:"claim_token,omitempty"`
+	LeaseExpiresAt    *time.Time `json:"lease_expires_at,omitempty"`
+	LastProgressAt    *time.Time `json:"last_progress_at,omitempty"`
+	Attempts          int        `json:"attempts"`
+	ClaimIncremented  bool       `json:"claim_incremented_attempts"`
+	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row

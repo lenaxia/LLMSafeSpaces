@@ -1523,6 +1523,38 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/status-snapshot:
+    post:
+      tags: [sessions]
+      summary: Request a busy-snapshot flight
+      description: |
+        Triggers a session-status-snapshot attempt for the workspace
+        (#1821 piece 2): emits `session.status.snapshot_begin`, one
+        `session.status.snapshot` frame (the broker cursor plus the
+        authority's per-session derived-busy rows, phrase-keyed with the
+        harness id additive), and `session.status.snapshot_complete`
+        (with `snapshot_ok`) on the user event stream. The authority is
+        the pod's statusz; a failed authority read completes with
+        `snapshot_ok=false` (keep your state — never an authoritative
+        all-idle). The busy lease's authoritative recheck surface
+        (#1821 piece 4): clients whose latched busy has gone
+        unconfirmed for the lease window re-request this flight instead
+        of guessing. Concurrent triggers coalesce per workspace
+        in-process (one authority fetch per in-flight window). Returns
+        immediately with 202; the snapshot outcome is delivered via the
+        user stream.
+      operationId: requestSessionStatusSnapshot
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "202":
+          description: Snapshot flight scheduled; outcome arrives on the user event stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/uploads:
     post:
       tags: [workspaces]
@@ -4351,7 +4383,7 @@ paths:
         A project is the swimlane: one target workspace the owning user
         can access (ruling R8 — single workspace per project; parallel
         work = sibling projects), a worker-slot budget, and tags. The
-        response's `short_id` (`prj-` + 8 chars, design 0066) addresses
+        response's `short_id` (word phrase since #1831, e.g. `prj-amber-falcon-glides`; legacy `prj-` + 8 chars still resolves through the dual-accept window) addresses
         the project on every surface (case-insensitive; UUID also
         accepted).
       operationId: createBoardProject
@@ -4536,6 +4568,65 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/projects/{id}/config:
+    get:
+      tags: [board]
+      summary: Get a project's board config (overrides + effective merged row)
+      description: |
+        #1832 item 6: renders the project's raw stored overrides plus
+        the effective config in one read. The effective row is merged
+        at READ time — a key the override map leaves unset inherits
+        the owner's board-wide default (and tracks later user-default
+        changes); no materialized copy exists.
+      operationId: getBoardProjectConfig
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Project config (overrides + effective)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProjectConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+    put:
+      tags: [board]
+      summary: Replace a project's board config overrides
+      description: |
+        REPLACE-semantics write: send the FULL override map — absent
+        keys stop being overridden and revert to inheriting the owner's
+        board-wide default; `{}` clears every override. Unknown keys,
+        malformed values, and JSON null values reject with 400
+        (invalid_input): an unset key is ABSENT, never null. Foreign or
+        unknown projects render 404 (scoped, never disclosed);
+        defaultWorkerSlots is rejected here — it is a user-level key
+        (PUT /me/board/config); a project's worker slots are fixed at
+        create.
+      operationId: setBoardProjectConfig
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardConfigOverrideProject"
+      responses:
+        "200":
+          description: Updated project config (overrides + effective)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProjectConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/projects/{id}/import-plan:
     post:
       tags: [board]
@@ -4630,6 +4721,8 @@ paths:
       description: |
         Ordered by (creation order — FIFO, the #1747 claim rule). `stage` filters by one of the
         five stages (ruling R2's binding set as amended by #1747); any other value is a 400.
+        `failed` filters by the #1813 failed-state overlay (true: only tasks whose last attempt
+        failed — crash loop, lease-lapse reclaims, exhaustion; false: only clean rows).
       operationId: listBoardProjectTasks
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4639,6 +4732,12 @@ paths:
           schema:
             type: string
             enum: [backlog, in_progress, in_review, done, pending_input]
+        - name: failed
+          in: query
+          required: false
+          description: "#1813 failed-state overlay filter (tri-state boolean)"
+          schema:
+            type: boolean
       responses:
         "200":
           description: Task list
@@ -5029,6 +5128,73 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/verdict:
+    post:
+      tags: [board]
+      summary: Record a structured review verdict on a task
+      description: |
+        #1832 item 5 — the forge-agnostic verdict core. Validates the
+        payload (severity enum blocker|major|minor, pointer required,
+        criterionIndex bounds-checked against the task's criteria), then
+        applies the transition through the EXISTING guarded stage
+        machine: `approve` → done STILL passes the Done guard (ALL
+        criteria met + evidenceUrl); a refused transition is a RECORDED
+        outcome (`applied=false`, `transition="refused:<code>"`), not
+        an error — the chain keeps the evidence. `fail` → in_progress
+        rides the bounce: fresh claim minted, attempts UNCHANGED (a
+        bounce is an iteration inside the verdict chain, never a
+        failure-ledger entry). Idempotent per requestId.
+      operationId: recordBoardTaskVerdict
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardVerdictRequest"
+      responses:
+        "200":
+          description: The task row plus the recorded verdict (a refused transition included — applied=false)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardVerdictResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/verdicts:
+    get:
+      tags: [board]
+      summary: A task's ordered verdict chain
+      description: |
+        Every recorded verdict with findings, reviewer, and whether its
+        transition applied — the record the next claimant's charter
+        envelope embeds after a fail-bounce (PR-B2) and the drawer
+        timeline joins (#1832 item 4).
+      operationId: listBoardTaskVerdicts
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      responses:
+        "200":
+          description: The ordered verdict chain (oldest first)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardVerdictList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/tasks/{id}/start:
     post:
       tags: [board]
@@ -5123,6 +5289,50 @@ paths:
         "409":
           $ref: "#/components/responses/BoardConflict"
 
+  /me/tasks/{id}/events:
+    get:
+      tags: [board]
+      summary: The task's full audit timeline (board_events rows)
+      description: |
+        #1832 item 4: every board_events row scoped to the task,
+        chronological (oldest→newest) — stage transitions (move_stage
+        payloads carry from_stage/requested_to/resulting_stage), claims
+        (who claimed — the payload's worker + attempts — and when),
+        review verdicts (the structured verdict payload when the action
+        carries one), dependency-graph changes (add/remove_dependency),
+        orphan/unblock events (unblocked_by_delete rides the ORPHAN's
+        timeline), plus the reconciler's system rows (reclaim, drift,
+        escalate, pending_stage). The SSE board.event projection only
+        carries post-subscribe commits (§4.6 persist-then-publish);
+        this read is the HISTORY seam. Owner perimeter identical to
+        GET /me/tasks/{id} (foreign rows are plain 404s). `?limit=N`
+        keeps the newest N rows (default 200, max 500; heartbeats write
+        a row per call, so the window bounds long-lived claims).
+      operationId: getBoardTaskEvents
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+        - name: limit
+          in: query
+          required: false
+          description: Keep the newest N events (1–500; default 200). Still rendered oldest→newest.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          description: The task's audit timeline (chronological ascending)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEventList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/tasks/{id}/dependencies:
     post:
       tags: [board]
@@ -5239,6 +5449,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /me/board/config:
+    get:
+      tags: [board]
+      summary: Get the acting user's effective board-wide config defaults
+      description: |
+        #1832 item 6: the board-wide defaults — code defaults overlaid
+        with the acting user's stored defaults map (every key always
+        present). USER scope per design 0067 R7 (boards are user-level,
+        so "board-wide" = the user's boards, not the instance — scope
+        ruling on PR #1840). A future instance tier (instance > user >
+        project) is deliberate future work.
+      operationId: getUserBoardConfig
+      responses:
+        "200":
+          description: Effective user board-wide config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [board]
+      summary: Replace the acting user's board-wide config defaults
+      description: |
+        REPLACE-semantics write: send the FULL map — absent keys revert
+        to the code defaults; `{}` clears every override. Unknown keys,
+        malformed values, and JSON null values reject with 400
+        (invalid_input): an unset key is ABSENT from the object, never
+        null. Per-project overrides are unaffected (they win at
+        read-time merge).
+      operationId: setUserBoardConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardConfigOverride"
+      responses:
+        "200":
+          description: New effective user board-wide config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
   # --- Org-scope workflows & triggers (Epic 64) ---
@@ -9252,11 +9511,11 @@ components:
       name: id
       in: path
       required: true
-      description: Board project ID — UUID or short id (`prj-` + 8 chars, case-insensitive; design 0066)
+      description: Board project ID — UUID or short id (word phrase `prj-amber-falcon-glides` since #1831, or legacy `prj-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(prj-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: prj-a1b2c3d4
+        pattern: "^(prj-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: prj-amber-falcon-glides
     BoardSearchQ:
       name: q
       in: query
@@ -9303,20 +9562,20 @@ components:
       name: id
       in: path
       required: true
-      description: Board epic ID — UUID or short id (`epc-` + 8 chars, case-insensitive)
+      description: Board epic ID — UUID or short id (word phrase since #1831, or legacy `epc-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(epc-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: epc-b1c2d3e4
+        pattern: "^(epc-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: epc-ebony-lantern-ambles
     BoardTaskId:
       name: id
       in: path
       required: true
-      description: Board task ID — UUID or short id (`tsk-` + 8 chars, case-insensitive)
+      description: Board task ID — UUID or short id (word phrase `tsk-crimson-finch-blooms` since #1831, or legacy `tsk-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: tsk-c1d2e3f4
+        pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: tsk-crimson-finch-blooms
     BoardDependsOnId:
       name: dependsOnId
       in: path
@@ -9324,8 +9583,8 @@ components:
       description: The dependency target task — UUID or short id (`tsk-…`)
       schema:
         type: string
-        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: tsk-d1e2f3g4
+        pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: tsk-crimson-finch-blooms
   responses:
     BadRequest:
       description: Invalid request
@@ -12209,6 +12468,80 @@ components:
     # --- Task Board (design 0067, #1699). Row encoding is the engine's
     # canonical JSON (snake_case short_id — identical to the internal
     # automation seam's rendering; the parity matrix pins it). ---
+    BoardConfig:
+      type: object
+      description: |
+        #1832 item 6: the effective board config — every key always
+        present. Rendered for the acting user's board-wide defaults
+        and as the per-project effective row (user defaults overlaid
+        with the project's overrides, merged at read time).
+      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots]
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+          description: Whether the review column shows and who drives it; auto stores the preference only (review automation is a separate slice)
+        autoAssignReviewer:
+          type: boolean
+          description: Whether in_review auto-assigns a review claim (config-gated behavior ships separately)
+        defaultWorkerSlots:
+          type: integer
+          minimum: 1
+          description: Default worker slots for new projects (the platform default is 2)
+    BoardConfigOverride:
+      type: object
+      description: |
+        #1832 item 6: a PARTIAL config map (write payload and the raw
+        stored override row). Absent keys inherit — a set key wins at
+        read-time merge. Writes are REPLACE-semantics: send the full
+        set; `{}` clears every override. Unknown keys, malformed
+        values, and JSON null values reject (400) — an unset key is
+        ABSENT from the object, never null. NOTE:
+        defaultWorkerSlots is user-level (PUT /me/board/config); the
+        project surface uses BoardConfigOverrideProject, which omits
+        it (a project's worker slots are fixed at create).
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+        autoAssignReviewer:
+          type: boolean
+        defaultWorkerSlots:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    BoardConfigOverrideProject:
+      type: object
+      description: |
+        #1832 item 6: the PER-PROJECT override map (PUT
+        /me/projects/{id}/config body and the raw stored overrides in
+        BoardProjectConfig). Same REPLACE-semantics and null/unknown
+        rejection as BoardConfigOverride, but scoped to the
+        project-level keys ONLY: defaultWorkerSlots is deliberately
+        ABSENT — it is a user-level key (PUT /me/board/config); a
+        project's worker slots are fixed at create, and the service
+        rejects the key here with 400 invalid_input.
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+        autoAssignReviewer:
+          type: boolean
+      additionalProperties: false
+    BoardProjectConfig:
+      type: object
+      description: |
+        #1832 item 6: one project's config surfaces in a single read —
+        the raw stored overrides plus the effective merged row.
+      required: [project_id, overrides, effective]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        overrides:
+          $ref: "#/components/schemas/BoardConfigOverrideProject"
+        effective:
+          $ref: "#/components/schemas/BoardConfig"
     BoardProject:
       type: object
       required: [id, short_id, user_id, name, worker_slots, tags, status, paused, created_at, updated_at]
@@ -12218,9 +12551,12 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^prj-[0-9a-z]{8}$"
-          example: prj-a1b2c3d4
-          description: The prj- short id (design 0066 mint; per-owner uniqueness, case-insensitive resolution)
+          pattern: "^prj-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: prj-amber-falcon-glides
+          description: The prj- short id (#1831 phrase mint; legacy random rows render short_id_deprecated, per-owner uniqueness, case-insensitive resolution)
+          short_id_deprecated:
+            type: boolean
+            description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         user_id:
           type: string
           description: The owning user (ruling R7 — user-level only; no org boards)
@@ -12269,8 +12605,11 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^epc-[0-9a-z]{8}$"
-          example: epc-b1c2d3e4
+          pattern: "^epc-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: epc-ebony-lantern-ambles
+        short_id_deprecated:
+          type: boolean
+          description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         title:
           type: string
         outcome:
@@ -12313,7 +12652,7 @@ components:
           type: boolean
     BoardTask:
       type: object
-      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, stage_entered_at, created_at, updated_at]
+      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, last_attempt_failed, failure_count, stage_entered_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -12326,8 +12665,11 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^tsk-[0-9a-z]{8}$"
-          example: tsk-c1d2e3f4
+          pattern: "^tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: tsk-crimson-finch-blooms
+        short_id_deprecated:
+          type: boolean
+          description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         title:
           type: string
         description:
@@ -12398,11 +12740,23 @@ components:
           type: integer
           minimum: 0
           description: Claims granted (the claim statement is the ONLY increment; the human pending_input exit is the ONE reset)
+        last_attempt_failed:
+          type: boolean
+          description: "#1813 failed-state overlay — the last worker attempt failed (lease-lapse reclaim is the ONLY writer). NEVER a stage; an all-success attempts-cap exhaustion carries no marker (signal: pending_origin=escalated); reset by any successful turn (in_review/done entry) and the pending_input human exit."
+        failure_count:
+          type: integer
+          minimum: 0
+          description: CONSECUTIVE failed attempts (the doubling auto-return-to-ready backoff driver)
+        last_failure_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the latest attempt failure landed
         cooldown_until:
           type: string
           format: date-time
           nullable: true
-          description: Provider-throttle cooldown on this task
+          description: Cooldown gating claim candidacy — provider-throttle 429s and #1813 failure backoff (doubling per consecutive failure)
         stage_entered_at:
           type: string
           format: date-time
@@ -12462,6 +12816,75 @@ components:
       properties:
         task:
           $ref: "#/components/schemas/BoardTask"
+    BoardEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          description: The task's board_events rows, chronological ascending (oldest→newest); the newest-N window per the limit parameter
+          items:
+            $ref: "#/components/schemas/BoardEvent"
+    BoardEvent:
+      type: object
+      required: [id, project_id, action, created_at]
+      properties:
+        id:
+          type: string
+          description: The event row's id — the caller-supplied requestId (a uuid on ordinary writes; deterministic ids like "reconciler:reclaim:<task>:<episode>" on system/replay-convergence writes)
+        project_id:
+          type: string
+          format: uuid
+        item_kind:
+          type: string
+          description: 'The row''s item kind — "task" on task-scoped rows (epic/project rows exist for their own items)'
+        item_id:
+          type: string
+          description: The row's item uuid (the TASK's uuid on a task timeline — note unblocked_by_delete carries the ORPHAN's id, which is what scopes it to this timeline)
+        action:
+          type: string
+          description: |
+            The action vocabulary: create_task, update_task, delete_task,
+            move_stage, claim, task_start, escalate, reclaim,
+            pending_stage, resume, drift_done, drift_review,
+            drift_reentry, add_dependency, remove_dependency,
+            unblocked_by_delete, heartbeat, report_throttle, pause_task,
+            resume_task, import_plan, …
+          example: move_stage
+        actor:
+          $ref: "#/components/schemas/BoardEventActor"
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            The action's committed outcome (the replay payload). Notable
+            shapes: move_stage {task_id, from_stage, requested_to,
+            resulting_stage, reclaimed} (a review-verdict bounce carries
+            the structured verdict too); claim {task_id, worker,
+            attempts}; add_dependency {task_id, depends_on};
+            remove_dependency {task_id, removed}; unblocked_by_delete
+            {of, orphan}; delete_task {snapshot, orphaned_dependents,
+            reconnected}.
+        created_at:
+          type: string
+          format: date-time
+    BoardEventActor:
+      type: object
+      description: The persisted actor view (who performed the action)
+      properties:
+        kind:
+          type: string
+          enum: [user, system]
+        user_id:
+          type: string
+        surface:
+          type: string
+          description: "rest (user UI), agent (worker via claim), engine, reconciler, …"
+        workspace_id:
+          type: string
+        session_id:
+          type: string
+          description: The creating session on the agent surface (#1747 audit ruling)
     BoardEpicList:
       type: object
       required: [epics]
@@ -12710,6 +13133,81 @@ components:
           description: The artifact link for THIS transition — required on → done (ruling R2)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
+    BoardVerdictFinding:
+      type: object
+      required: [severity, pointer]
+      properties:
+        severity:
+          type: string
+          enum: [blocker, major, minor]
+        pointer:
+          type: string
+          description: file:line, or the criterion text when the finding maps to a criterion
+        criterionIndex:
+          type: integer
+          minimum: 0
+          description: The 0-based acceptance-criterion index the finding refutes (bounds-checked)
+    BoardVerdictRequest:
+      type: object
+      required: [verdict, reviewer]
+      properties:
+        verdict:
+          type: string
+          enum: [approve, fail]
+        reviewer:
+          type: string
+          description: Reviewer identity (the record's author)
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdictFinding"
+          description: Required on fail (what to fix)
+        evidenceUrl:
+          type: string
+          description: The approve transition's artifact link (the Done guard requires it)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardVerdict:
+      type: object
+      required: [verdict, reviewer, timestamp, applied]
+      properties:
+        verdict:
+          type: string
+          enum: [approve, fail]
+        reviewer:
+          type: string
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdictFinding"
+        timestamp:
+          type: string
+          format: date-time
+        taskStage:
+          type: string
+          description: The stage the task was in when the verdict landed
+        applied:
+          type: boolean
+          description: Whether the guarded transition succeeded
+        transition:
+          type: string
+          description: '"done" | "in_progress" | "refused:<guard-code>"'
+    BoardVerdictResponse:
+      type: object
+      required: [task, verdict]
+      properties:
+        task:
+          $ref: "#/components/schemas/BoardTask"
+        verdict:
+          $ref: "#/components/schemas/BoardVerdict"
+    BoardVerdictList:
+      type: object
+      required: [verdicts]
+      properties:
+        verdicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardVerdict"
     BoardDeleteResult:
       type: object
       required: [item_kind, id, short_id]

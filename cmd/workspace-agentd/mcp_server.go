@@ -238,7 +238,7 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_update_task",
 			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":      map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId":      map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"title":       map[string]any{"type": "string", "description": "New title"},
 				"description": map[string]any{"type": "string", "description": "New description (REPLACE)"},
 				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
@@ -254,23 +254,23 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_add_dependency",
 			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
+				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
 			}, "required": []string{"taskId", "dependsOn"}},
 		},
 		{
 			Name:        "board_remove_dependency",
 			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
+				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
 			}, "required": []string{"taskId", "dependsOn"}},
 		},
 		{
 			Name:        "board_delete_task",
 			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"reconnect": map[string]any{"type": "boolean", "description": "Orphans inherit the deleted node's direct upstream edges (default off — the graph never rewrites itself implicitly)"},
 			}, "required": []string{"taskId"}},
 		},
@@ -278,14 +278,14 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_pause_task",
 			Description: "Pause one task — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
 			Name:        "board_resume_task",
 			Description: "Resume a paused task: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
@@ -428,7 +428,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "send_message",
-			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when target==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the session_id value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when target==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the session_id value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -530,9 +530,9 @@ func mcpToolCatalog() []mcpTool {
 			// surfaces, and the claim token (charter envelope) is the
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
-			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (tsk-…, from your charter envelope) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
+			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"shortId": map[string]any{"type": "string", "description": "The task's short id (tsk-…, from your charter envelope); case-insensitive"},
+				"shortId": map[string]any{"type": "string", "description": "The task's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
 				"taskId":  map[string]any{"type": "string", "description": "The task's UUID (alternative to shortId; taskId wins when both are given)"},
 			}, "required": []string{}},
 		},
@@ -542,7 +542,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress evidence (last message/tool activity). The lease extends only when this moved past the stored watermark"},
-				"shortId":            map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":            map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":             map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
@@ -552,7 +552,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":        map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"retryAfterSeconds": map[string]any{"type": "integer", "description": "Optional backoff from the provider's Retry-After; omitted = the platform's default throttle backoff"},
-				"shortId":           map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":           map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":            map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
@@ -564,7 +564,7 @@ func mcpToolCatalog() []mcpTool {
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done) or in_progress (re-work); pending_input exits are human-only"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
-				"shortId":     map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":     map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":      map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken", "toStage"}},
 		},
@@ -782,18 +782,38 @@ func mcpHandler(password string) http.HandlerFunc {
 			}
 			result, err := callMCPTool(r.Context(), password, params.Name, params.Arguments)
 			if err != nil {
-				writeMCPResult(w, req.ID, map[string]any{
+				res := map[string]any{
 					"content": []map[string]any{
 						{"type": "text", "text": fmt.Sprintf("Error: %v", err)},
 					},
 					"isError": true,
-				})
+				}
+				// #1816 §2 parity: the notice rides the error envelope
+				// too — a deprecated-form ref that FAILS still tells
+				// the caller the address form is going away.
+				if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+					res["content"] = append(res["content"].([]map[string]any),
+						map[string]any{"type": "text", "text": note})
+				}
+				writeMCPResult(w, req.ID, res)
 				return
 			}
+			content := []map[string]any{
+				{"type": "text", "text": result},
+			}
+			// #1816 §2 parity with the REST Deprecation/Sunset
+			// headers: a caller addressing a session by a deprecated
+			// form (full/hashed id) gets the one-release notice as a
+			// SECOND content block on the tools/call result — the
+			// envelope-level carrier covers every session tool
+			// uniformly, including array-shaped outputs (session_read)
+			// that have no object field to carry it (#1806's round
+			// left those shape-constrained).
+			if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+				content = append(content, map[string]any{"type": "text", "text": note})
+			}
 			writeMCPResult(w, req.ID, map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": result},
-				},
+				"content": content,
 			})
 
 		default:
@@ -893,7 +913,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
 		// #1747: the manager set joins them, session-gated at dispatch.
-		return mcpAutomation(ctx, name, args)
+		return mcpAutomation(ctx, password, name, args)
 	case "get_datetime":
 		timezoneArg, _ := args["timezone"].(string)
 		return mcpGetDatetime(timezoneArg)

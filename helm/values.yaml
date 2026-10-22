@@ -1922,6 +1922,10 @@ board:
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300
+  # #1813: failed-attempt auto-return-to-ready BASE backoff in seconds
+  # (doubling per consecutive failure, capped at 1h) — a lease-lapse
+  # reclaim parks the row behind this cooldown before redispatch.
+  failureBackoffSeconds: 60
   # Deficit-round-robin round allowance (claims per epic per round).
   drrQuantum: 1
   # Reconciler sweep cadence in seconds (lease reclaims, drift, deps).

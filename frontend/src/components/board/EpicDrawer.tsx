@@ -158,7 +158,7 @@ export function EpicDrawer({
 
           <div className="flex flex-wrap justify-end gap-2 border-t border-border px-4 py-3">
             {onNewTask && (
-              <Button variant="outline" size="sm" onClick={onNewTask}>New task</Button>
+              <Button variant="outline" size="sm" onClick={onNewTask} data-testid="drawer-new-task">New task</Button>
             )}
             {epic.status !== "active" ? (
               onActivate && (

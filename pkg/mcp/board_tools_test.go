@@ -44,9 +44,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// boardToolNames is the exact external surface (design §4.3b): 19 tools.
+// boardToolNames is the exact external surface (design §4.3b + #1832
+// item 5's verdict pair + the item-4 timeline read): 27 tools.
 var boardToolNames = []string{
 	"board_list_projects", "board_get", "board_read", "board_health",
+	"board_task_events",
+	"board_record_verdict", "board_task_verdicts",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
@@ -140,9 +143,32 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
+			name: "board_task_events", tool: "board_task_events", args: map[string]any{"task_id": "tsk-cccc3333", "limit": 10},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardTaskEvents", mock.Anything, "tsk-cccc3333", 10).Return(`{"events":[]}`, nil)
+			},
+		},
+		{
 			name: "board_read", tool: "board_read", args: map[string]any{"project_id": "prj-aaaa1111", "stage": "backlog"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog").Return(`{"tasks":[]}`, nil)
+				m.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog", "").Return(`{"tasks":[]}`, nil)
+			},
+		},
+		{
+			name: "board_record_verdict", tool: "board_record_verdict",
+			args: map[string]any{"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
+				"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}}},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardRecordVerdict", mock.Anything, "tsk-cccc3333",
+					BoardVerdictBody{Verdict: "fail", Reviewer: "rev",
+						Findings:  []BoardVerdictFinding{{Severity: "blocker", Pointer: "c1"}},
+						RequestID: ""}).Return(`{"verdict":{"applied":true}}`, nil)
+			},
+		},
+		{
+			name: "board_task_verdicts", tool: "board_task_verdicts", args: map[string]any{"task_id": "tsk-cccc3333"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardTaskVerdicts", mock.Anything, "tsk-cccc3333").Return(`{"verdicts":[]}`, nil)
 			},
 		},
 		{
@@ -582,6 +608,12 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardGet(ctx, makeReq(name, args))
 	case "board_read":
 		return h.boardRead(ctx, makeReq(name, args))
+	case "board_task_events":
+		return h.boardTaskEvents(ctx, makeReq(name, args))
+	case "board_record_verdict":
+		return h.boardRecordVerdict(ctx, makeReq(name, args))
+	case "board_task_verdicts":
+		return h.boardTaskVerdicts(ctx, makeReq(name, args))
 	case "board_health":
 		return h.boardHealth(ctx, makeReq(name, args))
 	case "board_create_project":
@@ -714,7 +746,7 @@ const rejectedStageLiteral = "cancel\u006ced"
 // move-target set.
 func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	readOK := &MockAPIClient{}
-	readOK.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog").Return(`{"tasks":[]}`, nil).Once()
+	readOK.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog", "").Return(`{"tasks":[]}`, nil).Once()
 	h := &handlers{client: readOK, timeout: 30 * time.Second}
 	res, _ := callBoardTool(t, h, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": "backlog"})
 	assert.False(t, res.IsError)
@@ -743,6 +775,31 @@ func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	assert.True(t, res5.IsError, "stage=%s must be rejected at the tool tier (five-stage vocabulary)", rejectedStageLiteral)
 	assert.Contains(t, boardResultText(res5), "pending_input", "the error advertises the FIVE live stages")
 	assert.NotContains(t, boardResultText(res5), rejectedStageLiteral, "the error must not advertise the eliminated stage")
+}
+
+// TestBoardTools_BoardReadFailedFilter (#1813): the failed-state
+// overlay filter threads board_read → the client verbatim (true only;
+// absent/false means no filter — tri-state discipline server-side).
+func TestBoardTools_BoardReadFailedFilter(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "", "true").Return(`{"tasks":[]}`, nil).Once()
+	h := &handlers{client: m, timeout: 30 * time.Second}
+	res, _ := callBoardTool(t, h, "board_read", map[string]any{"project_id": "prj-aaaa1111", "failed": true})
+	assert.False(t, res.IsError)
+
+	m2 := &MockAPIClient{}
+	m2.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "", "").Return(`{"tasks":[]}`, nil).Once()
+	h2 := &handlers{client: m2, timeout: 30 * time.Second}
+	res2, _ := callBoardTool(t, h2, "board_read", map[string]any{"project_id": "prj-aaaa1111"})
+	assert.False(t, res2.IsError, "absent failed arg means no filter")
+
+	// r6 (review): explicit false THREADS — "false only clean rows" per
+	// the tool description, never a silent no-filter.
+	m3 := &MockAPIClient{}
+	m3.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "", "false").Return(`{"tasks":[]}`, nil).Once()
+	h3 := &handlers{client: m3, timeout: 30 * time.Second}
+	res3, _ := callBoardTool(t, h3, "board_read", map[string]any{"project_id": "prj-aaaa1111", "failed": false})
+	assert.False(t, res3.IsError, "explicit false filters clean rows")
 }
 
 // TestBoardTools_DeleteProjectRefused (r2): board_delete on a prj- id

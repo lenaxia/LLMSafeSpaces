@@ -1,0 +1,47 @@
+diff a/api/internal/handlers/board_parity_test.go b/api/internal/handlers/board_parity_test.go	(rejected hunks)
+@@ -145,6 +145,8 @@ var boardParityMatrix = []parityRow{
+ 	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
+ 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
+ 		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams, live on REST/external)
++	{action: "board_task_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
++		externalMCP: liveCell, extTools: []string{"board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity); agent surface follows the manager-read seams decision when the drawer ships there
+ 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
+ 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
+ 		agentTool: "board_create_epic"},
+@@ -333,6 +335,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
+ 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/resume", `{}`)
+ 	case "board_read":
+ 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
++	case "board_task_events":
++		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/events", "")
+ 	case "create_epic":
+ 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E"}`)
+ 	case "update_epic":
+@@ -757,6 +761,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
+ 		return "board_project_resume", map[string]any{"project_id": "prj-aaaa1111"}, true
+ 	case "board_read":
+ 		return "board_list_projects", map[string]any{}, true
++	case "board_task_events":
++		return "board_task_events", map[string]any{"task_id": "tsk-cccc3333"}, true
+ 	case "create_epic":
+ 		return "board_create_epic", map[string]any{"project_id": "prj-aaaa1111", "title": "E"}, true
+ 	case "update_epic":
+@@ -932,6 +938,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
+ 		"GET /api/v1/me/projects/:id/epics",
+ 		"GET /api/v1/me/projects/:id/tasks",
+ 		"GET /api/v1/me/tasks/:id",
++		"GET /api/v1/me/tasks/:id/events",
+ 		"PATCH /api/v1/me/epics/:id",
+ 		"PATCH /api/v1/me/projects/:id",
+ 		"PATCH /api/v1/me/tasks/:id",
+@@ -1015,7 +1022,9 @@ var replayExceptions = map[string]string{
+ func boardReadActions() map[string]bool {
+ 	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true,
+ 		// #1832 config reads: pure reads, nothing to replay or audit.
+-		"get_user_board_config": true, "get_project_board_config": true}
++		"get_user_board_config": true, "get_project_board_config": true,
++		// #1832 item 4: the task-events timeline read.
++		"board_task_events": true}
+ }
+ 
+ // TestBoardParity_IdempotentReplay: the clientMessageID discipline at

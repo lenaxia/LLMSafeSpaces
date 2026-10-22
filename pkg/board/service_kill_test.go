@@ -183,12 +183,15 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			s.Require().NoError(err)
 		}},
 		{"escalated", want{"backlog", board.PendingOriginEscalated, false, false}, func(t *board.Task, ws string) {
-			// Drive attempts to cap, then let the claim escalate.
+			// Drive attempts to cap, then let the claim escalate (#1813:
+			// clear the failure backoff each cycle — this arm pins the
+			// escalated origin, not the park).
 			for i := 0; i < s.cfg.AttemptsCap; i++ {
 				c := s.claimOrFail(ws)
 				s.Require().Equal(t.ID, c.TaskID)
 				s.expireLease(t.ID)
 				s.sweep()
+				s.clearTaskBackoff(t.ID)
 			}
 			c, err := s.svc.ClaimNext(context.Background(), "w", ws)
 			s.Require().NoError(err)
@@ -407,9 +410,11 @@ func (s *BoardSuite) TestKill_ShortIDResolution() {
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
 	t1 := s.seedTask(e, "alpha", nil, false)
-	s.Regexp(`^tsk-[0-9a-z]{8}$`, t1.ShortID)
-	s.Regexp(`^prj-[0-9a-z]{8}$`, p.ShortID)
-	s.Regexp(`^epc-[0-9a-z]{8}$`, e.ShortID)
+	// #1831: fresh mints are phrase-form (prefix + 3 words, optional
+	// counter rung) — the random 8-char form is never minted again.
+	s.Require().True(board.IsPhraseIDForm(t1.ShortID), "task mint is phrase-form: %s", t1.ShortID)
+	s.Require().True(board.IsPhraseIDForm(p.ShortID), "project mint is phrase-form: %s", p.ShortID)
+	s.Require().True(board.IsPhraseIDForm(e.ShortID), "epic mint is phrase-form: %s", e.ShortID)
 
 	// Case-insensitive resolution through the workspace-scoped reader
 	// (the agent seam's shape, r1-S1).
@@ -443,10 +448,12 @@ func (s *BoardSuite) TestKill_ShortIDResolution() {
 }
 
 // mutateShortIDSuffix swaps the final char for one GUARANTEED to differ
-// (the r3 flake: appending "q" is a no-op whenever the random mint already
-// ends in q — 1/36 per fresh draw, deterministic-in-cause, random-in-
-// trigger; it reddened Secrets Integration on 4a70bfa5). Same length, so
-// the mutation stays a Levenshtein-1 near miss.
+// (the r3 flake root-cause class: a substitution that can no-op on the
+// minted id's own final char — deterministic-in-cause, random-in-
+// trigger; it reddened Secrets Integration on 4a70bfa5 in the random
+// era and stays guarded now that mints are phrases). Same length, so
+// the mutation stays a distance-1 near miss (within the verb word —
+// the character ranker's catch; word drift is pinned at unit tier).
 func mutateShortIDSuffix(id string) string {
 	last := id[len(id)-1]
 	sub := byte('q')

@@ -33,6 +33,7 @@ type fakeBoardManager struct {
 	lastRequestID string
 
 	lastProjectID     string
+	lastFailed        string
 	lastSearchQuery   string
 	lastSearchFilters board.SearchFilters
 	lastHealthUser    string
@@ -43,6 +44,15 @@ type fakeBoardManager struct {
 	searchResult *board.SearchResult
 	health       *board.Health
 
+	events []board.Event
+
+	// #1832 item 4: the audit-timeline read's capture arms.
+	lastTaskEventsRef   string
+	lastTaskEventsLimit int
+
+	lastVerdictInput board.VerdictInput
+	verdicts         []board.Verdict
+
 	errFor map[string]error
 
 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
@@ -51,6 +61,10 @@ type fakeBoardManager struct {
 	beltErr                error
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
+
+	// #1832 item 6 seam arms: the config write captures.
+	lastGlobalConfigSet  *board.BoardConfigOverride
+	lastProjectConfigSet *board.BoardConfigOverride
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -277,14 +291,42 @@ func (f *fakeBoardManager) GetTask(_ context.Context, _, _ string) (*board.Task,
 	return nil, &board.NotFoundError{Item: "task", Identifier: "t1"}
 }
 
-func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage string) ([]board.Task, error) {
+func (f *fakeBoardManager) TaskEvents(_ context.Context, _, shortIDOrID string, limit int) ([]board.Event, error) {
+	f.call("task_events")
+	f.lastTaskEventsRef = shortIDOrID
+	f.lastTaskEventsLimit = limit
+	if err := f.errFor["task_events"]; err != nil {
+		return nil, err
+	}
+	return f.events, nil
+}
+
+func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage, failed string) ([]board.Task, error) {
 	f.call("list_tasks")
+	f.lastFailed = failed
 	_ = projectID
 	if err := f.errFor["list_tasks"]; err != nil {
 		return nil, err
 	}
-	_ = stage
-	return f.tasks, nil
+	out := f.tasks
+	if stage != "" {
+		out = filterTasks(out, func(t board.Task) bool { return t.Stage == stage })
+	}
+	if failed == "true" || failed == "false" {
+		want := failed == "true"
+		out = filterTasks(out, func(t board.Task) bool { return t.LastAttemptFailed == want })
+	}
+	return out, nil
+}
+
+func filterTasks(in []board.Task, keep func(board.Task) bool) []board.Task {
+	var out []board.Task
+	for _, t := range in {
+		if keep(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (f *fakeBoardManager) ListEpics(_ context.Context, projectID string) ([]board.Epic, error) {
@@ -346,6 +388,28 @@ func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, id
 	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: toStage, Tags: []string{}}, nil
 }
 
+func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _, idOrShort string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
+	f.call("record_verdict")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastVerdictInput = in
+	_ = idOrShort
+	if err := f.errFor["record_verdict"]; err != nil {
+		return nil, nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: "done", Tags: []string{}},
+		&board.Verdict{Verdict: in.Verdict, Reviewer: in.Reviewer, Applied: true, Transition: "done"}, nil
+}
+
+func (f *fakeBoardManager) TaskVerdicts(_ context.Context, actor board.Actor, _, idOrShort string) ([]board.Verdict, error) {
+	f.call("task_verdicts")
+	f.lastActor = actor
+	_ = idOrShort
+	if err := f.errFor["task_verdicts"]; err != nil {
+		return nil, err
+	}
+	return f.verdicts, nil
+}
+
 func (f *fakeBoardManager) TaskStart(_ context.Context, actor board.Actor, _, idOrShort, requestID string) (*board.Claim, error) {
 	f.call("task_start")
 	f.lastActor, f.lastRequestID = actor, requestID
@@ -398,9 +462,18 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p.POST("/:id/epics", h.CreateEpic)
 	p.POST("/:id/import-plan", h.ImportPlan)
 	p.GET("/:id/epics", h.ListProjectEpics)
+	p.GET("/:id/config", h.GetProjectBoardConfig)
+	p.PUT("/:id/config", h.SetProjectBoardConfig)
 	bb := g.Group("/board")
 	bb.GET("/search", h.BoardSearch)
 	bb.GET("/health", h.BoardHealth)
+	// #1832 item 6: the user-scoped board-wide config routes (the real
+	// router mounts these on the /api/v1/me/board group under the auth
+	// middleware — user scope, no admin gate, per the R7 ruling on PR
+	// #1840; the fixture stands in the userID middleware only — handler
+	// pins, not middleware pins).
+	bb.GET("/config", h.GetUserBoardConfig)
+	bb.PUT("/config", h.SetUserBoardConfig)
 	e := g.Group("/epics")
 	e.GET("/:id", h.GetEpic)
 	e.PATCH("/:id", h.UpdateEpic)
@@ -412,8 +485,11 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	e.POST("/:id/tasks", h.CreateEpicTask)
 	k := g.Group("/tasks")
 	k.GET("/:id", h.GetTask)
+	k.GET("/:id/events", h.TaskEvents)
 	k.PATCH("/:id", h.UpdateTask)
 	k.POST("/:id/move-stage", h.MoveStageTask)
+	k.POST("/:id/verdict", h.RecordTaskVerdict)
+	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
 	k.POST("/:id/pause", h.PauseTask)
 	k.POST("/:id/resume", h.ResumeTask)
@@ -658,6 +734,33 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 	// named/escaped site, never concatenation).
 	w = doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage=cancel\u006ced", "")
 	assert.Equal(t, http.StatusBadRequest, w.Code, "the eliminated stage left the vocabulary: "+w.Body.String())
+
+	// #1813: the failed-state overlay filter — tri-state boolean on the
+	// SAME endpoint; anything but true/false is a 400. The filter is
+	// SEMANTIC (the fake honors it): true keeps only failed rows,
+	// false only clean rows, absent keeps all.
+	svc2 := newFakeBoardManager()
+	svc2.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	svc2.tasks = []board.Task{
+		{ID: "t-clean", ShortID: "tsk-aaaa0001", ProjectID: "p1", EpicID: "e1", Title: "clean", Stage: board.StageBacklog},
+		{ID: "t-failed", ShortID: "tsk-bbbb0002", ProjectID: "p1", EpicID: "e1", Title: "flappy", Stage: board.StageBacklog, LastAttemptFailed: true, FailureCount: 2},
+	}
+	r2 := newBoardRESTRouter(t, svc2)
+	w2 := doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=true", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-bbbb0002", "failed=true keeps the failed row")
+	assert.NotContains(t, w2.Body.String(), "tsk-aaaa0001", "failed=true drops the clean row")
+	assert.Contains(t, w2.Body.String(), `"failure_count":2`, "the overlay renders on the read")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=false", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-aaaa0001", "failed=false keeps the clean row")
+	assert.NotContains(t, w2.Body.String(), "tsk-bbbb0002", "failed=false drops the failed row")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks", "")
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Contains(t, w2.Body.String(), "tsk-aaaa0001")
+	assert.Contains(t, w2.Body.String(), "tsk-bbbb0002", "absent keeps all rows")
+	w2 = doBoardREST(t, r2, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?failed=maybe", "")
+	assert.Equal(t, http.StatusBadRequest, w2.Code, "failed filter is tri-state boolean: "+w2.Body.String())
 }
 
 // TestBoardREST_ListRenders: list endpoints render the owner's boards in

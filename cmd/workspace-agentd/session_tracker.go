@@ -28,6 +28,14 @@ type providerCache struct {
 	configured    int
 	sessions      []agentd.SessionInfo
 	lastFetchedAt time.Time
+	// sessionsOK records whether the cached session list came from a
+	// SUCCESSFUL ListSessions fetch (#1821 piece 2, #1848 r0 finding 4):
+	// a failed fetch is logged and swallowed, and the empty slice it
+	// leaves would otherwise render as an authoritative "no sessions"
+	// in statusz — the D10 failure one layer above HTTP status. False
+	// until a successful fetch populates the cache; carried across
+	// cache hits so a failed refresh never launders into OK.
+	sessionsOK bool
 	// registry is the harness live-turn registry (/session/status,
 	// #1672) fetched alongside the session list on TTL expiry — the
 	// busy FLOOR input for cachedState's render composition. Nil when
@@ -732,7 +740,7 @@ func refreshRegistryLocked(ctx context.Context, client *OpenCodeClient, cache *p
 // truth the platform's own status consumers read). busyTruth may be nil
 // (no authority wired: bare tracker behavior, preserved for
 // constructions without one).
-func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker, busyTruth busyTruthFn) ([]string, int, []agentd.SessionInfo) {
+func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker, busyTruth busyTruthFn) ([]string, int, []agentd.SessionInfo, bool) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if time.Since(cache.lastFetchedAt) < connectedCacheTTL && cache.connected != nil {
@@ -743,7 +751,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 		applyBusyTruthLocked(cache.sessions, busyTruth)
 		applyRegistryFloorLocked(cache.sessions, cache.registry, cache.registryFetchedAt, tracker, busyTruth)
 		settleTrackerBusyLocked(tracker, cache.sessions, busyTruth)
-		return cache.connected, cache.configured, cache.sessions
+		return cache.connected, cache.configured, cache.sessions, cache.sessionsOK
 	}
 	connected, connErr := client.ConnectedProviders(ctx)
 	configured, cfgErr := client.ConfiguredProviderCount(ctx)
@@ -757,6 +765,10 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 	if sessErr != nil {
 		log.Debug("failed to fetch sessions", zap.Error(sessErr))
 	}
+	// #1848 r0 finding 4: only a successful ListSessions marks the
+	// cached list authoritative — a failed fetch's empty slice must
+	// not launder into one via the TTL cache.
+	cache.sessionsOK = sessErr == nil
 	// Merge SSE-tracked statuses into session list
 	for i := range sessions {
 		sessions[i].Status = tracker.get(sessions[i].ID)
@@ -779,7 +791,7 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 	cache.sessions = sessions
 	cache.lastFetchedAt = time.Now()
 	cache.readySnapshot.Store(&providerReadySnapshot{connected: connected, configured: configured})
-	return connected, configured, sessions
+	return connected, configured, sessions, cache.sessionsOK
 }
 
 // applyBusyTruthLocked overlays the authority's derived busy truth on

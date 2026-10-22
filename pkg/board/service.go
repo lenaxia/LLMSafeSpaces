@@ -266,7 +266,17 @@ func (s *Service) CreateProject(ctx context.Context, actor Actor, in ProjectInpu
 	}
 	slots := in.WorkerSlots
 	if slots <= 0 {
-		slots = 2
+		// #1832 item 6: the caller-specified-none fallback is the
+		// owner's board-wide defaultWorkerSlots (their user defaults
+		// map; the code default DefaultBoardWorkerSlots when unset) —
+		// the config key is consumed here, not decorative. Fail-closed:
+		// a drifted defaults row surfaces as an error, never a silent
+		// zero-value fallback.
+		eff, err := s.GetUserBoardConfig(ctx, actor)
+		if err != nil {
+			return nil, err
+		}
+		slots = eff.DefaultWorkerSlots
 	}
 
 	// The project id is generated up front so the audit event can carry
@@ -427,7 +437,7 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	epicID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_epic", itemKind: "epic", itemID: epicID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, ` AND project_id=$2`, p.ID)
+		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
 		}
@@ -692,7 +702,7 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	taskID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_task", itemKind: "task", itemID: taskID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		shortID, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, ` AND project_id=$2`, p.ID)
+		shortID, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
 		}

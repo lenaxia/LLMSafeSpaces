@@ -80,7 +80,7 @@ func TestCachedState_AuthorityBusyTruthOverlaysTracker(t *testing.T) {
 	}
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, busyTruth)
 	byID := map[string]string{}
 	for _, s := range sessions {
 		byID[s.ID] = s.Status
@@ -99,7 +99,7 @@ func TestCachedState_NilBusyTruthKeepsTrackerBehavior(t *testing.T) {
 	tracker.set("s1", "idle")
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "idle", sessions[0].Status)
 }
 

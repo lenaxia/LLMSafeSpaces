@@ -1538,6 +1538,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				AttemptsCap:     cfg.Board.AttemptsCap,
 				LeaseDuration:   time.Duration(cfg.Board.LeaseSeconds) * time.Second,
 				ThrottleBackoff: time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
+				FailureBackoff:  time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
 				DRRQuantum:      cfg.Board.DRRQuantum,
 				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
 				// #1747 backpressure caps + DAG blast-radius bounds.

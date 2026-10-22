@@ -398,13 +398,20 @@ type StatuszResponse struct {
 	Sessions            []SessionInfo `json:"sessions"`
 	SessionsActive      int           `json:"sessions_active"`
 	SessionsError       int           `json:"sessions_error"`
-	LastError           string        `json:"last_error"`
-	AgentType           string        `json:"agent_type"`
-	AgentVersion        string        `json:"agent_version"`
-	UptimeSeconds       int           `json:"uptime_seconds"`
-	Disk                *DiskUsage    `json:"disk,omitempty"`
-	Memory              *MemoryUsage  `json:"memory,omitempty"`
-	CPU                 *CPUUsage     `json:"cpu,omitempty"`
+	// SessionsOK is the session-list authority signal (#1821 piece 2 /
+	// #1848 r0 finding 4): false when the pod's ListSessions fetch
+	// failed and Sessions holds the swallowed empty result — an
+	// indicator consumer must treat the busy set as unknown, not
+	// empty. Pointer: nil on older pods (no signal — readers treat
+	// absent as ok, never worse than the pre-signal behavior).
+	SessionsOK    *bool        `json:"sessions_ok,omitempty"`
+	LastError     string       `json:"last_error"`
+	AgentType     string       `json:"agent_type"`
+	AgentVersion  string       `json:"agent_version"`
+	UptimeSeconds int          `json:"uptime_seconds"`
+	Disk          *DiskUsage   `json:"disk,omitempty"`
+	Memory        *MemoryUsage `json:"memory,omitempty"`
+	CPU           *CPUUsage    `json:"cpu,omitempty"`
 	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (terminal fetch
 	// failure this attempt — free-tier routing degraded until a re-arm
 	// cycle applies, bounded by the 5m→30m backoff; #901 G8, #910).

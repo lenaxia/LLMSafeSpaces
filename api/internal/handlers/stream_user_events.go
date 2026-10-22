@@ -299,6 +299,12 @@ func (h *ProxyHandler) snapshotUserWorkspaces(ctx context.Context, s *eventbroke
 	// authoritative pending set from the pod so a reconnecting client rebuilds
 	// pendingActions correctly (mirrors busy's seedBusy). Bounded by the ≤10
 	// active-workspace scale constraint; each fetch is timeout-guarded.
+	//
+	// #1821 piece 2: the busy-snapshot handshake rides the same loop —
+	// per Active workspace, a session.status.snapshot D9/D10 flight so
+	// a subscriber joining after a busy flip (or refreshing with no
+	// Last-Event-ID) rebuilds busy from the authority in the connect
+	// window, not from the next transition or the REST overlay.
 	for _, wsID := range wsIDs {
 		phase := ""
 		if phases != nil {
@@ -315,6 +321,10 @@ func (h *ProxyHandler) snapshotUserWorkspaces(ctx context.Context, s *eventbroke
 			// bounded by emitPendingInputRequests' own 5s timeout —
 			// the same detach RequestInputSnapshot documents.
 			h.emitPendingInputRequests(context.WithoutCancel(ctx), id)
+		}(wsID)
+		go func(id string) {
+			defer func() { _ = recover() }() // same containment as the input flight
+			h.emitSessionStatusSnapshot(context.WithoutCancel(ctx), id)
 		}(wsID)
 	}
 }

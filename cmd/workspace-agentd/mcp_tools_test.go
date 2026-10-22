@@ -2190,7 +2190,7 @@ func TestMCPAutomation_ListWire(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"triggers":[]}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_list", nil)
 	require.NoError(t, err)
 	assert.Equal(t, `{"triggers":[]}`, out, "platform body passes through verbatim")
 	assert.Equal(t, http.MethodGet, rec.method)
@@ -2207,7 +2207,7 @@ func TestMCPAutomation_CreateStampsWorkspace(t *testing.T) {
 	// The schema-documented wrapper form: {"workflow": {...}}. The real
 	// delegated handler binds FLAT — the wire body must be the unwrapped
 	// object with the resolver-spelling workspace stamp.
-	out, err := mcpAutomation(context.Background(), "workflow_create", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "workflow_create", map[string]any{
 		"workflow": map[string]any{"name": "wf", "spec": map[string]any{"nodes": []any{}}},
 	})
 	require.NoError(t, err)
@@ -2229,7 +2229,7 @@ func TestMCPAutomation_UpdatePatchPurity(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"id":"11111111-1111-1111-1111-111111111111"}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	_, err := mcpAutomation(context.Background(), "trigger_update", map[string]any{
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_update", map[string]any{
 		"id":    "11111111-1111-1111-1111-111111111111",
 		"patch": map[string]any{"enabled": false},
 	})
@@ -2243,14 +2243,14 @@ func TestMCPAutomation_DeleteAndFiresWire(t *testing.T) {
 	api, rec := newAutomationAPI(t, 204, "")
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), "trigger_delete", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_delete", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
 	require.NoError(t, err)
 	assert.Equal(t, `{"status":204}`, out, "empty platform body degrades to status-only")
 	assert.Equal(t, http.MethodDelete, rec.method)
 	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111", rec.path)
 	assert.Equal(t, "workspaceID=ws-1", rec.query)
 
-	_, err = mcpAutomation(context.Background(), "trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	_, err = mcpAutomation(context.Background(), mcpTestPassword, "trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, rec.method)
 	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/fires", rec.path)
@@ -2260,7 +2260,7 @@ func TestMCPAutomation_WorkflowRunInputWrapped(t *testing.T) {
 	api, rec := newAutomationAPI(t, 202, `{"runId":"r-9"}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), "workflow_run", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "workflow_run", map[string]any{
 		"id":    "11111111-1111-1111-1111-111111111111",
 		"input": map[string]any{"topic": "ship"},
 	})
@@ -2276,7 +2276,7 @@ func TestMCPAutomation_ErrorPassthrough(t *testing.T) {
 	api, _ := newAutomationAPI(t, 400, `{"error":{"message":"name is required"}}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	_, err := mcpAutomation(context.Background(), "trigger_create", map[string]any{})
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_create", map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "trigger_create failed")
 	assert.Contains(t, err.Error(), "name is required", "platform error text surfaces verbatim")
@@ -2286,12 +2286,12 @@ func TestMCPAutomation_InvalidIDNeverDials(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	_, err := mcpAutomation(context.Background(), "workflow_runs", map[string]any{"id": "../../etc/passwd"})
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "workflow_runs", map[string]any{"id": "../../etc/passwd"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid automation id")
 	assert.Empty(t, rec.method, "hostile ID rejected before any dial")
 
-	_, err = mcpAutomation(context.Background(), "trigger_delete", map[string]any{})
+	_, err = mcpAutomation(context.Background(), mcpTestPassword, "trigger_delete", map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid automation id")
 	assert.Empty(t, rec.method)
@@ -2302,19 +2302,19 @@ func TestMCPAutomation_MissingDeps(t *testing.T) {
 	setupRenameWorkspaceEnv(t, api)
 
 	t.Setenv("WORKSPACE_ID", "")
-	_, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_list", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WORKSPACE_ID")
 
 	t.Setenv("WORKSPACE_ID", "ws-1")
 	t.Setenv("LLMSAFESPACE_API_URL", "")
-	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	_, err = mcpAutomation(context.Background(), mcpTestPassword, "trigger_list", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_URL")
 
 	t.Setenv("LLMSAFESPACE_API_URL", api.URL)
 	t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", filepath.Join(t.TempDir(), "missing"))
-	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	_, err = mcpAutomation(context.Background(), mcpTestPassword, "trigger_list", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SA token unreadable")
 }
@@ -2323,7 +2323,7 @@ func TestMCPAutomation_RotateWebhookSecret(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"webhookSecret":"whs_x","webhookUrl":"/api/v1/hooks/11111111-1111-1111-1111-111111111111"}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), "trigger_rotate_webhook_secret", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_rotate_webhook_secret", map[string]any{
 		"id": "11111111-1111-1111-1111-111111111111",
 	})
 	require.NoError(t, err)
@@ -2335,7 +2335,7 @@ func TestMCPAutomation_RotateWebhookSecret(t *testing.T) {
 func TestMCPAutomation_UnknownTool(t *testing.T) {
 	api, _ := newAutomationAPI(t, 200, `{}`)
 	setupRenameWorkspaceEnv(t, api)
-	_, err := mcpAutomation(context.Background(), "trigger_deploy", nil)
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "trigger_deploy", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown automation tool")
 }
@@ -2590,8 +2590,14 @@ func TestSplitDuplicatedArgFragment_RejectionHalf(t *testing.T) {
 	}{
 		{"clean id, no fragment mark", "ses_TARGET"},
 		{"empty target (mark at index 0)", `","lsp_injected_session":"ses_ORIGIN"}`},
-		{"malformed leading id", `not-an-id","lsp_injected_session":"ses_ORIGIN"}`},
+		// #1816: a 3-word leading form IS a phrase — recoverable now
+		// (phrases are the canonical address; the acceptance half
+		// pins it). The malformed row stays genuinely non-ref: spaces
+		// can never be a session address.
+		{"malformed leading id (spaces)", `not an id","lsp_injected_session":"ses_ORIGIN"}`},
+		{"two-word leading form (not a phrase)", `two-words","lsp_injected_session":"ses_ORIGIN"}`},
 		{"malformed embedded origin", `ses_TARGET","lsp_injected_session":"not an id"}`},
+		{"two-word embedded origin (not a phrase)", `ses_TARGET","lsp_injected_session":"two-words"}`},
 		{"empty embedded origin", `ses_TARGET","lsp_injected_session":""}`},
 		{"trailing garbage after origin", `ses_TARGET","lsp_injected_session":"ses_ORIGIN"}junk`},
 		{"multi-mark value", `ses_A","lsp_injected_session":"ses_B","lsp_injected_session":"ses_C"}`},
@@ -2621,6 +2627,19 @@ func TestSplitDuplicatedArgFragment_AcceptanceHalf(t *testing.T) {
 	target, embedded, ok = splitDuplicatedArgFragment(`ses_TARGET","lsp_injected_session":"ses_ORIGIN"`)
 	assert.True(t, ok, "no-brace variant accepts")
 	assert.Equal(t, "ses_TARGET", target)
+	assert.Equal(t, "ses_ORIGIN", embedded)
+
+	// #1816: 3-word phrase forms recover on BOTH halves — phrases are
+	// the canonical address and the emission slip follows the form the
+	// caller sees in context.
+	target, embedded, ok = splitDuplicatedArgFragment(`amber-falcon-glides","lsp_injected_session":"calm-otter-naps"}`)
+	assert.True(t, ok, "phrase target + phrase origin recovers")
+	assert.Equal(t, "amber-falcon-glides", target)
+	assert.Equal(t, "calm-otter-naps", embedded)
+
+	target, embedded, ok = splitDuplicatedArgFragment(`amber-falcon-glides","lsp_injected_session":"ses_ORIGIN"}`)
+	assert.True(t, ok, "phrase target + legacy origin recovers")
+	assert.Equal(t, "amber-falcon-glides", target)
 	assert.Equal(t, "ses_ORIGIN", embedded)
 
 	// Underscores are legal id characters (mirrors the seam grammar —

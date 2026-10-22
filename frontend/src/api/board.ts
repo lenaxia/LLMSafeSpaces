@@ -73,6 +73,13 @@ export interface BoardTask {
   last_progress_at?: string | null;
   attempts: number;
   claim_incremented_attempts: boolean;
+  /** #1813 failed-state overlay: the last worker attempt failed (lease
+   * lapse → reclaim, the overlay's only writer). Never a stage; an
+   * all-success exhaustion carries no marker. */
+  last_attempt_failed: boolean;
+  /** Consecutive failures — the doubling backoff driver. */
+  failure_count: number;
+  last_failure_at?: string | null;
   cooldown_until?: string | null;
   stage_entered_at: string;
   created_at: string;
@@ -108,6 +115,36 @@ export interface BoardEventPayload {
   payload?: Record<string, unknown>;
   created_at?: string;
   task?: Partial<BoardTask> & { stage?: string; short_id?: string };
+}
+
+/** #1832 item 4: one board_events row — the task-detail drawer's audit
+ * timeline read (GET /me/tasks/:id/events). Wire shape is the row
+ * VERBATIM (snake_case); chronological ascending, newest-N window. */
+export interface BoardAuditEvent {
+  id: string;
+  project_id: string;
+  item_kind?: string;
+  item_id?: string;
+  action: string;
+  actor?: { kind?: string; user_id?: string; surface?: string; workspace_id?: string; session_id?: string } | null;
+  payload?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** The structured review verdict riding a review-bounce move_stage
+ * payload (PR-B's verdict; rendered by the timeline when present). */
+export interface BoardVerdictFinding {
+  severity: string;
+  pointer?: string;
+  criterion_index?: number;
+  note?: string;
+}
+
+export interface BoardVerdict {
+  verdict: string;
+  reviewer?: string;
+  timestamp?: string;
+  findings?: BoardVerdictFinding[];
 }
 
 // --- Inputs (camelCase request bodies, per the REST projection) -----------------
@@ -185,6 +222,37 @@ export function newBoardRequestId(): string {
   return `bd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// --- #1832 item 6: board config shapes (mirror pkg/board/config.go) ------------
+
+export type BoardConfig = {
+  reviewColumn: string; // "off" | "manual" | "auto"
+  autoAssignReviewer: boolean;
+  defaultWorkerSlots: number;
+};
+
+/** Partial config — absent keys inherit; never null on the wire. */
+export type BoardConfigOverride = {
+  reviewColumn?: string;
+  autoAssignReviewer?: boolean;
+  defaultWorkerSlots?: number;
+};
+
+/** The project tier's override input: defaultWorkerSlots is a
+ * user-level key and the server 400s if it is sent (openapi:
+ * BoardConfigOverrideProject omits it). */
+export type ProjectBoardConfigOverrideInput = {
+  reviewColumn?: string;
+  autoAssignReviewer?: boolean;
+};
+
+export type ProjectBoardConfig = {
+  project_id: string;
+  overrides: BoardConfigOverride;
+  effective: BoardConfig;
+};
+
+export const BOARD_REVIEW_COLUMNS = ["off", "manual", "auto"] as const;
+
 // --- The 23 operations (router.go board groups, all AuthMiddleware) -------------
 
 export const boardApi = {
@@ -201,12 +269,22 @@ export const boardApi = {
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/archive`),
   unarchiveProject: (idOrShort: string): Promise<BoardProject> =>
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/unarchive`),
-  listProjectTasks: (idOrShort: string, stage?: string): Promise<BoardTask[]> => {
-    const q = stage ? `?stage=${encodeURIComponent(stage)}` : "";
-    return api.get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q}`).then((r) => r.tasks ?? []);
+  listProjectTasks: (idOrShort: string, stage?: string, opts?: { failed?: boolean }): Promise<BoardTask[]> => {
+    const params = new URLSearchParams();
+    if (stage) params.set("stage", stage);
+    if (opts?.failed !== undefined) params.set("failed", String(opts.failed));
+    const q = params.toString();
+    return api
+      .get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q ? `?${q}` : ""}`)
+      .then((r) => r.tasks ?? []);
   },
 
   // /me/projects/:id/epics + /me/epics
+  // The list seam (#1699 engine read): a project's epics with derived
+  // progress — the source of existence for bands/picker (zero-task
+  // epics live here, not in task rows).
+  listProjectEpics: (projectIdOrShort: string): Promise<BoardEpic[]> =>
+    api.get<{ epics: BoardEpic[] }>(`/me/projects/${encodeURIComponent(projectIdOrShort)}/epics`).then((r) => r.epics ?? []),
   createEpic: (projectIdOrShort: string, input: BoardEpicInput): Promise<BoardEpic> =>
     api.post<BoardEpic>(`/me/projects/${encodeURIComponent(projectIdOrShort)}/epics`, { ...input, requestId: newBoardRequestId() }),
   getEpic: (idOrShort: string): Promise<BoardEpic> =>
@@ -229,6 +307,12 @@ export const boardApi = {
     api.post<BoardTask>(`/me/epics/${encodeURIComponent(epicIdOrShort)}/tasks`, { ...input, requestId: newBoardRequestId() }),
   getTask: (idOrShort: string): Promise<BoardTask> =>
     api.get<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}`),
+  /** #1832 item 4: the task's FULL audit timeline (board_events rows,
+   * chronological ascending; limit keeps the newest N, default 200). */
+  taskEvents: (idOrShort: string, limit?: number): Promise<BoardAuditEvent[]> => {
+    const q = limit ? `?limit=${limit}` : "";
+    return api.get<{ events: BoardAuditEvent[] }>(`/me/tasks/${encodeURIComponent(idOrShort)}/events${q}`).then((r) => r.events ?? []);
+  },
   updateTask: (idOrShort: string, input: BoardTaskInput): Promise<BoardTask> =>
     api.patch<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}`, { ...input, requestId: newBoardRequestId() }),
   moveStage: (idOrShort: string, toStage: string, evidenceUrl?: string): Promise<BoardTask> =>
@@ -258,5 +342,20 @@ export const boardApi = {
     }),
   removeDependency: (idOrShort: string, dependsOnId: string): Promise<{ task: BoardTask }> =>
     api.delete<{ task: BoardTask }>(`/me/tasks/${encodeURIComponent(idOrShort)}/dependencies/${encodeURIComponent(dependsOnId)}`),
+
+  // /me/board/config + /me/projects/:id/config (#1832 item 6 — the
+  // config surface. Overrides are PARTIAL: absent keys inherit; on the
+  // wire an unset key is ABSENT, never null. The PROJECT tier never
+  // carries defaultWorkerSlots — a user-level key the server rejects.)
+  getUserBoardConfig: (): Promise<BoardConfig> => api.get<BoardConfig>("/me/board/config"),
+  setUserBoardConfig: (input: BoardConfigOverride): Promise<BoardConfig> =>
+    api.put<BoardConfig>("/me/board/config", { ...input, requestId: newBoardRequestId() }),
+  getProjectBoardConfig: (idOrShort: string): Promise<ProjectBoardConfig> =>
+    api.get<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`),
+  setProjectBoardConfig: (idOrShort: string, input: ProjectBoardConfigOverrideInput): Promise<ProjectBoardConfig> =>
+    api.put<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`, {
+      ...input,
+      requestId: newBoardRequestId(),
+    }),
 };
 

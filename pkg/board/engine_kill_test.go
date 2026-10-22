@@ -130,6 +130,10 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 		s.expireLease(tired.ID)
 		res := s.sweep()
 		s.Equal(1, res.Reclaims)
+		// #1813: the reclaim parks the row behind failure backoff — this
+		// test drives N attempts back-to-back, so it clears the cooldown
+		// explicitly (the backoff-delays pin owns the parked behavior).
+		s.clearTaskBackoff(tired.ID)
 	}
 	s.Equal(3, s.rawTask(tired.ID).Attempts)
 	spawnsBeforeEscalation := s.spawner.count()
@@ -223,7 +227,8 @@ func (s *BoardSuite) TestKill_ThrottleRollbackIncrementingGrant() {
 	// New claims into the project are paused while the slot cooldown runs.
 	s.expectNoCandidate(ws)
 
-	// Cooldown clears → claimable again, and the grant re-increments.
+	// Cooldown clears → claimable again, and the grant re-increments
+	// (BOTH cooldowns: the throttle set the project slot cooldown too).
 	s.clearCooldowns(p, task.ID)
 	c3 := s.claimOrFail(ws)
 	s.Equal(task.ID, c3.TaskID)
@@ -409,10 +414,13 @@ func (s *BoardSuite) TestKill_SpawnFailureHealsByLeaseLapse() {
 	s.Equal(board.StageInProgress, row.Stage, "the claim stands: spawn failure is not a claim failure")
 	s.NotNil(row.ClaimToken)
 
-	// The claim lapses; the reconciler reclaims; the next claim re-spawns.
+	// The claim lapses; the reconciler reclaims; the next claim re-spawns
+	// (#1813: after clearing the failure backoff — this arm pins the
+	// re-spawn, not the park).
 	s.expireLease(task.ID)
 	res := s.sweep()
 	s.Equal(1, res.Reclaims)
+	s.clearTaskBackoff(task.ID)
 	s.spawner.failWith(nil)
 	c2 := s.claimOrFail(ws)
 	s.Equal(task.ID, c2.TaskID)
@@ -444,6 +452,10 @@ func (s *BoardSuite) TestKill_WorkerDiedMidLeaseTaskReclaims() {
 	s.Nil(row.Assignee)
 	s.Equal(1, row.Attempts, "reclaim NEVER increments (the increment belongs to the next claim)")
 	s.Equal(1, s.countTransitions(task.ID, board.StageBacklog))
+
+	// #1813: drop the reclaim's failure backoff — this arm pins the
+	// re-claim's increment semantics, not the park (1813-b owns it).
+	s.clearTaskBackoff(task.ID)
 
 	// The next claim increments and grants.
 	c2 := s.claimOrFail(ws)

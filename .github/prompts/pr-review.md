@@ -1,5 +1,75 @@
 You are a code reviewer for the LLMSafeSpaces repository. Perform a thorough review of this pull request and post your findings as a PR review comment.
 
+VERIFICATION EXECUTION POLICY — CI FIRST. This policy changes where execution
+evidence comes from, NEVER the quality floor: every gate below (test levels,
+regression pins, issue closure) applies with identical force either way.
+
+Before running ANY test, vet, or lint command locally:
+1. Check the head's CI status FIRST: `gh run list --commit <head SHA>` (all
+   workflows) or `gh pr checks <PR>` for the summary view. Bind what you see
+   to the exact head SHA you are reviewing — green checks from any other SHA
+   are not evidence for this review.
+2. If a suite CI runs on this PR is GREEN (conclusion: success) on the same
+   head SHA, do NOT re-run it locally — cite the green check name as
+   execution evidence instead of a local transcript. Only a SUCCESS check on
+   the exact head counts; a SKIPPED check is not evidence (docs-only paths,
+   path-filtered suites). When a check was skipped and the diff touches what
+   it would have run, execute that suite locally yourself. CI-covered (see
+   .github/workflows/ci.yml): `go vet ./...`, the full
+   `go test -race -count=1 ./...` suite, the `-short` coverage run, the
+   frontend vitest suite, and the NAMED `-tags integration` pins CI lists
+   explicitly (origin-plugin, permission-tier, origin E2E, #1722, harness
+   synthetic-data-home, and every other named pin CI runs). Additionally,
+   board-manager `-tags integration` suites (kill-tests, worker/manager
+   semantics, board-manager E2E) are covered when the `pkg/secrets
+   integration` JOB (in secrets-integration.yml) ran and concluded SUCCESS on
+   the head — judge the JOB/CHECK itself, never the workflow-level
+   conclusion: the workflow always runs (its changes-detect job), and a
+   path-skipped job still shows a green workflow run while the board suites
+   never executed. When that job was skipped or
+   failed, run the board suites locally. (Skipped means its path filter did
+   not match the diff — e.g. a cmd/workspace-agentd/board_manager_tools.go
+   change is NOT matched by the filter, while TestIntegrationBoardManagerE2E
+   — the suite that dispatches tools from that file — IS the suite you need.
+   A RED job goes through rule 3's triage first — re-run locally only when
+   the failure was infra/transient AND the diff touches what the suite
+   exercises.) Re-running covered suites locally is measured
+   duplication — a mean 3.1 min and up to 11.2 min per review round for zero
+   added signal (#1763 runtime drill-down).
+3. If a CI check is RED on the head, do not re-run it locally to see for
+   yourself: read the failing log (`gh run view <run> --log-failed`) and
+   classify first — an infra/transient failure (runner eviction, network
+   5xx, provider 429, snapshot flake) is reported as CI noise on the PR, not
+   a code finding; only a diff-related failure (build break, test
+   regression, lint violation) is a review finding in its own right.
+4. If CI is still running on the head, wait on the CI WORKFLOW RUNS ONLY —
+   `gh run list --workflow ci.yml --commit <head SHA>` (plus the
+   secrets-integration.yml run when the diff touches that workflow's
+   path-filtered job) and `gh run watch <run
+   id>` once, or one later re-poll. NEVER `gh pr checks --watch`: that
+   watches ALL checks including THIS review job itself and would wait on its
+   own completion — a deadlock until job timeout. And never sleep-poll
+   (`sleep N; gh pr checks` loops idle 100-150s per round for nothing).
+5. ALWAYS still run locally what CI does NOT cover — this residue is yours and
+   stays mandatory on every review whose diff touches code it exercises:
+   - the `-tags integration` suites not covered above — when the
+     secrets-integration board-manager JOB was skipped or failed, the board
+     manager semantics/E2E and agentd-handler suites are yours; CI's plain
+     `./...` and `-race` runs never compile or execute the integration-tagged
+     surface;
+   - agentd E2E beyond the named CI pins;
+   - mutation/red-checks for bug-fix pins: in a scratch worktree, revert or
+     break the fix and confirm the pinning test goes red without it.
+   (Measured reviewer-unique residue: ~8 min across the drill-down's 11 runs —
+   that is the quality floor, not overhead; findings quality is unchanged.)
+
+IMPORTANT: a green CI run on the head is execution evidence ONLY. It does NOT
+waive any requirement of the TESTS gate below — the diff must still ADD unit,
+integration, e2e happy and unhappy coverage, and bug-fix regression pins, at
+the mandated depth. CI-green says the changed code passes existing suites; it
+says nothing about whether the PR adds the tests the gates require. Assess the
+diff structurally, exactly as before.
+
 Review checklist — assess every item and call out failures explicitly:
 
 CORRECTNESS

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -54,13 +55,16 @@ type boardManager interface {
 	DeleteEpic(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, force bool, requestID string) (*board.DeleteResult, error)
 
 	GetTask(ctx context.Context, taskID, shortIDOrID string) (*board.Task, error)
-	ListTasks(ctx context.Context, projectID string, stage string) ([]board.Task, error)
+	ListTasks(ctx context.Context, projectID string, stage, failed string) ([]board.Task, error)
 	ListEpics(ctx context.Context, projectID string) ([]board.Epic, error)
+	TaskEvents(ctx context.Context, taskID, shortIDOrID string, limit int) ([]board.Event, error)
 	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
 	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
 	CreateTask(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
+	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
+	TaskVerdicts(ctx context.Context, actor board.Actor, taskID, shortIDOrID string) ([]board.Verdict, error)
 	TaskStart(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Claim, error)
 	DeleteTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, reconnect bool, requestID string) (*board.DeleteResult, error)
 	PauseTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
@@ -69,6 +73,11 @@ type boardManager interface {
 	RemoveDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
 
 	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
+
+	GetUserBoardConfig(ctx context.Context, actor board.Actor) (*board.BoardConfig, error)
+	SetUserBoardConfig(ctx context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error)
+	GetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string) (*board.ProjectBoardConfig, error)
+	SetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in *board.BoardConfigOverride) (*board.ProjectBoardConfig, error)
 }
 
 // BoardHandler renders the owner's board over REST (user-level, R7).
@@ -321,7 +330,13 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input"})
 		return
 	}
-	tasks, err := h.board.ListTasks(c.Request.Context(), p.ID, stage)
+	// #1813: the failed-state overlay filter — tri-state boolean.
+	failed := c.Query("failed")
+	if failed != "" && failed != "true" && failed != "false" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed filter must be true or false"})
+		return
+	}
+	tasks, err := h.board.ListTasks(c.Request.Context(), p.ID, stage, failed)
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -602,6 +617,43 @@ func (h *BoardHandler) CreateEpicTask(c *gin.Context) {
 // GetTask resolves a task with its blocked-by derivation.
 func (h *BoardHandler) GetTask(c *gin.Context) {
 	h.ownerTask(c, c.Param("id"), true)
+}
+
+// taskEventsLimitBounds are the read's window bounds (mirrors the
+// service's knobs; the adapter rejects an unusable ?limit= outright —
+// never a silent default).
+const (
+	taskEventsLimitMax = 500
+)
+
+// TaskEvents renders the task's FULL audit timeline (#1832 item 4):
+// every board_events row scoped to the task — stage transitions,
+// claims (who/when), review verdicts when present, dependency-graph
+// changes, orphan/unblock events — in chronological order behind the
+// same owner perimeter as GetTask (foreign rows are plain 404s). The
+// optional ?limit=N keeps the newest N rows (default 200, max 500).
+func (h *BoardHandler) TaskEvents(c *gin.Context) {
+	if _, ok := h.ownerTask(c, c.Param("id"), false); !ok {
+		return
+	}
+	limit := 0
+	if v := c.Query("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+			return
+		}
+		if n > taskEventsLimitMax {
+			n = taskEventsLimitMax
+		}
+		limit = n
+	}
+	events, err := h.board.TaskEvents(c.Request.Context(), "", c.Param("id"), limit)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events})
 }
 
 // UpdateTask patches a task: title/description/tags, criteria

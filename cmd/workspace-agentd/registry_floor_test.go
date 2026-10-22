@@ -145,7 +145,7 @@ func TestCachedState_RegistryFloorRecoversMissedBusy(t *testing.T) {
 	}
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, busyTruth)
 	got := statusByIDs(sessions)
 	assert.Equal(t, "busy", got["orch"], "streaming orchestrator stays busy (authority leg)")
 	assert.Equal(t, "busy", got["w23"],
@@ -157,7 +157,7 @@ func TestCachedState_RegistryFloorRecoversMissedBusy(t *testing.T) {
 	// is cached with the provider snapshot; the composition re-runs per
 	// render with fresh tracker/authority input).
 	freshTracker := newSessionStatusTracker()
-	_, _, hit := cachedState(context.Background(), client, cache, freshTracker, busyTruth)
+	_, _, hit, _ := cachedState(context.Background(), client, cache, freshTracker, busyTruth)
 	gotHit := statusByIDs(hit)
 	assert.Equal(t, "busy", gotHit["w23"], "registry floor holds on the cache-hit render path")
 	assert.Equal(t, "busy", gotHit["w24"], "registry floor holds on the cache-hit render path")
@@ -212,7 +212,7 @@ func TestCachedState_RegistryFloorNeverUnbusies(t *testing.T) {
 	tracker.set("s1", "busy") // a live SSE busy mark
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "busy", sessions[0].Status,
 		"a registry idle must never un-busy a tracker mark (add-only floor)")
 }
@@ -255,7 +255,7 @@ func TestCachedState_RegistryUnavailableKeepsComposition(t *testing.T) {
 	}
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, busyTruth)
 	got := statusByIDs(sessions)
 	assert.Equal(t, "busy", got["s1"], "tracker busy must survive an empty/unreadable registry")
 	assert.Equal(t, "busy", got["s2"], "authority busy must survive an empty/unreadable registry")
@@ -284,7 +284,7 @@ func TestCachedState_RegistryFloorRespectsPermissionCarveOut(t *testing.T) {
 	}
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, busyTruth)
 	got := statusByIDs(sessions)
 	assert.Equal(t, "busy", got["s1"], "registry-busy with no pending ask floors to busy (#1672)")
 	assert.Equal(t, "idle", got["s2"],
@@ -304,7 +304,7 @@ func TestCachedState_RegistryFloorStalenessGraceBounded(t *testing.T) {
 
 	// Prime the cache with a successful fetch.
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 	require.Equal(t, "busy", statusByIDs(sessions)["s1"], "primed: registry floors to busy")
 
 	// Break the registry and force the miss path (TTL expired).
@@ -313,7 +313,7 @@ func TestCachedState_RegistryFloorStalenessGraceBounded(t *testing.T) {
 
 	// Within grace: the stale registry still floors.
 	cache.registryFetchedAt = time.Now().Add(-10 * time.Second)
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ = cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "busy", statusByIDs(sessions)["s1"],
 		"a recently-fetched registry survives a failed refresh (transient failure)")
 
@@ -322,7 +322,7 @@ func TestCachedState_RegistryFloorStalenessGraceBounded(t *testing.T) {
 	// was grace-checked at its last miss, at most one TTL ago.)
 	cache.lastFetchedAt = time.Time{}
 	cache.registryFetchedAt = time.Now().Add(-registryStalenessGrace - time.Second)
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ = cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "idle", statusByIDs(sessions)["s1"],
 		"an unrefreshably-stale registry must stop flooring (no phantom busy)")
 }
@@ -373,7 +373,7 @@ func TestCachedState_ObservedIdleBeatsStaleRegistry(t *testing.T) {
 
 	// Prime: registry floors to busy (tracker never saw the session).
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 	require.Equal(t, "busy", statusByIDs(sessions)["s1"], "primed: registry floors to busy")
 
 	// The turn ends and the SSE stream cleanly observes the idle —
@@ -385,7 +385,7 @@ func TestCachedState_ObservedIdleBeatsStaleRegistry(t *testing.T) {
 
 	// Hit-path render (TTL fresh, registry still the busy snapshot):
 	// observed-idle evidence newer than the registry's read must win.
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ = cachedState(context.Background(), client, cache, tracker, busyTruth)
 	assert.Equal(t, "idle", statusByIDs(sessions)["s1"],
 		"r2: an observed idle strictly newer than the registry fetch must not be re-busied by the stale cached registry (no TTL busy-linger)")
 }
@@ -403,13 +403,13 @@ func TestCachedState_RegistryFlipAppliedOnNextRefresh(t *testing.T) {
 
 	// Prime: registry busy floors s1.
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 	require.Equal(t, "busy", statusByIDs(sessions)["s1"])
 
 	// The turn ends (harness registry now idle). Force the miss path.
 	fake.setRegistry(map[string]string{"s1": "idle"})
 	cache.lastFetchedAt = time.Time{}
-	_, _, sessions = cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ = cachedState(context.Background(), client, cache, tracker, nil)
 	assert.Equal(t, "idle", statusByIDs(sessions)["s1"],
 		"the refreshed registry must be the one the floor judges — no stale-registry linger after a successful refresh")
 }
@@ -436,7 +436,7 @@ func TestCachedState_BlindPendingAskFloorsBusy(t *testing.T) {
 	}
 
 	cache := &providerCache{}
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, busyTruth)
 	assert.Equal(t, "busy", statusByIDs(sessions)["s1"],
 		"accepted edge: an UNCONFIRMABLE pending ask (authority blind) does not beat the harness live-turn registry")
 }

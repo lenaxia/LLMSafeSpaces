@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   renderBoard,
@@ -47,6 +47,28 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(card.closest('[data-stage-drop="backlog"]')).not.toBeNull();
     expect(card.textContent).toContain("tsk-aaaa0001");
     expect(card.textContent).toContain("Write charter");
+  });
+
+  it("filters to failed-attempt rows via the #1813 FAILED toggle", async () => {
+    renderBoard();
+    const toggle = await screen.findByTestId("failed-filter-toggle");
+    fireEvent.click(toggle);
+    // Only the failed fixture survives; the clean backlog row is gone.
+    expect(screen.getByTestId("task-card-tsk-ffff0009")).toBeDefined();
+    expect(screen.queryByTestId("task-card-tsk-aaaa0001")).toBeNull();
+    // Toggling off restores.
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("task-card-tsk-aaaa0001")).toBeDefined();
+  });
+
+  it("carries the #1813 failed-state overlay badge (FAILED ×n — never a stage)", async () => {
+    renderBoard();
+    const badge = await screen.findByTestId("failed-tsk-ffff0009");
+    expect(badge.textContent).toContain("FAILED ×2");
+    // The overlay is an ATTRIBUTE, not a stage: the failed row still
+    // sits in its stage column (backlog) with the ordinary card shape.
+    const card = screen.getByTestId("task-card-tsk-ffff0009");
+    expect(card.getAttribute("data-stage")).toBe("backlog");
   });
 
   it("shows the assignee busy indicator only on claimed in-progress rows", async () => {

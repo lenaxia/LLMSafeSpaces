@@ -20,6 +20,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 const (
@@ -109,7 +111,7 @@ type APIClient interface {
 	BoardUnarchiveProject(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
 	BoardProjectPause(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
 	BoardProjectResume(ctx context.Context, projectID, requestID string) (json.RawMessage, error)
-	BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error)
+	BoardListTasks(ctx context.Context, projectID, stage, failed string) (json.RawMessage, error)
 	BoardListEpics(ctx context.Context, projectID string) (json.RawMessage, error)
 	BoardSearch(ctx context.Context, query BoardSearchQuery) (json.RawMessage, error)
 	BoardHealth(ctx context.Context) (json.RawMessage, error)
@@ -123,8 +125,11 @@ type APIClient interface {
 	BoardDeleteEpic(ctx context.Context, epicID string, force bool) (json.RawMessage, error)
 	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
+	BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error)
 	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
+	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
+	BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
@@ -162,9 +167,14 @@ type RefreshWorkspaceResp struct {
 // SessionResp is the response from session creation. The production
 // route POST /workspaces/:id/sessions/new returns
 // types.EnsureSessionResponse, whose session identifier is serialized
-// as "sessionId" (#1033).
+// as "sessionId" (#1033) and IS the minted phrase (#1756 §1). In the
+// registration-degraded window the API falls back to the harness id
+// in sessionId AND echoes it in deprecatedSessionId — captured here so
+// the tool layer can flag the degraded id instead of shipping it
+// silently (#1816 parity with agentd's create_session).
 type SessionResp struct {
-	ID string `json:"sessionId"`
+	ID                  string `json:"sessionId"`
+	DeprecatedSessionID string `json:"deprecatedSessionId,omitempty"`
 }
 
 // Message is one entry of session history, in the platform session
@@ -224,6 +234,27 @@ type questionEventResult struct {
 	Request json.RawMessage `json:"request"`
 }
 
+// rewriteQuestionSessionID replaces the marshaled InputRequest's
+// sessionId value with the caller-facing ref (#1816 §1). Post-#1824,
+// refreshed pods carry the PHRASE in the frame's session_id (harness
+// additive as internal_session_id) and legacy/heal-window frames carry
+// the harness id — either space's id must not leak into tool output on
+// the phrase path; the caller sees the form it typed. Best-effort
+// shape guard: only rewrites when the field is present as a string.
+func rewriteQuestionSessionID(raw []byte, callerRef string) ([]byte, error) {
+	if callerRef == "" {
+		return raw, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw, err
+	}
+	if _, ok := doc["sessionId"].(string); ok {
+		doc["sessionId"] = callerRef
+	}
+	return json.Marshal(doc)
+}
+
 // questionReplyRequest is the body for POST /question/:id/reply.
 type questionReplyRequest struct {
 	Answers [][]string `json:"answers"`
@@ -265,6 +296,15 @@ type HTTPClient struct {
 }
 
 func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, result any) error {
+	_, err := c.doJSONHeaders(ctx, method, path, body, result)
+	return err
+}
+
+// doJSONHeaders is doJSON returning the response headers — the #1816
+// resolved-id bridge reads X-Session-Ref-Resolved off the prompt
+// response (and the §2 Deprecation/Sunset pair is caller-visible for
+// notice parity).
+func (c *HTTPClient) doJSONHeaders(ctx context.Context, method, path string, body any, result any) (http.Header, error) {
 	// Apply per-request timeout if context has no deadline
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -276,14 +316,14 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
+			return nil, fmt.Errorf("marshal request: %w", err)
 		}
 		reqBody = bytes.NewReader(b)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reqBody)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
@@ -292,7 +332,7 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -306,15 +346,15 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 		if len(errMsg) > 512 {
 			errMsg = errMsg[:512] + "...(truncated)"
 		}
-		return fmt.Errorf("API error %d: %s", resp.StatusCode, errMsg)
+		return resp.Header, fmt.Errorf("API error %d: %s", resp.StatusCode, errMsg)
 	}
 
 	if result != nil {
 		if err := json.NewDecoder(limited).Decode(result); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+			return resp.Header, fmt.Errorf("decode response: %w", err)
 		}
 	}
-	return nil
+	return resp.Header, nil
 }
 
 // doRequestRaw executes an HTTP request and returns the status code + raw JSON body.
@@ -442,6 +482,16 @@ func (c *HTTPClient) GetHistory(ctx context.Context, workspaceID, sessionID stri
 // ABI contract stream (GET /workspaces/:id/contract-events — protojson
 // StreamFrames, US-69.11) until the target session goes IDLE or the
 // agent asks for input.
+//
+// #1816 phrase addressing, post-#1824: the session ref may be the
+// 3-word phrase (or, in the one-release deprecation window, the
+// full/hashed id — the REST edge resolves every form). Contract frames
+// are keyed by the PHRASE on refreshed pods (#1824's emission
+// translation, harness id additive as internal_session_id) and by the
+// HARNESS id on heal-window/legacy pods — so the wait admits a frame
+// keyed by EITHER space (sessionMatchKeys), with the resolved
+// canonical id learned from the prompt response's
+// HeaderSessionRefResolved when the edge rewrote the ref.
 func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error) {
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return "", err
@@ -452,23 +502,40 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 
 	// 1. Fire prompt_async. The /prompt handler accepts the parts-based
 	// body shape ({parts:[{type:text,...}]}) — a bare {"message": ...}
-	// key extracts no text and is rejected (#1034).
+	// key extracts no text and is rejected (#1034). The response's
+	// HeaderSessionRefResolved (pkg/types — ONE definition shared with
+	// the middleware; set when the edge REWROTE the ref — phrase/alias
+	// inputs) carries the canonical harness id (#1816 bridge; the
+	// continuity test joins both sides).
+	origRef := sessionID
 	body := map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": message}},
 	}
 	path := fmt.Sprintf("/api/v1/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID)
-	if err := c.doJSON(ctx, http.MethodPost, path, body, nil); err != nil {
+	promptHeaders, err := c.doJSONHeaders(ctx, http.MethodPost, path, body, nil)
+	if err != nil {
 		return "", err
+	}
+	if resolved := strings.TrimSpace(promptHeaders.Get(types.HeaderSessionRefResolved)); resolved != "" {
+		sessionID = resolved
 	}
 
 	// 2. Consume the contract stream until the turn completes. The
 	// sseCtx bounds the whole wait (including reconnects); the parent
 	// ctx stays alive for the history fallback and the async
 	// permission auto-approve.
+	//
+	// Frame matching is DUAL-KEY post-#1824: refreshed pods key frames
+	// by the PHRASE (session_id = phrase, harness additive as
+	// internal_session_id — the #1817 emission translation), while
+	// heal-window/legacy pods still key by the harness id. The wait
+	// accepts a frame keyed by EITHER the caller-facing ref or the
+	// bridge-resolved canonical id — matching only one space would
+	// burn the whole budget on the other pod regime.
 	sseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	text, question, _ := c.awaitTurnCompletion(sseCtx, ctx, workspaceID, sessionID)
+	text, question, _ := c.awaitTurnCompletion(sseCtx, ctx, workspaceID, sessionID, origRef)
 	if question != nil {
 		out, merr := json.Marshal(question)
 		if merr == nil {
@@ -486,6 +553,20 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 	return c.fallbackHistory(ctx, workspaceID, sessionID)
 }
 
+// sessionRefDeprecationNotice is the #1756 §2 one-release notice the
+// tool layer attaches when the caller addressed a session by a
+// deprecated form (full/hashed id) — parity with the REST
+// Deprecation/Sunset headers and agentd's envelope note (#1816).
+// Empty for canonical phrase inputs.
+func sessionRefDeprecationNotice(ref string) string {
+	if !shortid.IsDeprecatedInputForm(ref) {
+		return ""
+	}
+	return "DEPRECATED: you addressed this session by its full/hashed id; " +
+		"use the 3-word phrase (see the workspace session list). " +
+		"Full-id session inputs are accepted through one release, then rejected."
+}
+
 // errContractUnseeded marks a stream that ended before delivering its
 // snapshot frame — a broken endpoint (or a pre-snapshot cut). Retrying
 // cannot help within a call; the history fallback answers instead.
@@ -500,8 +581,14 @@ const contractReconnectPause = 200 * time.Millisecond
 // SendMessage cares about: the target session going IDLE (done), an
 // input request (question result / headless permission auto-approve),
 // and PART_DELTA accumulation for live text. replyCtx outlives the
-// stream context and backs the async permission replies.
-func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID string) (string, *questionEventResult, error) {
+// stream context and backs the async permission replies. callerRef is
+// the caller-facing session id (the phrase when addressed by phrase) —
+// frames match on EITHER key (post-#1824 refreshed pods key frames by
+// the phrase; legacy/heal-window pods by the harness id), and the
+// question result reports the caller-facing form, never the other
+// space's id (#1816 §1).
+func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID, callerRef string) (string, *questionEventResult, error) {
+	matchKeys := newSessionMatchKeys(sessionID, callerRef)
 	var response strings.Builder
 	var lastSeq uint64
 
@@ -527,7 +614,7 @@ func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspac
 			return response.String(), nil, err
 		}
 
-		read := c.readContractStream(resp.Body, workspaceID, sessionID, &lastSeq, &response, replyCtx)
+		read := c.readContractStream(resp.Body, workspaceID, matchKeys, callerRef, &lastSeq, &response, replyCtx)
 		_ = resp.Body.Close()
 
 		if read.question != nil || read.idle {
@@ -567,12 +654,58 @@ type contractStreamRead struct {
 	reconnect bool
 }
 
+// sessionMatchKeys is the DUAL-KEY + ADDITIVE-ID frame filter (#1816
+// post-#1824): a frame belongs to this wait when its session_id
+// matches the resolved canonical id (harness-keyed frames — legacy/
+// heal-window pods and the internal id space) OR the caller-facing ref
+// (phrase-keyed frames — refreshed pods, the #1817 emission
+// translation) OR its ADDITIVE internal_session_id matches either key
+// (the #1824 pairing — lets a full-id deprecated-window input adopt
+// the phrase-keyed frames of refreshed pods). Empty ids never match.
+// Case discipline: the CANONICAL key stays byte-exact (legacy ses_
+// ids are case-sensitive — raw byte-equal, never folded, the #1691
+// rule); the CALLER-typed phrase-form key folds case-insensitively
+// (phrases are case-insensitive by ruling — r4 F1: a title-cased
+// phrase must match lowercase phrase-keyed frames in the header-less
+// mixed-fleet regime).
+type sessionMatchKeys struct {
+	a          string
+	b          string
+	phraseFold bool
+}
+
+func newSessionMatchKeys(canonical, callerRef string) sessionMatchKeys {
+	return sessionMatchKeys{
+		a:          strings.TrimSpace(canonical),
+		b:          strings.TrimSpace(callerRef),
+		phraseFold: shortid.IsShortIDForm(strings.TrimSpace(callerRef)),
+	}
+}
+
+func (k sessionMatchKeys) matchWithInternal(sid, internalID string) bool {
+	for _, id := range [...]string{sid, internalID} {
+		if id == "" {
+			continue
+		}
+		if id == k.a || id == k.b {
+			return true
+		}
+		if k.phraseFold && strings.EqualFold(id, k.b) {
+			return true
+		}
+	}
+	return false
+}
+
 // readContractStream parses the SSE body (data/event/comment lines,
 // per the SSE framing) and folds ABI StreamFrames until the target
 // session goes IDLE, an input request arrives, or the body ends.
 // Parse errors on individual frames are tolerated (skipped) — one bad
-// frame never kills the wait.
-func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
+// frame never kills the wait. keys is the dual-key filter (either id
+// space); callerRef rewrites the question result's session id to the
+// caller-facing form (#1816 §1: the other space's id never leaks into
+// tool output on the phrase path).
+func (c *HTTPClient) readContractStream(body io.Reader, workspaceID string, keys sessionMatchKeys, callerRef string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
 	var read contractStreamRead
 	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
 
@@ -597,7 +730,8 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID s
 			// A snapshot whose target session is already IDLE completes
 			// the wait immediately (checked before any event).
 			for _, s := range snap.GetSnapshot().GetSessions() {
-				if s.GetSessionId() == sessionID && s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+				if keys.matchWithInternal(s.GetSessionId(), s.GetInternalSessionId()) &&
+					s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
 					read.idle = true
 					return
 				}
@@ -622,7 +756,7 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID s
 			if sid == "" && evt.GetInput() != nil {
 				sid = evt.GetInput().GetSessionId()
 			}
-			if sid != sessionID {
+			if !keys.matchWithInternal(sid, evt.GetInternalSessionId()) {
 				return // other sessions on the pod-wide stream never bleed in
 			}
 			switch evt.GetType() {
@@ -641,7 +775,13 @@ func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID s
 					}
 					// QUESTION (or unspecified — surface it rather than
 					// hang the turn): structured result for the caller.
+					// The session id is rewritten to the CALLER-FACING ref
+					// (#1816 §1): on the phrase path the harness id the
+					// ABI frame carries must not leak into tool output.
 					if raw, merr := protojson.Marshal(in); merr == nil {
+						if rewritten, rerr := rewriteQuestionSessionID(raw, callerRef); rerr == nil {
+							raw = rewritten
+						}
 						read.question = &questionEventResult{Type: "question", Request: raw}
 					}
 				}
@@ -1126,13 +1266,20 @@ func (c *HTTPClient) BoardProjectResume(ctx context.Context, projectID, requestI
 	return c.boardProjectLifecycle(ctx, projectID, "resume", requestID)
 }
 
-func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardListTasks(ctx context.Context, projectID, stage, failed string) (json.RawMessage, error) {
 	if err := validateID(projectID, "project_id"); err != nil {
 		return nil, err
 	}
 	path := "/api/v1/me/projects/" + projectID + "/tasks"
+	query := url.Values{}
 	if stage != "" {
-		path += "?stage=" + url.QueryEscape(stage)
+		query.Set("stage", stage)
+	}
+	if failed == "true" || failed == "false" {
+		query.Set("failed", failed)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	return c.doRaw(ctx, http.MethodGet, path, nil)
 }
@@ -1295,6 +1442,17 @@ func (c *HTTPClient) BoardGetTask(ctx context.Context, taskID string) (json.RawM
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID, nil)
 }
 
+func (c *HTTPClient) BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	path := "/api/v1/me/tasks/" + taskID + "/events"
+	if limit > 0 {
+		path = fmt.Sprintf("%s?limit=%d", path, limit)
+	}
+	return c.doRaw(ctx, http.MethodGet, path, nil)
+}
+
 func (c *HTTPClient) BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
@@ -1308,6 +1466,37 @@ func (c *HTTPClient) BoardMoveStage(ctx context.Context, taskID, toStage, eviden
 	}
 	body := boardMoveStageBody{ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/move-stage", body)
+}
+
+// BoardVerdictFinding is one localized defect in a verdict payload
+// (#1832 item 5 — mirrors board.VerdictFinding).
+type BoardVerdictFinding struct {
+	Severity       string `json:"severity"`
+	Pointer        string `json:"pointer"`
+	CriterionIndex *int   `json:"criterionIndex,omitempty"`
+}
+
+// BoardVerdictBody is the POST /me/tasks/:id/verdict payload.
+type BoardVerdictBody struct {
+	Verdict     string                `json:"verdict"`
+	Findings    []BoardVerdictFinding `json:"findings,omitempty"`
+	Reviewer    string                `json:"reviewer"`
+	EvidenceURL string                `json:"evidenceUrl,omitempty"`
+	RequestID   string                `json:"requestId,omitempty"`
+}
+
+func (c *HTTPClient) BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/verdict", body)
+}
+
+func (c *HTTPClient) BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID+"/verdicts", nil)
 }
 
 // boardStartBody is the optional body for POST /me/tasks/:id/start —

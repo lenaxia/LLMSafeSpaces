@@ -24,7 +24,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       'create-project: no error',
     );
     if (!pOk || !proj) return;
-    r.assert(/^prj-[0-9a-z]{8}$/.test(proj.short_id), 'create-project: short_id shape', proj.short_id);
+    r.assert(/^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/.test(proj.short_id), 'create-project: short_id shape', proj.short_id);
     r.assert(proj.status === 'active', 'create-project: active', proj.status);
     const projectSid = proj.short_id;
 
@@ -52,7 +52,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       'create-epic: no error',
     );
     if (!eOk || !epic) return;
-    r.assert(/^epc-[0-9a-z]{8}$/.test(epic.short_id), 'create-epic: short_id shape', epic.short_id);
+    r.assert(/^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/.test(epic.short_id), 'create-epic: short_id shape', epic.short_id);
     r.assert(epic.status === 'draft', 'create-epic: draft default', epic.status);
     const epicSid = epic.short_id;
     // r5: the acknowledge flag rides the contract on the activation
@@ -82,7 +82,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       'create-task: no error',
     );
     if (!tOk || !taskA) return;
-    r.assert(/^tsk-[0-9a-z]{8}$/.test(taskA.short_id), 'create-task: short_id shape', taskA.short_id);
+    r.assert(/^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/.test(taskA.short_id), 'create-task: short_id shape', taskA.short_id);
     r.assert(/^pr:[1-9][0-9]*$/.test(taskA.tags?.[0] ?? ''), 'create-task: OR4 pr:N anchor tag form', (taskA.tags ?? []).join(','));
     const taskASid = taskA.short_id;
 

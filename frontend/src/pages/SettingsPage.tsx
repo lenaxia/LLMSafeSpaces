@@ -5,6 +5,7 @@ const allTabs = [
   { id: "preferences", label: "Preferences" },
   { id: "provider-keys", label: "Provider Keys" },
   { id: "mcp-servers", label: "MCP Servers" },
+  { id: "board-config", label: "Task Board" },
   { id: "secrets", label: "Secrets" },
   { id: "prompts", label: "Prompts" },
   { id: "api-keys", label: "API Keys" },

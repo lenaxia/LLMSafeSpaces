@@ -38,7 +38,7 @@ Content-Type: application/json
 HTTP 201
 [Asserts]
 jsonpath "$.id" isString
-jsonpath "$.short_id" matches /^prj-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.user_id" isString
 jsonpath "$.status" == "active"
 jsonpath "$.worker_slots" isInteger
@@ -85,7 +85,7 @@ GET {{base_url}}/me/projects/{{project_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.short_id" matches /^prj-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 
 # Get project — did-you-mean 404 (documented response)
 GET {{base_url}}/me/projects/prj-zzzzzzzz
@@ -105,7 +105,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.short_id" matches /^prj-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.status" isString
 
 # Archive → reversible storage; unarchive → active again
@@ -131,7 +131,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.short_id" matches /^epc-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.status" == "draft"
 [Captures]
 epic_id: jsonpath "$.id"
@@ -142,7 +142,7 @@ GET {{base_url}}/me/epics/{{epic_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.short_id" matches /^epc-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.progress_derived" == false
 
 # Patch epic (outcome is the human's steering wheel)
@@ -200,7 +200,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.short_id" matches /^tsk-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.stage" == "backlog"
 jsonpath "$.tags[0]" matches /^pr:[1-9][0-9]*$/
 jsonpath "$.acceptance_criteria[0].met" isBoolean
@@ -227,7 +227,7 @@ Content-Type: application/json
 }
 HTTP 200
 [Asserts]
-jsonpath "$.task.short_id" matches /^tsk-[0-9a-z]{8}$/
+jsonpath "$.task.short_id" matches /^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.task.is_blocked" isBoolean
 
 # Dependency write — self edge is the 409 class (R4a)
@@ -279,7 +279,7 @@ GET {{base_url}}/me/tasks/{{task_b_sid}}
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.short_id" matches /^tsk-[0-9a-z]{8}$/
+jsonpath "$.short_id" matches /^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.stage" isString
 
 # List project tasks (+ stage filter): the enumerated set is accepted
@@ -291,6 +291,18 @@ jsonpath "$.tasks" exists
 
 # Unknown stage filter is a real 400 in both modes (schema enum)
 GET {{base_url}}/me/projects/{{project_sid}}/tasks?stage=wip
+Authorization: Bearer {{token}}
+HTTP 400
+
+# #1813: the failed-state overlay filter — tri-state boolean (true
+# lists only failed-attempt rows; a non-boolean is a real 400).
+GET {{base_url}}/me/projects/{{project_sid}}/tasks?failed=true
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.tasks" exists
+
+GET {{base_url}}/me/projects/{{project_sid}}/tasks?failed=maybe
 Authorization: Bearer {{token}}
 HTTP 400
 
@@ -360,7 +372,7 @@ GET {{base_url}}/me/projects/{{project_sid}}/epics
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.epics[0].short_id" matches /^epc-[0-9a-z]{8}$/
+jsonpath "$.epics[0].short_id" matches /^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/  # #1831 phrase mint (legacy 8-char never minted again)
 jsonpath "$.epics[0].progress_total" isInteger
 jsonpath "$.epics[0].progress_derived" isBoolean
 

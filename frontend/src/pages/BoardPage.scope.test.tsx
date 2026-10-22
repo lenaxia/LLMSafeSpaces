@@ -36,7 +36,7 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
     expect(screen.getByTestId("task-card-tsk-eeee0005")).toBeInTheDocument();
 
     // Both epic chips are visible in the All-projects scope.
-    const chipE1 = screen.getByText("E1");
+    const chipE1 = screen.getByText("E1", { selector: "button" });
     fireEvent.click(chipE1);
     await waitFor(() => expect(screen.queryByTestId("task-card-tsk-eeee0005")).toBeNull());
     expect(screen.getByTestId("task-card-tsk-aaaa0001")).toBeInTheDocument();
@@ -48,8 +48,8 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
   it("derives epic chips from task rows (display inheritance, R2)", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    expect(screen.getByText("E1")).toBeInTheDocument();
-    expect(screen.getByText("E2")).toBeInTheDocument();
+    expect(screen.getByText("E1", { selector: "button" })).toBeInTheDocument();
+    expect(screen.getByText("E2", { selector: "button" })).toBeInTheDocument();
   });
 
   it("tag chips filter by tag", async () => {
