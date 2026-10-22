@@ -8,8 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 
+- **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
+  #1819's 1.26.10 digest re-pins (main already carries those, the
+  go.mod bump, vite 8.1.6, and every workflow go-version pin): the
+  digest remains the pinned base image; auto makes go.mod's minor
+  requirement govern the compile, fetching the toolchain through the
+  module proxy/GOSUMDB only when it exceeds the image's.
+- **/livez and /readyz are exempt from the global rate limiter.**
+  The SDK rate-limit canary pins "not rate-limited" for both, and a
+  429 on a k8s liveness probe restarts healthy pods — the probes only
+  passed pre-#1825 by refill-boundary luck after the canary's login
+  burst. Pinned red-first (an exhaustion control leg proves the
+  budget is spent — 429 observed on an ordinary route — before both
+  probes are asserted: /livez exactly 200, /readyz its typed 503).
+
+### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
 - **Duplicate worklog numbers now FAIL `make repolint`** — the new
   `runWorklogUniqueness` check, matching ANY numbered-worklog filename
   (`WorklogNumberPattern`) so historical uppercase-slug files count
