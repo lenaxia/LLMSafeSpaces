@@ -11,6 +11,7 @@ import {
   defaultTasks,
   mockCreateEpic,
   mockCreateTask,
+  mockGetEpic,
   mockListProjectEpics,
   mockListProjectTasks,
   mockMoveStage,
@@ -384,5 +385,95 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     await waitFor(() => expect(laneC.querySelectorAll('[data-testid^="band-task-"]').length).toBe(0));
     expect(laneC.querySelectorAll('[data-testid^="epic-band-"]').length).toBe(0);
     expect(laneC.querySelectorAll('[data-testid^="task-card-"]').length).toBe(0);
+  });
+});
+
+// #1832 r3 — the second review round's finding: the session's
+// knownEpics must never override the server list once it (re)arrives.
+// The known copy bridges ONLY the POST→refetch window; a successful
+// list response is authoritative for existence, progress, and metadata.
+describe("BoardPage #1832 r3 — server truth supersedes session-known epics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seedBoard();
+  });
+
+  it("band progress follows the refetched server list after task creation (not the stale POST copy)", async () => {
+    // Server list: initially without the epic; after the create-task
+    // invalidation the refetch reports it WITH the fresh row count.
+    mockListProjectEpics
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{
+        id: "epic-uuid-live", project_id: PROJECT_A.id, short_id: "epc-live0000",
+        title: "Live epic", outcome: "", status: "active", tags: [],
+        created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+        progress_done: 0, progress_total: 1, progress_derived: false,
+      }]);
+    mockCreateEpic.mockResolvedValue({
+      id: "epic-uuid-live", project_id: PROJECT_A.id, short_id: "epc-live0000",
+      title: "Live epic", outcome: "", status: "active", tags: [],
+      created_at: "", updated_at: "", progress_done: 0, progress_total: 0, progress_derived: false,
+    });
+    mockCreateTask.mockResolvedValue({});
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+
+    // Create the epic (swimlane button) — the POST copy (0/0) bridges
+    // until the refetch lands.
+    fireEvent.click(screen.getByTestId("new-epic-prj-aaaa1111"));
+    const epicTitle = await screen.findByTestId("epic-title");
+    fireEvent.change(epicTitle, { target: { value: "Live epic" } });
+    fireEvent.click(screen.getByTestId("epic-create"));
+    const band = await screen.findByTestId("epic-band-epic-uuid-live");
+    expect(band.textContent).toContain("Live epic");
+
+    // Select it and create a task inside (success → invalidation → the
+    // epics list refetch reports the task: 0 done / 1 total).
+    fireEvent.click(screen.getByTestId("band-header-epic-uuid-live"));
+    fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
+    const taskTitle = await screen.findByTestId("task-title");
+    expect(screen.getByText("in Live epic")).toBeInTheDocument();
+    fireEvent.change(taskTitle, { target: { value: "First" } });
+    fireEvent.click(screen.getByTestId("task-save"));
+    await waitFor(() => expect(mockCreateTask).toHaveBeenCalled());
+
+    // The band must show the SERVER's 1-total progress — the session's
+    // stale 0/0 POST copy must not survive the list's arrival.
+    await waitFor(() => expect(band.textContent).toContain("0/1"), { timeout: 4000 });
+  });
+
+  it("a session-known epic follows the server list for metadata and deletion", async () => {
+    // The drawer GET mints the known copy (paused); the list refetch —
+    // triggered by the create-task invalidation — is authoritative.
+    mockGetEpic.mockResolvedValue({
+      id: "epic-uuid-follow", project_id: PROJECT_A.id, short_id: "epc-follow00",
+      title: "Follow epic", outcome: "", status: "paused", tags: [],
+      created_at: "", updated_at: "", progress_done: 0, progress_total: 0, progress_derived: false,
+    });
+    mockListProjectEpics.mockResolvedValue([]);
+    mockCreateTask.mockResolvedValue({});
+    renderBoard();
+    await screen.findByTestId("task-card-tsk-aaaa0001");
+
+    // Open the drawer via the epic chip's double-click (adds the known
+    // copy for an epic the task-derived model doesn't carry) — the band
+    // then renders from the known bridge.
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    await screen.findByTestId("epic-status");
+    // The known bridge renders its band while the list hasn't arrived.
+    await screen.findByTestId("epic-band-epic-uuid-follow");
+
+    // Trigger the invalidation (any successful board write).
+    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
+    const t = await screen.findByTestId("task-title");
+    fireEvent.change(t, { target: { value: "Trigger" } });
+    fireEvent.click(screen.getByTestId("task-save"));
+    await waitFor(() => expect(mockCreateTask).toHaveBeenCalled());
+
+    // The server list (arrived, without the epic) is authoritative:
+    // the session-known paused copy must not keep its band alive.
+    const lane = screen.getByTestId("swimlane-prj-aaaa1111");
+    await waitFor(() => expect(lane.querySelector('[data-testid="epic-band-epic-uuid-follow"]')).toBeNull(), { timeout: 4000 });
   });
 });

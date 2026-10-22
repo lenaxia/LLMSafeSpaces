@@ -223,9 +223,12 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     const url = new URL(r.request().url());
     const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
     if (r.request().method() === "GET") {
+      // Faithful to ListEpics: zero-task epics from state ride AFTER the
+      // task-derived rows, so live row-derived progress (the engine's
+      // own derivation) WINS for any epic that has tasks (r3 finding 2).
       const byId = new Map<string, E2EEpic>();
-      for (const e of derivedEpicsFromTasks(state.tasks)) if (e.project_id === pid) byId.set(e.id, e);
       for (const e of state.epics) if (e.project_id === pid) byId.set(e.id, e);
+      for (const e of derivedEpicsFromTasks(state.tasks)) if (e.project_id === pid) byId.set(e.id, e);
       void r.fulfill(j({ epics: [...byId.values()] }));
       return;
     }
@@ -753,7 +756,41 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     // rides the epic list, then the card + band row render).
     await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
     await expect(page.getByTestId("band-task-epic-created-prj-bbbb2222-tsk-new0007")).toBeVisible();
+    // r3 finding 1+2: the band's progress must follow the refetched
+    // server list (row-derived 0 done / 1 total) — the session's stale
+    // 0/0 create response must not survive the list's arrival.
+    await expect(band).toContainText("0/1", { timeout: 8000 });
     expect(state.tasks.some((t) => t.title === "First of its name")).toBe(true);
+  });
+
+  test("a failed epics list read renders the board load error; Retry recovers (r3)", async ({ page }) => {
+    await openBoard(page);
+
+    // Override the list route: the app's query client retries once
+    // (providers/QueryClientProvider), so fail PROJECT_A's first TWO
+    // GETs (initial + retry — scoped to ONE lane so the sibling lane's
+    // concurrent GET doesn't consume a failure) before deferring to the
+    // normal handler (Playwright: later routes win; fallback defers).
+    let failuresLeft = 2;
+    await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
+      const isProjectA = r.request().url().includes(`/me/projects/${PROJECT_A}/epics`);
+      if (failuresLeft > 0 && isProjectA && r.request().method() === "GET") {
+        failuresLeft -= 1;
+        void r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "board: epics store unavailable", code: "internal" }) });
+        return;
+      }
+      await r.fallback();
+    });
+
+    await page.reload();
+    await expect(page.getByTestId("board-read-error")).toBeVisible({ timeout: 8000 });
+    await expect(page.locator("[data-board-error]").first()).toBeVisible();
+
+    // Retry invalidates and re-reads — the fallback now serves the good
+    // list; the board renders.
+    await page.getByTestId("board-retry").click();
+    await expect(page.getByTestId("swimlane-prj-aaaa1111")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId("board-read-error")).toHaveCount(0);
   });
 
   test("a failed New-epic POST renders the error in the still-open dialog (target + fields preserved)", async ({ page }) => {

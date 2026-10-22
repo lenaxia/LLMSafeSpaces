@@ -107,6 +107,16 @@ export function BoardPage() {
     projects.forEach((p, i) => m.set(p.id, epicsQueries[i]?.data ?? []));
     return m;
   }, [projects, epicsQueries]);
+  // When each lane's list last ARRIVED (0 = never) — the clock the
+  // session-known bridge is gated against (below).
+  const epicsArrivedAtByProject = useMemo(() => {
+    const m = new Map<string, number>();
+    projects.forEach((p, i) => {
+      const at = epicsQueries[i]?.dataUpdatedAt ?? 0;
+      if (at > 0) m.set(p.id, at);
+    });
+    return m;
+  }, [projects, epicsQueries]);
 
   // Read-path failures are NOT emptiness (r2): a failed projects/tasks/
   // epics fetch renders an error notice — the empty-board state is
@@ -120,13 +130,23 @@ export function BoardPage() {
     return null;
   }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error, epicsQueries]);
 
-  // #1832: epics per lane — the server list is authoritative (existence
-  // + progress for real rows); task-row derivation remains as the
-  // mid-load fallback (an epic visible in freshly-fetched task rows
-  // renders before its list response lands); this session's
-  // created/opened epics (knownEpics) bridge the POST→refetch window.
-  // Merge by id, last write wins: derived → server → knownEpics.
-  const [knownEpics, setKnownEpics] = useState<BoardEpic[]>([]);
+  // #1832: epics per lane. Precedence, per id:
+  //   1. the SERVER LIST, once it has arrived for the lane — the
+  //      engine's truth for existence, progress, and metadata; a known
+  //      copy stops applying the moment a list response (re)lands
+  //      (whether it carries the epic or not — server deletion wins);
+  //   2. task-row derivation — the mid-load fallback (an epic visible
+  //      in freshly-fetched task rows renders before its list response
+  //      lands) and the honest floor when the list lags the rows;
+  //   3. this session's created/opened epics (knownEpics) — the
+  //      POST→refetch bridge ONLY: each carries knownAt and applies
+  //      until the lane's NEXT list arrival, never past it (r3: the
+  //      create response's 0/0 must not shadow the refetched 0/1).
+  type KnownEpic = BoardEpic & { knownAt: number };
+  const [knownEpics, setKnownEpics] = useState<KnownEpic[]>([]);
+  const rememberEpic = useCallback((epic: BoardEpic) => {
+    setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), { ...epic, knownAt: Date.now() }]);
+  }, []);
   const epicsByProject = useMemo(() => {
     const byProject = new Map<string, Map<string, BoardEpic>>();
     const laneOf = (projectId: string) => {
@@ -159,9 +179,13 @@ export function BoardPage() {
       }
     }
     for (const [, epics] of serverEpicsByProject) for (const e of epics) put(e);
-    for (const e of knownEpics) put(e);
+    for (const e of knownEpics) {
+      // The bridge applies only while the lane's list has NOT arrived
+      // since the epic was learned (server truth supersedes, r3).
+      if (e.knownAt > (epicsArrivedAtByProject.get(e.project_id) ?? 0)) put(e);
+    }
     return new Map([...byProject.entries()].map(([k, v]) => [k, [...v.values()]]));
-  }, [tasks, serverEpicsByProject, knownEpics]);
+  }, [tasks, serverEpicsByProject, knownEpics, epicsArrivedAtByProject]);
 
   // The flat epic list (scope-switcher chips): ONE entry per epic id —
   // a same-id epic spanning lanes is a single chip. Server/known rows
@@ -372,7 +396,7 @@ export function BoardPage() {
     mutationFn: (projectId: string) =>
       boardApi.createEpic(projectId, { title: epicTitle.trim(), outcome: epicOutcome, tags: epicTags }),
     onSuccess: (epic) => {
-      setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+      rememberEpic(epic);
       setCreateEpicTarget(null);
       setEpicTitle("");
       setEpicOutcome("");
@@ -451,7 +475,7 @@ export function BoardPage() {
       action === "activate" ? boardApi.activateEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id) : boardApi.pauseEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id),
     onSuccess: (epic) => {
       setDrawerError(null);
-      setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+      rememberEpic(epic);
       setEpicDrawer(epic);
       void queryClient.invalidateQueries({ queryKey: ["board"] });
     },
@@ -492,7 +516,7 @@ export function BoardPage() {
     async (epicId: string) => {
       try {
         const epic = await boardApi.getEpic(epicId);
-        setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+        rememberEpic(epic);
         setDrawerError(null);
         setEpicDrawer(epic);
       } catch (err) {
