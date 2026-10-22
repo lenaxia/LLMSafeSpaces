@@ -397,8 +397,16 @@ func applyEvent(st *SessionState, seqed *abiv1.SequencedEvent) {
 	if snap == nil {
 		// A session observed before any status event is UNKNOWN — the
 		// same convention as the server projection (never UNSPECIFIED:
-		// the zero value is not a valid status).
-		snap = &abiv1.SessionSnapshot{SessionId: sid, Status: abiv1.SessionStatus_SESSION_STATUS_UNKNOWN}
+		// the zero value is not a valid status). Carry the additive
+		// internal_session_id from the event so a freshly-seen session's
+		// snapshot does not drop the "never dropped" harness id (#1817 r4
+		// finding 5 — the clone preserves it; a synthesized snapshot must
+		// too).
+		snap = &abiv1.SessionSnapshot{
+			SessionId:         sid,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_UNKNOWN,
+			InternalSessionId: evt.GetInternalSessionId(),
+		}
 		st.Sessions[sid] = snap
 	}
 	switch evt.GetType() {
@@ -470,6 +478,11 @@ func cloneSessionSnapshot(s *abiv1.SessionSnapshot) *abiv1.SessionSnapshot {
 		// recompute it. Dropping it here served busy-status sessions
 		// with nil components (#1602).
 		Busy: cloneBusy(s.GetBusy()),
+		// #1817 piece 3: the additive harness id (the phrase-keyed
+		// snapshot's internal_session_id) must survive the fold or the
+		// "never dropped" contract is broken and the consumer can't
+		// key its derived baseline by the harness id.
+		InternalSessionId: s.GetInternalSessionId(),
 	}
 	return out
 }

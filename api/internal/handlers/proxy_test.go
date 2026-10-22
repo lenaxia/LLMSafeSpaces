@@ -1458,12 +1458,21 @@ func (r *recordingActivitySessionIndex) Register(_ context.Context, _, _, _ stri
 	return ""
 }
 
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (r *recordingActivitySessionIndex) ResolveShortID(_ string, _ string) string { return "" }
+
 // Register: design 0066 registration seam — no-op stub for this fixture.
 func (r *recordingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
 	return ""
 }
 
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (r *recordingDeleteSessionIndex) ResolveShortID(_ string, _ string) string { return "" }
+
 // Register: design 0066 registration seam — no-op stub for this fixture.
 func (f *failingDeleteSessionIndex) Register(_ context.Context, _, _, _ string) string {
 	return ""
 }
+
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (f *failingDeleteSessionIndex) ResolveShortID(_ string, _ string) string { return "" }

@@ -18,16 +18,20 @@ type WorkspaceSSEEvent struct {
 	Status      string      `json:"status,omitempty"`
 	EventType   string      `json:"event_type,omitempty"`
 	Data        interface{} `json:"data,omitempty"`
-	// SnapshotOK is set only on agent.input.snapshot_complete markers:
-	// true when the pending-set fetch from the pod succeeded (the staged
-	// set is authoritative), false when it failed or timed out (clients
-	// must keep their existing pending state). nil on all other events.
+	// SnapshotOK is set on snapshot-complete markers — both the input
+	// family (agent.input.snapshot_complete) and the busy family
+	// (session.status.snapshot_complete, #1821 piece 2): true when the
+	// pod fetch behind the flight succeeded (the staged set is
+	// authoritative), false when it failed or timed out (clients must
+	// keep their existing state). nil on all other events.
 	SnapshotOK *bool `json:"snapshot_ok,omitempty"`
-	// SnapshotID identifies a single snapshot attempt. Set on
-	// agent.input.snapshot_begin and the matching snapshot_complete so
-	// clients can key per-flight staging — two concurrent flights for one
-	// workspace (workspace SSE + user stream connecting together) must not
-	// consume each other's staged events. Empty on legacy markers.
+	// SnapshotID identifies a single snapshot attempt. Set on the
+	// begin/complete markers AND the busy family's snapshot frame
+	// (session.status.snapshot) of both the input and busy flights, so
+	// clients can key per-flight staging — two concurrent flights for
+	// one workspace (workspace SSE + user stream connecting together, or
+	// a lease recheck racing a connect-path flight) must not consume
+	// each other's staged events. Empty on legacy markers.
 	SnapshotID string `json:"snapshot_id,omitempty"`
 	// WhileAway marks an inbox-only re-presentation (#1313 / 4a D3):
 	// the marker rides the platform envelope — the ABI InputRequest is

@@ -95,7 +95,7 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockActivateEpic.mockResolvedValue({ ...EPIC_ROW, status: "active" });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1"));
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
 
     await screen.findByTestId("epic-outcome");
     expect(screen.getByTestId("epic-status").textContent).toBe("paused");
@@ -110,7 +110,7 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockPauseEpic.mockResolvedValue({ ...EPIC_ROW, status: "paused" });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1"));
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
     await screen.findByTestId("epic-outcome");
     fireEvent.click(screen.getByTestId("epic-pause"));
     await waitFor(() => expect(mockPauseEpic).toHaveBeenCalled());
@@ -124,7 +124,7 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     );
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1"));
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
     await screen.findByTestId("epic-outcome");
     fireEvent.click(screen.getByTestId("epic-activate"));
 
@@ -262,7 +262,7 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockGetEpic.mockResolvedValue(EPIC_ROW);
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1"));
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
     await screen.findByTestId("epic-activity");
 
     await act(async () => {
@@ -347,7 +347,7 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     );
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1"));
+    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
 
     const notice = await screen.findByRole("alert");
     expect(notice.textContent).toContain("not found");

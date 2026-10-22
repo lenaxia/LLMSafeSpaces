@@ -112,6 +112,10 @@ message SessionSnapshot {
   // table); frontends must not render it as a send queue.
   int32 queue_depth = 4;
   repeated InputRequest pending_inputs = 5;
+  // #1817/#1821 piece 1: on EMISSION the wire session_id is the
+  // platform phrase; the harness id rides here, ADDITIVE. Absent on
+  // un-refreshed emitters (heal window) — consumers must not require it.
+  string internal_session_id = 7;
   // busy is the #1574 busy-from-data derivation and its components —
   // WHY the session is busy, so consumers render reasons instead of a
   // bare flag. busy.busy := streaming || in_flight_parts > 0 ||

@@ -5,6 +5,7 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
 ## [Unreleased]
 
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
@@ -30,7 +31,474 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalizes ssh-key values on create/update (paste/transport reflow
   cannot reintroduce the class), defense in depth with the belt.
 
-(nothing yet)
+### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
+
+- **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
+  timeline** — every `board_events` row scoped to the task (stage
+  transitions, claims who/when, review verdicts when present,
+  dependency-graph changes, orphan/unblock events), chronological,
+  behind the same owner perimeter as the task read (foreign rows are
+  plain 404s); optional `?limit=N` keeps the newest N (default 200,
+  max 500).
+- **`board_task_events` mirrors the timeline on the external MCP
+  server** (construction parity — the #1747 rule that every board
+  surface lives on every surface): read-only tool, `task_id` +
+  optional `limit`, identical rows.
+- **The task-detail drawer surfaces the timeline in the UI**: header
+  completeness (ids, stage, owner perimeter), criteria, dependencies,
+  and the full event feed on one panel.
+
+### Changed — Task Board short ids flip to word phrases (issue #1831, the session-ID playbook)
+
+- **Fresh `prj-`/`epc-`/`tsk-` ids are word phrases** over the #1756
+  frozen session lists (same generator via `pkg/shortid`, not a fork):
+  `tsk-amber-falcon-glides`, with a deterministic counter suffix
+  (`-2`, `-3`, …) arbitrating mint collisions. The prefixes (the
+  closed kind map) are kept, keeping board ids pairwise disjoint from
+  session phrases (bare 3 words), workspace phrases (2 words + digit),
+  and harness slugs. The pre-#1831 random 8-char form
+  (`tsk-ab12cd34`) is never minted again.
+- **One-release dual-accept window**: legacy random-form rows keep
+  resolving on every surface (case-insensitive, as today) and render
+  `short_id_deprecated: true` at scan time — every read path carries
+  the flag (REST/MCP/agentd render the row verbatim). A later
+  migration narrows the CHECK once no legacy row remains.
+- **Uniqueness widened to owner-wide for `epc`/`tsk`**: the phrase
+  space and the resolution perimeter (workspace-scoped `board_read`,
+  user-scoped search) make design 0067's per-project scope
+  insufficient — a same-phrase row in a sibling project would resolve
+  silently wrong. The per-project UNIQUE constraints remain as DB
+  backstops; migration `000043` widens the shape CHECK to both forms.
+- **did-you-mean ranks phrase candidates over WORD edit distance**
+  (bound 2; the issue's acceptance case `tsk-meek-pony-rides` →
+  suggests `tsk-meek-poncho-rides` — character distance 4 was out of
+  bound); legacy random ids and titles keep the character ranker (word
+  distance degenerates on a single random token). The frontend's
+  `suggestBoardItems` mirrors the word ranker.
+- **Tool schemas/docs updated**: `pkg/mcp` + agentd registry describe
+  the phrase form first (`tsk-crimson-finch-blooms`), legacy forms
+  noted as deprecated-but-resolving; `docs/api/mcp.md` `board_get`
+  row, `design/0067` §4.1 supersession note, TaskDialog dependency
+  placeholder.
+
+### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
+- **The user-stream connect path emits a `session.status.snapshot`
+  flight per Active workspace** (`snapshot_begin` → one snapshot frame
+  carrying `{cursor, sessions: [{session_id(phrase),
+  internal_session_id, status, derived_busy}]}` → `snapshot_complete`
+  with `snapshot_ok`), sourced from the pod's statusz — the same
+  authority `GetAuthoritativeActiveSessions` consults, now with an
+  ok-typed read so an authority failure reads "keep your state"
+  (D10), never an authoritative all-idle. Kills the delta-only fragility
+  (class 1): a subscriber joining after a busy flip — or a page refresh
+  with no `Last-Event-ID` — rebuilds busy in the connect window, and
+  the per-replica replay limitation becomes benign (state converges
+  without the delta log). Rows are phrase-keyed through the #1824
+  translation discipline (`sessionIndex.Register`, degrade flagged
+  `session_id_deprecated`), and the frame carries the broker cursor
+  (`UserEventBroker.LastEventID`, read before the authority fetch).
+- **`POST /workspaces/:id/sessions/status-snapshot`** — the on-demand
+  twin (RequestInputSnapshot pattern, 202 + flight on the user
+  stream): the frontend busy lease's authoritative recheck surface.
+- **EventID-ordered deltas (frontend)**: session.status deltas apply
+  in broker id order against a watermark seeded by the snapshot's
+  cursor — a replayed delta at or below the watermark is skipped,
+  making application idempotent across snapshot/replay overlap
+  (#1781's emission legs unchanged in substance).
+- **90s busy lease + one authoritative recheck (frontend)**: latched
+  busy entries carry `lastConfirmedAt` (any busy-bearing delta or
+  snapshot row refreshes it); expiry after 90s (≈3× the 25s
+  heartbeat, above the 60s liveness window) triggers exactly ONE
+  recheck per lease window via the status-snapshot trigger — the
+  flight's D10 marker decides keep-vs-clear, so an unreachable
+  authority holds the badge as unknown, never flips it to idle. The
+  ok=true snapshot commit is the authoritative per-workspace
+  reconciliation (entries superseded at the cursor clear; fresher
+  deltas survive), replacing the REST overlay as the re-seed source
+  on reconnect/resync/refresh (the overlay stays as the degraded
+  fallback).
+- **Review-hardened (PR #1848 r0)**: the statusz session-list
+  authority signal (`sessions_ok`, pointer — absent on older pods
+  reads ok) so a 200 whose ListSessions failed (agentd's swallowed
+  empty slice) reads non-authoritative instead of clearing latched
+  busy; delta ordering is now DEDUP-BY-APPLIED-SET + snapshot-cursor
+  subsumption instead of a watermark (the broker delivers after
+  releasing the shard lock — out-of-order arrivals of never-applied
+  deltas must still apply); a stale overlapping flight (cursor below
+  the applied evidence high-water) is discarded instead of
+  re-latching; REST-seeded and cursor-0 entries are orderable-at-0
+  (governable by any snapshot — no permanently-protected classes);
+  degraded harness-keyed rows heal client-side through the alias
+  seam; the connect-path flight Registers only busy rows (cold-replica
+  budget) and coalesces per workspace (one in-flight flight per
+  trigger window).
+- **Review-hardened round 2 (PR #1848 r1)**: every ordering bound is
+  PER-WORKSPACE (a snapshot covers only its own workspace's rows —
+  global bounds suppressed other workspaces' never-applied deltas and
+  discarded their flights); resync/reconnect RESET the ordering state
+  (the broker's id space is per-replica, restarting at 1) and resync
+  additionally requests one authoritative busy-snapshot flight per
+  affected workspace (the authority re-seed, not just the REST
+  overlay); a flight with unhealed degraded rows adds busy but never
+  removes (its id join is partial); agent_died / non-Active phase
+  invalidate the workspace's open flights (no post-terminal re-latch);
+  agentd's ListSessions treats non-2xx as an error (the status-blind
+  empty-array decode could still report sessions_ok=true).
+- **Review-hardened round 3 (PR #1848 r2)**: the on-demand trigger's
+  coalescing moved OUT of the emitter (the connect path always emits
+  its own per-subscriber flight — a mid-flight joiner has no backlog
+  and was left unseeded); delta ordering is enforced PER-SESSION (an
+  out-of-order older transition for the same session can no longer
+  overwrite the newer one), and overlapping-flight staleness is
+  resolved per-entry (every authority-answered session's watermark
+  moves to the flight's cursor — an unrelated session's delta can no
+  longer starve the recheck's rows); a degraded busy row blocks
+  removal of exactly the entries it may correspond to (matched by the
+  additive harness id, now carried on latched entries) instead of the
+  whole workspace's removals; a non-authoritative (ok=false / dropped)
+  flight schedules ONE authority retry per lease window (the
+  post-wipe re-seed previously left no lease to recover with); the
+  route is documented in sdks/openapi.yaml (the router↔spec parity
+  gate); Playwright e2e pins the connect-path badge (refresh-mid-busy,
+  abort-reconnect, down-then-recovered).
+- **Review-hardened round 4 (PR #1848 r3)**: the snapshot commit
+  reconciles INSIDE the state updater against its fresh `prev` (SSE
+  frames dispatch synchronously per chunk — a render-closure read was
+  stale within the chunk and could delete a same-chunk newer busy
+  re-confirm); idle rows are REGISTERED server-side too (every row
+  joins the phrase id space — a harness-keyed idle row could not
+  advance a phrase-keyed session's ordering watermark); the degraded
+  row blocks removal only of entries it could BE (own harness id,
+  reverse alias of the phrase, or a session with no resolved answer) —
+  a resolved answer always clears; terminal events (agent_died /
+  non-Active phase) also drop the pending recheck and the wipe memory
+  (no 90s retry loop for dead workspaces); a dropped flight
+  (ok=true, staged missing) schedules nothing; and the charter's
+  unknown-hold is delivered end-to-end: the reconnect/resync wipe
+  REMEMBERS what it cleared, and an ok=false answer to the post-wipe
+  re-seed re-latches it as unknown (never idle) with the lease owning
+  a once-per-window recovery cadence — pinned in vitest (fake timers)
+  and at e2e fidelity (authority-down never clears a live badge).
+- **Review-hardened round 6 (PR #1848 r5)**: the reconnect/resync wipe
+  memory is stored orderable-at-zero (a pre-wipe confirm id belongs to
+  the old replica's event-id space and could block the new replica's
+  authoritative clears forever); a post-wipe session.status delta
+  prunes the memory (an ok=false can no longer resurrect state the
+  authority already cleared); latching busy evidence hands the recheck
+  cadence to the lease (exactly one recheck POST per 90s window — the
+  no-evidence pending retry and the lease no longer double-fire); and
+  the authority-down e2e now proves the unknown-hold itself (the busy
+  delta rides the initial connects only; reconnects answer ok=false
+  alone), plus a resync-driven hold e2e.
+- **Review-hardened round 5 (PR #1848 r4)**: the resync recheck
+  capture rides the state-updater queue (a render-closure read was
+  stale within one SSE chunk — a same-chunk busy delta followed by
+  resync was never re-checked); a late ok=false after agent_died or a
+  non-Active flip arms nothing (no 90s POST loop for a dead workspace;
+  Active re-arms service); a degraded harness-keyed idle row beats an
+  older phrase-keyed busy flight (the busy row's latch checks its own
+  harness-id watermark too); idle snapshot rows are pinned
+  phrase-keyed at the wire; and the lost-idle lease recheck is pinned
+  at e2e fidelity (open-stream authority, fake-clock lease expiry).
+### Added — Task Board: config UI section (issue #1832 item 6, part 2)
+
+- **Settings → Task Board tab**: the user's board-wide defaults editor
+  (reviewColumn `off|manual|auto`, autoAssignReviewer,
+  defaultWorkerSlots ≥ 1) over `GET/PUT /api/v1/me/board/config`, with
+  client-side validation mirroring the server (enum + integer gates
+  block the send before any request).
+- **Per-project override editors** over `GET/PUT
+  /api/v1/me/projects/:id/config`: reviewColumn + autoAssignReviewer
+  only (defaultWorkerSlots is a user-level key the project tier
+  rejects), Inherit = the key's absence (REPLACE semantics — Save
+  sends the override set, `{}` clears to full inheritance).
+- **Effective view with provenance**: each project row shows the
+  merged effective config, each key marked override vs inherited from
+  the stored overrides.
+### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
+
+- **The forge-agnostic verdict core**: a validated payload
+  (`{verdict: approve|fail, findings: [{severity blocker|major|minor,
+  pointer, criterionIndex?}], reviewer}` — criterionIndex
+  bounds-checked against the task's criteria; a fail requires at least
+  one finding) persisted as an ORDERED per-task record (the verdict
+  chain) and applied through the EXISTING guarded stage machine. Forge
+  adapters (PR reviews) map INTO the core; they never re-implement it.
+- **approve → done STILL passes the Done guard** (ALL criteria met +
+  evidence URL). A refused transition is a RECORDED outcome, not an
+  error: the verdict persists with `applied=false` and
+  `transition="refused:<code>"` — the chain keeps the evidence.
+- **fail → in_progress rides the bounce**: a fresh claim is minted for
+  the recorded assignee and **attempts are UNCHANGED** — a review
+  bounce is an iteration inside the verdict chain, never a
+  failure-ledger entry (the amended #1832 semantics).
+- **Surfaces (construction parity)**: `POST /api/v1/me/tasks/:id/verdict`
+  + `GET /api/v1/me/tasks/:id/verdicts`; external MCP
+  `board_record_verdict` + `board_task_verdicts`; OpenAPI paths +
+  schemas. Idempotent per `requestId`.
+
+### Added — Task Board: failed-state attribute overlay (issue #1813)
+
+- **A task whose worker attempt failed is now VISIBLE**: every
+  lease-lapse reclaim marks `last_attempt_failed` (+1 consecutive
+  `failure_count`, `last_failure_at`). NEVER a sixth stage — the
+  five-stage vocabulary is untouched; the failed row stays in its
+  stage (usually backlog) and carries the marker.
+- **Auto-return-to-ready with backoff**: the reclaim parks the row
+  behind the existing cooldown gate with doubling backoff per
+  consecutive failure (base `board.failureBackoffSeconds`, default
+  60s; capped at 1h) — redispatch is automatic, never a manager
+  action. A crash-looping task is both visible and rate-limited.
+- **Reset on success**: any completed turn (in_review / done entry)
+  and the pending_input human exit clear the overlay and count with
+  the attempts reset.
+- **Truthful marker semantics**: the overlay means an attempt
+  actually failed, and ONLY the reclaim writes it (the invariant
+  last_attempt_failed == (failure_count > 0) holds through every
+  reset). An all-success exhaustion (attempts preserved through
+  in_review, cap reached with zero failures) escalates WITHOUT the
+  marker — `FAILED ×0` cannot render; the exhaustion signal is
+  pending_input with `pending_origin=escalated`, attempts at cap, and
+  an `exhausted=true` audit event.
+- **Surfaces**: `GET /me/projects/{id}/tasks?failed=true|false`
+  (tri-state filter); `board_read`'s `failed` argument (MCP); the UI
+  task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
+  the overlay renders on every task read (REST/SDK/MCP) and in
+  reclaim audit events (escalate events carry exhausted=true).
+
+### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
+- **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
+  #1819's 1.26.10 digest re-pins (main already carries those, the
+  go.mod bump, vite 8.1.6, and every workflow go-version pin): the
+  digest remains the pinned base image; auto makes go.mod's minor
+  requirement govern the compile, fetching the toolchain through the
+  module proxy/GOSUMDB only when it exceeds the image's.
+- **/livez and /readyz are exempt from the global rate limiter.**
+  The SDK rate-limit canary pins "not rate-limited" for both, and a
+  429 on a k8s liveness probe restarts healthy pods — the probes only
+  passed pre-#1825 by refill-boundary luck after the canary's login
+  burst. Pinned red-first (an exhaustion control leg proves the
+  budget is spent — 429 observed on an ordinary route — before both
+  probes are asserted: /livez exactly 200, /readyz its typed 503).
+
+### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+- **Duplicate worklog numbers now FAIL `make repolint`** — the new
+  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
+  (`WorklogNumberPattern`) so historical uppercase-slug files count
+  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
+  the lowercase-only slug class; healed here by renumbering the
+  non-series member of each pair — final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166). Gaps stay warnings:
+  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
+  (pinned end-to-end through the real hook: every sentinel numbered,
+  main-inherited included, all unique) and the falsified "sentinels
+  never appear on origin/main" / "collisions cannot occur" comments
+  are corrected. The invariant caught one real collision in-flight
+  (its own PR's 1161 vs main's lag-window assignment); a second
+  (1162) was pre-empted by a manual leapfrog before it could redden.
+  Companion security bumps shipped separately: 43a7ba29 (Go
+  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
+
+### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
+
+- **The delivery boundary now refuses literal placeholder tokens.** The
+  mid-write emission-corruption mode (observed across worker sessions
+  and the orchestrator) replaces a drafted body with a placeholder
+  token as the call fires — the sender rarely notices, and every such
+  delivery costs the recipient a turn to diagnose. `send_message`
+  validates BEFORE delivery and rejects the narrow exact-match set
+  (trimmed, case-insensitive): `placeholder`, `placeholder-removed`,
+  `<placeholder>`, `todo`, `tbd`, `asdf`, `qwerty` — with the
+  re-compose guidance in the error. NOT a length heuristic: short
+  legitimate payloads (`ok`, `x`), probe traffic (`test`, `ping`), and
+  sentences merely CONTAINING a placeholder word pass untouched
+  (pinned). The tool description teaches the same contract: send the
+  complete intended content; re-compose if emission corruption ate the
+  draft.
+
+### Changed — platform MCP surfaces flip to phrase session IDs (#1816, the #1756 §5 remainder)
+
+- **The external MCP server (pkg/mcp / cmd/mcp) accepts phrase
+  addressing for real.** `session_message` with a 3-word phrase target
+  previously worked only by accident: the client's contract-stream
+  filter never matched the frames. Post-#1824 the frames are
+  phrase-keyed on refreshed pods (harness id additive as
+  `internal_session_id`) and harness-keyed on heal-window/legacy pods,
+  so the client now admits a frame keyed by EITHER space
+  (`sessionMatchKeys`), learning the resolved canonical id from the
+  session-ref middleware's `X-Session-Ref-Resolved` response header
+  when the edge rewrote the ref — phrase-targeted sends complete from
+  live frames in every pod regime, and the deprecated full-id form
+  stays functional too (it adopts phrase-keyed frames via the additive
+  id). The header is correlation on a response the caller already
+  receives under authz (not a session-bearing payload surface) and
+  retires with a phrase-only ABI. The pending-question result's
+  session id is likewise rewritten to the caller-facing phrase — the
+  other id space never leaks into tool output on the phrase path.
+- **§2 deprecation notices reach the MCP surfaces.** The external
+  server's `session_message`/`session_history` attach the one-release
+  notice as a second content block on full/hashed-id inputs — on the
+  success path, the send/history error paths, AND the early validation
+  errors (missing message/workspace, invalid attachment) — and the
+  workspace agentd's tools/call envelope does the same for every
+  session tool — including array-shaped `session_read` and
+  `session_metadata` scopes that had no object field to carry it, and
+  `send_message`'s declared ORIGIN ref (the id the recipient re-uses
+  to reply). Parity with the REST `Deprecation`/`Sunset` headers.
+- **Degraded rows surface flagged on the external server too**:
+  `session_create`'s registration-degraded window now emits
+  `session_id_deprecated: true` + the address-by-phrase guidance
+  (agentd parity — never a silently-raw harness id).
+- **Emission closure on the agentd `llmsafespaces_*` handlers**: the
+  #1530 duplicated-argument recovery warning (with a canonical-to-
+  canonical origin comparison — a fragment whose embedded origin is
+  the same session in the other id space is not a mismatch), the
+  multiple-busy refusal, did-you-mean clauses (phrase-only rendering —
+  the harness id no longer parenthesizes the canonical address), and
+  metadata/compact/send error paths render session ids as phrases
+  whenever the replica knows them (ranking stays keyed on the internal
+  id). The #1530 recovery itself now accepts 3-word phrase targets —
+  phrases are the canonical address and the emission slip follows the
+  form callers see. Board manager tools' declared `sessionId` fallback
+  resolves phrase refs like every other id-taking input.
+- **e2e (the issue's acceptance)**: phrase-targeted `send_message`
+  and `abort_session` proven through the real chain — pinned opencode
+  binary, real origin-injection plugin, real tool dispatch, warm
+  phrase replica — with the harness id asserted absent from results;
+  the full-id window still accepts with the notice.
+### Added — Task Board: swimlane creation buttons + collapsible epic bands (#1832 items 1-2)
+
+- **Contextual creation per project swimlane.** Every swimlane header
+  now carries its own New epic / New task buttons; the New-epic dialog
+  is retargeted to the swimlane it was opened from (no dropdown
+  selection required — the global toolbar button remains but is no
+  longer the only path, and is still greyed at All-projects scope).
+- **Collapsible epic bands inside each swimlane**, tasks grouped
+  beneath their band (title, short id, per-lane derived progress,
+  collapse toggle; default expanded). The band header row is the
+  selection surface: clicking it highlights the epic's task cards and
+  dims the lane's others (display-only — never filters, never crosses
+  swimlanes); double-click opens the epic drawer.
+- **The selected epic scopes task creation.** The swimlane's New task
+  lands inside the selected epic; with no selection an epic picker
+  opens (with a create-epic escape hatch for empty projects).
+- **Epics are sourced from the engine's list seam (review round).**
+  Bands, the create-task picker, and the scope-switcher chips read
+  `GET /me/projects/:id/epics` (#1699's `ListEpics` engine read — the
+  client used to infer epic existence from task rows, so a zero-task
+  epic vanished after reload and invited duplicate creation). A failed
+  epics read renders the board load error, never a silent empty lane;
+  task-row derivation remains as the mid-load fallback and this
+  session's created epics bridge the POST→refetch window. Filtered
+  bands distinguish "No tasks match the current filter." from a true
+  "No tasks yet."; creation flows gained unhappy-path unit/e2e rows
+  (failed epic/task POSTs keep the dialog open, error rendered, fields
+  preserved) and reversion tests for the band-header hit surface and
+  the per-lane task routing.
+- **E2E port isolation**: the Playwright dev-server port is
+  `E2E_PORT`-driven (default 5173, `--strictPort`) so concurrent
+  sibling worktrees cannot latch a foreign server; this lane runs
+  18519 (nightly PORTFWD_PORT registry 18083–18093 untouched).
+### Added — task-detail drawer with the full audit timeline (#1832 item 4)
+
+- **The board's task cards open a detail drawer that renders the task's
+  full history.** Header (title, short id, stage, attempts, claim/lease
+  with assignee and lease-until, blocked-by with live dependency stage
+  chips), the charter and acceptance criteria with met state, and the
+  full audit timeline: stage transitions (from→resulting, reclaimed
+  flag), claims (who/when via the engine claim row's worker + attempt),
+  manual task_start dispatches, structured review verdicts with
+  per-finding severity/pointer/criterion when one rides a review-bounce
+  move, dependency-graph changes, and orphan/unblock events — plus
+  explicit loading/empty/error-with-retry states. The card's primary
+  click keeps its edit-dialog behavior; the drawer opens from a
+  dedicated ⓘ details affordance.
+- The history needed a read seam: the §4.6 SSE board.event projection
+  only carries post-subscribe commits, and no REST read exposed
+  board_events. `GET /api/v1/me/tasks/{id}/events` returns the task's
+  rows chronological ascending behind the same owner perimeter as every
+  task read (foreign rows are plain 404s), with a newest-N window
+  (`?limit=`, default 200, max 500 — lease heartbeats write a row per
+  call, so long-lived claims stay bounded). OpenAPI schemas and the
+  frontend client ship with it.
+
+## [0.40.1] - 2026-10-21
+
+### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
+
+- **The busy-signal/live-streaming id join is fixed at the user-stream
+  and contract-stream edges, within the heal window.** The
+  #1756/#1775/#1806 phrase re-keys flipped the frontend's session
+  identity (sessions list, history REST) to the phrase space while
+  user-stream `session.status` / `agent.question` /
+  `agent.question.resolved` events kept emitting the harness id — the
+  join missed for every minted row, killing live busy tracking
+  (sporadic busy only on degraded rows) and live streaming.
+  The API now reverse-resolves at the emission surface: the wire
+  `sessionID` is the PHRASE, with the harness id preserved additively
+  as `internal_session_id`; agentd's contract-stream frames carry the
+  same phrase + additive harness id. A degraded index (no phrase
+  minted, or an un-refreshed pod that has not yet learned the phrase)
+  passes the harness id through unchanged — never worse, but the join
+  is only complete once that heal window closes.
+  The API-side consumer also routes the additive harness id through
+  every seam (status, resolved input, context usage) so a refreshed
+  pod's already-translated frames never re-register the phrase (no
+  phantom index rows, context occupancy lands on the harness row).
+  agentd's replica warm was redesigned as ONE sync.Once worker (not a
+  goroutine per emission) fed by a bounded pending set (hard cap 4096;
+  an id already pending is kept, overflow drops the newest id, and a
+  dropped id re-enqueues only on its next emission — so a quiet session
+  may stay harness-keyed until then or until its next refresh), with
+  per-id exponential backoff (1s → 30s cap), a GLOBAL 1s floor between
+  warm pulls (distinct newly-seen ids batch instead of pulling once each,
+  while a new session still warms within a second), and a single-pass
+  prune of the idle TTL and backoff ceiling (the pending cap is enforced
+  on enqueue). The worker is bound to the
+  process background context and is cancelled at shutdown, where
+  runShutdown waits on it for up to 5s; the pull's own 10s context bounds
+  the remainder.
+  Coverage now spans the dual-id fixture class (mock index rows keyed
+  phrase + ABI events keyed harness id, T0.1 phrase-contract pins, the
+  T1.6 cross-surface join tripwire), live-goroutine/global-pull-floor/
+  backoff pins, and new Postgres-backed integration levels: translated
+  authority stream → real consumer → real `usageBridge` → real
+  `sessionindex`, the create-via-API registry round trip, the
+  legacy-frame phrase translation, and the agentd replica warm against
+  the real registry contract. A translation miss on the user-stream edge
+  flags the passthrough harness id as `session_id_deprecated` (map-shaped
+  `session.status` / `agent.*.resolved` payloads only; the struct
+  `agent.question` payload is left intact), and the lifecycle clear call
+  sites (idle reconcile, delete, archive, admin abort) are pinned through
+  their real paths.
+- **Frontend heal-window id seam (#1817, additive).** The app now learns
+  per-workspace (harness → phrase) aliases from the additive ids
+  (`data.internal_session_id` on user-stream events, `internalSessionId`
+  on contract frames), bounded at 512 aliases per workspace with FIFO
+  eviction, identity when no pair is known (never worse), with an
+  equal-id decoy guard and late re-key of fold rows that arrived before
+  the pair. This closes the API-new/agentd-old and API-old/agentd-new skew
+  windows. It cannot help when BOTH streams are fully pre-fix (no additive
+  id anywhere) — those workspaces still need a refresh/bounce. The
+  red-first E2.1/E2.6 Playwright pins drive pre-fix wire shapes on the
+  surface under test (composer send + sidebar collapsed-workspace busy
+  count, harness-keyed idle clear, reconnect lost-idle wipe, pre-fix
+  contract frames in the phrase view, and a non-vacuous same-id decoy);
+  they fail on `origin/main` at the predicted assertions and pass with the
+  seam.
+- **Late-learned aliases now re-key provider activity; snapshot learning is
+  batched (#1817, #1824 r10).** When a harness→phrase pair is learned after a
+  harness-keyed user event has already latched, `SessionActivityProvider`
+  re-keys its session-keyed activity maps (busy, unread, aborted, pending
+  actions and prompt content, and the cleared-session ref) through the
+  changed workspace's alias table, so the sidebar badges follow the phrase
+  without waiting for a reconnect. The contract stream learns only applied
+  frames, re-keys the fold only when the alias version moves (PART_DELTA
+  stays off the O(all sessions) path), and collapses a multi-pair snapshot
+  into a single alias notification and publish via
+  `beginSessionAliasBatch`/`endSessionAliasBatch`. The r11 companion commit
+  also hoists provider ref mutations out of state updaters so StrictMode's
+  double-invoked updaters stay pure and resolves staging maps at commit.
+
 
 ## [0.40.0] - 2026-10-21
 
@@ -53,6 +521,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (ai-workflows#65); this list then becomes redundant on the next sync.
 
 ### Added — Task Board: agent manager tools + the #1747 amendment set (issue #1747)
+
 ### Added — workspace phrase IDs (#1757): 2 words + 1 digit, fleet-unique
 
 - **Every workspace gains a minted phrase ID** (`amber-river-7`):
@@ -124,6 +593,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
+
 ### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 post-union review; PR #1806)
 
 - **Five production regressions from the re-key, all re-keyed to the canonical harness id (`InternalID`):** the agentd registry pull no longer poisons the replica phrase→phrase (unminted rows are skipped — the replica install rejects empty short ids); the archived set matches harness row ids again (the #1735 leak is re-closed); session-gone reap verdicts fire (no more blanket "uncertain"); `RebuildMessageCount` no longer mints phrase-keyed ghost rows; the `context_used` self-heal fires (and the workspace CRD stops being fetched on every session-list call). `PlanReconciliation`'s error-path miss-carriers are keyed by `InternalID` too (reap convergence survives transient list errors).
@@ -174,6 +644,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
+
 ### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
 - **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
@@ -264,6 +735,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
+
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
 - **Workspace pods now carry a dedicated disk-backed emptyDir for the
@@ -282,6 +754,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is network-expensive to rebuild and valuable across suspend/resume
   (the disk-recovery lever sweeps it under pressure). Storage docs
   updated with the sixth volume and its trade-offs.
+
 ### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
 
 - **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
@@ -349,6 +822,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
   volumes pointer), `docs/architecture/components.md` (controller policy
   + the versioned board seam contract).
+
 ### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
 
 - **The workspace pod's disk-recovery allowlist now covers the caches
@@ -414,6 +888,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwired ownership gate fails closed (500). The user REST API's
   `CreateTriggerRequest` carries the same optional field under the
   same gate.
+
 ### Added — agent-internal Task Board worker tools (#1701)
 
 - **The worker's board surface is live in the agentd MCP registry**
@@ -439,6 +914,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a pod never resolves another workspace's tasks — the real token
   buys nothing), and the pending_input self-exit refusal (a valid token
   does not unlock a manager-surface exit).
+
 ### Added — Task Board frontend UI: kanban/swimlanes, drag, scope switcher, SSE feed (#1702, design 0067 Lane 4)
 
 - **BoardPage at `/board`** (nav beside Workflows/Triggers): kanban with
@@ -474,6 +950,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Epic drawer activity feed** (§4.8): live board.event activity
   filtered to the epic's tasks via an in-page fan-out from the single
   user SSE connection (`lib/boardFeed.ts`).
+
 ### Changed — archived sessions are opt-in on session listings (#1735)
 
 - **agentd MCP `session_list` and `session_metadata` default to
@@ -497,6 +974,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which render the Archived group) opt in explicitly (pinned); the
   e2e route mocks match the opted-in query; the #1627 metadata
   annotation test pin opts in explicitly.
+
 ### Added — external platform MCP server tools for the Task Board (#1700)
 
 - **18 customer-facing `board_*` tools on the platform MCP server**
@@ -753,6 +1231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve; platform-deploy knobs per ruling R6 ride the helm → env →
   config chain (`board.*` values). REST/SDKs, MCP projections, and the
   frontend are #1699's lanes.
+
 ### Fixed — Chat streaming auto-tail vs user scroll (#1720)
 
 - **Scrolling away during a streaming response no longer snaps back to
@@ -5459,3 +5938,4 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 [0.2.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lenaxia/LLMSafeSpaces/releases/tag/v0.1.0
 ## Placeholder
+

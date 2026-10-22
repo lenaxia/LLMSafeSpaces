@@ -593,6 +593,7 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "5")
 	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "42")
 	t.Setenv("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS", "77")
+	t.Setenv("LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS", "120")
 	t.Setenv("LLMSAFESPACES_BOARD_DRRQUANTUM", "2")
 	t.Setenv("LLMSAFESPACES_BOARD_SWEEPSECONDS", "15")
 	t.Setenv("LLMSAFESPACES_BOARD_ENABLED", "false")
@@ -607,18 +608,19 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
 		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
 		SweepSeconds           int  `mapstructure:"sweepSeconds"`
 		UserClaimCap           int  `mapstructure:"userClaimCap"`
 		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
 		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, DRRQuantum: 1, SweepSeconds: 30,
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
 	applyBoardEnvOverrides(cfg)
 
 	if cfg.Board.Enabled != false || cfg.Board.AttemptsCap != 5 || cfg.Board.LeaseSeconds != 42 ||
-		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 ||
+		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.FailureBackoffSeconds != 120 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 ||
 		cfg.Board.UserClaimCap != 12 || cfg.Board.GlobalClaimCap != 96 ||
 		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 {
 		t.Fatalf("board env overrides not applied: %+v", cfg.Board)
@@ -635,13 +637,14 @@ func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
 		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
 		SweepSeconds           int  `mapstructure:"sweepSeconds"`
 		UserClaimCap           int  `mapstructure:"userClaimCap"`
 		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
 		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, DRRQuantum: 1, SweepSeconds: 30,
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
 	applyBoardEnvOverrides(cfg)
 	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {

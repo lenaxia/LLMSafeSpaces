@@ -44,7 +44,7 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	out := &ImportResult{DryRun: false, ProjectID: p.ID, TaskKeys: map[string]string{}, Warnings: validation.Warnings}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "import_plan", itemKind: "epic", itemID: epicID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, ` AND project_id=$2`, p.ID)
+		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +58,7 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 		ids := map[string]string{}
 		for _, n := range in.Tasks {
 			taskID := uuid.NewString()
-			tshort, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, ` AND project_id=$2`, p.ID)
+			tshort, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, taskMintOwnerScope, actor.UserID)
 			if err != nil {
 				return nil, err
 			}

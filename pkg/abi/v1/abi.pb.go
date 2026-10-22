@@ -494,6 +494,10 @@ type SessionSnapshot struct {
 	// table); frontends must not render it as a send queue.
 	QueueDepth    int32           `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
 	PendingInputs []*InputRequest `protobuf:"bytes,5,rep,name=pending_inputs,json=pendingInputs,proto3" json:"pending_inputs,omitempty"`
+	// #1817/#1821 piece 1: on EMISSION the wire session_id is the
+	// platform phrase; the harness id rides here, ADDITIVE. Absent on
+	// un-refreshed emitters (heal window) — consumers must not require it.
+	InternalSessionId string `protobuf:"bytes,7,opt,name=internal_session_id,json=internalSessionId,proto3" json:"internal_session_id,omitempty"`
 	// busy is the #1574 busy-from-data derivation and its components —
 	// WHY the session is busy, so consumers render reasons instead of a
 	// bare flag. busy.busy := streaming || in_flight_parts > 0 ||
@@ -572,6 +576,13 @@ func (x *SessionSnapshot) GetPendingInputs() []*InputRequest {
 		return x.PendingInputs
 	}
 	return nil
+}
+
+func (x *SessionSnapshot) GetInternalSessionId() string {
+	if x != nil {
+		return x.InternalSessionId
+	}
+	return ""
 }
 
 func (x *SessionSnapshot) GetBusy() *BusyComponents {
@@ -697,7 +708,7 @@ const file_llmsafespaces_abi_v1_abi_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\x0e2\".llmsafespaces.abi.v1.ReseedReasonR\x06reason\"3\n" +
 	"\x12GetSnapshotRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xd7\x02\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x87\x03\n" +
 	"\x0fSessionSnapshot\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12;\n" +
@@ -705,7 +716,8 @@ const file_llmsafespaces_abi_v1_abi_proto_rawDesc = "" +
 	"\x0fin_flight_parts\x18\x03 \x03(\v2\x1a.llmsafespaces.abi.v1.PartR\rinFlightParts\x12\x1f\n" +
 	"\vqueue_depth\x18\x04 \x01(\x05R\n" +
 	"queueDepth\x12I\n" +
-	"\x0epending_inputs\x18\x05 \x03(\v2\".llmsafespaces.abi.v1.InputRequestR\rpendingInputs\x128\n" +
+	"\x0epending_inputs\x18\x05 \x03(\v2\".llmsafespaces.abi.v1.InputRequestR\rpendingInputs\x12.\n" +
+	"\x13internal_session_id\x18\a \x01(\tR\x11internalSessionId\x128\n" +
 	"\x04busy\x18\x06 \x01(\v2$.llmsafespaces.abi.v1.BusyComponentsR\x04busy\"\xbb\x01\n" +
 	"\x0eBusyComponents\x12\x1c\n" +
 	"\tstreaming\x18\x01 \x01(\bR\tstreaming\x12&\n" +

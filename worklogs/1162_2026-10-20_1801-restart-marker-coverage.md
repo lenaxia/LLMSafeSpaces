@@ -76,4 +76,4 @@ None.
 - cmd/workspace-agentd/ops_metrics.go (help text)
 - cmd/workspace-agentd/restart_marker_coverage_test.go (new)
 - cmd/workspace-agentd/xdg_config_layer_test.go (watcher marker assertion)
-- worklogs/1161_2026-10-20_1801-restart-marker-coverage.md (sentinel; bot renumbers at merge) — this worklog
+- worklogs/1162_2026-10-20_1801-restart-marker-coverage.md (sentinel; bot renumbers at merge) — this worklog

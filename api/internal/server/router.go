@@ -319,7 +319,15 @@ func DefaultRouterConfig() RouterConfig {
 	// The /events SSE endpoint is a long-lived connection, not a per-request
 	// API call. Exempt it from the token-bucket rate limiter so reconnects
 	// after network drops don't trigger 429s.
-	rlCfg.ExemptPaths = []string{"/events", "/session-events"}
+	//
+	// Health probes (#1825): /livez is k8s liveness traffic — a 429
+	// there restarts healthy pods; /readyz is readiness — a 429
+	// de-services the pod (removed from endpoints, not restarted;
+	// monitoring.md's probe semantics). The SDK canaries pin
+	// "not rate-limited" for both. They only passed pre-#1825 by
+	// refill-boundary luck (the canary's readyz-then-livez sequence after
+	// a 12-request login burst): any exhausted per-IP budget 429s them.
+	rlCfg.ExemptPaths = []string{"/events", "/session-events", "/livez", "/readyz"}
 	return RouterConfig{
 		Debug:           false,
 		LoggingConfig:   middleware.DefaultLoggingConfig(),
@@ -1975,8 +1983,13 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	session.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
 
 	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
-	// in-workspace session switches where no SSE reconnect fires).
+	// in-workspace switches where no SSE reconnect fires).
 	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)
+
+	// #1821 piece 4: on-demand busy-snapshot flight — the frontend busy
+	// lease's authoritative recheck surface (RequestInputSnapshot
+	// pattern: 202 now, the flight lands on the user-event stream).
+	idGroup.POST("/sessions/status-snapshot", proxyHandler.RequestSessionStatusSnapshot)
 
 	// Epic 68 US-68.2: workspace file upload — streaming multipart ingest
 	// through agentd's user-mux PUT /v1/files, behind the same
@@ -2299,8 +2312,10 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 
 	// Task Board REST routes (design 0067 §4.3a, #1699 Lane 2):
 	// user-level only (ruling R7 — no org routes, no scope switcher);
-	// item addressing by short id (prj-/epc-/tsk-, case-insensitive) or
-	// UUID. Registered only when the board engine is wired (nil handler
+	// item addressing by short id (prj-/epc-/tsk-, case-insensitive —
+	// word-phrase form since #1831, e.g. tsk-amber-falcon-glides;
+	// legacy random tsk-XXXXXXXX forms still resolve through the
+	// dual-accept window) or UUID. Registered only when the board engine is wired (nil handler
 	// = feature off, matching the internal automation seam's gating).
 	// Board-wide search + health ride the /me/board group (#1699 seams).
 	if cfg.BoardHandler != nil {
@@ -2319,11 +2334,20 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		p.POST("/:id/epics", b.CreateEpic)
 		p.POST("/:id/import-plan", b.ImportPlan)
 		p.GET("/:id/epics", b.ListProjectEpics)
+		// #1832 item 6: per-project config overrides (overrides +
+		// effective merged config; REPLACE-semantics writes).
+		p.GET("/:id/config", b.GetProjectBoardConfig)
+		p.PUT("/:id/config", b.SetProjectBoardConfig)
 
 		bb := router.Group("/api/v1/me/board")
 		bb.Use(services.GetAuth().AuthMiddleware())
 		bb.GET("/search", b.BoardSearch)
 		bb.GET("/health", b.BoardHealth)
+		// #1832 item 6: board-wide config defaults are USER-scoped (R7
+		// ruling on PR #1840: boards are user-level, so "board-wide" =
+		// the acting user's boards) — the /me surface, no admin gate.
+		bb.GET("/config", b.GetUserBoardConfig)
+		bb.PUT("/config", b.SetUserBoardConfig)
 
 		e := router.Group("/api/v1/me/epics")
 		e.Use(services.GetAuth().AuthMiddleware())
@@ -2339,8 +2363,11 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k := router.Group("/api/v1/me/tasks")
 		k.Use(services.GetAuth().AuthMiddleware())
 		k.GET("/:id", b.GetTask)
+		k.GET("/:id/events", b.TaskEvents)
 		k.PATCH("/:id", b.UpdateTask)
 		k.POST("/:id/move-stage", b.MoveStageTask)
+		k.POST("/:id/verdict", b.RecordTaskVerdict)
+		k.GET("/:id/verdicts", b.ListTaskVerdicts)
 		k.POST("/:id/start", b.StartTask)
 		k.POST("/:id/pause", b.PauseTask)
 		k.POST("/:id/resume", b.ResumeTask)

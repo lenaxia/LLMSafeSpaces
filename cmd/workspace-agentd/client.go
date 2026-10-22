@@ -215,6 +215,13 @@ func (c *OpenCodeClient) ListSessions(ctx context.Context) ([]agentd.SessionInfo
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// #1821 piece 2 / #1848 r1 robustness: a non-2xx must be an ERROR,
+	// never a decodable empty list — cachedState keys the statusz
+	// sessions_ok authority signal off this verdict, and a swallowed
+	// error would render as an authoritative "no sessions".
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("GET /session: status %d", resp.StatusCode)
+	}
 	var sessions []struct {
 		ID     string `json:"id"`
 		Title  string `json:"title"`

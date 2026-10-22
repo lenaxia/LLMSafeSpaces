@@ -1,0 +1,24 @@
+diff a/api/internal/handlers/board_rest_test.go b/api/internal/handlers/board_rest_test.go	(rejected hunks)
+@@ -41,9 +41,14 @@ type fakeBoardManager struct {
+ 	projects     []board.Project
+ 	epics        []board.Epic
+ 	tasks        []board.Task
++	events       []board.Event
+ 	searchResult *board.SearchResult
+ 	health       *board.Health
+ 
++	// #1832 item 4: the audit-timeline read's capture arms.
++	lastTaskEventsRef   string
++	lastTaskEventsLimit int
++
+ 	errFor map[string]error
+ 
+ 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
+@@ -444,6 +459,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
+ 	e.POST("/:id/tasks", h.CreateEpicTask)
+ 	k := g.Group("/tasks")
+ 	k.GET("/:id", h.GetTask)
++	k.GET("/:id/events", h.TaskEvents)
+ 	k.PATCH("/:id", h.UpdateTask)
+ 	k.POST("/:id/move-stage", h.MoveStageTask)
+ 	k.POST("/:id/start", h.StartTask)

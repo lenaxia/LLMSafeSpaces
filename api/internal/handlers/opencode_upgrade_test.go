@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -37,16 +38,22 @@ type mockSessionIndex struct {
 	failList      bool              // ListByWorkspace returns an error when set
 	rebuiltCounts map[string]int    // key: "workspaceID/sessionID" (#1481 count rebuilds)
 	rows          map[string][]types.SessionListItem
-	archived      map[string]bool // key: "workspaceID/sessionID" (#1627)
-	failArchived  bool            // IsArchived returns an error when set (#1627 fail-open pin)
+	archived      map[string]bool   // key: "workspaceID/sessionID" (#1627)
+	failArchived  bool              // IsArchived returns an error when set (#1627 fail-open pin)
+	phrases       map[string]string // key: "workspaceID/sessionID" → the minted phrase (#1817 dual-id fixtures)
+	registerCalls map[string]int    // key: "workspaceID/sessionID" → Register call count (#1817 piece 3 double-translation pin)
+	mint          bool              // model production: mint a new phrase for an unknown session
+	mintSeq       int
 }
 
 func newMockSessionIndex() *mockSessionIndex {
 	return &mockSessionIndex{
-		titles:      make(map[string]string),
-		contextUsed: make(map[string]*int64),
-		deletedTree: make(map[string]bool),
-		rows:        make(map[string][]types.SessionListItem),
+		titles:        make(map[string]string),
+		contextUsed:   make(map[string]*int64),
+		deletedTree:   make(map[string]bool),
+		rows:          make(map[string][]types.SessionListItem),
+		phrases:       map[string]string{},
+		registerCalls: map[string]int{},
 	}
 }
 
@@ -218,7 +225,51 @@ func TestBridge_NilSessionIndex_NoPanic(t *testing.T) {
 	})
 }
 
-// Register: design 0066 registration seam — no-op stub for this fixture.
-func (m *mockSessionIndex) Register(ctx context.Context, workspaceID, sessionID, harnessType string) string {
+// Register: design 0066 registration seam — returns a seeded phrase
+// when the fixture planted one (the #1817 dual-id contract), else "".
+// When mint is set (the production shape — EnsureSessionRegistered INSERTs
+// a new row for an unknown session), it mints a fresh phrase for any
+// session not already registered, recording the call. The double-translation
+// pin uses mint to assert the phrase is NEVER registered (no phantom row).
+func (m *mockSessionIndex) Register(_ context.Context, workspaceID, sessionID, harnessType string) string {
+	key := workspaceID + "/" + sessionID
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.registerCalls[key]++
+	if m.phrases == nil {
+		return ""
+	}
+	if p, ok := m.phrases[key]; ok {
+		return p
+	}
+	if m.mint {
+		m.mintSeq++
+		minted := fmt.Sprintf("minted-phrase-%d", m.mintSeq)
+		m.phrases[key] = minted
+		return minted
+	}
 	return ""
+}
+
+// ResolveShortID: the #1817 piece-3 read-only seam — this mock returns the
+// seeded phrase when planted (LRU-hit shape), else "" (no mint).
+func (m *mockSessionIndex) ResolveShortID(workspaceID, sessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.phrases == nil {
+		return ""
+	}
+	return m.phrases[workspaceID+"/"+sessionID]
+}
+
+// registeredCalls returns the number of Register calls seen per
+// "workspaceID/sessionID" (the #1817 piece 3 double-translation pin).
+func (m *mockSessionIndex) registeredCalls() map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]int, len(m.registerCalls))
+	for k, v := range m.registerCalls {
+		out[k] = v
+	}
+	return out
 }

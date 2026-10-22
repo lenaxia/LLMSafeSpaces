@@ -161,11 +161,47 @@ openai_compatible
 | Tool | Required args | Description |
 |------|---------------|-------------|
 | `trigger_list` | _(none)_ | List triggers owned by the authenticated user |
-| `trigger_create` | `name`, `source_type`, `source_config` | Create a trigger. Routine mode (no `workflow_id`): `workspace_id` + `prompt`. Workflow mode: `workflow_id`. Optional: `memory_mode`, `capture_mode`, `preserve_session`, `input_from` (`envelope` default \| `body` — webhook only, the posted payload becomes the run input \| `mapped` — the static `input` document), `input` (static run input, workflow mode; a JSON object ≤ 64 KiB; in envelope/body modes a shallow top-level overlay, static wins; in `mapped` mode validated against the workflow's `inputSchema`). Wiring an envelope-mode trigger with no `input` to a workflow whose `inputSchema` requires non-envelope fields is rejected with a 400 — set `input`, use `input_from: "body"`, or relax the schema. |
-| `trigger_update` | `trigger_id` | Partial update. Optional: `enabled` (**boolean**), `input_from`, `input` (a JSON `null` clears the static input; omitting the key keeps it). |
+| `trigger_create` | `name`, `source_type`, `source_config` | Create a trigger. Routine mode (no `workflow_id`): `workspace_id` + `prompt`. Workflow mode: `workflow_id`. Optional: `memory_mode`, `capture_mode`, `preserve_session`, `script` (the #1812 inline gate script — see below), `input_from` (`envelope` default \| `body` — webhook only, the posted payload becomes the run input \| `mapped` — the static `input` document), `input` (static run input, workflow mode; a JSON object ≤ 64 KiB; in envelope/body modes a shallow top-level overlay, static wins; in `mapped` mode validated against the workflow's `inputSchema`). Wiring an envelope-mode trigger with no `input` to a workflow whose `inputSchema` requires non-envelope fields is rejected with a 400 — set `input`, use `input_from: "body"`, or relax the schema. |
+| `trigger_update` | `trigger_id` | Partial update. Optional: `enabled` (**boolean**), `input_from`, `input` (a JSON `null` clears the static input; omitting the key keeps it), `script` (same three-state rule: omitted keeps, `null` clears, an object replaces). |
 | `trigger_delete` | `trigger_id` | Delete a trigger |
 
 `source_type` is `cron` (with `source_config` JSON `{"expr","tz"}`) or `webhook` (with `{}`).
+
+#### The inline gate script (#1812)
+
+A routine trigger may carry `script` — an **inline executable script**, never a path pointer (the path form is the separate, legacy `script_path` pre-script). The shape matches a workflow script node:
+
+```json
+{"language": "python" | "node", "handler": "<inline source>"}
+```
+
+The handler defines `handler(input) -> {"proceed": <bool>, "vars": {<str>: <str>}}` and runs in the routine's target workspace (the same sandbox workflow script nodes use) before **every** fire's LLM call, with the fire envelope (`{source, received_at, headers?, body?}`) as input:
+
+- **`proceed: false`** — the fire exits with **no LLM call**. The gate is a cheap deterministic precondition: poll checks, state diffs, and threshold logic run as code, and the model is only invoked when the gate opens. The fire audit (`trigger_fires`) records a `skipped` fire with `{gate: {proceed: false, vars}}` in `actionResult`.
+- **`proceed: true`** — the prompt fires with each vars value substituted jinja-style (`{{key}}` — literal token replacement; unmatched tokens stay literal) and **all** vars (consumed or not) appended as a trailing `[trigger script vars]` metadata block. `{{.input}}`, `{{.prevResult}}`, and `{{.scriptResult}}` are platform tokens and never collide with vars. The open gate records `{gate: {proceed: true, vars}}` before the agent leg.
+- **Any script failure** — runtime error, unparseable output, or a return violating the schema (`proceed` must be a bool; `vars` values must be strings; keys must not start with `.`) — **fails closed**: a `failed` fire with the named error in `actionResult.gate.error`, no LLM call, and the failure counts toward auto-disable.
+- **Script-only triggers** (a `script`, no `prompt`) never call the LLM at all — the gate runs for its side effects and the fire delivers.
+
+`script` is routine-only: setting it alongside `workflow_id` is rejected with a self-teaching 400 (a workflow's DAG carries its own script/condition nodes).
+
+**Worked example** — a nightly digest that only spends an LLM call when work accumulated:
+
+```jsonc
+// trigger_create
+{
+  "name": "nightly-digest",
+  "source_type": "cron",
+  "source_config": {"expr": "0 2 * * *", "tz": "UTC"},
+  "workspace_id": "ws-1",
+  "prompt": "Summarize the {{count}} new items since yesterday.",
+  "script": {
+    "language": "python",
+    "handler": "def handler(input):\n    n = sum(1 for line in open('/workspace/inbox.log') if line.strip())\n    return {\"proceed\": n > 0, \"vars\": {\"count\": str(n)}}\n"
+  }
+}
+```
+
+At 02:00 the handler runs first. No new items → `proceed: false` → the fire is recorded `skipped`, no LLM call. New items → the prompt fires as "Summarize the 3 new items since yesterday." plus a trailing `[trigger script vars] {"count":"3"}` metadata block.
 
 ### Task Board (design 0067)
 
@@ -180,13 +216,16 @@ external actors hold no claim tokens.
 | Tool | Required args | Description |
 |------|---------------|-------------|
 | `board_list_projects` | _(none)_ | List the authenticated user's board projects |
-| `board_get` | `item_id` | Get one item by short id — the `prj-`/`epc-`/`tsk-` prefix selects the kind (project, epic with derived progress, task with blocked-by derivation) |
-| `board_read` | _(none)_ | Read a board. Default (with `project_id`): the project's tasks; Optional: `stage` (one of the five stages `backlog`, `in_progress`, `in_review`, `done`, `pending_input` — #1747). `kind=epics` (with `project_id`): the project's epics with derived progress. `q`: board-wide search (short id exact or title substring; Optional: `project_id`, `epic_id`, `stage`, `tags` — zero-hit near-misses carry did-you-mean suggestions). `health=true`: the health snapshot |
+| `board_get` | `item_id` | Get one item by short id — word-phrase form since #1831 (`tsk-crimson-finch-blooms`; legacy random `tsk-XXXXXXXX` rows still resolve through the dual-accept window, marked `short_id_deprecated`) — the `prj-`/`epc-`/`tsk-` prefix selects the kind (project, epic with derived progress, task with blocked-by derivation) |
+| `board_read` | _(none)_ | Read a board. Default (with `project_id`): the project's tasks; Optional: `stage` (one of the five stages `backlog`, `in_progress`, `in_review`, `done`, `pending_input` — #1747), `failed=true` (#1813: only tasks whose last attempt failed — lease-lapse reclaims put the overlay on the row; an all-success attempts-cap exhaustion carries NO failure marker, its signal is pending_input + `pending_origin=escalated`; the overlay renders as last_attempt_failed/failure_count on every task read). `kind=epics` (with `project_id`): the project's epics with derived progress. `q`: board-wide search (short id exact or title substring; Optional: `project_id`, `epic_id`, `stage`, `tags` — zero-hit near-misses carry did-you-mean suggestions). `health=true`: the health snapshot |
+| `board_task_events` | `task_id` | A task's audit timeline (#1832 item 4): stage transitions, claims with lease state, review verdicts, dependency-graph changes, orphan/unblock events — the same projection the task-detail drawer renders. Optional: `limit` (newest-first N) |
 | `board_create_project` | `name`, `target_workspace_id` | Create a board project (one target workspace per project — ruling R8). Optional: `worker_slots` (default 2), `tags`, `request_id` |
 | `board_create_epic` | `project_id`, `title` | Create a DRAFT epic. Optional: `outcome` (the steering wheel), `tags`, `request_id` |
 | `board_create_task` | `epic_id`, `title` | Create a backlog task; `description` (markdown) seeds the fresh worker's charter. Optional: `tags` (may carry one `pr:N` anchor — the only PR-drift form the reconciler consumes; malformed anchors are inert), `acceptance_criteria` (`[{text, met}]` — Done = ALL met + evidence), `depends_on` (prerequisite short ids — edges added in the same write, #1747), `request_id` |
 | `board_update_item` | `item_id` | Patch an item; only fields applying to the addressed kind are accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep existing values. **Tags differ by kind** (engine rules, REST-identical): on a task, omitted `tags` keep the set and an explicit `[]` clears it; on a project/epic, tags are written unconditionally — omitting them clears (send the full set to keep). Project fields: `name`, `target_workspace_id`, `worker_slots`, `tags`. Epic: `title`, `outcome`, `tags`. Task: `title`, `description`, `tags`, `acceptance_criteria`, `set_criteria_met` (0-based index check-off). Optional: `request_id` |
 | `board_health` | _(none)_ | The board health snapshot (design 0067 §4.8): active leases with expiry, recent reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker slots in use. The same projection `board_read` with `health=true` renders |
+| `board_record_verdict` | `task_id`, `verdict`, `reviewer` | Record a structured review verdict (#1832 item 5 — the forge-agnostic core). `verdict` is `approve` or `fail`; approve → `done` still passes the Done guard (all criteria + `evidence_url`), a refusal is a RECORDED outcome (`applied=false`, `transition="refused:<code>"`); fail → `in_progress` rides the bounce with attempts UNCHANGED (an iteration in the verdict chain, never a failure entry). `findings` `[{severity blocker\|major\|minor, pointer, criterionIndex?}]` required on fail. Optional: `findings`, `evidence_url`, `request_id` |
+| `board_task_verdicts` | `task_id` | The task's ordered verdict chain (#1832 item 5): every recorded verdict with findings, reviewer, and whether its transition applied — the record the next claimant's charter embeds after a fail-bounce |
 | `board_move_stage` | `task_id`, `to_stage` | Server-arbitrated stage move. Legal manager targets: `in_progress`, `in_review`, `done`, `pending_input`, and `backlog` (the pending_input human exits); entering from backlog is claim-only (`board_start_task`) and removal is `board_delete` — neither is a stage move. Forward moves refuse on a paused task (409 `task_paused`, #1747). `done` requires all acceptance criteria met + `evidence_url`. Optional: `evidence_url`, `request_id` |
 | `board_start_task` | `task_id` | Manual one-off dispatch (claim + fresh-charter worker spawn); allowed in draft epics, refused for paused/completed/archived epics and archived projects. Optional: `request_id` |
 | `board_epic_activate` | `epic_id` | Activate an epic (start feeding work); re-opens a completed epic. Refuses cross-epic dependencies into inactive epics unless acknowledged (`acknowledge_inactive_deps`); reports the initial ready set (#1747) |

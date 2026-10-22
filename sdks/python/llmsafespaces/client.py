@@ -122,10 +122,15 @@ class _BoardAPI:
         body: dict[str, Any] = {"requestId": request_id} if request_id else {}
         return self._c._request("POST", f"/me/projects/{project_id}/unarchive", json=body)
 
-    def list_project_tasks(self, project_id: str, stage: str = "") -> list[dict[str, Any]]:
+    def list_project_tasks(self, project_id: str, stage: str = "", *, failed: bool | None = None) -> list[dict[str, Any]]:
         path = f"/me/projects/{project_id}/tasks"
+        query: list[str] = []
         if stage:
-            path += f"?stage={quote(stage, safe='')}"
+            query.append(f"stage={quote(stage, safe='')}")
+        if failed is not None:
+            query.append(f"failed={'true' if failed else 'false'}")
+        if query:
+            path += "?" + "&".join(query)
         return self._c._request("GET", path).get("tasks", [])
 
     def create_epic(
@@ -296,6 +301,7 @@ class _TriggersAPI:
         workflow_id: str = "",
         prompt: str = "",
         agent: str = "",
+        script: dict[str, str] | None = None,
         script_path: str = "",
         script_args: list[str] | None = None,
         script_env: dict[str, Any] | None = None,
@@ -303,6 +309,51 @@ class _TriggersAPI:
         capture_mode: str = "",
         preserve_session: str = "",
     ) -> dict[str, Any]:
+        """Create a trigger.
+
+        ``script`` is the #1812 INLINE gate script — a dict
+        ``{"language": "python" | "node", "handler": <inline source>}``
+        whose handler defines ``handler(input) -> {"proceed": <bool>,
+        "vars": {<str>: <str>}}``. It is INLINE SOURCE, never a path
+        (the path form is the separate, legacy ``script_path``). Before
+        every fire's LLM call the handler runs in the routine's target
+        workspace with the fire envelope as input:
+
+        * ``proceed=False`` exits the fire with NO LLM call (cheap
+          deterministic gating — poll checks, thresholds, state diffs);
+        * ``proceed=True`` fires the prompt with vars substituted
+          jinja-style (``{{key}}``; unmatched tokens stay literal) and
+          ALL vars appended as trailing ``[trigger script vars]``
+          metadata;
+        * any script failure — runtime error, unparseable output, or a
+          return violating the schema — fails CLOSED: failed fire, the
+          named error in the fire audit, no LLM call;
+        * a ``script`` trigger with NO prompt never calls the LLM at
+          all (gate + side effects only).
+
+        Routine targets only — rejected (400) alongside ``workflow_id``
+        (a workflow's DAG carries its own script nodes).
+
+        Worked example — nightly digest, LLM called only when work
+        accumulated::
+
+            triggers.create(
+                name="nightly-digest",
+                source_type="cron",
+                source_config={"expr": "0 2 * * *", "tz": "UTC"},
+                workspace_id=ws_id,
+                prompt="Summarize the {{count}} new items.",
+                script={
+                    "language": "python",
+                    "handler": 'def handler(input):\\n'
+                               '    n = count_open_items()\\n'
+                               '    return {"proceed": n > 0, "vars": {"count": str(n)}}\\n',
+                },
+            )
+            # proceed=False  -> fire skipped, no model call
+            # proceed=True   -> prompt fires with {{count}} substituted
+            #                  + all vars as trailing metadata
+        """
         body: dict[str, Any] = {
             "name": name,
             "sourceType": source_type,
@@ -316,6 +367,8 @@ class _TriggersAPI:
             body["prompt"] = prompt
         if agent:
             body["agent"] = agent
+        if script is not None:
+            body["script"] = script
         if script_path:
             body["scriptPath"] = script_path
         if script_args is not None:
@@ -331,6 +384,14 @@ class _TriggersAPI:
         return self._c._request("POST", "/me/triggers", json=body)
 
     def update(self, trigger_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Partially update a trigger (omitted keys keep their values).
+
+        The #1812 gate script patches with key-presence semantics:
+        ``script=None`` (JSON null) clears it back to no-script, an
+        omitted ``script`` key keeps the stored one, and
+        ``script={"language": ..., "handler": ...}`` replaces it. See
+        :meth:`create` for the {proceed, vars} gate semantics.
+        """
         return self._c._request("PUT", f"/me/triggers/{trigger_id}", json=kwargs)
 
     def delete(self, trigger_id: str) -> None:

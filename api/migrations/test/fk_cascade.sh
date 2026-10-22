@@ -80,6 +80,8 @@ psql_run -c "INSERT INTO permissions (id, user_id, resource_type, resource_id, a
 psql_run -c "INSERT INTO user_keys (user_id, key_version, wrapped_dek, salt) VALUES ('${USER_ID}', 1, '\\x00', '\\x00');"
 psql_run -c "INSERT INTO user_secrets (id, user_id, name, type, ciphertext, key_version) VALUES ('${SECRET_ID}', '${USER_ID}', 'aname', 'env-secret', '\\x00', 1);"
 psql_run -c "INSERT INTO user_settings (user_id, key, value) VALUES ('${USER_ID}', 'preferences', '{}'::jsonb);"
+# 000041: the board config defaults map is a users child too.
+psql_run -c "INSERT INTO board_config_defaults (user_id, key, value) VALUES ('${USER_ID}', 'reviewColumn', '\"auto\"'::jsonb);"
 
 # Grandchildren: user_secret_bindings via user_secrets
 # workspace_id is now UUID with FK to workspaces (migration 000014).
@@ -94,6 +96,7 @@ assert_count "permissions" "user_id = '${USER_ID}'" "1" "permissions exists pre-
 assert_count "user_keys" "user_id = '${USER_ID}'" "1" "user_keys exists pre-delete"
 assert_count "user_secrets" "user_id = '${USER_ID}'" "1" "user_secrets exists pre-delete"
 assert_count "user_settings" "user_id = '${USER_ID}'" "1" "user_settings exists pre-delete"
+assert_count "board_config_defaults" "user_id = '${USER_ID}'" "1" "board_config_defaults exists pre-delete"
 assert_count "user_secret_bindings" "secret_id = '${SECRET_ID}'" "1" "user_secret_bindings exists pre-delete"
 
 # Delete the parent (must delete workspace first due to ON DELETE RESTRICT on workspaces_user_id_fkey)
@@ -106,6 +109,7 @@ assert_count "permissions" "user_id = '${USER_ID}'" "0" "permissions cascaded"
 assert_count "user_keys" "user_id = '${USER_ID}'" "0" "user_keys cascaded"
 assert_count "user_secrets" "user_id = '${USER_ID}'" "0" "user_secrets cascaded"
 assert_count "user_settings" "user_id = '${USER_ID}'" "0" "user_settings cascaded"
+assert_count "board_config_defaults" "user_id = '${USER_ID}'" "0" "board_config_defaults cascaded"
 assert_count "user_secret_bindings" "secret_id = '${SECRET_ID}'" "0" "user_secret_bindings cascaded (via user_secrets)"
 
 # -----------------------------------------------------------------------------

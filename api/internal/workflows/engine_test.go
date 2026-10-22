@@ -141,6 +141,9 @@ type mockAgentd struct {
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
 	sessionIDs map[string]string
+	// calls records every Execute's node id in dispatch order — the
+	// spawn-count evidence for the #1812 no-LLM-call pins.
+	calls []string
 }
 
 func newMockAgentd() *mockAgentd {
@@ -154,7 +157,12 @@ func newMockAgentd() *mockAgentd {
 	}
 }
 
+func (m *mockAgentd) callNodeIDs() []string {
+	return append([]string(nil), m.calls...)
+}
+
 func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	m.calls = append(m.calls, req.NodeID)
 	if m.sentSpecs != nil {
 		m.sentSpecs[req.NodeID] = req.Spec
 	}
@@ -464,9 +472,12 @@ type mockSchedulerStore struct {
 	// stays the running total), results captures the last written
 	// result payload per fire. getTriggerByIDErr injects a transient
 	// store failure (#1473 fetch split).
-	increments        map[string]int
-	resets            map[string]int
-	results           map[string]json.RawMessage
+	increments map[string]int
+	resets     map[string]int
+	results    map[string]json.RawMessage
+	// actions captures UpdateTriggerFireAction writes (#1812): the gate
+	// outcome payload per fire.
+	actions           map[string]json.RawMessage
 	getTriggerByIDErr error
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
@@ -583,6 +594,16 @@ func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID s
 			f.Result = json.RawMessage(`{"written":true}`)
 		}
 	}
+	return nil
+}
+
+func (m *mockSchedulerStore) UpdateTriggerFireAction(_ context.Context, fireID string, actionResult json.RawMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.actions == nil {
+		m.actions = make(map[string]json.RawMessage)
+	}
+	m.actions[fireID] = actionResult
 	return nil
 }
 

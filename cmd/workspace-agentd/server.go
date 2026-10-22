@@ -185,7 +185,7 @@ func buildStatuszHandler(
 		if busyTruth != nil {
 			truth = busyTruth()
 		}
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, func() map[string]busyVerdict { return truth })
+		connected, configured, sessions, sessionsOK := cachedState(r.Context(), client, cache, tracker, func() map[string]busyVerdict { return truth })
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -298,6 +298,12 @@ func buildStatuszHandler(
 			Sessions:            sessions,
 			SessionsActive:      activeCnt,
 			SessionsError:       0,
+			// #1821 piece 2 / #1848 r0 finding 4: the session-list
+			// authority signal — false when ListSessions failed and
+			// the slice above is the swallowed empty result. Pointer
+			// so older pods (which never set it) stay interpretable
+			// as "no signal" by API readers, never as false.
+			SessionsOK:          &sessionsOK,
 			LastError:           "",
 			AgentType:           "opencode",
 			AgentVersion:        version,
@@ -750,11 +756,17 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 }
 
 // startBackgroundLoops launches the agentd background goroutines:
-// SSE session-status subscriber, memory-pressure monitor, periodic ops
-// metrics collector, the fillGaps prompt-token backfiller, and the
-// eager-refresh health cache. All are tracked on bgWg so shutdown can
-// join them.
+// the short-id warm worker, SSE session-status subscriber,
+// memory-pressure monitor, periodic ops metrics collector, the fillGaps
+// prompt-token backfiller, and the eager-refresh health cache. All are
+// tracked on bgWg so shutdown cancels and JOINS them.
 func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
+	// #1817 r7: start the emission-warm singleton FIRST, bound to the
+	// process bgCtx and registered on bgWg, before any emitter goroutine
+	// (SSE subscriber, boot pull) can run. runShutdown's bgCancel then
+	// cancels it and bgWg.Wait joins it — no orphan worker past shutdown.
+	ensureShortIDWarmWorker(bgCtx, bgWg)
+
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()

@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
-import { Link2, Play, AlertTriangle } from "lucide-react";
+import { Link2, Play, AlertTriangle, Info } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { BoardTask } from "../../api/board";
 import { STAGE_LABELS, PENDING_ORIGIN_LABELS, prAnchorOf, type BoardStage } from "../../lib/boardRules";
@@ -40,6 +40,12 @@ interface TaskCardProps {
   pending?: boolean;
   /** Snap-back flash: the server refused the optimistic move. */
   refused?: boolean;
+  /** #1832 item 2: another epic in this swimlane is selected — this
+   * card's epic is NOT it (rendered dimmed; the selection only ever
+   * scopes display, never removes rows). */
+  dimmed?: boolean;
+  /** #1832 item 2: this card's epic is the swimlane's selection. */
+  highlighted?: boolean;
   /** task_start (§4.2): the manual one-off dispatch — the designed UI
    * exit for backlog rows (backlog stage moves are not enumerated; the
    * engine's claim is the path). */
@@ -47,6 +53,9 @@ interface TaskCardProps {
   /** True while a task_start for this card is in flight. */
   starting?: boolean;
   onOpen?: (task: BoardTask) => void;
+  /** #1832 item 4: the details affordance — opens the task-detail
+   * drawer (the card's primary click keeps its edit-dialog behavior). */
+  onDetails?: (task: BoardTask) => void;
   onDragStart?: (task: BoardTask) => void;
   onDragEnd?: (task: BoardTask) => void;
 }
@@ -59,7 +68,7 @@ interface TaskCardProps {
  * attempt counter with its escalation preview, and the backlog Start
  * affordance (task_start).
  */
-export function TaskCard({ task, projectTasks, pending, refused, onStart, starting, onOpen, onDragStart, onDragEnd }: TaskCardProps) {
+export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
@@ -75,6 +84,8 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
       data-task-card={task.short_id}
       data-testid={`task-card-${task.short_id}`}
       data-stage={task.stage}
+      data-dimmed={dimmed ? "true" : undefined}
+      data-highlighted={highlighted ? "true" : undefined}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/board-task", task.short_id);
@@ -87,12 +98,29 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
         "cursor-grab rounded-md border border-border bg-card p-2 text-left shadow-sm transition-colors hover:border-primary/40",
         pending && "opacity-60",
         refused && "border-destructive",
+        dimmed && "opacity-40 saturate-50",
+        highlighted && "border-primary/60 ring-1 ring-primary/40",
       )}
       aria-label={`${task.short_id} ${task.title}`}
     >
       <div className="flex items-start justify-between gap-1">
         <span className="font-mono text-[10px] text-muted-foreground">{task.short_id}</span>
         <div className="flex items-center gap-1">
+          {onDetails && (
+            <button
+              type="button"
+              data-testid={`details-${task.short_id}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDetails(task);
+              }}
+              title="Task details — charter, criteria, full audit timeline"
+              aria-label={`Task details ${task.short_id}`}
+              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Info className="h-3 w-3" />
+            </button>
+          )}
           {task.stage === "backlog" && onStart && (
             <button
               type="button"
@@ -143,6 +171,13 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
         {task.stage === "pending_input" && task.pending_origin && (
           <Badge variant="warning" className="px-1.5 py-0 text-[10px]">
             {PENDING_ORIGIN_LABELS[task.pending_origin] ?? task.pending_origin}
+          </Badge>
+        )}
+        {task.last_attempt_failed && (
+          <Badge variant="destructive" className="px-1.5 py-0 text-[10px]" data-testid={`failed-${task.short_id}`}
+            title={`Last attempt failed (${task.failure_count} consecutive — auto-return-to-ready behind doubling backoff). Never a stage: the row is ${task.stage}.`}
+          >
+            FAILED ×{task.failure_count}
           </Badge>
         )}
         {task.attempts > 0 && (

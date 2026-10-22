@@ -70,6 +70,25 @@ func SessionRefResolution(resolver sessionindex.RefResolver) gin.HandlerFunc {
 				// the agentd deprecation notes and the CHANGELOG.
 				c.Header("Sunset", "Tue, 01 Dec 2026 00:00:00 GMT")
 			}
+			// #1816 resolved-id bridge: tell the caller which
+			// canonical id the ref mapped to. The platform MCP
+			// client (pkg/mcp) consumes this as ONE key of its
+			// dual-space contract-stream match — post-#1824 frames
+			// are phrase-keyed on refreshed pods (harness additive
+			// as internal_session_id) and harness-keyed on
+			// heal-window/legacy pods, so a phrase-typed filter
+			// alone would burn the whole wait budget on the latter.
+			// Correlation for a caller that just addressed the
+			// session under authz, on the response it already
+			// receives — §1 governs session-bearing payload BODIES.
+			// Only a true RESOLUTION (phrase/alias) reports: a
+			// passthrough caller already holds the canonical id.
+			// The literal lives in pkg/types — ONE definition shared
+			// with the client (the bridge continuity test joins the
+			// two sides).
+			if res.MatchedBy != sessionindex.MatchPassthrough && res.CanonicalID != "" {
+				c.Header(types.HeaderSessionRefResolved, res.CanonicalID)
+			}
 			setParam(c, "sessionId", res.CanonicalID)
 			c.Next()
 		case res.AmbiguousAlias:

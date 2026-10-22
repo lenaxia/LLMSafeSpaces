@@ -37,7 +37,7 @@ function seq(n: number, event?: Event): SequencedEvent {
   return create(SequencedEventSchema, { seq: BigInt(n), event });
 }
 
-function snapshotFrame(atSeq: number, sessions: Array<Pick<SessionSnapshot, "sessionId" | "status" | "inFlightParts" | "queueDepth" | "pendingInputs">>): SnapshotFrame {
+function snapshotFrame(atSeq: number, sessions: Array<Pick<SessionSnapshot, "sessionId" | "status" | "inFlightParts" | "queueDepth" | "pendingInputs"> & { internalSessionId?: string }>): SnapshotFrame {
   // JSON round-trip: mirrors the parsed-JSON body the SSE transport
   // hands fromJson.
   return fromJson(SnapshotFrameSchema, JSON.parse(JSON.stringify({
@@ -49,6 +49,7 @@ function snapshotFrame(atSeq: number, sessions: Array<Pick<SessionSnapshot, "ses
         inFlightParts: s.inFlightParts.map(partToJson),
         queueDepth: s.queueDepth,
         pendingInputs: s.pendingInputs.map(inputToJson),
+        internalSessionId: s.internalSessionId ?? "",
       })),
     },
   })));
@@ -172,6 +173,48 @@ describe("fold: per-event semantics", () => {
     const fold = newFold();
     applySequenced(fold, seq(1, ev({ type: EventType.PART_START, part: textPart("p1", "x") })));
     expect(fold.sessions.get("s0")?.status).toBe(SessionStatus.UNKNOWN);
+  });
+
+  it("a session first seen on PART_DELTA carries the event's internalSessionId (Go parity)", () => {
+    const fold = newFold();
+    applySequenced(fold, seq(1, ev({
+      sessionId: "quiet-mountain-9",
+      internalSessionId: "ses_sa_a1_harness",
+      type: EventType.PART_DELTA,
+      partId: "p1",
+      delta: "x",
+    })));
+    expect(fold.sessions.get("quiet-mountain-9")?.internalSessionId).toBe("ses_sa_a1_harness");
+  });
+
+  it("a session first seen on SESSION_STATUS carries the event's internalSessionId (Go parity)", () => {
+    const fold = newFold();
+    applySequenced(fold, seq(1, ev({
+      sessionId: "quiet-mountain-9",
+      internalSessionId: "ses_sa_a1_harness",
+      type: EventType.SESSION_STATUS,
+      status: SessionStatus.BUSY,
+    })));
+    expect(fold.sessions.get("quiet-mountain-9")?.internalSessionId).toBe("ses_sa_a1_harness");
+  });
+
+  it("an existing snapshot's internalSessionId is not overwritten by a later event (Go parity)", () => {
+    const fold = newFold();
+    applySnapshot(fold, snapshotFrame(1, [{
+      sessionId: "s0",
+      status: SessionStatus.BUSY,
+      inFlightParts: [],
+      queueDepth: 0,
+      pendingInputs: [],
+      internalSessionId: "snapshot-harness",
+    }]));
+    applySequenced(fold, seq(2, ev({
+      sessionId: "s0",
+      internalSessionId: "event-harness",
+      type: EventType.SESSION_STATUS,
+      status: SessionStatus.IDLE,
+    })));
+    expect(fold.sessions.get("s0")?.internalSessionId).toBe("snapshot-harness");
   });
 
   it("IDLE clears in-flight parts", () => {

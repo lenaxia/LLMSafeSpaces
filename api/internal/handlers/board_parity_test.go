@@ -145,6 +145,12 @@ var boardParityMatrix = []parityRow{
 	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
 		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams, live on REST/external)
+	{action: "record_verdict", restMethods: []string{"RecordTaskVerdict"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_record_verdict"}, agent: absentCell}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it
+	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
+	{action: "board_task_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
 		agentTool: "board_create_epic"},
@@ -204,6 +210,23 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
 		agentTool: "board_import_plan",
 		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
+	// #1832 item 6 config rows: the config system's read/write surfaces
+	// are the owner's REST projection (user-scoped board-wide defaults
+	// per the R7 ruling on PR #1840 + owner-scoped per-project
+	// overrides). Declared absent on BOTH MCP columns BY DESIGN in this
+	// slice: board config is a UI-facing surface (PR-A2 consumes it);
+	// MCP tools for it are future work, and the external column's tool
+	// scan pins the absence.
+	{action: "get_user_board_config", restMethods: []string{"GetUserBoardConfig"}, rest: liveCell,
+		externalMCP: absentCell, agent: absentCell},
+	{action: "set_user_board_config", restMethods: []string{"SetUserBoardConfig"}, rest: liveCell,
+		externalMCP: absentCell, agent: absentCell,
+		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
+	{action: "get_project_board_config", restMethods: []string{"GetProjectBoardConfig"}, rest: liveCell,
+		externalMCP: absentCell, agent: absentCell},
+	{action: "set_project_board_config", restMethods: []string{"SetProjectBoardConfig"}, rest: liveCell,
+		externalMCP: absentCell, agent: absentCell,
+		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	// Worker-only rows: absent on REST BY DESIGN (no owner surface
 	// delivers them — §4.7) and absent on external MCP BY DESIGN (§4.3b:
 	// external actors hold no claim tokens); live on the agent seam
@@ -316,6 +339,13 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/resume", `{}`)
 	case "board_read":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
+	case "task_verdicts":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/verdicts", "")
+	case "board_task_events":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/events", "")
+	case "record_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict",
+			`{"verdict":"fail","reviewer":"rev","findings":[{"severity":"blocker","pointer":"c1"}]}`)
 	case "create_epic":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E"}`)
 	case "update_epic":
@@ -351,6 +381,14 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 	case "import_plan":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
 			`{"epicTitle":"E","tasks":[{"key":"a","title":"A"},{"key":"b","title":"B","dependsOn":["a"]}]}`)
+	case "get_user_board_config":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/board/config", "")
+	case "set_user_board_config":
+		return doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"auto"}`)
+	case "get_project_board_config":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/config", "")
+	case "set_project_board_config":
+		return doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/prj-aaaa1111/config", `{"reviewColumn":"auto"}`)
 	default:
 		t.Fatalf("no representative REST call for action %q — the matrix row is mis-declared", action)
 		return nil
@@ -444,7 +482,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 
 // routeMountExpr matches a gin route mount `x.VERB("path", ...)` (the
 // router's established one-route-per-line formatting).
-var routeMountExpr = regexp.MustCompile(`^[a-z]\.(GET|POST|PATCH|PUT|DELETE)\("([^"]*)"`)
+var routeMountExpr = regexp.MustCompile(`^[a-z]+\.(GET|POST|PATCH|PUT|DELETE)\("([^"]*)"`)
 
 // seamBoardRoutes source-scans router.go's board seam registration (the
 // b.* mounts under the /internal/v1/automation/board group) and returns
@@ -587,6 +625,10 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: engine-internal since R9 — permanently absent on every surface", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
+		case "get_user_board_config", "set_user_board_config", "get_project_board_config", "set_project_board_config":
+			assert.Equal(t, "absent", row.externalMCP.kind,
+				"%s: #1832 config rows — the board config surface is the owner's REST/UI projection (user-scoped board-wide defaults on /me/board/config + owner-scoped per-project, all /me routes); external MCP tools are future work, pinned absent by design", row.action)
+			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
 		default:
 			assert.Equal(t, "live", row.externalMCP.kind, "%s: external MCP cell", row.action)
 			assert.NotEmpty(t, row.extTools, "%s: live external cell must name its tools", row.action)
@@ -728,6 +770,15 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_project_resume", map[string]any{"project_id": "prj-aaaa1111"}, true
 	case "board_read":
 		return "board_list_projects", map[string]any{}, true
+	case "task_verdicts":
+		return "board_task_verdicts", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "board_task_events":
+		return "board_task_events", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "record_verdict":
+		return "board_record_verdict", map[string]any{
+			"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
+			"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}},
+		}, true
 	case "create_epic":
 		return "board_create_epic", map[string]any{"project_id": "prj-aaaa1111", "title": "E"}, true
 	case "update_epic":
@@ -893,12 +944,18 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"DELETE /api/v1/me/epics/:id",
 		"DELETE /api/v1/me/tasks/:id",
 		"DELETE /api/v1/me/tasks/:id/dependencies/:dependsOnId",
+		"GET /api/v1/me/board/config",
+		"GET /api/v1/me/board/health",
+		"GET /api/v1/me/board/search",
 		"GET /api/v1/me/epics/:id",
 		"GET /api/v1/me/projects",
 		"GET /api/v1/me/projects/:id",
+		"GET /api/v1/me/projects/:id/config",
 		"GET /api/v1/me/projects/:id/epics",
 		"GET /api/v1/me/projects/:id/tasks",
 		"GET /api/v1/me/tasks/:id",
+		"GET /api/v1/me/tasks/:id/events",
+		"GET /api/v1/me/tasks/:id/verdicts",
 		"PATCH /api/v1/me/epics/:id",
 		"PATCH /api/v1/me/projects/:id",
 		"PATCH /api/v1/me/tasks/:id",
@@ -919,7 +976,10 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/pause",
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
-	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows; cancel eliminated; task_start stays owner-only)")
+		"POST /api/v1/me/tasks/:id/verdict",
+		"PUT /api/v1/me/board/config",
+		"PUT /api/v1/me/projects/:id/config",
+	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows; cancel eliminated; task_start stays owner-only; /me/board group now scanned)")
 }
 
 // restBoardRoutes source-scans router.go's /api/v1/me board groups and
@@ -928,8 +988,8 @@ func restBoardRoutes(t *testing.T) []string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "internal", "server", "router.go"))
 	require.NoError(t, err, "router.go not found — repo layout changed?")
-	prefixes := []string{"/api/v1/me/projects", "/api/v1/me/epics", "/api/v1/me/tasks"}
-	groupVar := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k."}
+	prefixes := []string{"/api/v1/me/projects", "/api/v1/me/epics", "/api/v1/me/tasks", "/api/v1/me/board"}
+	groupVar := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k.", "/api/v1/me/board": "bb."}
 	curPrefix := ""
 	var out []string
 	for _, line := range strings.Split(string(src), "\n") {
@@ -967,11 +1027,24 @@ var replayExceptions = map[string]string{
 	"remove_dependency": "DELETE carries no body at the REST tier",
 	"delete_task":       "DELETE carries no body at the REST tier (reconnect rides the query)",
 	"delete_epic":       "DELETE carries no body at the REST tier (force rides the query)",
+	// #1832 config PUTs are REPLACE-semantics: no requestId seam, no
+	// event writer — a replayed PUT writes the same map again and reads
+	// the same effective config back (idempotent by construction, the
+	// migration 000041 note; board_events deliberately carries no config
+	// vocabulary).
+	"set_user_board_config":    "replace-semantics config write: no requestId/event writer — idempotent by construction",
+	"set_project_board_config": "replace-semantics config write: no requestId/event writer — idempotent by construction",
 }
 
 // boardReadActions are the non-mutating rows (no replay/audit arms).
 func boardReadActions() map[string]bool {
-	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true}
+	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true,
+		// #1832 config reads: pure reads, nothing to replay or audit.
+		"get_user_board_config": true, "get_project_board_config": true,
+		// #1832 item 5: the verdict chain read.
+		"task_verdicts": true,
+		// #1832 item 4: the task-events timeline read.
+		"board_task_events": true}
 }
 
 // TestBoardParity_IdempotentReplay: the clientMessageID discipline at
@@ -1077,6 +1150,8 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
 	case "move_stage":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
+	case "record_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict", `{"verdict":"approve","reviewer":"rev","requestId":`+q(requestID)+`}`)
 	case "archive_project":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", body)
 	case "unarchive_project":

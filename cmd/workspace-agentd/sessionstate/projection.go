@@ -434,11 +434,23 @@ func (a *Authority) sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.
 	return snap
 }
 
-// podSnapshotsLocked renders the pod-wide snapshot payload.
+// podSnapshotsLocked renders the pod-wide snapshot payload. #1817/#1821
+// piece 1: this is the EMISSION surface for subscribe-time frames — the
+// wire session_id is the PHRASE when the translator resolves one (the
+// harness id rides additively as internal_session_id). State() and the
+// internal map stay harness-keyed; only the leaving frame translates.
+// Nil translator / unresolved id → harness id (the heal window).
 func (a *Authority) podSnapshotsLocked() []*abiv1.SessionSnapshot {
 	out := make([]*abiv1.SessionSnapshot, 0, len(a.sessions))
 	for id, rec := range a.sessions {
-		out = append(out, a.sessionSnapshotLocked(id, rec))
+		snap := a.sessionSnapshotLocked(id, rec)
+		if a.cfg.IDTranslator != nil {
+			if phrase := a.cfg.IDTranslator(id); phrase != "" && phrase != id {
+				snap.InternalSessionId = id
+				snap.SessionId = phrase
+			}
+		}
+		out = append(out, snap)
 	}
 	return out
 }

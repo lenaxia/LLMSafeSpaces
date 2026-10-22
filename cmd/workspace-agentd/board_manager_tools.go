@@ -22,13 +22,24 @@ import (
 // manager tool call (#1747 §5): the harness-attested injected identity
 // (the send_message pattern — injection wins over any declared copy),
 // fail-closed when absent, refused when the session was spawned as a
-// board worker.
-func boardManagerSession(name string, body map[string]any) (string, error) {
+// board worker. The DECLARED fallback (degraded pod, plugin absent)
+// may be typed as a 3-word phrase or alias — it resolves through the
+// same §4.4 precedence as every other caller-typed session ref before
+// it feeds the platform wire and the worker-grant check (#1816: every
+// id-taking surface accepts phrases).
+func boardManagerSession(ctx context.Context, password, name string, body map[string]any) (string, error) {
 	injected, _ := body["lsp_injected_session"].(string)
 	declared, _ := body["sessionId"].(string)
 	sid := strings.TrimSpace(injected)
 	if sid == "" {
 		sid = strings.TrimSpace(declared)
+		if sid != "" {
+			resolved, rerr := resolveSessionRef(ctx, password, sid)
+			if rerr != nil {
+				return "", fmt.Errorf("%s failed: the declared sessionId could not be resolved as a session address: %w", name, rerr)
+			}
+			sid = resolved
+		}
 	}
 	if sid == "" {
 		return "", fmt.Errorf("%s failed: manager board tools require the calling session's identity — "+
@@ -83,8 +94,8 @@ func boardWireBody(args map[string]any) []byte {
 }
 
 // dispatchBoardManagerTool routes one manager tool to its seam call.
-func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, name string, body map[string]any, saToken, workspaceID string) (*opencode.AutomationResponse, error) {
-	sessionID, err := boardManagerSession(name, body)
+func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, password, name string, body map[string]any, saToken, workspaceID string) (*opencode.AutomationResponse, error) {
+	sessionID, err := boardManagerSession(ctx, password, name, body)
 	if err != nil {
 		return nil, err
 	}

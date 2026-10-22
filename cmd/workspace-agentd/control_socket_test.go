@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,6 +127,8 @@ func TestControlSocket_UnknownFieldsIgnored(t *testing.T) {
 
 func TestControlSocket_RestartIdempotency(t *testing.T) {
 	proc := &fakeRestartProc{block: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(proc.block) })
+	defer release()
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 	addr := srv.addr()
@@ -149,7 +152,7 @@ func TestControlSocket_RestartIdempotency(t *testing.T) {
 	assert.Equal(t, true, res["in_progress"], "second request reports in_progress")
 
 	// Release the first; it completes as the winner.
-	close(proc.block)
+	release()
 	first := <-firstDone
 	fres := first["result"].(map[string]any)
 	assert.Equal(t, true, fres["restarted"], "first restart completes as the winner")

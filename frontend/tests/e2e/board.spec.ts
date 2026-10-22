@@ -68,10 +68,57 @@ function task(partial: Partial<E2ETask> & { short_id: string; title: string; sta
 
 interface BoardState {
   tasks: E2ETask[];
+  /** #1832 r2: epics that exist ONLY on the server (zero task rows). */
+  epics: E2EEpic[];
+  /** Per-test board overrides (e.g. a third project for the picker row). */
+  projects?: Array<{ id: string; short_id: string; name: string; worker_slots: number }>;
+  /** Unhappy-path levers: force the two creation POSTs to 500. */
+  failEpicCreate?: boolean;
+  failTaskCreate?: boolean;
+}
+
+type E2EEpic = {
+  id: string;
+  project_id: string;
+  short_id: string;
+  title: string;
+  outcome: string;
+  status: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  progress_done: number;
+  progress_total: number;
+  progress_derived: boolean;
+};
+
+/** Server-side ListEpics: the task-backed epics derived from rows (the
+ * read the UI used to guess client-side) — progress scoped PER PROJECT
+ * (a same-id epic spanning projects is one row per project, matching
+ * the engine's per-project list). */
+function derivedEpicsFromTasks(tasks: E2ETask[]): E2EEpic[] {
+  const byKey = new Map<string, E2EEpic>();
+  for (const t of tasks) {
+    const key = `${t.project_id}/${t.epic_id}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.progress_total += 1;
+      if (t.stage === "done") existing.progress_done += 1;
+      continue;
+    }
+    byKey.set(key, {
+      id: t.epic_id, project_id: t.project_id, short_id: `epc-${t.epic_id.replace(/-/g, "").padEnd(8, "0")}`,
+      title: t.epic_name, outcome: "", status: "active", tags: [],
+      created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+      progress_done: t.stage === "done" ? 1 : 0, progress_total: 1, progress_derived: false,
+    });
+  }
+  return [...byKey.values()];
 }
 
 function freshState(): BoardState {
   return {
+    epics: [],
     tasks: [
       task({ short_id: "tsk-aaaa0001", title: "Write charter", stage: "backlog", project_id: PROJECT_A, epic_id: "epic-1" }),
       task({
@@ -157,7 +204,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
   // post-invalidation refetch returns the authoritative row.
   await page.route(`${API}/me/projects`, (r: Route) =>
     r.fulfill(j({
-      projects: [
+      projects: state.projects ?? [
         { id: PROJECT_A, short_id: PROJECT_A, user_id: "u1", name: "Apollo", target_workspace_id: WORKSPACE_ID, worker_slots: 2, tags: [], status: "active", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" },
         { id: PROJECT_B, short_id: PROJECT_B, user_id: "u1", name: "Borealis", target_workspace_id: WORKSPACE_ID, worker_slots: 1, tags: [], status: "active", created_at: "2026-10-02T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" },
       ],
@@ -166,6 +213,87 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     const url = new URL(r.request().url());
     const pid = url.pathname.split("/").pop() === "tasks" ? url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] : "";
     void r.fulfill(j({ tasks: state.tasks.filter((t) => t.project_id === pid) }));
+  });
+  // #1832 item 1: contextual epic creation — POST /me/projects/:id/epics.
+  // The route echoes the project the button carried (asserted per-test).
+  // #1832 r2 finding 1: GET /me/projects/:id/epics — the server's epic
+  // LIST (task-backed rows derived server-side + this state's zero-task
+  // epics): the read that keeps zero-task epics visible after reload.
+  await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
+    const url = new URL(r.request().url());
+    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
+    if (r.request().method() === "GET") {
+      // Faithful to ListEpics: zero-task epics from state ride AFTER the
+      // task-derived rows, so live row-derived progress (the engine's
+      // own derivation) WINS for any epic that has tasks (r3 finding 2).
+      const byId = new Map<string, E2EEpic>();
+      for (const e of state.epics) if (e.project_id === pid) byId.set(e.id, e);
+      for (const e of derivedEpicsFromTasks(state.tasks)) if (e.project_id === pid) byId.set(e.id, e);
+      void r.fulfill(j({ epics: [...byId.values()] }));
+      return;
+    }
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    if (state.failEpicCreate) {
+      void r.fulfill(j({ error: "board: epic store unavailable", code: "internal" }, 500));
+      return;
+    }
+    const body = r.request().postDataJSON() as { title?: string; outcome?: string };
+    void r.fulfill(j({
+      id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
+      title: body.title ?? "", outcome: body.outcome ?? "", status: "draft", tags: [],
+      created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
+      progress_done: 0, progress_total: 0, progress_derived: false,
+    }));
+    // The created epic becomes server truth: zero task rows, but it
+    // EXISTS — the reload read must keep serving it.
+    state.epics.push({
+      id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
+      title: body.title ?? "", outcome: body.outcome ?? "", status: "draft", tags: [],
+      created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
+      progress_done: 0, progress_total: 0, progress_derived: false,
+    });
+  });
+  // #1832 item 2: epic-scoped task creation — POST /me/epics/:id/tasks.
+  // Appends to the shared state so the post-invalidation refetch shows
+  // the new row in the backlog column and beneath the epic band.
+  await page.route(`${API}/me/epics/*/tasks`, async (r: Route) => {
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    if (state.failTaskCreate) {
+      void r.fulfill(j({ error: "board: task store unavailable", code: "internal" }, 500));
+      return;
+    }
+    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0] ?? "";
+    const body = r.request().postDataJSON() as { title?: string };
+    const parent = state.tasks.find((t) => t.epic_id === epicId);
+    // #1832 r2: a zero-task epic has no parent ROW — its project rides
+    // the server's epic list (state.epics), the honest create path.
+    const parentEpic = state.epics.find((e) => e.id === epicId);
+    if (!parent && !parentEpic) {
+      void r.fulfill(j({ error: `board: epic "${epicId}" not found` }, 404));
+      return;
+    }
+    const projectId = parent?.project_id ?? parentEpic!.project_id;
+    const projectName =
+      parent?.project_name ??
+      state.projects?.find((p) => p.id === projectId)?.name ??
+      (projectId === PROJECT_A ? "Apollo" : "Borealis");
+    const row = task({
+      short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
+      title: body.title ?? "New task",
+      stage: "backlog",
+      project_id: projectId,
+      epic_id: epicId,
+      epic_name: parent?.epic_name ?? parentEpic!.title,
+      project_name: projectName,
+    });
+    state.tasks.push(row);
+    void r.fulfill(j(row));
   });
   await page.route(`${API}/me/tasks/*/move-stage`, async (r: Route) => {
     const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
@@ -227,8 +355,8 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
 }
 
-async function openBoard(page: Page) {
-  const state = freshState();
+async function openBoard(page: Page, init?: Partial<BoardState>) {
+  const state: BoardState = { tasks: freshState().tasks, epics: [], ...init };
   await installSSEEmitters(page);
   await setupBoardMocks(page, state);
   await page.goto("/board");
@@ -341,10 +469,12 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(page.getByTestId(`swimlane-${PROJECT_B}`)).toBeVisible();
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toHaveCount(0);
 
-    // Back to all; epic chip filters.
+    // Back to all; epic chip filters (#1832 r2: chips carry the SERVER
+    // epic short_id from GET /me/projects/:id/epics — the mock mints
+    // epc-epic2000 for epic-2 — no longer the derived epic-<id8> form).
     await page.getByTestId("project-focus").selectOption({ value: "all" });
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
-    await page.getByText("E2", { exact: true }).click();
+    await page.getByTestId("epic-chip-epc-epic2000").click();
     await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
     await page.getByTestId("epic-chip-all").click();
@@ -479,5 +609,232 @@ test.describe("Task Board UI (#1702)", () => {
     const notice = page.locator("[data-board-error]");
     await expect(notice).toHaveAttribute("data-board-error", "epic_state", { timeout: 8000 });
     await expect(notice).toContainText("epic_state");
+  });
+});
+
+test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic bands", () => {
+  test("every swimlane header carries enabled New epic / New task buttons (contextual, no dropdown)", async ({ page }) => {
+    await openBoard(page);
+
+    for (const pid of [PROJECT_A, PROJECT_B]) {
+      await expect(page.getByTestId(`new-epic-${pid}`)).toBeVisible();
+      await expect(page.getByTestId(`new-task-${pid}`)).toBeVisible();
+      await expect(page.getByTestId(`new-epic-${pid}`)).toBeEnabled();
+      await expect(page.getByTestId(`new-task-${pid}`)).toBeEnabled();
+    }
+    // The global New epic stays greyed at All-projects scope — the
+    // swimlane buttons are the contextual path (#1832 item 1).
+    await expect(page.getByTestId("new-epic-button")).toBeDisabled();
+  });
+
+  test("New epic from the Borealis swimlane header targets Borealis (no focus needed)", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId(`new-epic-${PROJECT_B}`).click();
+    await expect(page.getByText("New epic in Borealis")).toBeVisible();
+    await page.getByTestId("epic-title").fill("Borealis next phase");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/projects\/prj-bbbb2222\/epics$/.test(r.url()));
+    await page.getByTestId("epic-create").click();
+
+    // The POST rode the SWIMLANE's project (not a dropdown selection).
+    const req = await reqP;
+    expect(req.url()).toContain(`/me/projects/${PROJECT_B}/epics`);
+    await expect(page.getByTestId("epic-title")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("epic bands render inside the swimlane with tasks grouped beneath; collapse hides the group", async ({ page }) => {
+    await openBoard(page);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const bandE1 = lane.getByTestId("epic-band-epic-1");
+    await expect(bandE1).toBeVisible();
+    await expect(bandE1).toContainText("1/4");
+    await expect(lane.getByTestId("epic-band-epic-2")).toBeVisible();
+
+    // Tasks grouped beneath their band.
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
+    await expect(lane.getByTestId("band-task-epic-2-tsk-eeee0005")).toBeVisible();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-eeee0005")).toHaveCount(0);
+
+    // Collapse: rows hide, band stays.
+    await lane.getByTestId("band-toggle-epic-1").click();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toHaveCount(0);
+    await expect(bandE1).toBeVisible();
+    await lane.getByTestId("band-toggle-epic-1").click();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
+  });
+
+  test("clicking a band highlights its tasks and dims the swimlane's others", async ({ page }) => {
+    await openBoard(page);
+
+    // Borealis's only task sits in a side column (pending_input) — open
+    // the lane's side columns so its card is rendered for the assertion.
+    await page.getByTestId(`swimlane-${PROJECT_B}`).getByTestId("side-columns-toggle").click();
+    await expect(page.getByTestId("task-card-tsk-ffff0006")).toBeVisible();
+
+    await page.getByTestId("band-header-epic-2").click();
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).toHaveAttribute("data-highlighted", "true");
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-dimmed", "true");
+    await expect(page.getByTestId("task-card-tsk-dddd0004")).toHaveAttribute("data-dimmed", "true");
+    // Other swimlane untouched (selection is per-project).
+    await expect(page.getByTestId("task-card-tsk-ffff0006")).not.toHaveAttribute("data-dimmed");
+
+    // Click again → deselect: dims and highlights clear.
+    await page.getByTestId("band-header-epic-2").click();
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).not.toHaveAttribute("data-dimmed");
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
+  });
+
+  test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
+    const state = await openBoard(page);
+
+    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId(`new-task-${PROJECT_A}`).click();
+
+    // The dialog names the selected epic as the landing zone.
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("Scoped follow-up");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
+    await page.getByTestId("task-save").click();
+    const req = await reqP;
+    expect(req.postDataJSON()).toMatchObject({ title: "Scoped follow-up" });
+
+    // Authoritative row after the invalidation refetch: card in Backlog
+    // and grouped beneath the E2 band.
+    await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
+    await expect(page.getByTestId("band-task-epic-2-tsk-new0007")).toBeVisible();
+    expect(state.tasks.some((t) => t.title === "Scoped follow-up")).toBe(true);
+  });
+
+  test("New task with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId(`new-task-${PROJECT_A}`).click();
+    await expect(page.getByTestId("epic-picker")).toBeVisible();
+    await page.getByTestId("epic-picker-option-epic-2").click();
+
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("Picked task");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
+    await page.getByTestId("task-save").click();
+    const req = await reqP;
+    expect(req.postDataJSON()).toMatchObject({ title: "Picked task" });
+  });
+});
+
+test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape hatch", () => {
+  test("a zero-task epic created this session survives a reload and takes a task", async ({ page }) => {
+    const state = await openBoard(page);
+
+    // Create an epic in Borealis via the swimlane button (no task rows).
+    await page.getByTestId(`new-epic-${PROJECT_B}`).click();
+    await page.getByTestId("epic-title").fill("Reload survivor");
+    await page.getByTestId("epic-create").click();
+    await expect(page.getByTestId("epic-band-epic-created-prj-bbbb2222")).toBeVisible({ timeout: 8000 });
+
+    // THE reload: session state is gone — the band must survive on the
+    // server's epic list alone (GET /me/projects/:id/epics).
+    await page.reload();
+    await expect(page.getByTestId(`swimlane-${PROJECT_B}`)).toBeVisible();
+    const band = page.getByTestId("epic-band-epic-created-prj-bbbb2222");
+    await expect(band).toBeVisible({ timeout: 8000 });
+    await expect(band).toContainText("Reload survivor");
+    await expect(band).toContainText("0/0");
+
+    // The picker lists it (no duplicate-create invitation) and creation
+    // lands inside it.
+    await page.getByTestId(`new-task-${PROJECT_B}`).click();
+    await expect(page.getByTestId("epic-picker")).toBeVisible();
+    await expect(page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222")).toBeVisible();
+    await page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222").click();
+
+    await expect(page.getByText("New task in Reload survivor", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("First of its name");
+    await page.getByTestId("task-save").click();
+
+    // The authoritative row lands (no parent task existed — the project
+    // rides the epic list, then the card + band row render).
+    await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
+    await expect(page.getByTestId("band-task-epic-created-prj-bbbb2222-tsk-new0007")).toBeVisible();
+    // r3 finding 1+2: the band's progress must follow the refetched
+    // server list (row-derived 0 done / 1 total) — the session's stale
+    // 0/0 create response must not survive the list's arrival.
+    await expect(band).toContainText("0/1", { timeout: 8000 });
+    expect(state.tasks.some((t) => t.title === "First of its name")).toBe(true);
+  });
+
+  test("a failed epics list read renders the board load error; Retry recovers (r3)", async ({ page }) => {
+    await openBoard(page);
+
+    // Override the list route: the app's query client retries once
+    // (providers/QueryClientProvider), so fail PROJECT_A's first TWO
+    // GETs (initial + retry — scoped to ONE lane so the sibling lane's
+    // concurrent GET doesn't consume a failure) before deferring to the
+    // normal handler (Playwright: later routes win; fallback defers).
+    let failuresLeft = 2;
+    await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
+      const isProjectA = r.request().url().includes(`/me/projects/${PROJECT_A}/epics`);
+      if (failuresLeft > 0 && isProjectA && r.request().method() === "GET") {
+        failuresLeft -= 1;
+        void r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "board: epics store unavailable", code: "internal" }) });
+        return;
+      }
+      await r.fallback();
+    });
+
+    await page.reload();
+    await expect(page.getByTestId("board-read-error")).toBeVisible({ timeout: 8000 });
+    await expect(page.locator("[data-board-error]").first()).toBeVisible();
+
+    // Retry invalidates and re-reads — the fallback now serves the good
+    // list; the board renders.
+    await page.getByTestId("board-retry").click();
+    await expect(page.getByTestId("swimlane-prj-aaaa1111")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId("board-read-error")).toHaveCount(0);
+  });
+
+  test("a failed New-epic POST renders the error in the still-open dialog (target + fields preserved)", async ({ page }) => {
+    await openBoard(page, { failEpicCreate: true });
+
+    await page.getByTestId(`new-epic-${PROJECT_B}`).click();
+    await expect(page.getByText("New epic in Borealis")).toBeVisible();
+    await page.getByTestId("epic-title").fill("Doomed epic");
+    await page.getByTestId("epic-create").click();
+
+    // 500 → the engine's error renders inside the dialog; the dialog
+    // STAYS open with the swimlane target and the drafted title.
+    await expect(page.locator("[data-board-error]").first()).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("New epic in Borealis")).toBeVisible();
+    await expect(page.getByTestId("epic-title")).toHaveValue("Doomed epic");
+  });
+
+  test("a failed New-task POST renders the error in the still-open TaskDialog (fields preserved)", async ({ page }) => {
+    await openBoard(page, { failTaskCreate: true });
+
+    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId(`new-task-${PROJECT_A}`).click();
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("Doomed task");
+    await page.getByTestId("task-save").click();
+
+    await expect(page.locator("[data-board-error]").first()).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("task-title")).toHaveValue("Doomed task");
+  });
+
+  test("an empty project's picker offers the create-epic escape hatch (e2e)", async ({ page }) => {
+    await openBoard(page, {
+      projects: [
+        { id: PROJECT_A, short_id: PROJECT_A, name: "Apollo", worker_slots: 2 },
+        { id: PROJECT_B, short_id: PROJECT_B, name: "Borealis", worker_slots: 1 },
+        { id: "prj-cccc3333", short_id: "prj-cccc3333", name: "Ceres", worker_slots: 1 },
+      ],
+    });
+    await expect(page.getByTestId("swimlane-prj-cccc3333")).toBeVisible();
+
+    await page.getByTestId("new-task-prj-cccc3333").click();
+    await expect(page.getByTestId("epic-picker-empty")).toBeVisible();
+    await page.getByTestId("epic-picker-create-epic").click();
+    await expect(page.getByText("New epic in Ceres")).toBeVisible();
   });
 });

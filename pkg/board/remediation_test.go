@@ -147,21 +147,34 @@ func (s *BoardSuite) TestKill_DispatchDriveResweepFeedsWork() {
 	}
 
 	// Lapse everything; the next sweep reclaims (RC1) AND re-drives the
-	// reclaimed rows in one pass — a reclaimed task never sits in backlog.
+	// reclaimed rows in one pass — a reclaimed task never sits in backlog
+	// beyond its #1813 failure backoff (cleared here: this arm pins the
+	// re-feed, not the park — 1813-b owns the parked behavior).
 	s.expireLease(t1.ID)
 	s.expireLease(t2.ID)
 	res, err = drive.Sweep(context.Background())
 	s.Require().NoError(err)
 	s.Equal(2, res.Reclaims)
+	s.clearTaskBackoff(t1.ID)
+	s.clearTaskBackoff(t2.ID)
+	res, err = drive.Sweep(context.Background())
+	s.Require().NoError(err)
 	s.Equal(2, res.Dispatched, "the sweep backstop re-feeds reclaimed work")
 	s.Equal(2, s.inProgressCount(p.ID))
 	s.Equal(4, s.spawner.count(), "a replacement worker is simply the next fresh spawn")
 
 	// Escalation composes with the drive: at the attempts cap the drive
 	// escalates and stops granting (rows leave the candidate set).
+	// #1813: each cycle is reclaim-sweep → clear backoff → drive-sweep
+	// (the reclaim and its cooldown land in ONE sweep; the re-claim
+	// needs the cooldown gone and a fresh sweep).
 	for i := 0; i < s.cfg.AttemptsCap; i++ {
 		s.expireLease(t1.ID)
 		s.expireLease(t2.ID)
+		res, err = drive.Sweep(context.Background())
+		s.Require().NoError(err)
+		s.clearTaskBackoff(t1.ID)
+		s.clearTaskBackoff(t2.ID)
 		res, err = drive.Sweep(context.Background())
 		s.Require().NoError(err)
 	}
@@ -308,6 +321,9 @@ func (s *BoardSuite) TestKill_InterimStateClaimShape() {
 	s.expireLease(task.ID)
 	s.sweep()
 	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage)
+	// #1813: drop the reclaim's failure backoff — this arm pins the
+	// re-spawn, not the park.
+	s.clearTaskBackoff(task.ID)
 	drive := board.NewReconciler(s.pool, s.cfg, board.WithWorkerSpawner(s.spawner.Spawn))
 	res, err := drive.Sweep(context.Background())
 	s.Require().NoError(err)

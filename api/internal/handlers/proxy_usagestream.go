@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -180,6 +181,15 @@ func (b *usageBridge) kindOf(id string) abiv1.InputKind {
 }
 
 func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
+	b.SessionStatusWithInternal(workspaceID, sessionID, "", busy)
+}
+
+// SessionStatusWithInternal is the #1817 piece-3 seam: the consumer passes
+// the ADDITIVE harness id (agentd's internal_session_id) so the bridge's
+// translation can detect an already-phrase-keyed frame and avoid the
+// double-translation phantom row. A harness-keyed frame (heal window /
+// legacy) has an empty internal and still translates normally.
+func (b *usageBridge) SessionStatusWithInternal(workspaceID, sessionID, internalID string, busy bool) {
 	if b.h.userBroker == nil {
 		return
 	}
@@ -188,12 +198,28 @@ func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
 		status = "busy"
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
-		b.h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+		// #1817/#1821 piece 1: the wire id is the PHRASE (the id space
+		// the frontend joins on — session list, history, chat); the
+		// harness id rides along ADDITIVELY as internal_session_id.
+		// Degraded index (no phrase) passes the harness id through —
+		// never worse than the pre-fix behavior.
+		// #1817 piece 3: if the frame already carries an internal id (a
+		// refreshed agentd put the phrase on the wire), seed it onto the
+		// event so translateSessionIDToPhrase's guard sees it and does not
+		// re-register the phrase (the phantom-row defect).
+		var data map[string]any
+		if internalID != "" {
+			data = map[string]any{"internal_session_id": internalID}
+		}
+		evt := apitypes.WorkspaceSSEEvent{
 			Type:        "session.status",
 			WorkspaceID: workspaceID,
 			SessionID:   sessionID,
 			Status:      status,
-		})
+			Data:        data,
+		}
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
+		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
 
@@ -230,11 +256,23 @@ func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
 
 func (b *usageBridge) InputResolved(workspaceID, sessionID, inputID string) {
+	b.InputResolvedWithInternal(workspaceID, sessionID, "", inputID)
+}
+
+// InputResolvedWithInternal is the #1817 piece-3 additive seam (finding 2):
+// the consumer passes the harness id (agentd's internal_session_id) so the
+// translation guard detects an already-translated frame (SessionID=phrase)
+// and does NOT re-register the phrase (the phantom-row defect that left the
+// resolved event targeting a third id, so the frontend never removed the
+// prompt). A harness-keyed frame (legacy) has an empty internal and still
+// translates normally.
+func (b *usageBridge) InputResolvedWithInternal(workspaceID, sessionID, internalID, inputID string) {
 	if b.h.userBroker == nil {
 		return
 	}
@@ -242,17 +280,24 @@ func (b *usageBridge) InputResolved(workspaceID, sessionID, inputID string) {
 	if b.kindOf(inputID) == abiv1.InputKind_INPUT_KIND_PERMISSION {
 		resolvedType = "agent.permission.resolved"
 	}
+	data := map[string]string{
+		"request_id": inputID,
+		"session_id": sessionID,
+	}
+	// #1817 piece 3: seed the additive harness id so the translation guard
+	// sees an already-translated frame and passes the phrase through.
+	if internalID != "" {
+		data["internal_session_id"] = internalID
+	}
 	evt := apitypes.WorkspaceSSEEvent{
 		Type:      resolvedType,
 		SessionID: sessionID,
 		RequestID: inputID,
-		Data: map[string]string{
-			"request_id": inputID,
-			"session_id": sessionID,
-		},
+		Data:      data,
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
+		b.h.translateSessionIDToPhrase(context.Background(), workspaceID, &evt)
 		b.h.userBroker.PublishToUser(userID, evt)
 	}
 }
@@ -265,14 +310,48 @@ func (b *usageBridge) SessionTitle(workspaceID, sessionID, title string) {
 }
 
 func (b *usageBridge) ContextUsed(workspaceID, sessionID string, used int64) {
-	if b.h.sessionIndex == nil || sessionID == "" || b.h.isSessionDeleted(workspaceID, sessionID) || used <= 0 {
+	b.ContextUsedWithInternal(workspaceID, sessionID, "", used)
+}
+
+// ContextUsedWithInternal is the #1817 piece-3 additive seam (finding 1):
+// the context-usage write must key the row against the REAL session
+// (the harness id on refreshed pods), not the phrase. Register(phrase)
+// mints a phantom short-id row (EnsureSessionRegistered INSERTs on
+// session_id, a phrase lives in short_id) and the context occupancy would
+// land on the ghost row. When the frame is already translated (internalID
+// present), key the Register/UpsertContextUsed by the harness id (the
+// internal) so the existing row is updated. A harness-keyed frame (legacy)
+// has an empty internal and keys by sessionID as before.
+func (b *usageBridge) ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64) {
+	if b.h.sessionIndex == nil || sessionID == "" || used <= 0 {
+		return
+	}
+	// #1817 piece 3: the row is keyed by the session id the index knows
+	// (the harness id). On refreshed pods the wire sessionID is the phrase
+	// and the harness id rides additively — key the row by it so the
+	// existing row is updated, not a minted phantom.
+	rowID := internalID
+	if rowID == "" {
+		rowID = sessionID
+	}
+	// #1817 piece 3 (r3 finding 2): the delete tombstone is recorded under
+	// the HARNESS id (proxy_handlers.go delete path → MarkSessionDeleted
+	// with the harness sessionID), not the phrase. A late context-usage
+	// event on a refreshed pod carries the phrase on the wire and the
+	// harness id additively; guarding only on the phrase (sessionID) would
+	// MISS the tombstone, and the Register(rowID=harness) below would
+	// RE-CREATE the just-deleted index row (the delete-tail ghost-row class
+	// r2 finding 4 closed, re-opening here). Guard against BOTH id spaces:
+	// the harness id (rowID, where the tombstone lives) and the wire id
+	// (a legacy frame where wire = harness).
+	if b.h.isSessionDeleted(workspaceID, rowID) || b.h.isSessionDeleted(workspaceID, sessionID) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Design 0066 registration seam (context-usage row-creating path).
-	b.h.sessionIndex.Register(ctx, workspaceID, sessionID, "")
-	if err := b.h.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessionID, used); err != nil {
+	b.h.sessionIndex.Register(ctx, workspaceID, rowID, "")
+	if err := b.h.sessionIndex.UpsertContextUsed(ctx, workspaceID, rowID, used); err != nil {
 		b.h.logger.Warn("usagestream: context-usage upsert failed", "error", err, "workspaceID", workspaceID, "sessionID", sessionID)
 	}
 }
@@ -339,4 +418,168 @@ func (t *usageAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r = r.Clone(r.Context())
 	r.SetBasicAuth(agentd.AuthUsername, t.password)
 	return t.inner.RoundTrip(r)
+}
+
+// translateSessionIDToPhrase is the #1821 piece-1 ID-edge translation:
+// the user-stream wire id becomes the PHRASE (the id space the frontend
+// joins on since the #1756/#1775/#1806 re-keys — session list, history
+// REST, chat identity), with the harness id preserved ADDITIVELY as
+// internal_session_id. One id space at the edge; the harness id is
+// never dropped (consumers that need it read the additive field).
+// Degraded seam (index nil, session unknown, or no phrase minted):
+// the event passes through UNCHANGED — the pre-fix behavior, never
+// worse. The Register seam is idempotent and LRU-cached after first
+// sight, so the hot emission path is cheap once a session is known.
+// ctx is the caller's context — it is threaded to the Register seam so
+// cancellations/deadlines propagate.
+func (h *ProxyHandler) translateSessionIDToPhrase(ctx context.Context, workspaceID string, evt *apitypes.WorkspaceSSEEvent) {
+	harnessID := evt.SessionID
+	if h.sessionIndex == nil || harnessID == "" {
+		return
+	}
+	// #1817 piece 3 — double-translation guard (the refreshed-pod defect):
+	// on refreshed pods the agentd emission already translated the frame to
+	// the phrase and left the harness id ADDITIVELY as internal_session_id
+	// (authority.go wireEvent / projection.go podSnapshotsLocked). The
+	// additive id is therefore the marker that the wire SessionID is already
+	// the PHRASE. Re-registering it (Register(workspace, phrase)) would MINT
+	// a phantom short-id row (EnsureSessionRegistered INSERTs on session_id,
+	// but a phrase lives in short_id), re-breaking the busy join and writing
+	// context_used to a ghost row. So pass the phrase through UNCHANGED
+	// (re-affirm the additive id) — never downgrade a correct phrase to the
+	// harness id, even under a degraded index. A harness-keyed frame (heal
+	// window / legacy) has no internal id and still translates:
+	// phrase = Register(harness).
+	if internalID := internalSessionIDFromData(evt.Data); internalID != "" {
+		setInternalSessionID(evt, internalID)
+		return
+	}
+	regCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	phrase := h.sessionIndex.Register(regCtx, workspaceID, harnessID, "")
+	if phrase == "" || phrase == harnessID {
+		markDeprecatedSessionID(evt)
+		return
+	}
+	evt.SessionID = phrase
+	switch data := evt.Data.(type) {
+	case map[string]any:
+		if data == nil {
+			data = map[string]any{}
+		}
+		data["internal_session_id"] = harnessID
+		evt.Data = data
+	case map[string]string:
+		data["internal_session_id"] = harnessID
+	case session.InputRequest:
+		// #1817 piece 2: agent.question / agent.permission carry a
+		// STRUCT payload (inputRequestFromABI) whose fields already
+		// carry the session id — replacing it with a synthetic map
+		// clobbers the contract payload the frontend renders. The wire
+		// session_id above is the phrase, the payload keeps its own.
+	default:
+		evt.Data = map[string]any{"internal_session_id": harnessID}
+	}
+}
+
+// translateSessionIDToPhraseNoMint is the READ-ONLY twin of
+// translateSessionIDToPhrase for the LIFECYCLE CLEAR path (the delete tail).
+// #1817 piece 3 (r2 finding 4): the delete tail runs AFTER DeleteSession has
+// removed the row, so calling the minting translateSessionIDToPhrase here
+// would Register(workspace, harness) → EnsureSessionRegistered → INSERT a
+// ghost row for a session that was just deleted, and the `deleted` clear
+// would carry a freshly-minted phrase the frontend does not recognize.
+// ResolveShortID is LRU-only (no mint): it returns the phrase the session
+// was ALREADY known under (the LRU survives DeleteSession), and the clear
+// matches the busy flip's phrase key. When unknown (cold/evicted LRU) it
+// returns "" and the clear passes the harness id through — never worse:
+// the frontend removes the session by identity either way.
+func (h *ProxyHandler) translateSessionIDToPhraseNoMint(workspaceID string, evt *apitypes.WorkspaceSSEEvent) {
+	harnessID := evt.SessionID
+	if h.sessionIndex == nil || harnessID == "" {
+		return
+	}
+	// Same double-translation guard: a refreshed-pod frame already carries
+	// the phrase + additive internal id — leave it untouched.
+	if internalID := internalSessionIDFromData(evt.Data); internalID != "" {
+		setInternalSessionID(evt, internalID)
+		return
+	}
+	phrase := h.sessionIndex.ResolveShortID(workspaceID, harnessID)
+	if phrase == "" || phrase == harnessID {
+		markDeprecatedSessionID(evt)
+		return
+	}
+	evt.SessionID = phrase
+	switch data := evt.Data.(type) {
+	case map[string]any:
+		if data == nil {
+			data = map[string]any{}
+		}
+		data["internal_session_id"] = harnessID
+		evt.Data = data
+	case map[string]string:
+		data["internal_session_id"] = harnessID
+	}
+}
+
+// markDeprecatedSessionID is the #1821 degrade-rule marker: when the
+// translation seam cannot resolve a phrase, the harness id passes through
+// (never worse) but is FLAGGED as deprecated so consumers can distinguish a
+// degraded emission from a healthy one. Only the map-shaped payloads of the
+// session.status / agent.*.resolved events carry the flag; the struct
+// InputRequest payload (agent.question / agent.permission) is the
+// documented exception — its shape is never clobbered to carry a marker.
+func markDeprecatedSessionID(evt *apitypes.WorkspaceSSEEvent) {
+	isStatus := evt.Type == "session.status"
+	isResolved := strings.HasPrefix(evt.Type, "agent.") && strings.HasSuffix(evt.Type, ".resolved")
+	if !isStatus && !isResolved {
+		return
+	}
+	switch d := evt.Data.(type) {
+	case nil:
+		evt.Data = map[string]any{"session_id_deprecated": "true"}
+	case map[string]any:
+		if d == nil {
+			d = map[string]any{}
+		}
+		d["session_id_deprecated"] = "true"
+		evt.Data = d
+	case map[string]string:
+		d["session_id_deprecated"] = "true"
+	case session.InputRequest:
+		// Documented exception: keep the contract struct intact.
+	}
+}
+
+// internalSessionIDFromData reads the additive internal_session_id the
+// #1817 piece-1 emission leaves on the wire (the harness id) across both
+// map payload shapes. The session.InputRequest struct has no such field
+// — the nested payload keeps its own session id (agentd translates only
+// the top-level frame field), so struct payloads return "".
+func internalSessionIDFromData(data any) string {
+	switch m := data.(type) {
+	case map[string]any:
+		if v, ok := m["internal_session_id"].(string); ok {
+			return v
+		}
+	case map[string]string:
+		return m["internal_session_id"]
+	}
+	return ""
+}
+
+// setInternalSessionID writes the additive internal_session_id on the two
+// map payload shapes (the struct payload keeps its own id field).
+func setInternalSessionID(evt *apitypes.WorkspaceSSEEvent, harnessID string) {
+	switch d := evt.Data.(type) {
+	case map[string]any:
+		if d == nil {
+			d = map[string]any{}
+		}
+		d["internal_session_id"] = harnessID
+		evt.Data = d
+	case map[string]string:
+		d["internal_session_id"] = harnessID
+	}
 }

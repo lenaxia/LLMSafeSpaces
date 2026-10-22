@@ -1,0 +1,23 @@
+diff a/CHANGELOG.md b/CHANGELOG.md	(rejected hunks)
+@@ -175,6 +175,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ - **Effective view with provenance**: each project row shows the
+   merged effective config, each key marked override vs inherited from
+   the stored overrides.
++### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
++
++- **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
++  timeline** — every `board_events` row scoped to the task (stage
++  transitions, claims who/when, review verdicts when present,
++  dependency-graph changes, orphan/unblock events), chronological,
++  behind the same owner perimeter as the task read (foreign rows are
++  plain 404s); optional `?limit=N` keeps the newest N (default 200,
++  max 500).
++- **`board_task_events` mirrors the timeline on the external MCP
++  server** (construction parity — the #1747 rule that every board
++  surface lives on every surface): read-only tool, `task_id` +
++  optional `limit`, identical rows.
++- **The task-detail drawer surfaces the timeline in the UI**: header
++  completeness (ids, stage, owner perimeter), criteria, dependencies,
+ 
+ ### Added — Task Board: failed-state attribute overlay (issue #1813)
+ 

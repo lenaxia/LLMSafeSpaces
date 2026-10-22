@@ -5,25 +5,36 @@ package board
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
-// ids.go — short-ID mint + did-you-mean resolution (design §4.1
-// "Identifiers"). Shaped on design 0066's machinery (PR #1693): prefix +
-// 8 chars [0-9a-z] from crypto/rand, minted in Go never SQL,
-// check-and-retry on uniqueness violation, case-insensitive resolution,
-// 404 + top-3 suggestions with bounded Levenshtein <= 2.
+// ids.go — phrase-ID mint + did-you-mean resolution (design §4.1
+// "Identifiers", #1831 vocabulary flip). The #1831 CURRENT format is
+// the session playbook's (#1756/#1790): the prj-/epc-/tsk- kind prefix
+// (closed set) + a 3-word adjective-noun-verb phrase from the SAME
+// frozen curated lists (e.g. "tsk-amber-lantern-ambles"), with a
+// deterministic counter suffix ("-2", "-3", …) arbitrating mint
+// collisions. Words are high-probability LLM tokens, transcription
+// drift is visible, and the did-you-mean ranker recovers near-misses on
+// WORDS far better than it ever could on random fragments.
 //
-// SEAM NOTE: 0066's shared library (issue #1691's implementation lane) has
-// not landed in main yet; this file is the board's local registration of
-// the same algorithm so Lane 1 is not blocked. When 0066's mint/suggest
-// package lands, this file collapses into an import (the closed prefix
-// map gains prj-/epc-/tsk-). The shapes are deliberately identical.
+// The PREVIOUS random form ("tsk-ab12cd34", design 0066's 8-char
+// [0-9a-z] suffix) exists on clusters that ran main before #1831: those
+// rows stay addressable as INPUT through the one-release dual-accept
+// window (classified by IsLegacyBoardIDForm, marked
+// short_id_deprecated on read via IsDeprecatedBoardID), never minted
+// again.
+//
+// SEAM NOTE: 0066's shared library (issue #1691's implementation lane)
+// never landed; the session phrase generator DID (pkg/shortid) — the
+// board mint reuses it directly (same vocabulary, not a fork).
 
 // Short-ID prefixes (closed set; no sty- — stories do not exist, ruling R1).
 const (
@@ -32,43 +43,100 @@ const (
 	PrefixTask    = "tsk-"
 )
 
-const shortIDSuffixLen = 8
+// boardPrefixes is the closed kind map (mint admission + shape checks).
+var boardPrefixes = []string{PrefixProject, PrefixEpic, PrefixTask}
 
-// shortIDAlphabet is [0-9a-z] (0066's closed alphabet).
-const shortIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+// phraseIDForm is the #1831 shape: kind prefix + exactly three
+// lowercase word tokens + optional deterministic counter suffix
+// ("-2", "-10", …), case-insensitive on input. Shape-only, like the
+// session classifier (shortid.IsShortIDForm): list MEMBERSHIP is the
+// mint's guarantee, not the classifier's job — a transcribed drift
+// ("lantrn") still classifies phrase-shaped and flows to the word
+// ranker instead of a bare 404.
+var phraseIDForm = regexp.MustCompile(`^(prj|epc|tsk)-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$`)
 
-// mintShortIDSuffix returns 8 random chars over [0-9a-z] (crypto/rand).
-func mintShortIDSuffix() (string, error) {
-	buf := make([]byte, shortIDSuffixLen)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("board: mint entropy: %w", err)
-	}
-	out := make([]byte, shortIDSuffixLen)
-	for i, b := range buf {
-		out[i] = shortIDAlphabet[int(b)%len(shortIDAlphabet)]
-	}
-	return string(out), nil
+// legacyBoardIDForm is the pre-#1831 random form: prefix + exactly 8
+// chars over [0-9a-z] (design 0066's mint, constrained by the
+// 000036/000042 CHECK). Addressable as INPUT through the dual-accept
+// window, never minted again.
+var legacyBoardIDForm = regexp.MustCompile(`^(prj|epc|tsk)-[0-9a-z]{8}$`)
+
+// IsPhraseIDForm reports whether s carries the #1831 board-phrase
+// shape (see phraseIDForm). Disjoint by construction from bare session
+// phrases (no kind prefix), workspace phrases (2 words + digit), and
+// the legacy random board form.
+func IsPhraseIDForm(s string) bool {
+	return phraseIDForm.MatchString(shortid.Normalize(s))
 }
 
-// mintShortID mints prefix+suffix and persists it via the caller-supplied
-// insert (check-and-retry: the insert's uniqueness violation retriggers the
-// mint, bounded attempts). The prefix is normalized (lowercase).
-func mintShortID(prefix string) (string, error) {
-	if !strings.HasPrefix(prefix, "prj-") && !strings.HasPrefix(prefix, "epc-") && !strings.HasPrefix(prefix, "tsk-") {
+// IsLegacyBoardIDForm classifies the pre-#1831 random short-id form.
+func IsLegacyBoardIDForm(s string) bool {
+	return legacyBoardIDForm.MatchString(shortid.Normalize(s))
+}
+
+// IsDeprecatedBoardID reports whether the id belongs to an INPUT-only
+// class whose acceptance is deprecated by #1831: the random form rows
+// minted before the flip. Such rows keep resolving (dual-accept
+// window) and render short_id_deprecated; the mint never emits the
+// form again.
+func IsDeprecatedBoardID(s string) bool {
+	return IsLegacyBoardIDForm(s)
+}
+
+// mintBoardID mints a fresh #1831 phrase id: the kind prefix + a
+// 3-word draw from the session generator's frozen lists (thread-safe
+// mintRand under the shared lock). Uniqueness is NOT checked here —
+// mintUnique's check-and-ladder owns it.
+func mintBoardID(prefix string) (string, error) {
+	if !slicesContains(boardPrefixes, prefix) {
 		return "", fmt.Errorf("board: unknown short-id prefix %q", prefix)
 	}
-	suffix, err := mintShortIDSuffix()
+	phrase, err := shortid.MintPhrase()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("board: phrase mint: %w", err)
 	}
-	return prefix + suffix, nil
+	return prefix + phrase, nil
 }
 
-// suggestMaxEdits is the did-you-mean bound (0066: Levenshtein <= 2).
+func slicesContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// suggestMaxEdits is the did-you-mean bound (0066: Levenshtein <= 2 —
+// #1831: the bound now applies to WORD tokens for phrase candidates,
+// characters for legacy candidates).
 const suggestMaxEdits = 2
 
-// suggestTop3 returns up to 3 candidates within the edit-distance bound,
-// best-first. Candidates are in-scope identifiers/titles (the caller
+// suggestCandidateScore ranks one candidate against the needle. The
+// vocabulary dispatch (#1831): a PHRASE-form candidate scores the
+// minimum of word-token distance and character distance (word distance
+// catches the one-word drift class — "tsk-amber-lantern-ambles" vs
+// "tsk-amber-gondola-ambles" is word distance 1, character distance
+// 6, out of bound; character still catches within-word typos); a
+// LEGACY random candidate keeps the character ranker — word distance
+// degenerates on the single random token (every same-prefix id would
+// be distance 1 and the suggestion set becomes noise). Titles and
+// other free text are never phrase-form (no kind prefix) and keep the
+// character ranker.
+func suggestCandidateScore(needle, candidate string) int {
+	if IsPhraseIDForm(candidate) {
+		wd := wordEditDistanceBounded(needle, candidate, suggestMaxEdits)
+		if wd == 0 {
+			return 0
+		}
+		cd := editDistanceBounded(strings.ToLower(needle), strings.ToLower(candidate), suggestMaxEdits)
+		return min2(wd, cd)
+	}
+	return editDistanceBounded(strings.ToLower(needle), strings.ToLower(candidate), suggestMaxEdits)
+}
+
+// suggestTop3 returns up to 3 candidates within the edit-distance
+// bound, best-first. Candidates are in-scope identifiers/titles (the caller
 // scopes them — did-you-mean never suggests across authorization
 // boundaries).
 func suggestTop3(requested string, candidates []string) []string {
@@ -77,12 +145,8 @@ func suggestTop3(requested string, candidates []string) []string {
 		score int
 	}
 	var hits []scored
-	needle := strings.ToLower(requested)
 	for _, c := range candidates {
-		if len(hits) >= 3 && len(c) > len(needle)+suggestMaxEdits {
-			continue
-		}
-		d := editDistanceBounded(needle, strings.ToLower(c), suggestMaxEdits)
+		d := suggestCandidateScore(requested, c)
 		if d <= suggestMaxEdits {
 			hits = append(hits, scored{c, d})
 		}
@@ -101,6 +165,60 @@ func suggestTop3(requested string, candidates []string) []string {
 		out = append(out, h.id)
 	}
 	return out
+}
+
+// wordEditDistanceBounded is Levenshtein over the "-"-split WORD
+// tokens (#1831's ranker unit), case-insensitive, with the same early
+// exit as the character ranker: once the distance exceeds bound it
+// returns bound+1.
+func wordEditDistanceBounded(a, b string, bound int) int {
+	return editDistanceTokensBounded(strings.Split(shortid.Normalize(a), "-"),
+		strings.Split(shortid.Normalize(b), "-"), bound)
+}
+
+func editDistanceTokensBounded(a, b []string, bound int) int {
+	la, lb := len(a), len(b)
+	if la > lb {
+		a, b = b, a
+		la, lb = lb, la
+	}
+	if lb-la > bound {
+		return bound + 1
+	}
+	prev := make([]int, la+1)
+	curr := make([]int, la+1)
+	for i := 0; i <= la; i++ {
+		prev[i] = i
+	}
+	for j := 1; j <= lb; j++ {
+		curr[0] = j
+		rowMin := curr[0]
+		for i := 1; i <= la; i++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[i] = min3(prev[i]+1, curr[i-1]+1, prev[i-1]+cost)
+			if curr[i] < rowMin {
+				rowMin = curr[i]
+			}
+		}
+		if rowMin > bound {
+			return bound + 1
+		}
+		prev, curr = curr, prev
+	}
+	if prev[la] > bound {
+		return bound + 1
+	}
+	return prev[la]
+}
+
+func min2(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // editDistanceBounded is Levenshtein with an early exit: once the distance

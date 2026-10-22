@@ -36,6 +36,8 @@ import (
 // well below the blocked regime.
 func TestControlSocket_ReadsNotBlockedBySlowRestart(t *testing.T) {
 	proc := &fakeRestartProc{block: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(proc.block) })
+	defer release()
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 
@@ -63,7 +65,7 @@ func TestControlSocket_ReadsNotBlockedBySlowRestart(t *testing.T) {
 			"%s took %v while a restart was in flight — reads must not head-of-line-block behind restarts (A.3 amendment)", m, elapsed)
 	}
 
-	close(proc.block) // release the restart
+	release() // release the restart
 	select {
 	case <-restartDone:
 	case <-time.After(2 * time.Second):
@@ -79,6 +81,8 @@ func TestControlSocket_ReadsNotBlockedBySlowRestart(t *testing.T) {
 // restart's spawn.
 func TestControlSocket_ConcurrentSpawnEnvLastWriteWins(t *testing.T) {
 	proc := &fakeRestartProc{block: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(proc.block) })
+	defer release()
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 
@@ -116,7 +120,7 @@ func TestControlSocket_ConcurrentSpawnEnvLastWriteWins(t *testing.T) {
 	require.Contains(t, env, "WRITER")
 	require.Regexp(t, `^[a-p]$`, env["WRITER"], "value must be one written writer tag")
 
-	close(proc.block)
+	release()
 }
 
 // TestControlSocket_SpawnEnvVisibleToNextSpawn: after spawn_env, the

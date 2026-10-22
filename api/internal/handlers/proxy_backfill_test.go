@@ -186,3 +186,6 @@ func TestBackfillSessionParents_InvalidateCachesAllowsRetry(t *testing.T) {
 func (r *recordingSessionIndex) Register(_ context.Context, _, _, _ string) string {
 	return ""
 }
+
+// ResolveShortID: the #1817 piece-3 read-only seam — no-op stub.
+func (r *recordingSessionIndex) ResolveShortID(_ string, _ string) string { return "" }

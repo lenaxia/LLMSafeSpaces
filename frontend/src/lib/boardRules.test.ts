@@ -164,6 +164,43 @@ describe("suggestBoardItems", () => {
   });
 });
 
+// ─── Did-you-mean over WORDS (#1831 phrase ids) ──────────────────────────────
+
+const PHRASE_ITEMS = [
+  { shortId: "tsk-meek-lantern-ambles", title: "Phrase one" },
+  { shortId: "tsk-amber-gondola-waits", title: "Phrase two" },
+  { shortId: "tsk-aaaa1111", title: "Legacy fleet row" },
+];
+
+describe("suggestBoardItems over phrase ids (#1831)", () => {
+  it("suggests a one-WORD drift (character distance out of bound)", () => {
+    // "lantern" → "gondola"-class drift: word distance 1, char distance ≥ 6.
+    const out = suggestBoardItems("tsk-meek-gondola-ambles", PHRASE_ITEMS);
+    expect(out.map((i) => i.shortId)).toContain("tsk-meek-lantern-ambles");
+  });
+
+  it("suggests a within-word typo (character distance catches it)", () => {
+    const out = suggestBoardItems("tsk-meek-lantern-ambless", PHRASE_ITEMS);
+    expect(out.map((i) => i.shortId)).toContain("tsk-meek-lantern-ambles");
+  });
+
+  it("suggests the counter rung for the bare base", () => {
+    const items = [{ shortId: "tsk-amber-gondola-waits-2", title: "Rung" }];
+    expect(suggestBoardItems("tsk-amber-gondola-waits", items).map((i) => i.shortId))
+      .toContain("tsk-amber-gondola-waits-2");
+  });
+
+  it("keeps the character ranker for legacy ids and never crosses vocabularies", () => {
+    // The phrase needle must not surface the legacy row (char distance
+    // far; word distance applies only to phrase candidates).
+    const out = suggestBoardItems("tsk-meek-gondola-ambles", PHRASE_ITEMS);
+    expect(out.map((i) => i.shortId)).not.toContain("tsk-aaaa1111");
+    // The legacy needle keeps its own character suggestions.
+    const legacy = suggestBoardItems("tsk-aaaa1112", PHRASE_ITEMS);
+    expect(legacy.map((i) => i.shortId)).toContain("tsk-aaaa1111");
+  });
+});
+
 // ─── Guard-code parity (r2: no dead keys, no missing live ones) ──────────────
 
 describe("BOARD_GUARD_MESSAGES parity with the backend's emittable codes", () => {

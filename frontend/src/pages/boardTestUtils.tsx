@@ -14,6 +14,8 @@ import type { ApiError } from "../api/types";
 
 export const mockListProjects = vi.fn();
 export const mockListProjectTasks = vi.fn();
+export const mockListProjectEpics = vi.fn();
+export const mockTaskEvents = vi.fn();
 export const mockMoveStage = vi.fn();
 export const mockCreateProject = vi.fn();
 export const mockCreateEpic = vi.fn();
@@ -32,6 +34,8 @@ vi.mock("../api/board", () => ({
   boardApi: {
     listProjects: () => mockListProjects(),
     listProjectTasks: (id: string, stage?: string) => mockListProjectTasks(id, stage),
+    listProjectEpics: (id: string) => mockListProjectEpics(id),
+    taskEvents: (id: string, limit?: number) => mockTaskEvents(id, limit),
     moveStage: (id: string, to: string, ev?: string) => mockMoveStage(id, to, ev),
     startTask: (id: string) => mockStartTask(id),
     createProject: (input: unknown) => mockCreateProject(input),
@@ -91,6 +95,21 @@ const base = {
   created_at: "2026-10-10T00:00:00Z",
   updated_at: "2026-10-10T00:00:00Z",
   attempts: 0,
+  last_attempt_failed: false,
+  failure_count: 0,
+};
+
+export const TASK_FAILED: BoardTask = {
+  ...base,
+  id: "task-uuid-f",
+  project_id: "proj-uuid-a",
+  epic_id: "epic-uuid-1",
+  short_id: "tsk-ffff0009",
+  title: "Crash looping",
+  stage: "backlog",
+  attempts: 2,
+  last_attempt_failed: true,
+  failure_count: 2,
 };
 
 export const TASK_BACKLOG: BoardTask = {
@@ -163,16 +182,18 @@ export const TASK_PENDING: BoardTask = {
 };
 
 export function defaultTasks(): BoardTask[] {
-  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING];
+  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING, TASK_FAILED];
 }
 
 /** Seeds the standard two-project board. Returns the seeded task list
  * (callers derive updated states from it). */
 export function seedBoard(tasks: BoardTask[] = defaultTasks(), projects: BoardProject[] = [PROJECT_A, PROJECT_B]): BoardTask[] {
   mockListProjects.mockResolvedValue(projects);
-  mockListProjectTasks.mockImplementation(async (pid: string) =>
-    pid === "proj-uuid-b" ? tasks.filter((t) => t.project_id === "proj-uuid-b") : tasks.filter((t) => t.project_id === "proj-uuid-a"),
-  );
+  mockListProjectTasks.mockImplementation(async (pid: string) => tasks.filter((t) => t.project_id === pid));
+  // #1832 r2: the GET /me/projects/:id/epics read — empty by default so
+  // the task-derived bands of the r1 rows keep exercising the fallback;
+  // the r2 rows override this with server-truth fixtures.
+  mockListProjectEpics.mockResolvedValue([]);
   mockWorkspacesList.mockResolvedValue({
     items: [{ id: "ws-1", name: "Main", userId: "u1", runtime: "python", storageSize: "1Gi", createdAt: "", updatedAt: "" }],
   });
