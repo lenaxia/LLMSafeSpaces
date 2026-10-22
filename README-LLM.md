@@ -850,7 +850,7 @@ After merge, the bot renames them:
 0547_2026-05-03_controller-tdd-sandbox.md
 ```
 
-**Why sentinels:** picking numbers manually races under concurrent PRs (two branches both observe `max=543`, both pick `544`, merge collision). The sentinel scheme eliminates the race — the bot assigns numbers atomically at merge time, serialized by GitHub's sequential merge-commit ordering.
+**Why sentinels:** picking numbers manually races under concurrent PRs (two branches both observe `max=543`, both pick `544`, merge collision). The sentinel scheme narrows the race to the bot-lag window: the bot assigns numbers at merge time, but between a merge and its numbering commit, origin/main carries unnumbered sentinels — and two concurrent merges in one bot cycle can each draw the next-free number (#1795's lag-window duplicates; the repolint uniqueness invariant reddens CI on them, and the post-rewrite hook's renumber-all is the distributed self-heal).
 
 ### Worklog format
 

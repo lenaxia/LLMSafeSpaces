@@ -56,7 +56,7 @@ After merge, a post-merge bot renames the file with the real sequential number a
 0547_2026-05-03_controller-tdd-sandbox.md
 ```
 
-Picking numbers manually races under concurrent PRs: two branches both observe `max=543`, both pick `544`, and collide on merge. The sentinel scheme eliminates the race — the bot assigns numbers atomically at merge time, serialized by GitHub's sequential merge-commit ordering.
+Picking numbers manually races under concurrent PRs: two branches both observe `max=543`, both pick `544`, and collide on merge. The sentinel scheme narrows the race to the bot-lag window: between a merge and the bot's numbering commit, two concurrent merges can each draw the next-free number (#1795's lag-window duplicates — the repolint uniqueness invariant reddens CI on them).
 
 ## Format
 

@@ -1240,10 +1240,11 @@ func TestMainlineCheck_SharedAncestryNotCollision(t *testing.T) {
 
 func TestLive_Worklogs_NoMainlineCollisions(t *testing.T) {
 	// Retired under the NNNN_ sentinel scheme. Mainline collisions were
-	// the failure mode of the old "authors pick numbers" workflow; with
-	// sentinels, the post-merge bot assigns numbers atomically at merge
-	// time (serialized by GitHub's sequential merge-commit ordering), so
-	// mainline collisions cannot occur by construction.
+	// the failure mode of the old "authors pick numbers" workflow; the
+	// sentinel scheme NARROWS that race to the bot-lag window (#1795:
+	// between a merge and the bot's numbering commit, two concurrent
+	// merges can each draw the next-free number — the uniqueness
+	// invariant reddens CI on the result).
 	//
 	// Kept as a no-op to avoid breaking test runners that reference it;
 	// the live invariant is now covered by TestLive_Worklogs_NoDuplicates
