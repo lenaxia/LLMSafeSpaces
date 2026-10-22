@@ -518,8 +518,10 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 	// commit (#1795: the 25ed1853 rebase carried four) — and the
 	// ruling-c semantics deliberately renumber them anyway: the pass is
 	// the distributed self-healing that closes the lag window, and
-	// every assignment skips both local and remote occupied numbers so
-	// the heal cannot itself collide with either writer. The safety
+	// every assignment skips both local and remote occupied numbers —
+	// every number WORKLOGPATTERN can see (uppercase-slug files are
+	// invisible to this pass; the runWorklogUniqueness invariant is
+	// the net that catches what it cannot). The safety
 	// net for what two lag-window writers can still independently
 	// produce is the runWorklogUniqueness invariant (duplicate numbers
 	// = red CI), not this pass.
