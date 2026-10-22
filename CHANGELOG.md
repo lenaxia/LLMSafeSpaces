@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — toolchain unblock: every CI workflow on Go 1.26.10; health probes exempt from rate limiting (#1825)
+
+- **The go.mod 1.26.10 bump (GO-2026-6809) left eleven workflow files
+  and every container builder pinned to 1.26.9** — GOTOOLCHAIN=local
+  made each red with "go.mod requires go >= 1.26.10" (the 32s
+  secrets-integration fast-fail; the same latent class in e2e PR/
+  nightly/attachments/mutation/posture-gate/release/kind pools).
+  All remaining pins now read 1.26.10; builder images carry
+  GOTOOLCHAIN=auto (the prior commits on this branch).
+- **/livez and /readyz are exempt from the global rate limiter.**
+  The SDK rate-limit canary pins "not rate-limited" for both, and a
+  429 on a k8s liveness probe restarts healthy pods — the probes only
+  passed pre-#1825 by refill-boundary luck after the canary's login
+  burst. Pinned red-first (exhausted (1,1) budget, same IP: both
+  probes must still serve).
 (nothing yet)
 
 ## [0.40.1] - 2026-10-21

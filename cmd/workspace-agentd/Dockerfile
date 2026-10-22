@@ -26,6 +26,7 @@
 # integrity — the binary — is the contract.
 
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
+ENV GOTOOLCHAIN=auto
 
 ARG TARGETARCH
 WORKDIR /src

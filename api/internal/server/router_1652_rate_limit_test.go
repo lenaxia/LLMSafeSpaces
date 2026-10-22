@@ -4,9 +4,11 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -111,5 +113,113 @@ func TestRouter_1652_AuthAccountLifecycleRateLimits(t *testing.T) {
 			assert.Equal(t, 3, passed, "burst (3) requests should pass the per-route limiter")
 			assert.Equal(t, 2, rejected, "remaining (2) requests should be rate-limited (429)")
 		})
+	}
+}
+
+// TestRouter_HealthProbesNeverRateLimited pins the SDK-canary contract
+// (#1825 red leg: "FAIL /livez: not rate-limited") and the k8s
+// operational requirement: /livez and /readyz must NEVER answer 429 —
+// a rate-limited liveness probe restarts healthy pods. The global
+// limiter is tightened to (1,1); an ordinary route from the same IP
+// proves the budget IS exhausted (429 OBSERVED — the control leg never
+// assumes it) before the probes are checked. /livez must answer 200
+// (the real handler); /readyz answers its typed 503 (the STUBBED mock
+// pings return "unreachable"). The control leg is what proves the
+// exemption — not an empty bucket — is what serves the probes.
+func TestRouter_HealthProbesNeverRateLimited(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	log, _ := apilogger.New(true, "error", "console")
+	rlSvc := ratelimit.NewWithRedisClient(log, client)
+	defer rlSvc.Stop()
+
+	authSvc := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	dbSvc := &imocks.MockDatabaseService{}
+	caSvc := &imocks.MockCacheService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	authSvc.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
+	authSvc.On("GetUserID", mock.Anything).Return("").Maybe()
+	// /readyz renders its typed 503 only when the pings ANSWER; an
+	// unstubbed mock PANICS (testify mock failure) and gin's recovery
+	// turns that into a 500 — the r1 false-green finding. Stub both
+	// pings to fail deterministically: the probe reaches its own JSON.
+	dbSvc.On("Ping", mock.Anything).Return(errors.New("db unreachable")).Maybe()
+	caSvc.On("Ping", mock.Anything).Return(errors.New("cache unreachable")).Maybe()
+
+	svc := &g41MockServices{auth: authSvc, metrics: met, db: dbSvc, cache: caSvc, rl: rlSvc}
+
+	cfg := DefaultRouterConfig()
+	// Production wiring must exempt the probes (#1825): they are IN the
+	// exempt set, then the global limiter is tightened to prove the
+	// exemption — not an empty bucket — is what serves them.
+	var livezExempt, readyzExempt bool
+	for _, p := range cfg.RateLimitConfig.ExemptPaths {
+		if p == "/livez" {
+			livezExempt = true
+		}
+		if p == "/readyz" {
+			readyzExempt = true
+		}
+	}
+	assert.True(t, livezExempt, "DefaultRouterConfig must exempt /livez from rate limiting (k8s liveness probes must never 429)")
+	assert.True(t, readyzExempt, "DefaultRouterConfig must exempt /readyz from rate limiting")
+
+	// (1, 1) token bucket: burst of one, refilling at 1 token/SECOND
+	// (the strategy computes rate = limit; DefaultWindow is unused by
+	// it — r3 finding). Exhaustion is therefore EMPIRICAL, not assumed:
+	// the control loop below fires fast enough that the per-second
+	// refill cannot keep pace, and it requires the observed 429 before
+	// any probe assertion runs.
+	cfg.RateLimitConfig.DefaultLimit = 1
+	cfg.RateLimitConfig.BurstSize = 1
+	cfg.RateLimitConfig.DefaultWindow = time.Hour
+	cfg.SecurityConfig.RequireHTTPS = false
+	cfg.SecurityConfig.Development = true
+
+	router := NewRouter(svc, log, nil, cfg)
+
+	// CONTROL — the budget must actually exhaust: after the first
+	// pass, further /api/v1/auth/login hits from this IP answer 429.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	req.RemoteAddr = "10.9.9.9:777"
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req) // burst token consumed
+	exhausted := false
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+		req.RemoteAddr = "10.9.9.9:777"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			exhausted = true
+			break
+		}
+	}
+	require.True(t, exhausted, "control: the (1,1) budget must exhaust on an ordinary route — otherwise this test proves nothing")
+
+	// The probes, from the SAME exhausted IP: /livez serves 200 (the
+	// real handler, no dependencies); /readyz serves its typed 503 (the
+	// STUBBED pings answer "unreachable" — see the mock setup: the r1
+	// panic class is structurally impossible with the stubs in place).
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+		req.RemoteAddr = "10.9.9.9:777"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code, "/livez must serve 200 with the per-IP budget exhausted (the #1825 canary failure)")
+	}
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		req.RemoteAddr = "10.9.9.9:777"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+			"/readyz must answer its deterministic 503 (stubbed pings = unreachable), never 429 and never a panic recovery")
 	}
 }

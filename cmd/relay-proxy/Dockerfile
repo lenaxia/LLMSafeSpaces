@@ -8,6 +8,7 @@
 # hardcoded default can produce a binary for the wrong arch (issue #462).
 
 FROM --platform=$BUILDPLATFORM golang:1.26@sha256:5c3f3f28a273c9b61698b2d34f18375929790ab1f1d3835d032d21e2b31eae0c AS builder
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /workspace
 

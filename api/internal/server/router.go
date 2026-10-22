@@ -319,7 +319,13 @@ func DefaultRouterConfig() RouterConfig {
 	// The /events SSE endpoint is a long-lived connection, not a per-request
 	// API call. Exempt it from the token-bucket rate limiter so reconnects
 	// after network drops don't trigger 429s.
-	rlCfg.ExemptPaths = []string{"/events", "/session-events"}
+	//
+	// Health probes (#1825): /livez + /readyz are k8s liveness/readiness
+	// traffic — a 429 there restarts healthy pods, and the SDK canaries
+	// pin "not rate-limited" for both. They only passed pre-#1825 by
+	// refill-boundary luck (the canary's readyz-then-livez sequence after
+	// a 12-request login burst): any exhausted per-IP budget 429s them.
+	rlCfg.ExemptPaths = []string{"/events", "/session-events", "/livez", "/readyz"}
 	return RouterConfig{
 		Debug:           false,
 		LoggingConfig:   middleware.DefaultLoggingConfig(),
