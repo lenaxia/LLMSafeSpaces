@@ -2307,8 +2307,10 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 
 	// Task Board REST routes (design 0067 §4.3a, #1699 Lane 2):
 	// user-level only (ruling R7 — no org routes, no scope switcher);
-	// item addressing by short id (prj-/epc-/tsk-, case-insensitive) or
-	// UUID. Registered only when the board engine is wired (nil handler
+	// item addressing by short id (prj-/epc-/tsk-, case-insensitive —
+	// word-phrase form since #1831, e.g. tsk-amber-falcon-glides;
+	// legacy random tsk-XXXXXXXX forms still resolve through the
+	// dual-accept window) or UUID. Registered only when the board engine is wired (nil handler
 	// = feature off, matching the internal automation seam's gating).
 	// Board-wide search + health ride the /me/board group (#1699 seams).
 	if cfg.BoardHandler != nil {

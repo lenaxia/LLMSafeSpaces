@@ -74,9 +74,11 @@ var boardListProjectsTool = mcp.NewTool("board_list_projects",
 var boardGetTool = mcp.NewTool("board_get",
 	mcp.WithDescription("Get one board item by short id. The prefix selects the kind: prj- a project, "+
 		"epc- an epic (with derived progress), tsk- a task (with blocked-by derivation). "+
-		"Short-id addressing is the surface's contract (design 0067 §4.3a)."),
+		"Ids are word phrases — tsk-crimson-finch-blooms (#1831, session-ID playbook); a near-miss "+
+		"returns 404 with did-you-mean suggestions ranked over WORDS. Short-id addressing is the "+
+		"surface's contract (design 0067 §4.3a)."),
 	mcp.WithString("item_id", mcp.Required(),
-		mcp.Description("Short id: prj-XXXXXXXX, epc-XXXXXXXX, or tsk-XXXXXXXX")),
+		mcp.Description("Short id (phrase form, #1831): prj-amber-lantern-ambles, epc-meek-gondola-waits, or tsk-crimson-finch-blooms (legacy random forms like tsk-ab12cd34 still resolve, deprecated)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
@@ -86,13 +88,13 @@ var boardReadTool = mcp.NewTool("board_read",
 		"#1747). kind=epics lists the project's epics with derived progress. q= searches your board "+
 		"(short id exact or title match, board-wide when project_id is omitted) with did-you-mean "+
 		"suggestions on zero-hit near-misses. health=true renders the board health snapshot instead."),
-	mcp.WithString("project_id", mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the five stages)")),
 	mcp.WithBoolean("failed", mcp.Description("#1813 failed-state filter: true lists only tasks whose last attempt failed (crash loop, exhaustion — last_attempt_failed overlay), false only clean rows")),
 	mcp.WithString("kind", mcp.Description("Projection selector: epics lists the project's epics (requires project_id)")),
 	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Search filter: tasks carrying ALL of these tags")),
-	mcp.WithString("epic_id", mcp.Description("Search filter: narrow to one epic (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Description("Search filter: narrow to one epic (epc-…, phrase or legacy form)")),
 	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
@@ -119,7 +121,7 @@ var boardCreateProjectTool = mcp.NewTool("board_create_project",
 var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 	mcp.WithDescription("Create a DRAFT epic in a project (ruling R2's default). Activate it to start "+
 		"feeding work to fresh workers; the outcome field is the human's steering wheel."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Epic title")),
 	mcp.WithString("outcome", mcp.Description("What this epic exists to achieve (the steering wheel)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags")),
@@ -132,7 +134,7 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
 		"the reconciler consumes; malformed anchors are inert tags, never guessed). depends_on adds "+
 		"prerequisite edges in the same write (#1747)."),
-	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
 	mcp.WithString("description", mcp.Description("Markdown; seeds the fresh worker's charter (R9)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor; the full set — project/epic updates rewrite tags wholesale)")),
@@ -160,9 +162,9 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 		"REPLACE when present. set_criteria_met checks off the criterion at the 0-based index (the "+
 		"reviewer's Done preparation). The assignee is engine-set, never a patch field."),
 	mcp.WithString("item_id", mcp.Required(),
-		mcp.Description("Short id: prj-XXXXXXXX (name/target_workspace_id/worker_slots/tags), "+
-			"epc-XXXXXXXX (title/outcome/tags), tsk-XXXXXXXX (title/description/tags/"+
-			"acceptance_criteria/set_criteria_met)")),
+		mcp.Description("Short id, phrase form (#1831): prj-… (name/target_workspace_id/worker_slots/tags), "+
+			"epc-… (title/outcome/tags), tsk-… (title/description/tags/"+
+			"acceptance_criteria/set_criteria_met); legacy prj-XXXXXXXX still resolves, deprecated")),
 	mcp.WithString("name", mcp.Description("Project name (prj- only; rename cascades the display inheritance)")),
 	mcp.WithString("target_workspace_id", mcp.Description("Project target workspace (prj- only; must be accessible to the owner)")),
 	mcp.WithInteger("worker_slots", mcp.Description("Project worker-slot budget (prj- only)")),
@@ -192,7 +194,7 @@ var boardMoveStageTool = mcp.NewTool("board_move_stage",
 		"→{in_progress, backlog}. Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
 		"write exists); removal is board_delete, never a stage move (#1747). done requires ALL acceptance "+
 		"criteria met + evidence_url (ruling R2). Forward moves refuse on a paused task (409 task_paused)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...), mcp.Description("Target stage")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link for THIS transition (required for done)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
@@ -202,7 +204,7 @@ var boardStartTaskTool = mcp.NewTool("board_start_task",
 	mcp.WithDescription("Manual one-off dispatch (task_start): claim + fresh-charter worker spawn into "+
 		"the project's target workspace (R9). Explicitly allowed in draft epics; paused/completed/archived "+
 		"epics and archived projects refuse it. No caller-supplied worker identity exists on any surface."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -210,7 +212,7 @@ var boardEpicActivateTool = mcp.NewTool("board_epic_activate",
 	mcp.WithDescription("Activate an epic: start feeding ready work to fresh workers. Re-opens a completed "+
 		"epic; unarchive always restores active. #1747: refuses cross-epic dependencies into inactive epics "+
 		"unless acknowledged, reports the initial ready set, and cascades resume directives to held workers."),
-	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithBoolean("acknowledge_inactive_deps",
 		mcp.Description("Acknowledge cross-epic deps entering inactive epics (they stay blocking until those epics activate)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
@@ -220,31 +222,31 @@ var boardEpicPauseTool = mcp.NewTool("board_epic_pause",
 	mcp.WithDescription("Pause an epic: stop NEW claims without interrupting in-flight leases — and "+
 		"cascade HALT directives to the epic's in-flight workers (#1747 pause-must-pause; they land at "+
 		"the current turn's boundary)."),
-	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardEpicArchiveTool = mcp.NewTool("board_epic_archive",
 	mcp.WithDescription("Archive an epic (reversible storage; it leaves the candidate set)."),
-	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardEpicUnarchiveTool = mcp.NewTool("board_epic_unarchive",
 	mcp.WithDescription("Unarchive an epic — always restores active (the resumable default)."),
-	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-XXXXXXXX)")),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardProjectArchiveTool = mcp.NewTool("board_project_archive",
 	mcp.WithDescription("Archive a project (reversible): stops ALL claims into it."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardProjectUnarchiveTool = mcp.NewTool("board_project_unarchive",
 	mcp.WithDescription("Unarchive a project: restores active."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -252,26 +254,26 @@ var boardProjectPauseTool = mcp.NewTool("board_project_pause",
 	mcp.WithDescription("Pause a project (#1747 — the scheduling lever: 'pause this project so another "+
 		"moves forward'). Blocks claiming for every task under it (query scoping), cascades HALT directives "+
 		"to its in-flight workers; never interrupts leases. resume_project clears it."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 )
 
 var boardProjectResumeTool = mcp.NewTool("board_project_resume",
 	mcp.WithDescription("Resume a paused project: clears the flag, cascades RESUME directives to held "+
 		"workers; lapsed leases re-enter the FIFO pool."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 )
 
 var boardPauseTaskTool = mcp.NewTool("board_pause_task",
 	mcp.WithDescription("Pause a task (#1747): parks it — claim candidacy off, forward stage-writes "+
 		"refused (409 task_paused), HALT directive to the in-flight worker (lands at the turn boundary; "+
 		"the lease keeps running — LAPSE accounting, never frozen). Dependencies stay blocking."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 )
 
 var boardResumeTaskTool = mcp.NewTool("board_resume_task",
 	mcp.WithDescription("Resume a paused task: clears the flag, delivers the RESUME directive — the held "+
 		"session continues if its lease survived; a lapsed one re-enters the FIFO pool (fresh worker)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 )
 
 var boardDeleteTool = mcp.NewTool("board_delete",
@@ -292,7 +294,7 @@ var boardImportPlanTool = mcp.NewTool("board_import_plan",
 		"edges from a single payload, all-or-nothing. dry_run=true validates WITHOUT writing — the render "+
 		"(graph, warnings, initial ready set) is the user's plan-approval moment. Tasks address each other "+
 		"by payload key; edges live within the workspace."),
-	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id (prj-XXXXXXXX)")),
+	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("epic_title", mcp.Required(), mcp.Description("The created epic's title")),
 	mcp.WithString("outcome", mcp.Description("The epic's outcome (steering wheel)")),
 	mcp.WithBoolean("dry_run", mcp.Description("Validate + render only — nothing is written")),
@@ -318,16 +320,16 @@ var boardAddDependencyTool = mcp.NewTool("board_add_dependency",
 		"blocking mechanism): N-ary task→task within a WORKSPACE (cross-epic allowed, never cross-"+
 		"workspace); cycles are rejected with did-you-mean suggestions (409); duplicate edges are "+
 		"idempotent no-ops; edges per node are capped (blast-radius bound). Unblocks when ALL targets are Done."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-XXXXXXXX)")),
-	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 var boardRemoveDependencyTool = mcp.NewTool("board_remove_dependency",
 	mcp.WithDescription("Remove a dependency edge — one of the pending_input resolutions (removing an "+
 		"abandoned prerequisite's edge unblocks the row; the human re-queue stays a move-stage write)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-XXXXXXXX)")),
-	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-XXXXXXXX)")),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent task short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite task short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 

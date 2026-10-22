@@ -4,40 +4,14 @@
 package board
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestMintShortIDShape(t *testing.T) {
-	for _, prefix := range []string{PrefixProject, PrefixEpic, PrefixTask} {
-		id, err := mintShortID(prefix)
-		if err != nil {
-			t.Fatalf("mint %s: %v", prefix, err)
-		}
-		if !regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `[0-9a-z]{8}$`).MatchString(id) {
-			t.Errorf("mint %q produced out-of-shape %q", prefix, id)
-		}
-	}
-	if _, err := mintShortID("sty-"); err == nil {
-		t.Error("the closed prefix map rejects unknown prefixes (stories do not exist, ruling R1)")
-	}
-}
-
-func TestMintShortIDUniqueness(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 500; i++ {
-		id, err := mintShortID(PrefixTask)
-		if err != nil {
-			t.Fatalf("mint: %v", err)
-		}
-		if seen[id] {
-			t.Fatalf("collision at %d draws — alphabet/entropy broken", i)
-		}
-		seen[id] = true
-	}
-}
+// The pre-#1831 random mint (mintShortID) is RETIRED — phrase mints
+// are pinned in ids_phrase_unit_test.go (TestMintPhraseIDShape), and
+// the never-minted-again property in TestMintPhraseIDNeverRandom.
 
 func TestSuggestTop3(t *testing.T) {
 	candidates := []string{

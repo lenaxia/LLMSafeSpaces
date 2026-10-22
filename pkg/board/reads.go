@@ -164,6 +164,7 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 			return nil, err
 		}
 		e.ProgressDerived = e.ProgressTotal > 0
+		e.ShortIDDeprecated = IsDeprecatedBoardID(e.ShortID)
 		out = append(out, e)
 	}
 	return out, rows.Err()

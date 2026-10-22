@@ -238,7 +238,7 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_update_task",
 			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":      map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId":      map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"title":       map[string]any{"type": "string", "description": "New title"},
 				"description": map[string]any{"type": "string", "description": "New description (REPLACE)"},
 				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
@@ -254,23 +254,23 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_add_dependency",
 			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
+				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
 			}, "required": []string{"taskId", "dependsOn"}},
 		},
 		{
 			Name:        "board_remove_dependency",
 			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
+				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
 			}, "required": []string{"taskId", "dependsOn"}},
 		},
 		{
 			Name:        "board_delete_task",
 			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"reconnect": map[string]any{"type": "boolean", "description": "Orphans inherit the deleted node's direct upstream edges (default off — the graph never rewrites itself implicitly)"},
 			}, "required": []string{"taskId"}},
 		},
@@ -278,14 +278,14 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_pause_task",
 			Description: "Pause one task — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
 			Name:        "board_resume_task",
 			Description: "Resume a paused task: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Task short id (tsk-… or UUID)"},
+				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
@@ -530,9 +530,9 @@ func mcpToolCatalog() []mcpTool {
 			// surfaces, and the claim token (charter envelope) is the
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
-			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (tsk-…, from your charter envelope) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
+			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"shortId": map[string]any{"type": "string", "description": "The task's short id (tsk-…, from your charter envelope); case-insensitive"},
+				"shortId": map[string]any{"type": "string", "description": "The task's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
 				"taskId":  map[string]any{"type": "string", "description": "The task's UUID (alternative to shortId; taskId wins when both are given)"},
 			}, "required": []string{}},
 		},
@@ -542,7 +542,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress evidence (last message/tool activity). The lease extends only when this moved past the stored watermark"},
-				"shortId":            map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":            map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":             map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
@@ -552,7 +552,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":        map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"retryAfterSeconds": map[string]any{"type": "integer", "description": "Optional backoff from the provider's Retry-After; omitted = the platform's default throttle backoff"},
-				"shortId":           map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":           map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":            map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
@@ -564,7 +564,7 @@ func mcpToolCatalog() []mcpTool {
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done) or in_progress (re-work); pending_input exits are human-only"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
-				"shortId":     map[string]any{"type": "string", "description": "The task's short id (tsk-…) — alternative to taskId"},
+				"shortId":     map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":      map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken", "toStage"}},
 		},
