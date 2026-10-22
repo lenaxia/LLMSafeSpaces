@@ -4,12 +4,13 @@
 package handlers
 
 // board_config_test.go — RED-first pins for the #1832 item 6 Task Board
-// Config REST surface: the admin-scoped global defaults read/write, the
-// owner-scoped per-project override read/write (both rendering the
-// effective merged config), strict unknown-key/malformed-value rejection
-// at the adapter, and the ownership perimeter on project config reads.
-// Landed BEFORE handlers/board_config.go (house red-first rule); the red
-// state at this commit is the compile error (undefined handler methods).
+// Config REST surface: the user-scoped board-wide defaults read/write
+// (R7 ruling on PR #1840), the owner-scoped per-project override
+// read/write (both rendering the effective merged config), strict
+// unknown-key/malformed-value/NULL rejection at the adapter, and the
+// ownership perimeter on project config reads. Landed BEFORE
+// handlers/board_config.go (house red-first rule); the red state at
+// this commit is the compile error (undefined handler methods).
 
 import (
 	"context"
@@ -25,34 +26,49 @@ import (
 
 // --- fake seam arms (config) ---------------------------------------------------
 
-func (f *fakeBoardManager) GetGlobalBoardConfig(_ context.Context) (*board.BoardConfig, error) {
-	f.call("get_global_board_config")
-	if err := f.errFor["get_global_board_config"]; err != nil {
+func (f *fakeBoardManager) GetUserBoardConfig(_ context.Context, actor board.Actor) (*board.BoardConfig, error) {
+	f.call("get_user_board_config")
+	_ = actor
+	if err := f.errFor["get_user_board_config"]; err != nil {
 		return nil, err
 	}
 	cfg := board.BoardConfig{ReviewColumn: "manual", AutoAssignReviewer: false, DefaultWorkerSlots: 2}
 	return &cfg, nil
 }
 
-func (f *fakeBoardManager) SetGlobalBoardConfig(_ context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error) {
-	f.call("set_global_board_config")
+func (f *fakeBoardManager) SetUserBoardConfig(_ context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error) {
+	f.call("set_user_board_config")
 	f.lastActor = actor
 	f.lastGlobalConfigSet = in
-	if err := f.errFor["set_global_board_config"]; err != nil {
+	if err := f.errFor["set_user_board_config"]; err != nil {
 		return nil, err
 	}
 	cfg := board.BoardConfig{ReviewColumn: "auto", AutoAssignReviewer: false, DefaultWorkerSlots: 2}
 	return &cfg, nil
 }
 
-func (f *fakeBoardManager) GetProjectBoardConfig(_ context.Context, _, idOrShort string) (*board.ProjectBoardConfig, error) {
+func (f *fakeBoardManager) GetProjectBoardConfig(_ context.Context, actor board.Actor, _, idOrShort string) (*board.ProjectBoardConfig, error) {
 	f.call("get_project_board_config")
-	_ = idOrShort
+	// The real service resolves the project scoped to the acting user
+	// (R7, design 0067:37 guards-once): a foreign or unknown project
+	// renders the scoped 404 — the fake models that perimeter.
+	var owned *board.Project
+	for i := range f.projects {
+		if f.projects[i].ID == idOrShort || f.projects[i].ShortID == idOrShort {
+			if f.projects[i].UserID == actor.UserID {
+				owned = &f.projects[i]
+			}
+			break
+		}
+	}
+	if owned == nil {
+		return nil, &board.NotFoundError{Item: "project", Identifier: idOrShort}
+	}
 	if err := f.errFor["get_project_board_config"]; err != nil {
 		return nil, err
 	}
 	return &board.ProjectBoardConfig{
-		ProjectID: "p1",
+		ProjectID: owned.ID,
 		Overrides: board.BoardConfigOverride{ReviewColumn: strPtr("off")},
 		Effective: board.BoardConfig{ReviewColumn: "off", AutoAssignReviewer: false, DefaultWorkerSlots: 2},
 	}, nil
@@ -77,8 +93,9 @@ func (f *fakeBoardManager) SetProjectBoardConfig(_ context.Context, actor board.
 }
 
 // newBoardConfigRouter mounts exactly the config routes the router
-// mounts (admin group + project group), with the userID-stamping
-// AuthMiddleware stand-in the real middleware provides.
+// mounts (the /me/board user-scoped group + the project group), with
+// the userID-stamping AuthMiddleware stand-in the real middleware
+// provides.
 func newBoardConfigRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -92,28 +109,25 @@ func newBoardConfigRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p := g.Group("/projects")
 	p.GET("/:id/config", h.GetProjectBoardConfig)
 	p.PUT("/:id/config", h.SetProjectBoardConfig)
-	ag := r.Group("/api/v1/admin/board")
-	ag.Use(func(c *gin.Context) {
-		c.Set("userID", "admin-1")
-		c.Next()
-	})
-	ag.GET("/config", h.GetGlobalBoardConfig)
-	ag.PUT("/config", h.SetGlobalBoardConfig)
+	bb := g.Group("/board")
+	bb.GET("/config", h.GetUserBoardConfig)
+	bb.PUT("/config", h.SetUserBoardConfig)
 	return r
 }
 
-// TestBoardConfigREST_GlobalRoundTrip: GET renders the effective global
-// defaults; PUT decodes a partial map, hands the typed override to the
-// service, and renders the new effective row.
-func TestBoardConfigREST_GlobalRoundTrip(t *testing.T) {
+// TestBoardConfigREST_UserRoundTrip: GET renders the acting user's
+// effective board-wide defaults; PUT decodes a partial map, hands the
+// typed override + actor to the service, and renders the new
+// effective row.
+func TestBoardConfigREST_UserRoundTrip(t *testing.T) {
 	svc := newFakeBoardManager()
 	r := newBoardConfigRouter(t, svc)
 
-	w := doBoardREST(t, r, http.MethodGet, "/api/v1/admin/board/config", "")
+	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2}`, w.Body.String())
 
-	w = doBoardREST(t, r, http.MethodPut, "/api/v1/admin/board/config", `{"reviewColumn":"auto"}`)
+	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"auto"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":false,"defaultWorkerSlots":2}`, w.Body.String())
 	require.NotNil(t, svc.lastGlobalConfigSet)
@@ -121,9 +135,11 @@ func TestBoardConfigREST_GlobalRoundTrip(t *testing.T) {
 	assert.Equal(t, "auto", *svc.lastGlobalConfigSet.ReviewColumn)
 	assert.Nil(t, svc.lastGlobalConfigSet.AutoAssignReviewer, "absent key stays unset (inherit)")
 	assert.Nil(t, svc.lastGlobalConfigSet.DefaultWorkerSlots)
+	// REST actor stamping: the JWT user, user kind, rest surface, no token.
+	assert.Equal(t, board.Actor{Kind: board.ActorUser, UserID: "user-1", Surface: board.SurfaceREST}, svc.lastActor)
 
 	// The empty map is a legal clear-all (every key back to default).
-	w = doBoardREST(t, r, http.MethodPut, "/api/v1/admin/board/config", `{}`)
+	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{}`)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.NotNil(t, svc.lastGlobalConfigSet)
 	assert.Nil(t, svc.lastGlobalConfigSet.ReviewColumn, "empty map clears every override (all inherit)")
@@ -131,9 +147,12 @@ func TestBoardConfigREST_GlobalRoundTrip(t *testing.T) {
 	assert.Nil(t, svc.lastGlobalConfigSet.DefaultWorkerSlots)
 }
 
-// TestBoardConfigREST_GlobalRejectsUnknownAndMalformed: unknown keys and
-// malformed values never reach the service (adapter rejects; calls stay 0).
-func TestBoardConfigREST_GlobalRejectsUnknownAndMalformed(t *testing.T) {
+// TestBoardConfigREST_UserRejectsUnknownMalformedNull: unknown keys,
+// malformed values, JSON nulls, a null body, and an empty body never
+// reach the service (adapter rejects; calls stay 0). Null is never a
+// value: an unset key is absent, never null — a null must not
+// masquerade as an explicit false/zero and flip inheritance.
+func TestBoardConfigREST_UserRejectsUnknownMalformedNull(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -146,15 +165,23 @@ func TestBoardConfigREST_GlobalRejectsUnknownAndMalformed(t *testing.T) {
 		{"negative slots", `{"defaultWorkerSlots":-1}`},
 		{"fractional slots", `{"defaultWorkerSlots":2.5}`},
 		{"string slots", `{"defaultWorkerSlots":"3"}`},
+		{"null bool value", `{"autoAssignReviewer":null}`},
+		{"null string value", `{"reviewColumn":null}`},
+		{"null int value", `{"defaultWorkerSlots":null}`},
+		{"null alongside known", `{"reviewColumn":"auto","autoAssignReviewer":null}`},
+		{"top-level null body", `null`},
+		{"empty body", ``},
+		{"whitespace-only body", `   `},
+		{"array body", `["reviewColumn"]`},
 		{"malformed json", `{reviewColumn`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newFakeBoardManager()
 			r := newBoardConfigRouter(t, svc)
-			w := doBoardREST(t, r, http.MethodPut, "/api/v1/admin/board/config", tc.body)
+			w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", tc.body)
 			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-			assert.Equal(t, 0, svc.calls["set_global_board_config"], "rejected writes never reach the service")
+			assert.Equal(t, 0, svc.calls["set_user_board_config"], "rejected writes never reach the service")
 		})
 	}
 }
@@ -216,6 +243,12 @@ func TestBoardConfigREST_ProjectRejectsUnknownAndMalformed(t *testing.T) {
 
 	t.Run("adapter rejects unknown key before service", func(t *testing.T) {
 		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"reviewColumn":"auto","bogus":1}`)
+		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Equal(t, 0, svc.calls["set_project_board_config"])
+	})
+
+	t.Run("adapter rejects null value", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"autoAssignReviewer":null}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 		assert.Equal(t, 0, svc.calls["set_project_board_config"])
 	})

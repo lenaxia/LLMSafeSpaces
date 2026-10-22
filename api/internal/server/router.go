@@ -2328,15 +2328,11 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		bb.Use(services.GetAuth().AuthMiddleware())
 		bb.GET("/search", b.BoardSearch)
 		bb.GET("/health", b.BoardHealth)
-
-		// #1832 item 6: board-wide config defaults are INSTANCE scope —
-		// admin-guarded (the /admin/settings discipline), still gated on
-		// the board engine being wired.
-		bc := router.Group("/api/v1/admin/board")
-		bc.Use(services.GetAuth().AuthMiddleware())
-		bc.Use(middleware.AdminGuard())
-		bc.GET("/config", b.GetGlobalBoardConfig)
-		bc.PUT("/config", b.SetGlobalBoardConfig)
+		// #1832 item 6: board-wide config defaults are USER-scoped (R7
+		// ruling on PR #1840: boards are user-level, so "board-wide" =
+		// the acting user's boards) — the /me surface, no admin gate.
+		bb.GET("/config", b.GetUserBoardConfig)
+		bb.PUT("/config", b.SetUserBoardConfig)
 
 		e := router.Group("/api/v1/me/epics")
 		e.Use(services.GetAuth().AuthMiddleware())

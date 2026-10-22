@@ -97,6 +97,12 @@ func TestValidateBoardConfigKey(t *testing.T) {
 		{"unknown key", "reviewQueue", `"off"`, "unknown"},
 		{"case variant key is unknown", "ReviewColumn", `"auto"`, "unknown"},
 		{"junk value", "reviewColumn", `{}`, "reviewColumn"},
+		// JSON null is NEVER a valid value: an unset key is ABSENT
+		// (omitempty), never null — null must not masquerade as an
+		// explicit false/zero and flip inheritance semantics.
+		{"null reviewColumn", "reviewColumn", `null`, "must not be null"},
+		{"null autoAssignReviewer", "autoAssignReviewer", `null`, "must not be null"},
+		{"null defaultWorkerSlots", "defaultWorkerSlots", `null`, "must not be null"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,6 +164,47 @@ func TestDecodeBoardConfigOverride(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "defaultWorkerSlots")
 	})
+
+	t.Run("null value rejects (unset is absent, never null)", func(t *testing.T) {
+		_, err := DecodeBoardConfigOverride(map[string]json.RawMessage{
+			"autoAssignReviewer": json.RawMessage(`null`),
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not be null")
+	})
+}
+
+// TestValidateBoardConfigOverride pins the TYPED service belt directly
+// (happy + unhappy, per field): a caller that bypassed the adapter's
+// decode still cannot land a malformed override.
+func TestValidateBoardConfigOverride(t *testing.T) {
+	t.Run("nil is valid (clears to full inheritance)", func(t *testing.T) {
+		assert.NoError(t, ValidateBoardConfigOverride(nil))
+	})
+	t.Run("empty is valid", func(t *testing.T) {
+		assert.NoError(t, ValidateBoardConfigOverride(&BoardConfigOverride{}))
+	})
+	t.Run("all-set happy path", func(t *testing.T) {
+		assert.NoError(t, ValidateBoardConfigOverride(&BoardConfigOverride{
+			ReviewColumn:       strPtr("auto"),
+			AutoAssignReviewer: boolPtr(true),
+			DefaultWorkerSlots: intPtr(4),
+		}))
+	})
+	for name, in := range map[string]*BoardConfigOverride{
+		"bad reviewColumn enum":   {ReviewColumn: strPtr("maybe")},
+		"bad autoAssignReviewer":  {AutoAssignReviewer: boolPtr(true), ReviewColumn: strPtr("nope")},
+		"zero defaultWorkerSlots": {DefaultWorkerSlots: intPtr(0)},
+		"neg defaultWorkerSlots":  {DefaultWorkerSlots: intPtr(-1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateBoardConfigOverride(in)
+			require.Error(t, err)
+			guard, ok := err.(*GuardError)
+			require.True(t, ok, "typed belt failures render GuardInput, got %T", err)
+			assert.Equal(t, GuardInput, guard.Code)
+		})
+	}
 }
 
 // TestBoardConfigOverrideWireShape pins the camelCase wire encoding and

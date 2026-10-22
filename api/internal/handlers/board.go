@@ -70,9 +70,9 @@ type boardManager interface {
 
 	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
 
-	GetGlobalBoardConfig(ctx context.Context) (*board.BoardConfig, error)
-	SetGlobalBoardConfig(ctx context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error)
-	GetProjectBoardConfig(ctx context.Context, projectID, shortIDOrID string) (*board.ProjectBoardConfig, error)
+	GetUserBoardConfig(ctx context.Context, actor board.Actor) (*board.BoardConfig, error)
+	SetUserBoardConfig(ctx context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error)
+	GetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string) (*board.ProjectBoardConfig, error)
 	SetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in *board.BoardConfigOverride) (*board.ProjectBoardConfig, error)
 }
 

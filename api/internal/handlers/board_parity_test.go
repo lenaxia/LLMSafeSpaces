@@ -205,14 +205,15 @@ var boardParityMatrix = []parityRow{
 		agentTool: "board_import_plan",
 		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	// #1832 item 6 config rows: the config system's read/write surfaces
-	// are the owner's REST projection (admin-guarded global defaults +
-	// owner-scoped per-project overrides). Declared absent on BOTH MCP
-	// columns BY DESIGN in this slice: board config is a UI-facing
-	// surface (PR-A2 consumes it); MCP tools for it are future work, and
-	// the external column's tool scan pins the absence.
-	{action: "get_global_board_config", restMethods: []string{"GetGlobalBoardConfig"}, rest: liveCell,
+	// are the owner's REST projection (user-scoped board-wide defaults
+	// per the R7 ruling on PR #1840 + owner-scoped per-project
+	// overrides). Declared absent on BOTH MCP columns BY DESIGN in this
+	// slice: board config is a UI-facing surface (PR-A2 consumes it);
+	// MCP tools for it are future work, and the external column's tool
+	// scan pins the absence.
+	{action: "get_user_board_config", restMethods: []string{"GetUserBoardConfig"}, rest: liveCell,
 		externalMCP: absentCell, agent: absentCell},
-	{action: "set_global_board_config", restMethods: []string{"SetGlobalBoardConfig"}, rest: liveCell,
+	{action: "set_user_board_config", restMethods: []string{"SetUserBoardConfig"}, rest: liveCell,
 		externalMCP: absentCell, agent: absentCell,
 		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	{action: "get_project_board_config", restMethods: []string{"GetProjectBoardConfig"}, rest: liveCell,
@@ -367,10 +368,10 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 	case "import_plan":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
 			`{"epicTitle":"E","tasks":[{"key":"a","title":"A"},{"key":"b","title":"B","dependsOn":["a"]}]}`)
-	case "get_global_board_config":
-		return doBoardREST(t, r, http.MethodGet, "/api/v1/admin/board/config", "")
-	case "set_global_board_config":
-		return doBoardREST(t, r, http.MethodPut, "/api/v1/admin/board/config", `{"reviewColumn":"auto"}`)
+	case "get_user_board_config":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/board/config", "")
+	case "set_user_board_config":
+		return doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"auto"}`)
 	case "get_project_board_config":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/config", "")
 	case "set_project_board_config":
@@ -468,7 +469,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 
 // routeMountExpr matches a gin route mount `x.VERB("path", ...)` (the
 // router's established one-route-per-line formatting).
-var routeMountExpr = regexp.MustCompile(`^[a-z]\.(GET|POST|PATCH|PUT|DELETE)\("([^"]*)"`)
+var routeMountExpr = regexp.MustCompile(`^[a-z]+\.(GET|POST|PATCH|PUT|DELETE)\("([^"]*)"`)
 
 // seamBoardRoutes source-scans router.go's board seam registration (the
 // b.* mounts under the /internal/v1/automation/board group) and returns
@@ -611,7 +612,7 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: engine-internal since R9 — permanently absent on every surface", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
-		case "get_global_board_config", "set_global_board_config", "get_project_board_config", "set_project_board_config":
+		case "get_user_board_config", "set_user_board_config", "get_project_board_config", "set_project_board_config":
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: #1832 config rows — the board config surface is the owner's REST/UI projection (admin-guarded global + owner-scoped per-project); external MCP tools are future work, pinned absent by design", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
@@ -921,6 +922,9 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"DELETE /api/v1/me/epics/:id",
 		"DELETE /api/v1/me/tasks/:id",
 		"DELETE /api/v1/me/tasks/:id/dependencies/:dependsOnId",
+		"GET /api/v1/me/board/config",
+		"GET /api/v1/me/board/health",
+		"GET /api/v1/me/board/search",
 		"GET /api/v1/me/epics/:id",
 		"GET /api/v1/me/projects",
 		"GET /api/v1/me/projects/:id",
@@ -948,8 +952,9 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/pause",
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
+		"PUT /api/v1/me/board/config",
 		"PUT /api/v1/me/projects/:id/config",
-	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows; cancel eliminated; task_start stays owner-only)")
+	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows; cancel eliminated; task_start stays owner-only; /me/board group now scanned)")
 }
 
 // restBoardRoutes source-scans router.go's /api/v1/me board groups and
@@ -958,8 +963,8 @@ func restBoardRoutes(t *testing.T) []string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "internal", "server", "router.go"))
 	require.NoError(t, err, "router.go not found — repo layout changed?")
-	prefixes := []string{"/api/v1/me/projects", "/api/v1/me/epics", "/api/v1/me/tasks"}
-	groupVar := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k."}
+	prefixes := []string{"/api/v1/me/projects", "/api/v1/me/epics", "/api/v1/me/tasks", "/api/v1/me/board"}
+	groupVar := map[string]string{"/api/v1/me/projects": "p.", "/api/v1/me/epics": "e.", "/api/v1/me/tasks": "k.", "/api/v1/me/board": "bb."}
 	curPrefix := ""
 	var out []string
 	for _, line := range strings.Split(string(src), "\n") {
@@ -1002,7 +1007,7 @@ var replayExceptions = map[string]string{
 	// the same effective config back (idempotent by construction, the
 	// migration 000041 note; board_events deliberately carries no config
 	// vocabulary).
-	"set_global_board_config":  "replace-semantics config write: no requestId/event writer — idempotent by construction",
+	"set_user_board_config":    "replace-semantics config write: no requestId/event writer — idempotent by construction",
 	"set_project_board_config": "replace-semantics config write: no requestId/event writer — idempotent by construction",
 }
 
@@ -1010,7 +1015,7 @@ var replayExceptions = map[string]string{
 func boardReadActions() map[string]bool {
 	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true,
 		// #1832 config reads: pure reads, nothing to replay or audit.
-		"get_global_board_config": true, "get_project_board_config": true}
+		"get_user_board_config": true, "get_project_board_config": true}
 }
 
 // TestBoardParity_IdempotentReplay: the clientMessageID discipline at

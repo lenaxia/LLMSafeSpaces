@@ -6,27 +6,33 @@ package board
 // config.go — Task Board Config (#1832 item 6, part 1): the storage +
 // read-time merge behind the board-wide config system.
 //
-// Model: a GLOBAL defaults map (board_config_defaults) plus an optional
-// PER-PROJECT override map (board_project_config_overrides), merged at
-// READ time — an unset key in the override map inherits the global
-// default, and a global key that was never written inherits the code
-// default. Storage is per-key jsonb rows (the instance_settings shape),
-// so per-project stays UI-only later and the key set can grow without a
-// row-shape change (grow = key vocabulary + CHECK constraint migration).
+// Model: a USER-SCOPED defaults map (board_config_defaults — the
+// owner's board-wide defaults across ALL their projects; boards are
+// user-level per design 0067 R7, so "board-wide" means the user's
+// boards, NOT the instance) plus an optional PER-PROJECT override map
+// (board_project_config_overrides), merged at READ time — an unset
+// key in the override map inherits the user default, and a user key
+// that was never written inherits the code default. A future INSTANCE
+// tier (instance > user > project) is deliberately not built (owner
+// ruling on PR #1840); see the migration 000041 header. Storage is
+// per-key jsonb rows (the instance_settings shape), so per-project
+// stays UI-only later and the key set can grow without a row-shape
+// change (grow = key vocabulary + CHECK constraint migration).
 //
 // Initial keys: reviewColumn (off|manual|auto, default manual — PR-B1/B2
 // own any review automation; this stores the preference only),
-// autoAssignReviewer (bool, default false), defaultWorkerSlots (int > 0,
-// default 2 — the platform's existing worker-slots default).
+// autoAssignReviewer (bool, default false), defaultWorkerSlots
+// (int > 0, default 2 — the platform's worker-slots default; it feeds
+// CreateProject's fallback when the caller specifies none).
 //
 // Writes are REPLACE-semantics (the tags-REPLACE discipline): a PUT
 // carries the full map; absent keys stop being overridden and revert to
 // inheritance. Validation is layered: the adapter's key-gate decodes
-// and rejects unknown keys/malformed values (400), the service re-checks
-// the typed override (belt), and the tables' CHECK constraints are the
-// physical floor. Unknown keys are fail-closed on read too: a row that
-// somehow drifted past the belts surfaces as an error, never a silently
-// ignored value.
+// and rejects unknown keys/malformed values/null values (400), the
+// service re-checks the typed override (belt), and the tables' CHECK
+// constraints are the physical floor. Unknown keys are fail-closed on
+// read too: a row that somehow drifted past the belts surfaces as an
+// error, never a silently ignored value.
 
 import (
 	"context"
@@ -53,8 +59,11 @@ const (
 )
 
 // DefaultBoardWorkerSlots is the platform default for worker slots: the
-// create-project fallback, the 000036 column default, and the config
-// key's code default — one constant now, three call sites before.
+// Go-side fallback in CreateProject (when the caller specifies none and
+// the user's defaultWorkerSlots config key is unset) and the config
+// key's code default. The 000036 SQL column default (DEFAULT 2) is
+// pinned to the same value by migration convention — SQL cannot import
+// the Go constant.
 const DefaultBoardWorkerSlots = 2
 
 // BoardConfig is the effective merged configuration row (every key
@@ -121,9 +130,15 @@ func MergeBoardConfig(base BoardConfig, o *BoardConfigOverride) BoardConfig {
 // ValidateBoardConfigKey validates one raw key/value pair: the key must
 // be known and the value well-formed for its type (enum membership for
 // reviewColumn, a real bool for autoAssignReviewer, an integral int > 0
-// for defaultWorkerSlots). Violations render GuardInput (the 400 class)
+// for defaultWorkerSlots). A JSON null is NEVER a valid value — an
+// unset key is ABSENT from the map (omitempty), never null; null is
+// rejected so it cannot masquerade as an explicit false/zero and flip
+// inheritance semantics. Violations render GuardInput (the 400 class)
 // — unknown keys name the known set, malformed values name the key.
 func ValidateBoardConfigKey(key string, raw json.RawMessage) error {
+	if string(raw) == "null" {
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s must not be null — omit the key to inherit the next tier's value", key)}
+	}
 	switch key {
 	case ConfigKeyReviewColumn:
 		var v string
@@ -245,10 +260,11 @@ func (o *BoardConfigOverride) rows() []configRow {
 
 // --- Store readers -------------------------------------------------------------
 
-// loadBoardConfigDefaults reads the global defaults map (empty map when
-// nothing was ever written — the code defaults cover it at merge time).
-func (st *Store) loadBoardConfigDefaults(ctx context.Context, q Queryer) (map[string]json.RawMessage, error) {
-	rows, err := q.Query(ctx, `SELECT key, value::text FROM board_config_defaults`)
+// loadBoardConfigDefaults reads one user's board-wide defaults map
+// (empty map when nothing was ever written — the code defaults cover
+// it at merge time).
+func (st *Store) loadBoardConfigDefaults(ctx context.Context, q Queryer, userID string) (map[string]json.RawMessage, error) {
+	rows, err := q.Query(ctx, `SELECT key, value::text FROM board_config_defaults WHERE user_id=$1`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,21 +301,22 @@ func (st *Store) loadBoardProjectConfigOverrides(ctx context.Context, q Queryer,
 	return out, rows.Err()
 }
 
-// replaceBoardConfigDefaults REPLACE-writes the global defaults map in
-// one transaction (absent keys revert to the code defaults).
-func (st *Store) replaceBoardConfigDefaults(ctx context.Context, rows []configRow) error {
+// replaceBoardConfigDefaults REPLACE-writes one user's board-wide
+// defaults map in one transaction (absent keys revert to the code
+// defaults).
+func (st *Store) replaceBoardConfigDefaults(ctx context.Context, userID string, rows []configRow) error {
 	tx, err := st.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM board_config_defaults`); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, userID); err != nil {
 		return err
 	}
 	for _, r := range rows {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO board_config_defaults (key, value) VALUES ($1, $2::jsonb)`,
-			r.Key, string(r.Value)); err != nil {
+			INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, $2, $3::jsonb)`,
+			userID, r.Key, string(r.Value)); err != nil {
 			return err
 		}
 	}
@@ -329,21 +346,24 @@ func (st *Store) replaceBoardProjectConfigOverrides(ctx context.Context, project
 
 // --- Service seam ----------------------------------------------------------------
 
-// globalBoardConfig reads the stored global defaults and decodes them
-// (fail-closed on drift: an unknown key surfacing from storage is an
-// error, never a silently ignored value).
-func (s *Service) globalBoardConfigOverride(ctx context.Context) (*BoardConfigOverride, error) {
-	raw, err := s.store.loadBoardConfigDefaults(ctx, s.q())
+// userBoardConfigOverride reads the acting user's stored board-wide
+// defaults and decodes them (fail-closed on drift: an unknown key or
+// malformed value surfacing from storage is an error, never a
+// silently ignored value).
+func (s *Service) userBoardConfigOverride(ctx context.Context, userID string) (*BoardConfigOverride, error) {
+	raw, err := s.store.loadBoardConfigDefaults(ctx, s.q(), userID)
 	if err != nil {
 		return nil, err
 	}
 	return DecodeBoardConfigOverride(raw)
 }
 
-// GetGlobalBoardConfig renders the effective global defaults: the code
-// defaults overlaid with the stored global map.
-func (s *Service) GetGlobalBoardConfig(ctx context.Context) (*BoardConfig, error) {
-	o, err := s.globalBoardConfigOverride(ctx)
+// GetUserBoardConfig renders the acting user's effective board-wide
+// defaults: the code defaults overlaid with their stored user map
+// (R7: boards are user-level; "board-wide" = the user's boards, NOT
+// the instance — the defaults row is scoped to the owner).
+func (s *Service) GetUserBoardConfig(ctx context.Context, actor Actor) (*BoardConfig, error) {
+	o, err := s.userBoardConfigOverride(ctx, actor.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -351,37 +371,43 @@ func (s *Service) GetGlobalBoardConfig(ctx context.Context) (*BoardConfig, error
 	return &eff, nil
 }
 
-// SetGlobalBoardConfig REPLACE-writes the global defaults map (send the
-// full set; absent keys revert to the code defaults). The route is
-// admin-guarded (instance-scope config, the /admin/settings
-// discipline); the actor rides the seam stamped by the adapter (every
-// mutating board action's discipline) and lands in the write's log
-// line — board_events is the project-scoped audit log and carries no
-// config vocabulary (see migration 000041).
-func (s *Service) SetGlobalBoardConfig(ctx context.Context, actor Actor, in *BoardConfigOverride) (*BoardConfig, error) {
+// SetUserBoardConfig REPLACE-writes the acting user's board-wide
+// defaults map (send the full set; absent keys revert to the code
+// defaults). Guards live here (design 0067:37 — once, in the
+// service): a user-scoped action needs a real acting user; the actor
+// rides the seam stamped by the adapter (every mutating board
+// action's discipline) and lands in the write's log line —
+// board_events is the project-scoped audit log and carries no config
+// vocabulary (see migration 000041 for the explicit deferral ruling).
+func (s *Service) SetUserBoardConfig(ctx context.Context, actor Actor, in *BoardConfigOverride) (*BoardConfig, error) {
+	if actor.UserID == "" {
+		return nil, &GuardError{Code: GuardAuthz, Detail: "board config defaults are user-scoped — an authenticated acting user is required"}
+	}
 	if err := ValidateBoardConfigOverride(in); err != nil {
 		return nil, err
 	}
-	if err := s.store.replaceBoardConfigDefaults(ctx, in.rows()); err != nil {
+	if err := s.store.replaceBoardConfigDefaults(ctx, actor.UserID, in.rows()); err != nil {
 		return nil, err
 	}
-	slog.InfoContext(ctx, "board: global config defaults replaced",
-		"actor.kind", actor.Kind, "actor.user_id", actor.UserID, "actor.surface", actor.Surface,
+	slog.InfoContext(ctx, "board: user config defaults replaced",
+		"user_id", actor.UserID, "actor.kind", actor.Kind, "actor.surface", actor.Surface,
 		"keys", len(in.rows()))
-	return s.GetGlobalBoardConfig(ctx)
+	return s.GetUserBoardConfig(ctx, actor)
 }
 
 // GetProjectBoardConfig renders one project's config surfaces: the raw
-// stored overrides plus the effective row (global effective overlaid
-// with the project's overrides — read-time merge, never materialized).
-// The read perimeter is the adapter's (ownerProject, the GetProject
-// discipline).
-func (s *Service) GetProjectBoardConfig(ctx context.Context, projectID, shortIDOrID string) (*ProjectBoardConfig, error) {
-	p, err := s.store.resolveProject(ctx, s.q(), "", pick(projectID, shortIDOrID))
+// stored overrides plus the effective row (the acting user's
+// board-wide defaults overlaid with the project's overrides —
+// read-time merge, never materialized). The read perimeter is the
+// service's own (design 0067:37: guards once, here): the project
+// resolves scoped to the acting user, so a foreign project renders
+// the scoped 404 (never disclosed) regardless of which adapter calls.
+func (s *Service) GetProjectBoardConfig(ctx context.Context, actor Actor, projectID, shortIDOrID string) (*ProjectBoardConfig, error) {
+	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
 	if err != nil {
 		return nil, err
 	}
-	g, err := s.globalBoardConfigOverride(ctx)
+	u, err := s.userBoardConfigOverride(ctx, actor.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,14 +422,15 @@ func (s *Service) GetProjectBoardConfig(ctx context.Context, projectID, shortIDO
 	return &ProjectBoardConfig{
 		ProjectID: p.ID,
 		Overrides: *ov,
-		Effective: MergeBoardConfig(MergeBoardConfig(DefaultBoardConfig(), g), ov),
+		Effective: MergeBoardConfig(MergeBoardConfig(DefaultBoardConfig(), u), ov),
 	}, nil
 }
 
 // SetProjectBoardConfig REPLACE-writes one project's override map
-// (send the full set; absent keys revert to inheriting the global
-// default). Manager action: ownership (R7) + the #1747 workspace
-// binding on the agent surface, the UpdateProject discipline.
+// (send the full set; absent keys revert to inheriting the user's
+// board-wide default). Manager action: ownership (R7) + the #1747
+// workspace binding on the agent surface, the UpdateProject
+// discipline.
 func (s *Service) SetProjectBoardConfig(ctx context.Context, actor Actor, projectID, shortIDOrID string, in *BoardConfigOverride) (*ProjectBoardConfig, error) {
 	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
 	if err != nil {
@@ -424,5 +451,5 @@ func (s *Service) SetProjectBoardConfig(ctx context.Context, actor Actor, projec
 	slog.InfoContext(ctx, "board: project config overrides replaced",
 		"project_id", p.ID, "actor.kind", actor.Kind, "actor.user_id", actor.UserID, "actor.surface", actor.Surface,
 		"keys", len(in.rows()))
-	return s.GetProjectBoardConfig(ctx, p.ID, "")
+	return s.GetProjectBoardConfig(ctx, actor, p.ID, "")
 }
