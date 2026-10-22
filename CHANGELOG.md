@@ -9,13 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 
-- **The five service builders set `ENV GOTOOLCHAIN=auto`** — belt to
-  #1819's builder-digest suspenders (main already carries the 1.26.10
-  digests, the go.mod bump, vite 8.1.6, and every workflow go-version
-  pin): whatever golang minor a builder digest later resolves to,
-  go.mod's requirement governs the compile. The digest stays the
-  trust anchor; auto only bridges minor gaps, fetching through the
-  module proxy/GOSUMDB.
+- **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
+  #1819's 1.26.10 digest re-pins (main already carries those, the
+  go.mod bump, vite 8.1.6, and every workflow go-version pin): the
+  digest remains the pinned base image; auto makes go.mod's minor
+  requirement govern the compile, fetching the toolchain through the
+  module proxy/GOSUMDB only when it exceeds the image's.
 - **/livez and /readyz are exempt from the global rate limiter.**
   The SDK rate-limit canary pins "not rate-limited" for both, and a
   429 on a k8s liveness probe restarts healthy pods — the probes only
