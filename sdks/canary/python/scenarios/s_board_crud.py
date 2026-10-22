@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from canary import jwt_login, Runner, Config, config_from_env
 from llmsafespaces import LLMSafeSpaces
 
-PRJ = re.compile(r"^prj-[0-9a-z]{8}$")
-EPC = re.compile(r"^epc-[0-9a-z]{8}$")
-TSK = re.compile(r"^tsk-[0-9a-z]{8}$")
+PRJ = re.compile(r"^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$")
+EPC = re.compile(r"^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$")
+TSK = re.compile(r"^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$")
 PR_ANCHOR = re.compile(r"^pr:[1-9][0-9]*$")
 REPLAY_KEY = "11111111-2222-3333-4444-555555555555"
 

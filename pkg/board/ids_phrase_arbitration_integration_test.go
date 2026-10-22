@@ -107,25 +107,42 @@ func TestMintUniqueOwnerWideLadder(t *testing.T) {
 	seedTask("33333333-3333-4333-8333-333333333331", arbP1, arbE1, base)      // owner holds the base
 	seedTask("33333333-3333-4333-8333-333333333332", arbP2, arbE2, base+"-2") // …and the -2 rung (sibling project)
 
-	// The owner-wide task-mint scope: the candidate is taken if ANY of
-	// the owner's projects holds it.
-	got, err := mintUnique(ctx, pool, "tasks", PrefixTask, taskMintOwnerScope, owner)
+	// The deterministic ladder pin: arbitrateMint walks base → base-2 →
+	// base-3 against the owner-wide scope directly (mintUnique's draw
+	// is random and cannot be steered to the seeded base — the review
+	// round caught the original mintUnique-call asserting a forced
+	// base it would essentially never draw).
+	got, err := arbitrateMint(ctx, pool, "tasks", base, taskMintOwnerScope, owner)
 	if err != nil {
-		t.Fatalf("mintUnique: %v", err)
+		t.Fatalf("arbitrateMint: %v", err)
 	}
 	if want := base + "-3"; got != want {
-		t.Fatalf("owner-wide ladder: forced base %s with base and -2 held must mint %s, got %s", base, want, got)
+		t.Fatalf("owner-wide ladder: forced base %s with base and -2 held (sibling project) must arbitrate to %s, got %s", base, want, got)
+	}
+	// A per-project-scoped check would return base-2 — the rung the
+	// owner ALREADY holds in the sibling project (the collision is
+	// invisible inside p1; that silently-wrong id is the exact
+	// regression the owner-wide scope exists to prevent).
+	gotScoped, err := arbitrateMint(ctx, pool, "tasks", base, ` AND project_id=$2::uuid`, arbP1)
+	if err != nil {
+		t.Fatalf("arbitrateMint scoped: %v", err)
+	}
+	if gotScoped != base+"-2" {
+		t.Fatalf("sanity: p1-scoped arbitration must hand out the taken base-2 (collision invisible), got %s", gotScoped)
 	}
 
-	// A fresh base (nothing held) returns the base itself.
-	fresh, err := mintUnique(ctx, pool, "tasks", PrefixTask, taskMintOwnerScope, owner)
-	if err != nil {
-		t.Fatalf("mintUnique fresh: %v", err)
-	}
-	if fresh == base || fresh == base+"-2" || fresh == base+"-3" {
-		t.Fatalf("fresh draw collided with the seeded ladder impossibly: %s", fresh)
-	}
-	if !IsPhraseIDForm(fresh) {
-		t.Fatalf("fresh draw is phrase-form, got %s", fresh)
+	// The full mint path on the same scope draws fresh bases (never the
+	// seeded rungs) and every draw is phrase-form.
+	for i := 0; i < 5; i++ {
+		fresh, err := mintUnique(ctx, pool, "tasks", PrefixTask, taskMintOwnerScope, owner)
+		if err != nil {
+			t.Fatalf("mintUnique fresh: %v", err)
+		}
+		if fresh == base || fresh == base+"-2" || fresh == base+"-3" {
+			t.Fatalf("fresh draw hit the seeded ladder impossibly: %s", fresh)
+		}
+		if !IsPhraseIDForm(fresh) {
+			t.Fatalf("fresh draw is phrase-form, got %s", fresh)
+		}
 	}
 }

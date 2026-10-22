@@ -128,3 +128,32 @@ Fix: union-merge of 34da5751 + renumber this lane's migration to
 Also: main's board-config lane claimed worklog number 1174 — the
 NNNN_ sentinel discipline absorbed both collisions without a renumber
 on my side.
+
+## r3 addendum — review findings remediated + integration seed legs green-up
+
+PR Review (run 39822809981, against pre-merge commit) findings and
+disposition:
+
+1. "Integration tests fail CI (non-uuid ids)" — fixed across
+   4146f987/ab1f76e1/acc1575a/2cfcb7e3 (uuid literals, explicit
+   param casts, valid legacy-form seed short_ids, one epic per
+   project for the tasks FK).
+2. "arbitration test calls mintUnique (random) while asserting a
+   forced base" — REAL: the deterministic pin now calls
+   `arbitrateMint` directly (base→base-3 owner-wide), plus a
+   p1-scoped sanity pin proving the per-project scope would hand out
+   the sibling-held base-2 (the invisible-collision regression the
+   owner-wide scope exists to prevent).
+3. "Public contract stale: sdks/openapi.yaml + SDK canary/contract
+   suites still require the 8-char form" — fixed: 7 openapi patterns
+   dual-accept (phrase | legacy | uuid per surface), response schemas
+   carry `short_id_deprecated`, descriptions/examples phrase-first;
+   hurl contract asserts the PHRASE form on fresh creates (emission
+   pin at the SDK tier); go/python/typescript canary shape regexes
+   flipped to the phrase form. `make -s openapi-validate` green.
+4. "Lint red: duplicate migration 41" — already absorbed by the r2
+   union-merge + renumber to 000043 (review ran pre-merge).
+5. "Slug aliases unaddressed" — disclosed as follow-up: the board's
+   dual-accept window already provides the session-playbook alias
+   equivalent (legacy form keeps resolving, case-insensitively);
+   title-slug aliases are an additive UX layer, not a window blocker.

@@ -4351,7 +4351,7 @@ paths:
         A project is the swimlane: one target workspace the owning user
         can access (ruling R8 — single workspace per project; parallel
         work = sibling projects), a worker-slot budget, and tags. The
-        response's `short_id` (`prj-` + 8 chars, design 0066) addresses
+        response's `short_id` (word phrase since #1831, e.g. `prj-amber-falcon-glides`; legacy `prj-` + 8 chars still resolves through the dual-accept window) addresses
         the project on every surface (case-insensitive; UUID also
         accepted).
       operationId: createBoardProject
@@ -9368,11 +9368,11 @@ components:
       name: id
       in: path
       required: true
-      description: Board project ID — UUID or short id (`prj-` + 8 chars, case-insensitive; design 0066)
+      description: Board project ID — UUID or short id (word phrase `prj-amber-falcon-glides` since #1831, or legacy `prj-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(prj-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: prj-a1b2c3d4
+        pattern: "^(prj-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: prj-amber-falcon-glides
     BoardSearchQ:
       name: q
       in: query
@@ -9419,20 +9419,20 @@ components:
       name: id
       in: path
       required: true
-      description: Board epic ID — UUID or short id (`epc-` + 8 chars, case-insensitive)
+      description: Board epic ID — UUID or short id (word phrase since #1831, or legacy `epc-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(epc-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: epc-b1c2d3e4
+        pattern: "^(epc-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: epc-ebony-lantern-ambles
     BoardTaskId:
       name: id
       in: path
       required: true
-      description: Board task ID — UUID or short id (`tsk-` + 8 chars, case-insensitive)
+      description: Board task ID — UUID or short id (word phrase `tsk-crimson-finch-blooms` since #1831, or legacy `tsk-` + 8 chars; case-insensitive)
       schema:
         type: string
-        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: tsk-c1d2e3f4
+        pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: tsk-crimson-finch-blooms
     BoardDependsOnId:
       name: dependsOnId
       in: path
@@ -9440,8 +9440,8 @@ components:
       description: The dependency target task — UUID or short id (`tsk-…`)
       schema:
         type: string
-        pattern: "^(tsk-[0-9a-z]{8}|[0-9a-fA-F-]{36})$"
-        example: tsk-d1e2f3g4
+        pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
+        example: tsk-crimson-finch-blooms
   responses:
     BadRequest:
       description: Invalid request
@@ -12408,9 +12408,12 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^prj-[0-9a-z]{8}$"
-          example: prj-a1b2c3d4
-          description: The prj- short id (design 0066 mint; per-owner uniqueness, case-insensitive resolution)
+          pattern: "^prj-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: prj-amber-falcon-glides
+          description: The prj- short id (#1831 phrase mint; legacy random rows render short_id_deprecated, per-owner uniqueness, case-insensitive resolution)
+          short_id_deprecated:
+            type: boolean
+            description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         user_id:
           type: string
           description: The owning user (ruling R7 — user-level only; no org boards)
@@ -12459,8 +12462,11 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^epc-[0-9a-z]{8}$"
-          example: epc-b1c2d3e4
+          pattern: "^epc-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: epc-ebony-lantern-ambles
+        short_id_deprecated:
+          type: boolean
+          description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         title:
           type: string
         outcome:
@@ -12516,8 +12522,11 @@ components:
           format: uuid
         short_id:
           type: string
-          pattern: "^tsk-[0-9a-z]{8}$"
-          example: tsk-c1d2e3f4
+          pattern: "^tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)$"
+          example: tsk-crimson-finch-blooms
+        short_id_deprecated:
+          type: boolean
+          description: "#1831 dual-accept window - true when the row still carries the legacy random form (never minted again)"
         title:
           type: string
         description:
