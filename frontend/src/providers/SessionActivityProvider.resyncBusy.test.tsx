@@ -49,6 +49,18 @@ vi.mock("../api/workspaces", () => ({
   },
 }));
 
+// #1821 piece 4: the resync path additionally requests an authoritative
+// busy-snapshot flight per affected workspace — mock the surface so the
+// test's fetch-call accounting (exactly one connection) stays about the
+// SSE stream only.
+const mockRequestStatusSnapshot = vi.fn();
+vi.mock("../api/sessions", () => ({
+  sessionsApi: {
+    create: vi.fn(),
+    requestStatusSnapshot: (id: string) => mockRequestStatusSnapshot(id),
+  },
+}));
+
 const encoder = new TextEncoder();
 
 // A push-controlled reader: delivers chunks as they are pushed by the
@@ -93,6 +105,10 @@ describe("SessionActivityProvider — resync must reconcile busy (live-update re
     fetchMock = vi.fn();
     global.fetch = fetchMock;
     mockGetAlerts.mockResolvedValue([]);
+    // The recheck surface's contract is a promise (the sweep calls
+    // .catch on it); #1848 r4's resync capture fires it from the sweep
+    // effect, so a bare vi.fn() returning undefined would throw.
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
     // REST truth for the whole test: the session FINISHED (idle).
     mockGetSessions.mockResolvedValue([
       {

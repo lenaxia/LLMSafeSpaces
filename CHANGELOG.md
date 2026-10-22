@@ -41,6 +41,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row, `design/0067` §4.1 supersession note, TaskDialog dependency
   placeholder.
 
+### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
+- **The user-stream connect path emits a `session.status.snapshot`
+  flight per Active workspace** (`snapshot_begin` → one snapshot frame
+  carrying `{cursor, sessions: [{session_id(phrase),
+  internal_session_id, status, derived_busy}]}` → `snapshot_complete`
+  with `snapshot_ok`), sourced from the pod's statusz — the same
+  authority `GetAuthoritativeActiveSessions` consults, now with an
+  ok-typed read so an authority failure reads "keep your state"
+  (D10), never an authoritative all-idle. Kills the delta-only fragility
+  (class 1): a subscriber joining after a busy flip — or a page refresh
+  with no `Last-Event-ID` — rebuilds busy in the connect window, and
+  the per-replica replay limitation becomes benign (state converges
+  without the delta log). Rows are phrase-keyed through the #1824
+  translation discipline (`sessionIndex.Register`, degrade flagged
+  `session_id_deprecated`), and the frame carries the broker cursor
+  (`UserEventBroker.LastEventID`, read before the authority fetch).
+- **`POST /workspaces/:id/sessions/status-snapshot`** — the on-demand
+  twin (RequestInputSnapshot pattern, 202 + flight on the user
+  stream): the frontend busy lease's authoritative recheck surface.
+- **EventID-ordered deltas (frontend)**: session.status deltas apply
+  in broker id order against a watermark seeded by the snapshot's
+  cursor — a replayed delta at or below the watermark is skipped,
+  making application idempotent across snapshot/replay overlap
+  (#1781's emission legs unchanged in substance).
+- **90s busy lease + one authoritative recheck (frontend)**: latched
+  busy entries carry `lastConfirmedAt` (any busy-bearing delta or
+  snapshot row refreshes it); expiry after 90s (≈3× the 25s
+  heartbeat, above the 60s liveness window) triggers exactly ONE
+  recheck per lease window via the status-snapshot trigger — the
+  flight's D10 marker decides keep-vs-clear, so an unreachable
+  authority holds the badge as unknown, never flips it to idle. The
+  ok=true snapshot commit is the authoritative per-workspace
+  reconciliation (entries superseded at the cursor clear; fresher
+  deltas survive), replacing the REST overlay as the re-seed source
+  on reconnect/resync/refresh (the overlay stays as the degraded
+  fallback).
+- **Review-hardened (PR #1848 r0)**: the statusz session-list
+  authority signal (`sessions_ok`, pointer — absent on older pods
+  reads ok) so a 200 whose ListSessions failed (agentd's swallowed
+  empty slice) reads non-authoritative instead of clearing latched
+  busy; delta ordering is now DEDUP-BY-APPLIED-SET + snapshot-cursor
+  subsumption instead of a watermark (the broker delivers after
+  releasing the shard lock — out-of-order arrivals of never-applied
+  deltas must still apply); a stale overlapping flight (cursor below
+  the applied evidence high-water) is discarded instead of
+  re-latching; REST-seeded and cursor-0 entries are orderable-at-0
+  (governable by any snapshot — no permanently-protected classes);
+  degraded harness-keyed rows heal client-side through the alias
+  seam; the connect-path flight Registers only busy rows (cold-replica
+  budget) and coalesces per workspace (one in-flight flight per
+  trigger window).
+- **Review-hardened round 2 (PR #1848 r1)**: every ordering bound is
+  PER-WORKSPACE (a snapshot covers only its own workspace's rows —
+  global bounds suppressed other workspaces' never-applied deltas and
+  discarded their flights); resync/reconnect RESET the ordering state
+  (the broker's id space is per-replica, restarting at 1) and resync
+  additionally requests one authoritative busy-snapshot flight per
+  affected workspace (the authority re-seed, not just the REST
+  overlay); a flight with unhealed degraded rows adds busy but never
+  removes (its id join is partial); agent_died / non-Active phase
+  invalidate the workspace's open flights (no post-terminal re-latch);
+  agentd's ListSessions treats non-2xx as an error (the status-blind
+  empty-array decode could still report sessions_ok=true).
+- **Review-hardened round 3 (PR #1848 r2)**: the on-demand trigger's
+  coalescing moved OUT of the emitter (the connect path always emits
+  its own per-subscriber flight — a mid-flight joiner has no backlog
+  and was left unseeded); delta ordering is enforced PER-SESSION (an
+  out-of-order older transition for the same session can no longer
+  overwrite the newer one), and overlapping-flight staleness is
+  resolved per-entry (every authority-answered session's watermark
+  moves to the flight's cursor — an unrelated session's delta can no
+  longer starve the recheck's rows); a degraded busy row blocks
+  removal of exactly the entries it may correspond to (matched by the
+  additive harness id, now carried on latched entries) instead of the
+  whole workspace's removals; a non-authoritative (ok=false / dropped)
+  flight schedules ONE authority retry per lease window (the
+  post-wipe re-seed previously left no lease to recover with); the
+  route is documented in sdks/openapi.yaml (the router↔spec parity
+  gate); Playwright e2e pins the connect-path badge (refresh-mid-busy,
+  abort-reconnect, down-then-recovered).
+- **Review-hardened round 4 (PR #1848 r3)**: the snapshot commit
+  reconciles INSIDE the state updater against its fresh `prev` (SSE
+  frames dispatch synchronously per chunk — a render-closure read was
+  stale within the chunk and could delete a same-chunk newer busy
+  re-confirm); idle rows are REGISTERED server-side too (every row
+  joins the phrase id space — a harness-keyed idle row could not
+  advance a phrase-keyed session's ordering watermark); the degraded
+  row blocks removal only of entries it could BE (own harness id,
+  reverse alias of the phrase, or a session with no resolved answer) —
+  a resolved answer always clears; terminal events (agent_died /
+  non-Active phase) also drop the pending recheck and the wipe memory
+  (no 90s retry loop for dead workspaces); a dropped flight
+  (ok=true, staged missing) schedules nothing; and the charter's
+  unknown-hold is delivered end-to-end: the reconnect/resync wipe
+  REMEMBERS what it cleared, and an ok=false answer to the post-wipe
+  re-seed re-latches it as unknown (never idle) with the lease owning
+  a once-per-window recovery cadence — pinned in vitest (fake timers)
+  and at e2e fidelity (authority-down never clears a live badge).
+- **Review-hardened round 6 (PR #1848 r5)**: the reconnect/resync wipe
+  memory is stored orderable-at-zero (a pre-wipe confirm id belongs to
+  the old replica's event-id space and could block the new replica's
+  authoritative clears forever); a post-wipe session.status delta
+  prunes the memory (an ok=false can no longer resurrect state the
+  authority already cleared); latching busy evidence hands the recheck
+  cadence to the lease (exactly one recheck POST per 90s window — the
+  no-evidence pending retry and the lease no longer double-fire); and
+  the authority-down e2e now proves the unknown-hold itself (the busy
+  delta rides the initial connects only; reconnects answer ok=false
+  alone), plus a resync-driven hold e2e.
+- **Review-hardened round 5 (PR #1848 r4)**: the resync recheck
+  capture rides the state-updater queue (a render-closure read was
+  stale within one SSE chunk — a same-chunk busy delta followed by
+  resync was never re-checked); a late ok=false after agent_died or a
+  non-Active flip arms nothing (no 90s POST loop for a dead workspace;
+  Active re-arms service); a degraded harness-keyed idle row beats an
+  older phrase-keyed busy flight (the busy row's latch checks its own
+  harness-id watermark too); idle snapshot rows are pinned
+  phrase-keyed at the wire; and the lost-idle lease recheck is pinned
+  at e2e fidelity (open-stream authority, fake-clock lease expiry).
+
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
 
 - **A task whose worker attempt failed is now VISIBLE**: every
@@ -5687,3 +5807,4 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 [0.2.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lenaxia/LLMSafeSpaces/releases/tag/v0.1.0
 ## Placeholder
+

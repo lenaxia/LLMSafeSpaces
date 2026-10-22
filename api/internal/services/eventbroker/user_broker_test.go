@@ -604,3 +604,29 @@ func TestPublishToWorkspace_HeartbeatsNotCountedDelivered(t *testing.T) {
 	assert.Equal(t, 1.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", string(HeartbeatSentinelType))),
 		"the counter is uniform by type — heartbeat exclusion lives at the stream layer (never counted there)")
 }
+
+// #1821 piece 3: LastEventID is the busy-snapshot flight's cursor —
+// the id the client orders subsequent session.status deltas against.
+func TestUserEventBroker_LastEventID(t *testing.T) {
+	b := NewUserEventBroker()
+
+	if got := b.LastEventID("u-none"); got != 0 {
+		t.Fatalf("unknown user: want 0, got %d", got)
+	}
+
+	b.PublishToUser("u1", apitypes.WorkspaceSSEEvent{Type: "workspace.phase", WorkspaceID: "w", Phase: "Active"})
+	b.PublishToUser("u1", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: "w", SessionID: "s", Status: "busy"})
+
+	if got := b.LastEventID("u1"); got != 2 {
+		t.Fatalf("after two publishes: want 2, got %d", got)
+	}
+
+	// Per-user isolation: another user's publishes must not move it.
+	b.PublishToUser("u2", apitypes.WorkspaceSSEEvent{Type: "workspace.phase", WorkspaceID: "w", Phase: "Active"})
+	if got := b.LastEventID("u1"); got != 2 {
+		t.Fatalf("u1 cursor moved after u2 publish: want 2, got %d", got)
+	}
+	if got := b.LastEventID("u2"); got != 1 {
+		t.Fatalf("u2 cursor: want 1, got %d", got)
+	}
+}

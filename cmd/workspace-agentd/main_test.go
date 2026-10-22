@@ -134,14 +134,14 @@ func TestCachedState_CachesWithinTTL(t *testing.T) {
 	cache := &providerCache{}
 
 	// First call populates cache
-	connected1, configured1, sessions1 := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
+	connected1, configured1, sessions1, _ := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.Equal(t, []string{"opencode"}, connected1)
 	assert.Equal(t, 1, configured1)
 	assert.Len(t, sessions1, 1)
 	firstCallCount := callCount
 
 	// Second call within TTL should use cache
-	connected2, configured2, sessions2 := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
+	connected2, configured2, sessions2, _ := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.Equal(t, connected1, connected2)
 	assert.Equal(t, configured1, configured2)
 	assert.Equal(t, sessions1, sessions2)
@@ -185,7 +185,7 @@ func TestStatuszEndpoint_IncludesSessionsAndDisk(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		healthy, version, _ := client.IsHealthy(r.Context())
-		connected, configured, sessions := cachedState(r.Context(), client, cache, tracker, nil)
+		connected, configured, sessions, _ := cachedState(r.Context(), client, cache, tracker, nil)
 		ready := healthy && len(connected) > 0
 
 		activeCnt := 0
@@ -703,7 +703,7 @@ func TestSessionStatusTracker_MergesIntoCachedState(t *testing.T) {
 	// Simulate SSE event marking ses_1 as busy
 	tracker.set("ses_1", "busy")
 
-	_, _, sessions := cachedState(context.Background(), client, cache, tracker, nil)
+	_, _, sessions, _ := cachedState(context.Background(), client, cache, tracker, nil)
 
 	assert.Len(t, sessions, 2)
 	assert.Equal(t, "busy", sessions[0].Status)
