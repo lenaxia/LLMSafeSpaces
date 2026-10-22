@@ -390,6 +390,26 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     await waitFor(() => expect(laneC.querySelectorAll('[data-testid^="band-task-"]').length).toBe(0));
     expect(laneC.querySelectorAll('[data-testid^="epic-band-"]').length).toBe(0);
     expect(laneC.querySelectorAll('[data-testid^="task-card-"]').length).toBe(0);
+
+    // THE GUARD (r5): the pre-fix leak also DUPLICATED Apollo's rows —
+    // the leaked rows carry project_id=proj-uuid-a, so they render a
+    // second time inside Apollo's own lane. Ceres-lane emptiness alone
+    // cannot catch that (review 5618571787, verified empirically);
+    // uniqueness in the OWNING lane is what fails on revert.
+    const laneA = screen.getByTestId("swimlane-prj-aaaa1111");
+    await waitFor(() => {
+      const cards = laneA.querySelectorAll('[data-testid^="task-card-"]');
+      expect(cards.length).toBeGreaterThan(0);
+    });
+    const distinctIds = new Set(
+      [...laneA.querySelectorAll('[data-testid^="task-card-"]')].map((el) =>
+        el.getAttribute("data-testid"),
+      ),
+    );
+    expect(laneA.querySelectorAll('[data-testid^="task-card-"]').length).toBe(distinctIds.size);
+    expect(
+      screen.getAllByTestId("task-card-tsk-aaaa0001").length,
+    ).toBe(1);
   });
 });
 
