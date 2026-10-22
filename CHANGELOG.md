@@ -160,6 +160,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness-id watermark too); idle snapshot rows are pinned
   phrase-keyed at the wire; and the lost-idle lease recheck is pinned
   at e2e fidelity (open-stream authority, fake-clock lease expiry).
+### Added — Task Board: config UI section (issue #1832 item 6, part 2)
+
+- **Settings → Task Board tab**: the user's board-wide defaults editor
+  (reviewColumn `off|manual|auto`, autoAssignReviewer,
+  defaultWorkerSlots ≥ 1) over `GET/PUT /api/v1/me/board/config`, with
+  client-side validation mirroring the server (enum + integer gates
+  block the send before any request).
+- **Per-project override editors** over `GET/PUT
+  /api/v1/me/projects/:id/config`: reviewColumn + autoAssignReviewer
+  only (defaultWorkerSlots is a user-level key the project tier
+  rejects), Inherit = the key's absence (REPLACE semantics — Save
+  sends the override set, `{}` clears to full inheritance).
+- **Effective view with provenance**: each project row shows the
+  merged effective config, each key marked override vs inherited from
+  the stored overrides.
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
 
