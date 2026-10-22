@@ -24,13 +24,13 @@ The five service builders set `ENV GOTOOLCHAIN=auto`. #1819 (merged) re-pinned t
 
 ### Health-probe rate-limit exemption
 
-Diagnosed the canary failure: /livez + /readyz were never in the limiter's ExemptPaths — they passed only by refill-boundary luck after the canary's login burst; operationally a 429 on a k8s liveness probe restarts healthy pods. Added both to DefaultRouterConfig's ExemptPaths (router.go:328).
+Diagnosed the canary failure: /livez + /readyz were never in the limiter's ExemptPaths — they passed only by refill-boundary luck after the canary's login burst; operationally a 429 on the liveness probe restarts healthy pods and on the readiness probe de-services the pod (monitoring.md semantics). Added both to DefaultRouterConfig's ExemptPaths (router.go:328).
 
 ### Red-first regression pin
 
 `TestRouter_HealthProbesNeverRateLimited`: production wiring; (1,1) global limiter; an exhaustion CONTROL leg (429 observed on an ordinary route from the same IP — never assumed) before /livez is asserted exactly 200 and /readyz its typed 503 (stubbed pings = unreachable; the r1 panic class is structurally impossible with stubs). Verified RED pre-fix, GREEN post-fix; the r3 reviewer independently re-verified red/green by reverting the exemption at head.
 
-### Review iterations r1→r6 (pre-rebuild heads)
+### Review iterations r1→r6 (r1→r3 pre-rebuild heads; r4+ at the rebuilt heads)
 
 The false-green `!= 429` shape replaced with the discriminating exact-status + control form; the stale comments corrected (the remaining "unstubbed" mentions describe the pre-stub panic behavior, not the current mocks); the refill rationale states the mechanism (rate = limit → 1 token/second; DefaultWindow unused by the strategy; exhaustion is empirical); the CHANGELOG `(nothing yet)` placeholder removed — claimed in r3 but actually landed in r4 (the r3-era removal was a silent no-op; owned on the PR thread); the template deviations (doubled `---`, non-`None.` Blockers) fixed in r5 — and this ### subsection restructure is r6.
 

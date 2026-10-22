@@ -119,7 +119,9 @@ func TestRouter_1652_AuthAccountLifecycleRateLimits(t *testing.T) {
 // TestRouter_HealthProbesNeverRateLimited pins the SDK-canary contract
 // (#1825 red leg: "FAIL /livez: not rate-limited") and the k8s
 // operational requirement: /livez and /readyz must NEVER answer 429 —
-// a rate-limited liveness probe restarts healthy pods. The global
+// a rate-limited LIVENESS probe restarts healthy pods; a rate-limited
+// READINESS probe de-services the pod (removed from endpoints, not
+// restarted — monitoring.md's probe semantics). The global
 // limiter is tightened to (1,1); an ordinary route from the same IP
 // proves the budget IS exhausted (429 OBSERVED — the control leg never
 // assumes it) before the probes are checked. /livez must answer 200
