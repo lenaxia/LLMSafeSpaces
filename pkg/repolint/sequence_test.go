@@ -1247,8 +1247,8 @@ func TestLive_Worklogs_NoMainlineCollisions(t *testing.T) {
 	// invariant reddens CI on the result).
 	//
 	// Kept as a no-op to avoid breaking test runners that reference it;
-	// the live invariant is now covered by TestLive_Worklogs_NoDuplicates
-	// (which checks for NNNN_ sentinels).
+	// TestLive_Worklogs_NoDuplicates covers the sentinel surface; the
+	// live DUPLICATE invariant is runWorklogUniqueness (cmd/repolint).
 	t.Skip("retired under NNNN_ sentinel scheme; see TestLive_Worklogs_NoDuplicates")
 }
 

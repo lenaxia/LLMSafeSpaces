@@ -26,11 +26,13 @@ name: Worklog Renumbering
 #
 #   workflow_dispatch: manual trigger for operators (rare).
 #
-# Race safety: same as the original embedded version — GitHub serializes
-# merge commits, so each run sees the previous run's renumbered state,
-# and the [skip ci] in the auto-commit message prevents an infinite
-# loop. Two simultaneous merges would each tick the bot; the second
-# would see the first's renumbered tree and assign the next number.
+# Race safety: partial — GitHub serializes merge commits, so the common
+# case is sequential (each run sees the previous renumbered state), and
+# the [skip ci] in the auto-commit message prevents an infinite loop.
+# NOT atomic across the lag window (#1795): two merges landing between
+# numbering runs can each draw the same next-free number — the repolint
+# uniqueness invariant reddens CI on the duplicate, and the next bot
+# run (or a manual renumber) heals it.
 
 on:
   push:

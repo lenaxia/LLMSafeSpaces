@@ -109,8 +109,11 @@ EOF
 # or a manual rename (uppercase-slug files: see the note at
 # cmd/repolint/main.go).
 #
-# Other failures (migrations, CRD drift, chart drift, gitleaks) require
-# human judgement and are NEVER auto-fixed here.
+# Other failures (migrations, CRD drift, chart drift, gitleaks, worklog
+# duplicates) require human judgement and are NEVER auto-fixed here.
+# A worklogs-uniqueness failure: a lag-window duplicate — heal by
+# renaming one of the named files to the next free number (see
+# cmd/repolint/main.go's runWorklogUniqueness note).
 run_repolint_gate() {
     local hint="$1"
     echo "== pre-commit: repolint =="

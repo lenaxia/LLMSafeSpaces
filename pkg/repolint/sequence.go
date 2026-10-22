@@ -459,8 +459,11 @@ type WorklogRename struct {
 // `<next-number>_<date>_<slug>.md`. Sentinels are processed in lexical
 // order so same-branch batches get contiguous numbers in a stable order.
 //
-// When origin/main is reachable, files that exist there are treated as
-// incumbents — they stay; files unique to this working copy are renumbered.
+// When origin/main is reachable, NUMBERED files that exist there are
+// treated as incumbents — they stay; files unique to this working copy
+// are renumbered. (Main-inherited SENTINELS are the ruling-c exception:
+// assignSentinels deliberately renumbers them too — the distributed
+// self-heal for the bot-lag window.)
 // This is the correct signal after `git rebase origin/main`: mainline's
 // worklog and yours both end up in worklogs/, and mainline's was merged
 // first. Mainline files also participate in collision detection as

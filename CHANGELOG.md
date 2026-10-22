@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+
+- **Duplicate worklog numbers now FAIL `make repolint`** — the new
+  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
+  (`WorklogNumberPattern`) so historical uppercase-slug files count
+  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
+  the lowercase-only slug class; healed here by renumbering the
+  non-series member of each pair to 1166/1167). Gaps stay warnings:
+  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
+  (pinned end-to-end through the real hook: every sentinel numbered,
+  main-inherited included, all unique) and the falsified "sentinels
+  never appear on origin/main" / "collisions cannot occur" comments
+  are corrected. The invariant caught one real collision in-flight
+  (its own PR's 1161 vs main's lag-window assignment); a second
+  (1162) was pre-empted by a manual leapfrog before it could redden.
+  Companion security bumps shipped separately: 43a7ba29 (Go
+  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
+
+## [0.40.1] - 2026-10-21
+
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
 
 - **The delivery boundary now refuses literal placeholder tokens.** The
@@ -245,25 +265,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
-
-### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
-
-- **Duplicate worklog numbers now FAIL `make repolint`** — the new
-  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
-  (`WorklogNumberPattern`) so historical uppercase-slug files count
-  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
-  the lowercase-only slug class; healed here by renumbering the
-  non-series member of each pair to 1166/1167). Gaps stay warnings:
-  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
-  (pinned end-to-end through the real hook: every sentinel numbered,
-  main-inherited included, all unique) and the falsified "sentinels
-  never appear on origin/main" / "collisions cannot occur" comments
-  are corrected. The invariant caught one real collision in-flight
-  (its own PR's 1161 vs main's lag-window assignment); a second
-  (1162) was pre-empted by a manual leapfrog before it could redden.
-  Companion security bumps shipped separately: 43a7ba29 (Go
-  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
-
 ### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
 - **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
