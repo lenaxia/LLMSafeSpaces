@@ -4581,7 +4581,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BoardConfigOverride"
+              $ref: "#/components/schemas/BoardConfigOverrideProject"
       responses:
         "200":
           description: Updated project config (overrides + effective)
@@ -12346,9 +12346,9 @@ components:
         set; `{}` clears every override. Unknown keys, malformed
         values, and JSON null values reject (400) — an unset key is
         ABSENT from the object, never null. NOTE:
-        defaultWorkerSlots is user-level (PUT /me/board/config) and is
-        rejected on the project override surface; a project's worker
-        slots are fixed at create.
+        defaultWorkerSlots is user-level (PUT /me/board/config); the
+        project surface uses BoardConfigOverrideProject, which omits
+        it (a project's worker slots are fixed at create).
       properties:
         reviewColumn:
           type: string
@@ -12358,6 +12358,24 @@ components:
         defaultWorkerSlots:
           type: integer
           minimum: 1
+      additionalProperties: false
+    BoardConfigOverrideProject:
+      type: object
+      description: |
+        #1832 item 6: the PER-PROJECT override map (PUT
+        /me/projects/{id}/config body and the raw stored overrides in
+        BoardProjectConfig). Same REPLACE-semantics and null/unknown
+        rejection as BoardConfigOverride, but scoped to the
+        project-level keys ONLY: defaultWorkerSlots is deliberately
+        ABSENT — it is a user-level key (PUT /me/board/config); a
+        project's worker slots are fixed at create, and the service
+        rejects the key here with 400 invalid_input.
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+        autoAssignReviewer:
+          type: boolean
       additionalProperties: false
     BoardProjectConfig:
       type: object
@@ -12370,7 +12388,7 @@ components:
           type: string
           format: uuid
         overrides:
-          $ref: "#/components/schemas/BoardConfigOverride"
+          $ref: "#/components/schemas/BoardConfigOverrideProject"
         effective:
           $ref: "#/components/schemas/BoardConfig"
     BoardProject:
