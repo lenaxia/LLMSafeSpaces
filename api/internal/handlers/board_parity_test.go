@@ -149,6 +149,8 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_record_verdict"}, agent: absentCell}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it
 	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
+	{action: "board_task_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
 		agentTool: "board_create_epic"},
@@ -339,6 +341,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
 	case "task_verdicts":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/verdicts", "")
+	case "board_task_events":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/events", "")
 	case "record_verdict":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict",
 			`{"verdict":"fail","reviewer":"rev","findings":[{"severity":"blocker","pointer":"c1"}]}`)
@@ -768,6 +772,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_list_projects", map[string]any{}, true
 	case "task_verdicts":
 		return "board_task_verdicts", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "board_task_events":
+		return "board_task_events", map[string]any{"task_id": "tsk-cccc3333"}, true
 	case "record_verdict":
 		return "board_record_verdict", map[string]any{
 			"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
@@ -948,6 +954,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"GET /api/v1/me/projects/:id/epics",
 		"GET /api/v1/me/projects/:id/tasks",
 		"GET /api/v1/me/tasks/:id",
+		"GET /api/v1/me/tasks/:id/events",
 		"GET /api/v1/me/tasks/:id/verdicts",
 		"PATCH /api/v1/me/epics/:id",
 		"PATCH /api/v1/me/projects/:id",
@@ -1035,7 +1042,9 @@ func boardReadActions() map[string]bool {
 		// #1832 config reads: pure reads, nothing to replay or audit.
 		"get_user_board_config": true, "get_project_board_config": true,
 		// #1832 item 5: the verdict chain read.
-		"task_verdicts": true}
+		"task_verdicts": true,
+		// #1832 item 4: the task-events timeline read.
+		"board_task_events": true}
 }
 
 // TestBoardParity_IdempotentReplay: the clientMessageID discipline at

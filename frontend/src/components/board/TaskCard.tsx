@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
-import { Link2, Play, AlertTriangle } from "lucide-react";
+import { Link2, Play, AlertTriangle, Info } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { BoardTask } from "../../api/board";
 import { STAGE_LABELS, PENDING_ORIGIN_LABELS, prAnchorOf, type BoardStage } from "../../lib/boardRules";
@@ -53,6 +53,9 @@ interface TaskCardProps {
   /** True while a task_start for this card is in flight. */
   starting?: boolean;
   onOpen?: (task: BoardTask) => void;
+  /** #1832 item 4: the details affordance — opens the task-detail
+   * drawer (the card's primary click keeps its edit-dialog behavior). */
+  onDetails?: (task: BoardTask) => void;
   onDragStart?: (task: BoardTask) => void;
   onDragEnd?: (task: BoardTask) => void;
 }
@@ -65,7 +68,7 @@ interface TaskCardProps {
  * attempt counter with its escalation preview, and the backlog Start
  * affordance (task_start).
  */
-export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, onOpen, onDragStart, onDragEnd }: TaskCardProps) {
+export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
@@ -103,6 +106,21 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
       <div className="flex items-start justify-between gap-1">
         <span className="font-mono text-[10px] text-muted-foreground">{task.short_id}</span>
         <div className="flex items-center gap-1">
+          {onDetails && (
+            <button
+              type="button"
+              data-testid={`details-${task.short_id}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDetails(task);
+              }}
+              title="Task details — charter, criteria, full audit timeline"
+              aria-label={`Task details ${task.short_id}`}
+              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Info className="h-3 w-3" />
+            </button>
+          )}
           {task.stage === "backlog" && onStart && (
             <button
               type="button"

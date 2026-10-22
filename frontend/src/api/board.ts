@@ -117,6 +117,36 @@ export interface BoardEventPayload {
   task?: Partial<BoardTask> & { stage?: string; short_id?: string };
 }
 
+/** #1832 item 4: one board_events row — the task-detail drawer's audit
+ * timeline read (GET /me/tasks/:id/events). Wire shape is the row
+ * VERBATIM (snake_case); chronological ascending, newest-N window. */
+export interface BoardAuditEvent {
+  id: string;
+  project_id: string;
+  item_kind?: string;
+  item_id?: string;
+  action: string;
+  actor?: { kind?: string; user_id?: string; surface?: string; workspace_id?: string; session_id?: string } | null;
+  payload?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** The structured review verdict riding a review-bounce move_stage
+ * payload (PR-B's verdict; rendered by the timeline when present). */
+export interface BoardVerdictFinding {
+  severity: string;
+  pointer?: string;
+  criterion_index?: number;
+  note?: string;
+}
+
+export interface BoardVerdict {
+  verdict: string;
+  reviewer?: string;
+  timestamp?: string;
+  findings?: BoardVerdictFinding[];
+}
+
 // --- Inputs (camelCase request bodies, per the REST projection) -----------------
 
 export interface BoardProjectInput {
@@ -277,6 +307,12 @@ export const boardApi = {
     api.post<BoardTask>(`/me/epics/${encodeURIComponent(epicIdOrShort)}/tasks`, { ...input, requestId: newBoardRequestId() }),
   getTask: (idOrShort: string): Promise<BoardTask> =>
     api.get<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}`),
+  /** #1832 item 4: the task's FULL audit timeline (board_events rows,
+   * chronological ascending; limit keeps the newest N, default 200). */
+  taskEvents: (idOrShort: string, limit?: number): Promise<BoardAuditEvent[]> => {
+    const q = limit ? `?limit=${limit}` : "";
+    return api.get<{ events: BoardAuditEvent[] }>(`/me/tasks/${encodeURIComponent(idOrShort)}/events${q}`).then((r) => r.events ?? []);
+  },
   updateTask: (idOrShort: string, input: BoardTaskInput): Promise<BoardTask> =>
     api.patch<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}`, { ...input, requestId: newBoardRequestId() }),
   moveStage: (idOrShort: string, toStage: string, evidenceUrl?: string): Promise<BoardTask> =>

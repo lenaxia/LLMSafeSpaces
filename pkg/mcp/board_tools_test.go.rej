@@ -1,0 +1,23 @@
+diff a/pkg/mcp/board_tools_test.go b/pkg/mcp/board_tools_test.go	(rejected hunks)
+@@ -44,9 +44,11 @@ import (
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+-// boardToolNames is the exact external surface (design §4.3b): 19 tools.
++// boardToolNames is the exact external surface (design §4.3b + the
++// #1832 item-4 timeline read): 25 tools.
+ var boardToolNames = []string{
+ 	"board_list_projects", "board_get", "board_read", "board_health",
++	"board_task_events",
+ 	"board_create_project", "board_create_epic", "board_create_task",
+ 	"board_update_item", "board_move_stage", "board_start_task",
+ 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
+@@ -582,6 +590,8 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any)
+ 		return h.boardGet(ctx, makeReq(name, args))
+ 	case "board_read":
+ 		return h.boardRead(ctx, makeReq(name, args))
++	case "board_task_events":
++		return h.boardTaskEvents(ctx, makeReq(name, args))
+ 	case "board_health":
+ 		return h.boardHealth(ctx, makeReq(name, args))
+ 	case "board_create_project":

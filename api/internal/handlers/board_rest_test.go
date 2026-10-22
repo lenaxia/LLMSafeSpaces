@@ -44,6 +44,12 @@ type fakeBoardManager struct {
 	searchResult *board.SearchResult
 	health       *board.Health
 
+	events []board.Event
+
+	// #1832 item 4: the audit-timeline read's capture arms.
+	lastTaskEventsRef   string
+	lastTaskEventsLimit int
+
 	lastVerdictInput board.VerdictInput
 	verdicts         []board.Verdict
 
@@ -285,6 +291,16 @@ func (f *fakeBoardManager) GetTask(_ context.Context, _, _ string) (*board.Task,
 	return nil, &board.NotFoundError{Item: "task", Identifier: "t1"}
 }
 
+func (f *fakeBoardManager) TaskEvents(_ context.Context, _, shortIDOrID string, limit int) ([]board.Event, error) {
+	f.call("task_events")
+	f.lastTaskEventsRef = shortIDOrID
+	f.lastTaskEventsLimit = limit
+	if err := f.errFor["task_events"]; err != nil {
+		return nil, err
+	}
+	return f.events, nil
+}
+
 func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage, failed string) ([]board.Task, error) {
 	f.call("list_tasks")
 	f.lastFailed = failed
@@ -469,6 +485,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	e.POST("/:id/tasks", h.CreateEpicTask)
 	k := g.Group("/tasks")
 	k.GET("/:id", h.GetTask)
+	k.GET("/:id/events", h.TaskEvents)
 	k.PATCH("/:id", h.UpdateTask)
 	k.POST("/:id/move-stage", h.MoveStageTask)
 	k.POST("/:id/verdict", h.RecordTaskVerdict)

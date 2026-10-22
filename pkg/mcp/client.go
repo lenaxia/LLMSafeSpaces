@@ -125,6 +125,7 @@ type APIClient interface {
 	BoardDeleteEpic(ctx context.Context, epicID string, force bool) (json.RawMessage, error)
 	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
+	BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error)
 	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
 	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
@@ -1439,6 +1440,17 @@ func (c *HTTPClient) BoardGetTask(ctx context.Context, taskID string) (json.RawM
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID, nil)
+}
+
+func (c *HTTPClient) BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	path := "/api/v1/me/tasks/" + taskID + "/events"
+	if limit > 0 {
+		path = fmt.Sprintf("%s?limit=%d", path, limit)
+	}
+	return c.doRaw(ctx, http.MethodGet, path, nil)
 }
 
 func (c *HTTPClient) BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error) {

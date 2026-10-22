@@ -15,6 +15,7 @@ import type { ApiError } from "../api/types";
 export const mockListProjects = vi.fn();
 export const mockListProjectTasks = vi.fn();
 export const mockListProjectEpics = vi.fn();
+export const mockTaskEvents = vi.fn();
 export const mockMoveStage = vi.fn();
 export const mockCreateProject = vi.fn();
 export const mockCreateEpic = vi.fn();
@@ -34,6 +35,7 @@ vi.mock("../api/board", () => ({
     listProjects: () => mockListProjects(),
     listProjectTasks: (id: string, stage?: string) => mockListProjectTasks(id, stage),
     listProjectEpics: (id: string) => mockListProjectEpics(id),
+    taskEvents: (id: string, limit?: number) => mockTaskEvents(id, limit),
     moveStage: (id: string, to: string, ev?: string) => mockMoveStage(id, to, ev),
     startTask: (id: string) => mockStartTask(id),
     createProject: (input: unknown) => mockCreateProject(input),

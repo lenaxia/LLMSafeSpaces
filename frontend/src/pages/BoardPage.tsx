@@ -12,6 +12,7 @@ import { TagInput } from "../components/ui/TagInput";
 import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
 import { TaskCard } from "../components/board/TaskCard";
 import { TaskDialog } from "../components/board/TaskDialog";
+import { TaskDrawer } from "../components/board/TaskDrawer";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { KanbanSquare, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -378,6 +379,9 @@ export function BoardPage() {
   const [taskDialog, setTaskDialog] = useState<{ mode: "create"; epic: BoardEpic } | { mode: "edit"; task: BoardTask } | null>(null);
   const [dialogError, setDialogError] = useState<DescribedBoardError | null>(null);
   const [epicDrawer, setEpicDrawer] = useState<BoardEpic | null>(null);
+  // #1832 item 4: the task-detail drawer (charter + criteria + full
+  // audit timeline) — opened from the card's details affordance.
+  const [taskDrawer, setTaskDrawer] = useState<BoardTask | null>(null);
 
   const createProjectMutation = useMutation({
     mutationFn: () =>
@@ -870,6 +874,7 @@ export function BoardPage() {
                       highlightEpicId={highlightEpicId}
                       onDrop={handleDrop(stage)}
                       onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+                      onCardDetails={(t) => setTaskDrawer(t)}
                       onCardDragStart={(t) => setDraggingStage(t.stage)}
                       onCardDragEnd={() => setDraggingStage(null)}
                       onCardStart={(t) => {
@@ -906,6 +911,7 @@ export function BoardPage() {
                           highlightEpicId={highlightEpicId}
                           onDrop={handleDrop(stage)}
                           onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+                          onCardDetails={(t) => setTaskDrawer(t)}
                           onCardDragStart={(t) => setDraggingStage(t.stage)}
                           onCardDragEnd={() => setDraggingStage(null)}
                           onCardStart={(t) => {
@@ -1196,6 +1202,24 @@ export function BoardPage() {
         }
       />
 
+      {/* --- Task-detail drawer (#1832 item 4) ------------------------------------ */}
+      <TaskDrawer
+        open={taskDrawer !== null}
+        onOpenChange={(open) => {
+          if (!open) setTaskDrawer(null);
+        }}
+        task={taskDrawer}
+        projectTasks={taskDrawer ? tasks.filter((t) => t.project_id === taskDrawer.project_id) : []}
+        onEdit={
+          taskDrawer
+            ? (t) => {
+                setTaskDialog({ mode: "edit", task: t });
+                setTaskDrawer(null);
+              }
+            : undefined
+        }
+      />
+
       {/* --- Done-evidence prompt ---------------------------------------------------- */}
       <Dialog.Root open={donePrompt !== null} onOpenChange={(open) => { if (!open) setDonePrompt(null); }}>
         <Dialog.Portal>
@@ -1277,6 +1301,7 @@ interface StageCellProps {
   highlightEpicId: string | null;
   onDrop: (e: React.DragEvent) => void;
   onOpenCard: (t: BoardTask) => void;
+  onCardDetails: (t: BoardTask) => void;
   onCardDragStart: (t: BoardTask) => void;
   onCardDragEnd: () => void;
   onCardStart: (t: BoardTask) => void;
@@ -1294,6 +1319,7 @@ function StageCell({
   highlightEpicId,
   onDrop,
   onOpenCard,
+  onCardDetails,
   onCardDragStart,
   onCardDragEnd,
   onCardStart,
@@ -1346,6 +1372,7 @@ function StageCell({
           starting={startingShortId === t.short_id}
           onStart={onCardStart}
           onOpen={onOpenCard}
+          onDetails={onCardDetails}
           onDragStart={onCardDragStart}
           onDragEnd={onCardDragEnd}
         />
