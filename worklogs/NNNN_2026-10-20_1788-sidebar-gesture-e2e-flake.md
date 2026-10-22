@@ -36,7 +36,7 @@
 
 ## Next Steps
 
-- PR review loop to APPROVED → rebase-current → N=5 reruns green on final head → final packet.
+- Determinism evidence re-run on the post-#1819 rebase head (r6 review: prior full-workflow reds were deterministic stale-base toolchain skew, not an outage — branch lacked main's builder-digest fix). No further rebase after this head; 5 consecutive Frontend e2e greens land on it, then review verdict → merge.
 
 ## Files Modified
 
