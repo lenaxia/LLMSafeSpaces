@@ -73,12 +73,12 @@ type fakeBoardManager struct {
 
 	// #1837 P2 arms: workspace-scoped list/health captures + the last
 	// update-task input (setCriteriaMet echo tier).
-	lastListWorkspace string
-	lastListRef       string
+	lastListWorkspace   string
+	lastListRef         string
 	lastHealthWorkspace string
-	wsTasks            []board.Task
-	wsHealth           *board.Health
-	lastTaskInput      *board.TaskInput
+	wsTasks             []board.Task
+	wsHealth            *board.Health
+	lastTaskInput       *board.TaskInput
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {

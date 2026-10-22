@@ -274,7 +274,7 @@ func boardManagerTools() []mcpTool {
 						"index": map[string]any{"type": "integer", "description": "0-based criterion index"},
 						"met":   map[string]any{"type": "boolean", "description": "The flag to write (default true — the legacy bare-integer form)"},
 					},
-					"required": []string{"index"},
+					"required":    []string{"index"},
 					"description": "{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria",
 				},
 			}, "required": []string{"taskId"}},

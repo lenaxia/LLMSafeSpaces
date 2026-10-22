@@ -1363,7 +1363,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b := router.Group("/internal/v1/automation/board")
 		b.GET("/tasks/:id", h.BoardTaskGet)
 		b.GET("/projects/:id/tasks", h.BoardManagerListTasks) // #1837 P2a board_list
-		b.GET("/health", h.BoardManagerHealth) // #1837 P2a board_health
+		b.GET("/health", h.BoardManagerHealth)                // #1837 P2a board_health
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)

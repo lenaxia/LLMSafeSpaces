@@ -34,7 +34,7 @@ func (c *CriteriaCheck) UnmarshalJSON(b []byte) error {
 	}
 	if b[0] == '{' {
 		var obj struct {
-			Index *int `json:"index"`
+			Index *int  `json:"index"`
 			Met   *bool `json:"met"`
 		}
 		if err := json.Unmarshal(b, &obj); err != nil {
