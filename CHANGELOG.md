@@ -152,6 +152,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The selected epic scopes task creation.** The swimlane's New task
   lands inside the selected epic; with no selection an epic picker
   opens (with a create-epic escape hatch for empty projects).
+- **Epics are sourced from the engine's list seam (review round).**
+  Bands, the create-task picker, and the scope-switcher chips read
+  `GET /me/projects/:id/epics` (#1699's `ListEpics` engine read — the
+  client used to infer epic existence from task rows, so a zero-task
+  epic vanished after reload and invited duplicate creation). A failed
+  epics read renders the board load error, never a silent empty lane;
+  task-row derivation remains as the mid-load fallback and this
+  session's created epics bridge the POST→refetch window. Filtered
+  bands distinguish "No tasks match the current filter." from a true
+  "No tasks yet."; creation flows gained unhappy-path unit/e2e rows
+  (failed epic/task POSTs keep the dialog open, error rendered, fields
+  preserved) and reversion tests for the band-header hit surface and
+  the per-lane task routing.
 - **E2E port isolation**: the Playwright dev-server port is
   `E2E_PORT`-driven (default 5173, `--strictPort`) so concurrent
   sibling worktrees cannot latch a foreign server; this lane runs

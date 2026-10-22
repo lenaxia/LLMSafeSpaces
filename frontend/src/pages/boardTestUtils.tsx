@@ -14,6 +14,7 @@ import type { ApiError } from "../api/types";
 
 export const mockListProjects = vi.fn();
 export const mockListProjectTasks = vi.fn();
+export const mockListProjectEpics = vi.fn();
 export const mockMoveStage = vi.fn();
 export const mockCreateProject = vi.fn();
 export const mockCreateEpic = vi.fn();
@@ -32,6 +33,7 @@ vi.mock("../api/board", () => ({
   boardApi: {
     listProjects: () => mockListProjects(),
     listProjectTasks: (id: string, stage?: string) => mockListProjectTasks(id, stage),
+    listProjectEpics: (id: string) => mockListProjectEpics(id),
     moveStage: (id: string, to: string, ev?: string) => mockMoveStage(id, to, ev),
     startTask: (id: string) => mockStartTask(id),
     createProject: (input: unknown) => mockCreateProject(input),
@@ -186,6 +188,10 @@ export function defaultTasks(): BoardTask[] {
 export function seedBoard(tasks: BoardTask[] = defaultTasks(), projects: BoardProject[] = [PROJECT_A, PROJECT_B]): BoardTask[] {
   mockListProjects.mockResolvedValue(projects);
   mockListProjectTasks.mockImplementation(async (pid: string) => tasks.filter((t) => t.project_id === pid));
+  // #1832 r2: the GET /me/projects/:id/epics read — empty by default so
+  // the task-derived bands of the r1 rows keep exercising the fallback;
+  // the r2 rows override this with server-truth fixtures.
+  mockListProjectEpics.mockResolvedValue([]);
   mockWorkspacesList.mockResolvedValue({
     items: [{ id: "ws-1", name: "Main", userId: "u1", runtime: "python", storageSize: "1Gi", createdAt: "", updatedAt: "" }],
   });

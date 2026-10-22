@@ -73,3 +73,58 @@ Deliver #1832 items 1-2 per the charter: contextual swimlane-header creation but
 - Flip `dimmed`/`highlighted` prop wiring in StageCell → the dim/highlight e2e + component rows go red.
 - Drop `stopPropagation` on the band toggle → collapse clicks also select (the header-row rows catch it).
 - Revert the `seedBoard` exact-pid filter → the picker test re-emits 20 duplicate-key warnings (a canary, not a failure — worth pinning if warnings are ever gated).
+
+---
+
+# Round 2 — rebase + review-findings rework (2026-10-22, second session)
+
+**Context:** the orchestrator's 03:35Z adjudication approved the substance but required a rebase; this session rebased, re-gated, pushed — and the formal review automation (github-actions, 04:55:14Z on the rebased head) returned CHANGES_REQUESTED with three findings. Per the verdict-disagreement protocol the lane orchestrator (meek-moonlight-dines) was messaged and AUTHORIZED in-turn findings work (option a); the "rebase+gates only" mandate was amended accordingly.
+
+## Rebase (before the findings work)
+
+- `f26daea7` → `7f1565f2` onto `origin/main` tip `e6764841` (past the renumber-bot commit). CHANGELOG content conflict resolved by UNION (main's #1814 entry + our #1832 entry; diff vs main = pure +21-line addition, 0 deletions). No worklog entries deleted; the branch worklog auto-renumbered `NNNN_` → `1167_` by the post-rewrite hook.
+- Gates on the rebased head: BoardPage vitest 73/73, typecheck clean, lint 0 err/6 pre-existing warnings, e2e 18/18 (E2E_PORT=18519), full vitest 2383/2383, `make repolint` all-pass.
+- Platform anomaly: GitHub recorded the PushEvent for `7f1565f2` (04:40:30Z) but created ZERO workflow runs (a sibling branch's push at 04:39:17Z fired its full suite instantly). Re-triggered with an empty commit `6c284c99` (tree identical, 0-line diff vs `7f1565f2`); the suite then fired normally. Rebase evidence noted on the PR (issuecomment-6332869799).
+
+## The three findings (verified, not taken on faith)
+
+1. **Zero-task epics invisible after reload / unselectable** — verified: `GET /me/projects/:id/epics` exists at this merge base (router.go → `ListProjectEpics` → `pkg/board.Service.ListEpics`) and already existed at the pre-rebase base; the frontend client had no list method and `BoardPage` inferred epic existence from task rows (the stale "seam does not exist yet" comment was wrong even before the rebase).
+2. **Filtered lanes showed a false "No tasks yet."** — verified: bands derived from unfiltered tasks while band rows came from the filtered lane.
+3. **Happy-path-only coverage** — verified: no unhappy-path unit/e2e rows for the new creation flows; no test failed when the `fix:` commit's band-header hit-surface or `seedBoard` exact-pid changes were reverted.
+
+## RED-FIRST evidence (this round)
+
+- Unit: 4 rows written red first (zero-task server epic band/picker/create; epics-read-failure = load error; filtered-vs-empty band distinction ×2) — `npx vitest run src/pages/BoardPage.swimlane.test.tsx` → **4 failed | 12 passed** at the exact expected rows pre-implementation, **16/16** after.
+- E2E: the reload row (`git stash` of the two impl files, old code) — `a zero-task epic created this session survives a reload` **failed** at the post-reload band assert (the finding's deterministic repro); the 3 pinning rows passed; after implementation **4/4**.
+- Reversion guards now exist: band container/task-row/toggle clicks never select (a container-level onClick regression goes red); the 3-project row asserts each lane renders only its own rows (the exact-pid mock regression goes red).
+
+## Implementation (this round)
+
+- `board.ts`: `listProjectEpics` wired to the existing GET seam (`{ epics }` envelope, same client shape as `listProjectTasks`).
+- `BoardPage.tsx`: `useQueries` per project (`["board","epics",id]`, 30s refetch, same enabled gate as tasks; invalidated with every `["board"]` invalidation). `epicsByProject` = task-derived fallback → server (authoritative) → session `knownEpics`, merged by id per lane — one derivation feeding bands, picker, AND chips (the r1 duplicate derivations collapsed; chips deduped by id with server/known precedence for real `epc-` short ids). Epics read failures extend the r2 not-emptiness posture (`board-read-error` + Retry). Bands distinguish `band-filtered-empty-*` ("No tasks match the current filter.") from `band-empty-*` ("No tasks yet.") via the lane's unfiltered per-epic row counts. Stale ListEpics comment removed.
+- e2e mocks: state-driven projects list (third-project row), GET+POST `/me/projects/*/epics` (created epics become server truth), per-project server epic derivation, zero-task-epic task creation (project rides the epic list), `failEpicCreate`/`failTaskCreate` 500 levers.
+
+## Validation (round 2 — exact commands + outcomes)
+
+| Command | Outcome |
+| --- | --- |
+| `cd frontend && npx vitest run src/pages/BoardPage.swimlane.test.tsx` (pre-impl) | **4 failed \| 12 passed** (RED at the exact finding rows) |
+| `cd frontend && E2E_PORT=18519 npx playwright test -g "#1832 r2"` (impl stashed) | reload row **failed**, 3 pinning rows passed (RED) |
+| `cd frontend && npx vitest run src/pages/BoardPage` | **82/82 passed** |
+| `cd frontend && E2E_PORT=18519 npx playwright test tests/e2e/board.spec.ts` (full) | **22/22 passed** (18 prior + 4 new; the #1702 chip row now targets the server short_id `epic-chip-epc-epic2000`) |
+| `cd frontend && npm run typecheck` | clean (0 errors) |
+| `cd frontend && npm run lint` | 0 errors, 6 pre-existing generated-abi warnings |
+| `cd frontend && npx vitest run` (full) | 211 files, **2392/2392 passed** |
+| `make repolint` | all checks passed |
+
+## Residual flags (round 2)
+
+- The scope-switcher epic chips dedupe by id with server precedence; a same-id epic spanning projects shows ONE chip (pre-r1 behavior restored after the per-lane list briefly duplicated it — caught by the r1 drawer rows, fixed in-turn).
+- Mid-load: a zero-task epic's band appears when its list response lands (task-derived bands render immediately); no skeleton was added (out of findings scope).
+- Keyboard access to band selection (header row is pointer-only, non-blocking per the review) — left to the a11y lane.
+
+## Assumptions (round 2)
+
+1. The server epic list is authoritative for existence + progress; task-row derivation is a fallback, not a second source of truth.
+2. Creation POST failures keep dialogs open with fields preserved — pinned by test at both layers (was already the behavior; now guarded).
+

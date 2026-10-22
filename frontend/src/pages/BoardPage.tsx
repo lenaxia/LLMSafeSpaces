@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
@@ -88,55 +88,45 @@ export function BoardPage() {
   });
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
 
-  // Read-path failures are NOT emptiness (r2): a failed projects/tasks
-  // fetch renders an error notice — the empty-board state is reserved
-  // for a successful read of zero projects (the "no swallowed errors"
-  // posture extended from action paths to read paths).
+  // #1832 r2 (review finding 1): the ListEpics REST seam —
+  // GET /me/projects/:id/epics (router → ListProjectEpics →
+  // pkg/board Service.ListEpics, #1699's engine read). The epic LIST
+  // is the source of existence for bands and the create-task picker:
+  // zero-task epics (created last session, or via the API) live here,
+  // never in task rows.
+  const epicsQueries = useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ["board", "epics", p.id],
+      queryFn: () => boardApi.listProjectEpics(p.id),
+      enabled: projectsQuery.isSuccess && projects.length > 0,
+      refetchInterval: BOARD_REFETCH_MS,
+    })),
+  });
+  const serverEpicsByProject = useMemo(() => {
+    const m = new Map<string, BoardEpic[]>();
+    projects.forEach((p, i) => m.set(p.id, epicsQueries[i]?.data ?? []));
+    return m;
+  }, [projects, epicsQueries]);
+
+  // Read-path failures are NOT emptiness (r2): a failed projects/tasks/
+  // epics fetch renders an error notice — the empty-board state is
+  // reserved for a successful read of zero projects (the "no swallowed
+  // errors" posture extended from action paths to read paths).
   const boardReadError = useMemo(() => {
     if (projectsQuery.isError) return toBoardError(projectsQuery.error);
     if (tasksQuery.isError) return toBoardError(tasksQuery.error);
+    const failedEpics = epicsQueries.find((q) => q.isError);
+    if (failedEpics) return toBoardError(failedEpics.error);
     return null;
-  }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error]);
+  }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error, epicsQueries]);
 
-  // Epics are derived from task rows (display inheritance, R2) plus the
-  // epics this session created/opened — the ListEpics REST seam does not
-  // exist yet (#1699 stopped it on the engine gap); this bridge keeps the
-  // epic chips + create-task picker honest over live data.
+  // #1832: epics per lane — the server list is authoritative (existence
+  // + progress for real rows); task-row derivation remains as the
+  // mid-load fallback (an epic visible in freshly-fetched task rows
+  // renders before its list response lands); this session's
+  // created/opened epics (knownEpics) bridge the POST→refetch window.
+  // Merge by id, last write wins: derived → server → knownEpics.
   const [knownEpics, setKnownEpics] = useState<BoardEpic[]>([]);
-  const derivedEpics = useMemo(() => {
-    const byId = new Map<string, BoardEpic>();
-    for (const t of tasks) {
-      if (!byId.has(t.epic_id)) {
-        byId.set(t.epic_id, {
-          id: t.epic_id,
-          project_id: t.project_id,
-          short_id: `epic-${t.epic_id.slice(0, 8)}`,
-          title: t.epic_name,
-          outcome: "",
-          status: "active",
-          tags: [],
-          created_at: "",
-          updated_at: "",
-          progress_done: tasks.filter((x) => x.epic_id === t.epic_id && x.stage === "done").length,
-          progress_total: tasks.filter((x) => x.epic_id === t.epic_id).length,
-          progress_derived: tasks.some((x) => x.epic_id === t.epic_id),
-        });
-      }
-    }
-    for (const e of knownEpics) byId.set(e.id, e);
-    return [...byId.values()];
-  }, [tasks, knownEpics]);
-
-  const scopedEpics = useMemo(
-    () => derivedEpics.filter((e) => focusProject === "all" || e.project_id === focusProject),
-    [derivedEpics, focusProject],
-  );
-
-  // #1832 item 2: epics grouped PER SWIMLANE (keyed by project id) —
-  // derived from that project's own task rows (display inheritance, R2)
-  // plus this session's created/opened epics. Progress is scoped to the
-  // project's rows (a same-id epic spanning projects counts each lane's
-  // tasks separately — per-project is what the band beneath it shows).
   const epicsByProject = useMemo(() => {
     const byProject = new Map<string, Map<string, BoardEpic>>();
     const laneOf = (projectId: string) => {
@@ -147,11 +137,12 @@ export function BoardPage() {
       }
       return m;
     };
+    const put = (epic: BoardEpic) => laneOf(epic.project_id).set(epic.id, epic);
     for (const t of tasks) {
-      const m = laneOf(t.project_id);
-      if (!m.has(t.epic_id)) {
-        const lane = tasks.filter((x) => x.project_id === t.project_id && x.epic_id === t.epic_id);
-        m.set(t.epic_id, {
+      const lane = laneOf(t.project_id);
+      if (!lane.has(t.epic_id)) {
+        const rows = tasks.filter((x) => x.project_id === t.project_id && x.epic_id === t.epic_id);
+        lane.set(t.epic_id, {
           id: t.epic_id,
           project_id: t.project_id,
           short_id: `epic-${t.epic_id.slice(0, 8)}`,
@@ -161,15 +152,32 @@ export function BoardPage() {
           tags: [],
           created_at: "",
           updated_at: "",
-          progress_done: lane.filter((x) => x.stage === "done").length,
-          progress_total: lane.length,
+          progress_done: rows.filter((x) => x.stage === "done").length,
+          progress_total: rows.length,
           progress_derived: true,
         });
       }
     }
-    for (const e of knownEpics) laneOf(e.project_id).set(e.id, e);
+    for (const [, epics] of serverEpicsByProject) for (const e of epics) put(e);
+    for (const e of knownEpics) put(e);
     return new Map([...byProject.entries()].map(([k, v]) => [k, [...v.values()]]));
-  }, [tasks, knownEpics]);
+  }, [tasks, serverEpicsByProject, knownEpics]);
+
+  // The flat epic list (scope-switcher chips): ONE entry per epic id —
+  // a same-id epic spanning lanes is a single chip. Server/known rows
+  // (progress_derived=false, real epc- short ids) win the id over
+  // task-derived entries when both exist.
+  const derivedEpics = useMemo(() => {
+    const byId = new Map<string, BoardEpic>();
+    for (const list of epicsByProject.values()) for (const e of list) if (!byId.has(e.id)) byId.set(e.id, e);
+    for (const list of epicsByProject.values()) for (const e of list) if (!e.progress_derived) byId.set(e.id, e);
+    return [...byId.values()];
+  }, [epicsByProject]);
+
+  const scopedEpics = useMemo(
+    () => derivedEpics.filter((e) => focusProject === "all" || e.project_id === focusProject),
+    [derivedEpics, focusProject],
+  );
 
   const visibleProjects = useMemo(
     () => (focusProject === "all" ? projects : projects.filter((p) => p.id === focusProject)),
@@ -675,6 +683,12 @@ export function BoardPage() {
         <div className="flex flex-col gap-4">
           {visibleProjects.map((project) => {
             const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
+            const laneAllTasks = tasks.filter((t) => t.project_id === project.id);
+            // Unfiltered row count per epic (#1832 r2, finding 2): the
+            // band's "No tasks yet." must not fire when tasks exist but
+            // the lane's filter (epic chip / tag / search) hides them.
+            const laneRowsByEpic = new Map<string, number>();
+            for (const t of laneAllTasks) laneRowsByEpic.set(t.epic_id, (laneRowsByEpic.get(t.epic_id) ?? 0) + 1);
             const laneEpics = epicsByProject.get(project.id) ?? [];
             // The swimlane's selection (derived — a vanished epic reads
             // as unselected) drives highlight/dim on the kanban cards
@@ -799,7 +813,18 @@ export function BoardPage() {
                                   </span>
                                 </button>
                               ))}
-                              {bandTasks.length === 0 && <span className="px-1 text-[10px] text-muted-foreground/60">No tasks yet.</span>}
+                              {bandTasks.length === 0 &&
+                                (laneRowsByEpic.get(epic.id) ?? 0) > 0 && (
+                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-filtered-empty-${epic.id}`}>
+                                    No tasks match the current filter.
+                                  </span>
+                                )}
+                              {bandTasks.length === 0 &&
+                                (laneRowsByEpic.get(epic.id) ?? 0) === 0 && (
+                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-empty-${epic.id}`}>
+                                    No tasks yet.
+                                  </span>
+                                )}
                             </div>
                           )}
                         </div>
@@ -813,7 +838,7 @@ export function BoardPage() {
                       key={stage}
                       stage={stage}
                       projectTasks={projectTasks}
-                      allProjectTasks={tasks.filter((t) => t.project_id === project.id)}
+                      allProjectTasks={laneAllTasks}
                       stageOf={stageOf}
                       optimistic={optimistic}
                       refusedShortId={refusedShortId}
@@ -849,7 +874,7 @@ export function BoardPage() {
                           key={stage}
                           stage={stage}
                           projectTasks={projectTasks}
-                          allProjectTasks={tasks.filter((t) => t.project_id === project.id)}
+                          allProjectTasks={laneAllTasks}
                           stageOf={stageOf}
                           optimistic={optimistic}
                           refusedShortId={refusedShortId}
