@@ -205,3 +205,58 @@ func TestTextGuard_LongLegitProsePasses(t *testing.T) {
 	require.Greater(t, b.Len(), 4096)
 	require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: b.String()}))
 }
+
+// --- #1837 review round 1: evasion paths + exemption holes ----------------------
+
+func TestTextGuard_JunkWrappedRepetitionRejected(t *testing.T) {
+	// The #1832 evidence shape: prose junk wrapping the loop — single
+	// line AND multiline. Neither the exact-tiling nor line detector
+	// alone catches it; runRepetition must.
+	frag := "Retry the loop step and continue the same task again. "
+	t.Run("single line, prefix+50x+suffix", func(t *testing.T) {
+		payload := "prefix junk " + strings.Repeat(frag, 50) + " suffix junk"
+		err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "repetition")
+	})
+	t.Run("multiline junk-wrapped", func(t *testing.T) {
+		payload := "Intro line.\n" + strings.Repeat(frag, 55) + "\nOutro line."
+		err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "repetition")
+	})
+	t.Run("49x under the floor passes", func(t *testing.T) {
+		payload := "prefix " + strings.Repeat(frag, 49) + " suffix"
+		require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: payload}))
+	})
+}
+
+func TestTextGuard_SpliceExemptionHolesClosed(t *testing.T) {
+	// Line-start artifacts are NOT wholesale exempt (a corrupted line
+	// beginning with " or { opens no balanced span); only TERMINATED
+	// fences exempt (an unterminated fence exempts nothing after it).
+	t.Run("line-start splice artifact rejected", func(t *testing.T) {
+		payload := "Steps:\n" + "\",\"x\":\"PLACEHOLDER\"} tail prose\nDone."
+		err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+		require.Error(t, err, "a line beginning with the artifact bytes is not a legitimate-JSON exemption")
+		require.Contains(t, err.Error(), "splice")
+	})
+	t.Run("artifact after unterminated fence rejected", func(t *testing.T) {
+		payload := "Example:\n```\ncode line\n" + "\",\"title\":\"PLACEHOLDER\"} trailing artifact"
+		err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+		require.Error(t, err, "an unterminated fence exempts nothing after it")
+		require.Contains(t, err.Error(), "splice")
+	})
+	t.Run("legit JSON example line still passes (balanced)", func(t *testing.T) {
+		require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: "{\"key\":\"value\",\"x\":\"y\"}"}))
+	})
+}
+
+func TestTextGuard_CriterionErrorHasNoFileHint(t *testing.T) {
+	err := ValidateTaskInput(TaskInput{Title: "ok", AcceptanceCriteria: []AcceptanceCriterion{
+		{Text: strings.Repeat("c", MaxCriterionBytes+1)},
+	}})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "criterion_file", "no such param exists — never suggest it")
+	require.Contains(t, err.Error(), "criterion[0].text")
+}

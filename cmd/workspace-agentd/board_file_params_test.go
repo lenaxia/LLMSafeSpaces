@@ -141,3 +141,13 @@ func jsonMustString(t *testing.T, s string) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestBoardFileParams_NullWrongFieldRefused(t *testing.T) {
+	// #1837 review round 1: a null *_file key on a tool that does not
+	// admit it is still a mention — refused loudly, never silently
+	// dropped onto the wire.
+	args := map[string]any{"description_file": nil}
+	err := resolveBoardFileArgs(args, "outcome")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not admitted")
+}

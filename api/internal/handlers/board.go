@@ -210,7 +210,7 @@ func (h *BoardHandler) CreateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, p)
+	c.JSON(http.StatusCreated, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // boardLifecycleRequest is the pause/resume family's optional body
@@ -267,7 +267,7 @@ func (h *BoardHandler) UpdateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, p)
+	c.JSON(http.StatusOK, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // boardOptionalRequestID binds the optional {requestId} body on actions

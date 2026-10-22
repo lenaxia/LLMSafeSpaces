@@ -70,6 +70,10 @@ type fakeBoardManager struct {
 	// THIS row verbatim (a stored row that differs from the submitted
 	// text — the drift the echo must flag).
 	driftTask *board.Task
+
+	// driftProject (#1837 P1b project-echo arm): when set, project
+	// update returns THIS row (stored != submitted name).
+	driftProject *board.Project
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -125,6 +129,9 @@ func (f *fakeBoardManager) UpdateProject(_ context.Context, actor board.Actor, _
 	_ = idOrShort
 	if err := f.errFor["update_project"]; err != nil {
 		return nil, err
+	}
+	if f.driftProject != nil {
+		return f.driftProject, nil
 	}
 	return &board.Project{ID: "p1", ShortID: "prj-aaaa1111", UserID: actor.UserID, Name: in.Name, WorkerSlots: 2, Status: board.ProjectActive}, nil
 }
