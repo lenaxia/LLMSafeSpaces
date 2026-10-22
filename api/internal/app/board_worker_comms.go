@@ -20,6 +20,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -41,6 +42,18 @@ func resumeDirectiveText(shortID string) string {
 	return fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
 		"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
 		"task with board_read; the engine may already have spawned a fresh worker.", shortID)
+}
+
+// leaseAppealDirectiveText is the #1847 pre-reclaim appeal (spec item
+// 4): ONE ping at the lapsed claimant's turn boundary — reclaim or
+// release — before the row re-pools. Delivered exactly like halt/resume
+// (queued behind the in-flight turn, never a mid-generation cut).
+func leaseAppealDirectiveText(shortID string, window time.Duration) string {
+	return fmt.Sprintf("BOARD LEASE APPEAL: the lease on your claimed task %s lapsed without observed "+
+		"liveness. If you are still working it (or hold useful context), act now: keep working or make "+
+		"any board write — observed liveness re-arms the lease. If you are done or abandoning, do "+
+		"nothing. Without an observed response within %s the task returns to the ready set for a "+
+		"fresh worker.", shortID, window.Round(time.Second))
 }
 
 // boardTaskScope resolves (owner, target workspace) for a task by id or
@@ -67,16 +80,20 @@ func newBoardAborter(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerAbor
 
 // newBoardMessenger builds the halt/resume directive seam (SendAsync —
 // the message queues behind the in-flight turn and lands at its
-// boundary).
-func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMessenger {
+// boundary). appealWindow feeds the #1847 lease-appeal directive's
+// text (how long the lapsed claimant has to answer before re-pool).
+func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter, appealWindow time.Duration) board.WorkerMessenger {
 	return func(ctx context.Context, sessionID, directive, taskShortID string) error {
 		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
 		if err != nil {
 			return fmt.Errorf("board: directive scope: %w", err)
 		}
 		text := resumeDirectiveText(taskShortID)
-		if directive == board.DirectiveHalt {
+		switch directive {
+		case board.DirectiveHalt:
 			text = haltDirectiveText(taskShortID)
+		case board.DirectiveLeaseAppeal:
+			text = leaseAppealDirectiveText(taskShortID, appealWindow)
 		}
 		_, err = adapter.SendAsync(ctx, userID, workspaceID, sessionID, text, session.SendOpts{})
 		return err

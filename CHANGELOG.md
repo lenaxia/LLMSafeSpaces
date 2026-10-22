@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Task Board: platform-derived claim liveness (issue #1847, spec items 1-4)
+
+- **PRIMARY liveness is what the platform observes, not what a worker
+  declares.** The in-workspace agentd pushes per-session observability
+  (busy = an open turn, started = the session began, the activity
+  watermark) over the pod SA-token seam (the resource-pressure reporter
+  precedent) into `board_session_liveness`; the RC1 sweep classifies
+  every lapsed claim against it: **an open turn holds the lease** —
+  across arbitrarily long silent tool calls (the exact case heartbeats
+  cannot cover) — and a started session with observed activity inside
+  the grace (~2x the lease window) holds too. Attempts stay untouched
+  on liveness renews: nothing was lost.
+- **`board_heartbeat` demoted to an optional manual override** for
+  deliberate quiet (spec item 2); the tool description now says so.
+  The wire form is unchanged.
+- **Stillborn spawns are never renewed** (spec item 3): a session that
+  never pushed, or never began a turn, is the none-class — its lapsed
+  claim reclaims directly (the documented corpse-renewal hole in the
+  lane's lease-keeper cron is moot).
+- **One pre-reclaim appeal ping** (spec item 4): a lapsed-but-started
+  session gets a single `lease_appeal` directive at its turn boundary
+  (the halt/resume delivery machinery — never a mid-generation cut)
+  and an appeal window on the row (`tasks.appeal_until`); observed
+  liveness inside the window re-arms the ORIGINAL claim (same token,
+  same context); silence past the window reclaims with the reason
+  recorded (`tasks.lapse_reason`: `no_assignee`, `session_unknown`,
+  `silent_beyond_grace`, `stale_liveness`, `appeal_ignored` — the
+  escalation-reason input for the #1847 item-6 work).
+- **Server-clock authority on the push path**: a liveness activity
+  stamp ahead of the server clock clamps at the write, and the
+  classifier clamps every stamp to its own push anchor — information
+  cannot be newer than when it was pushed, so a garbage/future
+  timestamp can neither poison nor inflate liveness (no such input
+  path, by construction).
+- **Staleness bounds everything**: a pod that stops pushing cannot
+  hold a latched busy=true (voids at `livenessStaleBoundSeconds`, 5m
+  default) nor a frozen activity watermark (ages past
+  `leaseGraceSeconds`); a wedged turn releases within grace + one
+  appeal ping.
+- Backward compatible: with no liveness rows (agentd N-1 never
+  pushes), every lapsed claim reclaims exactly as before. New frozen
+  wire set `WorkerSeamWireV2` (agentd v0.41.0) adds the
+  `session-liveness` push to the skew matrix. New knobs:
+  `board.leaseGraceSeconds` (0 = 2x lease), `board.
+  leaseAppealWindowSeconds` (300), `board.livenessStaleBoundSeconds`
+  (300).
+
 ### Fixed — board heartbeat: server clock is the authority over client-observed stamps (issue #1847 PR1, the C1 incident class)
 
 - **A future-stamped `observedProgressAt` rejects outright**

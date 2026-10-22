@@ -537,11 +537,11 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{}},
 		},
 		{
-			Name:        "board_heartbeat",
-			Description: "Renew your claimed task's lease — but ONLY with new progress evidence: pass observedProgressAt, your session's latest progress watermark (last message or tool activity, RFC 3339). Elapsed time is not liveness — a heartbeat with no NEW evidence does NOT extend the lease (a session streaming or tool-calling for an hour never trips; a silent one trips at one lease window). Requires the claim token from your charter envelope. A 409 with code claim_token means the claim is no longer yours (lease lapsed and was reclaimed, the task reached a terminal stage, or already moved) — STOP working the task and re-read the task with board_read; retrying the heartbeat cannot help.",
+			Name: "board_heartbeat",
+			Description: "OPTIONAL manual lease override (#1847): your claim's liveness is PLATFORM-DERIVED — an open turn or recent observed activity holds the lease automatically; you do NOT need to heartbeat during normal work, including long silent tool calls. Use this ONLY to extend the lease during deliberate quiet (e.g. a planned pause while you still hold the claim): pass observedProgressAt, your latest progress watermark (last message or tool activity, RFC 3339). The SERVER CLOCK is the authority — a future-stamped timestamp rejects (invalid_input); stamps clamp to server time. Elapsed time is not liveness: a heartbeat with no NEW evidence does NOT extend. Requires the claim token from your charter envelope. A 409 with code claim_token means the claim is no longer yours (lease lapsed past the appeal window, the task reached a terminal stage, or already moved) — STOP working the task and re-read the task with board_read; retrying the heartbeat cannot help.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
-				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress evidence (last message/tool activity). The lease extends only when this moved past the stored watermark"},
+				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress evidence (last message/tool activity). The lease extends only when this moved past the stored watermark; future stamps reject (server clock is the authority)"},
 				"shortId":            map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":             map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},

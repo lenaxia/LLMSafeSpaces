@@ -60,17 +60,22 @@ func (w *wireRecorder) serve(t *testing.T) http.HandlerFunc {
 	}
 }
 
-// emitWorkerSeam drives the loopback client's four worker-tool calls
-// with the exact tool-argument bodies agentd v0.39.0's MCP layer passes
-// through (cmd/workspace-agentd mcp_tools.go: verbatim args; the client
-// stamps the pod's workspaceID — the frozen fixtures' stamp source).
+// emitWorkerSeam drives the loopback client's worker-tool calls with
+// the exact tool-argument bodies the MCP layer passes through
+// (cmd/workspace-agentd mcp_tools.go: verbatim args; the client stamps
+// the pod's workspaceID — the frozen fixtures' stamp source). Order
+// matches the newest frozen set (liveness push → read → heartbeat →
+// throttle → move).
 func emitWorkerSeam(t *testing.T, c *Client) {
 	t.Helper()
 	ctx := context.Background()
 	const sa = "sa-token"
 	const ws = "11111111-1111-1111-1111-111111111101"
 
-	_, err := c.BoardTaskGet(ctx, sa, ws, "tsk-aaaa1111")
+	_, err := c.BoardSessionLiveness(ctx, sa, ws, json.RawMessage(
+		`{"sessions":[{"sessionId":"sess-aaaa1111","busy":true,"started":true,"lastActivityAt":"2026-10-22T01:36:00Z"}]}`))
+	require.NoError(t, err, "board_session_liveness push")
+	_, err = c.BoardTaskGet(ctx, sa, ws, "tsk-aaaa1111")
 	require.NoError(t, err, "board_read item form")
 	_, err = c.BoardHeartbeat(ctx, sa, ws, json.RawMessage(
 		`{"shortId":"tsk-aaaa1111","claimToken":"tok-1","observedProgressAt":"2026-10-19T00:00:00Z"}`))
@@ -99,7 +104,7 @@ func TestLoopbackBoardWorkerWire_MatchesFrozenContract(t *testing.T) {
 	sets := board.WorkerSeamWireSets()
 	frozen := sets[len(sets)-1] // the newest frozen set = this agentd's contract
 	require.Len(t, rec.requests, len(frozen.Requests),
-		"the four worker-tool calls emit exactly the frozen request count")
+		"the worker-tool calls emit exactly the frozen request count")
 
 	// Emitted order == frozen order (read → heartbeat → throttle → move).
 	for i, want := range frozen.Requests {

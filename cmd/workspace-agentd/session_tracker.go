@@ -188,6 +188,54 @@ func (t *sessionStatusTracker) lastMessageAges() map[string]time.Duration {
 	return out
 }
 
+// livenessRow is one session's platform-observed liveness sample (#1847):
+// busy (an open turn), started (messages>0 — a session that began; a
+// busy session counts, its charter message is in flight), and the
+// activity watermark (the later of any stream event and message-level
+// progress — mid-tool streaming IS work).
+type livenessRow struct {
+	SessionID      string    `json:"sessionId"`
+	Busy           bool      `json:"busy"`
+	Started        bool      `json:"started"`
+	LastActivityAt time.Time `json:"lastActivityAt"`
+}
+
+// livenessSnapshot copies every tracked session's liveness row (an
+// RLock'd copy in the lastMessageAges pattern — the SSE goroutine
+// writes; the push loop must never read the maps unlocked). #1847: the
+// PRIMARY claim-liveness input the pod pushes over the automation seam.
+func (t *sessionStatusTracker) livenessSnapshot() []livenessRow {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	out := make([]livenessRow, 0, len(t.statuses))
+	for id, status := range t.statuses {
+		busy := status == "busy"
+		activity := time.Time{}
+		if at, ok := t.lastEventAt[id]; ok && at.After(activity) {
+			activity = at
+		}
+		if at, ok := t.lastMessageAt[id]; ok && at.After(activity) {
+			activity = at
+		}
+		if busy && !activity.After(time.Time{}) {
+			if since, ok := t.busySince[id]; ok {
+				activity = since // a busy mark is the earliest activity evidence
+			} else {
+				activity = now
+			}
+		}
+		started := busy
+		if _, ok := t.lastMessageAt[id]; ok {
+			started = true // messages>0: the session began
+		}
+		out = append(out, livenessRow{
+			SessionID: id, Busy: busy, Started: started, LastActivityAt: activity,
+		})
+	}
+	return out
+}
+
 // busyPartitions splits the currently-busy sessions into progressing
 // (harness activity fresher than stallBound) and stalled (#1342: the
 // force-path eligibility signal — a busy session silent past the bound

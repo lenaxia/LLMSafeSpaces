@@ -113,6 +113,12 @@ type Task struct {
 	Attempts          int        `json:"attempts"`
 	ClaimIncremented  bool       `json:"claim_incremented_attempts"`
 	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
+	// #1847 liveness columns: the open pre-reclaim appeal window (ONE
+	// ping at the lapsed claimant's turn boundary; NULL = none open)
+	// and WHY the claim lapsed (the escalation-reason input — recorded
+	// by RC1 at appeal/reclaim time).
+	AppealUntil *time.Time `json:"appeal_until,omitempty"`
+	LapseReason *string    `json:"lapse_reason,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row
@@ -249,8 +255,13 @@ type HeartbeatResult struct {
 
 // SweepResult summarizes one reconciler pass (health panel feed).
 type SweepResult struct {
-	Dispatched      int `json:"dispatched"`       // §4.4 sweep-backstop drive
-	Reclaims        int `json:"reclaims"`         // RC1
+	Dispatched int `json:"dispatched"` // §4.4 sweep-backstop drive
+	Reclaims   int `json:"reclaims"`   // RC1
+	// #1847 platform-liveness dispositions inside RC1: a lapsed claim
+	// the platform observed alive (open turn / activity inside grace)
+	// renews; a lapsed-but-started session gets one pre-reclaim appeal.
+	LivenessRenews  int `json:"liveness_renews"`
+	Appeals         int `json:"appeals"`
 	DriftDone       int `json:"drift_done"`       // RC2 merged, criteria met
 	DriftReview     int `json:"drift_review"`     // RC2 merged, criteria unmet
 	DriftReentry    int `json:"drift_reentry"`    // RC2 closed-unmerged → in_progress

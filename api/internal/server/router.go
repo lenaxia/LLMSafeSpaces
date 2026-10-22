@@ -1391,6 +1391,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.DELETE("/tasks/:id/dependencies/:dependsOnId", h.BoardRemoveDependency)
 
 		b.POST("/resource-pressure", h.BoardResourcePressure)
+		b.POST("/session-liveness", h.BoardSessionLiveness)
 	}
 }
 

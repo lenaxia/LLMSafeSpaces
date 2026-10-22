@@ -1259,11 +1259,12 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "board_heartbeat in tools/list")
 		for _, want := range []string{
 			"claim token from your charter envelope", // the in-flight guard's provenance
-			"new progress evidence",                  // #1685: evidence, not elapsed time
+			"progress watermark",                     // #1685/#1847: evidence, not elapsed time (now server-clock-authoritative)
 			"does NOT extend",                        // the no-evidence outcome is named
 			"observedProgressAt",                     // the evidence field
 			"claim_token",                            // the 409 code that means the claim is gone
 			"re-read the task",                       // the recovery path
+			"PLATFORM-DERIVED",                       // #1847: liveness is platform-observed; the tool is the optional override
 		} {
 			assert.Contains(t, d, want)
 		}

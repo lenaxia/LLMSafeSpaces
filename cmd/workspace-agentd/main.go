@@ -229,6 +229,17 @@ func main() {
 	// at every child start.
 	sseTracker := newSessionStatusTracker()
 
+	// #1847: the platform-liveness reporter — pushes the tracker's
+	// per-session observability (busy/started/activity) over the seam;
+	// the engine's RC1 sweep classifies lapsed claims against it (an
+	// open turn holds the lease; a stillborn spawn is never renewed).
+	// Best-effort throughout (staleness bounds heal silence).
+	bgWg.Add(1)
+	go func() {
+		defer bgWg.Done()
+		boardLivenessLoop(bgCtx, slog.New(slog.NewJSONHandler(os.Stderr, nil)), sseTracker, 30*time.Second)
+	}()
+
 	// Epic 69 US-69.2: the session-state authority. S1 shadow — additive
 	// machinery only; a non-bootable durable cursor degrades loudly
 	// (sessionstate_wiring.go). The authority receives every raw SSE

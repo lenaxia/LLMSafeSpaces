@@ -320,17 +320,23 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_MAXEDGESPERNODE     (default 16 — #1747 DAG blast-radius bound)
 	//   LLMSAFESPACES_BOARD_MAXNODESPEREPIC     (default 64 — #1747 DAG blast-radius bound)
 	Board struct {
-		Enabled                bool `mapstructure:"enabled"`
-		AttemptsCap            int  `mapstructure:"attemptsCap"`
-		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
-		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
-		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
-		DRRQuantum             int  `mapstructure:"drrQuantum"`
-		SweepSeconds           int  `mapstructure:"sweepSeconds"`
-		UserClaimCap           int  `mapstructure:"userClaimCap"`
-		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
-		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
-		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
+		Enabled      bool `mapstructure:"enabled"`
+		AttemptsCap  int  `mapstructure:"attemptsCap"`
+		LeaseSeconds int  `mapstructure:"leaseSeconds"`
+		// #1847 platform-derived liveness: activity-grace bound, the
+		// pre-reclaim appeal window, and the liveness-push staleness
+		// bound (seconds; 0 grace = engine default 2x leaseSeconds).
+		LeaseGraceSeconds         int `mapstructure:"leaseGraceSeconds"`
+		LeaseAppealWindowSeconds  int `mapstructure:"leaseAppealWindowSeconds"`
+		LivenessStaleBoundSeconds int `mapstructure:"livenessStaleBoundSeconds"`
+		ThrottleBackoffSeconds    int `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds     int `mapstructure:"failureBackoffSeconds"`
+		DRRQuantum                int `mapstructure:"drrQuantum"`
+		SweepSeconds              int `mapstructure:"sweepSeconds"`
+		UserClaimCap              int `mapstructure:"userClaimCap"`
+		GlobalClaimCap            int `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode           int `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic           int `mapstructure:"maxNodesPerEpic"`
 	} `mapstructure:"board"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -452,6 +458,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("board.enabled", true)
 	v.SetDefault("board.attemptsCap", 3)
 	v.SetDefault("board.leaseSeconds", 900)
+	// #1847: activity-grace (0 = engine default 2x the lease window),
+	// appeal window, and liveness staleness bound.
+	v.SetDefault("board.leaseGraceSeconds", 0)
+	v.SetDefault("board.leaseAppealWindowSeconds", 300)
+	v.SetDefault("board.livenessStaleBoundSeconds", 300)
 	v.SetDefault("board.throttleBackoffSeconds", 300)
 	// #1813: failed-attempt auto-return-to-ready BASE backoff (doubling
 	// per consecutive failure, capped at 1h engine-side).
@@ -897,6 +908,15 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_LEASESECONDS"); ok {
 		config.Board.LeaseSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_LEASEGRACESECONDS"); ok {
+		config.Board.LeaseGraceSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_LEASEAPPEALWINDOWSECONDS"); ok {
+		config.Board.LeaseAppealWindowSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_LIVENESSSTALEBOUNDSECONDS"); ok {
+		config.Board.LivenessStaleBoundSeconds = n
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"); ok {
 		config.Board.ThrottleBackoffSeconds = n

@@ -185,7 +185,8 @@ Under `OnRefresh`, a platform upgrade leaves running pods on agentd N-1
 against API N until their next recreation (a suspended workspace can lag
 indefinitely — it rebuilds with the current digest at resume). The
 worker-tool seam (`/internal/v1/automation/board/*`: `board_heartbeat`,
-`board_report_throttle`, `board_move_stage`, `board_read`) is therefore
+`board_report_throttle`, `board_move_stage`, `board_read`, and — from
+the #1847 release — the `session-liveness` push) is therefore
 pinned as a **tested skew matrix**, not an assumption: the wire form of
 every still-supported agentd release is frozen in
 `pkg/board/worker_compat.go`, replayed against the current API

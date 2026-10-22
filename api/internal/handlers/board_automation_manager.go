@@ -560,3 +560,38 @@ func (h *PodAutomationHandler) BoardResourcePressure(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "recorded"})
 }
+
+// boardLivenessSink receives the pod's session-liveness pushes.
+type boardLivenessSink interface {
+	RecordSessionLiveness(ctx context.Context, workspaceID string, reports []board.LivenessReport) (int, error)
+}
+
+// BoardSessionLiveness is agentd's liveness push endpoint (#1847): the
+// pod reports its per-session platform observability (busy = open
+// turn, started = the session began, last activity watermark) — the
+// PRIMARY claim-liveness input. Server-clock authority at the write.
+func (h *PodAutomationHandler) BoardSessionLiveness(c *gin.Context) {
+	raw, ws, _, ok := h.resolve(c)
+	if !ok {
+		return
+	}
+	// The sink resolves off the board seam (the *board.Service in
+	// production satisfies it; SetBoardService wires them together).
+	sink, hasSink := h.board.(boardLivenessSink)
+	if !hasSink {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "board liveness reporting is not wired"})
+		return
+	}
+	var req struct {
+		Sessions []board.LivenessReport `json:"sessions"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	n, err := sink.RecordSessionLiveness(c.Request.Context(), ws, req.Sessions)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "recorded", "sessions": n})
+}

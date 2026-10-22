@@ -79,6 +79,12 @@ func (f *fakeBoardService) GetTaskInWorkspace(_ context.Context, workspaceID, ta
 	return f.getTask, nil
 }
 
+func (f *fakeBoardService) RecordSessionLiveness(_ context.Context, workspaceID string, reports []board.LivenessReport) (int, error) {
+	f.calls["liveness"]++
+	f.lastWorkspace = workspaceID
+	return len(reports), nil
+}
+
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
 // workspace lookup — the auth chain is exercised, not stubbed). #1747:

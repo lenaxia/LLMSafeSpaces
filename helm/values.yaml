@@ -1919,6 +1919,16 @@ board:
   # Evidence-gated lease window in seconds (#1685: elapsed time is not
   # liveness — heartbeats extend only on progress evidence).
   leaseSeconds: 900
+  # #1847 platform-derived liveness: how long past its last observed
+  # activity a STARTED session still holds a lapsed claim (0 = 2x
+  # leaseSeconds); an open turn (busy) holds regardless.
+  leaseGraceSeconds: 0
+  # #1847: the pre-reclaim appeal window — ONE ping at the lapsed
+  # claimant's turn boundary, then the row re-pools if silent.
+  leaseAppealWindowSeconds: 300
+  # #1847: how long a liveness push stays authoritative without a
+  # refresh — a pod that stops pushing cannot hold a latched busy.
+  livenessStaleBoundSeconds: 300
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300

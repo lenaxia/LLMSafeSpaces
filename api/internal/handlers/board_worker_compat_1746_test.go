@@ -69,6 +69,7 @@ func newBoardCompatRouter(t *testing.T, svc *fakeBoardService) *gin.Engine {
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
+	b.POST("/session-liveness", h.BoardSessionLiveness)
 	return r
 }
 

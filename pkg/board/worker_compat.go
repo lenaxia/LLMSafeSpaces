@@ -90,10 +90,50 @@ var WorkerSeamWireV1 = &WorkerSeamWireSet{
 	},
 }
 
+// WorkerSeamWireV2 is the next agentd release's wire form (v0.41.0,
+// #1847): the four worker-tool routes UNCHANGED from V1 plus the
+// session-liveness push (the platform-liveness reporter — additive; an
+// N-1 agentd that never pushes it is simply invisible to #1847's
+// liveness classification, which falls back to the legacy reclaim).
+var WorkerSeamWireV2 = &WorkerSeamWireSet{
+	AgentdVersion: "v0.41.0",
+	Requests: []WorkerSeamRequest{
+		{
+			Tool:   "board_session_liveness",
+			Method: "POST",
+			Path:   "/internal/v1/automation/board/session-liveness",
+			Body:   `{"sessions":[{"busy":true,"lastActivityAt":"2026-10-22T01:36:00Z","sessionId":"sess-aaaa1111","started":true}],"workspaceID":"11111111-1111-1111-1111-111111111101"}`,
+		},
+		{
+			Tool:   "board_read",
+			Method: "GET",
+			Path:   "/internal/v1/automation/board/tasks/tsk-aaaa1111?workspaceID=11111111-1111-1111-1111-111111111101",
+		},
+		{
+			Tool:   "board_heartbeat",
+			Method: "POST",
+			Path:   "/internal/v1/automation/board/tasks/heartbeat",
+			Body:   `{"claimToken":"tok-1","observedProgressAt":"2026-10-19T00:00:00Z","shortId":"tsk-aaaa1111","workspaceID":"11111111-1111-1111-1111-111111111101"}`,
+		},
+		{
+			Tool:   "board_report_throttle",
+			Method: "POST",
+			Path:   "/internal/v1/automation/board/tasks/throttle",
+			Body:   `{"claimToken":"tok-1","retryAfterSeconds":900,"shortId":"tsk-aaaa1111","workspaceID":"11111111-1111-1111-1111-111111111101"}`,
+		},
+		{
+			Tool:   "board_move_stage",
+			Method: "POST",
+			Path:   "/internal/v1/automation/board/tasks/move-stage",
+			Body:   `{"claimToken":"tok-1","requestId":"req-1","shortId":"tsk-aaaa1111","toStage":"in_review","workspaceID":"11111111-1111-1111-1111-111111111101"}`,
+		},
+	},
+}
+
 // workerSeamWireSets lists every frozen wire set the API(N) must still
 // accept — the N-1 skew matrix. Append on agentd wire changes; never
 // edit in place.
-var workerSeamWireSets = []*WorkerSeamWireSet{WorkerSeamWireV1}
+var workerSeamWireSets = []*WorkerSeamWireSet{WorkerSeamWireV1, WorkerSeamWireV2}
 
 // WorkerSeamWireSets returns the supported frozen wire sets (oldest
 // first). Exported for the seam's compat pins on both sides.

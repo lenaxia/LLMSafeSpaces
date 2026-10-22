@@ -93,11 +93,11 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	if err := s.failAt(ctx, fpRC1Pre); err != nil {
 		return res, err
 	}
-	reclaims, err := s.rc1Reclaims(ctx)
+	renews, appeals, reclaims, err := s.rc1Reclaims(ctx)
 	if err != nil {
 		return res, err
 	}
-	res.Reclaims = reclaims
+	res.LivenessRenews, res.Appeals, res.Reclaims = renews, appeals, reclaims
 	if err := s.failAt(ctx, fpRC1Post); err != nil {
 		return res, err
 	}
@@ -223,79 +223,220 @@ func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff, sweepHigh tim
 	return err
 }
 
-// rc1Reclaims reclaims every lapsed in_progress row: guarded UPDATE
-// (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
-// sweeps divide the work), attempts untouched (the increment belongs to
-// the next claim), deterministic episode event ids.
-func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
+// rc1Reclaims converges every lapsed in_progress row under #1847's
+// platform-derived liveness: the claim's SESSION decides before the
+// reclaim does. Classification (ClassifyLiveness — unit-pinned) runs
+// against the agentd-pushed liveness projection:
+//
+//	alive (open turn, or started + activity inside the grace) → the
+//	  lease re-arms (guarded UPDATE; attempts untouched — nothing was
+//	  lost; the watermark advances to the platform-observed activity);
+//	dead + started → ONE pre-reclaim appeal (#1847 spec item 4): a ping
+//	  at the session's turn boundary (post-commit, best-effort) and an
+//	  appeal window on the row — the reclaim waits out the window;
+//	none (no row, or never started — the stillborn spawn) or an ignored
+//	  appeal → the #1813 reclaim (backlog, overlay, doubling backoff).
+//
+// All writes stay guarded (stage predicate re-checked at write time;
+// SKIP LOCKED lets concurrent sweeps divide the work), attempts remain
+// untouched by the sweep itself (the increment belongs to the next
+// claim), and event ids stay deterministic per lapse episode.
+func (s *Service) rc1Reclaims(ctx context.Context) (stagedRenews, stagedAppeals int, reclaims int, err error) {
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var pending []Event
+	// appealPing is one post-commit lease-appeal delivery (r1-C5: a
+	// rollback never emits it) — session + task short id for the
+	// messenger's turn-boundary directive.
+	type appealPing struct{ assignee, shortID string }
+	var pings []appealPing
 
 	rows, err := tx.Query(ctx, `
-		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
+		       t.short_id, t.assignee_session, t.appeal_until,
+		       lv.busy, lv.started, lv.last_activity_at, lv.pushed_at
 		FROM tasks t
+		JOIN projects p ON p.id = t.project_id
+		LEFT JOIN board_session_liveness lv
+		       ON lv.workspace_id = p.target_workspace_id AND lv.session_id = t.assignee_session
 		WHERE t.stage='in_progress' AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
 		FOR UPDATE OF t SKIP LOCKED`)
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	type victim struct {
-		id, project, episode string
-		failures             int32
+		id, project, episode, shortID string
+		assignee                      string
+		appealUntil                   *time.Time
+		failures                      int32
+		hasLiveness                   bool
+		sample                        LivenessSample
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
+		var assignee *string
+		var busy, started *bool
+		var lastActivity, pushedAt *time.Time
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures,
+			&v.shortID, &assignee, &v.appealUntil,
+			&busy, &started, &lastActivity, &pushedAt); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, 0, err
+		}
+		if assignee != nil {
+			v.assignee = *assignee
+		}
+		// A liveness row joins on the assignee; no assignee (async spawn
+		// still in flight / failed) or no row (stillborn) → no sample.
+		v.hasLiveness = v.assignee != "" && busy != nil && started != nil && lastActivity != nil && pushedAt != nil
+		if v.hasLiveness {
+			v.sample = LivenessSample{Busy: *busy, Started: *started,
+				LastActivity: *lastActivity, PushedAt: *pushedAt}
 		}
 		victims = append(victims, v)
 	}
 	rows.Close()
 
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
-	applied := 0
+	serverNow := time.Now().UTC()
 	for _, v := range victims {
-		// #1813 failed-state overlay: the lease lapse IS the attempt
-		// failure — mark it, count it CONSECUTIVELY, and park the row
-		// behind doubling backoff (auto-return-to-ready via the
-		// existing cooldown candidacy gate; never a stage).
+		var sample *LivenessSample
+		if v.hasLiveness {
+			sample = &v.sample
+		}
+		switch ClassifyLiveness(serverNow, sample, s.cfg.LeaseGrace, s.cfg.LivenessStaleBound) {
+		case LivenessAlive:
+			// Platform liveness holds the claim: re-arm the lease, adopt
+			// the observed watermark (push-anchor-clamped), clear any
+			// appeal, attempts untouched.
+			watermark := effectiveActivity(sample)
+			tag, err := tx.Exec(ctx, `
+				UPDATE tasks SET
+					lease_expires_at=now()+make_interval(secs=>$2::float8),
+					last_progress_at=GREATEST(COALESCE(last_progress_at, to_timestamp(0)), $3),
+					appeal_until=NULL, lapse_reason=NULL
+				WHERE id=$1 AND stage='in_progress'
+				  AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
+				v.id, s.cfg.LeaseDuration.Seconds(), watermark)
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			if tag.RowsAffected() == 0 {
+				continue // raced a concurrent writer: converged by them
+			}
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:liveness_renew:"+v.id+":"+v.episode,
+				"liveness_renew", "task", v.id, sys,
+				map[string]any{"task_id": v.id, "busy": sample.Busy, "last_activity_at": effectiveActivity(sample)})
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			pending = append(pending, evt)
+			stagedRenews++
+			continue
+
+		case LivenessDead:
+			// An open appeal holds the row: no second ping, no reclaim,
+			// until the window lapses.
+			if v.appealUntil != nil && v.appealUntil.After(serverNow) {
+				continue
+			}
+			if v.appealUntil == nil {
+				// ONE pre-reclaim appeal (spec item 4): the ping lands at
+				// the session's turn boundary (post-commit, best-effort);
+				// the row carries the window.
+				reason := LapseSilentBeyondGrace
+				if serverNow.Sub(sample.PushedAt) >= s.cfg.LivenessStaleBound {
+					reason = LapseStaleLiveness
+				}
+				tag, err := tx.Exec(ctx, `
+					UPDATE tasks SET
+						lease_expires_at=now()+make_interval(secs=>$2::float8),
+						appeal_until=now()+make_interval(secs=>$2::float8),
+						lapse_reason=$3
+					WHERE id=$1 AND stage='in_progress' AND appeal_until IS NULL
+					  AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
+					v.id, s.cfg.LeaseAppealWindow.Seconds(), reason)
+				if err != nil {
+					return 0, 0, 0, err
+				}
+				if tag.RowsAffected() == 0 {
+					continue // raced: converged by them
+				}
+				evt, err := recordEventTx(ctx, tx, v.project, "reconciler:lease_appeal:"+v.id+":"+v.episode,
+					"lease_appeal", "task", v.id, sys,
+					map[string]any{"task_id": v.id, "reason": reason,
+						"appeal_window_seconds": s.cfg.LeaseAppealWindow.Seconds()})
+				if err != nil {
+					return 0, 0, 0, err
+				}
+				pending = append(pending, evt)
+				if v.assignee != "" {
+					pings = append(pings, appealPing{assignee: v.assignee, shortID: v.shortID})
+				}
+				stagedAppeals++
+				continue
+			}
+			// The appeal lapsed unanswered: fall through to the reclaim
+			// with the recorded reason.
+
+		default: // LivenessNone: stillborn / unknown — straight reclaim.
+		}
+
+		// The #1813 reclaim: the lease lapse IS the attempt failure —
+		// mark it, count it CONSECUTIVELY, park behind doubling backoff.
+		reason := LapseSessionUnknown
+		switch {
+		case v.assignee == "":
+			reason = LapseNoAssignee
+		case v.appealUntil != nil:
+			reason = LapseAppealIgnored
+		case v.hasLiveness && v.sample.Started:
+			reason = LapseSilentBeyondGrace
+		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
 				claim_incremented_attempts=false,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
-				cooldown_until=now()+make_interval(secs=>$2::float8)
+				cooldown_until=now()+make_interval(secs=>$2::float8),
+				appeal_until=NULL, lapse_reason=$3
 			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
-			v.id, s.cfg.failureBackoff(int(v.failures)+1).Seconds())
+			v.id, s.cfg.failureBackoff(int(v.failures)+1).Seconds(), reason)
 		if err != nil {
-			return 0, err
+			return 0, 0, 0, err
 		}
 		if tag.RowsAffected() == 0 {
 			continue // raced a concurrent writer: converged by them
 		}
 		if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageBacklog, "", sys); err != nil {
-			return 0, err
+			return 0, 0, 0, err
 		}
 		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
 			"reclaim", "task", v.id, sys,
 			map[string]any{"task_id": v.id, "failure_count": v.failures + 1,
-				"last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
+				"last_attempt_failed": true, "last_failure_at": time.Now().UTC(), "lapse_reason": reason})
 		if err != nil {
-			return 0, err
+			return 0, 0, 0, err
 		}
 		pending = append(pending, evt)
-		applied++ // r1-C5: count what landed, not what was scanned
+		reclaims++ // r1-C5: count what landed, not what was scanned
 	}
 	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
-	return applied, nil
+	// Post-commit appeal deliveries (r1-C5: a rollback must never emit
+	// them). The flag/row is authoritative; a lost ping self-heals at
+	// the window's reclaim.
+	for _, p := range pings {
+		if s.messenger != nil {
+			_ = s.messenger(ctx, p.assignee, DirectiveLeaseAppeal, p.shortID)
+		}
+	}
+	return stagedRenews, stagedAppeals, reclaims, nil
 }
 
 // dispatchDrive feeds claimable work to fresh workers via the engine
@@ -776,10 +917,11 @@ func (r *Reconciler) Start(ctx context.Context) error {
 					"error", err.Error())
 				continue
 			}
-			if res.Reclaims+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
+			if res.Reclaims+res.LivenessRenews+res.Appeals+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
 				res.PendingStaged+res.Resumes+res.EpicCompletions > 0 {
 				slog.InfoContext(ctx, "board: reconciler sweep",
-					"reclaims", res.Reclaims, "drift_done", res.DriftDone, "drift_review", res.DriftReview,
+					"reclaims", res.Reclaims, "liveness_renews", res.LivenessRenews, "appeals", res.Appeals,
+					"drift_done", res.DriftDone, "drift_review", res.DriftReview,
 					"drift_reentry", res.DriftReentry, "dep_repairs", res.DepRepairs,
 					"pending_staged", res.PendingStaged,
 					"resumes", res.Resumes, "epic_completions", res.EpicCompletions)

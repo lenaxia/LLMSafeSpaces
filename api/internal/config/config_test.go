@@ -602,27 +602,35 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_GLOBALCLAIMCAP", "96")
 	t.Setenv("LLMSAFESPACES_BOARD_MAXEDGESPERNODE", "20")
 	t.Setenv("LLMSAFESPACES_BOARD_MAXNODESPEREPIC", "80")
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEGRACESECONDS", "0") // explicit default form
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEAPPEALWINDOWSECONDS", "321")
+	t.Setenv("LLMSAFESPACES_BOARD_LIVENESSSTALEBOUNDSECONDS", "222")
 
 	cfg := &Config{Board: struct {
-		Enabled                bool `mapstructure:"enabled"`
-		AttemptsCap            int  `mapstructure:"attemptsCap"`
-		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
-		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
-		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
-		DRRQuantum             int  `mapstructure:"drrQuantum"`
-		SweepSeconds           int  `mapstructure:"sweepSeconds"`
-		UserClaimCap           int  `mapstructure:"userClaimCap"`
-		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
-		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
-		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
+		Enabled                   bool `mapstructure:"enabled"`
+		AttemptsCap               int  `mapstructure:"attemptsCap"`
+		LeaseSeconds              int  `mapstructure:"leaseSeconds"`
+		LeaseGraceSeconds         int  `mapstructure:"leaseGraceSeconds"`
+		LeaseAppealWindowSeconds  int  `mapstructure:"leaseAppealWindowSeconds"`
+		LivenessStaleBoundSeconds int  `mapstructure:"livenessStaleBoundSeconds"`
+		ThrottleBackoffSeconds    int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds     int  `mapstructure:"failureBackoffSeconds"`
+		DRRQuantum                int  `mapstructure:"drrQuantum"`
+		SweepSeconds              int  `mapstructure:"sweepSeconds"`
+		UserClaimCap              int  `mapstructure:"userClaimCap"`
+		GlobalClaimCap            int  `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode           int  `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic           int  `mapstructure:"maxNodesPerEpic"`
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, LeaseGraceSeconds: 0, LeaseAppealWindowSeconds: 300, LivenessStaleBoundSeconds: 300, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
 	applyBoardEnvOverrides(cfg)
 
 	if cfg.Board.Enabled != false || cfg.Board.AttemptsCap != 5 || cfg.Board.LeaseSeconds != 42 ||
 		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.FailureBackoffSeconds != 120 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 ||
 		cfg.Board.UserClaimCap != 12 || cfg.Board.GlobalClaimCap != 96 ||
-		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 {
+		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 ||
+		cfg.Board.LeaseGraceSeconds != 0 || cfg.Board.LeaseAppealWindowSeconds != 321 ||
+		cfg.Board.LivenessStaleBoundSeconds != 222 {
 		t.Fatalf("board env overrides not applied: %+v", cfg.Board)
 	}
 }
@@ -633,18 +641,21 @@ func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "-1")
 	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "not-a-number")
 	cfg := &Config{Board: struct {
-		Enabled                bool `mapstructure:"enabled"`
-		AttemptsCap            int  `mapstructure:"attemptsCap"`
-		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
-		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
-		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
-		DRRQuantum             int  `mapstructure:"drrQuantum"`
-		SweepSeconds           int  `mapstructure:"sweepSeconds"`
-		UserClaimCap           int  `mapstructure:"userClaimCap"`
-		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
-		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
-		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
+		Enabled                   bool `mapstructure:"enabled"`
+		AttemptsCap               int  `mapstructure:"attemptsCap"`
+		LeaseSeconds              int  `mapstructure:"leaseSeconds"`
+		LeaseGraceSeconds         int  `mapstructure:"leaseGraceSeconds"`
+		LeaseAppealWindowSeconds  int  `mapstructure:"leaseAppealWindowSeconds"`
+		LivenessStaleBoundSeconds int  `mapstructure:"livenessStaleBoundSeconds"`
+		ThrottleBackoffSeconds    int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds     int  `mapstructure:"failureBackoffSeconds"`
+		DRRQuantum                int  `mapstructure:"drrQuantum"`
+		SweepSeconds              int  `mapstructure:"sweepSeconds"`
+		UserClaimCap              int  `mapstructure:"userClaimCap"`
+		GlobalClaimCap            int  `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode           int  `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic           int  `mapstructure:"maxNodesPerEpic"`
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, LeaseGraceSeconds: 0, LeaseAppealWindowSeconds: 300, LivenessStaleBoundSeconds: 300, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
 	applyBoardEnvOverrides(cfg)
 	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {

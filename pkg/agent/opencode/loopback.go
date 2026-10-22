@@ -1158,6 +1158,13 @@ func (c *Client) BoardResourcePressure(ctx context.Context, saToken, workspaceID
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/resource-pressure", body)
 }
 
+// BoardSessionLiveness pushes the pod's per-session liveness set
+// (#1847 platform-derived claim liveness: busy/started/activity — the
+// observability the RC1 sweep classifies lapsed claims against).
+func (c *Client) BoardSessionLiveness(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/session-liveness", body)
+}
+
 // SessionArchive sets the platform-level archived marker on one session
 // of this pod's workspace (#1627) via the pod-identity internal API.
 func (c *Client) SessionArchive(ctx context.Context, saToken, workspaceID, sessionID string, archived bool) error {

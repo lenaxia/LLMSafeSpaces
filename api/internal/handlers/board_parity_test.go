@@ -430,6 +430,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/projects/:id/resume",
 		"POST /internal/v1/automation/board/projects/:id/unarchive",
 		"POST /internal/v1/automation/board/resource-pressure",
+		"POST /internal/v1/automation/board/session-liveness",
 		"POST /internal/v1/automation/board/tasks/:id/dependencies",
 		"POST /internal/v1/automation/board/tasks/:id/pause",
 		"POST /internal/v1/automation/board/tasks/:id/resume",

@@ -1535,12 +1535,17 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.Error("board engine disabled: pgxpool construction failed", boardErr)
 		} else {
 			engineCfg := board.EngineConfig{
-				AttemptsCap:     cfg.Board.AttemptsCap,
-				LeaseDuration:   time.Duration(cfg.Board.LeaseSeconds) * time.Second,
-				ThrottleBackoff: time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
-				FailureBackoff:  time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
-				DRRQuantum:      cfg.Board.DRRQuantum,
-				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
+				AttemptsCap:   cfg.Board.AttemptsCap,
+				LeaseDuration: time.Duration(cfg.Board.LeaseSeconds) * time.Second,
+				// #1847 platform-derived liveness knobs (0 grace falls
+				// back engine-side to 2x the lease window).
+				LeaseGrace:         time.Duration(cfg.Board.LeaseGraceSeconds) * time.Second,
+				LeaseAppealWindow:  time.Duration(cfg.Board.LeaseAppealWindowSeconds) * time.Second,
+				LivenessStaleBound: time.Duration(cfg.Board.LivenessStaleBoundSeconds) * time.Second,
+				ThrottleBackoff:    time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
+				FailureBackoff:     time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
+				DRRQuantum:         cfg.Board.DRRQuantum,
+				SweepInterval:      time.Duration(cfg.Board.SweepSeconds) * time.Second,
 				// #1747 backpressure caps + DAG blast-radius bounds.
 				UserClaimCap:    cfg.Board.UserClaimCap,
 				GlobalClaimCap:  cfg.Board.GlobalClaimCap,
@@ -1567,7 +1572,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// the pkg/agent adapter's session routes (no new
 				// transport).
 				board.WithWorkerAborter(newBoardAborter(boardPool, agentAdapter)),
-				board.WithWorkerMessenger(newBoardMessenger(boardPool, agentAdapter)),
+				board.WithWorkerMessenger(newBoardMessenger(boardPool, agentAdapter, time.Duration(cfg.Board.LeaseAppealWindowSeconds)*time.Second)),
 			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions
 			// poke the queue; this consumer drives the affected project
