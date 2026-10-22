@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -346,9 +347,23 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 
 // --- Heartbeat + throttle -----------------------------------------------------------
 
+// heartbeatFutureTolerance bounds honest client-clock drift: an
+// observedProgressAt up to this far ahead of the SERVER clock is clamped
+// to the server clock (still evidence-bearing — all stored watermark
+// stamps are server-clock); a stamp beyond it is a hallucinated
+// estimate, not evidence, and rejects outright (#1847 PR1: the C1
+// incident class — a future watermark is unrenewable by construction,
+// so one accepted future stamp locked the worker out of its own lease).
+const heartbeatFutureTolerance = 2 * time.Minute
+
 // Heartbeat refreshes the lease ONLY when it carries new progress evidence
 // (the worker's message-level watermark moved — #1685: elapsed time is not
-// liveness). Requires the matching claim token.
+// liveness). Requires the matching claim token. #1847: the server clock is
+// the authority over every stamp — a client-observed timestamp beyond
+// heartbeatFutureTolerance ahead of the server clock rejects (invalid
+// evidence), one within it clamps to now, and a stored watermark already
+// in the future (pre-fix C1 damage) reads as stale so an honest
+// present-t observation heals it.
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -357,9 +372,20 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
+	serverNow := time.Now().UTC()
+	switch {
+	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
+		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
+			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
+	case observedProgressAt.After(serverNow):
+		observedProgressAt = serverNow // clamp: stored stamps are server-clock
+	}
 	// Evidence gate: extend only when the watermark moved past the stored
-	// progress watermark.
-	extends := t.LastProgressAt == nil || observedProgressAt.After(*t.LastProgressAt)
+	// progress watermark. A stored watermark ahead of the server clock is
+	// pre-fix poison (the C1 lockout) and reads as stale — never as
+	// unbeatable evidence.
+	extends := t.LastProgressAt == nil || t.LastProgressAt.After(serverNow) || observedProgressAt.After(*t.LastProgressAt)
 	var lease time.Time
 	if extends {
 		if err := s.q().QueryRow(ctx, `

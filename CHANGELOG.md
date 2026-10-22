@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — board heartbeat: server clock is the authority over client-observed stamps (issue #1847 PR1, the C1 incident class)
+
+- **A future-stamped `observedProgressAt` rejects outright**
+  (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker
+  hallucinated a timestamp ~7.5h into the future; the server accepted
+  it as progress evidence and stored it as the lease's progress
+  watermark — which then became unrenewable by construction (every
+  honest later observation failed the moved-watermark evidence gate),
+  locking a live worker out of its own claim. Stamps more than
+  `heartbeatFutureTolerance` (2m) ahead of the server clock are
+  estimates, not evidence, and no longer touch the watermark or the
+  lease.
+- **Mild future skew clamps to the server clock** (all stored watermark
+  stamps are server-clock); honest clients with drifting clocks keep
+  extending.
+- **Already-poisoned watermarks self-heal**: a stored watermark ahead
+  of the server clock (pre-fix damage) reads as stale, so an honest
+  present-t observation extends again — the C1 lockout cannot recur
+  against repaired rows.
+
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
