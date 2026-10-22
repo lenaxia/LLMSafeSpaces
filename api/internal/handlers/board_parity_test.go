@@ -614,7 +614,7 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
 		case "get_user_board_config", "set_user_board_config", "get_project_board_config", "set_project_board_config":
 			assert.Equal(t, "absent", row.externalMCP.kind,
-				"%s: #1832 config rows — the board config surface is the owner's REST/UI projection (admin-guarded global + owner-scoped per-project); external MCP tools are future work, pinned absent by design", row.action)
+				"%s: #1832 config rows — the board config surface is the owner's REST/UI projection (user-scoped board-wide defaults on /me/board/config + owner-scoped per-project, all /me routes); external MCP tools are future work, pinned absent by design", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
 		default:
 			assert.Equal(t, "live", row.externalMCP.kind, "%s: external MCP cell", row.action)

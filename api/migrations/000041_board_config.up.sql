@@ -18,13 +18,21 @@
 --
 -- Shape mirrors instance_settings (key text + value jsonb rows, the
 -- settings system's tier model) scoped to the board domain. The key
--- CHECK constraint is the physical belt beneath the service
--- validation (unknown keys reject at the API first); growing the key
--- set (issue: "room to grow") is a deliberate migration: add the key
--- to pkg/board/config.go's vocabulary and relax this constraint.
+-- CHECK constraints are the physical belt beneath the service
+-- validation (unknown keys reject at the API first) and the two
+-- tables' belts DIFFER by design: board_config_defaults admits all
+-- three keys, while board_project_config_overrides omits
+-- defaultWorkerSlots (a USER-level key — a project's worker slots are
+-- fixed at create, so the service rejects the key on the project
+-- surface and the physical floor matches that ruling; an out-of-band
+-- row cannot render an "effective" value the engine does not honor).
+-- Growing the key set (issue: "room to grow") is a deliberate
+-- migration: add the key to pkg/board/config.go's vocabulary and
+-- relax the constraint(s) it belongs on.
 --
 -- Initial keys (#1832): reviewColumn (off|manual|auto),
--- autoAssignReviewer (bool), defaultWorkerSlots (int > 0).
+-- autoAssignReviewer (bool), defaultWorkerSlots (int > 0 — user
+-- table only).
 --
 -- No board_events rows ride these tables (explicit owner decision,
 -- not a silent deviation): board_events is the project-scoped
@@ -56,7 +64,10 @@ CREATE TABLE IF NOT EXISTS public.board_project_config_overrides (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT board_project_config_overrides_pkey PRIMARY KEY (project_id, key),
-    CONSTRAINT board_project_config_overrides_key_check CHECK ((key = ANY (ARRAY['reviewColumn'::text, 'autoAssignReviewer'::text, 'defaultWorkerSlots'::text])))
+    CONSTRAINT board_project_config_overrides_key_check CHECK ((key = ANY (ARRAY['reviewColumn'::text, 'autoAssignReviewer'::text])))
+    -- defaultWorkerSlots is deliberately ABSENT here: user-level key
+    -- (a project's slots are fixed at create); the service rejects it
+    -- on the project surface and this CHECK is the matching floor.
 );
 
 DO $$ BEGIN

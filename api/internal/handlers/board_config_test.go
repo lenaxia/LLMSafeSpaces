@@ -15,6 +15,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -81,6 +82,12 @@ func (f *fakeBoardManager) SetProjectBoardConfig(_ context.Context, actor board.
 	if err := f.errFor["set_project_board_config"]; err != nil {
 		return nil, err
 	}
+	// Model the real service's user-level-key ruling (round-3): the
+	// project surface rejects defaultWorkerSlots — the fake must not
+	// mask a rejection the real seam renders as 400 invalid_input.
+	if in != nil && in.DefaultWorkerSlots != nil {
+		return nil, &board.GuardError{Code: board.GuardInput, Detail: "defaultWorkerSlots is a user-level key — set it in the board-wide defaults (PUT /api/v1/me/board/config); a project's worker slots are fixed at create"}
+	}
 	echo := board.BoardConfigOverride{}
 	if in != nil {
 		echo = *in
@@ -88,7 +95,7 @@ func (f *fakeBoardManager) SetProjectBoardConfig(_ context.Context, actor board.
 	return &board.ProjectBoardConfig{
 		ProjectID: "p1",
 		Overrides: echo,
-		Effective: board.BoardConfig{ReviewColumn: "auto", AutoAssignReviewer: false, DefaultWorkerSlots: 5},
+		Effective: board.BoardConfig{ReviewColumn: "auto", AutoAssignReviewer: true, DefaultWorkerSlots: 2},
 	}, nil
 }
 
@@ -202,16 +209,30 @@ func TestBoardConfigREST_ProjectRoundTrip(t *testing.T) {
 		"effective":{"reviewColumn":"off","autoAssignReviewer":false,"defaultWorkerSlots":2}
 	}`, w.Body.String())
 
-	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"defaultWorkerSlots":5,"autoAssignReviewer":true}`)
+	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"reviewColumn":"auto","autoAssignReviewer":true}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.NotNil(t, svc.lastProjectConfigSet)
-	require.NotNil(t, svc.lastProjectConfigSet.DefaultWorkerSlots)
+	require.NotNil(t, svc.lastProjectConfigSet.ReviewColumn)
 	require.NotNil(t, svc.lastProjectConfigSet.AutoAssignReviewer)
-	assert.Equal(t, 5, *svc.lastProjectConfigSet.DefaultWorkerSlots)
+	assert.Equal(t, "auto", *svc.lastProjectConfigSet.ReviewColumn)
 	assert.True(t, *svc.lastProjectConfigSet.AutoAssignReviewer)
-	assert.Nil(t, svc.lastProjectConfigSet.ReviewColumn)
+	assert.Nil(t, svc.lastProjectConfigSet.DefaultWorkerSlots, "defaultWorkerSlots stays off legal project PUTs (user-level key)")
 	// REST actor stamping: the JWT user, user kind, rest surface, no token.
 	assert.Equal(t, board.Actor{Kind: board.ActorUser, UserID: "user-1", Surface: board.SurfaceREST}, svc.lastActor)
+}
+
+// TestBoardConfigREST_BodyCap: the 64 KiB MaxBytesReader gate in
+// bindBoardConfigOverride — an over-cap body rejects 400 before any
+// decode, never reaching the service (the round-3 review's missing
+// pin).
+func TestBoardConfigREST_BodyCap(t *testing.T) {
+	svc := newFakeBoardManager()
+	r := newBoardConfigRouter(t, svc)
+	huge := `{"reviewColumn":"` + strings.Repeat("a", 64<<10) + `"}`
+	w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", huge)
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "too large", "the cap names the MaxBytesReader error")
+	assert.Equal(t, 0, svc.calls["set_user_board_config"], "an over-cap body never reaches the service")
 }
 
 // TestBoardConfigREST_ProjectPerimeter: a foreign project renders the same
@@ -264,6 +285,22 @@ func TestBoardConfigREST_ProjectRejectsUnknownAndMalformed(t *testing.T) {
 		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"defaultWorkerSlots":5}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 		assert.Contains(t, w.Body.String(), "invalid_input")
+	})
+
+	t.Run("user-level key ruling renders 400 through the modeled seam", func(t *testing.T) {
+		// Round-3: the fake now models the real service's ruling, so
+		// the project-PUT defaultWorkerSlots 400 is pinned here too —
+		// no fake-200 masking the real seam's rejection (the
+		// handler-integration suite pins the same against the REAL
+		// service + Postgres). Fresh fake: no errFor leakage from the
+		// subtest above.
+		svc2 := newFakeBoardManager()
+		svc2.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", WorkerSlots: 2, Status: board.ProjectActive}}
+		r2 := newBoardConfigRouter(t, svc2)
+		w := doBoardREST(t, r2, http.MethodPut, "/api/v1/me/projects/p1/config", `{"defaultWorkerSlots":5}`)
+		assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), "invalid_input")
+		assert.Contains(t, w.Body.String(), "user-level key", "the rejection names the ruling")
 	})
 
 	t.Run("missing project renders 404", func(t *testing.T) {

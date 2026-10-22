@@ -165,12 +165,18 @@ func (s *BoardSuite) TestBoardConfig_DefaultWorkerSlotsFeedsCreate() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 
-	// Unset user map: create falls back to the code default.
-	p := s.seedProject(ws, 0)
+	// Unset user map + NO explicit slots (CreateProject directly —
+	// seedProject always passes an explicit WorkerSlots, which would
+	// make this arm tautological): create falls back to the code
+	// default.
+	p, err := s.svc.CreateProject(ctx, s.owner(), board.ProjectInput{
+		Name: "proj-slots-none", TargetWorkspaceID: ws, Tags: []string{},
+	}, "")
+	s.Require().NoError(err)
 	s.Equal(2, p.WorkerSlots, "no user default and no explicit slots → the code default")
 
 	// A user default flips the create fallback for the NEXT project.
-	_, err := s.svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
+	_, err = s.svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
 		DefaultWorkerSlots: intVal(5),
 	})
 	s.Require().NoError(err)
@@ -254,8 +260,17 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 	_, err = s.svc.GetProjectBoardConfig(ctx, board.Actor{}, p.ID, "")
 	s.Require().Error(err)
 	guard, ok = err.(*board.GuardError)
-	s.Require().True(ok, "got %T", err)
+	s.Require().True(ok)
 	s.Equal(board.GuardAuthz, guard.Code, "empty actor rejects authz, never resolves unscoped")
+
+	// The USER read seam enforces the same actor discipline (round-3
+	// uniformity): an empty actor must not silently render the code
+	// defaults dressed up as a resolved user's effective map.
+	_, err = s.svc.GetUserBoardConfig(ctx, board.Actor{})
+	s.Require().Error(err)
+	guard, ok = err.(*board.GuardError)
+	s.Require().True(ok)
+	s.Equal(board.GuardAuthz, guard.Code, "empty actor rejects authz on the user read too")
 
 	// R7: a foreign actor's write resolves the scoped 404 (the
 	// UpdateProject discipline — foreign rows are plain 404s, never
@@ -320,6 +335,21 @@ func (s *BoardSuite) TestBoardConfig_StorageRejectsUnknownKeys() {
 		`INSERT INTO board_project_config_overrides (project_id, key, value) VALUES ($1, 'reviewQueue', '"off"')`, p.ID)
 	s.Require().Error(err, "unknown keys must not be storable per-project")
 
+	// The project table's CHECK is NARROWER than the user table's
+	// (round-3 ruling): defaultWorkerSlots is a user-level key — the
+	// physical floor must match the service rejection, so an
+	// out-of-band row cannot render an effective value the engine
+	// does not honor.
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO board_project_config_overrides (project_id, key, value) VALUES ($1, 'defaultWorkerSlots', '4')`, p.ID)
+	s.Require().Error(err, "defaultWorkerSlots must not be storable per-project (user-level key)")
+	// The user table still admits it (the key's home).
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'defaultWorkerSlots', '4')`, testUser)
+	s.Require().NoError(err, "defaultWorkerSlots remains storable on its home (user) table")
+	_, err = s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1 AND key='defaultWorkerSlots'`, testUser)
+	s.Require().NoError(err)
+
 	// Sanity: a known key stores fine (scoped to the user).
 	_, err = s.pool.Exec(ctx,
 		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'reviewColumn', '"auto"')`, testUser)
@@ -376,8 +406,6 @@ func (s *BoardSuite) TestBoardConfig_FailClosedOnDrift() {
 	s.Contains(drift.Error(), "project overrides")
 
 	// And the create fallback fails closed too (no silent 0-slot
-	// projects off a drifted map).
-	// And the create fallback fails closed too (no silent 0-slot
 	// projects off a drifted map) — re-drift the user map for this arm.
 	_, err = s.pool.Exec(ctx,
 		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'defaultWorkerSlots', '"x"')`, testUser)
@@ -422,18 +450,69 @@ func (s *BoardSuite) TestBoardConfig_ConcurrentReplaceWrites() {
 		s.Require().NoError(<-errCh, "concurrent REPLACE writes must not surface PK-violation 500s")
 	}
 
-	// Final user map is exactly A or exactly B (never a union).
+	// Final USER map is exactly A or exactly B (never a union).
 	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
-	isA := cfg.ReviewColumn == board.ReviewColumnOff && cfg.DefaultWorkerSlots == 3 && !cfg.AutoAssignReviewer
-	isB := cfg.ReviewColumn == board.ReviewColumnManual && cfg.DefaultWorkerSlots == 2 && cfg.AutoAssignReviewer
-	s.True(isA || isB, "final user map is one written map, not a union: %+v", cfg)
+	uIsA := cfg.ReviewColumn == board.ReviewColumnOff && cfg.DefaultWorkerSlots == 3 && !cfg.AutoAssignReviewer
+	uIsB := cfg.ReviewColumn == board.ReviewColumnManual && cfg.DefaultWorkerSlots == 2 && cfg.AutoAssignReviewer
+	s.True(uIsA || uIsB, "final user map is one written map, not a union: %+v", cfg)
 
+	// Final PROJECT OVERRIDE map is exactly A or exactly B (never a
+	// union). The project's EFFECTIVE row is asserted against
+	// merge-of-observed, NOT "all-A or all-B": the user and project
+	// scopes sit under INDEPENDENT advisory locks, so the last user
+	// writer and the last project writer can land in different
+	// parities — U=A/P=B and U=B/P=A are both reachable and legal
+	// (pinned deterministically in TestBoardConfig_CrossScopeParity);
+	// the old all-A-or-all-B effective assertion was flaky by
+	// construction.
 	pc, err := s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
 	s.Require().NoError(err)
-	pIsA := pc.Effective.ReviewColumn == board.ReviewColumnOff && pc.Effective.DefaultWorkerSlots == 3 && !pc.Effective.AutoAssignReviewer
-	pIsB := pc.Effective.ReviewColumn == board.ReviewColumnManual && pc.Effective.DefaultWorkerSlots == 2 && pc.Effective.AutoAssignReviewer
-	s.True(pIsA || pIsB, "final project map is one written map, not a union: %+v", pc.Effective)
+	pOvA := pc.Overrides.ReviewColumn != nil && *pc.Overrides.ReviewColumn == board.ReviewColumnOff &&
+		pc.Overrides.AutoAssignReviewer == nil
+	pOvB := pc.Overrides.AutoAssignReviewer != nil && *pc.Overrides.AutoAssignReviewer &&
+		pc.Overrides.ReviewColumn == nil
+	s.True(pOvA || pOvB, "final project override map is one written map, not a union: %+v", pc.Overrides)
+	s.Equal(board.MergeBoardConfig(*cfg, &pc.Overrides), pc.Effective,
+		"effective is exactly the observed user map merged with the observed overrides — any parity")
+}
+
+// TestBoardConfig_CrossScopeParity: the user-defaults map and the
+// project-overrides map are INDEPENDENTLY locked scopes — a final
+// U=A/P=B or U=B/P=A state is legal and renders exactly the merge of
+// the two observed maps. The deterministic twin of the concurrency
+// test's racing path: this pins the semantics with no race at all
+// (the round-3 review's cross-parity arms).
+func (s *BoardSuite) TestBoardConfig_CrossScopeParity() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 0)
+
+	// U=A / P=B: user sets reviewColumn=off + slots=3; project sets
+	// only autoAssignReviewer=true. Effective = {off, true, 3}.
+	userA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff), DefaultWorkerSlots: intVal(3)}
+	projB := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
+	_, err := s.svc.SetUserBoardConfig(ctx, s.owner(), &userA)
+	s.Require().NoError(err)
+	pc, err := s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &projB)
+	s.Require().NoError(err)
+	s.Equal(board.ReviewColumnOff, pc.Effective.ReviewColumn, "U=A/P=B: review column from the user map")
+	s.True(pc.Effective.AutoAssignReviewer, "U=A/P=B: auto-assign from the project override")
+	s.Equal(3, pc.Effective.DefaultWorkerSlots, "U=A/P=B: slots from the user map")
+
+	// U=B / P=A: user sets only autoAssignReviewer=true; project sets
+	// reviewColumn=off. Effective = {off, true, 2} — slots re-inherit
+	// the CODE default: the exact mixed row the old all-A-or-all-B
+	// effective assertion wrongly ruled impossible.
+	userB := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
+	projA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff)}
+	_, err = s.svc.SetUserBoardConfig(ctx, s.owner(), &userB)
+	s.Require().NoError(err)
+	pc, err = s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &projA)
+	s.Require().NoError(err)
+	s.Equal(board.ReviewColumnOff, pc.Effective.ReviewColumn, "U=B/P=A: review column from the project override")
+	s.True(pc.Effective.AutoAssignReviewer, "U=B/P=A: auto-assign from the user map")
+	s.Equal(2, pc.Effective.DefaultWorkerSlots, "U=B/P=A: slots re-inherit the code default — a legal mixed row, not a union")
 }
 
 // Local pointer helpers (external test package: unexported helpers in

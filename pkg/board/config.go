@@ -224,10 +224,14 @@ func ValidateBoardConfigOverride(o *BoardConfigOverride) error {
 }
 
 // mustMarshalJSON marshals a value that cannot fail (string/bool/int).
+// The impossible branch PANICS rather than returning "null": a future
+// reusable caller must never silently persist a null (null is never a
+// config value — an unset key is absent, and a silent null would flip
+// inheritance semantics at the storage floor).
 func mustMarshalJSON(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return json.RawMessage("null")
+		panic(fmt.Sprintf("board config: mustMarshalJSON(%T): unreachable for string/bool/int: %v", v, err))
 	}
 	return b
 }
@@ -396,8 +400,15 @@ func (s *Service) userBoardConfigOverride(ctx context.Context, userID string) (*
 // GetUserBoardConfig renders the acting user's effective board-wide
 // defaults: the code defaults overlaid with their stored user map
 // (R7: boards are user-level; "board-wide" = the user's boards, NOT
-// the instance — the defaults row is scoped to the owner).
+// the instance — the defaults row is scoped to the owner). Guards once
+// here like every other config seam: a user-scoped read needs a real
+// acting user (uniform with the project read and both writes — an
+// empty actor never silently reads the code defaults as if they were
+// a resolved user's map).
 func (s *Service) GetUserBoardConfig(ctx context.Context, actor Actor) (*BoardConfig, error) {
+	if actor.UserID == "" {
+		return nil, &GuardError{Code: GuardAuthz, Detail: "board config defaults are user-scoped — an authenticated acting user is required"}
+	}
 	o, err := s.userBoardConfigOverride(ctx, actor.UserID)
 	if err != nil {
 		return nil, err
@@ -445,6 +456,15 @@ func (s *Service) GetProjectBoardConfig(ctx context.Context, actor Actor, projec
 	if err != nil {
 		return nil, err
 	}
+	// Torn-read tolerance (deliberate): the user map and the project
+	// map load in two statements on separate pool connections, so a
+	// write landing between them can render an effective row that
+	// never existed at any single instant. Each map is individually
+	// consistent (per-scope advisory locks), every rendered value was
+	// really stored, and a cross-scope snapshot transaction would
+	// couple the two independent lock domains for a cosmetic
+	// guarantee — tolerated and pinned by the concurrency test's
+	// cross-parity arms.
 	u, err := s.userBoardConfigOverride(ctx, actor.UserID)
 	if err != nil {
 		return nil, err

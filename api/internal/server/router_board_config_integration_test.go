@@ -169,4 +169,30 @@ func TestIntegrationRouterBoardConfig(t *testing.T) {
 
 	w = call("router-cfg-other", http.MethodGet, "/api/v1/me/projects/"+owned.ID+"/config", "")
 	assert.Equal(t, http.StatusNotFound, w.Code, "foreign project: scoped 404 through the production perimeter")
+
+	// --- malformed bodies through the production route table (round-3) ------------
+	// These 400s were previously pinned only through the hand-built
+	// handler router; the production route table must render the same
+	// strict gate (middleware wiring cannot soften it).
+	for _, tc := range []struct{ name, body string }{
+		{"unknown key", `{"reviewQueue":"off"}`},
+		{"per-key null", `{"autoAssignReviewer":null}`},
+		{"top-level null", `null`},
+		{"empty body", ``},
+	} {
+		w := call("router-cfg", http.MethodPut, "/api/v1/me/board/config", tc.body)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "%s must 400 through the production route table: %s", tc.name, w.Body.String())
+	}
+
+	// Storage drift renders 5xx through the production route table
+	// (round-3): a drifted stored row is the server's problem — a GET
+	// must not render 400 invalid_input on any wiring.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ('router-cfg', 'autoAssignReviewer', '"not-a-bool"')`)
+	require.NoError(t, err)
+	w = call("router-cfg", http.MethodGet, "/api/v1/me/board/config", "")
+	assert.Equal(t, http.StatusInternalServerError, w.Code, "drift GET must render 5xx through production, never 400: %s", w.Body.String())
+	_, err = pool.Exec(ctx,
+		`DELETE FROM board_config_defaults WHERE user_id='router-cfg' AND key='autoAssignReviewer'`)
+	require.NoError(t, err)
 }
