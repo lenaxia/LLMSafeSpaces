@@ -29,7 +29,7 @@
 ## Work Completed
 
 - Diagnosis-first lane: pulled both failing job logs (118506390338, 118536660923), source-geometry analysis, temporary Playwright probe (race-window instrumentation + settled-state repro + fix-path validation), then the spec restructure above. Probe deleted pre-commit; its evidence is recorded in this worklog, the PR thread, and the issue thread (issuecomment-6304285916).
-- Review iterations on PR #1804: r2 name-pinned the wait selector; r3/r4 worklog sentinel restorations (a local auto-numberer kept self-assigning numbers — reverted twice, per README-LLM.md the post-merge bot numbers worklogs); r6 rebase onto post-#1819 main (prior full-workflow build reds were deterministic stale-base toolchain skew, not an outage).
+- Review iterations on PR #1804: r2 name-pinned the wait selector; r3/r4 worklog sentinel restorations (a local auto-numberer kept self-assigning numbers — reverted twice, per README-LLM.md the post-merge bot numbers worklogs); r6 rebase onto post-#1819 main (prior full-workflow build reds were deterministic stale-base toolchain skew, not an outage); r9 union-merge of origin/main `cef43acf` (143 commits — new playwright harness with `E2E_PORT`, 3 new e2e specs, board surface) per the stale-base finding; spec passed the new harness first try (canary run 39864417270).
 
 ## Key Decisions
 
@@ -45,13 +45,13 @@
 
 - Diagnostic probe (temporary, deleted): race-window table + settled-state CI-signature repro + backdrop-close validation — 2/2 identical.
 - Local, pre-PR: fixed row ×10 iterations (`--workers=1 --grep "both halves"`) → 10/10; full spec file → 5/5; `npm run typecheck` + eslint → clean.
-- CI determinism, final heads (orchestrator-ratified instrument: full-workflow reruns on one head):
-  - `4035ba54` (post-#1819 rebase, r6 head; run 39704085765): Frontend (unit + typecheck + e2e) **5/5 green**; full workflow fully green 3/5 (a1, a4, a5); isolated single-job reds: SDK Contract Tests (Hurl-vs-Prism step, exit 2) in a2 only, Origin plugin freeze pin in a3 only — each green in the other four executions of identical content; non-deterministic, outside this diff's surface. Table: PR #1804 issuecomment-6333320084.
-  - Superseded heads: `556f9745` Frontend 5/5; `ce9fe72c` Frontend 8/8 with attempts 4–8 full-green (the a3 red there was the unrelated Go cron-timing test; builds on that head were pre-#1819 skew, corrected in the PR body per r6).
+- CI determinism (orchestrator-ratified instrument: the **Frontend (unit + typecheck + e2e) lane** — 5 consecutive green executions of that job on the final head; NOT full-workflow reruns):
+  - **Final head (post-r9 union-merge of origin/main `cef43acf` + this worklog sync):** the criterion-2 set is collected on this exact head via the standing run-rerun mechanism (this head's pull_request CI run, attempts 1–5, Frontend job re-executed each attempt) — every attempt's run/job ids and conclusions are recorded in the evidence table posted on the PR #1804 thread and linked from the PR body Green section, which names this head.
+  - Superseded heads: `80a5949b` (r9 merge commit, pre-worklog-sync): Frontend 1/1 green (run 39864417270, job 120122993551) — first execution of the spec under main's new harness (E2E_PORT config + 3 new e2e specs). `6b56edf8`: Frontend 1/1 green, full workflow green (run 39733129550). `4035ba54` (post-#1819 rebase, r6 head; run 39704085765): Frontend **5/5 green**; full workflow fully green 3/5 (a1, a4, a5); isolated single-job reds: SDK Contract Tests (Hurl-vs-Prism step, exit 2) in a2 only, Origin plugin freeze pin in a3 only — each green in the other four executions of identical content; non-deterministic, outside this diff's surface. Table: PR #1804 issuecomment-6333320084. `556f9745` Frontend 5/5; `ce9fe72c` Frontend 8/8 with attempts 4–8 full-green (the a3 red there was the unrelated Go cron-timing test; builds on that head were pre-#1819 skew, corrected in the PR body per r6).
 
 ## Next Steps
 
-- Merge (squash takes the PR title; post-merge bot numbers this worklog; "Fixes #1788" closes the issue). No further rebase expected — head is post-#1819; if main moves again before merge, rebase + a fresh 5× Frontend set on the new head per the standing rule.
+- Merge (squash takes the PR title; post-merge bot numbers this worklog; "Fixes #1788" closes the issue). Standing rule (replaces the r7 "no further rebase expected" premise, stale since main advanced 143 commits): the criterion-2 evidence is head-pinned — if main moves again before merge and the branch is rebased/merged forward, a fresh 5× Frontend set on the new head supersedes the current one.
 
 ## Files Modified
 
