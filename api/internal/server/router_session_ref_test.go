@@ -427,3 +427,53 @@ func TestSessionRef_HashMissPassthroughCarriesDeprecationNotice(t *testing.T) {
 		t.Fatalf("Sunset must be an RFC 8594 HTTP-date, got %q: %v", sunset, err)
 	}
 }
+
+// #1816: a RESOLVED ref (a phrase or alias REWRITE — never the
+// byte-identical deprecated-id passthrough, which resolves nothing)
+// tells the caller which canonical id it mapped to via
+// X-Session-Ref-Resolved. The platform MCP client consumes it as one
+// key of its dual-space contract-stream match — post-#1824 frames are
+// phrase-keyed on refreshed pods (harness additive) and harness-keyed
+// on heal-window/legacy pods — so a single-space filter would burn the
+// wait timeout on one regime or the other. Correlation for a caller
+// that just addressed the session under authz — not a new
+// default-output surface (#1756 §1 governs session-bearing payload
+// bodies; this rides the same response the caller already receives).
+func TestSessionRef_ResolvedRefCarriesCanonicalHeader(t *testing.T) {
+	router, ws, db := newRouterFixtureWithDB(t)
+
+	t.Run("phrase", func(t *testing.T) {
+		db.On("FindSessionByShortID", mock.Anything, "ws-1", refShortUp).Return(refLiveID, nil).Once()
+		ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", refLiveID).Return(nil).Once()
+
+		rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/"+refShortUp+"/seen")
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		assert.Equal(t, refLiveID, rec.Header().Get("X-Session-Ref-Resolved"),
+			"a phrase-addressed rewrite must surface the canonical id")
+	})
+
+	t.Run("alias", func(t *testing.T) {
+		db.On("FindSessionsByAlias", mock.Anything, "ws-1", "resolve-me").Return([]types.SessionListItem{
+			{ID: refLiveID, ShortID: refShortID, Title: "resolve-me"},
+		}, nil).Once()
+		ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", refLiveID).Return(nil).Once()
+
+		rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/resolve-me/seen")
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		assert.Equal(t, refLiveID, rec.Header().Get("X-Session-Ref-Resolved"),
+			"an alias-addressed rewrite must surface the canonical id")
+	})
+}
+
+// #1816: a byte-identical passthrough (the caller already used the
+// canonical id) sets no header — the bridge only reports a RESOLUTION.
+func TestSessionRef_UnresolvedPassthroughCarriesNoHeader(t *testing.T) {
+	router, ws, _ := newRouterFixtureWithDB(t)
+
+	ws.On("MarkSessionSeen", mock.Anything, "test-user", "ws-1", refLiveID).Return(nil).Once()
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/workspaces/ws-1/sessions/"+refLiveID+"/seen")
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Empty(t, rec.Header().Get("X-Session-Ref-Resolved"),
+		"a canonical-id input resolves nothing; no header")
+}

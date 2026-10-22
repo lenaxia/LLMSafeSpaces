@@ -323,7 +323,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	client := opencode.NewLoopbackClient(srv.URL, "pw")
 
 	// --- A: happy path — injection wins end to end ------------------------------
-	resp, err := dispatchBoardManagerTool(ctx, client, "board_create_project", map[string]any{
+	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_project", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"sessionId":            "ses_MODEL_DECLARED",
 		"name":                 "E2E Proj",
@@ -349,7 +349,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		proj.ID).Scan(&n))
 	assert.Zero(t, n)
 
-	resp, err = dispatchBoardManagerTool(ctx, client, "board_create_epic", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"projectId":            proj.ShortID,
 		"title":                "E2E Epic",
@@ -362,7 +362,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.Body), &epic))
 
-	resp, err = dispatchBoardManagerTool(ctx, client, "board_create_task", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 		"title":                "E2E Task",
@@ -388,7 +388,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 
 	// --- B: identity-less dispatch fails closed pre-wire ------------------------
 	before := boardE2EEventCount(t, pool)
-	_, err = dispatchBoardManagerTool(ctx, client, "board_create_epic", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"projectId": proj.ShortID,
 		"title":     "x",
 	}, "sa-token", wsPod)
@@ -397,7 +397,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Equal(t, before, boardE2EEventCount(t, pool))
 
 	// --- C: the engine belt refuses a claimed worker session --------------------
-	resp, err = dispatchBoardManagerTool(ctx, client, "board_epic_activate", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_epic_activate", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 	}, "sa-token", wsPod)
@@ -409,7 +409,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NotNil(t, claim)
 	require.Equal(t, task.ID, claim.TaskID)
 
-	_, err = dispatchBoardManagerTool(ctx, client, "board_create_task", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
 		"title":                "worker power grab",
@@ -423,7 +423,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		board.Actor{Kind: board.ActorUser, UserID: "user-7", Surface: board.SurfaceREST},
 		board.ProjectInput{Name: "Foreign", TargetWorkspaceID: wsForeign}, "")
 	require.NoError(t, err)
-	_, err = dispatchBoardManagerTool(ctx, client, "board_create_epic", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"projectId":            foreign.ShortID,
 		"title":                "nope",
