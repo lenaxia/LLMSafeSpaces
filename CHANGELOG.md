@@ -5,6 +5,7 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
 ## [Unreleased]
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
@@ -35,6 +36,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
   the overlay renders on every task read (REST/SDK/MCP) and in
   reclaim audit events (escalate events carry exhausted=true).
+
+### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
+- **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
+  #1819's 1.26.10 digest re-pins (main already carries those, the
+  go.mod bump, vite 8.1.6, and every workflow go-version pin): the
+  digest remains the pinned base image; auto makes go.mod's minor
+  requirement govern the compile, fetching the toolchain through the
+  module proxy/GOSUMDB only when it exceeds the image's.
+- **/livez and /readyz are exempt from the global rate limiter.**
+  The SDK rate-limit canary pins "not rate-limited" for both, and a
+  429 on a k8s liveness probe restarts healthy pods — the probes only
+  passed pre-#1825 by refill-boundary luck after the canary's login
+  burst. Pinned red-first (an exhaustion control leg proves the
+  budget is spent — 429 observed on an ordinary route — before both
+  probes are asserted: /livez exactly 200, /readyz its typed 503).
+
+### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+- **Duplicate worklog numbers now FAIL `make repolint`** — the new
+  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
+  (`WorklogNumberPattern`) so historical uppercase-slug files count
+  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
+  the lowercase-only slug class; healed here by renumbering the
+  non-series member of each pair — final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166). Gaps stay warnings:
+  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
+  (pinned end-to-end through the real hook: every sentinel numbered,
+  main-inherited included, all unique) and the falsified "sentinels
+  never appear on origin/main" / "collisions cannot occur" comments
+  are corrected. The invariant caught one real collision in-flight
+  (its own PR's 1161 vs main's lag-window assignment); a second
+  (1162) was pre-empted by a manual leapfrog before it could redden.
+  Companion security bumps shipped separately: 43a7ba29 (Go
+  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
+
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
 
 - **The delivery boundary now refuses literal placeholder tokens.** The
@@ -152,6 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (ai-workflows#65); this list then becomes redundant on the next sync.
 
 ### Added — Task Board: agent manager tools + the #1747 amendment set (issue #1747)
+
 ### Added — workspace phrase IDs (#1757): 2 words + 1 digit, fleet-unique
 
 - **Every workspace gains a minted phrase ID** (`amber-river-7`):
@@ -223,6 +258,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note in agentd tool results — naming the phrase as the address.
   SDK/SSE/frontend value-flips coordinate with the ABI short_id M2
   major (#1756 §5).
+
 ### Fixed — #1756 post-union remediation: the un-audited ID re-key consumers, §2 notice, and mint determinism (#1756/#1775 post-union review; PR #1806)
 
 - **Five production regressions from the re-key, all re-keyed to the canonical harness id (`InternalID`):** the agentd registry pull no longer poisons the replica phrase→phrase (unminted rows are skipped — the replica install rejects empty short ids); the archived set matches harness row ids again (the #1735 leak is re-closed); session-gone reap verdicts fire (no more blanket "uncertain"); `RebuildMessageCount` no longer mints phrase-keyed ghost rows; the `context_used` self-heal fires (and the workspace CRD stops being fetched on every session-list call). `PlanReconciliation`'s error-path miss-carriers are keyed by `InternalID` too (reap convergence survives transient list errors).
@@ -273,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every surface. `replayExceptions` in the parity matrix is empty:
   every mutating action asserts the full idempotent-replay contract on
   both the REST and external-MCP columns.
+
 ### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
 - **Both AI callers pin `lenaxia/ai-workflows@v0.2.18` and pass
@@ -363,6 +400,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage + priority columns, adds the pause flags, relaxes the
   dependency guard to workspace scope, and keeps transition history
   alive across deletes.
+
 ### Added — Platform: the Go build-cache economy moves off the PVC (#1758)
 
 - **Workspace pods now carry a dedicated disk-backed emptyDir for the
@@ -381,6 +419,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is network-expensive to rebuild and valuable across suspend/resume
   (the disk-recovery lever sweeps it under pressure). Storage docs
   updated with the sixth volume and its trade-offs.
+
 ### Changed — Agent permissions: the three PVC mount points are read-write by default (#1759)
 
 - **`/workspace`, `/tmp`, and `/home/sandbox` no longer permission-prompt.**
@@ -448,6 +487,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hatch + N-1 discipline), `docs/operator/storage.md` (platform-delivered
   volumes pointer), `docs/architecture/components.md` (controller policy
   + the versioned board seam contract).
+
 ### Added — Disk recovery: the #1744 regenerable classes + open-handle/floor/staleness gates (#1744)
 
 - **The workspace pod's disk-recovery allowlist now covers the caches
@@ -513,6 +553,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwired ownership gate fails closed (500). The user REST API's
   `CreateTriggerRequest` carries the same optional field under the
   same gate.
+
 ### Added — agent-internal Task Board worker tools (#1701)
 
 - **The worker's board surface is live in the agentd MCP registry**
@@ -538,6 +579,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a pod never resolves another workspace's tasks — the real token
   buys nothing), and the pending_input self-exit refusal (a valid token
   does not unlock a manager-surface exit).
+
 ### Added — Task Board frontend UI: kanban/swimlanes, drag, scope switcher, SSE feed (#1702, design 0067 Lane 4)
 
 - **BoardPage at `/board`** (nav beside Workflows/Triggers): kanban with
@@ -573,6 +615,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Epic drawer activity feed** (§4.8): live board.event activity
   filtered to the epic's tasks via an in-page fan-out from the single
   user SSE connection (`lib/boardFeed.ts`).
+
 ### Changed — archived sessions are opt-in on session listings (#1735)
 
 - **agentd MCP `session_list` and `session_metadata` default to
@@ -596,6 +639,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which render the Archived group) opt in explicitly (pinned); the
   e2e route mocks match the opted-in query; the #1627 metadata
   annotation test pin opts in explicitly.
+
 ### Added — external platform MCP server tools for the Task Board (#1700)
 
 - **18 customer-facing `board_*` tools on the platform MCP server**
@@ -852,6 +896,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve; platform-deploy knobs per ruling R6 ride the helm → env →
   config chain (`board.*` values). REST/SDKs, MCP projections, and the
   frontend are #1699's lanes.
+
 ### Fixed — Chat streaming auto-tail vs user scroll (#1720)
 
 - **Scrolling away during a streaming response no longer snaps back to

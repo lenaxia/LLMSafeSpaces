@@ -102,11 +102,18 @@ EOF
 # run_repolint_gate: the repolint gate. Runs all layout checks (migrations,
 # worklog sentinels, chart drift, CRD drift). Worklog numbering is now
 # handled by the NNNN_ sentinel convention (see run_worklog_prefix_gate),
-# so there is no longer a worklog auto-fix retry in this hook — collisions
-# are structurally impossible because authors never pick numbers.
+# so there is no longer a worklog auto-fix retry in this hook — authoring-
+# time collisions are gone (authors never pick numbers), but the bot-lag
+# window can still mint duplicates (#1795); those redden this gate via
+# runWorklogUniqueness and are healed by the post-rewrite renumber pass
+# or a manual rename (uppercase-slug files: see the note at
+# cmd/repolint/main.go).
 #
-# Other failures (migrations, CRD drift, chart drift, gitleaks) require
-# human judgement and are NEVER auto-fixed here.
+# Other failures (migrations, CRD drift, chart drift, gitleaks, worklog
+# duplicates) require human judgement and are NEVER auto-fixed here.
+# A worklogs-uniqueness failure: a lag-window duplicate — heal by
+# renaming one of the named files to the next free number (see
+# cmd/repolint/main.go's runWorklogUniqueness note).
 run_repolint_gate() {
     local hint="$1"
     echo "== pre-commit: repolint =="
@@ -188,7 +195,10 @@ run_repolint_gate \
     "duplicate migration: rename to next 6-digit number (ls api/migrations/).
   chart migrations drift: run 'make chart-sync-migrations' and stage the result.
   CRD drift: read the failure message; align chart CRD properties with Go
-    JSON tags (see pkg/repolint/crd_drift.go and worklog 0119)."
+    JSON tags (see pkg/repolint/crd_drift.go and worklog 0119).
+  worklogs uniqueness: a lag-window duplicate — rename one of the named
+    files to the next free number (see cmd/repolint/main.go's
+    runWorklogUniqueness note; uppercase-slug files need the manual step)."
 
 # Go gates: skip entirely on doc-only commits.
 if [ "$GO_STAGED" -eq 1 ]; then
