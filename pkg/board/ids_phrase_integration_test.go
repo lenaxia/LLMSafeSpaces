@@ -14,6 +14,8 @@ package board_test
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
@@ -59,12 +61,14 @@ func (s *BoardSuite) TestPhrase_DeprecationMarkingOnReads() {
 	s.Require().NoError(err)
 	s.Require().True(board.IsPhraseIDForm(t1.ShortID))
 
-	// A legacy-fleet row (the pre-#1831 vocabulary) addressed as-is.
+	// A legacy-fleet row (the pre-#1831 vocabulary) addressed as-is
+	// (id is a uuid column — first CI run reddened on a non-uuid
+	// literal id, SQLSTATE 22P02).
 	const legacy = "tsk-vlfuvcil"
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO tasks (id, project_id, epic_id, short_id, title, description, project_name, epic_name, tags, acceptance_criteria)
 		VALUES ($1, $2, $3, $4, 'legacy row', 'd', $5, $6, '{}', '[]')`,
-		"lega-0001-"+e.ID[:8], p.ID, e.ID, legacy, p.Name, e.Title)
+		uuid.NewString(), p.ID, e.ID, legacy, p.Name, e.Title)
 	s.Require().NoError(err)
 
 	// GetTask by the legacy id: resolves (dual-accept) and the row is
