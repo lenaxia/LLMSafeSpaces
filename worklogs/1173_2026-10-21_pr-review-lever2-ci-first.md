@@ -62,4 +62,4 @@ None.
 
 - `.github/prompts/pr-review.md` (additive policy section)
 - `tests/ghaworkflows/pr_review_prompt_policy_test.go` (new)
-- `worklogs/NNNN_2026-10-21_pr-review-lever2-ci-first.md` (this worklog)
+- `worklogs/1173_2026-10-21_pr-review-lever2-ci-first.md` (this worklog)
