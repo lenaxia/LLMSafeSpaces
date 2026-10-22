@@ -92,8 +92,8 @@ type APIClient interface {
 
 	// Trigger management (Epic 64)
 	ListTriggers(ctx context.Context) (json.RawMessage, error)
-	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error)
-	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error)
+	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input, script string) (json.RawMessage, error)
+	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input, script string) (json.RawMessage, error)
 	DeleteTrigger(ctx context.Context, triggerID string) error
 
 	// Task Board (design 0067 §4.3b, #1700): the external board_* tools
@@ -918,7 +918,7 @@ func (c *HTTPClient) ListTriggers(ctx context.Context) (json.RawMessage, error) 
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/triggers", nil)
 }
 
-func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error) {
+func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input, script string) (json.RawMessage, error) {
 	body := map[string]any{
 		"name": name, "sourceType": sourceType, "sourceConfig": json.RawMessage(sourceConfig),
 	}
@@ -946,6 +946,11 @@ func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, source
 	if input != "" {
 		body["input"] = json.RawMessage(input)
 	}
+	// #1812: script is the inline gate script as a JSON object string
+	// ({language, handler}) — same serialization convention as input.
+	if script != "" {
+		body["script"] = json.RawMessage(script)
+	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/triggers", body)
 }
 
@@ -954,8 +959,10 @@ func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, source
 // sends no key (keep existing); a present value must be a JSON boolean
 // (#1035). inputFrom/input follow the same empty-string-means-omitted
 // convention; a non-empty input is a JSON document ("null" clears the
-// stored static input).
-func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error) {
+// stored static input). script (#1812) follows suit: omitted keeps the
+// stored gate script, the JSON literal "null" clears it, and an object
+// string {language, handler} replaces it.
+func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input, script string) (json.RawMessage, error) {
 	if err := validateID(triggerID, "trigger_id"); err != nil {
 		return nil, err
 	}
@@ -968,6 +975,9 @@ func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enable
 	}
 	if input != "" {
 		body["input"] = json.RawMessage(input)
+	}
+	if script != "" {
+		body["script"] = json.RawMessage(script)
 	}
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
 }

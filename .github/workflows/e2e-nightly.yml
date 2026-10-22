@@ -527,6 +527,24 @@ jobs:
           RUN_WAIT_S: 300
         run: bash local/issue-1455-scriptenv-e2e.sh
 
+      - name: Run trigger gate e2e rows (#1812)
+        # Trigger inline gate script: create-path validation (R0), the
+        # closed gate's skipped fire + audit payload (R1), the open
+        # gate's delivered fire + workspace side effect on a script-only
+        # trigger (R2), fail-closed on script failure (R3), and the
+        # prompt-only compat row (R4). Every execution row asserts ZERO
+        # agent sessions — the no-LLM-call evidence. Adaptive arms per
+        # #1455: the nightly's sidecar mode expects the named
+        # script_env_unavailable fail-closed outcome; exec-mode clusters
+        # prove the real gate outcomes.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18093
+          FIRE_WAIT_S: 300
+        run: bash local/issue-1812-trigger-gate-e2e.sh
+
       - name: Run templating e2e rows (#1417)
         # Agent-prompt dotted-path rendering: a workflow run with
         # {{.body.topic}} + {{.missing.path}} executes against an

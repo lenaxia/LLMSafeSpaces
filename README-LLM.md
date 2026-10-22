@@ -956,6 +956,28 @@ This applies to humans and AI agents equally. No exceptions. The review-iterate-
 2. Use strongly-typed structs (see `pkg/types/types.go` for existing domain types)
 3. Commit at each logical unit of work with a descriptive message
 
+### Trigger script gates (#1812)
+
+Automation triggers can gate and template their fires programmatically before any LLM call. A trigger's `script` field carries an INLINE executable script (workflow-script-node parity: `{"language": "python"|"node", "handler": <source>}` — never a path pointer; the path form is the legacy `scriptPath` pre-script). The handler defines `handler(input) -> {"proceed": <bool>, "vars": {<str>: <str>}}` and runs in the routine's target workspace before every fire's agent leg:
+
+- `proceed: false` — the fire exits with **no LLM call** (recorded `skipped` with the gate payload in the fire audit). Poll checks, state diffs, and threshold logic run as code; the model is only invoked when the gate opens.
+- `proceed: true` — the prompt fires with vars substituted jinja-style (`{{key}}`, literal token replacement; unmatched tokens stay literal; `{{.input}}`/`{{.prevResult}}`/`{{.scriptResult}}` are reserved platform tokens) and ALL vars appended as a trailing `[trigger script vars]` metadata block.
+- Any script failure (runtime error, unparseable output, schema-violating return) **fails closed**: failed fire, named error in the audit, no LLM call.
+- A script trigger with no prompt never calls the LLM at all (gate + side effects only). Routine targets only — rejected on workflow-mode triggers.
+
+Worked example (nightly digest, LLM called only when work accumulated):
+
+```json
+{"name": "nightly-digest", "sourceType": "cron",
+ "sourceConfig": {"expr": "0 2 * * *", "tz": "UTC"},
+ "workspaceId": "ws-1",
+ "prompt": "Summarize the {{count}} new items since yesterday.",
+ "script": {"language": "python",
+            "handler": "def handler(input):\n    n = count_new_items()\n    return {\"proceed\": n > 0, \"vars\": {\"count\": str(n)}}\n"}}
+```
+
+Mechanics: `pkg/workflows/trigger_gate.go` (schema validation + substitution), the gate leg in `api/internal/workflows/engine_gate.go` (dispatch via agentd script node, fail-closed, audit writes). Full docs: `docs/api/mcp.md` § Triggers.
+
 ### After completing work
 
 1. Run all tests: `make test` or `go test -timeout 30s -race ./...`
