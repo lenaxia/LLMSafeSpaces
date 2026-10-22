@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user-scoped search) make design 0067's per-project scope
   insufficient — a same-phrase row in a sibling project would resolve
   silently wrong. The per-project UNIQUE constraints remain as DB
-  backstops; migration `000042` widens the shape CHECK to both forms.
+  backstops; migration `000043` widens the shape CHECK to both forms.
 - **did-you-mean ranks phrase candidates over WORD edit distance**
   (bound 2; the issue's acceptance case `tsk-meek-pony-rides` →
   suggests `tsk-meek-poncho-rides` — character distance 4 was out of

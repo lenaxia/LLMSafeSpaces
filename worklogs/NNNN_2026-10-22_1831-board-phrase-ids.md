@@ -36,7 +36,7 @@ updated. Internal UUID PKs stay (addressing/vocabulary change only).
   verbatim) carries it; `ListEpics` marks too.
 - `service.go`/`plan.go`: epic/task mints (create + import-plan) use
   the owner-wide scope.
-- Migration `000042_board_phrase_ids.{up,down}.sql`: CHECK widens to
+- Migration `000043_board_phrase_ids.{up,down}.sql`: CHECK widens to
   accept both forms (down restores random-only, fails if phrase rows
   exist — best-effort by design).
 
@@ -115,3 +115,16 @@ updated. Internal UUID PKs stay (addressing/vocabulary change only).
   union needed). Main's pr-review lane claimed worklog number 1173 —
   this worklog ships under the `NNNN_` sentinel (the post-merge bot
   assigns the final number; uniqueness check re-run empty before push).
+
+## r2 addendum — migration renumber 000042 → 000043
+
+CI caught a same-cycle migration-version race: main's #1853 (merged
+34da5751, after this lane's fetch of 538caeef and concurrently with
+the push) healed its duplicate-41 as `000042_board_config` — colliding
+with this lane's `000042_board_phrase_ids` (repolint migrations
+sequence + TestLive_Migrations_NoCollisionsOrGaps reddened on the PR).
+Fix: union-merge of 34da5751 + renumber this lane's migration to
+`000043_board_phrase_ids` (api/ + helm/ mirrors + doc references).
+Also: main's board-config lane claimed worklog number 1174 — the
+NNNN_ sentinel discipline absorbed both collisions without a renumber
+on my side.
