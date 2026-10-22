@@ -44,8 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete intended content; re-compose if emission corruption ate the
   draft.
 
-## [0.40.1] - 2026-10-21
-
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
 
 - **The busy-signal/live-streaming id join is fixed at the user-stream
