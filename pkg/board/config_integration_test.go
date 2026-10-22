@@ -71,9 +71,12 @@ func (s *BoardSuite) TestBoardConfig_UserIsolation() {
 	ctx := context.Background()
 	other := board.Actor{Kind: board.ActorUser, UserID: "board-other-user", Surface: board.SurfaceREST}
 	// The FK on board_config_defaults.user_id references users(id).
+	// Idempotent insert (the harness truncates board tables, not
+	// users — a re-run of the suite must not collide).
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO users (id, username, email, password_hash, active, role)
-		 VALUES ('board-other-user', 'board-other', 'other@example.test', 'x', true, 'user')`)
+		 VALUES ('board-other-user', 'board-other', 'other@example.test', 'x', true, 'user')
+		 ON CONFLICT (id) DO NOTHING`)
 	s.Require().NoError(err)
 
 	_, err = s.svc.SetUserBoardConfig(ctx, other, &board.BoardConfigOverride{
