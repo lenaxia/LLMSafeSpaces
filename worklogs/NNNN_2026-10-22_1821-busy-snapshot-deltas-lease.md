@@ -80,6 +80,25 @@ One adjacent test updated: SessionActivityProvider.resyncBusy.test.tsx now mocks
 
 Verification at r2: frontend 2395/2395 (211 files); agentd full green (363s); handlers + eventbroker green; golangci-lint 0 issues; tsc clean; eslint 0 errors.
 
+## Review round r2 (PR #1848 third bot review) + CI red at da9fcac7
+
+The third review (CHANGES_REQUESTED) plus a red CI taught the same lesson twice: VERIFY THE FULL PACKAGE SET. `TestOpenAPIRouterContract` (api/internal/server — never run locally before pushing) failed on the undocumented route; my "handlers + eventbroker green" claim was accurate but incomplete. Posture Gate's failure was infra (mise python@3.12.13 download failing 3×) — unrelated, retriggered.
+
+Findings addressed:
+1. **OpenAPI parity (BLOCKING)** — `POST /workspaces/{id}/sessions/status-snapshot` documented in sdks/openapi.yaml (input-snapshot's shape; typed responses, coalescing + D10 semantics in the description).
+2. **Coalescing orphaned mid-flight joiners (BLOCKING)** — the guard moved from the emitter to the on-demand trigger only; the connect path always emits its own per-subscriber flight (a fresh subscriber has no backlog). Red: behavioral revert of the guard's location → joiner sees no begin (2.00s timeout); green at head.
+3. **Same-session out-of-order overwrite (BLOCKING)** — ordering now enforced PER-SESSION (`sessionLastDeltaIDRef`): a delta applies only above its session's watermark; a snapshot's row latches only when no newer per-session evidence supersedes it. The global applied-id set is deleted (its per-workspace-cursor pruning was itself a cross-workspace mixing bug).
+4. **Degraded-row removal poisoning (HIGH)** — latched entries carry `internalId` (the additive harness id from deltas; the row key for degraded snapshot rows). A degraded busy row blocks removal of exactly the entries matching its harness id (plus internalId-less REST/legacy entries) — resolved sessions stay clearable.
+5. **Same-workspace flight starvation (MEDIUM)** — the wholesale stale-flight discard is REPLACED by per-entry guards: every ANSWERED session's watermark (busy or idle row) moves to the cursor, so an unrelated session's mid-flight delta no longer discards the recheck's rows.
+6. **ok=false after a wipe-initiated re-seed (MEDIUM)** — `pendingRecheckRef` schedules exactly ONE authority retry per lease window (the sweep processes it; an authoritative answer clears it). Scoped honestly: during a statusz blip the post-reconnect badge still reads idle until the first successful flight (the #1646 wipe + REST-overlay semantics are pinned elsewhere; full unknown-hold needs statusz-failure semantics on the session-list surface — noted as follow-up class).
+7. Style: typed `busySnapshotPayload` struct (Rule 5); the DoesNotDuplicateDeltas comment no longer claims concurrency.
+
+E2E (the thrice-flagged gate): added `frontend/tests/e2e/busy-snapshot-lease.spec.ts` — refresh-mid-busy (REST idle, snapshot-only badge, double reload), down-then-recovered (ok=false corrupts nothing; first ok=true converges), abort-reconnect. 3/3 green locally (9.4s). The lease-timing tier stays in vitest (fake timers).
+
+Red-first round 4 (observed red via stash-revert): frontend Y2 (same-session inversion ended busy), Y3 (degraded row starved a resolved clear), Y4 (unrelated delta discarded the recheck's rows), Y5 (no pending-recheck retry) — 4/4 red, green post-fix; backend Y1 (guard-location revert → joiner unseeded, behavioral red captured).
+
+Verification at r3 (the FULL set this time): api ./internal/server + ./internal/handlers + ./internal/services/eventbroker green; cmd/workspace-agentd FULL green (360s); frontend vitest 2399/2399 (211 files) + eslint 0 errors + tsc clean; Playwright busy-snapshot-lease 3/3; golangci-lint 0 issues (handlers, server, agentd, pkg/agentd); repolint ok.
+
 ## Blockers
 
 None.

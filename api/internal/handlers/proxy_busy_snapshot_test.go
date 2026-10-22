@@ -519,3 +519,72 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 		return atomic.LoadInt32(&fetches) == 1
 	}, 2*time.Second, 20*time.Millisecond, "concurrent triggers must coalesce to one authority fetch (got %d)", atomic.LoadInt32(&fetches))
 }
+
+// Y1 (#1848 r2 finding 2): a subscriber connecting while an on-demand
+// flight is ALREADY running must still get its OWN connect-path flight
+// — coalescing belongs to the on-demand trigger only (a fresh
+// subscriber has no backlog; the running flight's markers do not reach
+// it as a usable seed).
+func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
+	release := make(chan struct{})
+	fetched := make(chan struct{})
+	var once sync.Once
+	hs := newBusySnapHarness(t, "user-join", func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(fetched) }) // first fetch = the on-demand flight's begin is already published
+		<-release                          // hold every flight's fetch
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, busyStatuszBody())
+	}, nil)
+
+	// Fire the on-demand trigger; wait until its fetch STARTED — its
+	// begin marker is provably already on the wire, so the joiner below
+	// cannot see it.
+	go hs.handler.RequestSessionStatusSnapshotForTest(busySnapWS)
+	select {
+	case <-fetched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("on-demand flight never reached the authority fetch")
+	}
+
+	// A subscriber joins mid-flight. The connect-path flight's fetch
+	// also parks on the stub, so the begin the joiner receives can ONLY
+	// be its own connect-path flight's — the pre-fix code coalesced the
+	// connect path into the running flight and emitted NOTHING for the
+	// fresh subscriber.
+	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
+		for _, e := range evts {
+			if e.Type == "session.status.snapshot_begin" {
+				return true
+			}
+		}
+		return false
+	})
+	sawBegin := false
+	for _, e := range evts {
+		if e.Type == "session.status.snapshot_begin" {
+			sawBegin = true
+		}
+	}
+	assert.True(t, sawBegin,
+		"mid-flight joiner got no begin marker — the connect path must not coalesce into a running on-demand flight")
+
+	// Release the stub: both flights complete; the joiner's own flight
+	// delivers its complete (its authoritative seed).
+	close(release)
+	evts2 := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
+		for _, e := range evts {
+			if e.Type == "session.status.snapshot_complete" {
+				return true
+			}
+		}
+		return false
+	})
+	sawComplete := false
+	for _, e := range evts2 {
+		if e.Type == "session.status.snapshot_complete" {
+			sawComplete = true
+		}
+	}
+	assert.True(t, sawComplete,
+		"the joiner's own flight must complete (its authoritative seed, not the running flight's markers)")
+}

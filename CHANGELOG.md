@@ -72,6 +72,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalidate the workspace's open flights (no post-terminal re-latch);
   agentd's ListSessions treats non-2xx as an error (the status-blind
   empty-array decode could still report sessions_ok=true).
+- **Review-hardened round 3 (PR #1848 r2)**: the on-demand trigger's
+  coalescing moved OUT of the emitter (the connect path always emits
+  its own per-subscriber flight — a mid-flight joiner has no backlog
+  and was left unseeded); delta ordering is enforced PER-SESSION (an
+  out-of-order older transition for the same session can no longer
+  overwrite the newer one), and overlapping-flight staleness is
+  resolved per-entry (every authority-answered session's watermark
+  moves to the flight's cursor — an unrelated session's delta can no
+  longer starve the recheck's rows); a degraded busy row blocks
+  removal of exactly the entries it may correspond to (matched by the
+  additive harness id, now carried on latched entries) instead of the
+  whole workspace's removals; a non-authoritative (ok=false / dropped)
+  flight schedules ONE authority retry per lease window (the
+  post-wipe re-seed previously left no lease to recover with); the
+  route is documented in sdks/openapi.yaml (the router↔spec parity
+  gate); Playwright e2e pins the connect-path badge (refresh-mid-busy,
+  abort-reconnect, down-then-recovered).
 
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)

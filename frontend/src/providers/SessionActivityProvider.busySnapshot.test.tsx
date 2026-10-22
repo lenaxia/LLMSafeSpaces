@@ -655,3 +655,150 @@ describe("SessionActivityProvider — busy ordering review findings (#1848 r1)",
     expect(screen.getByTestId("busy").textContent).toBe("no");
   });
 });
+
+// ===== Round-4 review findings (PR #1848 r2) =====
+//
+// Y2: same-session out-of-order delivery (idle 100 before busy 99)
+//     must end idle — ordering enforced per session.
+// Y3: one degraded row must not starve a DIFFERENT resolved session's
+//     authoritative clear.
+// Y4: an unrelated same-workspace delta during a recheck flight must
+//     not discard the recheck's rows.
+// Y5: ok=false after a wipe-initiated re-seed schedules exactly ONE
+//     authority retry per lease window; the retry's answer re-badges.
+describe("SessionActivityProvider — ordering/partial-join findings (#1848 r2)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let stream: ReturnType<typeof pushedReader>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    mockGetAlerts.mockResolvedValue([]);
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
+    stream = pushedReader([]);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: { getReader: () => stream.reader },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderProbe(sessionId?: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe sessionId={sessionId} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("Y2 same-session out-of-order delivery ends at the newer transition's state", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Inverted delivery: idle id 100 first, then the older busy id 99
+    // for the SAME session. The newer truth (idle) must win.
+    stream.push(`id: 100\ndata: {"event_id":100,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"idle"}\n\n`);
+    await settle(300);
+    stream.push(`id: 99\ndata: {"event_id":99,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Y3 a degraded row does not starve a different resolved session's authoritative clear", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Session A latches busy via a delta carrying its harness id
+    // additively; session B is busy but its row will degrade.
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy","data":{"internal_session_id":"h-A"}}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The flight: A resolved+idle, B busy+degraded (harness "h-B").
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-mix"}\n\n`);
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-mix","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false},{"session_id":"h-B","derived_busy":true,"session_id_deprecated":true}]}}\n\n`);
+    stream.push(`id: 11\ndata: {"event_id":11,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-mix","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    // A's clear is not poisoned by B's degraded row.
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Y4 an unrelated same-workspace delta during a recheck flight does not discard its rows", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // phrase-one latched busy (confirm 5).
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+
+    // The recheck flight opens (cursor 10); an UNRELATED session in
+    // the same workspace transitions at id 11 mid-flight; the flight's
+    // authoritative idle answer for phrase-one must still clear it.
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-r"}\n\n`);
+    stream.push(`id: 11\ndata: {"event_id":11,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-two","status":"busy"}\n\n`);
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-r","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false},{"session_id":"phrase-two","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 12\ndata: {"event_id":12,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-r","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(screen.getByTestId("busy-two").textContent).toBe("yes");
+  });
+
+  it("Y5 ok=false after a wipe-initiated re-seed retries exactly once per window and re-badges on the answer", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Busy latched, then the broker overflows: resync wipes busy and
+    // requests re-seed flight #1.
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+    stream.push(`data: {"type":"resync"}\n\n`);
+    await advanceHealthy(stream, 2_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+
+    // The authority is down: the flight answers ok=false. With no
+    // latched evidence left, the pending-recheck path must own the
+    // retry — one more request per lease window, not a hammer.
+    stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-down"}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-down","snapshot_ok":false}\n\n`);
+    await advanceHealthy(stream, 80_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+
+    await advanceHealthy(stream, 20_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(2);
+
+    // The retry's flight answers authoritatively: busy restored.
+    stream.push(`id: 30\ndata: {"event_id":30,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-up"}\n\n`);
+    stream.push(`id: 31\ndata: {"event_id":31,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-up","data":{"cursor":31,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 32\ndata: {"event_id":32,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-up","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    // The authoritative answer cleared the pending retry — no more
+    // requests after another full window.
+    await advanceHealthy(stream, 95_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(2);
+  });
+});

@@ -1523,6 +1523,38 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/status-snapshot:
+    post:
+      tags: [sessions]
+      summary: Request a busy-snapshot flight
+      description: |
+        Triggers a session-status-snapshot attempt for the workspace
+        (#1821 piece 2): emits `session.status.snapshot_begin`, one
+        `session.status.snapshot` frame (the broker cursor plus the
+        authority's per-session derived-busy rows, phrase-keyed with the
+        harness id additive), and `session.status.snapshot_complete`
+        (with `snapshot_ok`) on the user event stream. The authority is
+        the pod's statusz; a failed authority read completes with
+        `snapshot_ok=false` (keep your state — never an authoritative
+        all-idle). The busy lease's authoritative recheck surface
+        (#1821 piece 4): clients whose latched busy has gone
+        unconfirmed for the lease window re-request this flight instead
+        of guessing. Concurrent triggers coalesce per workspace
+        in-process (one authority fetch per in-flight window). Returns
+        immediately with 202; the snapshot outcome is delivered via the
+        user stream.
+      operationId: requestSessionStatusSnapshot
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "202":
+          description: Snapshot flight scheduled; outcome arrives on the user event stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/uploads:
     post:
       tags: [workspaces]

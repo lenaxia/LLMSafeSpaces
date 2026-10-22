@@ -57,6 +57,14 @@ type statuszSessionRow struct {
 	Status string
 }
 
+// busySnapshotPayload is the session.status.snapshot frame's typed
+// payload: the broker cursor (EventID the rows were read at) and the
+// authority's per-session rows.
+type busySnapshotPayload struct {
+	Cursor   uint64            `json:"cursor"`
+	Sessions []busySnapshotRow `json:"sessions"`
+}
+
 // fetchStatuszSessions reads the workspace pod's statusz and returns
 // its per-session rows. ok=false means the authority could not be
 // consulted (workspace not Active, resolve failure, transport failure,
@@ -126,13 +134,16 @@ func (h *ProxyHandler) fetchStatuszSessions(ctx context.Context, workspaceID str
 	return rows, true
 }
 
-// busyFlightsInFlight coalesces concurrent busy-snapshot flights per
-// workspace (#1848 r0 robustness): a second trigger while one flight
-// is running is a no-op — the running flight's events already answer
-// the second caller (both ride the same user stream). This bounds the
-// on-demand POST's amplification (a client hammering the trigger gets
-// one statusz fetch + one Register pass per in-flight window, not one
-// per request) without adding a rate limiter to the route.
+// busyFlightsInFlight coalesces concurrent ON-DEMAND busy-snapshot
+// flights per workspace (#1848 r0 robustness, rescoped r2 finding 2):
+// a second POST while one POST-triggered flight is running is a no-op
+// — that flight's markers are still in flight and will answer the
+// second caller on the shared user stream. The CONNECT path is
+// deliberately EXEMPT: snapshotUserWorkspaces runs it per subscriber
+// connect, a mid-flight joiner has no backlog (replay needs
+// Last-Event-ID), and coalescing there would leave the new subscriber
+// with no authoritative seed — the class-1/class-2 window this flight
+// exists to close.
 var busyFlightsInFlight sync.Map // workspaceID → struct{}
 
 // emitSessionStatusSnapshot runs one busy-snapshot flight for the
@@ -148,11 +159,6 @@ var busyFlightsInFlight sync.Map // workspaceID → struct{}
 // state at least as fresh as the fetch, so the client lets it survive
 // the commit (#1821 piece 3).
 func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceID string) {
-	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); loaded {
-		return // a flight is already running — its events answer this trigger too
-	}
-	defer busyFlightsInFlight.Delete(workspaceID)
-
 	ok := false
 
 	flightID := fmt.Sprintf("%s-%d", workspaceID, time.Now().UnixNano())
@@ -242,9 +248,9 @@ func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceI
 		Type:        "session.status.snapshot",
 		WorkspaceID: workspaceID,
 		SnapshotID:  flightID,
-		Data: map[string]any{
-			"cursor":   cursor,
-			"sessions": rows,
+		Data: busySnapshotPayload{
+			Cursor:   cursor,
+			Sessions: rows,
 		},
 	})
 }
@@ -262,9 +268,28 @@ func (h *ProxyHandler) RequestSessionStatusSnapshot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
 		return
 	}
+	detached := context.WithoutCancel(c.Request.Context()) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
 	// Detached context: the flight (≤5s) must outlive this request,
 	// which returns immediately. The flight's events reach the caller
-	// via the user-event stream, not this response.
-	go h.emitSessionStatusSnapshot(context.WithoutCancel(c.Request.Context()), workspaceID) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
+	// via the user-event stream, not this response. The coalescing
+	// guard lives HERE (the on-demand trigger), not in the emitter —
+	// the connect path must always emit its own per-subscriber flight.
+	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); !loaded {
+		go func() {
+			defer busyFlightsInFlight.Delete(workspaceID)
+			h.emitSessionStatusSnapshot(detached, workspaceID)
+		}()
+	}
 	c.Status(http.StatusAccepted)
+}
+
+// RequestSessionStatusSnapshotForTest drives the on-demand trigger
+// synchronously (the POST handler's coalescing guard + detached
+// goroutine, minus the HTTP ceremony) — the seam the coalescing and
+// orphan-subscriber tests use.
+func (h *ProxyHandler) RequestSessionStatusSnapshotForTest(workspaceID string) {
+	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); !loaded {
+		defer busyFlightsInFlight.Delete(workspaceID)
+		h.emitSessionStatusSnapshot(context.Background(), workspaceID)
+	}
 }
