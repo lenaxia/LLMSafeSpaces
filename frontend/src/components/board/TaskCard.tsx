@@ -40,6 +40,12 @@ interface TaskCardProps {
   pending?: boolean;
   /** Snap-back flash: the server refused the optimistic move. */
   refused?: boolean;
+  /** #1832 item 2: another epic in this swimlane is selected — this
+   * card's epic is NOT it (rendered dimmed; the selection only ever
+   * scopes display, never removes rows). */
+  dimmed?: boolean;
+  /** #1832 item 2: this card's epic is the swimlane's selection. */
+  highlighted?: boolean;
   /** task_start (§4.2): the manual one-off dispatch — the designed UI
    * exit for backlog rows (backlog stage moves are not enumerated; the
    * engine's claim is the path). */
@@ -59,7 +65,7 @@ interface TaskCardProps {
  * attempt counter with its escalation preview, and the backlog Start
  * affordance (task_start).
  */
-export function TaskCard({ task, projectTasks, pending, refused, onStart, starting, onOpen, onDragStart, onDragEnd }: TaskCardProps) {
+export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, onOpen, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
@@ -75,6 +81,8 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
       data-task-card={task.short_id}
       data-testid={`task-card-${task.short_id}`}
       data-stage={task.stage}
+      data-dimmed={dimmed ? "true" : undefined}
+      data-highlighted={highlighted ? "true" : undefined}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/board-task", task.short_id);
@@ -87,6 +95,8 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
         "cursor-grab rounded-md border border-border bg-card p-2 text-left shadow-sm transition-colors hover:border-primary/40",
         pending && "opacity-60",
         refused && "border-destructive",
+        dimmed && "opacity-40 saturate-50",
+        highlighted && "border-primary/60 ring-1 ring-primary/40",
       )}
       aria-label={`${task.short_id} ${task.title}`}
     >

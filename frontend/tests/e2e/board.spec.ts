@@ -167,6 +167,48 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     const pid = url.pathname.split("/").pop() === "tasks" ? url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] : "";
     void r.fulfill(j({ tasks: state.tasks.filter((t) => t.project_id === pid) }));
   });
+  // #1832 item 1: contextual epic creation — POST /me/projects/:id/epics.
+  // The route echoes the project the button carried (asserted per-test).
+  await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    const url = new URL(r.request().url());
+    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1];
+    const body = r.request().postDataJSON() as { title?: string; outcome?: string };
+    void r.fulfill(j({
+      id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
+      title: body.title ?? "", outcome: body.outcome ?? "", status: "draft", tags: [],
+      created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
+      progress_done: 0, progress_total: 0, progress_derived: false,
+    }));
+  });
+  // #1832 item 2: epic-scoped task creation — POST /me/epics/:id/tasks.
+  // Appends to the shared state so the post-invalidation refetch shows
+  // the new row in the backlog column and beneath the epic band.
+  await page.route(`${API}/me/epics/*/tasks`, async (r: Route) => {
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0];
+    const body = r.request().postDataJSON() as { title?: string };
+    const parent = state.tasks.find((t) => t.epic_id === epicId);
+    if (!parent) {
+      void r.fulfill(j({ error: `board: epic "${epicId}" not found` }, 404));
+      return;
+    }
+    const row = task({
+      short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
+      title: body.title ?? "New task",
+      stage: "backlog",
+      project_id: parent.project_id,
+      epic_id: epicId,
+    });
+    state.tasks.push(row);
+    void r.fulfill(j(row));
+  });
   await page.route(`${API}/me/tasks/*/move-stage`, async (r: Route) => {
     const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
     const body = r.request().postDataJSON() as { toStage: string; evidenceUrl?: string };
@@ -479,5 +521,110 @@ test.describe("Task Board UI (#1702)", () => {
     const notice = page.locator("[data-board-error]");
     await expect(notice).toHaveAttribute("data-board-error", "epic_state", { timeout: 8000 });
     await expect(notice).toContainText("epic_state");
+  });
+});
+
+test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic bands", () => {
+  test("every swimlane header carries enabled New epic / New task buttons (contextual, no dropdown)", async ({ page }) => {
+    await openBoard(page);
+
+    for (const pid of [PROJECT_A, PROJECT_B]) {
+      await expect(page.getByTestId(`new-epic-${pid}`)).toBeVisible();
+      await expect(page.getByTestId(`new-task-${pid}`)).toBeVisible();
+      await expect(page.getByTestId(`new-epic-${pid}`)).toBeEnabled();
+      await expect(page.getByTestId(`new-task-${pid}`)).toBeEnabled();
+    }
+    // The global New epic stays greyed at All-projects scope — the
+    // swimlane buttons are the contextual path (#1832 item 1).
+    await expect(page.getByTestId("new-epic-button")).toBeDisabled();
+  });
+
+  test("New epic from the Borealis swimlane header targets Borealis (no focus needed)", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId(`new-epic-${PROJECT_B}`).click();
+    await expect(page.getByText("New epic in Borealis")).toBeVisible();
+    await page.getByTestId("epic-title").fill("Borealis next phase");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/projects\/prj-bbbb2222\/epics$/.test(r.url()));
+    await page.getByTestId("epic-create").click();
+
+    // The POST rode the SWIMLANE's project (not a dropdown selection).
+    const req = await reqP;
+    expect(req.url()).toContain(`/me/projects/${PROJECT_B}/epics`);
+    await expect(page.getByTestId("epic-title")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("epic bands render inside the swimlane with tasks grouped beneath; collapse hides the group", async ({ page }) => {
+    await openBoard(page);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const bandE1 = lane.getByTestId("epic-band-epic-1");
+    await expect(bandE1).toBeVisible();
+    await expect(bandE1).toContainText("1/4");
+    await expect(lane.getByTestId("epic-band-epic-2")).toBeVisible();
+
+    // Tasks grouped beneath their band.
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
+    await expect(lane.getByTestId("band-task-epic-2-tsk-eeee0005")).toBeVisible();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-eeee0005")).toHaveCount(0);
+
+    // Collapse: rows hide, band stays.
+    await lane.getByTestId("band-toggle-epic-1").click();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toHaveCount(0);
+    await expect(bandE1).toBeVisible();
+    await lane.getByTestId("band-toggle-epic-1").click();
+    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
+  });
+
+  test("clicking a band highlights its tasks and dims the swimlane's others", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId("epic-band-epic-2").click();
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).toHaveAttribute("data-highlighted", "true");
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-dimmed", "true");
+    await expect(page.getByTestId("task-card-tsk-dddd0004")).toHaveAttribute("data-dimmed", "true");
+    // Other swimlane untouched (selection is per-project).
+    await expect(page.getByTestId("task-card-tsk-ffff0006")).not.toHaveAttribute("data-dimmed");
+
+    // Click again → deselect: dims and highlights clear.
+    await page.getByTestId("epic-band-epic-2").click();
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).not.toHaveAttribute("data-dimmed");
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
+  });
+
+  test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
+    const state = await openBoard(page);
+
+    await page.getByTestId("epic-band-epic-2").click();
+    await page.getByTestId(`new-task-${PROJECT_A}`).click();
+
+    // The dialog names the selected epic as the landing zone.
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("Scoped follow-up");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
+    await page.getByTestId("task-save").click();
+    const req = await reqP;
+    expect(req.postDataJSON()).toMatchObject({ title: "Scoped follow-up" });
+
+    // Authoritative row after the invalidation refetch: card in Backlog
+    // and grouped beneath the E2 band.
+    await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
+    await expect(page.getByTestId("band-task-epic-2-tsk-new0007")).toBeVisible();
+    expect(state.tasks.some((t) => t.title === "Scoped follow-up")).toBe(true);
+  });
+
+  test("New task with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId(`new-task-${PROJECT_A}`).click();
+    await expect(page.getByTestId("epic-picker")).toBeVisible();
+    await page.getByTestId("epic-picker-option-epic-2").click();
+
+    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await page.getByTestId("task-title").fill("Picked task");
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
+    await page.getByTestId("task-save").click();
+    const req = await reqP;
+    expect(req.postDataJSON()).toMatchObject({ title: "Picked task" });
   });
 });
