@@ -145,6 +145,13 @@ export function TaskCard({ task, projectTasks, pending, refused, onStart, starti
             {PENDING_ORIGIN_LABELS[task.pending_origin] ?? task.pending_origin}
           </Badge>
         )}
+        {task.last_attempt_failed && (
+          <Badge variant="destructive" className="px-1.5 py-0 text-[10px]" data-testid={`failed-${task.short_id}`}
+            title={`Last attempt failed (${task.failure_count} consecutive — auto-return-to-ready behind doubling backoff). Never a stage: the row is ${task.stage}.`}
+          >
+            FAILED ×{task.failure_count}
+          </Badge>
+        )}
         {task.attempts > 0 && (
           <span
             className="text-[10px] text-muted-foreground"

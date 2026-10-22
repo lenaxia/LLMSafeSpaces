@@ -222,6 +222,7 @@ func newBoardSuite(pool *pgxpool.Pool) *BoardSuite {
 		AttemptsCap:     3,
 		LeaseDuration:   200 * time.Millisecond, // short for expiry tests; lease arithmetic is still cfg-driven
 		ThrottleBackoff: time.Hour,              // "long" so cooldowns gate until explicitly cleared
+		FailureBackoff:  500 * time.Millisecond, // #1813: small so the doubling windows are observable; tests that need redispatch NOW clear cooldowns explicitly
 		DRRQuantum:      1,
 		SweepInterval:   time.Second,
 	}
@@ -349,6 +350,14 @@ func (s *BoardSuite) expireLease(taskID string) {
 }
 
 // clearCooldowns removes task + project cooldowns (test accelerator).
+// clearTaskBackoff drops ONLY the task's cooldown (#1813 failure
+// backoff arms — the project slot cooldown is never involved).
+func (s *BoardSuite) clearTaskBackoff(taskID string) {
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE tasks SET cooldown_until=NULL WHERE id=$1`, taskID)
+	s.Require().NoError(err)
+}
+
 func (s *BoardSuite) clearCooldowns(p *board.Project, taskID string) {
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET cooldown_until=NULL WHERE id=$1`, taskID)

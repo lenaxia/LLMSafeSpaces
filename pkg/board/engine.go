@@ -202,6 +202,8 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
 	if cur.Attempts >= s.cfg.AttemptsCap {
+		// #1813 (r10): no overlay write here either — see claimOnce
+		// (the invariant is rc1's; exhaustion is its own signal).
 		if _, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated'
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
@@ -212,7 +214,8 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			return nil, err
 		}
 		evt, err := recordEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
-			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"}, map[string]any{"task_id": t.ID, "attempts": cur.Attempts})
+			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"},
+			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "exhausted": true})
 		if err != nil {
 			return nil, err
 		}
@@ -329,6 +332,14 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	// lands pending_input/escalated instead (§4.4). No lease, no token,
 	// no spawn; attempts stay at N.
 	if attempts >= s.cfg.AttemptsCap {
+		// #1813 (r10): the escalation writes NO overlay. The invariant
+		// last_attempt_failed == (failure_count > 0) is owned by rc1's
+		// reclaims and the reset sites alone — a marker SET here is
+		// provably a no-op (it can never flip the invariant), and
+		// stamping last_failure_at would REPLACE the reclaim's real
+		// failure moment with the escalation one. The exhaustion signal
+		// is pending_origin='escalated' + attempts at cap (+ the
+		// exhausted=true audit event below).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
 				pending_origin='escalated'
@@ -343,7 +354,8 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			return nil, "", "", err
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
-			"task", taskID, sysActor, map[string]any{"task_id": taskID, "attempts": attempts})
+			"task", taskID, sysActor,
+			map[string]any{"task_id": taskID, "attempts": attempts, "exhausted": true})
 		if err != nil {
 			return nil, "", "", err
 		}

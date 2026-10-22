@@ -294,6 +294,18 @@ GET {{base_url}}/me/projects/{{project_sid}}/tasks?stage=wip
 Authorization: Bearer {{token}}
 HTTP 400
 
+# #1813: the failed-state overlay filter — tri-state boolean (true
+# lists only failed-attempt rows; a non-boolean is a real 400).
+GET {{base_url}}/me/projects/{{project_sid}}/tasks?failed=true
+Authorization: Bearer {{token}}
+HTTP 200
+[Asserts]
+jsonpath "$.tasks" exists
+
+GET {{base_url}}/me/projects/{{project_sid}}/tasks?failed=maybe
+Authorization: Bearer {{token}}
+HTTP 400
+
 # Patch task — criteria check-off rides the PATCH (Done preparation)
 PATCH {{base_url}}/me/tasks/{{task_a_sid}}
 Authorization: Bearer {{token}}
