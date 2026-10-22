@@ -137,7 +137,14 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	}
 
 	var pendingNudge nudge
-	outcome, _, err := (&eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "review_verdict", itemKind: "task", itemID: t.ID, actor: actor}).run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+	buildOutcome := func(applied bool, transition, resultingStage string) map[string]any {
+		return map[string]any{
+			"verdict": v.Verdict, "reviewer": v.Reviewer, "findings": v.Findings,
+			"applied": applied, "transition": transition,
+			"taskStage": v.TaskStage, "resulting_stage": resultingStage,
+		}
+	}
+	outcome, dup, err := (&eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "review_verdict", itemKind: "task", itemID: t.ID, actor: actor}).run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		res, n, txErr := s.moveStageTx(ctx, tx, actor, t.ID, target, in.EvidenceURL)
 		pendingNudge = n
 		if txErr != nil {
@@ -147,23 +154,33 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 				// persists, the task stays put, the chain shows why.
 				v.Applied = false
 				v.Transition = "refused:" + guard.Code
-				return map[string]any{
-					"verdict": v.Verdict, "reviewer": v.Reviewer, "findings": v.Findings,
-					"applied": false, "transition": v.Transition, "resulting_stage": v.TaskStage,
-				}, nil
+				return buildOutcome(false, v.Transition, v.TaskStage), nil
 			}
 			return nil, txErr // db-class failures roll back — no phantom verdicts
 		}
 		v.Applied = true
 		v.Transition = target
 		pendingNudge = n
-		return map[string]any{
-			"verdict": v.Verdict, "reviewer": v.Reviewer, "findings": v.Findings,
-			"applied": true, "transition": target, "resulting_stage": res.ResultingStage,
-		}, nil
+		return buildOutcome(true, target, res.ResultingStage), nil
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if dup != nil {
+		// 200-with-original (§4.2): a replayed requestId returns the
+		// ORIGINAL outcome from the event row, not a freshly-built row.
+		if orig := dup.Result; orig != nil {
+			if b, err := json.Marshal(orig); err == nil {
+				var original Verdict
+				if json.Unmarshal(b, &original) == nil && original.Verdict != "" {
+					out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+					if err != nil {
+						return nil, &original, err
+					}
+					return out, &original, nil
+				}
+			}
+		}
 	}
 	_ = outcome
 	// Deliveries fire only AFTER commit (r1-C5); the bounce's fresh
