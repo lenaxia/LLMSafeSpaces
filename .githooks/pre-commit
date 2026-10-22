@@ -102,8 +102,12 @@ EOF
 # run_repolint_gate: the repolint gate. Runs all layout checks (migrations,
 # worklog sentinels, chart drift, CRD drift). Worklog numbering is now
 # handled by the NNNN_ sentinel convention (see run_worklog_prefix_gate),
-# so there is no longer a worklog auto-fix retry in this hook — collisions
-# are structurally impossible because authors never pick numbers.
+# so there is no longer a worklog auto-fix retry in this hook — authoring-
+# time collisions are gone (authors never pick numbers), but the bot-lag
+# window can still mint duplicates (#1795); those redden this gate via
+# runWorklogUniqueness and are healed by the post-rewrite renumber pass
+# or a manual rename (uppercase-slug files: see the note at
+# cmd/repolint/main.go).
 #
 # Other failures (migrations, CRD drift, chart drift, gitleaks) require
 # human judgement and are NEVER auto-fixed here.

@@ -20,7 +20,7 @@ Duplicate worklog numbers — producable by two lag-window writers under the san
   - TestRepolintMain_RegistersWorklogUniqueness — the #1305 registration pattern: silent deregistration fails the pin.
 - **The lag-window e2e pin** — TestPostRewrite_LagWindowRenumbersMainInheritedSentinels: the 25ed1853 scenario end-to-end through the REAL post-rewrite hook (scratch repo + linked worktree, main carrying two unnumbered sentinels, lane rebasing onto it): every sentinel numbered INCLUDING the main-inherited ones, all numbers unique. Pins ruling c's chosen semantics — an option-(a) "fix" (skip main-inherited) must fail here. Building it surfaced two harness realities, both documented in the pin: the hook's fix-worklogs pass resolves root via go.mod (the scratch must carry one) and the pre-existing hookScratch seeds its own lane sentinel + numbered fixtures (the assertion counts accordingly).
 - **The invariant**: runWorklogUniqueness in cmd/repolint/main.go — SequenceCheck over worklogs with WorklogNumberPattern (since the r6 blind-spot fix; originally WorklogPattern) + AllowGaps (duplicates FAIL red; gaps WARN — historical or bot-lag holes that nothing backfills).
-- **Comment fix** in sequence.go's assignSentinels: the sentinel pass now documents the lag window, the deliberate renumber-all heal (assignments skip both local and remote occupied numbers), and points at the uniqueness invariant as the safety net.
+- **Comment fix** in sequence.go's assignSentinels: the sentinel pass now documents the lag window, the deliberate renumber-all heal (assignments skip both local and remote occupied numbers — every number WorklogPattern can see; uppercase-slug files are invisible to the pass, the uniqueness invariant is their net), and points at the uniqueness invariant as the safety net.
 - **Mutation verification on the final tree**: deregistering the check (file-copy mutation, restored) → both pins FAIL; registered → full pkg/repolint suite green (21.9s); `make repolint` on the real repo clean (sentinels ok, uniqueness ok-with-gap-warnings).
 
 ## Key Decisions
@@ -50,6 +50,9 @@ The r6 review proved the invariant's matcher blind spot with LIVE evidence: `Wor
 - CHANGELOG.md — Unreleased entry (the invariant; the security bumps shipped separately: 43a7ba29 toolchain, #1828/57495a4c vite, #1819 the five builder digests)
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
-- pkg/repolint/worklog_uniqueness_test.go — the three pins
+- pkg/repolint/worklog_uniqueness_test.go — the four pins (CLI red, uppercase matcher, registration+matcher pin, post-rewrite e2e)
+- README-LLM.md + docs/contributing/worklogs.md — the sentinel-scheme race narrative corrected (bot-lag window, not atomic-impossible)
+- pkg/repolint/sequence_test.go — the retired-test comment's same falsified sentence corrected
+- .githooks/pre-commit — the run_repolint_gate comment's 'structurally impossible' premise corrected
 - worklogs/0498→1166_relay-leak-fix-implementation.md, 0500→1167_epic-43-verify-pending-invitee.md — the two healed historical duplicates
 - worklogs/1169_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162; ->1164; ->1165 by our own post-rewrite hook; ->1169 past main's bot-assigned 1165_trigger-script-gate — the fourth lag-window renumber)
