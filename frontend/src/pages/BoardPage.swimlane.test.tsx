@@ -93,8 +93,13 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     expect(lane.querySelector('[data-testid="band-task-epic-uuid-2-tsk-eeee0005"]')).not.toBeNull();
     expect(lane.querySelector('[data-testid="band-task-epic-uuid-1-tsk-eeee0005"]')).toBeNull();
 
-    // Derived progress rides the band header (E1: 1 of 4 done).
-    expect(bandE1.textContent).toContain("1/4");
+    // Derived progress rides the band header (E1: 1 of 5 done). Failed
+    // tasks COUNT: the backend epic progress (pkg/board/reads.go) is
+    // count(*) FILTER (done) / count(*) with no failure exclusion —
+    // failure is an attribute (#1823), not a stage — so the local
+    // derivation must match the server's number exactly (r3: server
+    // truth and derived truth may not disagree).
+    expect(bandE1.textContent).toContain("1/5");
 
     // Collapse hides the band's tasks (header stays); expand restores.
     fireEvent.click(lane.querySelector('[data-testid="band-toggle-epic-uuid-1"]')!);
