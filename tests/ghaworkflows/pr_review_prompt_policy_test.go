@@ -47,8 +47,9 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		t.Fatalf("read pr-review.md: %v", err)
 	}
 	// Whitespace-normalized so prompt re-wrapping can never break a pin;
-	// markers are semantic phrases, not layout.
-	body := strings.Join(strings.Fields(string(b)), " ")
+	// markers are semantic phrases, not layout. Curly apostrophes are
+	// normalized to straight quotes so "don’t" cannot evade negation guards.
+	body := strings.ReplaceAll(strings.Join(strings.Fields(string(b)), " "), "\u2019", "'")
 
 	for _, marker := range []struct {
 		needle string
@@ -145,17 +146,96 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		t.Errorf("pr-review.md: negated/optional local-execution command(s) %q — every 'execute/run that suite locally' directive must be affirmative and mandatory (PR #1833 r4 surviving mutations)", m)
 	}
 
-	// The self-deadlocking watch form (`gh pr checks --watch` includes THIS
-	// review job's own check and waits on its own completion — PR #1833
-	// review finding 1) may appear ONLY inside its explicit prohibition
-	// ("NEVER `gh pr checks --watch`"). Any additional occurrence is an
-	// instruction to deadlock, so total occurrences must equal prohibited
-	// occurrences.
-	watchTotal := strings.Count(body, "gh pr checks --watch")
-	watchProhibited := strings.Count(body, "NEVER `gh pr checks --watch`")
-	if watchTotal != watchProhibited {
-		t.Errorf("pr-review.md: `gh pr checks --watch` appears %d times but only %d are inside the NEVER-prohibition — a bare occurrence instructs the reviewer to wait on its own review job (deadlock until job timeout)",
-			watchTotal, watchProhibited)
+	// sentenceStart returns the offset of the start of the sentence
+	// containing pos, treating ". ", "! " and "? " as terminal sequences
+	// (r6 verification: an "!" fragment let a prior NEVER leak across into
+	// an affirmative watch instruction).
+	sentenceStart := func(s string, pos int) int {
+		start := 0
+		for _, term := range []string{". ", "! ", "? "} {
+			if k := strings.LastIndex(s[:pos], term); k >= 0 {
+				if k+2 > start {
+					start = k + 2
+				}
+			}
+		}
+		return start
+	}
+
+	// The self-deadlocking watch family (`gh pr checks … --watch` in ANY
+	// spelling — exact, PR-numbered, number-after, re-quoted — includes THIS
+	// review job's own check and waits on its own completion). OCCURRENCE-
+	// LEVEL check (r6: a greedy `[^.]*` family count merged a variant with
+	// the prohibition into one match and let it survive; and a count of 1
+	// proves presence, not polarity — the prohibition itself could be
+	// flipped to an instruction): every `gh pr checks` occurrence whose
+	// SENTENCE contains `--watch` must have the uppercase NEVER prohibition
+	// earlier in that same sentence. Anything else instructs the deadlock.
+	for i := 0; i < len(body); {
+		j := strings.Index(body[i:], "gh pr checks")
+		if j < 0 {
+			break
+		}
+		pos := i + j
+		start := sentenceStart(body, pos)
+		end := len(body)
+		if k := strings.Index(body[pos:], ". "); k >= 0 {
+			end = pos + k
+		}
+		sent := body[start:end]
+		if strings.Contains(sent, "--watch") && !strings.Contains(body[start:pos], "NEVER") {
+			t.Errorf("pr-review.md: `gh pr checks ... --watch` occurrence outside its NEVER-prohibition — sentence: %q — instructs the reviewer to wait on its own review job (deadlock until job timeout)", sent)
+		}
+		i = pos + 1
+	}
+
+	// Sentence-level polarity (r6: adjacency regexes were evaded by one
+	// intervening word — "do not ever execute", "do not, under any
+	// circumstances, execute", "you may want to execute", "not necessarily
+	// execute", "never ever execute" all survived). Every sentence carrying
+	// an operative local-execution command must contain NO negation or
+	// optionality token ANYWHERE in it. The prompt deliberately isolates
+	// these commands in clean sentences (the legitimate "not evidence" /
+	// "did not match" / "never compile" prose lives in neighboring
+	// sentences); restructuring that isolation away is itself a pin failure.
+	negToken := regexp.MustCompile(`(?i)\b(not|never|don't|may|optional(?:ly)?|might|could)\b`)
+	// allSentencesOf returns the sentence span for EVERY occurrence of
+	// anchor (r6 verification: first-occurrence-only scans let a weakened
+	// duplicate survive).
+	allSentencesOf := func(anchor string) [][2]int {
+		var spans [][2]int
+		for i := 0; i < len(body); {
+			j := strings.Index(body[i:], anchor)
+			if j < 0 {
+				break
+			}
+			pos := i + j
+			start := sentenceStart(body, pos)
+			end := len(body)
+			if k := strings.Index(body[pos:], ". "); k >= 0 {
+				end = pos + k
+			}
+			spans = append(spans, [2]int{start, end})
+			i = pos + 1
+		}
+		return spans
+	}
+	for _, anchor := range []string{
+		"execute that suite locally yourself",
+		"failed, run the board suites locally",
+	} {
+		spans := allSentencesOf(anchor)
+		if len(spans) == 0 {
+			t.Errorf("pr-review.md: operative command anchor %q is gone — the local-execution mandate was deleted, not just reworded", anchor)
+			continue
+		}
+		for _, sp := range spans {
+			sent := body[sp[0]:sp[1]]
+			if bad := negToken.FindAllString(sent, -1); len(bad) > 0 {
+				t.Errorf("pr-review.md: the sentence carrying %q contains negation/optionality token(s) %q — sentence: %q. The command must be affirmative and mandatory; keep it isolated in a clean sentence",
+					anchor, bad, sent)
+			}
+		}
 	}
 
 	// Ordering: the policy must precede the review checklist — it is a

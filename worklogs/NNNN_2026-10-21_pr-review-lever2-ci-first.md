@@ -25,7 +25,7 @@ Cut the reviewer's measured double-execution and idle-wait waste without touchin
 
 ### Red-first pin — `tests/ghaworkflows/pr_review_prompt_policy_test.go`
 
-`TestPrReviewPromptCIFirstExecutionPolicy`: 16 whitespace-normalized positive markers, 9 negative forbidden-phrase markers + a structural negated-command regex, a count guard (`gh pr checks --watch` may appear only inside its NEVER-prohibition), and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked (bare `--watch` instruction, inversion phrases, workflow-level board condition).
+`TestPrReviewPromptCIFirstExecutionPolicy`: 16 whitespace-normalized positive markers, 9 negative forbidden-phrase markers, a structural negated-command regex, sentence-level polarity checks on both operative commands, a watch-family guard, and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked across six review rounds (inversion and polarity phrases, workflow-level board conditions, intervening-word negations, PR-numbered --watch variants).
 
 ---
 
@@ -33,7 +33,7 @@ Cut the reviewer's measured double-execution and idle-wait waste without touchin
 
 - Job-level (not workflow-level) board coverage condition: adopted after the r1 review demonstrated a real hole — the secrets-integration workflow ALWAYS runs (changes-detect job) and a path-skipped suite job still yields a green workflow run; e.g. a `cmd/workspace-agentd/board_manager_tools.go` change is NOT matched by the job's path filter while `TestIntegrationBoardManagerE2E` (which dispatches tools from that file) IS the suite you need. Coverage keys on the check itself.
 - Worklog named with the `NNNN_` sentinel (README-LLM:826-843; manual numbers race — main's 1163 was taken by 1817-phrase-id-edge mid-flight).
-- CHANGELOG [Unreleased] entry kept per the orchestrator's standing lane instruction ("CHANGELOG [Unreleased]"); flagged non-blocking by both reviews (README-LLM:1006 assigns release trains to the orchestrator) — the orchestrator may drop it at merge.
+- CHANGELOG [Unreleased] entry DROPPED at r5 (resolves the merge conflict with main and the thrice-flagged worker-lane ownership rule, README-LLM:1006 — release trains/CHANGELOG are the orchestrator's); the change record lives in this worklog and the PR body.
 
 ---
 
@@ -45,7 +45,7 @@ None.
 
 ## Tests Run
 
-- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (16 positives / 9 negatives + the negated-command regex); red-verified against the pre-policy prompt and against each mutation (bare `--watch` instruction; workflow-level board phrasing; inversion phrases).
+- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (16 positives / 9 negatives + negated-command regex + sentence polarity + watch family); red-verified against the pre-policy prompt and against every mutation class across six rounds: inversion phrases, workflow-level board conditions, polarity negations (NOT/never/do-not/must-not/dont/may/optionally, including intervening-word forms like "do not, under any circumstances, execute"), and watch-family variants (PR-numbered, number-after, prohibition-flip).
 - `go test ./tests/ghaworkflows/ -count=1` — ok. `go vet ./tests/ghaworkflows/` — clean.
 - CI on the branch head: Lint, Test (-short), Test (full suite, race), Frontend, Origin plugin freeze pin, Harness ABI, Gitleaks — SUCCESS (ten docker build-push jobs fail `go mod download` — pre-existing on main at 43a7ba29, no build inputs touched).
 
@@ -63,4 +63,3 @@ None.
 - `.github/prompts/pr-review.md` (additive policy section)
 - `tests/ghaworkflows/pr_review_prompt_policy_test.go` (new)
 - `worklogs/NNNN_2026-10-21_pr-review-lever2-ci-first.md` (this worklog)
-- `CHANGELOG.md` ([Unreleased] entry)
