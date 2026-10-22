@@ -68,11 +68,22 @@ public class BoardService {
     }
 
     public List<Map<String, Object>> listProjectTasks(String projectId, String stage) {
-        String path = "/me/projects/" + projectId + "/tasks";
+        return listProjectTasks(projectId, stage, null);
+    }
+
+    /** #1813: failed = Boolean.TRUE (only failed-attempt rows) /
+     * FALSE (only clean rows) / null (no filter). */
+    public List<Map<String, Object>> listProjectTasks(String projectId, String stage, Boolean failed) {
+        StringBuilder path = new StringBuilder("/me/projects/").append(projectId).append("/tasks");
+        String sep = "?";
         if (stage != null && !stage.isEmpty()) {
-            path += "?stage=" + stage;
+            path.append(sep).append("stage=").append(stage);
+            sep = "&";
         }
-        Map<String, Object> resp = c.request("GET", path, null, MAP.getType());
+        if (failed != null) {
+            path.append(sep).append("failed=").append(failed);
+        }
+        Map<String, Object> resp = c.request("GET", path.toString(), null, MAP.getType());
         Object tasks = resp.get("tasks");
         if (tasks instanceof List) {
             @SuppressWarnings("unchecked")

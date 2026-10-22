@@ -50,6 +50,16 @@ describe("boardApi wire shapes", () => {
     expect(mockGet).toHaveBeenCalledWith("/me/projects/prj-aaaa1111/tasks?stage=backlog");
   });
 
+  it("threads the #1813 failed-state filter (true/false/composed)", async () => {
+    mockGet.mockResolvedValue({ tasks: [] });
+    await boardApi.listProjectTasks("prj-aaaa1111", undefined, { failed: true });
+    expect(mockGet).toHaveBeenCalledWith("/me/projects/prj-aaaa1111/tasks?failed=true");
+    await boardApi.listProjectTasks("prj-aaaa1111", undefined, { failed: false });
+    expect(mockGet).toHaveBeenCalledWith("/me/projects/prj-aaaa1111/tasks?failed=false");
+    await boardApi.listProjectTasks("prj-aaaa1111", "backlog", { failed: true });
+    expect(mockGet).toHaveBeenCalledWith("/me/projects/prj-aaaa1111/tasks?stage=backlog&failed=true");
+  });
+
   it("creates a project with a requestId (idempotency discipline)", async () => {
     mockPost.mockResolvedValue({ id: "p1" });
     await boardApi.createProject({ name: "Board", targetWorkspaceId: "ws-1", workerSlots: 2 });

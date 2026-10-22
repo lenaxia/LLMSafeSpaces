@@ -37,19 +37,22 @@ func TestBoardKillSwitch_ChartDefaults(t *testing.T) {
 	assert.Equal(t, "300", env["LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"])
 	assert.Equal(t, "1", env["LLMSAFESPACES_BOARD_DRRQUANTUM"])
 	assert.Equal(t, "30", env["LLMSAFESPACES_BOARD_SWEEPSECONDS"])
+	assert.Equal(t, "60", env["LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS"], "#1813 default")
 }
 
-// Knob overrides thread chart → env — ALL six (the r3 review's pin gap:
-// throttleBackoffSeconds/sweepSeconds were unasserted, and a wrong-key
-// dig on those two is invisible to ChartDefaults because dig's fallback
-// byte-equals the values.yaml default).
+// Knob overrides thread chart → env — ALL seven (the r3 review's pin
+// gap: throttleBackoffSeconds/sweepSeconds were unasserted, and a
+// wrong-key dig on those two is invisible to ChartDefaults because
+// dig's fallback byte-equals the values.yaml default; r9 adds the
+// #1813 failureBackoffSeconds knob).
 func TestBoardKillSwitch_OverridesThread(t *testing.T) {
-	docs := helmTemplate(t, "board:\n  enabled: true\n  attemptsCap: 5\n  leaseSeconds: 42\n  throttleBackoffSeconds: 77\n  drrQuantum: 2\n  sweepSeconds: 15\n")
+	docs := helmTemplate(t, "board:\n  enabled: true\n  attemptsCap: 5\n  leaseSeconds: 42\n  throttleBackoffSeconds: 77\n  failureBackoffSeconds: 120\n  drrQuantum: 2\n  sweepSeconds: 15\n")
 	env := apiEnv(t, apiDeployment(t, docs))
 	assert.Equal(t, "true", env["LLMSAFESPACES_BOARD_ENABLED"])
 	assert.Equal(t, "5", env["LLMSAFESPACES_BOARD_ATTEMPTSCAP"])
 	assert.Equal(t, "42", env["LLMSAFESPACES_BOARD_LEASESECONDS"])
 	assert.Equal(t, "77", env["LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"])
+	assert.Equal(t, "120", env["LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS"], "#1813 override threads")
 	assert.Equal(t, "2", env["LLMSAFESPACES_BOARD_DRRQUANTUM"])
 	assert.Equal(t, "15", env["LLMSAFESPACES_BOARD_SWEEPSECONDS"])
 }

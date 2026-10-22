@@ -55,6 +55,7 @@ const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.descr
 	t.stage, t.pending_origin, t.project_name, t.epic_name, t.tags,
 	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.claim_token::text,
 	t.lease_expires_at, t.last_progress_at, t.attempts, t.claim_incremented_attempts,
+	t.last_attempt_failed, t.failure_count, t.last_failure_at,
 	t.cooldown_until, t.stage_entered_at, t.created_at, t.updated_at`
 
 func scanTask(row pgx.Row) (*Task, error) {
@@ -65,6 +66,7 @@ func scanTask(row pgx.Row) (*Task, error) {
 		&t.Stage, &t.PendingOrigin, &t.ProjectName, &t.EpicName, &t.Tags,
 		&criteria, &t.IsBlocked, &t.Paused, &assignee, &token,
 		&t.LeaseExpiresAt, &t.LastProgressAt, &t.Attempts, &t.ClaimIncremented,
+		&t.LastAttemptFailed, &t.FailureCount, &t.LastFailureAt,
 		&t.CooldownUntil, &t.StageEnteredAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err

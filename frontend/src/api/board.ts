@@ -73,6 +73,13 @@ export interface BoardTask {
   last_progress_at?: string | null;
   attempts: number;
   claim_incremented_attempts: boolean;
+  /** #1813 failed-state overlay: the last worker attempt failed (lease
+   * lapse → reclaim, the overlay's only writer). Never a stage; an
+   * all-success exhaustion carries no marker. */
+  last_attempt_failed: boolean;
+  /** Consecutive failures — the doubling backoff driver. */
+  failure_count: number;
+  last_failure_at?: string | null;
   cooldown_until?: string | null;
   stage_entered_at: string;
   created_at: string;
@@ -201,9 +208,14 @@ export const boardApi = {
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/archive`),
   unarchiveProject: (idOrShort: string): Promise<BoardProject> =>
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/unarchive`),
-  listProjectTasks: (idOrShort: string, stage?: string): Promise<BoardTask[]> => {
-    const q = stage ? `?stage=${encodeURIComponent(stage)}` : "";
-    return api.get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q}`).then((r) => r.tasks ?? []);
+  listProjectTasks: (idOrShort: string, stage?: string, opts?: { failed?: boolean }): Promise<BoardTask[]> => {
+    const params = new URLSearchParams();
+    if (stage) params.set("stage", stage);
+    if (opts?.failed !== undefined) params.set("failed", String(opts.failed));
+    const q = params.toString();
+    return api
+      .get<{ tasks: BoardTask[] }>(`/me/projects/${encodeURIComponent(idOrShort)}/tasks${q ? `?${q}` : ""}`)
+      .then((r) => r.tasks ?? []);
   },
 
   // /me/projects/:id/epics + /me/epics
