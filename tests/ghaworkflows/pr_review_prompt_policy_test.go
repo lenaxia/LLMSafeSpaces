@@ -162,15 +162,14 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		return start
 	}
 
-	// The self-deadlocking watch family (`gh pr checks … --watch` in ANY
-	// spelling — exact, PR-numbered, number-after, re-quoted — includes THIS
-	// review job's own check and waits on its own completion). OCCURRENCE-
-	// LEVEL check (r6: a greedy `[^.]*` family count merged a variant with
-	// the prohibition into one match and let it survive; and a count of 1
-	// proves presence, not polarity — the prohibition itself could be
-	// flipped to an instruction): every `gh pr checks` occurrence whose
-	// SENTENCE contains `--watch` must have the uppercase NEVER prohibition
-	// earlier in that same sentence. Anything else instructs the deadlock.
+	// The self-deadlocking watch family (`gh pr checks ... --watch` in ANY
+	// spelling includes THIS review job's own check and waits on its own
+	// completion — deadlock until job timeout).
+	// LEVEL check (r7: a decoy 'NEVER mind; use ...' earlier in the
+	// sentence satisfied the anywhere-earlier test): every `gh pr checks`
+	// occurrence whose sentence contains `--watch` must itself be the exact
+	// prohibition prefix "NEVER `gh pr checks --watch`" — no variant
+	// spelling, no PR number, no re-quoting, no decoy.
 	for i := 0; i < len(body); {
 		j := strings.Index(body[i:], "gh pr checks")
 		if j < 0 {
@@ -183,8 +182,10 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			end = pos + k
 		}
 		sent := body[start:end]
-		if strings.Contains(sent, "--watch") && !strings.Contains(body[start:pos], "NEVER") {
-			t.Errorf("pr-review.md: `gh pr checks ... --watch` occurrence outside its NEVER-prohibition — sentence: %q — instructs the reviewer to wait on its own review job (deadlock until job timeout)", sent)
+		if strings.Contains(sent, "--watch") {
+			if !strings.HasPrefix(body[pos:], "gh pr checks --watch`") || body[pos-7:pos] != "NEVER `" {
+				t.Errorf("pr-review.md: a `gh pr checks ... --watch` occurrence is not the exact prohibition form \"NEVER `gh pr checks --watch`\" — sentence: %q — any variant or decoy instructs the reviewer to wait on its own review job (deadlock until job timeout)", sent)
+			}
 		}
 		i = pos + 1
 	}
@@ -213,13 +214,45 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"the self-deadlock prohibition (rule 4): the ONLY sanctioned --watch mention, exact form — a 'so use ... instead' continuation or any variant breaks it"},
 		{"ALWAYS still run locally what CI does NOT cover — this residue is yours and stays mandatory on every review whose diff touches code it exercises:",
 			"the residue mandate (rule 5 lead): mandatory, never optionalized ('though you needn't bother' or 'only if you have spare time' breaks it)"},
+		{"ALWAYS still run locally what CI does NOT cover — this residue is yours and stays mandatory on every review whose diff touches code it exercises: - the `-tags integration` suites not covered above",
+			"the residue mandate fused to its first bullet — an insertion between the lead and the bullet list ('though you needn't bother') breaks it (r7 mutation)"},
+		{"If a suite CI runs on this PR is GREEN (conclusion: success) on the same head SHA, do NOT re-run it locally — cite the green check name as execution evidence instead of a local transcript.",
+			"the no-rerun rule (rule 2 lead): the skip is unconditional — 'unless you are curious' tailoring breaks it (r7 mutation)"},
+		{"- agentd E2E beyond the named CI pins;",
+			"the agentd-E2E residue bullet verbatim — 'is NOT yours' inversion breaks it (r7 mutation)"},
+		{"in a scratch worktree, revert or break the fix and confirm the pinning test goes red without it.",
+			"the mutation/red-check definition verbatim — 'goes green' inversion breaks the red-first meaning (r7 mutation)"},
+		{"It does NOT waive any requirement of the TESTS gate below — the diff must still ADD unit, integration, e2e happy and unhappy coverage, and bug-fix regression pins, at the mandated depth.",
+			"the non-waiver clause verbatim — the TESTS gate cannot be optionalized or reworded away (r7 mutation class)"},
+		{"it says nothing about whether the PR adds the tests the gates require.",
+			"the non-waiver rationale verbatim — CI-green never substitutes for structural coverage assessment"},
 	} {
 		if !strings.Contains(body, exact.sentence) {
 			t.Errorf("pr-review.md: load-bearing sentence no longer exact — %s. Expected: %q", exact.why, exact.sentence)
 		}
 	}
 
-	// Sentence-level polarity (r6: adjacency regexes were evaded by one
+	// Section-scoped anti-policy phrases (r7: appended WEAKENING SENTENCES
+	// after pinned terminals survived everything above — "That coverage
+	// claim is FALSE.", "There is no need to execute ...", "If CI is green
+	// you may skip adding ..."). Within the policy section these phrasings
+	// have NO legitimate use — the section's genuine negatives ("not
+	// evidence", "do NOT re-run", "NEVER", "never compile") do not match —
+	// so any hit is a weakening, whichever sentence it lands in.
+	secStart := strings.Index(body, "VERIFICATION EXECUTION POLICY")
+	secEnd := strings.Index(body, "Review checklist")
+	if secStart < 0 || secEnd < 0 || secStart > secEnd {
+		t.Fatalf("policy section bounds not found (policyIdx=%d checklistIdx=%d) — the ordering pin should have caught this", secStart, secEnd)
+	}
+	section := body[secStart:secEnd]
+	for _, anti := range []string{
+		"is FALSE", "you may skip", "no need to", "needn't", "shouldn't",
+		"cannot execute", "only if you have spare time", "is NOT yours", "goes green without it",
+	} {
+		if strings.Contains(section, anti) {
+			t.Errorf("pr-review.md: anti-policy phrase %q inside the execution-policy section — every weakening phrasing (claim denial, skip permission, need-negation, mandate inversion) is forbidden anywhere in the section, not just in pinned sentences", anti)
+		}
+	}
 	// intervening word — "do not ever execute", "do not, under any
 	// circumstances, execute", "you may want to execute", "not necessarily
 	// execute", "never ever execute" all survived). Every sentence carrying
@@ -228,6 +261,12 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 	// these commands in clean sentences (the legitimate "not evidence" /
 	// "did not match" / "never compile" prose lives in neighboring
 	// sentences); restructuring that isolation away is itself a pin failure.
+	// Sentence-level polarity (r6: adjacency regexes were evaded by one
+	// intervening word — "do not ever execute", "do not, under any
+	// circumstances, execute", "you may want to execute", "not necessarily
+	// execute", "never ever execute" all survived). Every sentence carrying
+	// an operative local-execution command must contain NO negation or
+	// optionality token ANYWHERE in it. The prompt deliberately isolates
 	negToken := regexp.MustCompile(`(?i)\b(not|never|don't|may|optional(?:ly)?|might|could)\b`)
 	// allSentencesOf returns the sentence span for EVERY occurrence of
 	// anchor (r6 verification: first-occurrence-only scans let a weakened
