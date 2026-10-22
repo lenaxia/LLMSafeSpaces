@@ -8,7 +8,7 @@
 
 ## Objective
 
-Fix PR #1825's two red legs — the SDK canaries' `FAIL /livez: not rate-limited` and the pkg/secrets integration 32s fast-fail — inside the branch, and carry the fleet-unblock builder story (GOTOOLCHAIN=auto) so one merge unblocks canyon's CI, harbor's #1820, and #1826.
+Fix PR #1825's two red legs — the SDK canaries' `FAIL /livez: not rate-limited` (fixed in this branch) and the pkg/secrets integration 32s fast-fail (diagnosed here; the pin fix landed on main piecewise) — and carry the fleet-unblock builder story (GOTOOLCHAIN=auto) so one merge unblocks canyon's CI, harbor's #1820, and #1826.
 
 ---
 
@@ -24,15 +24,15 @@ The five service builders set `ENV GOTOOLCHAIN=auto`. #1819 (merged) re-pinned t
 
 ### Health-probe rate-limit exemption
 
-Diagnosed the canary failure: /livez + /readyz were never in the limiter's ExemptPaths — they passed only by refill-boundary luck after the canary's login burst; operationally a 429 on the liveness probe restarts healthy pods and on the readiness probe de-services the pod (monitoring.md semantics). Added both to DefaultRouterConfig's ExemptPaths (router.go:328).
+Diagnosed the canary failure: /livez + /readyz were never in the limiter's ExemptPaths — they passed only by refill-boundary luck after the canary's login burst; operationally a 429 on the liveness probe restarts healthy pods and on the readiness probe de-services the pod (monitoring.md semantics). Added both to DefaultRouterConfig's ExemptPaths (router.go:330).
 
 ### Red-first regression pin
 
 `TestRouter_HealthProbesNeverRateLimited`: production wiring; (1,1) global limiter; an exhaustion CONTROL leg (429 observed on an ordinary route from the same IP — never assumed) before /livez is asserted exactly 200 and /readyz its typed 503 (stubbed pings = unreachable; the r1 panic class is structurally impossible with stubs). Verified RED pre-fix, GREEN post-fix; the r3 reviewer independently re-verified red/green by reverting the exemption at head.
 
-### Review iterations r1→r6 (r1→r3 pre-rebuild heads; r4+ at the rebuilt heads)
+### Review iterations r1→r8 (r1→r3 pre-rebuild heads; r4+ at the rebuilt heads)
 
-The false-green `!= 429` shape replaced with the discriminating exact-status + control form; the stale comments corrected (the remaining "unstubbed" mentions describe the pre-stub panic behavior, not the current mocks); the refill rationale states the mechanism (rate = limit → 1 token/second; DefaultWindow unused by the strategy; exhaustion is empirical); the CHANGELOG `(nothing yet)` placeholder removed — claimed in r3 but actually landed in r4 (the r3-era removal was a silent no-op; owned on the PR thread); the template deviations (doubled `---`, non-`None.` Blockers) fixed in r5 — and this ### subsection restructure is r6.
+The false-green `!= 429` shape replaced with the discriminating exact-status + control form; the stale comments corrected (the remaining "unstubbed" mentions describe the pre-stub panic behavior, not the current mocks); the refill rationale states the mechanism (rate = limit → 1 token/second; DefaultWindow unused by the strategy; exhaustion is empirical); the CHANGELOG `(nothing yet)` placeholder removed — claimed in r3 but actually landed in r4 (the r3-era removal was a silent no-op; owned on the PR thread); the template deviations (doubled `---`, non-`None.` Blockers) fixed in r5; this ### subsection restructure r6; the setext-H2 separator hazard r7; the readiness-429 semantics r8.
 
 ---
 
@@ -70,4 +70,4 @@ None.
 
 ## Files Modified
 
-`api/internal/server/router.go`, `api/internal/server/router_1652_rate_limit_test.go`, `api/Dockerfile`, `cmd/relay-proxy/Dockerfile`, `cmd/relay-router/Dockerfile`, `cmd/workspace-agentd/Dockerfile`, `controller/Dockerfile`, `CHANGELOG.md`, this worklog. (Exactly the nine-file net diff vs post-#1819 main — dedupe verified by content, not filename.)
+`api/internal/server/router.go`, `api/internal/server/router_1652_rate_limit_test.go`, `api/Dockerfile`, `cmd/relay-proxy/Dockerfile`, `cmd/relay-router/Dockerfile`, `cmd/workspace-agentd/Dockerfile`, `controller/Dockerfile`, `CHANGELOG.md`, `worklogs/NNNN_2026-10-21_1825-toolchain-unblock.md` (this file). (Exactly the nine-file net diff vs post-#1819 main — dedupe verified by content, not filename.)

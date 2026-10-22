@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   burst. Pinned red-first (an exhaustion control leg proves the
   budget is spent — 429 observed on an ordinary route — before both
   probes are asserted: /livez exactly 200, /readyz its typed 503).
+
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
+
 - **The delivery boundary now refuses literal placeholder tokens.** The
   mid-write emission-corruption mode (observed across worker sessions
   and the orchestrator) replaces a drafted body with a placeholder
