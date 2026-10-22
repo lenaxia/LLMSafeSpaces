@@ -1055,23 +1055,6 @@ func criteriaCheckArg(args map[string]any, key string) (*board.CriteriaCheck, er
 	}
 }
 
-// intPtrArg pulls an optional integer argument; nil when absent.
-func intPtrArg(args map[string]any, key string) *int {
-	if raw, ok := args[key]; ok && raw != nil {
-		switch v := raw.(type) {
-		case float64:
-			i := int(v)
-			return &i
-		case int:
-			return &v
-		case int64:
-			i := int(v)
-			return &i
-		}
-	}
-	return nil
-}
-
 // boardCriteriaArg decodes the acceptance_criteria array ([{text, met}],
 // ruling R2) from MCP arguments.
 func boardCriteriaArg(args map[string]any, key string) ([]BoardCriterion, error) {
