@@ -124,6 +124,11 @@ func TestRepolintMain_RegistersWorklogUniqueness(t *testing.T) {
 	for _, pin := range []string{
 		"failures += runWorklogUniqueness(root)",
 		"func runWorklogUniqueness(root string) int {",
+		// The matcher IS the invariant's coverage: reverting to the
+		// lowercase-only WorklogPattern resurrects the uppercase-slug
+		// blind spot (r6) with every test green — pinned here so that
+		// revert fails this test.
+		"Pattern:   repolint.WorklogNumberPattern,",
 	} {
 		if !strings.Contains(string(src), pin) {
 			t.Errorf("cmd/repolint/main.go lost its wiring: %q not found — the uniqueness invariant would be silently disabled", pin)

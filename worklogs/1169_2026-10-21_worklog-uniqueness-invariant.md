@@ -25,7 +25,7 @@ Duplicate worklog numbers — producable by two lag-window writers under the san
 
 ## Key Decisions
 
-- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; nothing backfills historical gap holes (75 exist at this head), so gap-gating would redden every branch forever.
+- Gaps are warnings, duplicates are failures — the ruling names duplicates as the invariant; nothing backfills historical gap holes (72 at this head, per the built binary), so gap-gating would redden every branch forever.
 - The e2e pin runs the REAL hook binary path (prebuilt real repolint where the hook looks for it) rather than unit-mocking FixWorklogs — the scenario IS the hook's contract.
 
 ## Blockers
@@ -47,7 +47,7 @@ The r6 review proved the invariant's matcher blind spot with LIVE evidence: `Wor
 
 ## Files Modified
 
-- CHANGELOG.md — Unreleased entry (the invariant; the toolchain/vite entries shipped with #1819's carries)
+- CHANGELOG.md — Unreleased entry (the invariant; the security bumps shipped separately: 43a7ba29 toolchain, #1828/57495a4c vite, #1819 the five builder digests)
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins

@@ -154,7 +154,7 @@ npm run lint                                                                    
 - `frontend/src/api/orgs.ts` — `verifyInvitee` API method
 - `frontend/src/components/org-admin/OrgMembersTab.tsx` — Verify button on Pending Invitations rows
 - `frontend/src/components/org-admin/OrgMembersTab.test.tsx` — 5 new tests + mock extension
-- `worklogs/0500_2026-06-22_epic-43-verify-pending-invitee.md` — this file
+- `worklogs/1167_2026-06-22_epic-43-verify-pending-invitee.md` — this file (renumbered from 0500 by the #1795 uniqueness-heal)
 
 ---
 

@@ -188,4 +188,4 @@ Total: 21 tests added in this PR (9 adoption + 1 OCI tag + 12 orphan detector â€
 | `controller/internal/relay/oci_driver_test.go` | New: tag shape table test |
 | `controller/internal/relay/orphan_detector_test.go` | New: 12 detector tests including race avoidance |
 | `controller/internal/relay/reconciler_test.go` | Extended `stubDriver` with `provisionCalls` + `listInstances` + `listErr` |
-| `worklogs/0498_2026-06-22_relay-leak-fix-implementation.md` | This file |
+| `worklogs/1166_2026-06-22_relay-leak-fix-implementation.md` | This file (renumbered from 0498 by the #1795 uniqueness-heal) |

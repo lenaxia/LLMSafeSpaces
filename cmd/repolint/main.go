@@ -239,6 +239,10 @@ func runWorklogSentinels(root string) int {
 // the same number. Gaps stay warnings (they are historical or bot-lag
 // holes that nothing backfills — the fix pass only ever numbers
 // above max); DUPLICATES are the real corruption.
+// NOTE (#1807 r8): fixWorklogs (the bot's healer) still matches only
+// WorklogPattern — an uppercase-slug duplicate redden requires a
+// MANUAL renumber (as this PR did for the 0498/0500 pairs); aligning
+// the healer is deferred as a behavior change to the numbering bot.
 func runWorklogUniqueness(root string) int {
 	dir := filepath.Join(root, "worklogs")
 	rep, err := repolint.SequenceCheck(repolint.SequenceConfig{

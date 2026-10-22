@@ -258,10 +258,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pinned end-to-end through the real hook: every sentinel numbered,
   main-inherited included, all unique) and the falsified "sentinels
   never appear on origin/main" / "collisions cannot occur" comments
-  are corrected. The invariant fired for real twice in-flight,
-  catching its own PR's worklog collisions with main's lag-window
-  assignments (1161, then 1162). Companion toolchain/vite security
-  bumps shipped via #1819.
+  are corrected. The invariant caught one real collision in-flight
+  (its own PR's 1161 vs main's lag-window assignment); a second
+  (1162) was pre-empted by a manual leapfrog before it could redden.
+  Companion security bumps shipped separately: 43a7ba29 (Go
+  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
 
 ### Changed — Review infra: admit the agentic-actor-coder app bot past the reviewer's startup assert (ai-workflows #51/#53; callers pinned v0.2.18)
 
