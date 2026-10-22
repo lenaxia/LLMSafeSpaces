@@ -348,7 +348,11 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     const url = new URL(r.request().url());
     const epicId = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
     const force = url.searchParams.get("force") === "true";
-    const under = state.tasks.filter((t) => t.epic_id === epicId);
+    // #1831 wire contract: the wire addresses epics by derived short id
+    // (epc-<compact-id>); map back through the same derivation the
+    // harness uses (line ~111) so guard arms see the fixture's rows.
+    const wireEpic = (id: string) => `epc-${id.replace(/-/g, "").padEnd(8, "0")}`;
+    const under = state.tasks.filter((t) => wireEpic(t.epic_id) === epicId);
     const inFlight = under.filter((t) => t.stage === "in_progress" && t.assignee_session);
     if (inFlight.length > 0 && !force) {
       void r.fulfill(j({
@@ -367,7 +371,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
         orphaned.push(dep.short_id);
       }
     }
-    state.tasks = state.tasks.filter((t) => t.epic_id !== epicId);
+    state.tasks = state.tasks.filter((t) => wireEpic(t.epic_id) !== epicId);
     void r.fulfill(j({
       item_kind: "epic", id: epicId, short_id: `epc-${epicId.slice(-6)}`,
       cascade_tasks: cascade, orphaned_dependents: orphaned,
@@ -517,42 +521,6 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       ...(reconnect ? { reconnected } : {}),
     }));
   });
-  // #1832 item 3: epic delete — refuses while claims are in flight
-  // under the epic unless ?force=true (force deletes, then aborts each
-  // in-flight worker post-commit). Matches pkg/board/delete.go.
-  await page.route(`${API}/me/epics/*`, async (r: Route) => {
-    if (r.request().method() !== "DELETE") {
-      void r.continue();
-      return;
-    }
-    const url = new URL(r.request().url());
-    const epicId = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
-    const force = url.searchParams.get("force") === "true";
-    const under = state.tasks.filter((t) => t.epic_id === epicId);
-    const inFlight = under.filter((t) => t.stage === "in_progress" && t.assignee_session);
-    if (inFlight.length > 0 && !force) {
-      void r.fulfill(j({
-        error: "board: guard epic_state: claims in flight under the epic — force required (force=true deletes, then aborts each in-flight worker post-commit)",
-        code: "epic_state",
-      }, 409));
-      return;
-    }
-    // Cross-epic dependents outside the blast radius are orphaned.
-    const cascade = under.map((t) => t.short_id);
-    const orphaned: string[] = [];
-    for (const t of under) {
-      for (const dep of state.tasks.filter((x) => x.epic_id !== epicId && (x.blocked_by ?? []).includes(t.short_id))) {
-        dep.blocked_by = (dep.blocked_by ?? []).filter((id) => id !== t.short_id);
-        dep.is_blocked = (dep.blocked_by ?? []).length > 0;
-        orphaned.push(dep.short_id);
-      }
-    }
-    state.tasks = state.tasks.filter((t) => t.epic_id !== epicId);
-    void r.fulfill(j({
-      item_kind: "epic", id: epicId, short_id: `epc-${epicId.slice(-6)}`,
-      cascade_tasks: cascade, orphaned_dependents: orphaned,
-    }));
-  });
   await page.route(`${API}/me/tasks/*/start`, async (r: Route) => {
     const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
     const t = state.tasks.find((x) => x.short_id === shortId);
@@ -583,7 +551,8 @@ async function setupBoardMocks(page: Page, state: BoardState) {
 }
 
 async function openBoard(page: Page, init?: Partial<BoardState>) {
-  const state: BoardState = { tasks: freshState().tasks, epics: [], ...init };
+  const __base = freshState();
+  const state: BoardState = { tasks: __base.tasks, projects: __base.projects, epics: [], ...init };
   await installSSEEmitters(page);
   await setupBoardMocks(page, state);
   await page.goto("/board");
@@ -1155,7 +1124,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     await expect(modal.getByTestId("epic-delete-cascade-count")).toHaveText("5");
 
     // First attempt: NO force — the API refuses (epic_state).
-    const refuseP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epic-1$/.test(r.url()));
+    const refuseP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epc-epic1000$/.test(r.url()));
     await modal.getByTestId("confirm-delete-epic").click();
     const refuseReq = await refuseP;
     expect(new URL(refuseReq.url()).searchParams.get("force")).toBeNull();
@@ -1167,7 +1136,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     await modal.getByTestId("force-abort-confirm").check();
     await expect(forceBtn).toBeEnabled();
 
-    const forceP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epic-1\?force=true$/.test(r.url()));
+    const forceP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epc-epic1000\?force=true$/.test(r.url()));
     await forceBtn.click();
     const forceReq = await forceP;
     expect(new URL(forceReq.url()).searchParams.get("force")).toBe("true");
