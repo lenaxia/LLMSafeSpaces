@@ -182,6 +182,12 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "bounce requires a recorded assignee (no token-less in_progress rows)"}
 		}
 		resulting, postNudge, err = s.reclaimTx(ctx, tx, taskID, cur.AssigneeSession, actor, "bounce")
+		if err == nil {
+			// VERIFICATION MUTATION (throwaway): pre-amendment behavior.
+			if _, err = tx.Exec(ctx, `UPDATE board_tasks SET attempts = attempts + 1 WHERE id = $1`, taskID); err != nil {
+				return res, nudge{}, err
+			}
+		}
 
 	case from == StageInReview && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
