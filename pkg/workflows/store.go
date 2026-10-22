@@ -71,23 +71,27 @@ type WorkflowRow struct {
 
 // TriggerRow is the DB row shape for triggers.
 type TriggerRow struct {
-	ID                  string
-	OwnerType           string
-	OwnerID             string
-	Name                string
-	Description         string
-	Enabled             bool
-	SourceType          string
-	SourceConfig        json.RawMessage
-	WorkspaceID         *string
-	WorkflowID          *string
-	InputFrom           string // 0059: envelope (legacy default) | body | mapped
-	Input               json.RawMessage
-	Prompt              string
-	Agent               string
-	ScriptPath          string
-	ScriptArgs          []string
-	ScriptEnv           json.RawMessage
+	ID           string
+	OwnerType    string
+	OwnerID      string
+	Name         string
+	Description  string
+	Enabled      bool
+	SourceType   string
+	SourceConfig json.RawMessage
+	WorkspaceID  *string
+	WorkflowID   *string
+	InputFrom    string // 0059: envelope (legacy default) | body | mapped
+	Input        json.RawMessage
+	Prompt       string
+	Agent        string
+	ScriptPath   string
+	ScriptArgs   []string
+	ScriptEnv    json.RawMessage
+	// ScriptLanguage/ScriptHandler carry the #1812 inline gate script
+	// (workflow-script-node parity). Empty = no script (legacy shape).
+	ScriptLanguage      string
+	ScriptHandler       string
 	MemoryMode          string
 	MemoryMaxRuns       int
 	CaptureMode         string
@@ -200,13 +204,18 @@ type TriggerUpdate struct {
 	// jsonb CASE shape — a non-nil RawMessage (including the JSON
 	// literal null, which lands as jsonb null = "no static input")
 	// replaces the stored document; nil keeps it.
-	InputFrom        *string
-	Input            json.RawMessage
-	Prompt           *string
-	Agent            *string
-	ScriptPath       *string
-	ScriptArgs       []string
-	ScriptEnv        json.RawMessage
+	InputFrom  *string
+	Input      json.RawMessage
+	Prompt     *string
+	Agent      *string
+	ScriptPath *string
+	ScriptArgs []string
+	ScriptEnv  json.RawMessage
+	// Script (#1812): nil keeps the stored inline gate script; a
+	// non-nil value replaces it (the zero value clears back to
+	// no-script). The handler resolves API key-presence semantics
+	// (absent/null/object) into this plain replace-or-keep shape.
+	Script           *TriggerScript
 	MemoryMode       *string
 	MemoryMaxRuns    *int
 	CaptureMode      *string
@@ -367,6 +376,7 @@ func (s *Store) CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID st
 // CreateWebhook in the same transaction by the handler (US-64.5).
 const triggerSelectColumns = `id, owner_type, owner_id, name, description, enabled, source_type, source_config,
 	workspace_id, workflow_id, input, input_from, prompt, agent, script_path, script_args, script_env,
+	script_language, script_handler,
 	memory_mode, memory_max_runs, capture_mode, preserve_session,
 	consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at`
 
@@ -374,17 +384,20 @@ func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config,
 			workspace_id, workflow_id, input, input_from, prompt, agent, script_path, script_args, script_env,
+			script_language, script_handler,
 			memory_mode, memory_max_runs, capture_mode, preserve_session,
 			consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb),
 			$9, $10, $11, COALESCE(NULLIF($12, ''), 'envelope'), COALESCE($13, ''), COALESCE($14, ''), COALESCE($15, ''), COALESCE($16, ARRAY[]::text[]), COALESCE($17, '{}'::jsonb),
-			COALESCE(NULLIF($18, ''), 'none'), COALESCE(NULLIF($19, 0), 1), COALESCE(NULLIF($20, ''), 'errors_only'), COALESCE(NULLIF($21, ''), 'never'),
-			COALESCE($22, 0), COALESCE($23, 10), $24, $25, $26, $27)
+			COALESCE(NULLIF($18, ''), ''), COALESCE(NULLIF($19, ''), ''),
+			COALESCE(NULLIF($20, ''), 'none'), COALESCE(NULLIF($21, 0), 1), COALESCE(NULLIF($22, ''), 'errors_only'), COALESCE(NULLIF($23, ''), 'never'),
+			COALESCE($24, 0), COALESCE($25, 10), $26, $27, $28, $29)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Description, row.Enabled,
 		row.SourceType, nullableJSON(row.SourceConfig),
 		nullableStrPtr(row.WorkspaceID), nullableStrPtr(row.WorkflowID),
 		nullableJSON(row.Input), row.InputFrom,
 		row.Prompt, row.Agent, row.ScriptPath, toNullableStringArray(row.ScriptArgs), nullableJSON(row.ScriptEnv),
+		row.ScriptLanguage, row.ScriptHandler,
 		row.MemoryMode, row.MemoryMaxRuns, row.CaptureMode, row.PreserveSession,
 		row.ConsecutiveFailures, row.AutoDisableAfter, row.LastFiredAt, row.NextFireAt,
 		row.CreatedAt, row.UpdatedAt)
@@ -454,6 +467,8 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		    script_path = COALESCE($14, script_path),
 		    script_args = CASE WHEN $15::text[] IS NULL THEN script_args ELSE $15 END,
 		    script_env = CASE WHEN $16::jsonb IS NOT NULL THEN $16 ELSE script_env END,
+		    script_language = CASE WHEN $23::text IS NULL THEN script_language ELSE $23 END,
+		    script_handler = CASE WHEN $24::text IS NULL THEN script_handler ELSE $24 END,
 		    memory_mode = COALESCE($17, memory_mode),
 		    memory_max_runs = COALESCE($18, memory_max_runs),
 		    capture_mode = COALESCE($19, capture_mode),
@@ -473,11 +488,13 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		upd.MemoryMode, upd.MemoryMaxRuns, upd.CaptureMode, upd.PreserveSession,
 		upd.AutoDisableAfter,
 		nullableTimePtr(upd.NextFireAt),
+		nullableStrPtr(scriptUpdateLanguage(upd)), nullableStrPtr(scriptUpdateHandler(upd)),
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Description, &row.Enabled,
 		&row.SourceType, &row.SourceConfig,
 		&row.WorkspaceID, &row.WorkflowID, &row.Input, &row.InputFrom, &row.Prompt, &row.Agent,
 		&row.ScriptPath, &row.ScriptArgs, &row.ScriptEnv,
+		&row.ScriptLanguage, &row.ScriptHandler,
 		&row.MemoryMode, &row.MemoryMaxRuns, &row.CaptureMode, &row.PreserveSession,
 		&row.ConsecutiveFailures, &row.AutoDisableAfter, &row.LastFiredAt, &row.NextFireAt,
 		&row.CreatedAt, &row.UpdatedAt,
@@ -770,6 +787,20 @@ func (s *Store) UpdateTriggerFireResult(ctx context.Context, fireID string, resu
 	return err
 }
 
+// UpdateTriggerFireAction writes the pre-execution action payload on a
+// trigger fire row (#1812): the gate outcome — {gate:{proceed, vars}} or
+// the fail-closed error — lands in action_result BEFORE the agent leg,
+// so every script-gated fire is self-explaining in the audit regardless
+// of what the leg then does to result/status.
+func (s *Store) UpdateTriggerFireAction(ctx context.Context, fireID string, actionResult json.RawMessage) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE trigger_fires
+		SET action_result = $2
+		WHERE id = $1
+	`, fireID, nullableJSON(actionResult))
+	return err
+}
+
 // GetLastRoutineResult returns the result from the most recent successful
 // routine fire for a trigger. Used for memory_mode: last_result.
 func (s *Store) GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error) {
@@ -1009,6 +1040,7 @@ func scanTriggerRow(row pgx.Row) (*TriggerRow, error) {
 		&r.SourceType, &r.SourceConfig,
 		&r.WorkspaceID, &r.WorkflowID, &r.Input, &r.InputFrom, &r.Prompt, &r.Agent,
 		&r.ScriptPath, &r.ScriptArgs, &r.ScriptEnv,
+		&r.ScriptLanguage, &r.ScriptHandler,
 		&r.MemoryMode, &r.MemoryMaxRuns, &r.CaptureMode, &r.PreserveSession,
 		&r.ConsecutiveFailures, &r.AutoDisableAfter, &r.LastFiredAt, &r.NextFireAt,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -1017,6 +1049,23 @@ func scanTriggerRow(row pgx.Row) (*TriggerRow, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// scriptUpdateLanguage/handler project the #1812 TriggerUpdate.Script
+// pointer into the store's keep-or-replace shape: nil keeps (NULL arg),
+// non-nil replaces (the zero value clearing back to no-script).
+func scriptUpdateLanguage(upd *TriggerUpdate) *string {
+	if upd.Script == nil {
+		return nil
+	}
+	return &upd.Script.Language
+}
+
+func scriptUpdateHandler(upd *TriggerUpdate) *string {
+	if upd.Script == nil {
+		return nil
+	}
+	return &upd.Script.Handler
 }
 
 func scanTriggerRows(rows pgx.Rows) ([]*TriggerRow, error) {

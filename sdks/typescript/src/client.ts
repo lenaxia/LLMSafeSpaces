@@ -820,6 +820,50 @@ export interface WorkflowRunResponse {
   createdAt: string;
 }
 
+/**
+ * The #1812 inline gate script — INLINE SOURCE, never a path.
+ *
+ * The handler defines `handler(input) -> {proceed: boolean, vars:
+ * {[key: string]: string}}` and runs in the routine's target workspace
+ * before every fire's LLM call (input = the fire envelope):
+ * - `proceed: false` exits the fire with NO LLM call;
+ * - `proceed: true` fires the prompt with vars substituted jinja-style
+ *   (`{{key}}`; unmatched tokens stay literal) and ALL vars appended as
+ *   trailing `[trigger script vars]` metadata;
+ * - any failure (runtime error, unparseable output, schema-violating
+ *   return) fails CLOSED: failed fire, named error in the audit, no LLM
+ *   call;
+ * - a script trigger with NO prompt never calls the LLM at all.
+ *
+ * Routine targets only — rejected (400) alongside workflowId.
+ *
+ * Worked example — nightly digest, LLM called only when work
+ * accumulated:
+ *
+ * ```ts
+ * await client.triggers.create({
+ *   name: "nightly-digest",
+ *   sourceType: "cron",
+ *   sourceConfig: { expr: "0 2 * * *", tz: "UTC" },
+ *   workspaceId: wsId,
+ *   prompt: "Summarize the {{count}} new items.",
+ *   script: {
+ *     language: "python",
+ *     handler: 'def handler(input):\n    n = count_open_items()\n    return {"proceed": n > 0, "vars": {"count": str(n)}}\n',
+ *   },
+ * });
+ * // proceed=false → fire skipped, no model call
+ * // proceed=true  → prompt fires with {{count}} substituted + all
+ * //                 vars appended as trailing metadata
+ * ```
+ */
+export interface TriggerScript {
+  /** Runtime: "python" or "node" (the workflow script-node runtimes). */
+  language: "python" | "node";
+  /** The inline handler source (≤ 64 KiB), not a path. */
+  handler: string;
+}
+
 export interface TriggerResponse {
   id: string;
   name: string;
@@ -830,6 +874,8 @@ export interface TriggerResponse {
   workflowId?: string;
   prompt?: string;
   agent?: string;
+  /** Inline gate script — see {@link TriggerScript}. Absent = none. */
+  script?: TriggerScript;
   scriptPath?: string;
   scriptArgs?: string[];
   scriptEnv?: unknown;
@@ -1030,6 +1076,13 @@ class TriggersAPI {
     workflowId?: string;
     prompt?: string;
     agent?: string;
+    /**
+     * Inline gate script (#1812) — see {@link TriggerScript} for the
+     * {proceed, vars} gate semantics (proceed=false exits with no LLM
+     * call; true substitutes {{key}} tokens + appends all vars as
+     * trailing metadata; failures fail closed). Routine mode only.
+     */
+    script?: TriggerScript;
     scriptPath?: string;
     scriptArgs?: string[];
     scriptEnv?: unknown;
@@ -1040,7 +1093,19 @@ class TriggersAPI {
     return this.client.request<TriggerResponse>("POST", "/me/triggers", req);
   }
 
-  update(id: string, req: { enabled?: boolean; autoDisableAfter?: number }) {
+  update(
+    id: string,
+    req: {
+      enabled?: boolean;
+      autoDisableAfter?: number;
+      /**
+       * Patch the inline gate script (#1812): an omitted key keeps the
+       * stored script, `null` clears it back to no-script, an object
+       * replaces it. See {@link TriggerScript}.
+       */
+      script?: TriggerScript | null;
+    },
+  ) {
     return this.client.request<TriggerResponse>("PUT", `/me/triggers/${id}`, req);
   }
 

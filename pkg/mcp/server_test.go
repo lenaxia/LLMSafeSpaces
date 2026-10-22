@@ -179,13 +179,13 @@ func (m *MockAPIClient) ListTriggers(ctx context.Context) (json.RawMessage, erro
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error) {
-	args := m.Called(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input)
+func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input, script string) (json.RawMessage, error) {
+	args := m.Called(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input, script)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error) {
-	args := m.Called(ctx, triggerID, enabled, inputFrom, input)
+func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input, script string) (json.RawMessage, error) {
+	args := m.Called(ctx, triggerID, enabled, inputFrom, input, script)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -1103,7 +1103,7 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	h, client := newTestHandlers()
 
 	client.On("CreateTrigger", mock.Anything, "mapped-trig", "cron", `{"expr":"0 2 * * *"}`,
-		"", "wf-1", "", "", "", "", "mapped", `{"topic":"nightly"}`).
+		"", "wf-1", "", "", "", "", "mapped", `{"topic":"nightly"}`, "").
 		Return(`{"id":"t1","inputFrom":"mapped"}`, nil)
 	res, err := h.triggerCreate(context.Background(), makeReq("trigger_create", map[string]any{
 		"name": "mapped-trig", "source_type": "cron", "source_config": `{"expr":"0 2 * * *"}`,
@@ -1116,7 +1116,7 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	// Update: empty strings = keys omitted (keep existing); "null" passes
 	// through so the API's key-presence discrimination can clear the doc.
 	enabled := true
-	client.On("UpdateTrigger", mock.Anything, "t1", &enabled, "", "null").
+	client.On("UpdateTrigger", mock.Anything, "t1", &enabled, "", "null", "").
 		Return(`{"id":"t1"}`, nil)
 	res, err = h.triggerUpdate(context.Background(), makeReq("trigger_update", map[string]any{
 		"trigger_id": "t1", "enabled": true, "input": "null",
@@ -1132,15 +1132,42 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.IsError, "invalid JSON input must be rejected by the tool")
 
+	// #1812: the inline gate script passes through verbatim, and garbage
+	// script JSON dies at the tool boundary.
+	client.On("CreateTrigger", mock.Anything, "gated", "cron", `{"expr":"0 2 * * *"}`,
+		"ws-1", "", "Report {{count}} items", "", "", "", "", "",
+		`{"language":"python","handler":"def handler(input):\n    return {'proceed': True, 'vars': {}}\n"}`).
+		Return(`{"id":"t2"}`, nil)
+	res, err = h.triggerCreate(context.Background(), makeReq("trigger_create", map[string]any{
+		"name": "gated", "source_type": "cron", "source_config": `{"expr":"0 2 * * *"}`,
+		"workspace_id": "ws-1", "prompt": "Report {{count}} items",
+		"script": `{"language":"python","handler":"def handler(input):\n    return {'proceed': True, 'vars': {}}\n"}`,
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError, "script must pass through verbatim")
+	client.AssertExpectations(t)
+	res, err = h.triggerCreate(context.Background(), makeReq("trigger_create", map[string]any{
+		"name": "bad-script", "source_type": "cron", "source_config": `{}`, "script": `{nope`,
+	}))
+	require.NoError(t, err)
+	require.True(t, res.IsError, "invalid JSON script must be rejected by the tool")
+
 	// The tool schemas advertise the new args, and the tool descriptions
-	// carry the wiring-guard guidance (D7).
+	// carry the wiring-guard guidance (D7) + the #1812 gate semantics —
+	// discoverable from the description alone.
 	b, err := json.Marshal(triggerCreateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "input_from")
+	assert.Contains(t, string(b), "script")
 	assert.Contains(t, string(b), "envelope (default)")
 	assert.Contains(t, triggerCreateTool.Description, "envelope-mode trigger")
+	assert.Contains(t, triggerCreateTool.Description, "proceed=false exits the fire with NO LLM call")
+	assert.Contains(t, triggerCreateTool.Description, "{{key}}")
+	assert.Contains(t, triggerCreateTool.Description, "fail")
 	b, err = json.Marshal(triggerUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "input_from")
+	assert.Contains(t, string(b), "script")
 	assert.Contains(t, triggerUpdateTool.Description, "patchable")
+	assert.Contains(t, triggerUpdateTool.Description, "gate script")
 }

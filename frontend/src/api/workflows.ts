@@ -49,6 +49,30 @@ export interface NodeRun {
   finishedAt?: string;
 }
 
+/**
+ * The #1812 inline gate script — INLINE SOURCE, never a path.
+ *
+ * The handler defines `handler(input) -> {proceed: boolean, vars:
+ * {[key: string]: string}}` and runs in the routine's target workspace
+ * before every fire's LLM call (input = the fire envelope):
+ * - `proceed: false` exits the fire with NO LLM call;
+ * - `proceed: true` fires the prompt with vars substituted jinja-style
+ *   (`{{key}}`; unmatched tokens stay literal) and ALL vars appended as
+ *   trailing `[trigger script vars]` metadata;
+ * - any failure (runtime error, unparseable output, schema-violating
+ *   return) fails CLOSED: failed fire, named error in the audit, no
+ *   LLM call;
+ * - a script trigger with NO prompt never calls the LLM at all.
+ *
+ * Routine targets only — rejected (400) alongside workflowId.
+ */
+export interface TriggerScript {
+  /** Runtime: "python" or "node" (the workflow script-node runtimes). */
+  language: 'python' | 'node';
+  /** The inline handler source (≤ 64 KiB), not a path. */
+  handler: string;
+}
+
 export interface Trigger {
   id: string;
   name: string;
@@ -60,6 +84,8 @@ export interface Trigger {
   workflowId?: string;
   prompt?: string;
   agent?: string;
+  /** Inline gate script — see {@link TriggerScript}. Absent = none. */
+  script?: TriggerScript;
   scriptPath?: string;
   scriptArgs?: string[];
   scriptEnv?: unknown;
@@ -127,6 +153,8 @@ export interface TriggerCreateInput {
   workflowId?: string;
   prompt?: string;
   agent?: string;
+  /** Inline gate script (#1812) — see {@link TriggerScript}. Routine mode only. */
+  script?: TriggerScript;
   scriptPath?: string;
   scriptArgs?: string[];
   scriptEnv?: unknown;
@@ -151,6 +179,12 @@ export interface TriggerUpdateInput {
   workflowId?: string;
   prompt?: string;
   agent?: string;
+  /**
+   * Patch the inline gate script (#1812): an omitted key keeps the
+   * stored script, `null` clears it back to no-script, an object
+   * replaces it. See {@link TriggerScript}.
+   */
+  script?: TriggerScript | null;
   scriptPath?: string;
   scriptArgs?: string[];
   scriptEnv?: unknown;

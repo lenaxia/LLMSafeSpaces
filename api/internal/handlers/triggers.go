@@ -94,6 +94,33 @@ func hasCreateOnlyTargetKey(raw []byte) bool {
 	return false
 }
 
+// parseTriggerScriptPatch resolves the #1812 script key's
+// presence-discrimination on the update DTO's RawMessage field:
+// nil (absent key) keeps the stored script — (nil, false); the JSON
+// literal null clears it — (zero script, true); a JSON object replaces
+// it — (parsed script, true). A present-but-malformed value is an
+// error naming the expected shape. An object carrying NEITHER
+// recognized field (empty `{}`, or only misspelled keys — the decoder
+// ignores unknown keys) is rejected rather than silently erasing the
+// stored script (r2 review Finding 2): a patch that binds nothing must
+// not answer 200.
+func parseTriggerScriptPatch(raw json.RawMessage) (*wf.TriggerScript, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return &wf.TriggerScript{}, true, nil
+	}
+	var script wf.TriggerScript
+	if err := json.Unmarshal(raw, &script); err != nil {
+		return nil, true, fmt.Errorf("script must be an object {language: \"python\"|\"node\", handler: <inline source>} or null (clear) — got %s", string(raw))
+	}
+	if !script.Present() {
+		return nil, true, fmt.Errorf(`script object carries neither "language" nor "handler" (unknown keys are ignored by the decoder — check for misspellings); use null to clear the script or provide both fields`)
+	}
+	return &script, true, nil
+}
+
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
 	store        triggerStore
@@ -247,6 +274,27 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	if !types.ValidTriggerSourceType(req.SourceType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid source type"})
 		return
+	}
+
+	// #1812: the inline gate script is routine-only — it gates and
+	// templates a PROMPT leg, and its handler needs the routine's
+	// workspace sandbox to run in. A workflow target has no prompt and
+	// carries its own gating nodes (script/condition) in the DAG.
+	if req.Script.Present() && req.WorkflowID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; drop script or use workspaceId"})
+		return
+	}
+	if req.Script != nil && !req.Script.Present() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": `script object carries neither "language" nor "handler" (unknown keys are ignored by the decoder — check for misspellings); omit script entirely for a prompt-only trigger or provide both fields`})
+		return
+	}
+	if err := wf.ValidateTriggerScript(req.Script); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	scriptLang, scriptHandler := "", ""
+	if req.Script != nil {
+		scriptLang, scriptHandler = req.Script.Language, req.Script.Handler
 	}
 
 	memoryMode := req.MemoryMode
@@ -448,6 +496,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		InputFrom: inputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		ScriptLanguage: scriptLang, ScriptHandler: scriptHandler,
 		MemoryMode: memoryMode, MemoryMaxRuns: memoryMaxRuns,
 		CaptureMode: captureMode, PreserveSession: preserveSession,
 		AutoDisableAfter: autoDisable,
@@ -574,6 +623,62 @@ func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID, triggerID stri
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
 }
 
+// validateUpdateScriptConflict enforces the #1812 routine-only rule on
+// the POST-PATCH MERGED view: a patch that would leave a gate script on
+// a workflow-targeted trigger 400s, in either direction (scripting onto
+// a DAG target, or retargeting a scripted routine to a DAG). Extracted
+// from update() — the function exceeded the repo's gocyclo ceiling.
+func (h *TriggersHandler) validateUpdateScriptConflict(c *gin.Context, existing *wf.TriggerRow, scriptPatch *wf.TriggerScript, scriptKeyPresent bool, mergedWorkflowID string) bool {
+	mergedHasScript := existing != nil && (existing.ScriptLanguage != "" || existing.ScriptHandler != "")
+	if scriptKeyPresent {
+		mergedHasScript = scriptPatch.Present()
+	}
+	if mergedHasScript && mergedWorkflowID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "script requires a routine target — a workflow-mode trigger's DAG carries its own script/condition nodes; clear script (null) or drop the workflowId patch"})
+		return false
+	}
+	return true
+}
+
+// validateUpdateTargets carries the #1442 targetless guard and the
+// #1519/#1522 parent-id audit on the UPDATE view. Extracted verbatim
+// from update() — the function exceeded the repo's gocyclo ceiling.
+//
+// #1442: the post-patch row must keep an execution target. The 0059
+// V-matrix already rejected opted-in de-targeting patches (V1, the
+// specific message); anything still targetless here is a plain
+// de-targeting patch — the user-API route to a zombie tick, now a 400.
+//
+// #1519/#1522: a PATCHED target must resolve — nonexistent
+// workflowId/workspaceId patches previously reached the FK as an
+// opaque 500 ("failed to update trigger"). The workflowId half is
+// answered by the #1519 merged-view check inside the caller's mapping
+// block (every workflowId patch touches mapping, so that check always
+// runs first and additionally surfaces stored ghosts on de-opt
+// patches); this arm carries the workspaceId half via the existencer.
+// STORED targets outside mapping-touching patches stay FK-anchored and
+// untouched (a legacy row with a cross-owner workflowId remains
+// patchable for mitigation — the #1440 loud-fire zombie tolerates
+// enabled:false).
+func (h *TriggersHandler) validateUpdateTargets(c *gin.Context, req *types.UpdateTriggerRequest, targetlessAfterPatch bool) bool {
+	if targetlessAfterPatch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
+		return false
+	}
+	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return false
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return false
+		}
+	}
+	return true
+}
+
 // validateUpdateMapping runs the 0059 V7 wiring/mapping rules for
 // patches that touch the mapping surface. Extracted from update() —
 // the function exceeded the repo's gocyclo ceiling.
@@ -614,6 +719,19 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		return
 	}
 
+	// #1812: the script patch key is presence-discriminated on its
+	// RawMessage DTO field — absent (nil) keeps the stored script, the
+	// JSON literal null clears it, an object replaces it.
+	scriptPatch, scriptKeyPresent, serr := parseTriggerScriptPatch(req.Script)
+	if serr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": serr.Error()})
+		return
+	}
+	if serr := wf.ValidateTriggerScript(scriptPatch); serr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": serr.Error()})
+		return
+	}
+
 	upd := &wf.TriggerUpdate{
 		Name: req.Name, Description: req.Description, Enabled: req.Enabled,
 		SourceConfig: req.SourceConfig,
@@ -621,6 +739,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		InputFrom: req.InputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		Script:     scriptPatch,
 		MemoryMode: req.MemoryMode, MemoryMaxRuns: req.MemoryMaxRuns,
 		CaptureMode: req.CaptureMode, PreserveSession: req.PreserveSession,
 		AutoDisableAfter: req.AutoDisableAfter,
@@ -663,7 +782,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	targetlessAfterPatch := false
 	var existing *wf.TriggerRow
 	now := time.Now().UTC()
-	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget || touchesMemoryCapture {
+	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget || touchesMemoryCapture || scriptKeyPresent {
 		var err error
 		existing, err = h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 		if err != nil {
@@ -748,6 +867,15 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
+	// #1812: the inline gate script is routine-only (create-arm rule,
+	// enforced on the POST-PATCH MERGED view) — a patch that would leave
+	// a script on a workflow-targeted trigger 400s, in either direction:
+	// scripting onto a DAG target, or retargeting a scripted routine to
+	// a DAG.
+	if !h.validateUpdateScriptConflict(c, existing, scriptPatch, scriptKeyPresent, mergedWorkflowID) {
+		return
+	}
+
 	// Input mapping (0059 V7): only patches that touch workflowId, input,
 	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
 	// merged view. Patches that remove an opt-in (input → null, inputFrom →
@@ -778,36 +906,8 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	// #1442: the post-patch row must keep an execution target. The 0059
-	// V-matrix above already rejected opted-in de-targeting patches (V1,
-	// the specific message); anything still targetless here is a plain
-	// de-targeting patch — the user-API route to a zombie tick, now a 400.
-	if targetlessAfterPatch {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
+	if !h.validateUpdateTargets(c, &req, targetlessAfterPatch) {
 		return
-	}
-
-	// The parent-id audit on the UPDATE view (#1519/#1522): a PATCHED
-	// target must resolve — nonexistent workflowId/workspaceId patches
-	// previously reached the FK as an opaque 500 ("failed to update
-	// trigger"). The workflowId half is answered by the #1519 merged-view
-	// check inside the mapping block above (every workflowId patch
-	// touches mapping, so that check always runs first and additionally
-	// surfaces stored ghosts on de-opt patches); this arm carries the
-	// workspaceId half via the existencer. STORED targets outside
-	// mapping-touching patches stay FK-anchored and untouched (a legacy
-	// row with a cross-owner workflowId remains patchable for mitigation
-	// — the #1440 loud-fire zombie tolerates enabled:false).
-	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
-		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
-			return
-		}
-		if !exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
-			return
-		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
@@ -1041,6 +1141,9 @@ func triggerRowToResponse(r *wf.TriggerRow) types.TriggerResponse {
 		ConsecutiveFailures: r.ConsecutiveFailures, AutoDisableAfter: r.AutoDisableAfter,
 		LastFiredAt: r.LastFiredAt, NextFireAt: r.NextFireAt,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}
+	if r.ScriptLanguage != "" || r.ScriptHandler != "" {
+		resp.Script = &types.TriggerScript{Language: r.ScriptLanguage, Handler: r.ScriptHandler}
 	}
 	if r.OwnerID != "" && r.OwnerID != "_platform" {
 		resp.OwnerID = r.OwnerID

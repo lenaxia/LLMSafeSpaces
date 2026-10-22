@@ -11227,6 +11227,8 @@ components:
           type: string
         agent:
           type: string
+        script:
+          $ref: "#/components/schemas/TriggerScript"
         scriptPath:
           type: string
         scriptArgs:
@@ -11264,6 +11266,21 @@ components:
         updatedAt:
           type: string
           format: date-time
+    TriggerScript:
+      type: object
+      description: "Inline gate script (#1812): INLINE SOURCE, not a path pointer (that is the legacy scriptPath pre-script). Before each fire's LLM call the handler runs in the routine's target workspace (same sandbox as workflow script nodes) with the fire envelope as input; it must return {\"proceed\": <bool>, \"vars\": {<str>: <str>}}. proceed=false exits the fire with NO LLM call (the fire audit records status skipped with a {gate:{proceed,vars}} actionResult); proceed=true fires the prompt with each vars value substituted jinja-style ({{key}} — literal token replacement, unmatched tokens stay literal) and ALL vars appended as a trailing `[trigger script vars]` metadata block. Any script failure (runtime error, unparseable output, or a return not matching the schema — proceed must be a bool, vars values must be strings, keys must not start with \".\") fails CLOSED: status failed, the named error in the fire audit, no LLM call. A script-bearing trigger with NO prompt never calls the LLM at all (gate + side effects only). Routine targets only — rejected (400) on workflow-mode triggers, whose DAGs carry their own script/condition nodes."
+      required: [language, handler]
+      properties:
+        language:
+          type: string
+          enum: [python, node]
+          description: "Runtime for the inline source — the two workflow script-node runtimes."
+        handler:
+          type: string
+          description: "INLINE handler source defining handler(input) -> {\"proceed\": <bool>, \"vars\": {<str>: <str>}}. Receives the fire envelope ({source, received_at, headers?, body?}) as input. Not a path, not a command — the source itself (≤ 64 KiB)."
+      example:
+        language: python
+        handler: "def handler(input):\n    threshold = 5\n    open_items = 2  # e.g. read a state file in the workspace\n    if open_items >= threshold:\n        return {\"proceed\": True, \"vars\": {\"count\": str(open_items)}}\n    return {\"proceed\": False, \"vars\": {}}"
     TriggerCreateRequest:
       type: object
       required: [name, sourceType, sourceConfig]
@@ -11295,6 +11312,10 @@ components:
           type: string
         agent:
           type: string
+        script:
+          allOf:
+            - $ref: "#/components/schemas/TriggerScript"
+          description: "Inline gate script — optional; omit for a prompt-only trigger (unchanged legacy behavior). Routine targets only: rejected (400, self-teaching error) when workflowId is set. See TriggerScript for the {proceed, vars} gate semantics and jinja-style {{key}} substitution."
         scriptPath:
           type: string
         scriptArgs:
@@ -11354,6 +11375,10 @@ components:
           type: string
         agent:
           type: string
+        script:
+          allOf:
+            - $ref: "#/components/schemas/TriggerScript"
+          description: "Key-presence discriminated: an ABSENT key keeps the stored gate script; the JSON literal `null` CLEARS it back to no-script; an object REPLACES it (validated: language ∈ {python, node}, handler non-empty inline source ≤ 64 KiB — a partial object is a 400 naming the missing field). Patches that would leave a script on a workflow-targeted trigger (script onto a DAG target, or workflowId onto a scripted routine) are rejected (400) on the post-patch merged view."
         scriptPath:
           type: string
         scriptArgs:
@@ -11395,6 +11420,7 @@ components:
           enum: [run_workflow, routine]
         actionResult:
           type: object
+          description: "Pre-execution action payload. Script-gated fires (#1812) carry the gate outcome here — {gate: {proceed: bool, vars: {...}}} on open/close, or {gate: {proceed: false, error: cause}} when the gate script failed closed — written BEFORE the agent leg so every gated fire self-explains."
         result:
           type: object
           description: Execution outcome — the routine failure cause on error, or the captured agent output under captureMode full. Distinct from actionResult (the pre-execution action payload).

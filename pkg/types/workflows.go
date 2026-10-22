@@ -190,6 +190,29 @@ func ValidTriggerSourceType(t string) bool {
 	return false
 }
 
+// TriggerScript is a trigger's inline gate script (#1812): workflow
+// script-node parity — a language plus INLINE handler source defining
+// handler(input) -> {"proceed": bool, "vars": {str: str}} — never a
+// path/pointer to an external script (that is the legacy scriptPath
+// pre-script). proceed=false exits the fire with NO LLM call; true
+// fires the prompt with jinja-style {{key}} substitution from vars and
+// a trailing all-vars metadata block. Zero value = no script.
+type TriggerScript struct {
+	// Language is the runtime: "python" or "node" (the two workflow
+	// script-node runtimes).
+	Language string `json:"language"`
+	// Handler is the inline source. It runs in the routine's target
+	// workspace (same sandbox as workflow script nodes), receives the
+	// fire envelope as input, and returns the gate decision.
+	Handler string `json:"handler"`
+}
+
+// Present reports whether the script names any script at all (either
+// field set). The zero value is the no-script state.
+func (s *TriggerScript) Present() bool {
+	return s != nil && (s.Language != "" || s.Handler != "")
+}
+
 // ValidTriggerInputFrom reports whether f is a supported trigger input
 // source (design 0059 D1).
 func ValidTriggerInputFrom(f string) bool {
@@ -352,31 +375,36 @@ type UpdateWorkflowRequest struct {
 
 // TriggerResponse is the API response shape for a trigger.
 type TriggerResponse struct {
-	ID                  string          `json:"id"`
-	OwnerType           string          `json:"ownerType"`
-	OwnerID             string          `json:"ownerId,omitempty"`
-	Name                string          `json:"name"`
-	Description         string          `json:"description,omitempty"`
-	Enabled             bool            `json:"enabled"`
-	SourceType          string          `json:"sourceType"`
-	SourceConfig        json.RawMessage `json:"sourceConfig"`
-	WorkspaceID         string          `json:"workspaceId,omitempty"`
-	WorkflowID          string          `json:"workflowId,omitempty"`
-	Prompt              string          `json:"prompt,omitempty"`
-	Agent               string          `json:"agent,omitempty"`
-	ScriptPath          string          `json:"scriptPath,omitempty"`
-	ScriptArgs          []string        `json:"scriptArgs,omitempty"`
-	ScriptEnv           json.RawMessage `json:"scriptEnv,omitempty"`
-	MemoryMode          string          `json:"memoryMode,omitempty"`
-	MemoryMaxRuns       int             `json:"memoryMaxRuns,omitempty"`
-	CaptureMode         string          `json:"captureMode,omitempty"`
-	PreserveSession     string          `json:"preserveSession,omitempty"`
-	ConsecutiveFailures int             `json:"consecutiveFailures"`
-	AutoDisableAfter    int             `json:"autoDisableAfter"`
-	LastFiredAt         *time.Time      `json:"lastFiredAt,omitempty"`
-	NextFireAt          *time.Time      `json:"nextFireAt,omitempty"`
-	CreatedAt           time.Time       `json:"createdAt"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
+	ID           string          `json:"id"`
+	OwnerType    string          `json:"ownerType"`
+	OwnerID      string          `json:"ownerId,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Enabled      bool            `json:"enabled"`
+	SourceType   string          `json:"sourceType"`
+	SourceConfig json.RawMessage `json:"sourceConfig"`
+	WorkspaceID  string          `json:"workspaceId,omitempty"`
+	WorkflowID   string          `json:"workflowId,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Agent        string          `json:"agent,omitempty"`
+	ScriptPath   string          `json:"scriptPath,omitempty"`
+	ScriptArgs   []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv    json.RawMessage `json:"scriptEnv,omitempty"`
+	// Script is the #1812 inline gate script (nil/absent = none). It is
+	// INLINE SOURCE — language + handler defining handler(input) ->
+	// {"proceed": bool, "vars": {str: str}} — never a path pointer (that
+	// is the separate, legacy scriptPath pre-script).
+	Script              *TriggerScript `json:"script,omitempty"`
+	MemoryMode          string         `json:"memoryMode,omitempty"`
+	MemoryMaxRuns       int            `json:"memoryMaxRuns,omitempty"`
+	CaptureMode         string         `json:"captureMode,omitempty"`
+	PreserveSession     string         `json:"preserveSession,omitempty"`
+	ConsecutiveFailures int            `json:"consecutiveFailures"`
+	AutoDisableAfter    int            `json:"autoDisableAfter"`
+	LastFiredAt         *time.Time     `json:"lastFiredAt,omitempty"`
+	NextFireAt          *time.Time     `json:"nextFireAt,omitempty"`
+	CreatedAt           time.Time      `json:"createdAt"`
+	UpdatedAt           time.Time      `json:"updatedAt"`
 	// InputFrom selects the fired run's input source (0059); always set in
 	// responses — legacy rows read as "envelope" via the column default.
 	InputFrom string          `json:"inputFrom"`
@@ -408,11 +436,18 @@ type CreateTriggerRequest struct {
 	ScriptPath        string          `json:"scriptPath,omitempty"`
 	ScriptArgs        []string        `json:"scriptArgs,omitempty"`
 	ScriptEnv         json.RawMessage `json:"scriptEnv,omitempty"`
-	MemoryMode        string          `json:"memoryMode,omitempty"`
-	MemoryMaxRuns     *int            `json:"memoryMaxRuns,omitempty"`
-	CaptureMode       string          `json:"captureMode,omitempty"`
-	PreserveSession   string          `json:"preserveSession,omitempty"`
-	AutoDisableAfter  *int            `json:"autoDisableAfter,omitempty"`
+	// Script is the #1812 inline gate script (absent = none): language
+	// + handler source defining handler(input) -> {"proceed": bool,
+	// "vars": {str: str}}. proceed=false exits the fire with NO LLM
+	// call; true fires the prompt with jinja-style {{key}} substitution
+	// from vars plus a trailing all-vars metadata block. Failures are
+	// fail-closed. Routine targets only.
+	Script           *TriggerScript `json:"script,omitempty"`
+	MemoryMode       string         `json:"memoryMode,omitempty"`
+	MemoryMaxRuns    *int           `json:"memoryMaxRuns,omitempty"`
+	CaptureMode      string         `json:"captureMode,omitempty"`
+	PreserveSession  string         `json:"preserveSession,omitempty"`
+	AutoDisableAfter *int           `json:"autoDisableAfter,omitempty"`
 	// Input mapping (0059): InputFrom selects what a fired run's input is
 	// (envelope default | body | mapped); Input is the optional static
 	// input document (DAG-mode only — V1). The JSON literal null means
@@ -428,17 +463,21 @@ type CreateTriggerRequest struct {
 // UpdateTriggerRequest supports partial update. Pointer fields: nil = keep existing.
 // source_type is NOT mutable after create (defines the trigger's identity).
 type UpdateTriggerRequest struct {
-	Name             *string         `json:"name,omitempty"`
-	Description      *string         `json:"description,omitempty"`
-	Enabled          *bool           `json:"enabled,omitempty"`
-	SourceConfig     json.RawMessage `json:"sourceConfig,omitempty"`
-	WorkspaceID      *string         `json:"workspaceId,omitempty"`
-	WorkflowID       *string         `json:"workflowId,omitempty"`
-	Prompt           *string         `json:"prompt,omitempty"`
-	Agent            *string         `json:"agent,omitempty"`
-	ScriptPath       *string         `json:"scriptPath,omitempty"`
-	ScriptArgs       []string        `json:"scriptArgs,omitempty"`
-	ScriptEnv        json.RawMessage `json:"scriptEnv,omitempty"`
+	Name         *string         `json:"name,omitempty"`
+	Description  *string         `json:"description,omitempty"`
+	Enabled      *bool           `json:"enabled,omitempty"`
+	SourceConfig json.RawMessage `json:"sourceConfig,omitempty"`
+	WorkspaceID  *string         `json:"workspaceId,omitempty"`
+	WorkflowID   *string         `json:"workflowId,omitempty"`
+	Prompt       *string         `json:"prompt,omitempty"`
+	Agent        *string         `json:"agent,omitempty"`
+	ScriptPath   *string         `json:"scriptPath,omitempty"`
+	ScriptArgs   []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv    json.RawMessage `json:"scriptEnv,omitempty"`
+	// Script (#1812) is key-presence discriminated: an ABSENT key keeps
+	// the stored inline gate script; the JSON literal null CLEARS it
+	// back to no-script; an object {language, handler} REPLACES it.
+	Script           json.RawMessage `json:"script,omitempty"`
 	MemoryMode       *string         `json:"memoryMode,omitempty"`
 	MemoryMaxRuns    *int            `json:"memoryMaxRuns,omitempty"`
 	CaptureMode      *string         `json:"captureMode,omitempty"`
