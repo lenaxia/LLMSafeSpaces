@@ -235,6 +235,11 @@ var boardParityMatrix = []parityRow{
 		agentTool: "board_heartbeat"},
 	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
 		agentTool: "board_report_throttle"},
+	// #1847 item 5: the prior-claimant recovery mint — worker-only like
+	// its siblings (external actors hold no claim tokens; no REST
+	// surface delivers it).
+	{action: "reclaim_task", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
+		agentTool: "board_reclaim"},
 	// Engine-internal since R9 — absent on ALL surfaces, permanently.
 	// The agent surface's absence is enforced at BOTH tiers: the seam
 	// route table (TestBoardParity_AgentColumn) and the agentd registry
@@ -436,6 +441,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/:id/resume",
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
+		"POST /internal/v1/automation/board/tasks/reclaim",
 		"POST /internal/v1/automation/board/tasks/throttle",
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
@@ -618,7 +624,7 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 	// declared-asymmetric rows absent with none.
 	for _, row := range boardParityMatrix {
 		switch row.action {
-		case "heartbeat", "report_throttle":
+		case "heartbeat", "report_throttle", "reclaim_task":
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: worker-only action — external actors hold no claim tokens (§4.3b)", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)

@@ -537,7 +537,7 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{}},
 		},
 		{
-			Name: "board_heartbeat",
+			Name:        "board_heartbeat",
 			Description: "OPTIONAL manual lease override (#1847): your claim's liveness is PLATFORM-DERIVED — an open turn or recent observed activity holds the lease automatically; you do NOT need to heartbeat during normal work, including long silent tool calls. Use this ONLY to extend the lease during deliberate quiet (e.g. a planned pause while you still hold the claim): pass observedProgressAt, your latest progress watermark (last message or tool activity, RFC 3339). The SERVER CLOCK is the authority — a future-stamped timestamp rejects (invalid_input); stamps clamp to server time. Elapsed time is not liveness: a heartbeat with no NEW evidence does NOT extend. Requires the claim token from your charter envelope. A 409 with code claim_token means the claim is no longer yours (lease lapsed past the appeal window, the task reached a terminal stage, or already moved) — STOP working the task and re-read the task with board_read; retrying the heartbeat cannot help.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
@@ -545,6 +545,16 @@ func mcpToolCatalog() []mcpTool {
 				"shortId":            map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":             map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
+		},
+		{
+			Name:        "board_reclaim",
+			Description: "Reclaim a task you previously held a claim on (#1847): if your claim lapsed (lease expiry past the appeal window) but you are still alive WITH your context, this re-arms the claim for YOU — attempts are NOT incremented (attempts counts context-loss events; yours was preserved) and the failure overlay clears. Pass priorClaimToken, the claim token from your charter envelope (live or lapsed — identity follows the token's assign history, never a self-declared session id). Guards: refused if the task holds a LIVE claim (409 claim_token), is pending_input (the human gate — resolve it on a manager surface), is terminal/in_review, or is paused. Typical flow: your board write returned 409 claim_token → board_read the task → if it shows backlog or a lapsed lease and you hold useful context, board_reclaim and continue; otherwise leave it for a fresh worker.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"priorClaimToken": map[string]any{"type": "string", "description": "The claim token from your charter envelope — the prior claim you hold context for (identity follows its assign history)"},
+				"requestId":       map[string]any{"type": "string", "description": "Optional idempotency key (UUID): a replay returns the original outcome"},
+				"shortId":         map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
+				"taskId":          map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
+			}, "required": []string{"priorClaimToken"}},
 		},
 		{
 			Name:        "board_report_throttle",
@@ -900,7 +910,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
 		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
-		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
+		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage", "board_reclaim",
 		"board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",

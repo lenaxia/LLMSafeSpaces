@@ -85,8 +85,8 @@ func (s *BoardSuite) TestKill_ReclaimTask_PriorClaimantReclaimsWithContext() {
 	s.False(lastFailed, "the overlay does not mark a context-preserving reclaim")
 	s.Require().NotNil(got)
 	s.Equal(assignee, got.Assignee, "the result names the re-armed session")
-	s.Equal(0, s.countTransitions(task.ID, board.StageBacklog)+s.countTransitions(task.ID, board.StageInProgress)-2,
-		"backlog→in_progress transition recorded (claim + reclaim)")
+	s.Equal(2, s.countTransitions(task.ID, board.StageInProgress),
+		"exactly two in_progress entries: the engine claim + the reclaim")
 }
 
 // A LIVE claimant blocks reclaim: the row is in_progress on an
@@ -156,7 +156,7 @@ func (s *BoardSuite) TestKill_ReclaimTask_TerminalRefused() {
 
 	c, assignee := s.claimAndAssign(ws)
 	_, err := s.svc.MoveStage(context.Background(), s.agent(assignee, c.ClaimToken), task.ID, "",
-		board.StageDone, "", "https://example.com/evidence")
+		board.StageDone, "https://example.com/ev-1", "")
 	s.Require().NoError(err)
 
 	_, err = s.svc.ReclaimTask(context.Background(), s.agent(assignee, ""), task.ID, "", c.ClaimToken, "")

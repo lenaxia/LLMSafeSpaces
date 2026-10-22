@@ -122,6 +122,12 @@ var WorkerSeamWireV2 = &WorkerSeamWireSet{
 			Body:   `{"claimToken":"tok-1","retryAfterSeconds":900,"shortId":"tsk-aaaa1111","workspaceID":"11111111-1111-1111-1111-111111111101"}`,
 		},
 		{
+			Tool:   "board_reclaim",
+			Method: "POST",
+			Path:   "/internal/v1/automation/board/tasks/reclaim",
+			Body:   `{"priorClaimToken":"tok-1","requestId":"req-2","shortId":"tsk-aaaa1111","workspaceID":"11111111-1111-1111-1111-111111111101"}`,
+		},
+		{
 			Tool:   "board_move_stage",
 			Method: "POST",
 			Path:   "/internal/v1/automation/board/tasks/move-stage",

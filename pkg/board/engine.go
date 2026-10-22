@@ -209,13 +209,17 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
 			return nil, err
 		}
+		// #1847 item 6: record the REASON (the lapse class) on the
+		// manual lever too — manager-serviceable by cause.
+		escalationReason := "attempts_exhausted"
+		_ = tx.QueryRow(ctx, `SELECT lapse_reason FROM tasks WHERE id=$1`, t.ID).Scan(&escalationReason)
 		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StagePendingInput, "",
 			Actor{Kind: ActorSystem, Surface: SurfaceReconciler}); err != nil {
 			return nil, err
 		}
 		evt, err := recordEventTx(ctx, tx, p.ID, engineEventID("escalate", t.ID, cur.Attempts), "escalate",
 			"task", t.ID, Actor{Kind: ActorSystem, Surface: "engine"},
-			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "exhausted": true})
+			map[string]any{"task_id": t.ID, "attempts": cur.Attempts, "exhausted": true, "reason": escalationReason})
 		if err != nil {
 			return nil, err
 		}
@@ -341,21 +345,29 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		// is pending_origin='escalated' + attempts at cap (+ the
 		// exhausted=true audit event below).
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-				pending_origin='escalated'
-			WHERE id=$1 AND stage='backlog'`, taskID)
+		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
+			pending_origin='escalated'
+		WHERE id=$1 AND stage='backlog'`, taskID)
 		if err != nil {
 			return nil, "", "", err
 		}
 		if tag.RowsAffected() == 0 {
 			return nil, "project_empty", projectID, nil // raced away: retry
 		}
+		// #1847 item 6: the escalation records a REASON — the recorded
+		// lapse class distinguishes death/no-show (no_assignee/
+		// session_unknown: nothing ever observed) from treadmill
+		// artifacts (silent_beyond_grace/appeal_ignored/stale_liveness:
+		// a live-ish worker lost to mechanics) so the manager can
+		// service the row by cause.
+		escalationReason := "attempts_exhausted"
+		_ = tx.QueryRow(ctx, `SELECT lapse_reason FROM tasks WHERE id=$1`, taskID).Scan(&escalationReason)
 		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StagePendingInput, "", sysActor); err != nil {
 			return nil, "", "", err
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
 			"task", taskID, sysActor,
-			map[string]any{"task_id": taskID, "attempts": attempts, "exhausted": true})
+			map[string]any{"task_id": taskID, "attempts": attempts, "exhausted": true, "reason": escalationReason})
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -476,7 +488,16 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	if sessionID == "" {
 		return
 	}
-	tag, err := s.q().Exec(ctx, `
+	// The guarded stamp + the #1847 claim-history event land in ONE
+	// transaction: the assign history (claim_assign: which session
+	// holds which token's context) never disagrees with the row.
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET assignee_session=$2,
 			lease_expires_at=now()+make_interval(secs=>$4::float8)
 		WHERE id=$1 AND claim_token=$3 AND stage='in_progress'`,
@@ -485,16 +506,31 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
 		return
 	}
-	if tag.RowsAffected() > 0 {
-		claim.Assignee = sessionID
+	if tag.RowsAffected() == 0 {
+		// The guarded stamp lost the race (deleted, lapsed, or re-claimed
+		// while the spawn was in flight): the just-spawned session holds a
+		// dead charter — abort it (the merged design's spawn-stamp guard; the
+		// same interrupt seam as delete/reclaim).
+		if s.aborter != nil {
+			_ = s.aborter(ctx, claim.TaskID, sessionID)
+		}
 		return
 	}
-	// The guarded stamp lost the race (deleted, lapsed, or re-claimed
-	// while the spawn was in flight): the just-spawned session holds a
-	// dead charter — abort it (the merged design's spawn-stamp guard; the
-	// same interrupt seam as delete/reclaim).
-	if s.aborter != nil {
-		_ = s.aborter(ctx, claim.TaskID, sessionID)
+	// #1847 item 5: the claim-history row — board_reclaim's prior-
+	// claimant check reads exactly this (identity follows the charter
+	// token; no LLM-declared session id exists on any path).
+	evt, err := recordEventTx(ctx, tx, claim.ProjectID,
+		"engine:assign:"+claim.TaskID+":"+claim.ClaimToken, "claim_assign", "task", claim.TaskID,
+		Actor{Kind: ActorSystem, Surface: "engine"},
+		map[string]any{"task_id": claim.TaskID, "session": sessionID, "token": claim.ClaimToken})
+	if err != nil {
+		slog.WarnContext(ctx, "board: assign history event failed", "task_id", claim.TaskID, "err", err.Error())
+		return
+	}
+	claim.Assignee = sessionID
+	if err := s.commitPublishing(ctx, tx, evt); err != nil {
+		slog.WarnContext(ctx, "board: assign history commit failed", "task_id", claim.TaskID, "err", err.Error())
+		return
 	}
 }
 

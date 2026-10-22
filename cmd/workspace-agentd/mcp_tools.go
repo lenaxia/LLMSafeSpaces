@@ -1670,6 +1670,11 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 			return "", err
 		}
 		res, err = client.BoardReportThrottle(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+	case "board_reclaim":
+		if err := requireBoardPriorToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardReclaimTask(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 	case "board_move_stage":
 		if err := requireBoardClaimToken(name, body); err != nil {
 			return "", err
@@ -1759,6 +1764,16 @@ func requireBoardClaimToken(name string, body map[string]any) error {
 	tok, _ := boardToolArgs(body)["claimToken"].(string)
 	if strings.TrimSpace(tok) == "" {
 		return fmt.Errorf("%s failed: claimToken is required — the in-flight guard from your charter envelope (reads need no token; every stage/lease write does)", name)
+	}
+	return nil
+}
+
+// requireBoardPriorToken is board_reclaim's arg guard: the PRIOR claim
+// token from the charter envelope (identity follows its assign history).
+func requireBoardPriorToken(name string, body map[string]any) error {
+	tok, _ := boardToolArgs(body)["priorClaimToken"].(string)
+	if strings.TrimSpace(tok) == "" {
+		return fmt.Errorf("%s failed: priorClaimToken is required — the claim token from your charter envelope (the prior claim you hold context for)", name)
 	}
 	return nil
 }

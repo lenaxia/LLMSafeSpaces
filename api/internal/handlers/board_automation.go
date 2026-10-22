@@ -35,6 +35,7 @@ type boardService interface {
 	Heartbeat(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (board.HeartbeatResult, error)
 	ReportThrottle(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
+	ReclaimTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, priorClaimToken, requestID string) (*board.Claim, error)
 	GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*board.Task, error)
 }
 
@@ -85,6 +86,34 @@ func (h *PodAutomationHandler) BoardHeartbeat(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"extended": res.Extended, "leaseExpiresAt": res.LeaseExpiresAt, "lastProgressAt": res.LastProgressAt})
+}
+
+// BoardReclaimTask is board_reclaim (#1847 spec item 5): the prior
+// claimant's recovery mint. The worker presents the claim token from
+// its charter envelope (live or lapsed); the claim-history check names
+// the context-holding session — attempts unchanged (no context-loss
+// event), the #1813 overlay cleared.
+func (h *PodAutomationHandler) BoardReclaimTask(c *gin.Context) {
+	raw, workspaceID, ownerID, ok := h.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TaskID          string `json:"taskId"`
+		ShortID         string `json:"shortId"`
+		PriorClaimToken string `json:"priorClaimToken"`
+		RequestID       string `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	claim, err := h.board.ReclaimTask(c.Request.Context(), h.boardActor(ownerID, workspaceID, ""),
+		req.TaskID, req.ShortID, req.PriorClaimToken, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, claim)
 }
 
 // BoardReportThrottle is board_report_throttle: the 429 path — requeue

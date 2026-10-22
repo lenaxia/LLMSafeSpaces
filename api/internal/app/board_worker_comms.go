@@ -50,10 +50,12 @@ func resumeDirectiveText(shortID string) string {
 // (queued behind the in-flight turn, never a mid-generation cut).
 func leaseAppealDirectiveText(shortID string, window time.Duration) string {
 	return fmt.Sprintf("BOARD LEASE APPEAL: the lease on your claimed task %s lapsed without observed "+
-		"liveness. If you are still working it (or hold useful context), act now: keep working or make "+
-		"any board write — observed liveness re-arms the lease. If you are done or abandoning, do "+
-		"nothing. Without an observed response within %s the task returns to the ready set for a "+
-		"fresh worker.", shortID, window.Round(time.Second))
+		"liveness. If you are still working it (or hold useful context), act now: keep working, make any board "+
+		"write, or call board_reclaim with the claim token from your charter envelope — observed liveness re-arms "+
+		"the lease and board_reclaim restores the claim with your context intact (attempts unchanged). If you are "+
+		"done or abandoning, do nothing. Without an observed response within %s the task returns to the ready set "+
+		"for a fresh worker (and board_reclaim remains your recovery path while the context is worth it).",
+		shortID, window.Round(time.Second))
 }
 
 // boardTaskScope resolves (owner, target workspace) for a task by id or

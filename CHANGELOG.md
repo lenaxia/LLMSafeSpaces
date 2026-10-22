@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: board_reclaim, escalation reasons, lease-keeper decommission (issue #1847, spec items 5-7)
+
+- **`board_reclaim` — the prior claimant's recovery mint** (worker
+  tool, agent seam): a lapsed-then-alive claimant reclaims WITH
+  CONTEXT — attempts unchanged (attempts counts context-loss events; a
+  same-session reclaim lost none) and the #1813 failure overlay
+  clears (the treadmill-artifact-vs-real-failure distinction the
+  issue demands). Identity follows the claim token from the worker's
+  charter envelope: the spawn-stamp now writes a `claim_assign` audit
+  event (which session holds which token's context) and the reclaim
+  resolves the assignee from that history — no LLM-declared session
+  id exists anywhere on the path. Guards: prior token must be in the
+  task's assign history; no live claimant (backlog, or in_progress
+  with a lapsed lease); pending_input is the human gate; terminal and
+  in_review rows refuse (RC5 / the bounce owns re-entry); paused rows
+  refuse the mint. Wire: `POST /internal/v1/automation/board/tasks/
+  reclaim`, appended to the unreleased `WorkerSeamWireV2`.
+- **Escalations record a REASON** (spec item 6): the attempts-cap
+  escalation's audit event now carries the recorded lapse class
+  (`no_assignee`/`session_unknown` = death/no-show vs
+  `silent_beyond_grace`/`stale_liveness`/`appeal_ignored` = treadmill
+  artifacts; `attempts_exhausted` fallback) — and `lapse_reason`
+  rides the task read, so a manager can service pending_input rows by
+  cause instead of guessing. Both escalation sites (engine claim,
+  task_start) record it.
+- **The lane's lease-keeper cron is DECOMMISSIONABLE** (spec item 7):
+  trigger `4c0629c5` on workspace `b150f355` renewed lapsed claims
+  whose `updated_at` sat near spawn — the corpse-renewal hole the
+  #1847 evidence table documents (it kept a stillborn spawn's claim
+  alive all night). Under platform-derived liveness the hole is moot
+  by construction: a stillborn (never-started, never-busy) session is
+  the none-class and its lapsed claim reclaims immediately, while
+  genuinely-alive workers hold leases through open turns and activity
+  grace. The cron can be deleted at the owner's convenience; nothing
+  in the platform depends on it (this change adds no deletion — the
+  trigger lives in workspace state the platform does not modify).
+
 ### Changed — Task Board: platform-derived claim liveness (issue #1847, spec items 1-4)
 
 - **PRIMARY liveness is what the platform observes, not what a worker

@@ -119,11 +119,14 @@ func (s *BoardSuite) TestReads_TaskEventsWindow() {
 	assert.Equal(s.T(), other.ID, otherEvts[0].ItemID, "no cross-task bleed")
 
 	// Window: limit caps at the newest rows, ascending order preserved.
-	// FIFO by creation: the older seeded task (t) grants first.
+	// FIFO by creation: the older seeded task (t) grants first. The
+	// claim's spawn-stamp appends a claim_assign (the #1847 assign
+	// history) after the engine's claim row — the newest row is the
+	// assign event.
 	claim := s.claimOrFail(ws)
 	s.Require().Equal(t.ID, claim.TaskID)
 	evts, err := s.svc.TaskEvents(ctx, "", t.ShortID, 1)
 	s.Require().NoError(err)
 	require.Len(s.T(), evts, 1)
-	assert.Equal(s.T(), "claim", evts[0].Action, "limit=1 keeps the NEWEST row")
+	assert.Equal(s.T(), "claim_assign", evts[0].Action, "limit=1 keeps the NEWEST row (the spawn-stamp's assign history)")
 }

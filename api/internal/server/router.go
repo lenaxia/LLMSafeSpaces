@@ -1365,6 +1365,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
+		b.POST("/tasks/reclaim", h.BoardReclaimTask)
 
 		b.POST("/projects", h.BoardCreateProject)
 		b.PATCH("/projects/:id", h.BoardUpdateProject)

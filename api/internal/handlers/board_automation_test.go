@@ -85,6 +85,13 @@ func (f *fakeBoardService) RecordSessionLiveness(_ context.Context, workspaceID 
 	return len(reports), nil
 }
 
+func (f *fakeBoardService) ReclaimTask(_ context.Context, actor board.Actor, taskID, shortIDOrID, priorClaimToken, _ string) (*board.Claim, error) {
+	f.calls["reclaim"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
+	_ = priorClaimToken
+	return &board.Claim{TaskID: taskID, ShortID: shortIDOrID, ClaimToken: "fresh-1", Assignee: "sess-tsk-aaaa1111"}, nil
+}
+
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
 // workspace lookup — the auth chain is exercised, not stubbed). #1747:

@@ -1158,6 +1158,13 @@ func (c *Client) BoardResourcePressure(ctx context.Context, saToken, workspaceID
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/resource-pressure", body)
 }
 
+// BoardReclaimTask is the worker's board_reclaim call (#1847 item 5:
+// the prior claimant's recovery mint — the charter token identifies
+// the context-holding session).
+func (c *Client) BoardReclaimTask(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/reclaim", body)
+}
+
 // BoardSessionLiveness pushes the pod's per-session liveness set
 // (#1847 platform-derived claim liveness: busy/started/activity — the
 // observability the RC1 sweep classifies lapsed claims against).

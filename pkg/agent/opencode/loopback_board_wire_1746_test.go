@@ -83,6 +83,9 @@ func emitWorkerSeam(t *testing.T, c *Client) {
 	_, err = c.BoardReportThrottle(ctx, sa, ws, json.RawMessage(
 		`{"shortId":"tsk-aaaa1111","claimToken":"tok-1","retryAfterSeconds":900}`))
 	require.NoError(t, err, "board_report_throttle")
+	_, err = c.BoardReclaimTask(ctx, sa, ws, json.RawMessage(
+		`{"shortId":"tsk-aaaa1111","priorClaimToken":"tok-1","requestId":"req-2"}`))
+	require.NoError(t, err, "board_reclaim")
 	_, err = c.BoardMoveStage(ctx, sa, ws, json.RawMessage(
 		`{"shortId":"tsk-aaaa1111","claimToken":"tok-1","toStage":"in_review","requestId":"req-1"}`))
 	require.NoError(t, err, "board_move_stage")

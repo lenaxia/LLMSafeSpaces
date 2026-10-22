@@ -1270,6 +1270,20 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		}
 	})
 
+	t.Run("board_reclaim guidance", func(t *testing.T) {
+		d, ok := descs["board_reclaim"]
+		require.True(t, ok, "board_reclaim in tools/list")
+		for _, want := range []string{
+			"attempts are NOT incremented", // #1847: attempts counts context-loss events
+			"priorClaimToken",              // identity follows the charter token's assign history
+			"409 claim_token",              // a LIVE claim refuses — the holder keeps it
+			"pending_input",                // the human gate is named
+			"board_read",                   // the flow: 409 → read → reclaim-or-leave
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("board_report_throttle guidance", func(t *testing.T) {
 		d, ok := descs["board_report_throttle"]
 		require.True(t, ok, "board_report_throttle in tools/list")
