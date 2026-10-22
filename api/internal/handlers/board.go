@@ -69,6 +69,11 @@ type boardManager interface {
 	RemoveDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
 
 	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
+
+	GetGlobalBoardConfig(ctx context.Context) (*board.BoardConfig, error)
+	SetGlobalBoardConfig(ctx context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error)
+	GetProjectBoardConfig(ctx context.Context, projectID, shortIDOrID string) (*board.ProjectBoardConfig, error)
+	SetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in *board.BoardConfigOverride) (*board.ProjectBoardConfig, error)
 }
 
 // BoardHandler renders the owner's board over REST (user-level, R7).

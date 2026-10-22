@@ -402,9 +402,22 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p.POST("/:id/epics", h.CreateEpic)
 	p.POST("/:id/import-plan", h.ImportPlan)
 	p.GET("/:id/epics", h.ListProjectEpics)
+	p.GET("/:id/config", h.GetProjectBoardConfig)
+	p.PUT("/:id/config", h.SetProjectBoardConfig)
 	bb := g.Group("/board")
 	bb.GET("/search", h.BoardSearch)
 	bb.GET("/health", h.BoardHealth)
+	// #1832 item 6: the admin-scoped global config routes (the router
+	// mounts these under AuthMiddleware + AdminGuard; the fixture
+	// stands in the userID middleware only — handler pins, not
+	// middleware pins).
+	ag := r.Group("/api/v1/admin/board")
+	ag.Use(func(c *gin.Context) {
+		c.Set("userID", "admin-1")
+		c.Next()
+	})
+	ag.GET("/config", h.GetGlobalBoardConfig)
+	ag.PUT("/config", h.SetGlobalBoardConfig)
 	e := g.Group("/epics")
 	e.GET("/:id", h.GetEpic)
 	e.PATCH("/:id", h.UpdateEpic)

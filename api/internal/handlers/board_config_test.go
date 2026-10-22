@@ -34,8 +34,9 @@ func (f *fakeBoardManager) GetGlobalBoardConfig(_ context.Context) (*board.Board
 	return &cfg, nil
 }
 
-func (f *fakeBoardManager) SetGlobalBoardConfig(_ context.Context, in *board.BoardConfigOverride) (*board.BoardConfig, error) {
+func (f *fakeBoardManager) SetGlobalBoardConfig(_ context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error) {
 	f.call("set_global_board_config")
+	f.lastActor = actor
 	f.lastGlobalConfigSet = in
 	if err := f.errFor["set_global_board_config"]; err != nil {
 		return nil, err

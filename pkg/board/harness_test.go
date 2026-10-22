@@ -231,7 +231,8 @@ func newBoardSuite(pool *pgxpool.Pool) *BoardSuite {
 func (s *BoardSuite) SetupTest() {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `
-		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects,
+			board_config_defaults, board_project_config_overrides
 		CASCADE
 	`)
 	s.Require().NoError(err)

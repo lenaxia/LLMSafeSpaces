@@ -36,8 +36,8 @@ func (s *BoardSuite) TestBoardConfig_GlobalRoundTrip() {
 	s.Equal(2, cfg.DefaultWorkerSlots)
 
 	// Partial write: one key set, two revert to (stay at) defaults.
-	set := board.BoardConfigOverride{ReviewColumn: board.ReviewColumnAuto}
-	cfg, err = s.svc.SetGlobalBoardConfig(ctx, &set)
+	set := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnAuto)}
+	cfg, err = s.svc.SetGlobalBoardConfig(ctx, s.owner(), &set)
 	s.Require().NoError(err)
 	s.Equal("auto", cfg.ReviewColumn)
 	s.False(cfg.AutoAssignReviewer)
@@ -49,14 +49,14 @@ func (s *BoardSuite) TestBoardConfig_GlobalRoundTrip() {
 	s.Equal("auto", cfg.ReviewColumn)
 
 	// Replace-write: absent keys revert (reviewColumn back to manual).
-	set = board.BoardConfigOverride{DefaultWorkerSlots: 9}
-	cfg, err = s.svc.SetGlobalBoardConfig(ctx, &set)
+	set = board.BoardConfigOverride{DefaultWorkerSlots: intVal(9)}
+	cfg, err = s.svc.SetGlobalBoardConfig(ctx, s.owner(), &set)
 	s.Require().NoError(err)
 	s.Equal("manual", cfg.ReviewColumn, "absent key on replace reverts to the code default")
 	s.Equal(9, cfg.DefaultWorkerSlots)
 
 	// Empty map clears every override.
-	cfg, err = s.svc.SetGlobalBoardConfig(ctx, &board.BoardConfigOverride{})
+	cfg, err = s.svc.SetGlobalBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{})
 	s.Require().NoError(err)
 	s.Equal(board.DefaultBoardConfig(), *cfg)
 }
@@ -71,8 +71,8 @@ func (s *BoardSuite) TestBoardConfig_ProjectOverrideMerge() {
 	p := s.seedProject(ws, 0)
 
 	// Establish a non-default global so inheritance is observable.
-	_, err := s.svc.SetGlobalBoardConfig(ctx, &board.BoardConfigOverride{
-		ReviewColumn:       board.ReviewColumnOff,
+	_, err := s.svc.SetGlobalBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
+		ReviewColumn:       strVal(board.ReviewColumnOff),
 		AutoAssignReviewer: boolVal(true),
 	})
 	s.Require().NoError(err)
@@ -102,8 +102,8 @@ func (s *BoardSuite) TestBoardConfig_ProjectOverrideMerge() {
 	// Inheritance tracks a LATER global change (read-time merge, not a
 	// materialized copy): flipping the global slots default re-flips
 	// the project's effective value with no project write.
-	_, err = s.svc.SetGlobalBoardConfig(ctx, &board.BoardConfigOverride{
-		ReviewColumn:       board.ReviewColumnOff,
+	_, err = s.svc.SetGlobalBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
+		ReviewColumn:       strVal(board.ReviewColumnOff),
 		AutoAssignReviewer: boolVal(true),
 		DefaultWorkerSlots: intVal(6),
 	})
@@ -131,7 +131,7 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 
 	// Service-side belt: malformed values reject even when a caller
 	// bypassed the adapter's decode.
-	_, err := s.svc.SetGlobalBoardConfig(ctx, &board.BoardConfigOverride{DefaultWorkerSlots: intVal(0)})
+	_, err := s.svc.SetGlobalBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{DefaultWorkerSlots: intVal(0)})
 	s.Require().Error(err)
 	guard, ok := err.(*board.GuardError)
 	s.Require().True(ok, "got %T", err)
@@ -149,13 +149,14 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 	s.Require().NoError(err)
 	s.Equal("manual", pc.Effective.ReviewColumn)
 
-	// R7: a foreign actor's write rejects with authz.
+	// R7: a foreign actor's write resolves the scoped 404 (the
+	// UpdateProject discipline — foreign rows are plain 404s, never
+	// disclosed, never an authz disclosure).
 	foreign := board.Actor{Kind: board.ActorUser, UserID: "board-foreign-user", Surface: board.SurfaceREST}
 	_, err = s.svc.SetProjectBoardConfig(ctx, foreign, p.ID, "", &board.BoardConfigOverride{})
 	s.Require().Error(err)
-	guard, ok = err.(*board.GuardError)
+	_, ok = err.(*board.NotFoundError)
 	s.Require().True(ok, "got %T", err)
-	s.Equal(board.GuardAuthz, guard.Code)
 
 	// Unknown project resolves the 404 class.
 	_, err = s.svc.GetProjectBoardConfig(ctx, "prj-zzzzzzzz", "")

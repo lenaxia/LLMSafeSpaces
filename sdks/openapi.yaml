@@ -4536,6 +4536,62 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/projects/{id}/config:
+    get:
+      tags: [board]
+      summary: Get a project's board config (overrides + effective merged row)
+      description: |
+        #1832 item 6: renders the project's raw stored overrides plus
+        the effective config in one read. The effective row is merged
+        at READ time — a key the override map leaves unset inherits the
+        global default (and tracks later global changes); no
+        materialized copy exists.
+      operationId: getBoardProjectConfig
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      responses:
+        "200":
+          description: Project config (overrides + effective)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProjectConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+    put:
+      tags: [board]
+      summary: Replace a project's board config overrides
+      description: |
+        REPLACE-semantics write: send the FULL override map — absent
+        keys stop being overridden and revert to inheriting the global
+        default; `{}` clears every override. Unknown keys and malformed
+        values reject with 400 (invalid_input).
+      operationId: setBoardProjectConfig
+      parameters:
+        - $ref: "#/components/parameters/BoardProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardConfigOverride"
+      responses:
+        "200":
+          description: Updated project config (overrides + effective)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardProjectConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
   /me/projects/{id}/import-plan:
     post:
       tags: [board]
@@ -5241,6 +5297,54 @@ paths:
                 $ref: "#/components/schemas/BoardHealth"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /admin/board/config:
+    get:
+      tags: [board]
+      summary: Get the effective global board config defaults (admin)
+      description: |
+        #1832 item 6: the board-wide defaults — code defaults overlaid
+        with the stored global map (every key always present). Instance
+        scope, admin-guarded (the /admin/settings discipline).
+      operationId: getGlobalBoardConfig
+      responses:
+        "200":
+          description: Effective global board config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [board]
+      summary: Replace the global board config defaults (admin)
+      description: |
+        REPLACE-semantics write: send the FULL map — absent keys revert
+        to the code defaults; `{}` clears every override. Unknown keys
+        and malformed values reject with 400 (invalid_input). Per-project
+        overrides are unaffected (they win at read-time merge).
+      operationId: setGlobalBoardConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardConfigOverride"
+      responses:
+        "200":
+          description: New effective global board config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   # --- Org-scope workflows & triggers (Epic 64) ---
   /orgs/{id}/workflows:
     get:
@@ -12209,6 +12313,57 @@ components:
     # --- Task Board (design 0067, #1699). Row encoding is the engine's
     # canonical JSON (snake_case short_id — identical to the internal
     # automation seam's rendering; the parity matrix pins it). ---
+    BoardConfig:
+      type: object
+      description: |
+        #1832 item 6: the effective board config — every key always
+        present. Rendered for the global defaults (admin) and as the
+        per-project effective row (global overlaid with the project's
+        overrides, merged at read time).
+      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots]
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+          description: Whether the review column shows and who drives it; auto stores the preference only (review automation is a separate slice)
+        autoAssignReviewer:
+          type: boolean
+          description: Whether in_review auto-assigns a review claim (config-gated behavior ships separately)
+        defaultWorkerSlots:
+          type: integer
+          minimum: 1
+          description: Default worker slots for new projects (the platform default is 2)
+    BoardConfigOverride:
+      type: object
+      description: |
+        #1832 item 6: a PARTIAL config map (write payload and the raw
+        stored override row). Absent keys inherit — a set key wins at
+        read-time merge. Writes are REPLACE-semantics: send the full
+        set; `{}` clears every override. Unknown keys reject (400).
+      properties:
+        reviewColumn:
+          type: string
+          enum: [off, manual, auto]
+        autoAssignReviewer:
+          type: boolean
+        defaultWorkerSlots:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    BoardProjectConfig:
+      type: object
+      description: |
+        #1832 item 6: one project's config surfaces in a single read —
+        the raw stored overrides plus the effective merged row.
+      required: [project_id, overrides, effective]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        overrides:
+          $ref: "#/components/schemas/BoardConfigOverride"
+        effective:
+          $ref: "#/components/schemas/BoardConfig"
     BoardProject:
       type: object
       required: [id, short_id, user_id, name, worker_slots, tags, status, paused, created_at, updated_at]

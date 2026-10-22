@@ -2319,11 +2319,24 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		p.POST("/:id/epics", b.CreateEpic)
 		p.POST("/:id/import-plan", b.ImportPlan)
 		p.GET("/:id/epics", b.ListProjectEpics)
+		// #1832 item 6: per-project config overrides (overrides +
+		// effective merged config; REPLACE-semantics writes).
+		p.GET("/:id/config", b.GetProjectBoardConfig)
+		p.PUT("/:id/config", b.SetProjectBoardConfig)
 
 		bb := router.Group("/api/v1/me/board")
 		bb.Use(services.GetAuth().AuthMiddleware())
 		bb.GET("/search", b.BoardSearch)
 		bb.GET("/health", b.BoardHealth)
+
+		// #1832 item 6: board-wide config defaults are INSTANCE scope —
+		// admin-guarded (the /admin/settings discipline), still gated on
+		// the board engine being wired.
+		bc := router.Group("/api/v1/admin/board")
+		bc.Use(services.GetAuth().AuthMiddleware())
+		bc.Use(middleware.AdminGuard())
+		bc.GET("/config", b.GetGlobalBoardConfig)
+		bc.PUT("/config", b.SetGlobalBoardConfig)
 
 		e := router.Group("/api/v1/me/epics")
 		e.Use(services.GetAuth().AuthMiddleware())
