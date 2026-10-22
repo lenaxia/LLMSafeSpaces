@@ -186,6 +186,25 @@ func (b *UserEventBroker) Replay(userID string, lastID uint64) ([]ReplayEntry, b
 	return rb.sinceLocked(lastID)
 }
 
+// LastEventID returns the id of the most recent event published to the
+// user's stream (0 when nothing was published yet). #1821 piece 3: the
+// busy-snapshot flight stamps this as its cursor so clients can order
+// subsequent session.status deltas against the snapshot — a delta with
+// id ≤ cursor is already reflected in (or superseded by) the snapshot
+// rows; a delta with id > cursor is newer truth that must survive the
+// snapshot's commit.
+func (b *UserEventBroker) LastEventID(userID string) uint64 {
+	sh := b.userShard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	rb := sh.replay[userID]
+	if rb == nil || rb.count == 0 {
+		return 0
+	}
+	return rb.nextID - 1 //nolint:gosec // nextID ≥ 1 whenever count > 0
+}
+
 func (b *UserEventBroker) RecordWorkspaceOwner(workspaceID, userID string) {
 	sh := b.wsShard(workspaceID)
 	sh.mu.Lock()

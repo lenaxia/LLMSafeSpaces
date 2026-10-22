@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
+
+- **The user-stream connect path emits a `session.status.snapshot`
+  flight per Active workspace** (`snapshot_begin` → one snapshot frame
+  carrying `{cursor, sessions: [{session_id(phrase),
+  internal_session_id, status, derived_busy}]}` → `snapshot_complete`
+  with `snapshot_ok`), sourced from the pod's statusz — the same
+  authority `GetAuthoritativeActiveSessions` consults, now with an
+  ok-typed read so an authority failure reads "keep your state"
+  (D10), never an authoritative all-idle. Kills the delta-only fragility
+  (class 1): a subscriber joining after a busy flip — or a page refresh
+  with no `Last-Event-ID` — rebuilds busy in the connect window, and
+  the per-replica replay limitation becomes benign (state converges
+  without the delta log). Rows are phrase-keyed through the #1824
+  translation discipline (`sessionIndex.Register`, degrade flagged
+  `session_id_deprecated`), and the frame carries the broker cursor
+  (`UserEventBroker.LastEventID`, read before the authority fetch).
+- **`POST /workspaces/:id/sessions/status-snapshot`** — the on-demand
+  twin (RequestInputSnapshot pattern, 202 + flight on the user
+  stream): the frontend busy lease's authoritative recheck surface.
+- **EventID-ordered deltas (frontend)**: session.status deltas apply
+  in broker id order against a watermark seeded by the snapshot's
+  cursor — a replayed delta at or below the watermark is skipped,
+  making application idempotent across snapshot/replay overlap
+  (#1781's emission legs unchanged in substance).
+- **90s busy lease + one authoritative recheck (frontend)**: latched
+  busy entries carry `lastConfirmedAt` (any busy-bearing delta or
+  snapshot row refreshes it); expiry after 90s (≈3× the 25s
+  heartbeat, above the 60s liveness window) triggers exactly ONE
+  recheck per lease window via the status-snapshot trigger — the
+  flight's D10 marker decides keep-vs-clear, so an unreachable
+  authority holds the badge as unknown, never flips it to idle. The
+  ok=true snapshot commit is the authoritative per-workspace
+  reconciliation (entries superseded at the cursor clear; fresher
+  deltas survive), replacing the REST overlay as the re-seed source
+  on reconnect/resync/refresh (the overlay stays as the degraded
+  fallback).
+
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 
 - **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside

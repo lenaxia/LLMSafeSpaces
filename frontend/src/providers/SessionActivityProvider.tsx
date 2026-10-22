@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
+import { sessionsApi } from "../api/sessions";
 import type { InputRequest } from "../api/types";
 import {
   eventInternalSessionId,
@@ -16,6 +17,29 @@ import {
 // #1365: receivedAt is stamped on store entry — the whileAway staleness
 // bound in ChatPage keys off it, never off the (absent) event stream.
 type StoredInputRequest = InputRequest & { whileAway?: boolean; receivedAt?: number };
+
+// #1821 pieces 3-4 — busy is a LEASED cache of the backend authority's
+// answer, never self-owned truth. Each latched busy entry carries its
+// workspace, the timestamp of its last confirming evidence (delta or
+// snapshot row), and — when orderable — the broker EventID of that
+// evidence so a snapshot commit can tell a fresher delta (survives the
+// commit) from one the authority already superseded (governed by the
+// snapshot's rows).
+export interface BusyEntry {
+  workspaceId: string;
+  confirmedAt: number;
+  // undefined = unorderable evidence (event carried no event_id —
+  // REST-seeded rows, legacy frames): protected from snapshot removal.
+  confirmEventId?: number;
+}
+
+// #1821 piece 4: the lease window. L = 90s ≈ 3× the 25s heartbeat and
+// above the 60s liveness-silence window: only a genuinely
+// confirmation-less span (heartbeats flowing, no busy evidence — the
+// lost-idle case) expires, and expiry buys ONE authoritative recheck,
+// not a self-made answer.
+export const BUSY_LEASE_MS = 90_000;
+const BUSY_LEASE_SWEEP_MS = 15_000;
 
 // useWhileAwayStalenessSweep (#1365) drives the whileAway staleness bound
 // with a TIMER while any whileAway pill is pending. The fold-sync effect's
@@ -103,7 +127,17 @@ const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
   "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
   "resync", "workspace.alert", "workspace.alert_resolved",
+  // #1821 piece 2: the busy-snapshot handshake flight.
+  "session.status.snapshot_begin", "session.status.snapshot", "session.status.snapshot_complete",
 ]);
+
+// #1821 piece 2: one staged busy-snapshot flight — the busy rows and
+// cursor a begin marker opened, committed (or dropped) by the matching
+// complete.
+interface BusyFlight {
+  busyRowIds: Set<string>;
+  cursor: number;
+}
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
 // if none matched (avoids needless re-renders).
@@ -134,6 +168,14 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
 // event callbacks via module scope, like wipeBusyForEventLoss.
 function registerFirstSeen(firstSeen: Map<string, number>, requestId: string): void {
   if (!firstSeen.has(requestId)) firstSeen.set(requestId, Date.now());
+}
+
+// stampBusyNow is the lease-stamp seam: Date.now() for BusyEntry writes
+// without calling it from a render-analyzed body (react-hooks/purity —
+// same discipline as registerFirstSeen). Runs from event callbacks and
+// effect timers via module scope.
+function stampBusyNow(): number {
+  return Date.now();
 }
 
 // #1824: a late-learned harness→phrase pair must re-key the provider's
@@ -202,7 +244,7 @@ function rekeyPendingContent(
 function wipeBusyForEventLoss(
   wipeAtRef: { current: number },
   seededRef: { current: Set<string> },
-  setBusySessions: Dispatch<SetStateAction<Map<string, string>>>,
+  setBusySessions: Dispatch<SetStateAction<Map<string, BusyEntry>>>,
 ): void {
   wipeAtRef.current = Date.now();
   seededRef.current.clear();
@@ -210,7 +252,22 @@ function wipeBusyForEventLoss(
 }
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
-  const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
+  // #1821 pieces 3-4: values carry the leased-cache bookkeeping
+  // (BusyEntry) — workspace, last confirming evidence timestamp, and
+  // the confirming delta's EventID when orderable.
+  const [busySessions, setBusySessions] = useState<Map<string, BusyEntry>>(new Map());
+  // #1821 piece 3: watermark of the highest session.status event_id
+  // APPLIED (deltas + snapshot cursors). A delta with event_id ≤ the
+  // watermark is a stale replay overlap — already reflected in (or
+  // superseded by) applied state — and is skipped, making delta
+  // application idempotent across snapshot/replay overlap.
+  const lastSessionStatusIDRef = useRef(0);
+
+  // #1821 piece 2: open busy-snapshot flights, keyed workspaceId →
+  // Map<flightId, BusyFlight> (the per-flight discipline of the input
+  // snapshots — two flights can run concurrently for one workspace).
+  const busyFlightsRef = useRef(new Map<string, Map<string, BusyFlight>>());
+
   // D6 (#998): workspaces with an active hung-session alert. Set on
   // workspace.alert/session_hung; cleared on that workspace's next
   // session.status=idle (the hang resolved) — the map is workspace-keyed
@@ -329,7 +386,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     // authority (REST enrichment can lag on multi-replica or timing gaps, so a
     // refetch returning status:"idle" must not clear an SSE-tracked busy session).
     function seedBusy() {
-      let busyDelta: Map<string, string> | null = null;
+      let busyDelta: Map<string, BusyEntry> | null = null;
 
       for (const query of queryCache.getAll()) {
         const key = query.queryKey;
@@ -389,7 +446,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // responses and any cache entries written by the SSE handler.
           if (session.status === "busy" || session.status === "active") {
             if (!busyDelta) busyDelta = new Map();
-            busyDelta.set(session.id, wsId);
+            // #1821 piece 4: REST-overlay evidence is unorderable (no
+            // broker EventID) — the lease stamps now and the entry is
+            // protected from snapshot-removal until a snapshot flight
+            // (or a delta with an id) governs it.
+            busyDelta.set(session.id, { workspaceId: wsId, confirmedAt: Date.now() });
           }
         }
 
@@ -580,7 +641,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       }
 
       setBusySessions(
-        (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
+        (prev) =>
+          rekeyWorkspaceValueMap(prev, workspaceId, (entry) => entry.workspaceId === workspaceId) ?? prev,
       );
       setPendingUnread(
         (prev) => rekeyWorkspaceValueMap(prev, workspaceId, (wid) => wid === workspaceId) ?? prev,
@@ -661,6 +723,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       legacyStagingRef.current.clear();
       committedWsRef.current.clear();
       flightsRef.current.clear();
+      // #1821 piece 2: open busy flights died with the connection —
+      // the reconnect's connect-path flights rebuild authoritatively.
+      busyFlightsRef.current.clear();
     },
     onEvent: (data) => {
       const rawEvt = data as {
@@ -671,6 +736,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         status?: string;
         phase?: string;
         snapshot_id?: string;
+        snapshot_ok?: boolean;
+        event_id?: number;
         data?: { alert?: string };
       };
       // #1817 heal window: a legacy harness-keyed frame resolves to the
@@ -934,7 +1001,129 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // ===== #1821 piece 2: the busy-snapshot flight =====
+      //
+      // D9/D10, the input-snapshot discipline applied to busy: begin
+      // opens a per-flight staging window, the snapshot frame stages
+      // the authority's rows + cursor, complete commits (ok=true) or
+      // keeps state (ok=false — a failed authority read must never
+      // read as an authoritative empty set).
+      if (evt.type === "session.status.snapshot_begin") {
+        const wsId = evt.workspace_id;
+        if (!wsId) return;
+        const flightId = evt.snapshot_id ?? "";
+        let open = busyFlightsRef.current.get(wsId);
+        if (!open) {
+          open = new Map();
+          busyFlightsRef.current.set(wsId, open);
+        }
+        open.set(flightId, { busyRowIds: new Set(), cursor: 0 });
+        return;
+      }
+
+      if (evt.type === "session.status.snapshot") {
+        const wsId = evt.workspace_id;
+        const flightId = evt.snapshot_id ?? "";
+        // Stage into the named flight only: a snapshot frame with no
+        // open flight had its begin dropped (broker backpressure) — its
+        // complete is non-authoritative by the same rule the input
+        // snapshots apply to unknown flight ids.
+        const flight = wsId ? busyFlightsRef.current.get(wsId)?.get(flightId) : undefined;
+        if (!wsId || !flight) return;
+        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; derived_busy?: boolean }> } }).data;
+        if (!payload || !Array.isArray(payload.sessions)) return;
+        for (const row of payload.sessions) {
+          if (row.session_id && row.derived_busy) flight.busyRowIds.add(row.session_id);
+        }
+        flight.cursor = payload.cursor ?? 0;
+        return;
+      }
+
+      if (evt.type === "session.status.snapshot_complete") {
+        const wsId = evt.workspace_id;
+        if (!wsId) return;
+        const ok = rawEvt.snapshot_ok !== false;
+        const flightId = evt.snapshot_id ?? "";
+        const open = busyFlightsRef.current.get(wsId);
+        const staged = open?.get(flightId);
+        if (open) {
+          open.delete(flightId);
+          if (open.size === 0) busyFlightsRef.current.delete(wsId);
+        }
+
+        // D10: ok=false (or a dropped flight — no staged rows) is
+        // NON-authoritative: keep every latched busy exactly as-is.
+        if (!ok || !staged) return;
+
+        // The workspace is now seeded from a better source than the
+        // REST overlay; the overlay's later add-only pass is harmless.
+        seededRef.current.add(wsId);
+
+        // #1821 piece 3: the cursor subsumes every delta at or below
+        // it — advance the application watermark.
+        if (staged.cursor > lastSessionStatusIDRef.current) {
+          lastSessionStatusIDRef.current = staged.cursor;
+        }
+
+        const cursor = staged.cursor;
+        const busyRowIds = staged.busyRowIds;
+        const now = stampBusyNow();
+        setBusySessions((prev) => {
+          const next = new Map(prev);
+          // Authoritative reconciliation: entries of THIS workspace
+          // whose confirming evidence the cursor supersedes (ordered
+          // confirm ≤ cursor) are governed by the authority's rows.
+          // Fresher deltas (confirm > cursor — published after the
+          // flight read its cursor) and unorderable entries (REST
+          // seeds, legacy frames) survive the commit.
+          for (const [sid, entry] of prev) {
+            if (entry.workspaceId !== wsId) continue;
+            if (entry.confirmEventId === undefined || entry.confirmEventId > cursor) continue;
+            if (!busyRowIds.has(sid)) next.delete(sid);
+          }
+          // Busy rows latch or re-confirm: any busy-bearing snapshot
+          // row refreshes the lease (piece 4).
+          for (const sid of busyRowIds) {
+            const existing = prev.get(sid);
+            const confirmEventId = Math.max(existing?.confirmEventId ?? 0, cursor);
+            next.set(sid, {
+              workspaceId: wsId,
+              confirmedAt: now,
+              confirmEventId: confirmEventId > 0 ? confirmEventId : undefined,
+            });
+          }
+          return next;
+        });
+
+        // Mirror the busy latch's cache flip so sidebar rows read
+        // active for snapshot-busy sessions until the next refetch.
+        const sessionsKey = ["sessions", wsId];
+        const existingCache = queryClient.getQueryData(sessionsKey);
+        if (existingCache && busyRowIds.size > 0) {
+          queryClient.setQueryData(sessionsKey, (old: unknown) => {
+            if (!Array.isArray(old)) return old;
+            return old.map((s: Record<string, unknown>) =>
+              busyRowIds.has(String(s.id)) ? { ...s, status: "active" } : s
+            );
+          });
+        }
+        return;
+      }
+
+      // ===== #1821 piece 3: EventID-ordered deltas =====
+      //
+      // The broker stamps every published event with a monotonic
+      // EventID; the client applies session.status deltas in id order.
+      // A delta at or below the watermark is a stale replay overlap
+      // (reconnect replay racing the connect-path snapshot flight) —
+      // its truth is already reflected in applied state — and is
+      // skipped, making application idempotent across overlap.
       if (evt.type === "session.status" && evt.session_id && evt.workspace_id) {
+        const deltaID = rawEvt.event_id ?? 0;
+        if (deltaID > 0) {
+          if (deltaID <= lastSessionStatusIDRef.current) return;
+          lastSessionStatusIDRef.current = deltaID;
+        }
         if (evt.status === "busy") {
           clearedRef.current.delete(evt.session_id);
           // #786: a new turn un-aborts — the interrupted marker dies
@@ -947,7 +1136,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           });
           setBusySessions((prev) => {
             const next = new Map(prev);
-            next.set(evt.session_id!, evt.workspace_id!);
+            // #1821 piece 4: the delta is confirming evidence — the
+            // lease stamps now; the orderable delta id lets a later
+            // snapshot commit recognize this entry as fresher-than-
+            // cursor when the flight raced the delta.
+            next.set(evt.session_id!, {
+              workspaceId: evt.workspace_id!,
+              confirmedAt: stampBusyNow(),
+              confirmEventId: deltaID > 0 ? deltaID : undefined,
+            });
             return next;
           });
 
@@ -1131,8 +1328,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         const wsId = evt.workspace_id;
         setBusySessions((prev) => {
           const next = new Map();
-          for (const [sid, wid] of prev) {
-            if (wid !== wsId) next.set(sid, wid);
+          for (const [sid, entry] of prev) {
+            if (entry.workspaceId !== wsId) next.set(sid, entry);
           }
           return next;
         });
@@ -1164,6 +1361,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         flightsRef.current.clear();
         legacyStagingRef.current.clear();
         setInputSnapshots(new Map());
+        // #1821 piece 2: the dropped set may include a busy flight's
+        // begin or snapshot frame — open flights are unreliable, and
+        // the reconnect-path flights rebuild authoritatively.
+        busyFlightsRef.current.clear();
         // Events were dropped for this subscriber — possibly including
         // the idle that would have cleared a hung badge. Full clear,
         // like reconnect; the gated seed re-adds genuine hangs.
@@ -1177,8 +1378,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           seededRef.current.delete(wsId);
           setBusySessions((prev) => {
             const next = new Map();
-            for (const [sid, wid] of prev) {
-              if (wid !== wsId) next.set(sid, wid);
+            for (const [sid, entry] of prev) {
+              if (entry.workspaceId !== wsId) next.set(sid, entry);
             }
             return next;
           });
@@ -1208,6 +1409,51 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  // #1821 piece 4: the busy lease sweep. Busy entries whose confirming
+  // evidence is older than BUSY_LEASE_MS trigger exactly ONE
+  // authoritative recheck per lease window — a session-status-snapshot
+  // flight per workspace (one flight covers every expired session of
+  // that workspace; the D10 marker on the resulting flight decides
+  // keep-vs-clear). The lease re-arms at trigger time, so an
+  // unreachable authority (request rejects, no flight) holds the badge
+  // as unknown and retries once per window — never a hammering loop,
+  // never a self-made clear.
+  useEffect(() => {
+    if (busySessions.size === 0) return;
+    const sweep = () => {
+      const now = Date.now();
+      const expiredWorkspaces = new Set<string>();
+      for (const entry of busySessions.values()) {
+        if (now - entry.confirmedAt > BUSY_LEASE_MS) {
+          expiredWorkspaces.add(entry.workspaceId);
+        }
+      }
+      if (expiredWorkspaces.size === 0) return;
+      for (const wsId of expiredWorkspaces) {
+        sessionsApi.requestStatusSnapshot(wsId).catch(() => {
+          // Unknown, not idle: the badge holds; the re-armed lease
+          // retries once per window.
+        });
+      }
+      // Re-arm at trigger (outside any updater — Date.now/refs in
+      // render-analyzed bodies stay pure; this is an event-callback
+      // context like wipeBusyForEventLoss).
+      setBusySessions((prev) => {
+        let next: Map<string, BusyEntry> | null = null;
+        for (const [sid, entry] of prev) {
+          if (now - entry.confirmedAt > BUSY_LEASE_MS) {
+            if (!next) next = new Map(prev);
+            next.set(sid, { ...entry, confirmedAt: now });
+          }
+        }
+        return next ?? prev;
+      });
+    };
+    sweep();
+    const t = setInterval(sweep, BUSY_LEASE_SWEEP_MS);
+    return () => clearInterval(t);
+  }, [busySessions]);
+
   const isSessionBusy = useCallback(
     (sessionId: string) => busySessions.has(sessionId),
     [busySessions]
@@ -1221,8 +1467,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const workspaceBusyCount = useCallback(
     (workspaceId: string) => {
       let count = 0;
-      for (const wid of busySessions.values()) {
-        if (wid === workspaceId) count++;
+      for (const entry of busySessions.values()) {
+        if (entry.workspaceId === workspaceId) count++;
       }
       return count;
     },

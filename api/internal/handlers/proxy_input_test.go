@@ -38,6 +38,26 @@ func recvWithTimeout(t *testing.T, sub *eventbroker.Subscriber, what string) api
 	}
 }
 
+// recvTypeWithTimeout drains until an event of the given type arrives
+// (bounded). #1821 piece 2: the connect path now fans out TWO detached
+// flights per Active workspace (pending-input + busy-snapshot), so
+// next-event sequencing assertions no longer hold — match by type.
+func recvTypeWithTimeout(t *testing.T, sub *eventbroker.Subscriber, typ string) apitypes.WorkspaceSSEEvent {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub.Ch:
+			if evt.Type == typ {
+				return evt
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s event", typ)
+			return apitypes.WorkspaceSSEEvent{}
+		}
+	}
+}
+
 func newInputTestEnv(t *testing.T) *testEnv {
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
@@ -464,10 +484,12 @@ func TestSnapshotUserWorkspaces_FansOutPendingForActiveWorkspaces(t *testing.T) 
 	assert.Equal(t, "ws-1", phaseEvt.WorkspaceID)
 
 	// Drain the begin marker emitted by the fan-out before expecting complete.
-	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	// #1821 piece 2: match by type — the busy-snapshot flight fans out
+	// concurrently for Active workspaces and interleaves its markers.
+	_ = recvTypeWithTimeout(t, userSub, "agent.input.snapshot_begin")
 
 	// Should receive the snapshot_complete marker for ws-1 (fan-out fired)
-	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	marker := recvTypeWithTimeout(t, userSub, "agent.input.snapshot_complete")
 	assert.Equal(t, "agent.input.snapshot_complete", marker.Type)
 	assert.Equal(t, "ws-1", marker.WorkspaceID)
 }
