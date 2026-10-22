@@ -239,6 +239,29 @@ type configRow struct {
 	Value json.RawMessage
 }
 
+// StorageDriftError marks a stored config row that failed validation
+// on READ — server-side data drift (e.g. manual SQL past the write
+// belts), never a client error: a GET must not render 400 for the
+// server's own corrupt row, so this class rides the generic 500 arm.
+type StorageDriftError struct {
+	Scope  string // which map drifted ("user defaults" / "project overrides")
+	Detail string
+}
+
+func (e *StorageDriftError) Error() string {
+	return fmt.Sprintf("board config storage drift (%s): %s", e.Scope, e.Detail)
+}
+
+// decodeBoardConfigRows decodes stored rows fail-closed: any
+// validation failure is drift, not caller input.
+func decodeBoardConfigRows(scope string, raw map[string]json.RawMessage) (*BoardConfigOverride, error) {
+	o, err := DecodeBoardConfigOverride(raw)
+	if err != nil {
+		return nil, &StorageDriftError{Scope: scope, Detail: err.Error()}
+	}
+	return o, nil
+}
+
 // rows encodes the partial override to storage rows: set keys only —
 // unset keys store nothing, which IS the inheritance mechanism.
 func (o *BoardConfigOverride) rows() []configRow {
@@ -303,13 +326,20 @@ func (st *Store) loadBoardProjectConfigOverrides(ctx context.Context, q Queryer,
 
 // replaceBoardConfigDefaults REPLACE-writes one user's board-wide
 // defaults map in one transaction (absent keys revert to the code
-// defaults).
+// defaults). A transaction-scoped advisory lock on the scope key
+// serializes concurrent REPLACE writers (DELETE+INSERT under
+// concurrency otherwise races on the PK or interleaves disjoint keys
+// into a union — last-locked writer wins the WHOLE map, which is the
+// replace contract).
 func (st *Store) replaceBoardConfigDefaults(ctx context.Context, userID string, rows []configRow) error {
 	tx, err := st.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "board_config_defaults:"+userID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, userID); err != nil {
 		return err
 	}
@@ -325,12 +355,17 @@ func (st *Store) replaceBoardConfigDefaults(ctx context.Context, userID string, 
 
 // replaceBoardProjectConfigOverrides REPLACE-writes one project's
 // override map in one transaction (absent keys revert to inheritance).
+// The same per-scope advisory-xact-lock discipline as the user map:
+// concurrent writers serialize, last-locked writer wins the WHOLE map.
 func (st *Store) replaceBoardProjectConfigOverrides(ctx context.Context, projectID string, rows []configRow) error {
 	tx, err := st.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "board_project_config_overrides:"+projectID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM board_project_config_overrides WHERE project_id=$1`, projectID); err != nil {
 		return err
 	}
@@ -355,7 +390,7 @@ func (s *Service) userBoardConfigOverride(ctx context.Context, userID string) (*
 	if err != nil {
 		return nil, err
 	}
-	return DecodeBoardConfigOverride(raw)
+	return decodeBoardConfigRows("user defaults", raw)
 }
 
 // GetUserBoardConfig renders the acting user's effective board-wide
@@ -403,6 +438,9 @@ func (s *Service) SetUserBoardConfig(ctx context.Context, actor Actor, in *Board
 // resolves scoped to the acting user, so a foreign project renders
 // the scoped 404 (never disclosed) regardless of which adapter calls.
 func (s *Service) GetProjectBoardConfig(ctx context.Context, actor Actor, projectID, shortIDOrID string) (*ProjectBoardConfig, error) {
+	if actor.UserID == "" {
+		return nil, &GuardError{Code: GuardAuthz, Detail: "board project config is user-scoped — an authenticated acting user is required"}
+	}
 	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
 	if err != nil {
 		return nil, err
@@ -415,7 +453,7 @@ func (s *Service) GetProjectBoardConfig(ctx context.Context, actor Actor, projec
 	if err != nil {
 		return nil, err
 	}
-	ov, err := DecodeBoardConfigOverride(rawOv)
+	ov, err := decodeBoardConfigRows("project overrides", rawOv)
 	if err != nil {
 		return nil, err
 	}
@@ -444,6 +482,14 @@ func (s *Service) SetProjectBoardConfig(ctx context.Context, actor Actor, projec
 	}
 	if err := ValidateBoardConfigOverride(in); err != nil {
 		return nil, err
+	}
+	// defaultWorkerSlots is a USER-level key (it feeds CreateProject's
+	// fallback): a project's slots are fixed at create, so a per-project
+	// override would be inert yet render as "effective" — an
+	// effective-map the engine does not honor. Rejected here rather
+	// than displayed as a lie.
+	if in != nil && in.DefaultWorkerSlots != nil {
+		return nil, &GuardError{Code: GuardInput, Detail: "defaultWorkerSlots is a user-level key — set it in the board-wide defaults (PUT /api/v1/me/board/config); a project's worker slots are fixed at create"}
 	}
 	if err := s.store.replaceBoardProjectConfigOverrides(ctx, p.ID, in.rows()); err != nil {
 		return nil, err

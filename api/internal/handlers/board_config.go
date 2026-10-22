@@ -37,6 +37,11 @@ import (
 // rejects 400 — neither may masquerade as "clear every override".
 // Nothing outside the vocabulary reaches the service.
 func bindBoardConfigOverride(c *gin.Context) (*board.BoardConfigOverride, bool) {
+	// Hardened like the other small-object handlers: the config body is
+	// a 3-key object — 64 KiB is orders of magnitude generous, and the
+	// cap keeps an authenticated peer from parking an unbounded body in
+	// memory.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot read request body: " + err.Error()})

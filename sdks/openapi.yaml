@@ -4568,7 +4568,11 @@ paths:
         keys stop being overridden and revert to inheriting the owner's
         board-wide default; `{}` clears every override. Unknown keys,
         malformed values, and JSON null values reject with 400
-        (invalid_input): an unset key is ABSENT, never null.
+        (invalid_input): an unset key is ABSENT, never null. Foreign or
+        unknown projects render 404 (scoped, never disclosed);
+        defaultWorkerSlots is rejected here — it is a user-level key
+        (PUT /me/board/config); a project's worker slots are fixed at
+        create.
       operationId: setBoardProjectConfig
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4589,8 +4593,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
   /me/projects/{id}/import-plan:
@@ -12343,7 +12345,10 @@ components:
         read-time merge. Writes are REPLACE-semantics: send the full
         set; `{}` clears every override. Unknown keys, malformed
         values, and JSON null values reject (400) — an unset key is
-        ABSENT from the object, never null.
+        ABSENT from the object, never null. NOTE:
+        defaultWorkerSlots is user-level (PUT /me/board/config) and is
+        rejected on the project override surface; a project's worker
+        slots are fixed at create.
       properties:
         reviewColumn:
           type: string

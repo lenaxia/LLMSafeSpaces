@@ -165,6 +165,22 @@ func TestIntegrationBoardConfig(t *testing.T) {
 	w = doBoardREST(t, foreign, http.MethodPut, "/api/v1/me/projects/"+owned.ID+"/config", `{"reviewColumn":"auto"}`)
 	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 
+	// --- 4b: the user-level key ruling renders 400 through the real seam ----------
+	w = doBoardREST(t, owner, http.MethodPut, "/api/v1/me/projects/"+owned.ID+"/config", `{"defaultWorkerSlots":5}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "user-level key", "the rejection names the ruling")
+
+	// --- 4c: storage drift renders a SERVER error (5xx), never 400 ---------------
+	_, err = pool.Exec(context.Background(),
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ('user-cfg', 'autoAssignReviewer', '"not-a-bool"')`)
+	require.NoError(t, err)
+	w = doBoardREST(t, owner, http.MethodGet, "/api/v1/me/board/config", "")
+	assert.Equal(t, http.StatusInternalServerError, w.Code,
+		"a drifted stored row is the server's problem — a GET must not render 400 invalid_input: %s", w.Body.String())
+	_, err = pool.Exec(context.Background(),
+		`DELETE FROM board_config_defaults WHERE user_id='user-cfg' AND key='autoAssignReviewer'`)
+	require.NoError(t, err)
+
 	// --- 5: user isolation through the real seam -----------------------------------
 	w = doBoardREST(t, foreign, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

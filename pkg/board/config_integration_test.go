@@ -222,6 +222,17 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 	s.Require().True(ok, "got %T", err)
 	s.Equal(board.GuardInput, guard.Code)
 
+	// defaultWorkerSlots is a USER-level key: a per-project override
+	// would be inert (the engine honors projects.worker_slots) yet
+	// render as "effective" — an effective-map lie. Rejected.
+	_, err = s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "",
+		&board.BoardConfigOverride{DefaultWorkerSlots: intVal(4)})
+	s.Require().Error(err)
+	guard, ok = err.(*board.GuardError)
+	s.Require().True(ok, "got %T", err)
+	s.Equal(board.GuardInput, guard.Code)
+	s.Contains(guard.Detail, "user-level key", "the rejection names the ruling")
+
 	// Nothing landed: effective values still the defaults.
 	pc, err := s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
 	s.Require().NoError(err)
@@ -235,6 +246,16 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 	guard, ok = err.(*board.GuardError)
 	s.Require().True(ok, "got %T", err)
 	s.Equal(board.GuardAuthz, guard.Code)
+
+	// The READ seam enforces the same actor discipline: an empty actor
+	// must NOT silently fall back to engine-scope resolution (which
+	// would read ANY project's config — the fail-open the round-2
+	// review caught).
+	_, err = s.svc.GetProjectBoardConfig(ctx, board.Actor{}, p.ID, "")
+	s.Require().Error(err)
+	guard, ok = err.(*board.GuardError)
+	s.Require().True(ok, "got %T", err)
+	s.Equal(board.GuardAuthz, guard.Code, "empty actor rejects authz, never resolves unscoped")
 
 	// R7: a foreign actor's write resolves the scoped 404 (the
 	// UpdateProject discipline — foreign rows are plain 404s, never
@@ -265,7 +286,7 @@ func (s *BoardSuite) TestBoardConfig_ProjectDeleteCascades() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
-	ov := board.BoardConfigOverride{DefaultWorkerSlots: intVal(4)}
+	ov := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
 	_, err := s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &ov)
 	s.Require().NoError(err)
 
@@ -327,25 +348,92 @@ func (s *BoardSuite) TestBoardConfig_FailClosedOnDrift() {
 		`INSERT INTO board_project_config_overrides (project_id, key, value) VALUES ($1, 'reviewColumn', '42')`, p.ID)
 	s.Require().NoError(err)
 
-	// Reads fail closed with the validation error.
+	// Reads fail closed with the DRIFT class — a server-side data
+	// problem renders 5xx at the adapter, never 400 invalid_input (the
+	// caller did nothing wrong).
 	_, err = s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().Error(err, "a drifted defaults row must surface as an error, not a zero value")
-	guard, ok := err.(*board.GuardError)
+	drift, ok := err.(*board.StorageDriftError)
 	s.Require().True(ok, "got %T", err)
-	s.Equal(board.GuardInput, guard.Code)
+	s.Contains(drift.Error(), "user defaults")
+
+	// The project read fails closed on the SAME user-map drift (it
+	// loads the user defaults beneath the overrides) — then, with the
+	// user map clean, on its own override drift.
+	_, err = s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
+	s.Require().Error(err)
+	drift, ok = err.(*board.StorageDriftError)
+	s.Require().True(ok, "got %T", err)
+	s.Contains(drift.Error(), "user defaults")
+
+	_, err = s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1 AND key='autoAssignReviewer'`, testUser)
+	s.Require().NoError(err)
 
 	_, err = s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
 	s.Require().Error(err, "a drifted override row must surface as an error, not a zero value")
-	guard, ok = err.(*board.GuardError)
+	drift, ok = err.(*board.StorageDriftError)
 	s.Require().True(ok, "got %T", err)
-	s.Equal(board.GuardInput, guard.Code)
+	s.Contains(drift.Error(), "project overrides")
 
 	// And the create fallback fails closed too (no silent 0-slot
 	// projects off a drifted map).
+	// And the create fallback fails closed too (no silent 0-slot
+	// projects off a drifted map) — re-drift the user map for this arm.
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'defaultWorkerSlots', '"x"')`, testUser)
+	s.Require().NoError(err)
 	_, err = s.svc.CreateProject(ctx, s.owner(), board.ProjectInput{
 		Name: "proj-against-drift", TargetWorkspaceID: ws, Tags: []string{},
 	}, "")
 	s.Require().Error(err, "CreateProject's slots fallback must not silently survive a drifted defaults row")
+}
+
+// TestBoardConfig_ConcurrentReplaceWrites: concurrent REPLACE writes
+// to one scope serialize (per-scope advisory-xact-lock): no 23505
+// PK-violation errors, and the final map is exactly ONE of the written
+// maps — never a union of interleaved disjoint keys.
+func (s *BoardSuite) TestBoardConfig_ConcurrentReplaceWrites() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 0)
+
+	mapA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff), DefaultWorkerSlots: intVal(3)}
+	mapB := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
+	// The project surface rejects defaultWorkerSlots (user-level key),
+	// so its competing maps differ on the other two keys.
+	projA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff)}
+	projB := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
+
+	const writers = 8
+	errCh := make(chan error, 2*writers)
+	for i := 0; i < writers; i++ {
+		go func(i int) {
+			in, projIn := mapA, projA
+			if i%2 == 1 {
+				in, projIn = mapB, projB
+			}
+			_, err := s.svc.SetUserBoardConfig(ctx, s.owner(), &in)
+			errCh <- err
+			_, err = s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &projIn)
+			errCh <- err
+		}(i)
+	}
+	for i := 0; i < 2*writers; i++ {
+		s.Require().NoError(<-errCh, "concurrent REPLACE writes must not surface PK-violation 500s")
+	}
+
+	// Final user map is exactly A or exactly B (never a union).
+	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
+	s.Require().NoError(err)
+	isA := cfg.ReviewColumn == board.ReviewColumnOff && cfg.DefaultWorkerSlots == 3 && !cfg.AutoAssignReviewer
+	isB := cfg.ReviewColumn == board.ReviewColumnManual && cfg.DefaultWorkerSlots == 2 && cfg.AutoAssignReviewer
+	s.True(isA || isB, "final user map is one written map, not a union: %+v", cfg)
+
+	pc, err := s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+	pIsA := pc.Effective.ReviewColumn == board.ReviewColumnOff && pc.Effective.DefaultWorkerSlots == 3 && !pc.Effective.AutoAssignReviewer
+	pIsB := pc.Effective.ReviewColumn == board.ReviewColumnManual && pc.Effective.DefaultWorkerSlots == 2 && pc.Effective.AutoAssignReviewer
+	s.True(pIsA || pIsB, "final project map is one written map, not a union: %+v", pc.Effective)
 }
 
 // Local pointer helpers (external test package: unexported helpers in
