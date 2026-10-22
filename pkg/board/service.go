@@ -174,8 +174,11 @@ type TaskInput struct {
 	Description        string
 	Tags               []string
 	AcceptanceCriteria []AcceptanceCriterion
-	// SetCriteriaMet checks off the criterion at this 0-based index.
-	SetCriteriaMet *int
+	// SetCriteriaMet mutates the criterion at this 0-based index —
+	// {index, met} (#1837 P2b; the legacy bare-integer decode is
+	// {index, met:true}). Mutual exclusion with AcceptanceCriteria and
+	// bounds are enforced loudly (validateCriteriaUpdate).
+	SetCriteriaMet *CriteriaCheck
 	DependsOn      []string
 }
 
@@ -794,8 +797,13 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	if in.AcceptanceCriteria != nil {
 		criteria = in.AcceptanceCriteria
 	}
-	if in.SetCriteriaMet != nil && *in.SetCriteriaMet >= 0 && *in.SetCriteriaMet < len(criteria) {
-		criteria[*in.SetCriteriaMet].Met = true
+	// #1837 P2b: mutual exclusion + bounds are LOUD (an accidental
+	// pass-through never silently checks a criterion).
+	if err := validateCriteriaUpdate(in, criteria); err != nil {
+		return nil, err
+	}
+	if in.SetCriteriaMet != nil {
+		criteria[in.SetCriteriaMet.Index].Met = in.SetCriteriaMet.Met
 	}
 	tags := t.Tags
 	if in.Tags != nil {

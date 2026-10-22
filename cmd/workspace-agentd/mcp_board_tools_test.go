@@ -62,6 +62,8 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_create_task", "board_update_task", "board_add_dependency",
 		"board_remove_dependency", "board_delete_task", "board_pause_task",
 		"board_resume_task", "board_import_plan",
+		// Manager reads (#1837 P2a): the orchestrator's overview.
+		"board_list", "board_health",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {

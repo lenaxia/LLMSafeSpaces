@@ -19,6 +19,28 @@ import "github.com/lenaxia/llmsafespaces/pkg/board"
 type taskEchoResponse struct {
 	board.Task
 	ContentEchoDiff []string `json:"content_echo_diff,omitempty"`
+	// MutatedCriterion echoes the setCriteriaMet write (#1837 P2b):
+	// index, the met flag written, and the criterion TEXT — a
+	// check-off/uncheck never lands un-attributed.
+	MutatedCriterion *MutatedCriterion `json:"mutated_criterion,omitempty"`
+}
+
+// MutatedCriterion is the #1837 P2b setCriteriaMet echo.
+type MutatedCriterion struct {
+	Index int    `json:"index"`
+	Met   bool   `json:"met"`
+	Text  string `json:"text"`
+}
+
+// mutatedCriterion builds the echo from the submitted check and the
+// stored row (nil when no check was submitted or the row's set no
+// longer holds the index — the service's bounds guard makes the latter
+// unreachable, the belt keeps the renderer nil-safe).
+func mutatedCriterion(check *board.CriteriaCheck, stored *board.Task) *MutatedCriterion {
+	if check == nil || stored == nil || check.Index < 0 || check.Index >= len(stored.AcceptanceCriteria) {
+		return nil
+	}
+	return &MutatedCriterion{Index: check.Index, Met: check.Met, Text: stored.AcceptanceCriteria[check.Index].Text}
 }
 
 // epicEchoResponse is the epic tier of the same echo.

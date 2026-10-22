@@ -60,6 +60,9 @@ type boardManager interface {
 	TaskEvents(ctx context.Context, taskID, shortIDOrID string, limit int) ([]board.Event, error)
 	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
 	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
+	// #1837 P2a: the agent surface's workspace-scoped projections.
+	ListTasksInWorkspace(ctx context.Context, workspaceID, projectID, shortIDOrID, stage, failed string) ([]board.Task, *board.Project, error)
+	BoardHealthInWorkspace(ctx context.Context, workspaceID string) (*board.Health, error)
 	CreateTask(ctx context.Context, actor board.Actor, epicID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
@@ -582,7 +585,7 @@ type boardTaskRequest struct {
 	Description        string                      `json:"description"`
 	Tags               []string                    `json:"tags"`
 	AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
-	SetCriteriaMet     *int                        `json:"setCriteriaMet"`
+	SetCriteriaMet     *board.CriteriaCheck        `json:"setCriteriaMet"`
 	// DependsOn (create only, #1747): prerequisite task refs (tsk-… or
 	// UUID); the edges are added in the create's own transaction.
 	DependsOn []string `json:"dependsOn"`
@@ -675,7 +678,7 @@ func (h *BoardHandler) UpdateTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
+	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t), MutatedCriterion: mutatedCriterion(req.SetCriteriaMet, t)})
 }
 
 // PauseTask parks the task (#1747): claim candidacy off, forward writes

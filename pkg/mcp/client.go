@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -1174,13 +1175,13 @@ type BoardEpicBody struct {
 // REST-identical either way.) DependsOn (create only, #1747) adds
 // prerequisite edges in the same write.
 type BoardTaskBody struct {
-	Title              string           `json:"title,omitempty"`
-	Description        string           `json:"description,omitempty"`
-	Tags               *[]string        `json:"tags,omitempty"`
-	AcceptanceCriteria []BoardCriterion `json:"acceptanceCriteria,omitempty"`
-	SetCriteriaMet     *int             `json:"setCriteriaMet,omitempty"`
-	DependsOn          []string         `json:"dependsOn,omitempty"`
-	RequestID          string           `json:"requestId,omitempty"`
+	Title              string              `json:"title,omitempty"`
+	Description        string              `json:"description,omitempty"`
+	Tags               *[]string           `json:"tags,omitempty"`
+	AcceptanceCriteria []BoardCriterion    `json:"acceptanceCriteria,omitempty"`
+	SetCriteriaMet     *board.CriteriaCheck `json:"setCriteriaMet,omitempty"`
+	DependsOn          []string            `json:"dependsOn,omitempty"`
+	RequestID          string              `json:"requestId,omitempty"`
 }
 
 // BoardPlanBody mirrors the REST boardPlanRequest (#1747 import_plan).

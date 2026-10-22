@@ -1681,6 +1681,8 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 	// session-gated (user-collaborator sessions only — spawned workers
 	// hold no manager grant; the fail-closed injection check is the
 	// first tier, the engine's live-assignee belt the second).
+	// #1837 P2a: board_list/board_health join the manager set (the
+	// workspace-scoped overview reads).
 	case "board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",
@@ -1689,7 +1691,8 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_create_task", "board_update_task",
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task",
-		"board_import_plan":
+		"board_import_plan",
+		"board_list", "board_health":
 		res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)

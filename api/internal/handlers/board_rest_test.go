@@ -74,6 +74,7 @@ type fakeBoardManager struct {
 	// #1837 P2 arms: workspace-scoped list/health captures + the last
 	// update-task input (setCriteriaMet echo tier).
 	lastListWorkspace string
+	lastListRef       string
 	lastHealthWorkspace string
 	wsTasks            []board.Task
 	wsHealth           *board.Health
@@ -85,6 +86,39 @@ func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) 
 		return false, f.beltErr
 	}
 	return sessionID != "" && sessionID == f.workerSession, nil
+}
+
+// #1837 P2a: the agent surface's workspace-scoped projections.
+func (f *fakeBoardManager) ListTasksInWorkspace(_ context.Context, workspaceID, projectID, shortIDOrID, stage, failed string) ([]board.Task, *board.Project, error) {
+	f.lastListWorkspace = workspaceID
+	f.lastListRef = pickRef(projectID, shortIDOrID)
+	if err := f.errFor["list_tasks_ws"]; err != nil {
+		return nil, nil, err
+	}
+	p := &board.Project{ID: "p1", ShortID: "prj-aaaa1111", Name: "proj", TargetWorkspaceID: workspaceID}
+	return f.wsTasks, p, nil
+}
+
+func (f *fakeBoardManager) BoardHealthInWorkspace(_ context.Context, workspaceID string) (*board.Health, error) {
+	f.lastHealthWorkspace = workspaceID
+	if err := f.errFor["health_ws"]; err != nil {
+		return nil, err
+	}
+	if f.wsHealth != nil {
+		return f.wsHealth, nil
+	}
+	return &board.Health{
+		ActiveLeases: []board.HealthLease{}, TaskCooldowns: []board.HealthTaskCooldown{},
+		ProjectCooldowns: []board.HealthProjectCooldown{}, PendingInputByOrigin: map[string]int{},
+		RecentReclaims: []board.HealthReclaim{}, ProjectSlots: []board.HealthProjectSlots{},
+	}, nil
+}
+
+func pickRef(id, shortIDOrID string) string {
+	if id != "" {
+		return id
+	}
+	return shortIDOrID
 }
 
 func newFakeBoardManager() *fakeBoardManager {

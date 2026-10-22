@@ -26,6 +26,7 @@ func TestBoardSeam_ListTasks(t *testing.T) {
 			AssigneeSession: "ses-w1", LeaseExpiresAt: nil, Tags: []string{}},
 		{ID: "t2", ShortID: "tsk-list00002", Title: "two", Stage: board.StageBacklog,
 			IsBlocked: true, Tags: []string{}},
+		{ID: "t3", ShortID: "tsk-list00003", Title: "three", Stage: board.StageBacklog, Tags: []string{}},
 	}
 	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 
@@ -38,10 +39,10 @@ func TestBoardSeam_ListTasks(t *testing.T) {
 		ProjectID string       `json:"project_id"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Len(t, resp.Tasks, 2, "all tasks in ONE call with stage+claim columns")
+	require.Len(t, resp.Tasks, 3, "all tasks in ONE call with stage+claim columns")
 	assert.Equal(t, "ses-w1", resp.Tasks[0].AssigneeSession, "claim column (assignee)")
 	assert.True(t, resp.Tasks[1].IsBlocked, "blocked column")
-	assert.Equal(t, []string{"tsk-list00001"}, resp.ReadySet, "ready set: unblocked+unpaused backlog rows")
+	assert.Equal(t, []string{"tsk-list00003"}, resp.ReadySet, "ready set: unblocked+unpaused backlog rows (claimed and blocked rows excluded)")
 	assert.Equal(t, "ws-1", mgr.lastListWorkspace, "workspace-scoped resolve")
 }
 

@@ -42,6 +42,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // boardToolNames is the exact external surface (design §4.3b + #1832
@@ -222,8 +224,7 @@ func boardAllowCases() []boardToolCase {
 			name: "board_update_task", tool: "board_update_item",
 			args: map[string]any{"item_id": "tsk-cccc3333", "set_criteria_met": 0},
 			mock: func(m *MockAPIClient) {
-				zero := 0
-				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &zero}).
+				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &board.CriteriaCheck{Index: 0, Met: true}}).
 					Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
