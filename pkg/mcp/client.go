@@ -659,10 +659,24 @@ type contractStreamRead struct {
 // translation) OR its ADDITIVE internal_session_id matches either key
 // (the #1824 pairing — lets a full-id deprecated-window input adopt
 // the phrase-keyed frames of refreshed pods). Empty ids never match.
-type sessionMatchKeys struct{ a, b string }
+// Case discipline: the CANONICAL key stays byte-exact (legacy ses_
+// ids are case-sensitive — raw byte-equal, never folded, the #1691
+// rule); the CALLER-typed phrase-form key folds case-insensitively
+// (phrases are case-insensitive by ruling — r4 F1: a title-cased
+// phrase must match lowercase phrase-keyed frames in the header-less
+// mixed-fleet regime).
+type sessionMatchKeys struct {
+	a          string
+	b          string
+	phraseFold bool
+}
 
 func newSessionMatchKeys(canonical, callerRef string) sessionMatchKeys {
-	return sessionMatchKeys{a: strings.TrimSpace(canonical), b: strings.TrimSpace(callerRef)}
+	return sessionMatchKeys{
+		a:          strings.TrimSpace(canonical),
+		b:          strings.TrimSpace(callerRef),
+		phraseFold: shortid.IsShortIDForm(strings.TrimSpace(callerRef)),
+	}
 }
 
 func (k sessionMatchKeys) matchWithInternal(sid, internalID string) bool {
@@ -671,6 +685,9 @@ func (k sessionMatchKeys) matchWithInternal(sid, internalID string) bool {
 			continue
 		}
 		if id == k.a || id == k.b {
+			return true
+		}
+		if k.phraseFold && strings.EqualFold(id, k.b) {
 			return true
 		}
 	}

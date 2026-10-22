@@ -6,7 +6,7 @@
 
 ---
 
-## Objective
+## Objective (HISTORICAL r0 framing — describes the PRE-#1824 world; the "Post-#1824 adaptation" section is the current truth)
 
 Issue #1816: the platform-side MCP surfaces still emit/accept internal
 harness session ids everywhere the #1775/#1806 rounds did not reach.
@@ -120,7 +120,7 @@ Two concrete surfaces remained:
   records) carry harness ids as audit/attribution records — the §1
   admin/debug carve-out.
 
-## Test evidence (vs main @ 644446fa, then at head)
+## Test evidence (HISTORICAL r0 record — vs main @ 644446fa; superseded by the r2/r3 sections for the five-leg post-#1824 state)
 
 - Red-first: all pins listed above verified FAILING on main before
   implementation (envelope notice; recovery warning phrase; phrase
@@ -246,3 +246,26 @@ Five legs at head: PhraseTargetedSendMessage, PhraseTargetedAbort,
 DeprecatedFullIDCarriesNotice, UnresolvablePhraseRefusesCleanly (now with
 the no-delivery assertion), AliasMissRefusesWithDidYouMean (now asserting
 the clause).
+
+## r4 review (CHANGES_REQUESTED) — remediated
+
+- **F1 (blocking, reviewer-reproduced): caller-ref key was case-sensitive** —
+  a title-cased phrase never matched lowercase phrase-keyed frames in the
+  header-less mixed-fleet regime (budget burn + fallback; live
+  questions/permission lost). Fix: the caller-typed PHRASE-form key folds
+  case-insensitively (strings.EqualFold, gated on
+  shortid.IsShortIDForm(b)); the CANONICAL key stays byte-exact (legacy
+  ses_ ids are case-sensitive — raw byte-equal, the #1691 rule).
+  Pin: `TestHTTPClient_SendMessage_MixedCasePhraseNoHeaderMatchesFrames`
+  (red-first: 3.01s burn before the fold).
+- **Missing-test 2: phrase-keyed/additive permission auto-approve** —
+  `TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves`: the
+  reply POST fires for the phrase-keyed frame, and the wait completes
+  via the additive-id IDLE (history answers the no-live-text turn per
+  the pre-existing semantics — asserted, not masked).
+- **Doc nit**: the worklog's r0 "Test evidence"/"Objective" sections are
+  now explicitly marked HISTORICAL (the r2/r3 sections carry the
+  current five-leg, post-#1824 state).
+- Union-merge of main (e6764841) — brings the CI stale-base heal
+  (c42002e1: the stale-red checks ran the pre-merge-base merge commit)
+  and the landed #1814/#1820 placeholder guard.

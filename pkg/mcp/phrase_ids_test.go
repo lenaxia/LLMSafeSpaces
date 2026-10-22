@@ -13,6 +13,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -542,4 +543,117 @@ func TestHTTPClient_SendMessage_PhraseKeyedForeignFrameIgnored(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "mine", resp)
 	assert.NotContains(t, resp, "foreign", "a phrase-keyed foreign frame must not bleed in")
+}
+
+// TestHTTPClient_SendMessage_MixedCasePhraseNoHeaderMatchesFrames (r4
+// F1): the caller-ref key must be case-INSENSITIVE for phrase-form
+// refs — phrases are case-insensitive by ruling and the tool
+// descriptions advertise it. Mixed-fleet regime: NO bridge header (an
+// API predating it), phrase-keyed frames, title-cased caller input.
+func TestHTTPClient_SendMessage_MixedCasePhraseNoHeaderMatchesFrames(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/Amber-Falcon-Glides/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent) // no X-Session-Ref-Resolved: mixed fleet
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, &abiv1.SessionSnapshot{
+			SessionId: "amber-falcon-glides", // lowercase on the wire
+			Status:    abiv1.SessionStatus_SESSION_STATUS_BUSY,
+		}))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(2, &abiv1.Event{
+			Type:      abiv1.EventType_EVENT_TYPE_PART_DELTA,
+			SessionId: "amber-falcon-glides",
+			Delta:     "folded",
+		}))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(3, &abiv1.Event{
+			Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId: "amber-falcon-glides",
+			Status:    abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}))
+		flusher.Flush()
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/Amber-Falcon-Glides/message", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", "Amber-Falcon-Glides", "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "folded", resp)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"a title-cased phrase must match lowercase phrase-keyed frames (case-insensitive phrase space)")
+}
+
+// TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves (r4
+// missing-test 2): the headless permission auto-approve branch fires
+// under the PHRASE-KEYED/additive frame shape (it was only exercised
+// under harness-keyed fixtures) — the reply POST must carry the input
+// request's own id.
+func TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves(t *testing.T) {
+	const canonical = "ses_perm_canonical"
+	var repliedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(types.HeaderSessionRefResolved, canonical)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, &abiv1.SessionSnapshot{
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_BUSY,
+		}))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(2, &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_INPUT_REQUEST,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Input: &abiv1.InputRequest{
+				Id:        "per_777",
+				SessionId: "amber-falcon-glides",
+				Kind:      abiv1.InputKind_INPUT_KIND_PERMISSION,
+			},
+		}))
+		flusher.Flush()
+		// The auto-approve fires; the turn then completes (IDLE).
+		writeContractFrame(t, w, eventFrame(3, &abiv1.Event{
+			Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId:         "amber-falcon-glides",
+			InternalSessionId: canonical,
+			Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		}))
+		flusher.Flush()
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/permission/per_777/reply", func(w http.ResponseWriter, r *http.Request) {
+		repliedPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// An approved turn with no live deltas answers from history (the
+	// pre-existing IDLE-no-text semantics) — resolved canonical path.
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/"+canonical+"/message", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]Message{contractMsg("msg_9", "assistant", "approved-and-done")})
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", "amber-falcon-glides", "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "approved-and-done", resp)
+	require.Eventually(t, func() bool { return repliedPath != "" }, 2*time.Second, 50*time.Millisecond,
+		"the auto-approve reply must fire for a phrase-keyed/additive permission frame")
+	assert.Equal(t, "/api/v1/workspaces/ws-1/permission/per_777/reply", repliedPath)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"the IDLE frame (matched via the additive id) must complete the wait, not the timeout")
 }
