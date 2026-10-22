@@ -1,4 +1,4 @@
--- 000040_task_failed_state (issue #1813)
+-- 000041_task_failed_state (issue #1813)
 --
 -- The failed-state attribute overlay: a task whose worker attempt
 -- FAILED (lease lapse → reclaim; attempts-cap exhaustion) carries a

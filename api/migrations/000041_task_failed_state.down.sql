@@ -1,4 +1,4 @@
--- 000040 down: drop the failed-state attribute overlay (#1813).
+-- 000041 down: drop the failed-state attribute overlay (#1813).
 
 BEGIN;
 
