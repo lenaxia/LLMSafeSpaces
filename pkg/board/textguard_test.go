@@ -67,9 +67,21 @@ func TestTextGuard_LengthCaps(t *testing.T) {
 func TestTextGuard_AtCapPasses(t *testing.T) {
 	// Content exactly AT the cap is legitimate — the cap is inclusive
 	// and long prose is expected (that is what description_file exists
-	// to carry, but inline content up to the cap is legal).
-	require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: strings.Repeat("a", MaxDescriptionBytes)}))
-	require.NoError(t, ValidateTaskInput(TaskInput{Title: strings.Repeat("t", MaxTitleBytes)}))
+	// to carry, but inline content up to the cap is legal). Varied
+	// prose (distinct lines, no tiling) trips no heuristic.
+	var b strings.Builder
+	for i := 0; b.Len() < MaxDescriptionBytes; i++ {
+		b.WriteString("Line ")
+		b.WriteString(strings.Repeat("x", i%9+1))
+		b.WriteString(" carries unique payload ")
+		b.WriteString(strings.Repeat("y", (i*7)%5+1))
+		b.WriteString(" numbered ")
+		b.WriteString(strings.Repeat("z", i%4+1))
+		b.WriteString(".\n")
+	}
+	atCap := b.String()[:MaxDescriptionBytes]
+	require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: atCap}))
+	require.NoError(t, ValidateTaskInput(TaskInput{Title: atCap[:MaxTitleBytes]}))
 }
 
 // --- degenerate repetition -------------------------------------------------------

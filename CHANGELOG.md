@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
+
+- **Server-side text rejection heuristics on every board write surface**
+  (REST, external MCP, agent seam — enforced at the Service layer):
+  string-field byte caps (title 512 / description 128 KiB / outcome
+  64 KiB / name 256 / criterion 8 KiB / tag 64 ×16), degenerate-
+  repetition rejection (a fragment tiling the value, or one line
+  repeated, ≥50 times), and raw JSON structural splice rejection
+  (`","key":"` adjacency inside string values — the #1832 dogfood's
+  silent-corruption artifact). New guard code `text_rejected`
+  (400 class; `content_echo_diff` on create/update responses flags
+  stored != submitted, never silent). Fenced code blocks, balanced
+  inline JSON containers, and JSON-opening lines are exempt —
+  legitimate markdown/JSON/code is pinned un-rejected by tests.
+- **File-backed long fields on the agent manager surface**:
+  `description_file` (board_create_task / board_update_task) and
+  `outcome_file` (board_create_epic / board_update_epic) read a
+  workspace file agent-side (loadImages discipline: regular files
+  only, O_NONBLOCK open, stat+read caps, UTF-8 gate) and carry its
+  content to the platform verbatim — long charters never ride the
+  emitted-inline-argument path where corruption lives. Mutually
+  exclusive with the inline field; a `*_file` key on the wrong tool
+  is refused loudly.
+
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit

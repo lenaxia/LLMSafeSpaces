@@ -237,7 +237,7 @@ func (h *PodAutomationHandler) BoardCreateEpic(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, e)
+	c.JSON(http.StatusCreated, epicEchoResponse{Epic: *e, ContentEchoDiff: epicEchoDiff(req.Title, req.Outcome, e)})
 }
 
 // BoardUpdateEpic patches an epic.
@@ -261,7 +261,7 @@ func (h *PodAutomationHandler) BoardUpdateEpic(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, e)
+	c.JSON(http.StatusOK, epicEchoResponse{Epic: *e, ContentEchoDiff: epicEchoDiff(req.Title, req.Outcome, e)})
 }
 
 // BoardEpicLifecycle serves activate/pause/archive/unarchive.
@@ -370,7 +370,7 @@ func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, t)
+	c.JSON(http.StatusCreated, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
 }
 
 // BoardUpdateTask patches a task.
@@ -397,7 +397,7 @@ func (h *PodAutomationHandler) BoardUpdateTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, t)
+	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
 }
 
 // BoardTaskLifecycle serves pause/resume.

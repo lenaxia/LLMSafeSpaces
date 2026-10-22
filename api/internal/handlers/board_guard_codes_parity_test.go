@@ -47,8 +47,9 @@ var guardConstValues = map[string]string{
 	"GuardPaused":           board.GuardPaused,
 	"GuardConcurrency":      board.GuardConcurrency,
 	"GuardGraphLimit":       board.GuardGraphLimit,
-	"GuardBackpressure":     board.GuardBackpressure,
-	"GuardInput":            board.GuardInput,
+	"GuardBackpressure":      board.GuardBackpressure,
+	"GuardInput":             board.GuardInput,
+	"GuardTextRejected":      board.GuardTextRejected, // #1837 P1b corruption class
 }
 
 // codeExpr matches the Code field of a GuardError{...} or
