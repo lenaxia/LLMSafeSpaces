@@ -113,4 +113,4 @@ None. One observation for the orchestrator: the FULL `./cmd/workspace-agentd/` s
 - pkg/mcp/{client.go,workflow_tools.go,server_test.go}; cmd/workspace-agentd/{mcp_server.go,mcp_server_test.go}
 - frontend/src/api/workflows.ts; frontend/src/pages/TriggersPage.tsx, TriggersPage.test.tsx
 - sdks/openapi.yaml; sdks/go/workflows.go; sdks/python/llmsafespaces/client.py; sdks/typescript/src/client.ts; sdks/java/.../TriggersService.java
-- docs/api/mcp.md; README-LLM.md; .github/workflows/e2e-nightly.yml; local/issue-1812-trigger-gate-e2e.sh (new); local/issue_1812_trigger_gate_e2e_script_test.go (new); worklogs/1164_2026-10-21_trigger-script-gate.md (this file)
+- docs/api/mcp.md; README-LLM.md; .github/workflows/e2e-nightly.yml; local/issue-1812-trigger-gate-e2e.sh (new); local/issue_1812_trigger_gate_e2e_script_test.go (new); worklogs/1165_2026-10-21_trigger-script-gate.md (this file)
