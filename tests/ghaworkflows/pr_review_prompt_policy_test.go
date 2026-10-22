@@ -189,6 +189,36 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		i = pos + 1
 	}
 
+	// Exact-sentence pins (r7: the token/adjacency arms race — "no need to",
+	// "cannot", "shouldn't", "only if you have spare time", "is FALSE",
+	// "so use ... instead" all survived the enumerated guards). These five
+	// sentences are the load-bearing policy statements; each is pinned
+	// EXACTLY (terminal included) on the whitespace-normalized body. ANY
+	// edit — negation, optionalization, weakening clause, polarity flip,
+	// rewording — breaks equality and fails the pin; conscious policy edits
+	// must update the pin in the same commit, which is the point. Sentences
+	// with legitimate interior negations (S3/S5) are pinnable ONLY this
+	// way — a token scan would false-fire on "NOT cover"/"never compile".
+	for _, exact := range []struct {
+		sentence string
+		why      string
+	}{
+		{"When a check was skipped and the diff touches what it would have run, execute that suite locally yourself.",
+			"the skip action (rule 2): mandatory local execution for skipped checks"},
+		{"When that job was skipped or failed, run the board suites locally.",
+			"the board-suite local obligation (rule 2): unconditional on skip/fail of the JOB"},
+		{"Additionally, board-manager `-tags integration` suites (kill-tests, worker/manager semantics, board-manager E2E) are covered when the `pkg/secrets integration` JOB (in secrets-integration.yml) ran and concluded SUCCESS on the head — judge the JOB/CHECK itself, never the workflow-level conclusion: the workflow always runs (its changes-detect job), and a path-skipped job still shows a green workflow run while the board suites never executed.",
+			"the conditional board coverage claim (rule 2): JOB-level, polarity-bound, with the path-skip warning (an 'is FALSE' tail or NOT-insertion breaks it)"},
+		{"NEVER `gh pr checks --watch`: that watches ALL checks including THIS review job itself and would wait on its own completion — a deadlock until job timeout.",
+			"the self-deadlock prohibition (rule 4): the ONLY sanctioned --watch mention, exact form — a 'so use ... instead' continuation or any variant breaks it"},
+		{"ALWAYS still run locally what CI does NOT cover — this residue is yours and stays mandatory on every review whose diff touches code it exercises:",
+			"the residue mandate (rule 5 lead): mandatory, never optionalized ('though you needn't bother' or 'only if you have spare time' breaks it)"},
+	} {
+		if !strings.Contains(body, exact.sentence) {
+			t.Errorf("pr-review.md: load-bearing sentence no longer exact — %s. Expected: %q", exact.why, exact.sentence)
+		}
+	}
+
 	// Sentence-level polarity (r6: adjacency regexes were evaded by one
 	// intervening word — "do not ever execute", "do not, under any
 	// circumstances, execute", "you may want to execute", "not necessarily

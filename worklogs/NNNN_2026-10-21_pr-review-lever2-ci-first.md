@@ -25,7 +25,7 @@ Cut the reviewer's measured double-execution and idle-wait waste without touchin
 
 ### Red-first pin — `tests/ghaworkflows/pr_review_prompt_policy_test.go`
 
-`TestPrReviewPromptCIFirstExecutionPolicy`: 16 whitespace-normalized positive markers, 9 negative forbidden-phrase markers, a structural negated-command regex, sentence-level polarity checks on both operative commands, a watch-family guard, and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked across six review rounds (inversion and polarity phrases, workflow-level board conditions, intervening-word negations, PR-numbered --watch variants).
+`TestPrReviewPromptCIFirstExecutionPolicy`: 16 whitespace-normalized positive markers, 9 negative forbidden-phrase markers, a structural negated-command regex, sentence-level polarity checks on both operative commands, an occurrence-level watch guard, EXACT-SENTENCE pins on the five load-bearing policy statements, and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked across six review rounds (inversion and polarity phrases, workflow-level board conditions, intervening-word negations, PR-numbered --watch variants).
 
 ---
 
@@ -45,7 +45,7 @@ None.
 
 ## Tests Run
 
-- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (16 positives / 9 negatives + negated-command regex + sentence polarity + watch family); red-verified against the pre-policy prompt and against every mutation class across six rounds: inversion phrases, workflow-level board conditions, polarity negations (NOT/never/do-not/must-not/dont/may/optionally, including intervening-word forms like "do not, under any circumstances, execute"), and watch-family variants (PR-numbered, number-after, prohibition-flip).
+- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (16 positives / 9 negatives + negated-command regex + sentence polarity + watch family); red-verified against the pre-policy prompt and against every mutation class across six rounds: inversion phrases, workflow-level board conditions, polarity negations (NOT/never/do-not/must-not/dont/may/optionally, including intervening-word forms like "do not, under any circumstances, execute"), watch-family variants (PR-numbered, number-after, prohibition-flip, use-instead continuations), and unlisted negation/optionalization forms ("no need to", "cannot", "should not", "only if you have spare time", "is FALSE") — the exact-sentence pins catch every rewording class.
 - `go test ./tests/ghaworkflows/ -count=1` — ok. `go vet ./tests/ghaworkflows/` — clean.
 - CI on the branch head: Lint, Test (-short), Test (full suite, race), Frontend, Origin plugin freeze pin, Harness ABI, Gitleaks — SUCCESS (ten docker build-push jobs fail `go mod download` — pre-existing on main at 43a7ba29, no build inputs touched).
 
