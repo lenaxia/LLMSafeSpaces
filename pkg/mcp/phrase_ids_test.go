@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -598,7 +599,10 @@ func TestHTTPClient_SendMessage_MixedCasePhraseNoHeaderMatchesFrames(t *testing.
 // request's own id.
 func TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves(t *testing.T) {
 	const canonical = "ses_perm_canonical"
-	var repliedPath string
+	// r5: the reply lands on the SSE-serving goroutine's sibling (the
+	// auto-approve POST rides replyCtx) — synchronized access, the
+	// full-suite -race job must stay deterministic.
+	var replied atomic.Value
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/amber-falcon-glides/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(types.HeaderSessionRefResolved, canonical)
@@ -635,7 +639,7 @@ func TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves(t *testing.T) 
 		<-r.Context().Done()
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/permission/per_777/reply", func(w http.ResponseWriter, r *http.Request) {
-		repliedPath = r.URL.Path
+		replied.Store(r.URL.Path)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	// An approved turn with no live deltas answers from history (the
@@ -651,9 +655,9 @@ func TestHTTPClient_SendMessage_PhraseKeyedPermissionAutoApproves(t *testing.T) 
 	resp, err := client.SendMessage(context.Background(), "ws-1", "amber-falcon-glides", "hi", 3*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, "approved-and-done", resp)
-	require.Eventually(t, func() bool { return repliedPath != "" }, 2*time.Second, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return replied.Load() != nil }, 2*time.Second, 50*time.Millisecond,
 		"the auto-approve reply must fire for a phrase-keyed/additive permission frame")
-	assert.Equal(t, "/api/v1/workspaces/ws-1/permission/per_777/reply", repliedPath)
+	assert.Equal(t, "/api/v1/workspaces/ws-1/permission/per_777/reply", replied.Load())
 	assert.Less(t, time.Since(start), 2*time.Second,
 		"the IDLE frame (matched via the additive id) must complete the wait, not the timeout")
 }
