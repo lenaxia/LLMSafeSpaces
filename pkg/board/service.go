@@ -494,8 +494,11 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
-	// #1837 P1b: caps + corruption heuristics (the empty-fields-pass
-	// rule makes this patch-safe: omitted fields keep existing values).
+	// #1837 P1b: caps + corruption heuristics. NOTE: epic PATCH
+	// semantics are REPLACE-unconditional (title/outcome/tags are
+	// written as submitted — an omitted outcome CLEARS it, the
+	// documented engine rule, unchanged here); only EMPTY values skip
+	// validation above.
 	if err := ValidateEpicInput(in); err != nil {
 		return nil, err
 	}

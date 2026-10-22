@@ -142,7 +142,7 @@ func (h *PodAutomationHandler) BoardCreateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, p)
+	c.JSON(http.StatusCreated, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // BoardUpdateProject patches a project (the engine refuses agent-side
@@ -167,7 +167,7 @@ func (h *PodAutomationHandler) BoardUpdateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, p)
+	c.JSON(http.StatusOK, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // BoardProjectLifecycle serves archive/unarchive/pause/resume (the

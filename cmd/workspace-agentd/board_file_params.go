@@ -41,11 +41,12 @@ const boardFileFieldMaxBytes = 128 << 10
 // dropped onto the wire.
 func resolveBoardFileArgs(args map[string]any, targetField string) error {
 	admitted := targetField + "_file"
-	for k, v := range args {
+	for k := range args {
+		// A *_file key for another field is a caller mistake, refused
+		// loudly — never silently dropped onto the wire (a null value
+		// included: "I mentioned the param" is still a mention).
 		if strings.HasSuffix(k, "_file") && k != admitted {
-			if v != nil {
-				return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, admitted)
-			}
+			return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, admitted)
 		}
 	}
 	raw, present := args[admitted]

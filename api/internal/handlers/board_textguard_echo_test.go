@@ -94,3 +94,17 @@ func normalizeEchoDiff(in []string) []string {
 	}
 	return out
 }
+
+func TestBoardTextGuard_ProjectEchoDiff(t *testing.T) {
+	// #1837 review round 1: the project tier carries the echo too —
+	// name drift on update is flagged, clean responses unchanged.
+	mgr := newFakeBoardManager()
+	mgr.driftProject = &board.Project{ID: "p1", ShortID: "prj-aaaa1111", Name: "stored name", WorkerSlots: 2, Status: board.ProjectActive}
+	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+
+	w := doBoard(t, r, http.MethodPatch, "/internal/v1/automation/board/projects/prj-aaaa1111",
+		`{"sessionId":"ses-1","workspaceID":"ws-1","name":"submitted name"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"content_echo_diff":["name"]`,
+		"the stored name differs from the submitted one — flagged")
+}

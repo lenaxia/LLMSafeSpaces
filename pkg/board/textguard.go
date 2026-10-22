@@ -59,7 +59,10 @@ var boardSpliceRe = regexp.MustCompile(`","[A-Za-z_][A-Za-z0-9_]*":"`)
 
 // ValidateProjectInput enforces the text-field caps on project writes.
 func ValidateProjectInput(in ProjectInput) error {
-	return validateTextField("name", in.Name, MaxNameBytes)
+	if err := validateTextField("name", in.Name, MaxNameBytes); err != nil {
+		return err
+	}
+	return validateTags(in.Tags)
 }
 
 // ValidateEpicInput enforces caps + corruption heuristics on epic
@@ -68,7 +71,10 @@ func ValidateEpicInput(in EpicInput) error {
 	if err := validateTextField("title", in.Title, MaxTitleBytes); err != nil {
 		return err
 	}
-	return validateTextField("outcome", in.Outcome, MaxOutcomeBytes)
+	if err := validateTextField("outcome", in.Outcome, MaxOutcomeBytes); err != nil {
+		return err
+	}
+	return validateTags(in.Tags)
 }
 
 // ValidateTaskInput enforces caps + corruption heuristics on task
@@ -105,36 +111,56 @@ func validateTags(tags []string) error {
 
 // validateTextField enforces the byte cap, then the corruption
 // heuristics. Empty values (the field is omitted / keeps existing)
-// pass — updates patch.
+// pass — updates patch. NOTE (#1837 review): the deliberately
+// UNGUARDED string fields are move-stage/verdict evidence URLs and
+// free-form session/verdict reviewer identities — short, non-prose
+// identifiers with no corruption surface; the evidence URL carries a
+// plain cap at its own call sites.
 func validateTextField(field, s string, max int) error {
 	if s == "" {
 		return nil
 	}
 	if n := len(s); n > max {
-		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %d bytes exceeds the %d-byte cap (send long content via the agent surface's %s_file param)", field, n, max, strings.Split(field, "[")[0])}
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %d bytes exceeds the %d-byte cap%s", field, n, max, fileParamHint(field))}
 	}
 	return scanTextCorruption(field, s)
 }
 
-// scanTextCorruption runs the two degenerate-content detectors over
-// one field's value.
+// fileParamHint names the agent-surface file param ONLY for the fields
+// that actually have one (description/outcome) — a "criterion_file"
+// suggestion for a field with no such param is misleading guidance.
+func fileParamHint(field string) string {
+	base := strings.Split(field, "[")[0]
+	if base == "description" || base == "outcome" {
+		return fmt.Sprintf(" (send long content via the agent surface's %s_file param)", base)
+	}
+	return ""
+}
+
+// scanTextCorruption runs the degenerate-content detectors over one
+// field's value.
 func scanTextCorruption(field, s string) error {
 	if unit, count := tiledRepetition(s); count >= repetitionFloor {
-		return &GuardError{Code: GuardTextRejected, Detail: fmt.Sprintf(
-			"%s: degenerate repetition — a %d-byte fragment tiles the content %d times (floor %d); suspected emission corruption — regenerate the argument (long content: use the %s_file param)",
-			field, len(unit), count, repetitionFloor, strings.Split(field, "[")[0])}
+		return repetitionError(field, fmt.Sprintf("a %d-byte fragment tiles the content %d times", len(unit), count))
+	}
+	if unit, count := runRepetition(s); count >= repetitionFloor {
+		return repetitionError(field, fmt.Sprintf("a %d-byte fragment repeats %d times inside a longer string (junk-wrapped)", len(unit), count))
 	}
 	if line, count := repeatedLine(s); count >= repetitionFloor {
-		return &GuardError{Code: GuardTextRejected, Detail: fmt.Sprintf(
-			"%s: degenerate repetition — the line %q appears %d times (floor %d); suspected emission corruption — regenerate the argument (long content: use the %s_file param)",
-			field, truncateFor(line, 60), count, repetitionFloor, strings.Split(field, "[")[0])}
+		return repetitionError(field, fmt.Sprintf("the line %q appears %d times", truncateFor(line, 60), count))
 	}
 	if n := spliceHits(s); n > 0 {
 		return &GuardError{Code: GuardTextRejected, Detail: fmt.Sprintf(
-			"%s: %d raw JSON structural splice artifact(s) (`\",\"key\":\"` adjacency) inside the string value — never stored silently; suspected emission corruption — regenerate the argument (a fenced code block quoting the artifact is exempt)",
+			"%s: %d raw JSON structural splice artifact(s) (`\",\"key\":\"` adjacency) inside the string value — never stored silently; suspected emission corruption — regenerate the argument (a TERMINATED fenced code block quoting the artifact is exempt)",
 			field, n)}
 	}
 	return nil
+}
+
+func repetitionError(field, shape string) error {
+	return &GuardError{Code: GuardTextRejected, Detail: fmt.Sprintf(
+		"%s: degenerate repetition — %s (floor %d); suspected emission corruption — regenerate the argument%s",
+		field, shape, repetitionFloor, fileParamHint(field))}
 }
 
 // tiledRepetition reports the smallest tiling unit when s is exactly
@@ -163,6 +189,59 @@ func tiledRepetition(s string) (string, int) {
 	}
 	return unit, n / p
 }
+
+// runRepetition catches the junk-wrapped corruption shape the #1832
+// evidence actually shows: prefix + fragment*N + suffix, contiguous,
+// on one line or across lines. For every candidate unit length p in
+// [2, runUnitMax] it tracks the longest run r such that s[i] ==
+// s[i-p] holds throughout — a run of length ≥ repetitionFloor*p is N
+// back-to-back repeats of a p-byte unit. The unit must carry an
+// alnum rune (divider bars are formatting). Exact tiling by units
+// LARGER than runUnitMax stays tiledRepetition's job.
+func runRepetition(s string) (string, int) {
+	n := len(s)
+	if n < repetitionFloor*2 {
+		return s, 1
+	}
+	limit := runUnitMax
+	if maxUnit := n / repetitionFloor; maxUnit < limit {
+		limit = maxUnit
+	}
+	for p := 2; p <= limit; p++ {
+		bestStart, bestLen := 0, 0
+		runStart, runLen := 0, 0
+		for i := p; i < n; i++ {
+			if s[i] == s[i-p] {
+				if runLen == 0 {
+					runStart = i - p
+				}
+				runLen++
+			} else {
+				if runLen > bestLen {
+					bestStart, bestLen = runStart, runLen
+				}
+				runLen = 0
+			}
+		}
+		if runLen > bestLen {
+			bestStart, bestLen = runStart, runLen
+		}
+		// bestLen counts MATCHING bytes after the first unit; a run of
+		// k full units matches (k-1)*p bytes.
+		if bestLen >= (repetitionFloor-1)*p {
+			unit := s[bestStart : bestStart+p]
+			if hasAlnum(unit) {
+				return unit, bestLen/p + 1
+			}
+		}
+	}
+	return s, 1
+}
+
+// runUnitMax bounds runRepetition's unit-length scan. Units up to
+// ~half a_kb line cover the observed fragment sizes at 128 KiB worst
+// case cost; larger exact tiling is tiledRepetition's.
+const runUnitMax = 512
 
 // repeatedLine reports the most-repeated single line and its count.
 // Only lines with ≥8 bytes and at least one alphanumeric rune count —
@@ -203,26 +282,20 @@ func spliceHits(s string) int {
 	return n
 }
 
-// spliceExemptSpans builds the exempt-position predicate: fenced
-// blocks, balanced containers, and JSON-opening lines.
+// spliceExemptSpans builds the exempt-position predicate. Exempts
+// (the false-positive gates, test-pinned): TERMINATED fenced code
+// blocks (```-delimited — an unterminated fence exempts nothing: a
+// corruption artifact after a stray fence is still corruption) and
+// balanced {...}/[...] containers anywhere (a legitimate inline or
+// line-leading JSON example is balanced by construction; a splice
+// artifact's stray quotes/unbalanced braces open no span).
 func spliceExemptSpans(s string) func(int) bool {
 	type span struct{ start, end int }
 	var spans []span
 
-	addLineSpans := func() {
-		offset := 0
-		for _, raw := range strings.Split(s, "\n") {
-			start, end := offset, offset+len(raw)
-			trimmed := strings.TrimSpace(raw)
-			if trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"') {
-				spans = append(spans, span{start, end})
-			}
-			offset = end + 1
-		}
-	}
-	addLineSpans()
-
-	// Fenced code blocks: every ```-delimited region.
+	// Fenced code blocks: every TERMINATED ```-delimited region. An
+	// unterminated fence exempts nothing (#1837 review: exempting to
+	// EOF would let artifacts after a stray fence store silently).
 	inFence := false
 	fenceStart := 0
 	offset := 0
@@ -237,9 +310,6 @@ func spliceExemptSpans(s string) func(int) bool {
 			}
 		}
 		offset += len(raw) + 1
-	}
-	if inFence { // unterminated fence: exempt to the end
-		spans = append(spans, span{fenceStart, len(s)})
 	}
 
 	// Balanced containers: a stack walk tracking double-quoted string
@@ -312,10 +382,19 @@ func hasAlnum(s string) bool {
 	return false
 }
 
-// truncateFor renders a fragment for error messages.
+// truncateFor renders a fragment for error messages, rune-safe (a
+// mid-rune byte slice would marshal to U+FFFD).
 func truncateFor(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	cut := s[:max]
+	for i := 0; i < 4 && len(cut) > 0; i++ { // back off to a rune boundary
+		r := rune(cut[len(cut)-1])
+		if r&0xC0 != 0x80 { // not a continuation byte
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "…"
 }
