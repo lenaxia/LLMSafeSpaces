@@ -127,6 +127,8 @@ type APIClient interface {
 	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
+	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
+	BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
@@ -1452,6 +1454,37 @@ func (c *HTTPClient) BoardMoveStage(ctx context.Context, taskID, toStage, eviden
 	}
 	body := boardMoveStageBody{ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/move-stage", body)
+}
+
+// BoardVerdictFinding is one localized defect in a verdict payload
+// (#1832 item 5 — mirrors board.VerdictFinding).
+type BoardVerdictFinding struct {
+	Severity       string `json:"severity"`
+	Pointer        string `json:"pointer"`
+	CriterionIndex *int   `json:"criterionIndex,omitempty"`
+}
+
+// BoardVerdictBody is the POST /me/tasks/:id/verdict payload.
+type BoardVerdictBody struct {
+	Verdict     string                `json:"verdict"`
+	Findings    []BoardVerdictFinding `json:"findings,omitempty"`
+	Reviewer    string                `json:"reviewer"`
+	EvidenceURL string                `json:"evidenceUrl,omitempty"`
+	RequestID   string                `json:"requestId,omitempty"`
+}
+
+func (c *HTTPClient) BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/verdict", body)
+}
+
+func (c *HTTPClient) BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID+"/verdicts", nil)
 }
 
 // boardStartBody is the optional body for POST /me/tasks/:id/start —

@@ -44,9 +44,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// boardToolNames is the exact external surface (design §4.3b): 19 tools.
+// boardToolNames is the exact external surface (design §4.3b + #1832
+// item 5's verdict pair): 26 tools.
 var boardToolNames = []string{
 	"board_list_projects", "board_get", "board_read", "board_health",
+	"board_record_verdict", "board_task_verdicts",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
@@ -143,6 +145,23 @@ func boardAllowCases() []boardToolCase {
 			name: "board_read", tool: "board_read", args: map[string]any{"project_id": "prj-aaaa1111", "stage": "backlog"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardListTasks", mock.Anything, "prj-aaaa1111", "backlog", "").Return(`{"tasks":[]}`, nil)
+			},
+		},
+		{
+			name: "board_record_verdict", tool: "board_record_verdict",
+			args: map[string]any{"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
+				"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}}},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardRecordVerdict", mock.Anything, "tsk-cccc3333",
+					BoardVerdictBody{Verdict: "fail", Reviewer: "rev",
+						Findings:  []BoardVerdictFinding{{Severity: "blocker", Pointer: "c1"}},
+						RequestID: ""}).Return(`{"verdict":{"applied":true}}`, nil)
+			},
+		},
+		{
+			name: "board_task_verdicts", tool: "board_task_verdicts", args: map[string]any{"task_id": "tsk-cccc3333"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardTaskVerdicts", mock.Anything, "tsk-cccc3333").Return(`{"verdicts":[]}`, nil)
 			},
 		},
 		{
@@ -582,6 +601,10 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardGet(ctx, makeReq(name, args))
 	case "board_read":
 		return h.boardRead(ctx, makeReq(name, args))
+	case "board_record_verdict":
+		return h.boardRecordVerdict(ctx, makeReq(name, args))
+	case "board_task_verdicts":
+		return h.boardTaskVerdicts(ctx, makeReq(name, args))
 	case "board_health":
 		return h.boardHealth(ctx, makeReq(name, args))
 	case "board_create_project":

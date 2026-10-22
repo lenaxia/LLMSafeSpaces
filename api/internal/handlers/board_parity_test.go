@@ -145,6 +145,10 @@ var boardParityMatrix = []parityRow{
 	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
 		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams, live on REST/external)
+	{action: "record_verdict", restMethods: []string{"RecordTaskVerdict"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_record_verdict"}, agent: absentCell}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it
+	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
 		agentTool: "board_create_epic"},
@@ -333,6 +337,11 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/resume", `{}`)
 	case "board_read":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
+	case "task_verdicts":
+		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/verdicts", "")
+	case "record_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict",
+			`{"verdict":"fail","reviewer":"rev","findings":[{"severity":"blocker","pointer":"c1"}]}`)
 	case "create_epic":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E"}`)
 	case "update_epic":
@@ -757,6 +766,13 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_project_resume", map[string]any{"project_id": "prj-aaaa1111"}, true
 	case "board_read":
 		return "board_list_projects", map[string]any{}, true
+	case "task_verdicts":
+		return "board_task_verdicts", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "record_verdict":
+		return "board_record_verdict", map[string]any{
+			"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
+			"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}},
+		}, true
 	case "create_epic":
 		return "board_create_epic", map[string]any{"project_id": "prj-aaaa1111", "title": "E"}, true
 	case "update_epic":
@@ -932,6 +948,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"GET /api/v1/me/projects/:id/epics",
 		"GET /api/v1/me/projects/:id/tasks",
 		"GET /api/v1/me/tasks/:id",
+		"GET /api/v1/me/tasks/:id/verdicts",
 		"PATCH /api/v1/me/epics/:id",
 		"PATCH /api/v1/me/projects/:id",
 		"PATCH /api/v1/me/tasks/:id",
@@ -952,6 +969,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/pause",
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
+		"POST /api/v1/me/tasks/:id/verdict",
 		"PUT /api/v1/me/board/config",
 		"PUT /api/v1/me/projects/:id/config",
 	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows; cancel eliminated; task_start stays owner-only; /me/board group now scanned)")
@@ -1015,7 +1033,9 @@ var replayExceptions = map[string]string{
 func boardReadActions() map[string]bool {
 	return map[string]bool{"board_read": true, "heartbeat": true, "report_throttle": true, "claim_next": true,
 		// #1832 config reads: pure reads, nothing to replay or audit.
-		"get_user_board_config": true, "get_project_board_config": true}
+		"get_user_board_config": true, "get_project_board_config": true,
+		// #1832 item 5: the verdict chain read.
+		"task_verdicts": true}
 }
 
 // TestBoardParity_IdempotentReplay: the clientMessageID discipline at
@@ -1121,6 +1141,8 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
 	case "move_stage":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
+	case "record_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict", `{"verdict":"approve","reviewer":"rev","requestId":`+q(requestID)+`}`)
 	case "archive_project":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", body)
 	case "unarchive_project":
