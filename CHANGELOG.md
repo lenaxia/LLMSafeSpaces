@@ -5,7 +5,26 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
 ## [Unreleased]
+
+### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
+
+- **Duplicate worklog numbers now FAIL `make repolint`** — the new
+  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
+  (`WorklogNumberPattern`) so historical uppercase-slug files count
+  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
+  the lowercase-only slug class; healed here by renumbering the
+  non-series member of each pair — final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166). Gaps stay warnings:
+  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
+  (pinned end-to-end through the real hook: every sentinel numbered,
+  main-inherited included, all unique) and the falsified "sentinels
+  never appear on origin/main" / "collisions cannot occur" comments
+  are corrected. The invariant caught one real collision in-flight
+  (its own PR's 1161 vs main's lag-window assignment); a second
+  (1162) was pre-empted by a manual leapfrog before it could redden.
+  Companion security bumps shipped separately: 43a7ba29 (Go
+  toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
 
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
 

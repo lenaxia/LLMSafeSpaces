@@ -48,6 +48,13 @@ var MigrationPattern = regexp.MustCompile(`^(\d{6})_([a-z0-9_]+)\.(up|down)\.sql
 // 1=version, 2=date, 3=slug.
 var WorklogPattern = regexp.MustCompile(`^(\d{4})_(\d{4}-\d{2}-\d{2})_([a-z0-9._-]+)\.md$`)
 
+// WorklogNumberPattern matches ANY file carrying a numbered-worklog
+// prefix — regardless of slug case or shape (#1807 r6: historical files
+// like `0498_..._epic-54-US-54.1-...md` carry uppercase slugs that
+// WorklogPattern's lowercase-only class rejects, hiding their duplicate
+// numbers from the uniqueness invariant). Captures: 1=version.
+var WorklogNumberPattern = regexp.MustCompile(`^(\d{4})_.+\.md$`)
+
 // WorklogSentinelPattern matches `NNNN_YYYY-MM-DD_<slug>.md` — the sentinel
 // form authors write before the post-merge bot assigns a real number. The
 // literal `NNNN` is a placeholder meaning "assign me a number at merge."
@@ -452,8 +459,11 @@ type WorklogRename struct {
 // `<next-number>_<date>_<slug>.md`. Sentinels are processed in lexical
 // order so same-branch batches get contiguous numbers in a stable order.
 //
-// When origin/main is reachable, files that exist there are treated as
-// incumbents — they stay; files unique to this working copy are renumbered.
+// When origin/main is reachable, NUMBERED files that exist there are
+// treated as incumbents — they stay; files unique to this working copy
+// are renumbered. (Main-inherited SENTINELS are the ruling-c exception:
+// assignSentinels deliberately renumbers them too — the distributed
+// self-heal for the bot-lag window.)
 // This is the correct signal after `git rebase origin/main`: mainline's
 // worklog and yours both end up in worklogs/, and mainline's was merged
 // first. Mainline files also participate in collision detection as
@@ -506,9 +516,18 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 
 	// Sentinel pass: assign real numbers to all NNNN_ files first, in
 	// lexical order, so duplicate-resolution runs against an
-	// already-numbered tree. Sentinels never appear on origin/main
-	// (the post-merge bot rewrites them on every merge), so every
-	// sentinel is a newcomer by definition.
+	// already-numbered tree. Sentinels CAN appear on origin/main — the
+	// bot-lag window between a merge and the post-merge numbering
+	// commit (#1795: the 25ed1853 rebase carried four) — and the
+	// ruling-c semantics deliberately renumber them anyway: the pass is
+	// the distributed self-healing that closes the lag window, and
+	// every assignment skips both local and remote occupied numbers —
+	// every number WORKLOGPATTERN can see (uppercase-slug files are
+	// invisible to this pass; the runWorklogUniqueness invariant is
+	// the net that catches what it cannot). The safety
+	// net for what two lag-window writers can still independently
+	// produce is the runWorklogUniqueness invariant (duplicate numbers
+	// = red CI), not this pass.
 	sentinelRenames, err := assignSentinels(dir, remoteByVersion)
 	if err != nil {
 		return renames, err

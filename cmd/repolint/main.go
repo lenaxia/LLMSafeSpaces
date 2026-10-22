@@ -92,6 +92,7 @@ func main() {
 	failures := 0
 	failures += runMigrations(root)
 	failures += runWorklogSentinels(root)
+	failures += runWorklogUniqueness(root)
 	failures += runChartDrift(root)
 	failures += runCRDDrift(root)
 	failures += runGinSetMode(root)
@@ -202,12 +203,13 @@ func runMigrations(root string) int {
 // new worklogs). The CLI always reports; the caller (Makefile / CI / hook)
 // decides severity via exit-code handling.
 //
-// The old sequence check (duplicate detection, gap detection, mainline
-// collision detection) is intentionally removed: authors no longer pick
-// numbers, so collisions cannot originate at authoring time, and the
-// post-merge bot assigns numbers atomically per-merge, so merge-time
-// collisions cannot occur either. A residual NNNN_ on main is the only
-// signal worth checking — it means the bot failed to run.
+// The sequence checks live in runWorklogUniqueness below: duplicate
+// detection is RESTORED there (#1795 — the "bot assigns atomically,
+// collisions cannot occur" premise was falsified by the bot-lag window,
+// where a rebasing lane's post-rewrite renumber and the bot can
+// independently mint the same number) and gaps are its warning class.
+// A residual NNNN_ on main remains this check's own signal — it means
+// the bot failed to run (or has not run yet: the lag window).
 func runWorklogSentinels(root string) int {
 	dir := filepath.Join(root, "worklogs")
 	rep, err := repolint.SentinelCheck(dir)
@@ -224,6 +226,43 @@ func runWorklogSentinels(root string) int {
 		return 0
 	}
 	fmt.Println("ok    worklogs no NNNN_ sentinels (all numbered)")
+	return 0
+}
+
+// runWorklogUniqueness — the #1795 ruling-c invariant: duplicate
+// worklog numbers redden CI. The sentinel-era assumption that
+// collisions "cannot occur" (authors never pick numbers; the bot
+// assigns atomically) was falsified by the bot-lag window: origin/main
+// can carry unnumbered sentinels between a merge and the bot's
+// numbering commit, and the post-rewrite hook's sanctioned renumber-all
+// semantics then lets a rebasing lane and the bot independently mint
+// the same number. Gaps stay warnings (they are historical or bot-lag
+// holes that nothing backfills — the fix pass only ever numbers
+// above max); DUPLICATES are the real corruption.
+// NOTE (#1807 r8): fixWorklogs (the bot's healer) still matches only
+// WorklogPattern — an uppercase-slug duplicate redden requires a
+// MANUAL renumber (as this PR did for the 0498/0500 pairs); aligning
+// the healer is deferred as a behavior change to the numbering bot.
+func runWorklogUniqueness(root string) int {
+	dir := filepath.Join(root, "worklogs")
+	rep, err := repolint.SequenceCheck(repolint.SequenceConfig{
+		Dir:       dir,
+		Pattern:   repolint.WorklogNumberPattern,
+		AllowGaps: true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  worklogs uniqueness: %v\n", err)
+		return 1
+	}
+	if len(rep.Duplicates) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL  worklogs uniqueness in %s:\n%s\n", dir, rep.String())
+		return 1
+	}
+	if rep.HasWarnings() {
+		fmt.Printf("WARN  worklogs uniqueness: %d gap(s) (historical/bot-lag; gaps never gate — duplicates are the failure class)\n", len(rep.MissingVersions))
+		return 0
+	}
+	fmt.Printf("ok    worklogs unique (%d numbered, max %d)\n", len(rep.SeenVersions), rep.MaxVersion)
 	return 0
 }
 
