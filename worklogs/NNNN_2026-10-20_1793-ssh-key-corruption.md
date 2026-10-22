@@ -85,3 +85,35 @@ paths are pinned at component level. Local gates green (belt pins,
 secrets + agentd suites, golangci --new-from-merge-base 0 issues).
 Force-push with lease to replace the poisoned history; full disclosure
 on the PR thread.
+
+## Red-check remediation round — the three CI reds + a main flake
+
+Head dccefe9b (union-merge of main cef43acf, 165 commits) cleared the
+three red checks by absorbing main's own fixes — verified present in
+the merge result: go 1.26.10 (43a7ba29; govulncheck GO-2026-6809),
+vite ^8.1.6 (57495a4c; Trivy CVE-2026-112942), and /livez+/readyz
+rate-limit exemption (a6d6951e/#1825 — the exact s-rate-limit canary
+failure "refill-boundary luck" main's comment describes). CHANGELOG
+[Unreleased] unioned per house pattern; worklog + migration numbers
+re-checked clean post-merge. Review on dccefe9b: APPROVED, zero
+blocking findings.
+
+Residual red: Frontend (unit + typecheck + e2e) failed on
+sidebar-gesture.spec.ts:134 — twice in CI (both Playwright retries) and
+7/10 attempts locally. Root cause established by instrumented
+touch/click event capture + on-failure DOM dump: with the drawer open,
+the z-40 drawer covers the header's "Close menu" button, so the test's
+close-tap at the button's coordinates hits the drawer's non-interactive
+"Safe Space" heading and closes nothing; the test only ever closed by
+outracing the 200ms slide-in onto the backdrop (pass runs tapped
+DIV.fixed.inset-0, fail runs tapped the heading; ~170ms crossover, slow
+runners fail consistently). Same signature on main's own run 39837780604.
+
+Fix (test-only, this lane's branch): close via the backdrop's onClick
+(deterministic, x=vw-60 well right of the 256px drawer and outside the
+30px edge band) + waitForFunction hit-test guard before the center
+re-open tap (the same race on the way out). 30/30 local runs green
+(was ~33-70% first-attempt failure); full vitest 216 files / 2460
+tests green; tsc + eslint clean. The app's layering (a permanently
+covered aria "Close menu" button when the drawer is open) is noted as
+a UX/a11y follow-up for the app owners, out of this lane's scope.

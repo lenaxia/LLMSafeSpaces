@@ -127,11 +127,32 @@ test.describe("sidebar full-edge gesture (#1629)", () => {
     await page.touchscreen.tap(box!.x + 6, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
 
-    // Close (tap the close button) and re-open from the center.
-    const close = page.getByRole("button", { name: "Close menu" });
-    const closeBox = await close.boundingBox();
-    await page.touchscreen.tap(closeBox!.x + closeBox!.width / 2, closeBox!.y + closeBox!.height / 2);
+    // Close via the BACKDROP, not the covered "Close menu" box. When the
+    // drawer is open it layers over the header (z-40 drawer vs the plain
+    // header flow), so a tap at the close button's coordinates hits the
+    // drawer's non-interactive content and does nothing — the test only
+    // closed at all when the tap outraced the 200ms slide-in and landed
+    // on the backdrop instead (instrumented: pass runs tapped
+    // `DIV.fixed.inset-0` = backdrop; fail runs tapped the drawer's
+    // "Safe Space" heading and the drawer stayed open → the CI flake,
+    // ~170ms crossover, slow runners fail consistently). The backdrop's
+    // onClick IS the deterministic touch close affordance; tap it well
+    // right of the 256px drawer and outside the 30px edge band.
+    const vp = page.viewportSize();
+    if (!vp) throw new Error("viewport size unavailable");
+    await page.touchscreen.tap(vp.width - 60, vp.height / 2);
     await expect(page.getByRole("button", { name: "Open menu" })).toBeVisible({ timeout: 5000 });
+
+    // The drawer slides out over 200ms: wait until the hamburger's box is
+    // actually the hit-test target at the tap point (the same race, on
+    // the way out), then re-open from the center.
+    await page.waitForFunction(
+      ([px, py]) => {
+        const el = document.elementFromPoint(px ?? 0, py ?? 0);
+        return el !== null && el.closest("button[aria-label='Open menu']") !== null;
+      },
+      [box!.x + box!.width / 2, box!.y + box!.height / 2],
+    );
     await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await expect(page.getByRole("button", { name: "Close menu" })).toBeVisible({ timeout: 5000 });
   });
