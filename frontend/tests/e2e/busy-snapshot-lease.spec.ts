@@ -10,16 +10,19 @@
  *   1. refresh-mid-busy — the REST list says IDLE (the overlay cannot
  *      badge) and NO delta is ever sent: only the snapshot flight's busy
  *      row may badge the session, across a full page reload (twice).
- *   2. authority-down hold — busy latches via delta, then a reconnect's
- *      flight completes ok=false: the badge must HOLD (unknown ≠ idle).
+ *   2. authority-down hold — busy latches via delta, then every
+ *      reconnect's flight answers ok=false: the badge must HOLD, never
+ *      read idle, across the churn (unknown ≠ idle).
  *   3. abort-reconnect — the user-SSE fetch is aborted once; the
  *      reconnect's snapshot flight re-badges the session.
- *
- * The lease-timing tier (lost-idle → recheck within L+ε) is fake-timer
- * territory and stays in the vitest tier (SessionActivityProvider.
- * busySnapshot.test.tsx T0.2e/f).
+ *   4. lost-idle lease recheck (§3 E2.5) — the idle delta is never
+ *      delivered; page.clock drives the 90s lease + 15s sweep
+ *      deterministically; the recheck's authoritative idle flight
+ *      clears the badge within L+ε (the wipe-memory re-latch half of
+ *      the unknown-hold is pinned with fake timers in vitest Y5).
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { createServer } from "node:http";
 import { mockIdleContractStream } from "./helpers/contractStream";
 
 const WS = "ws-bsnap";
@@ -166,5 +169,99 @@ test.describe("#1821 busy-snapshot handshake (connect-path flight)", () => {
     // First connect aborted → backoff reconnect → the snapshot flight
     // badges the session with no delta anywhere.
     await expect(row.locator("[data-busy]")).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("4 — lost idle: the lease recheck clears the badge within L+ε (E2.5)", async ({ page }) => {
+    // E2.5's premise is a HEALTHY OPEN connection: the idle delta is
+    // lost while heartbeats keep the stream alive — no reconnect, no
+    // #1646 wipe-and-reseed — so only the 90s lease recheck can clear
+    // the latched badge. A fulfill-per-connect mock cannot represent
+    // this (every body-end is a reconnect → the wipe), so /events is
+    // served by an in-test HTTP server that streams forever; env.json
+    // points the app at it (page.route mocks still intercept every
+    // other endpoint — the patterns match any origin). page.clock
+    // advances the lease + sweep in fake time in <35s steps with
+    // real-time gaps so the server's heartbeats keep the read-timeout
+    // and liveness watchdogs fed.
+    let sse: import("node:http").ServerResponse | null = null;
+    let recheckRequested = false;
+    const cors = (res: import("node:http").ServerResponse, req: import("node:http").IncomingMessage) => {
+      const origin = req.headers.origin ?? "*";
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Headers", req.headers["access-control-request-headers"] ?? "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    };
+    const srv = createServer((req, res) => {
+      const url = req.url ?? "";
+      if (req.method === "OPTIONS") {
+        cors(res, req);
+        res.writeHead(204);
+        return res.end();
+      }
+      if (url.endsWith("/events")) {
+        cors(res, req);
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+        // The busy delta ONCE — then the idle is never delivered (lost).
+        res.write(`id: 1\ndata: ${JSON.stringify({ event_id: 1, type: "session.status", workspace_id: WS, session_id: SESS, status: "busy" })}\n\n`);
+        sse = res;
+        const hb = setInterval(() => {
+          try {
+            res.write(":\n\n");
+          } catch {
+            /* connection gone */
+          }
+        }, 250);
+        res.on("close", () => clearInterval(hb));
+        return;
+      }
+      if (url.endsWith("/sessions/status-snapshot") && req.method === "POST") {
+        // The lease recheck: 202 + the authoritative idle flight
+        // published INTO the open stream (the production shape — the
+        // on-demand trigger publishes to the user stream).
+        recheckRequested = true;
+        cors(res, req);
+        res.writeHead(202);
+        res.end();
+        sse?.write(
+          `id: 41\ndata: ${JSON.stringify({ event_id: 41, type: "session.status.snapshot_begin", workspace_id: WS, snapshot_id: "f-idle" })}\n\n` +
+            `id: 42\ndata: ${JSON.stringify({ event_id: 42, type: "session.status.snapshot", workspace_id: WS, snapshot_id: "f-idle", data: { cursor: 42, sessions: [{ session_id: SESS, internal_session_id: HARNESS, derived_busy: false }] } })}\n\n` +
+            `id: 43\ndata: ${JSON.stringify({ event_id: 43, type: "session.status.snapshot_complete", workspace_id: WS, snapshot_id: "f-idle", snapshot_ok: true })}\n\n`,
+        );
+        return;
+      }
+      cors(res, req);
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
+    const port = (srv.address() as { port: number }).port;
+
+    try {
+      await setupBase(page);
+      // Point the app at the in-test server; the recheck POST must
+      // reach IT (override setupBase's 202 stub — later route wins).
+      await page.route("**/env.json", (r: Route) =>
+        r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ apiBaseUrl: `http://127.0.0.1:${port}/api/v1` }) }));
+      await page.route(`${API}/workspaces/${WS}/sessions/status-snapshot`, (r: Route) => r.continue());
+
+      await page.clock.install();
+      await page.goto(`/chat/${WS}/${SESS}`);
+      const row = page.getByRole("button", { name: /Snapshot Row/ }).first();
+      await expect(page.getByText("Snapshot Row")).toBeVisible({ timeout: 10_000 });
+      await expect(row.locator("[data-busy]")).toBeVisible({ timeout: 6_000 });
+
+      // Advance past lease (90s) + sweep jitter (15s) in fake time;
+      // pre-fix this latches forever (no lease to expire).
+      for (let i = 0; i < 12; i++) {
+        await page.clock.fastForward(9_000);
+        await page.waitForTimeout(250);
+      }
+      await expect.poll(() => recheckRequested, { timeout: 10_000 }).toBe(true);
+      await expect(row.locator("[data-busy]")).toBeHidden({ timeout: 15_000 });
+    } finally {
+      srv.closeAllConnections?.();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
   });
 });

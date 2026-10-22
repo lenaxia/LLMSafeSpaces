@@ -112,6 +112,22 @@ Red-first round 5 (stash-revert of the provider): Z1b (stale-closure deletion), 
 
 Verification: api handlers (full, 126s) + server + eventbroker green; agentd targeted green; frontend vitest 2404/2404 (211 files); eslint 0 errors; tsc clean; Playwright 3/3; golangci-lint 0 issues.
 
+## Review round r4 — same review, residual gaps closed (owner takeover; f08ab016 → r5)
+
+The previous worker stood down mid-flight after pushing d6686054 (+ base-merge f08ab016); the takeover owner adversarially re-verified that push against review 5617698820 and closed the gaps it claimed but did not carry (three of the round's pins — committed by mistake before their fixes — were red at f08ab016, so the pushed CI's frontend leg was structurally red):
+
+1. **resync's stale closure read (finding 1's second surface)** — `resyncBusyWorkspaces` still iterated the render-closure `busySessions`: a same-chunk busy-delta-then-resync lost the workspace entirely (never re-checked; reads idle until a manual refresh). Fix: the capture rides the `setBusySessions` updater queue BEFORE the wipe's own updater (queued updaters apply in dispatch order — the capture sees the chunk's own state; idempotent set-adds are StrictMode-safe), and the SWEEP fires the requests post-render once the queue settles (`resyncRecheckRef`; the effect's early-return guard includes it). Red pin: Z6 — `expected +0 to be 1` recheck POSTs at f08ab016, green post-fix.
+2. **Late ok=false after a terminal event (finding 4's named reachable path)** — agent_died/non-Active dropped the pending recheck, but a LATE ok=false complete (its begin predates the death; the fetch raced the corpse) re-armed it: a 90s POST loop for a workspace that can never answer. Fix: `terminalWsRef` — terminal events mark, Active re-arms, and the ok=false branch arms nothing for a terminal workspace. Red pin: Z4b — `expected 2 to be +0` POSTs across 190s at f08ab016, green post-fix.
+3. **Degraded harness-keyed idle answer vs an older phrase-keyed busy flight (finding 3's client half)** — a degraded idle row stamps only the harness-keyed watermark; the older busy flight's latch guard checked only the phrase key and re-latched what the newer answer cleared (the r0-F2 class, lease-bounded but wrong). Fix: the latch also checks the row's OWN harness id (`rowInternalIds`) against the per-session watermark. Red pin: Z3b — `expected 'yes' to be 'no'` at f08ab016, green post-fix.
+4. **Z7 (backend pin for finding 3)** — `TestStreamUserEvents_BusySnapshotIdleRows_PhraseKeyed`: a registered idle row is phrase-keyed, harness id additive, no harness-keyed duplicate. Red via behavioral revert of the idle-row Register skip: `a resolved IDLE session must be keyed by its phrase` (nil row), green post-fix.
+5. **E2.5 at e2e fidelity** — `busy-snapshot-lease.spec.ts` test 4 (lost idle → lease recheck clears within L+ε). A fulfill-per-connect mock CANNOT represent the premise (every body-end is a reconnect → the #1646 wipe-and-reseed, and re-delivered evidence refreshes the lease forever), so `/events` is served by an in-test infinite-SSE server (`env.json` points the app at it; the suite's `**/api/v1/**` route mocks still intercept every other endpoint at any origin), the idle delta is simply never written, the lease POST publishes the authoritative idle flight INTO the open stream (the production shape), and `page.clock` advances the 90s lease + 15s sweep in <35s fake steps with real-time gaps so heartbeats keep the read-timeout/liveness watchdogs fed. 4/4 spec green locally (25.6s).
+
+Adjacent test repair: `SessionActivityProvider.resyncBusy.test.tsx`'s `requestStatusSnapshot` mock now resolves (the sweep calls `.catch` on it; a bare `vi.fn()` returning undefined threw and unmounted the tree). Its REST-healing premise and one-connection accounting are unchanged.
+
+Red-first (all quoted from the pre-fix runs above): Z6/Z4b/Z3b observed red at f08ab016 and green at r5; Z7 red under the behavioral revert. The r4 push's own pins (Z1/Z1b/Z2/Z3/Z4/Y5) were re-observed red by stash-revert during the takeover and pass at r5.
+
+Verification (full set): frontend vitest 2407/2407 (211 files); eslint 0 errors; tsc -b clean; Playwright busy-snapshot-lease 4/4; api ./internal/handlers (full, 199s) + ./internal/server + ./internal/services/eventbroker green; gofmt clean; golangci-lint 0 issues (handlers); repolint ok.
+
 ## Blockers
 
 None.

@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-seed re-latches it as unknown (never idle) with the lease owning
   a once-per-window recovery cadence — pinned in vitest (fake timers)
   and at e2e fidelity (authority-down never clears a live badge).
+- **Review-hardened round 5 (PR #1848 r4)**: the resync recheck
+  capture rides the state-updater queue (a render-closure read was
+  stale within one SSE chunk — a same-chunk busy delta followed by
+  resync was never re-checked); a late ok=false after agent_died or a
+  non-Active flip arms nothing (no 90s POST loop for a dead workspace;
+  Active re-arms service); a degraded harness-keyed idle row beats an
+  older phrase-keyed busy flight (the busy row's latch checks its own
+  harness-id watermark too); idle snapshot rows are pinned
+  phrase-keyed at the wire; and the lost-idle lease recheck is pinned
+  at e2e fidelity (open-stream authority, fake-clock lease expiry).
 
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)

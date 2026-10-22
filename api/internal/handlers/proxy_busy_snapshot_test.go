@@ -423,6 +423,42 @@ func TestStreamUserEvents_BusySnapshotRows_PhraseKeyed(t *testing.T) {
 	assert.True(t, dep, "the degraded row must be flagged session_id_deprecated")
 }
 
+// Z7 (#1848 r4 — finding 3's backend half): IDLE rows must register
+// into the phrase space exactly like busy rows. The client keys its
+// per-session ordering watermarks and removal decisions on the phrase,
+// so a harness-keyed idle row neither advances the phrase-keyed
+// watermark nor matches the latched entry — an older overlapping busy
+// flight then re-latches what the newer idle answer already cleared
+// (pinned client-side as Z3b). RED-FIRST: idle rows used to skip the
+// Register seam entirely and rode the harness key.
+func TestStreamUserEvents_BusySnapshotIdleRows_PhraseKeyed(t *testing.T) {
+	si := newMockSessionIndex()
+	si.phrases[busySnapWS+"/ses-known"] = "phrase-one"
+
+	hs := newBusySnapHarness(t, "user-t17", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"healthy":true,"sessions":[
+			{"id":"ses-known","status":"idle"}
+		]}`)
+	}, si)
+
+	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
+		return findEvent(evts, "session.status.snapshot_complete") != nil
+	})
+
+	snap := findEvent(evts, "session.status.snapshot")
+	require.NotNil(t, snap, "flight must carry the snapshot frame")
+	rows, _ := snapshotRows(t, snap)
+
+	idle := rowBySession(rows, "phrase-one")
+	require.NotNil(t, idle, "a resolved IDLE session must be keyed by its phrase (#1848 r3 finding 3)")
+	internal, _ := idle["internal_session_id"].(string)
+	assert.Equal(t, "ses-known", internal, "the harness id rides additively on idle rows too")
+	derived, _ := idle["derived_busy"].(bool)
+	assert.False(t, derived, "idle row carries derived_busy=false")
+	assert.Nil(t, rowBySession(rows, "ses-known"), "no harness-keyed duplicate row")
+}
+
 // The frontend lease's recheck surface (#1821 piece 4): POSTing the
 // trigger must answer 202 immediately and fire the flight on the user
 // stream (RequestInputSnapshot pattern).

@@ -105,6 +105,10 @@ describe("SessionActivityProvider — resync must reconcile busy (live-update re
     fetchMock = vi.fn();
     global.fetch = fetchMock;
     mockGetAlerts.mockResolvedValue([]);
+    // The recheck surface's contract is a promise (the sweep calls
+    // .catch on it); #1848 r4's resync capture fires it from the sweep
+    // effect, so a bare vi.fn() returning undefined would throw.
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
     // REST truth for the whole test: the session FINISHED (idle).
     mockGetSessions.mockResolvedValue([
       {

@@ -336,6 +336,17 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // unknown-hold memory. An ok=false answer to the post-wipe re-seed
   // re-latches it (unknown ≠ idle); ok=true / terminal events clear it.
   const wipedBusyRef = useRef(new Map<string, Map<string, BusyEntry>>());
+  // #1848 r4 (finding 4, the late-complete half): workspaces in a
+  // TERMINAL state (agent_died, non-Active phase). An ok=false answer
+  // arriving AFTER the terminal event must arm nothing — the sweep
+  // would POST every window for a corpse that can never answer. An
+  // Active phase re-arms normal service.
+  const terminalWsRef = useRef(new Set<string>());
+  // #1848 r4 (finding 1, the resync half): recheck workspaces captured
+  // at resync-wipe time. The capture rides the setBusySessions updater
+  // queue (a render-closure read of busySessions is stale within one
+  // chunk); the sweep fires the requests once the queue has settled.
+  const resyncRecheckRef = useRef(new Set<string>());
   // Re-render trigger for pendingRecheckRef mutations (refs are not
   // reactive; the sweep effect re-arms on this tick).
   const [recheckTick, setRecheckTick] = useState(0);
@@ -1173,6 +1184,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // or invalidated by a terminal event) schedules nothing: there
         // is no evidence the authority answered (#1848 r3 finding 4).
         if (!ok) {
+          // #1848 r4 (finding 4, late-complete half): a late ok=false
+          // for a TERMINAL workspace (its begin predates agent_died or
+          // a non-Active flip) must arm nothing — the sweep would POST
+          // every window for a workspace that can never answer.
+          if (terminalWsRef.current.has(wsId)) return;
           const now = stampBusyNow();
           const wiped = wipedBusyRef.current.get(wsId);
           if (wiped && wiped.size > 0) {
@@ -1283,6 +1299,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // about.
           for (const sid of busyRowIds) {
             if ((sessionLastDeltaIDRef.current.get(sid) ?? 0) > cursor) continue;
+            // #1848 r4 (finding 3, client half): the row's HARNESS id
+            // may carry a NEWER answer the phrase key never saw — a
+            // degraded idle row (harness-keyed, no learnable pair)
+            // stamps only the harness watermark. Check both keys, or
+            // an older overlapping busy flight re-latches what the
+            // newer idle answer already cleared.
+            const rowHarness = rowInternalIds.get(sid);
+            if (rowHarness !== undefined && (sessionLastDeltaIDRef.current.get(rowHarness) ?? 0) > cursor) continue;
             sessionLastDeltaIDRef.current.set(sid, cursor);
             const existing = prev.get(sid);
             const confirmEventId = Math.max(existing?.confirmEventId ?? 0, cursor);
@@ -1551,6 +1575,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // unknown-hold memory, no retry loop for a dead workspace.
         pendingRecheckRef.current.delete(wsId);
         wipedBusyRef.current.delete(wsId);
+        // #1848 r4: mark terminal so a LATE ok=false complete (its
+        // begin predates the death) cannot re-arm the loop.
+        terminalWsRef.current.add(wsId);
         setBusySessions((prev) => {
           const next = new Map();
           for (const [sid, entry] of prev) {
@@ -1586,10 +1613,21 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // (the same surface the lease recheck uses) so resync converges
         // via the snapshot, not only the REST overlay. Capture the
         // pre-wipe busy workspaces BEFORE the wipe clears them.
-        const resyncBusyWorkspaces = new Set<string>();
-        for (const entry of busySessions.values()) {
-          resyncBusyWorkspaces.add(entry.workspaceId);
-        }
+        // #1848 r4 (finding 1, the resync read): capture the pre-wipe
+        // busy workspaces INSIDE the updater queue, BEFORE the wipe's
+        // own updater — one chunk's frames dispatch against the same
+        // render closure, so a busy delta earlier in THIS chunk is
+        // invisible to a closure read here and its workspace would
+        // never be re-checked (reads idle until a manual refresh). The
+        // queued capture sees the chunk's own state; idempotent
+        // set-adds keep StrictMode's double-invocation harmless. The
+        // sweep (post-render, refs settled) fires the requests.
+        setBusySessions((prev) => {
+          for (const entry of prev.values()) {
+            resyncRecheckRef.current.add(entry.workspaceId);
+          }
+          return prev;
+        });
         wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions, wipedBusyRef);
         queryClient.invalidateQueries({ queryKey: ["sessions"] });
         committedWsRef.current.clear();
@@ -1607,9 +1645,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // high-waters.
         wsSnapshotCursorRef.current.clear();
         sessionLastDeltaIDRef.current.clear();
-        for (const wsId of resyncBusyWorkspaces) {
-          sessionsApi.requestStatusSnapshot(wsId).catch(() => {});
-        }
+        // #1848 r4: the captured rechecks fire from the sweep, after
+        // the capture updater has settled (bump re-arms the effect).
+        setRecheckTick((t) => t + 1);
         // Events were dropped for this subscriber — possibly including
         // the idle that would have cleared a hung badge. Full clear,
         // like reconnect; the gated seed re-adds genuine hangs.
@@ -1629,6 +1667,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // #1848 r3 finding 4: same terminal cleanup as agent_died.
           pendingRecheckRef.current.delete(wsId);
           wipedBusyRef.current.delete(wsId);
+          // #1848 r4: terminal — a late ok=false cannot re-arm.
+          terminalWsRef.current.add(wsId);
           setBusySessions((prev) => {
             const next = new Map();
             for (const [sid, entry] of prev) {
@@ -1653,6 +1693,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           clearWorkspacePendingActions(wsId);
         } else if (evt.phase === "Active") {
           seededRef.current.delete(wsId);
+          // #1848 r4: Active re-arms normal snapshot service (e.g. a
+          // suspended workspace resumed).
+          terminalWsRef.current.delete(wsId);
         }
       }
 
@@ -1677,9 +1720,18 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // request per lease window per workspace until an authoritative
   // answer lands.
   useEffect(() => {
-    if (busySessions.size === 0 && pendingRecheckRef.current.size === 0) return;
+    if (busySessions.size === 0 && pendingRecheckRef.current.size === 0 && resyncRecheckRef.current.size === 0) return;
     const sweep = () => {
       const now = Date.now();
+      // #1848 r4: resync-captured rechecks fire here — the sweep runs
+      // post-render, after the capture updater has settled. One-shot
+      // per resync, like the connect-path recheck: the resulting
+      // flight's markers decide keep-vs-clear.
+      const resyncRechecks: string[] = [];
+      for (const wsId of resyncRecheckRef.current) {
+        resyncRecheckRef.current.delete(wsId);
+        resyncRechecks.push(wsId);
+      }
       const expiredWorkspaces = new Set<string>();
       for (const entry of busySessions.values()) {
         if (now - entry.confirmedAt > BUSY_LEASE_MS) {
@@ -1690,7 +1742,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       for (const [wsId, at] of pendingRecheckRef.current) {
         if (now >= at && !expiredWorkspaces.has(wsId)) dueRechecks.push(wsId);
       }
-      if (expiredWorkspaces.size === 0 && dueRechecks.length === 0) return;
+      if (expiredWorkspaces.size === 0 && dueRechecks.length === 0 && resyncRechecks.length === 0) return;
+      for (const wsId of resyncRechecks) {
+        sessionsApi.requestStatusSnapshot(wsId).catch(() => {});
+      }
       for (const wsId of expiredWorkspaces) {
         sessionsApi.requestStatusSnapshot(wsId).catch(() => {
           // Unknown, not idle: the badge holds; the re-armed lease

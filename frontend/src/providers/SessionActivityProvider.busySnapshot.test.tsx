@@ -1041,7 +1041,7 @@ describe("SessionActivityProvider — commit-path correctness (#1848 r3)", () =>
     expect(screen.getByTestId("busy").textContent).toBe("no");
 
     await advanceHealthy(stream, 110_000);
-    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
-    expect(mockRequestStatusSnapshot.mock.calls[0][0]).toBe("ws-1");
+    expect(mockRequestStatusSnapshot).toHaveBeenCalledTimes(1);
+    expect(mockRequestStatusSnapshot).toHaveBeenCalledWith("ws-1");
   });
 });
