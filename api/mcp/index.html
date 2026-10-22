@@ -3071,6 +3071,16 @@ external actors hold no claim tokens.</p>
 <td>The board health snapshot (design 0067 §4.8): active leases with expiry, recent reclaims, task and project-slot cooldowns, pending_input counts by origin, per-project worker slots in use. The same projection <code>board_read</code> with <code>health=true</code> renders</td>
 </tr>
 <tr>
+<td><code>board_record_verdict</code></td>
+<td><code>task_id</code>, <code>verdict</code>, <code>reviewer</code></td>
+<td>Record a structured review verdict (#1832 item 5 — the forge-agnostic core). <code>verdict</code> is <code>approve</code> or <code>fail</code>; approve → <code>done</code> still passes the Done guard (all criteria + <code>evidence_url</code>), a refusal is a RECORDED outcome (<code>applied=false</code>, <code>transition="refused:&lt;code&gt;"</code>); fail → <code>in_progress</code> rides the bounce with attempts UNCHANGED (an iteration in the verdict chain, never a failure entry). <code>findings</code> <code>[{severity blocker\|major\|minor, pointer, criterionIndex?}]</code> required on fail. Optional: <code>findings</code>, <code>evidence_url</code>, <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_task_verdicts</code></td>
+<td><code>task_id</code></td>
+<td>The task's ordered verdict chain (#1832 item 5): every recorded verdict with findings, reviewer, and whether its transition applied — the record the next claimant's charter embeds after a fail-bounce</td>
+</tr>
+<tr>
 <td><code>board_move_stage</code></td>
 <td><code>task_id</code>, <code>to_stage</code></td>
 <td>Server-arbitrated stage move. Legal manager targets: <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>pending_input</code>, and <code>backlog</code> (the pending_input human exits); entering from backlog is claim-only (<code>board_start_task</code>) and removal is <code>board_delete</code> — neither is a stage move. Forward moves refuse on a paused task (409 <code>task_paused</code>, #1747). <code>done</code> requires all acceptance criteria met + <code>evidence_url</code>. Optional: <code>evidence_url</code>, <code>request_id</code></td>
@@ -3233,7 +3243,7 @@ ready set and creation order serves it.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 22, 2026 17:25:22 UTC"><span class="timeago" datetime="2026-10-22T17:25:22+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 22, 2026 17:25:22 UTC">2026-10-22</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 22, 2026 19:32:51 UTC"><span class="timeago" datetime="2026-10-22T19:32:51+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 22, 2026 19:32:51 UTC">2026-10-22</span>
   </span>
 
     
