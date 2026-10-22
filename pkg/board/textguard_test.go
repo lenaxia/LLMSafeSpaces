@@ -4,6 +4,7 @@
 package board
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -156,7 +157,7 @@ func TestTextGuard_LegitJSONExamplesPass(t *testing.T) {
 		// balanced inline JSON in prose
 		`The tool echoes {"a":"1","b":"2","c":"3","d":"4"} back to the caller.`,
 		// a line that IS compact JSON
-	 "{\"key\":\"value\",\"x\":\"y\"}",
+		"{\"key\":\"value\",\"x\":\"y\"}",
 		// yaml-ish prose and tables (no splice bytes at all)
 		"| col | val |\n|-----|-----|\n| a   | b   |",
 	}
@@ -189,12 +190,16 @@ func TestTextGuard_EpicAndProjectFields(t *testing.T) {
 func TestTextGuard_LongLegitProsePasses(t *testing.T) {
 	// A >4KB charter of legitimate prose passes validation — the caps
 	// are kilobytes above this, and varied prose trips no heuristic.
+	// Every line is unique (numbered steps — the realistic shape; a
+	// cycling generator would itself be the degenerate class).
 	var b strings.Builder
 	for i := 0; i < 200; i++ {
 		b.WriteString("Step ")
-		b.WriteString(strings.Repeat("x", i%7))
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" ")
+		b.WriteString(strings.Repeat("x", i%7+1))
 		b.WriteString(" describes a distinct action with unique numbering ")
-		b.WriteString(strings.Repeat("y", (i*3)%5))
+		b.WriteString(strings.Repeat("y", (i*3)%5+1))
 		b.WriteString(".\n")
 	}
 	require.Greater(t, b.Len(), 4096)
