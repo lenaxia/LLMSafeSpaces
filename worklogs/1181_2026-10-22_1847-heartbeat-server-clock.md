@@ -45,11 +45,26 @@ Real failure output quoted in the red commit message.
 - `heartbeatFutureTolerance = 2 * time.Minute` (package const).
 - Beyond-tolerance future stamp → `GuardError{GuardInput}` naming both
   clocks; no watermark write, no lease extension, no audit event.
-- Within-tolerance future → clamp to `serverNow` (stored stamps are
-  server-clock — the #1847 direction).
-- Poison self-heal: evidence gate reads a stored watermark ahead of the
-  server clock as STALE (`t.LastProgressAt.After(serverNow)` forces
-  `extends`), so the honest observation overwrites the poison.
+- Within-tolerance future → clamp to `serverNow` (a FUTURE stamp is
+  never stored — the poison direction only; past-skewed stamps remain
+  client-trusted until the rework retires worker-declared stamps
+  entirely).
+- Poison self-heal: evidence gate reads a stored watermark reading
+  future as STALE (`t.LastProgressAt.After(serverNow)` forces
+  `extends`), so the honest observation overwrites the poison — ONE
+  evidence-free extend, bounded (the heal overwrites the watermark; a
+  re-sent identical stamp does not extend again).
+
+### Review remediation (PR #1862, review d86cb7d8)
+
+- Finding 1 (wording overclaim): "all stored watermark stamps are
+  server-clock" was false — only the FUTURE direction is clamped.
+  Corrected in CHANGELOG, the stage.go comments, and this worklog.
+- Finding 2 (missing edge pin): added
+  `TestKill_HeartbeatHealIsOneShot` — a poison-FREE row whose watermark
+  reads future (DB-ahead/app-behind clock skew) gets exactly ONE
+  evidence-free extend on the first honest heartbeat; a second
+  heartbeat with the SAME stamp does NOT extend.
 
 Existing heartbeat callers verified: the evidence-gate pin
 (`now+1s`, within tolerance) stays green unmodified;
@@ -88,5 +103,7 @@ reconciler/remediation tests use `+1s` likewise.
 
 ## CHANGELOG
 
-[Unreleased] → "Fixed — board heartbeat: server clock is the authority
-over client-observed stamps (issue #1847 PR1…)".
+[Unreleased] → "Fixed — board heartbeat: server clock bounds
+client-observed stamps (issue #1847 PR1…)" (title reworded in the
+review remediation: the guarantee is the future direction, not all
+stamps).

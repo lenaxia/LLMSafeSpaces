@@ -122,3 +122,38 @@ func (s *BoardSuite) rawTaskWatermark(taskID string) *time.Time {
 	s.Require().NoError(err)
 	return wm
 }
+
+// TestKill_HeartbeatHealIsOneShot: the heal clause's edge (review
+// finding 2 on PR #1862). A poison-FREE row can still carry a
+// future-reading watermark via clock skew (the claim stamps
+// last_progress_at on the DB clock — a DB ahead of the app clock by a
+// minute makes the honest watermark read "future" to the Go server
+// clock; ditto an NTP step-back). The heal grants exactly ONE
+// evidence-free extend and cures the row: a re-sent identical stamp
+// must NOT extend again.
+func (s *BoardSuite) TestKill_HeartbeatHealIsOneShot() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "heal-once", nil, false)
+
+	c := s.claimOrFail(ws)
+	// Simulated DB-ahead skew: an honest row whose watermark reads 30s
+	// future to the app clock. NOT poison (no pre-fix bug involved).
+	s.poisonWatermark(task.ID, time.Now().UTC().Add(30*time.Second))
+
+	// The honest client's (fixed) observation. Truncated to the
+	// microsecond: timestamptz round-trips at µs precision, and a
+	// ns-resolution re-send would spuriously read as "newer" than its
+	// own stored stamp.
+	stamp := time.Now().UTC().Truncate(time.Microsecond)
+	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", stamp)
+	s.Require().NoError(err)
+	s.True(res.Extended, "the heal fires once against a future-reading watermark (bounded fail-open)")
+
+	// The re-sent identical stamp must NOT extend: the heal overwrote
+	// the watermark, and identical evidence is not new evidence.
+	res, err = s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", stamp)
+	s.Require().NoError(err)
+	s.False(res.Extended, "the heal is one-shot — a replayed stamp is not new evidence")
+}

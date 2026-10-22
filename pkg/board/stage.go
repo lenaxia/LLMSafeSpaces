@@ -349,21 +349,27 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 
 // heartbeatFutureTolerance bounds honest client-clock drift: an
 // observedProgressAt up to this far ahead of the SERVER clock is clamped
-// to the server clock (still evidence-bearing — all stored watermark
-// stamps are server-clock); a stamp beyond it is a hallucinated
-// estimate, not evidence, and rejects outright (#1847 PR1: the C1
-// incident class — a future watermark is unrenewable by construction,
-// so one accepted future stamp locked the worker out of its own lease).
+// to the server clock (a FUTURE stamp is never stored — the C1 poison
+// direction); a stamp beyond it is a hallucinated estimate, not
+// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
+// future watermark is unrenewable by construction, so one accepted
+// future stamp locked the worker out of its own lease). PAST-skewed
+// client stamps remain client-trusted (only the future direction can
+// poison the evidence gate); the #1847 rework retires worker-declared
+// stamps as the liveness input entirely.
 const heartbeatFutureTolerance = 2 * time.Minute
 
 // Heartbeat refreshes the lease ONLY when it carries new progress evidence
 // (the worker's message-level watermark moved — #1685: elapsed time is not
 // liveness). Requires the matching claim token. #1847: the server clock is
-// the authority over every stamp — a client-observed timestamp beyond
-// heartbeatFutureTolerance ahead of the server clock rejects (invalid
-// evidence), one within it clamps to now, and a stored watermark already
-// in the future (pre-fix C1 damage) reads as stale so an honest
-// present-t observation heals it.
+// the authority over the FUTURE direction — a client-observed timestamp
+// beyond heartbeatFutureTolerance ahead of the server clock rejects
+// (invalid evidence), one within it clamps to now (a future stamp is
+// never stored), and a stored watermark already reading future (pre-fix
+// C1 damage, or DB-ahead/app-behind clock skew) reads as stale so an
+// honest present-t observation heals it — ONE evidence-free extend,
+// bounded: the heal overwrites the watermark, so a re-sent identical
+// stamp does not extend again (pinned TestKill_HeartbeatHealIsOneShot).
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {

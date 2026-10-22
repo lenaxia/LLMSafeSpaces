@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — board heartbeat: server clock is the authority over client-observed stamps (issue #1847 PR1, the C1 incident class)
+### Fixed — board heartbeat: server clock bounds client-observed stamps (issue #1847 PR1, the C1 incident class)
 
 - **A future-stamped `observedProgressAt` rejects outright**
   (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker
@@ -20,13 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `heartbeatFutureTolerance` (2m) ahead of the server clock are
   estimates, not evidence, and no longer touch the watermark or the
   lease.
-- **Mild future skew clamps to the server clock** (all stored watermark
-  stamps are server-clock); honest clients with drifting clocks keep
-  extending.
-- **Already-poisoned watermarks self-heal**: a stored watermark ahead
-  of the server clock (pre-fix damage) reads as stale, so an honest
-  present-t observation extends again — the C1 lockout cannot recur
-  against repaired rows.
+- **Mild future skew clamps to the server clock** (a future stamp is
+  never stored — the poison direction only); honest clients with
+  drifting clocks keep extending. Past-skewed stamps remain
+  client-trusted until the #1847 rework retires worker-declared stamps
+  as the liveness input entirely.
+- **Already-poisoned watermarks self-heal, one-shot**: a stored
+  watermark reading future (pre-fix damage, or DB-ahead/app-behind
+  clock skew) reads as stale, so an honest present-t observation
+  extends once and overwrites it; a re-sent identical stamp does not
+  extend again — the C1 lockout cannot recur against repaired rows.
 
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
