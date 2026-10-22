@@ -243,7 +243,7 @@ func runWorklogUniqueness(root string) int {
 	dir := filepath.Join(root, "worklogs")
 	rep, err := repolint.SequenceCheck(repolint.SequenceConfig{
 		Dir:       dir,
-		Pattern:   repolint.WorklogPattern,
+		Pattern:   repolint.WorklogNumberPattern,
 		AllowGaps: true,
 	})
 	if err != nil {

@@ -86,6 +86,33 @@ func TestWorklogUniqueness_RedOnDuplicates(t *testing.T) {
 	}
 }
 
+// TestWorklogUniqueness_UppercaseSlugsCounted — the #1807 r6 gap pin:
+// historical filenames with uppercase slugs (e.g. the live
+// `0498_..._epic-54-US-54.1-...md` class) are invisible to
+// WorklogPattern's lowercase-only slug class — the uniqueness check
+// must count ANY numbered-worklog file (WorklogNumberPattern) or real
+// duplicates hide in plain sight (two live pairs shipped on main
+// before this pin: 0498 and 0500).
+func TestWorklogUniqueness_UppercaseSlugsCounted(t *testing.T) {
+	d := t.TempDir()
+	files := []string{
+		"0498_2026-06-22_epic-54-US-54.1-login-lookup-endpoint.md",
+		"0498_2026-06-22_relay-leak-fix-implementation.md",
+	}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(d, f), []byte("# pin\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := SequenceCheck(SequenceConfig{Dir: d, Pattern: WorklogNumberPattern, AllowGaps: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Duplicates) == 0 {
+		t.Fatalf("the uppercase-slug duplicate pair must be counted — WorklogNumberPattern must see both 0498 files")
+	}
+}
+
 // TestRepolintMain_RegistersWorklogUniqueness — the registration pin
 // (the #1305 pattern): a check deleted from main() passes every
 // package test; this fails instead.

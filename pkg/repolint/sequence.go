@@ -48,6 +48,13 @@ var MigrationPattern = regexp.MustCompile(`^(\d{6})_([a-z0-9_]+)\.(up|down)\.sql
 // 1=version, 2=date, 3=slug.
 var WorklogPattern = regexp.MustCompile(`^(\d{4})_(\d{4}-\d{2}-\d{2})_([a-z0-9._-]+)\.md$`)
 
+// WorklogNumberPattern matches ANY file carrying a numbered-worklog
+// prefix — regardless of slug case or shape (#1807 r6: historical files
+// like `0498_..._epic-54-US-54.1-...md` carry uppercase slugs that
+// WorklogPattern's lowercase-only class rejects, hiding their duplicate
+// numbers from the uniqueness invariant). Captures: 1=version.
+var WorklogNumberPattern = regexp.MustCompile(`^(\d{4})_.+\.md$`)
+
 // WorklogSentinelPattern matches `NNNN_YYYY-MM-DD_<slug>.md` — the sentinel
 // form authors write before the post-merge bot assigns a real number. The
 // literal `NNNN` is a placeholder meaning "assign me a number at merge."

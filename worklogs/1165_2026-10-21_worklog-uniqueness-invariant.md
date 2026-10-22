@@ -37,6 +37,10 @@ None.
 - Red: TestWorklogUniqueness_RedOnDuplicates + TestRepolintMain_RegistersWorklogUniqueness FAIL pre-implementation (demonstrated); lag-window e2e GREEN pre-implementation by design (pins unchanged sanctioned semantics).
 - Green: `go test -count=1 ./pkg/repolint/ ./cmd/repolint/` ok; mutation round-trip verified; `make repolint` clean on the repo.
 
+## r6 Addition: the uppercase-slug blind spot, closed
+
+The r6 review proved the invariant's matcher blind spot with LIVE evidence: `WorklogPattern`'s lowercase-only slug class hid two real duplicate pairs on main (0498: epic-54-US-54.1 vs relay-leak-fix; 0500: epic-54-US-54.2 vs epic-43-verify-pending-invitee — the uppercase `US` made the first of each pair invisible). Fixed by: `WorklogNumberPattern` (any `NNNN_`-prefixed .md) as the uniqueness matcher + the pinned red test `TestWorklogUniqueness_UppercaseSlugsCounted` + healing the two pairs (the non-series members renumbered to 1166/1167; the epic-54 series keeps its numbers).
+
 ## Next Steps
 
 - PR review loop to APPROVED → rebase-current → final packet.
@@ -47,4 +51,5 @@ None.
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins
+- worklogs/0498→1166_relay-leak-fix-implementation.md, 0500→1167_epic-43-verify-pending-invitee.md — the two healed historical duplicates
 - worklogs/1165_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162 pre-empting main; ->1164 past main's bot; ->1165 by our own post-rewrite hook mid-rebase)

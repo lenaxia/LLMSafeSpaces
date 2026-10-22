@@ -249,8 +249,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
 
 - **Duplicate worklog numbers now FAIL `make repolint`** — the new
-  `runWorklogUniqueness` check (gaps stay warnings: historical holes
-  nothing backfills). The post-rewrite renumber-all semantics stay
+  `runWorklogUniqueness` check, matching ANY numbered-worklog filename
+  (`WorklogNumberPattern`) so historical uppercase-slug files count
+  too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
+  the lowercase-only slug class; healed here by renumbering the
+  non-series member of each pair to 1166/1167). Gaps stay warnings:
+  historical holes nothing backfills. The post-rewrite renumber-all semantics stay
   (pinned end-to-end through the real hook: every sentinel numbered,
   main-inherited included, all unique) and the falsified "sentinels
   never appear on origin/main" / "collisions cannot occur" comments
