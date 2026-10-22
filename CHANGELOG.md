@@ -1,10 +1,3 @@
-# Changelog
-
-All notable changes to LLMSafeSpaces are documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
 
 ### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
@@ -14,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`WorklogNumberPattern`) so historical uppercase-slug files count
   too (two live duplicate pairs — 0498, 0500 — shipped invisibly under
   the lowercase-only slug class; healed here by renumbering the
-  non-series member of each pair to 1166/1167). Gaps stay warnings:
+  non-series member of each pair — final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166). Gaps stay warnings:
   historical holes nothing backfills. The post-rewrite renumber-all semantics stay
   (pinned end-to-end through the real hook: every sentinel numbered,
   main-inherited included, all unique) and the falsified "sentinels
@@ -24,8 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (1162) was pre-empted by a manual leapfrog before it could redden.
   Companion security bumps shipped separately: 43a7ba29 (Go
   toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
-
-## [0.40.1] - 2026-10-21
 
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
 
@@ -43,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pinned). The tool description teaches the same contract: send the
   complete intended content; re-compose if emission corruption ate the
   draft.
+
+## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
 

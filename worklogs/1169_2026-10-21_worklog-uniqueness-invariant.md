@@ -39,7 +39,7 @@ None.
 
 ## r6 Addition: the uppercase-slug blind spot, closed
 
-The r6 review proved the invariant's matcher blind spot with LIVE evidence: `WorklogPattern`'s lowercase-only slug class hid two real duplicate pairs on main (0498: epic-54-US-54.1 vs relay-leak-fix; 0500: epic-54-US-54.2 vs epic-43-verify-pending-invitee — the uppercase `US` made the first of each pair invisible). Fixed by: `WorklogNumberPattern` (any `NNNN_`-prefixed .md) as the uniqueness matcher + the pinned red test `TestWorklogUniqueness_UppercaseSlugsCounted` + healing the two pairs (the non-series members renumbered to 1166/1167; the epic-54 series keeps its numbers).
+The r6 review proved the invariant's matcher blind spot with LIVE evidence: `WorklogPattern`'s lowercase-only slug class hid two real duplicate pairs on main (0498: epic-54-US-54.1 vs relay-leak-fix; 0500: epic-54-US-54.2 vs epic-43-verify-pending-invitee — the uppercase `US` made the first of each pair invisible). Fixed by: `WorklogNumberPattern` (any `NNNN_`-prefixed .md) as the uniqueness matcher + the pinned red test `TestWorklogUniqueness_UppercaseSlugsCounted` + healing the two pairs (the non-series members renumbered; the epic-54 series keeps its numbers; final numbers 1170/1167 after the post-rewrite hook bumped one past main's new 1166).
 
 ## Next Steps
 
