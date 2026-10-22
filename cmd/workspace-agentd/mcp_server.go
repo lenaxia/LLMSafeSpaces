@@ -165,11 +165,11 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_create_epic",
 			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId":     map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"title":         map[string]any{"type": "string", "description": "Epic title"},
-				"outcome":       map[string]any{"type": "string", "description": "What this epic exists to achieve"},
-				"outcome_file":  map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
-				"tags":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
+				"projectId":    map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
+				"title":        map[string]any{"type": "string", "description": "Epic title"},
+				"outcome":      map[string]any{"type": "string", "description": "What this epic exists to achieve"},
+				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
+				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
 			}, "required": []string{"projectId", "title"}},
 		},
 		{
@@ -228,7 +228,7 @@ func boardManagerTools() []mcpTool {
 				"title":            map[string]any{"type": "string", "description": "Task title"},
 				"description":      map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
 				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},
@@ -245,7 +245,7 @@ func boardManagerTools() []mcpTool {
 				"title":            map[string]any{"type": "string", "description": "New title"},
 				"description":      map[string]any{"type": "string", "description": "New description (REPLACE)"},
 				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},

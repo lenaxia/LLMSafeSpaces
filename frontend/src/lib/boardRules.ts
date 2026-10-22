@@ -275,6 +275,8 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   cycle: "That dependency would create a cycle (ruling R4a).",
   cross_workspace: "Dependencies stay within one workspace (#1747).",
   self: "A task cannot depend on itself (ruling R4).",
+  // #1837 P1b: the emission-corruption rejection class.
+  text_rejected: "The text failed corruption checks (degenerate repetition or raw JSON splice artifacts) — regenerate the content (long text: use a file-backed field).",
 };
 
 import boardErrorCodesGolden from "../api/boardErrorCodes.json";

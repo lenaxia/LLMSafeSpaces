@@ -7,6 +7,7 @@ package board_test
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/stretchr/testify/require"
@@ -55,12 +56,19 @@ func (s *BoardSuite) TestTextGuard_1837_LongLegitCharterRoundTripsByteIdentical(
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicDraft)
 
-	// >4KB of legitimate prose — what description_file carries.
+	// >4KB of legitimate prose — what description_file carries. Every
+	// line is UNIQUE (numbered sections — the realistic charter shape);
+	// a generator that cycles line templates would itself be the
+	// degenerate-repetition shape the detector exists to catch.
 	var b strings.Builder
 	for i := 0; i < 150; i++ {
 		b.WriteString("### Charter section ")
 		b.WriteString(strings.Repeat("alpha ", i%5+1))
+		b.WriteString(" number ")
+		b.WriteString(strconv.Itoa(i))
 		b.WriteString("\nThe worker performs the distinct numbered step ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" ")
 		b.WriteString(strings.Repeat("beta", i%3+1))
 		b.WriteString(" and verifies the outcome.\n")
 	}
