@@ -385,7 +385,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
 			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
 	case observedProgressAt.After(serverNow):
-		observedProgressAt = serverNow // clamp: stored stamps are server-clock
+		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
 	}
 	// Evidence gate: extend only when the watermark moved past the stored
 	// progress watermark. A stored watermark ahead of the server clock is

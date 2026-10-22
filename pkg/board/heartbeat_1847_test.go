@@ -18,8 +18,10 @@ package board_test
 // The guard: server-clock authority over client-observed stamps.
 //   - a stamp beyond a small skew tolerance ahead of the server clock is
 //     REJECTED (invalid_input) — it is not evidence, it is an estimate;
-//   - a stamp within the tolerance is clamped to the server clock (all
-//     stored watermark stamps are server-clock — the #1847 direction);
+//   - a stamp within the tolerance is clamped to the server clock (a
+//     FUTURE stamp is never stored — the poison direction only;
+//     past-skewed client stamps remain client-trusted until the #1847
+//     rework retires worker-declared stamps as the liveness input);
 //   - a watermark already poisoned by the pre-fix bug self-heals: a
 //     stored FUTURE watermark reads as stale, so an honest present-t
 //     observation extends again.
@@ -49,6 +51,8 @@ func (s *BoardSuite) TestKill_HeartbeatFutureStampRejected() {
 
 	c := s.claimOrFail(ws)
 	before := s.rawTask(task.ID)
+	wmBefore := s.rawTaskWatermark(task.ID)
+	s.Require().NotNil(wmBefore, "the claim stamps an initial watermark")
 
 	hallucinated := time.Now().UTC().Add(8 * time.Hour)
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", hallucinated)
@@ -62,6 +66,12 @@ func (s *BoardSuite) TestKill_HeartbeatFutureStampRejected() {
 	s.WithinDuration(*before.LeaseExp, *after.LeaseExp, 50*time.Millisecond,
 		"a future-stamped heartbeat must not extend the lease")
 	s.Equal(0, s.countEvents("heartbeat"), "a rejected heartbeat writes no audit event")
+	// The watermark is untouched byte-identically, not merely un-extended
+	// (the review's minor gap: the claim previously rested on lease
+	// stability + zero audit alone).
+	wmAfter := s.rawTaskWatermark(task.ID)
+	s.Require().NotNil(wmAfter)
+	s.True(wmBefore.Equal(*wmAfter), "a rejected heartbeat must not touch the watermark")
 }
 
 // TestKill_HeartbeatMildSkewClampedToServerClock: a stamp within the

@@ -59,12 +59,22 @@ Real failure output quoted in the red commit message.
 
 - Finding 1 (wording overclaim): "all stored watermark stamps are
   server-clock" was false — only the FUTURE direction is clamped.
-  Corrected in CHANGELOG, the stage.go comments, and this worklog.
+  Corrected in CHANGELOG, the stage.go doc comments, and this worklog.
+  [Second round residual, review 594570ab]: two more instances of the
+  same false invariant survived the first pass — the red-test file's
+  header (heartbeat_1847_test.go) and the inline clamp comment
+  (stage.go) — and this note originally over-claimed completeness.
+  All three now scoped to the future direction; this note corrected.
 - Finding 2 (missing edge pin): added
   `TestKill_HeartbeatHealIsOneShot` — a poison-FREE row whose watermark
   reads future (DB-ahead/app-behind clock skew) gets exactly ONE
   evidence-free extend on the first honest heartbeat; a second
-  heartbeat with the SAME stamp does NOT extend.
+  heartbeat with the SAME stamp does NOT extend. (Second round
+  verified this pin mutation-strong in both directions.)
+- [Second round minor, remediated] `TestKill_HeartbeatFutureStampRejected`
+  now also asserts the raw `last_progress_at` is byte-identical across
+  the rejected heartbeat (the "must NOT touch the watermark" claim
+  previously rested only on lease stability + zero audit rows).
 
 Existing heartbeat callers verified: the evidence-gate pin
 (`now+1s`, within tolerance) stays green unmodified;
