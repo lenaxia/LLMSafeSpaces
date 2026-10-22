@@ -19,6 +19,7 @@ import { Spinner } from "./components/ui/Spinner";
 import { UserSettingsTab } from "./components/settings/UserSettingsTab";
 import { UserProviderCredentialsTab } from "./components/settings/UserProviderCredentialsTab";
 import { SecretsTab } from "./components/settings/SecretsTab";
+import { BoardConfigTab } from "./components/settings/BoardConfigTab";
 import { ApiKeysTab } from "./components/settings/ApiKeysTab";
 import { PromptsTab } from "./components/settings/PromptsTab";
 import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
@@ -136,6 +137,7 @@ export const router = createBrowserRouter([
               { path: "preferences", element: <UserSettingsTab /> },
               { path: "provider-keys", element: <UserProviderCredentialsTab /> },
               { path: "mcp-servers", element: <UserMcpServersTab scope="user" /> },
+              { path: "board-config", element: <BoardConfigTab /> },
               { path: "secrets", element: <SecretsTab /> },
               { path: "prompts", element: <PromptsTab /> },
               { path: "api-keys", element: <ApiKeysTab /> },

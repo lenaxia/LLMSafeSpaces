@@ -192,6 +192,37 @@ export function newBoardRequestId(): string {
   return `bd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// --- #1832 item 6: board config shapes (mirror pkg/board/config.go) ------------
+
+export type BoardConfig = {
+  reviewColumn: string; // "off" | "manual" | "auto"
+  autoAssignReviewer: boolean;
+  defaultWorkerSlots: number;
+};
+
+/** Partial config — absent keys inherit; never null on the wire. */
+export type BoardConfigOverride = {
+  reviewColumn?: string;
+  autoAssignReviewer?: boolean;
+  defaultWorkerSlots?: number;
+};
+
+/** The project tier's override input: defaultWorkerSlots is a
+ * user-level key and the server 400s if it is sent (openapi:
+ * BoardConfigOverrideProject omits it). */
+export type ProjectBoardConfigOverrideInput = {
+  reviewColumn?: string;
+  autoAssignReviewer?: boolean;
+};
+
+export type ProjectBoardConfig = {
+  project_id: string;
+  overrides: BoardConfigOverride;
+  effective: BoardConfig;
+};
+
+export const BOARD_REVIEW_COLUMNS = ["off", "manual", "auto"] as const;
+
 // --- The 23 operations (router.go board groups, all AuthMiddleware) -------------
 
 export const boardApi = {
@@ -275,5 +306,20 @@ export const boardApi = {
     }),
   removeDependency: (idOrShort: string, dependsOnId: string): Promise<{ task: BoardTask }> =>
     api.delete<{ task: BoardTask }>(`/me/tasks/${encodeURIComponent(idOrShort)}/dependencies/${encodeURIComponent(dependsOnId)}`),
+
+  // /me/board/config + /me/projects/:id/config (#1832 item 6 — the
+  // config surface. Overrides are PARTIAL: absent keys inherit; on the
+  // wire an unset key is ABSENT, never null. The PROJECT tier never
+  // carries defaultWorkerSlots — a user-level key the server rejects.)
+  getUserBoardConfig: (): Promise<BoardConfig> => api.get<BoardConfig>("/me/board/config"),
+  setUserBoardConfig: (input: BoardConfigOverride): Promise<BoardConfig> =>
+    api.put<BoardConfig>("/me/board/config", { ...input, requestId: newBoardRequestId() }),
+  getProjectBoardConfig: (idOrShort: string): Promise<ProjectBoardConfig> =>
+    api.get<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`),
+  setProjectBoardConfig: (idOrShort: string, input: ProjectBoardConfigOverrideInput): Promise<ProjectBoardConfig> =>
+    api.put<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`, {
+      ...input,
+      requestId: newBoardRequestId(),
+    }),
 };
 
