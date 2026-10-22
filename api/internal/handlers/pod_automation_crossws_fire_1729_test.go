@@ -91,6 +91,9 @@ func (s *crossWSSchedulerStore) IncrementTriggerFailures(_ context.Context, trig
 }
 func (s *crossWSSchedulerStore) ResetTriggerFailures(_ context.Context, _ string) error { return nil }
 func (s *crossWSSchedulerStore) DisableTrigger(_ context.Context, _ string) error       { return nil }
+func (s *crossWSSchedulerStore) UpdateTriggerFireAction(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
 func (s *crossWSSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.SessionOriginRow) error {
 	s.origins = append(s.origins, row)
 	return nil

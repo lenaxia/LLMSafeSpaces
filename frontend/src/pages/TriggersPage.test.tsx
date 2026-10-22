@@ -75,6 +75,16 @@ const ROUTINE_WITH_SCRIPT: Trigger = {
   createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
 };
 
+const GATED_TRIGGER: Trigger = {
+  id: "trig-5", name: "gated-nightly", enabled: true,
+  sourceType: "cron", sourceConfig: { expr: "0 2 * * *" },
+  workspaceId: "ws-1", prompt: "Report the {{count}} new items",
+  script: { language: "python", handler: "def handler(input):\n    return {'proceed': True, 'vars': {'count': '3'}}\n" },
+  memoryMode: "none", captureMode: "errors_only", preserveSession: "never",
+  consecutiveFailures: 0, autoDisableAfter: 10,
+  createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
+};
+
 const WORKSPACES = {
   items: [
     { id: "ws-1", name: "alpha-workspace", phase: "Active" },
@@ -149,6 +159,65 @@ describe("TriggersPage", () => {
     fireEvent.click(screen.getByLabelText("New trigger"));
     expect(screen.getByPlaceholderText("Trigger name")).toBeInTheDocument();
     expect(screen.getByText("Schedule")).toBeInTheDocument();
+  });
+
+  // ─── #1812: the inline gate-script editor ────────────────────────────────────
+
+  it("shows the gate-script editor with explainer in the routine create form", async () => {
+    mockList.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("New trigger")).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText("New trigger"));
+    // Routine mode is the default — the editor + explainer are visible.
+    expect(screen.getByLabelText("Gate script language")).toBeInTheDocument();
+    expect(screen.getByText(/How the gate works:/)).toBeInTheDocument();
+    expect(screen.getAllByText(/no LLM call/).length).toBeGreaterThan(0);
+    // Selecting a language reveals the inline source editor.
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "python" } });
+    expect(screen.getByLabelText("Gate script handler source")).toBeInTheDocument();
+  });
+
+  it("blocks create on a partial gate script with the field named", async () => {
+    mockList.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("New trigger")).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText("New trigger"));
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "python" } });
+    // Language chosen, source empty → live validation names the missing half.
+    expect(screen.getByRole("alert")).toHaveTextContent(/handler source/);
+    expect(screen.getByText("Create")).toBeDisabled();
+  });
+
+  it("sends script {language, handler} in the create payload", async () => {
+    mockList.mockResolvedValue([]);
+    mockCreate.mockResolvedValue({ trigger: CRON_TRIGGER });
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("New trigger")).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText("New trigger"));
+    fireEvent.change(screen.getByPlaceholderText("Trigger name"), { target: { value: "gated" } });
+    // Wait for the workspace options to load, then pick ws-1.
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: /alpha-workspace/ })).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Workspace"), { target: { value: "ws-1" } });
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "python" } });
+    fireEvent.change(screen.getByLabelText("Gate script handler source"), {
+      target: { value: 'def handler(input):\n    return {"proceed": True, "vars": {}}\n' },
+    });
+    const createButton = screen.getByText("Create");
+    // Script-only create is legal (gate + side effects, no LLM leg) —
+    // name + workspace + valid gate script is submittable.
+    expect(createButton).toBeEnabled();
+    fireEvent.change(screen.getByPlaceholderText(/Previous result:/), { target: { value: "Report {{count}}" } });
+    fireEvent.click(createButton);
+    await waitFor(() => {
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
+        name: "gated",
+        workspaceId: "ws-1",
+        prompt: "Report {{count}}",
+        script: { language: "python", handler: 'def handler(input):\n    return {"proceed": True, "vars": {}}\n' },
+      }));
+    });
   });
 
   it("shows trigger detail when selected", async () => {
@@ -267,6 +336,100 @@ describe("TriggersPage", () => {
         preserveSession: "always",
       }));
     });
+  });
+
+  // #1812: a gated trigger's detail shows the script; saving the target
+  // sends the script through unchanged; clearing it PATCHES script:null.
+  it("shows and edits a gate script on an existing trigger", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Gate script (python)")).toBeInTheDocument();
+      expect(screen.getByText(/proceed=false skips the model/)).toBeInTheDocument();
+    });
+    const editButtons3 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons3[editButtons3.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    // The editor prefills language + source from the stored script.
+    const langSelect = screen.getByLabelText("Gate script language") as HTMLSelectElement;
+    expect(langSelect.value).toBe("python");
+    expect(screen.getByLabelText("Gate script handler source")).toHaveValue(GATED_TRIGGER.script!.handler);
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith("trig-5", expect.objectContaining({
+        script: { language: "python", handler: GATED_TRIGGER.script!.handler },
+      }));
+    });
+  });
+
+  it("clearing the gate script patches script null", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    const editButtons4 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons4[editButtons4.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "none" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith("trig-5", expect.objectContaining({ script: null }));
+    });
+  });
+
+  // r2 review Finding 3: a partial gate edit must block the target save
+  // — emptying the handler while keeping the language can never submit
+  // (and in particular must not degrade into script:null erasure).
+  it("a partial gate edit blocks Save and never submits script null", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    const editButtons5 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons5[editButtons5.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    // Empty the handler source; language stays python → partial.
+    fireEvent.change(screen.getByLabelText("Gate script handler source"), { target: { value: "" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(/handler source/);
+    const saveButtons = screen.getAllByText("Save");
+    const targetSave = saveButtons[saveButtons.length - 1]!;
+    expect(targetSave).toBeDisabled();
+    // Even a programmatic click must not clear the stored script.
+    fireEvent.click(targetSave);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // r2 review minor trap: deselecting the language drops the stale
+  // source, so the form is cleanly script-less (not hidden-partial).
+  it("deselecting the gate language clears the stale source", async () => {
+    mockList.mockResolvedValue([GATED_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-5");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    const editButtons6 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons6[editButtons6.length - 1]!);
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Gate script language"), { target: { value: "none" } });
+    // Language none + source auto-cleared → no alert, Save enabled.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const saveButtons2 = screen.getAllByText("Save");
+    expect(saveButtons2[saveButtons2.length - 1]!).toBeEnabled();
   });
 
   it("discards edits when cancel clicked without calling onUpdate", async () => {

@@ -9,7 +9,7 @@
 # injects the value per-platform; a hardcoded default can mask a missing
 # buildx override and produce a binary for the wrong arch (issue #462).
 
-FROM --platform=$BUILDPLATFORM golang:1.26@sha256:52d57e3542f28ad72e9a1084e209366d8ca6af04997636134c138d16702a70a6 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26@sha256:5c3f3f28a273c9b61698b2d34f18375929790ab1f1d3835d032d21e2b31eae0c AS builder
 
 WORKDIR /workspace
 
