@@ -128,6 +128,18 @@ Red-first (all quoted from the pre-fix runs above): Z6/Z4b/Z3b observed red at f
 
 Verification (full set): frontend vitest 2407/2407 (211 files); eslint 0 errors; tsc -b clean; Playwright busy-snapshot-lease 4/4; api ./internal/handlers (full, 199s) + ./internal/server + ./internal/services/eventbroker green; gofmt clean; golangci-lint 0 issues (handlers); repolint ok.
 
+## Review round r5 — wipe-memory discipline + one-per-window cadence (review 5618589441)
+
+The fifth bot review (against fb97056d) verified the r4 takeover fixes (Z3b/Z4b/Z6, terminal guard, resync capture, dual-key latch, E2.5 e2e) and raised three previously-unaddressed defects + the e2e-2 honesty gap:
+
+1. **Cross-replica wipe-memory ids (BLOCKING)** — the wipe stored entries verbatim, keeping the OLD replica's `confirmEventId`; on a fresh replica (per-replica broker ids, non-sticky LB) the re-latched unknown could never be cleared by the new space's cursors (confirm 50 > cursor 10 forever). Fix: the memory is stored ORDERABLE-AT-ZERO (`confirmEventId: 0`, mirroring the REST-seed ruling from r0 finding 1) — any later snapshot governs it; `internalId` (id-space independent) stays. Red pin Z8 — pre-wipe id 50 → resync → ok=false re-latch → ok=true idle at cursor 10: red `expected 'yes' to be 'no'`, green post-fix.
+2. **ok=false resurrection (HIGH)** — post-wipe idle/aborted/deleted/busy deltas never pruned the memory, so a later ok=false re-latched state the authority had already cleared. Fix: every session.status delta prunes its sid from the workspace's wipe memory (busy supersedes; idle/aborted/deleted resolve). Red pin Z9 — wipe → fresh idle delta → ok=false: red `expected 'yes' to be 'no'` (badge flipped back), green post-fix.
+3. **Double recheck per window (MEDIUM)** — the pending-recheck (no-evidence retry) and the lease-expiry path only deduped when they coincided in ONE sweep tick; a busy delta latching after an ok=false armed both clocks, firing two POSTs per window (4 vs 2 across 220s). Fix: latching busy evidence deletes the workspace's pending recheck — the LEASE owns the cadence whenever evidence exists (the unknown-hold branch already did this). Red pin Z10 — red `expected "spy" to be called 2 times, but got 4 times`, green post-fix.
+4. **E2E-2 honesty (test gap)** — the old test re-stamped the busy delta on every connection, so it passed even with the hold removed. Rewritten: the delta rides the two INITIAL connects only (React StrictMode double-mounts the stream effect in dev — the page's first two /events fetches are the same initial load; the live one's onConnect is already a wiping "reconnect"); every later connection answers ok=false alone. Without the unknown-hold the badge now dies at the first post-initial reconnect. New 2b: the same hold driven by an in-stream resync (the healthy-connection wipe) instead of a reconnect. Spec 5/5 locally (31.7s).
+5. Style: the duplicated `pendingRecheckRef` delete removed.
+
+Verification: frontend vitest 2410/2410 (211 files); eslint 0 errors; tsc -b clean; Playwright busy-snapshot-lease 5/5. (Go untouched this round — r5's Go suites stand.)
+
 ## Blockers
 
 None.

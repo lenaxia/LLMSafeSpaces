@@ -107,6 +107,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-seed re-latches it as unknown (never idle) with the lease owning
   a once-per-window recovery cadence — pinned in vitest (fake timers)
   and at e2e fidelity (authority-down never clears a live badge).
+- **Review-hardened round 6 (PR #1848 r5)**: the reconnect/resync wipe
+  memory is stored orderable-at-zero (a pre-wipe confirm id belongs to
+  the old replica's event-id space and could block the new replica's
+  authoritative clears forever); a post-wipe session.status delta
+  prunes the memory (an ok=false can no longer resurrect state the
+  authority already cleared); latching busy evidence hands the recheck
+  cadence to the lease (exactly one recheck POST per 90s window — the
+  no-evidence pending retry and the lease no longer double-fire); and
+  the authority-down e2e now proves the unknown-hold itself (the busy
+  delta rides the initial connects only; reconnects answer ok=false
+  alone), plus a resync-driven hold e2e.
 - **Review-hardened round 5 (PR #1848 r4)**: the resync recheck
   capture rides the state-updater queue (a render-closure read was
   stale within one SSE chunk — a same-chunk busy delta followed by

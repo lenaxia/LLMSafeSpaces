@@ -284,6 +284,14 @@ function wipeBusyForEventLoss(
     // not idle"); the first ok=true flight reconciles definitively.
     // Idempotent under StrictMode double-invocation (same prev → same
     // entries).
+    //
+    // #1848 r5 finding 1: the memory is UNORDERABLE evidence — the
+    // pre-wipe confirmEventId belongs to the OLD replica's id space
+    // (the broker's ids are per-replica; a reconnect may land anywhere).
+    // Carrying it verbatim would let a stale high id block the new
+    // replica's authoritative clears forever (confirm > cursor). Store
+    // orderable-at-zero, exactly like a REST seed — any later snapshot
+    // governs it. internalId is id-space independent and stays.
     if (wipedMemoryRef) {
       for (const [sid, entry] of prev) {
         let wsMem = wipedMemoryRef.current.get(entry.workspaceId);
@@ -291,7 +299,7 @@ function wipeBusyForEventLoss(
           wsMem = new Map();
           wipedMemoryRef.current.set(entry.workspaceId, wsMem);
         }
-        wsMem.set(sid, entry);
+        wsMem.set(sid, { ...entry, confirmEventId: 0 });
       }
     }
     return new Map();
@@ -1221,10 +1229,6 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         wipedBusyRef.current.delete(wsId);
         pendingRecheckRef.current.delete(wsId);
 
-        // An authoritative answer landed — the pending retry (if any)
-        // is answered too.
-        pendingRecheckRef.current.delete(wsId);
-
         // The workspace is now seeded from a better source than the
         // REST overlay; the overlay's later add-only pass is harmless.
         seededRef.current.add(wsId);
@@ -1365,6 +1369,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         }
         if (evt.status === "busy") {
           clearedRef.current.delete(evt.session_id);
+          // #1848 r5 findings 2+3: fresh live evidence supersedes the
+          // wipe's memory (an ok=false can no longer resurrect this
+          // session) and hands the recheck cadence to the LEASE — the
+          // pending-recheck path exists only for no-evidence workspaces.
+          wipedBusyRef.current.get(evt.workspace_id)?.delete(evt.session_id);
+          pendingRecheckRef.current.delete(evt.workspace_id);
           // #786: a new turn un-aborts — the interrupted marker dies
           // with the session's next activity.
           setAbortedSessions((prev) => {
@@ -1405,6 +1415,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // neither carries a response, so neither marks unread.
           const sid = evt.session_id!;
           const wsId = evt.workspace_id!;
+          // #1848 r5 finding 2: aborted/deleted ends the session —
+          // prune the wipe memory like the idle delta does.
+          wipedBusyRef.current.get(wsId)?.delete(sid);
           // A stopped/deleted session can never emit the idle clear —
           // the hang is over by definition (and deleting a stuck
           // session is precisely what a user does with a hung one).
@@ -1489,6 +1502,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
             setDeletedSessions((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
           }
         } else if (evt.status === "idle") {
+          // #1848 r5 finding 2: a post-wipe idle delta is
+          // authoritative evidence the session recovered — prune the
+          // wipe memory so a later ok=false cannot resurrect it.
+          wipedBusyRef.current.get(evt.workspace_id)?.delete(evt.session_id);
           setBusySessions((prev) => {
             const next = new Map(prev);
             next.delete(evt.session_id!);

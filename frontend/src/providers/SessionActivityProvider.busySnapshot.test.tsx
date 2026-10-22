@@ -1045,3 +1045,133 @@ describe("SessionActivityProvider — commit-path correctness (#1848 r3)", () =>
     expect(mockRequestStatusSnapshot).toHaveBeenCalledWith("ws-1");
   });
 });
+
+// ===== Round-6 review findings (PR #1848 r5) =====
+//
+// Z8: the wipe memory must not carry the dead replica's confirm ids —
+//     after a replica change the first ok=true flight (cursor 10) must
+//     clear a re-latched unknown whose pre-wipe delta id was 50.
+// Z9: a post-wipe authoritative idle/aborted/deleted delta prunes the
+//     wipe memory — a later ok=false must not resurrect cleared state.
+// Z10: once busy evidence latches, the LEASE owns the recheck cadence —
+//     exactly one POST per lease window, not pending+lease double-fire.
+describe("SessionActivityProvider — wipe-memory + recheck cadence (#1848 r5)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let stream: ReturnType<typeof pushedReader>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    mockGetAlerts.mockResolvedValue([]);
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
+    stream = pushedReader([]);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: { getReader: () => stream.reader },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderProbe(sessionId?: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe sessionId={sessionId} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("Z8 the first ok=true flight clears a re-latched unknown whose pre-wipe id came from another replica", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Pre-wipe evidence at id 50 (an old replica's id space).
+    stream.push(`id: 50\ndata: {"event_id":50,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // Reconnect/resync to a FRESH replica: wipe + memory + ordering
+    // reset, then ok=false re-latches the memory as unknown.
+    stream.push(`data: {"type":"resync"}\n\n`);
+    await settle(300);
+    stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-hold"}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-hold","snapshot_ok":false}\n\n`);
+    await settle(300);
+    // Unknown-hold: never idle.
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The new replica's cursor space restarts low: an authoritative
+    // idle flight at cursor 10 MUST clear (the stale pre-wipe id 50
+    // is a dead letter, not ordering evidence).
+    stream.push(`id: 11\ndata: {"event_id":11,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-r"}\n\n`);
+    stream.push(`id: 12\ndata: {"event_id":12,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-r","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":false}]}}\n\n`);
+    stream.push(`id: 13\ndata: {"event_id":13,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-r","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z9 a post-wipe idle delta prunes the wipe memory — ok=false cannot resurrect cleared state", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // Wipe: the memory remembers the busy entry…
+    stream.push(`data: {"type":"resync"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+
+    // …but a FRESH idle delta is authoritative post-wipe evidence —
+    // the session went idle during/after the outage.
+    stream.push(`id: 60\ndata: {"event_id":60,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"idle"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+
+    // A later ok=false flight must NOT flip the badge back to busy.
+    stream.push(`id: 70\ndata: {"event_id":70,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-late"}\n\n`);
+    stream.push(`id: 71\ndata: {"event_id":71,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-late","snapshot_ok":false}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("Z10 latched busy evidence hands the recheck cadence to the lease — exactly one POST per window", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // ok=false with nothing latched: the pending recheck is armed at
+    // +90s (the no-evidence retry path).
+    stream.push(`id: 20\ndata: {"event_id":20,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-d"}\n\n`);
+    stream.push(`id: 21\ndata: {"event_id":21,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-d","snapshot_ok":false}\n\n`);
+    await settle(100);
+
+    // Busy evidence latches at +5s: the LEASE now owns the cadence.
+    stream.push(`id: 22\ndata: {"event_id":22,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(100);
+
+    // Two full windows: pre-fix the pending (+90) and the lease (+105)
+    // both fire in window one, then again — 4 POSTs by +220s; the
+    // bound is ONE per window (2 by +220s).
+    await advanceHealthy(stream, 220_000);
+    expect(mockRequestStatusSnapshot).toHaveBeenCalledTimes(2);
+  });
+});
