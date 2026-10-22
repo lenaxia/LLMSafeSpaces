@@ -67,9 +67,9 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 		// (a) the operative skip action: skipped => run it yourself.
 		{`execute that suite locally yourself`,
 			"the skip action is mandatory local execution — the sentence carrying the SKIPPED rule must direct the reviewer to run the suite, not merely note that evidence is missing (r2 mutation: 'do not bother running that suite locally' passed)"},
-		// (a) conditional board coverage keys on the JOB, bound structurally.
-		{`JOB (in secrets-integration.yml) ran and concluded SUCCESS`,
-			"board coverage binds 'ran and concluded SUCCESS' to the pkg/secrets integration JOB token — the parenthesized filename cannot absorb the verb (r2 mutation: 'when secrets-integration.yml ran and concluded SUCCESS' — workflow-level — passed while the warning sentence stayed)"},
+		// (a) conditional board coverage keys on the JOB, polarity bound.
+		{`are covered when the ` + "`pkg/secrets integration`" + ` JOB (in secrets-integration.yml) ran and concluded SUCCESS`,
+			"the positive coverage sentence binds polarity ('are covered when ... ran and concluded SUCCESS') to the JOB token — a NOT before covered or a workflow-level paraphrase both break the marker (r3 mutations)"},
 		{`judge the JOB/CHECK itself, never the workflow-level conclusion`,
 			"the workflow always runs and a path-skipped job still shows a green workflow run — the explicit warning must stay (e.g. board_manager_tools.go changes are NOT matched by the job filter while TestIntegrationBoardManagerE2E dispatches tools from that file)"},
 		// (b) the must-stay residue: CI-uncovered suites stay mandatory local work.
@@ -117,6 +117,16 @@ func TestPrReviewPromptCIFirstExecutionPolicy(t *testing.T) {
 			"workflow-level paraphrase class: 'ran green' keyed on the workflow file — the workflow conclusion stays green even when the board job is path-skipped"},
 		{"do not bother running that suite locally",
 			"skip-action inversion: the SKIPPED rule must mandate local execution, never discourage it (PR #1833 r2 mutation)"},
+		{"NOT execute that suite locally",
+			"polarity inversion of the pinned skip action (PR #1833 r3 mutation: 'do NOT execute that suite locally yourself' passed while the positive matched)"},
+		{"never execute that suite locally",
+			"negation-prefix inversion of the pinned skip action (PR #1833 r4 adversarial mutation: 'never execute that suite locally yourself' still contained the positive marker)"},
+		{"do not run the board suites locally",
+			"polarity inversion of the board-suite local obligation (PR #1833 r3 mutation: 'failed, do not run the board suites locally' passed)"},
+		{"never run the board suites locally",
+			"negation-prefix inversion of the board-suite local obligation (same class as the r4 'never execute' survivor)"},
+		{"NOT covered when",
+			"polarity inversion of the coverage claim (PR #1833 r3 mutation: 'are NOT covered when ... JOB ... SUCCESS' passed while the JOB marker matched)"},
 	} {
 		if strings.Contains(body, strings.Join(strings.Fields(forbidden.needle), " ")) {
 			t.Errorf("pr-review.md CI-first execution policy contains forbidden phrase %q: %s", forbidden.needle, forbidden.why)

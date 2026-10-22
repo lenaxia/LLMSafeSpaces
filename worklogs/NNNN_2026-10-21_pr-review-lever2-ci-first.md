@@ -25,7 +25,7 @@ Cut the reviewer's measured double-execution and idle-wait waste without touchin
 
 ### Red-first pin — `tests/ghaworkflows/pr_review_prompt_policy_test.go`
 
-`TestPrReviewPromptCIFirstExecutionPolicy`: 13 whitespace-normalized positive markers, 8 negative forbidden-phrase markers, a count guard (`gh pr checks --watch` may appear only inside its NEVER-prohibition), and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked (bare `--watch` instruction, inversion phrases, workflow-level board condition).
+`TestPrReviewPromptCIFirstExecutionPolicy`: 13 whitespace-normalized positive markers, 13 negative forbidden-phrase markers, a count guard (`gh pr checks --watch` may appear only inside its NEVER-prohibition), and a policy-before-checklist ordering assertion. Red on the pre-policy prompt (all markers missing); guards mutation-checked (bare `--watch` instruction, inversion phrases, workflow-level board condition).
 
 ---
 
@@ -45,7 +45,7 @@ None.
 
 ## Tests Run
 
-- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (13 positives / 8 negatives); red-verified against the pre-policy prompt and against each mutation (bare `--watch` instruction; workflow-level board phrasing; inversion phrases).
+- `go test ./tests/ghaworkflows/ -run TestPrReviewPromptCIFirstExecutionPolicy -count=1` — ok (13 positives / 13 negatives); red-verified against the pre-policy prompt and against each mutation (bare `--watch` instruction; workflow-level board phrasing; inversion phrases).
 - `go test ./tests/ghaworkflows/ -count=1` — ok. `go vet ./tests/ghaworkflows/` — clean.
 - CI on the branch head: Lint, Test (-short), Test (full suite, race), Frontend, Origin plugin freeze pin, Harness ABI, Gitleaks — SUCCESS (ten docker build-push jobs fail `go mod download` — pre-existing on main at 43a7ba29, no build inputs touched).
 

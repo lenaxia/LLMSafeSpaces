@@ -43,8 +43,9 @@ Before running ANY test, vet, or lint command locally:
    a code finding; only a diff-related failure (build break, test
    regression, lint violation) is a review finding in its own right.
 4. If CI is still running on the head, wait on the CI WORKFLOW RUNS ONLY —
-   `gh run list --workflow ci.yml --commit <head SHA>` (plus
-   secrets-integration.yml when its filters match) and `gh run watch <run
+   `gh run list --workflow ci.yml --commit <head SHA>` (plus the
+   secrets-integration.yml run when the diff touches that workflow's
+   path-filtered job) and `gh run watch <run
    id>` once, or one later re-poll. NEVER `gh pr checks --watch`: that
    watches ALL checks including THIS review job itself and would wait on its
    own completion — a deadlock until job timeout. And never sleep-poll
