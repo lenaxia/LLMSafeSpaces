@@ -48,6 +48,20 @@ type EngineConfig struct {
 	// LeaseDuration is how long a claim holds without progress evidence
 	// (#1685 semantics: elapsed time is not liveness). Default 15m.
 	LeaseDuration time.Duration
+	// LeaseGrace bounds the #1847 platform-liveness ACTIVITY arm: a
+	// started session whose last platform-observed activity is within
+	// the grace is alive (spec item 1: ~2x the lease window). An open
+	// turn (busy) is alive regardless of activity age. Default 30m.
+	LeaseGrace time.Duration
+	// LeaseAppealWindow is the #1847 pre-reclaim appeal window: ONE ping
+	// at the original session's turn boundary, then reclaim if silent.
+	// Default 5m.
+	LeaseAppealWindow time.Duration
+	// LivenessStaleBound bounds how long a pushed liveness row stays
+	// authoritative without a refresh (#1847): a pod that stops pushing
+	// cannot hold a latched busy=true forever (the wedged-turn release
+	// is bounded by grace + the appeal window). Default 5m.
+	LivenessStaleBound time.Duration
 	// ThrottleBackoff is the cooldown applied by report_throttle to both
 	// the task (cooldown_until) and the project (slot_cooldown_until).
 	// Default 5m.
@@ -87,17 +101,20 @@ type EngineConfig struct {
 // backpressure/graph-limit defaults).
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		AttemptsCap:       3,
-		FailureBackoff:    time.Minute,
-		LeaseDuration:     15 * time.Minute,
-		ThrottleBackoff:   5 * time.Minute,
-		DRRQuantum:        1,
-		SweepInterval:     30 * time.Second,
-		UserClaimCap:      8,
-		GlobalClaimCap:    64,
-		MaxEdgesPerNode:   16,
-		MaxNodesPerEpic:   64,
-		PressureSampleTTL: 2 * time.Minute,
+		AttemptsCap:        3,
+		FailureBackoff:     time.Minute,
+		LeaseDuration:      15 * time.Minute,
+		LeaseGrace:         30 * time.Minute,
+		LeaseAppealWindow:  5 * time.Minute,
+		LivenessStaleBound: 5 * time.Minute,
+		ThrottleBackoff:    5 * time.Minute,
+		DRRQuantum:         1,
+		SweepInterval:      30 * time.Second,
+		UserClaimCap:       8,
+		GlobalClaimCap:     64,
+		MaxEdgesPerNode:    16,
+		MaxNodesPerEpic:    64,
+		PressureSampleTTL:  2 * time.Minute,
 	}
 }
 

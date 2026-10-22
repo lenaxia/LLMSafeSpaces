@@ -190,15 +190,16 @@ func (f *failpoints) disarm(where string) {
 // faked, and seed helpers.
 type BoardSuite struct {
 	suite.Suite
-	pool    *pgxpool.Pool
-	cfg     board.EngineConfig
-	spawner *fakeSpawner
-	aborter *fakeAborter
-	drift   *fakeDriftSource
-	pending *fakePendingSource
-	fps     *failpoints
-	svc     *board.Service
-	recon   *board.Reconciler
+	pool      *pgxpool.Pool
+	cfg       board.EngineConfig
+	spawner   *fakeSpawner
+	aborter   *fakeAborter
+	drift     *fakeDriftSource
+	pending   *fakePendingSource
+	messenger *fakeMessenger
+	fps       *failpoints
+	svc       *board.Service
+	recon     *board.Reconciler
 }
 
 func TestBoardSuite(t *testing.T) {
@@ -219,12 +220,15 @@ func TestBoardSuite(t *testing.T) {
 func newBoardSuite(pool *pgxpool.Pool) *BoardSuite {
 	s := &BoardSuite{pool: pool}
 	s.cfg = board.EngineConfig{
-		AttemptsCap:     3,
-		LeaseDuration:   200 * time.Millisecond, // short for expiry tests; lease arithmetic is still cfg-driven
-		ThrottleBackoff: time.Hour,              // "long" so cooldowns gate until explicitly cleared
-		FailureBackoff:  500 * time.Millisecond, // #1813: small so the doubling windows are observable; tests that need redispatch NOW clear cooldowns explicitly
-		DRRQuantum:      1,
-		SweepInterval:   time.Second,
+		AttemptsCap:        3,
+		LeaseDuration:      200 * time.Millisecond, // short for expiry tests; lease arithmetic is still cfg-driven
+		LeaseGrace:         time.Minute,            // #1847: roomy — liveness tests seed activity beyond it explicitly
+		LeaseAppealWindow:  500 * time.Millisecond, // #1847: short so appeal-lapse tests age it with one rewind
+		LivenessStaleBound: 250 * time.Millisecond, // #1847: fresh-push seeds stay inside easily
+		ThrottleBackoff:    time.Hour,              // "long" so cooldowns gate until explicitly cleared
+		FailureBackoff:     500 * time.Millisecond, // #1813: small so the doubling windows are observable; tests that need redispatch NOW clear cooldowns explicitly
+		DRRQuantum:         1,
+		SweepInterval:      time.Second,
 	}
 	return s
 }
@@ -233,7 +237,7 @@ func (s *BoardSuite) SetupTest() {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `
 		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects,
-			board_config_defaults, board_project_config_overrides
+			board_config_defaults, board_project_config_overrides, board_session_liveness
 		CASCADE
 	`)
 	s.Require().NoError(err)
@@ -248,22 +252,26 @@ func (s *BoardSuite) SetupTest() {
 	s.aborter = &fakeAborter{}
 	s.drift = &fakeDriftSource{prs: map[int]board.PRState{}}
 	s.pending = &fakePendingSource{pend: map[string]bool{}}
+	s.messenger = &fakeMessenger{}
 	s.fps = newFailpoints()
 	s.svc = board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(s.spawner.Spawn),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
+		board.WithWorkerMessenger(s.messenger.Deliver),
 		board.WithFailpoint(s.fps.fp),
 	)
 	// The default test reconciler installs NO spawner: the §4.4 dispatch
 	// drive is inert without a spawn seam (no lease churn), so RC-phase
 	// tests observe reclaims in isolation. The drive itself is pinned by
-	// TestKill_DispatchDriveResweepFeedsWork.
+	// TestKill_DispatchDriveResweepFeedsWork. The messenger IS installed:
+	// #1847's RC1 appeal ping is a sweep-phase delivery.
 	s.recon = board.NewReconciler(s.pool, s.cfg,
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
+		board.WithWorkerMessenger(s.messenger.Deliver),
 		board.WithFailpoint(s.fps.fp),
 	)
 }

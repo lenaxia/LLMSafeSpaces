@@ -115,6 +115,15 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 	if cfg.LeaseDuration <= 0 {
 		cfg.LeaseDuration = 15 * time.Minute
 	}
+	if cfg.LeaseGrace <= 0 {
+		cfg.LeaseGrace = 2 * cfg.LeaseDuration
+	}
+	if cfg.LeaseAppealWindow <= 0 {
+		cfg.LeaseAppealWindow = 5 * time.Minute
+	}
+	if cfg.LivenessStaleBound <= 0 {
+		cfg.LivenessStaleBound = 5 * time.Minute
+	}
 	if cfg.ThrottleBackoff <= 0 {
 		cfg.ThrottleBackoff = 5 * time.Minute
 	}

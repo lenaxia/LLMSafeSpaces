@@ -389,7 +389,12 @@ func (p PressureSample) Summary() string {
 // machinery at the pause/resume levers. They land at the current turn's
 // boundary — a halt finishes the thought, then stops; it is NOT an
 // abort (delete still uses the abort seam).
+//
+// #1847 adds the lease-appeal directive: the pre-reclaim ping asks a
+// lapsed-but-recorded session to reclaim or release — same turn-boundary
+// delivery, never a mid-generation cut.
 const (
-	DirectiveHalt   = "halt"
-	DirectiveResume = "resume"
+	DirectiveHalt        = "halt"
+	DirectiveResume      = "resume"
+	DirectiveLeaseAppeal = "lease_appeal"
 )
