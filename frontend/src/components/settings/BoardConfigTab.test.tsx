@@ -113,7 +113,7 @@ describe("BoardConfigTab — #1832 item 6 (2/2)", () => {
     await screen.findByText("Apollo");
     const sel = await screen.findByTestId("cfg-ov-prj-aaaa1111-reviewColumn");
     await user.click(sel);
-    const inheritOption = (await screen.findAllByRole("option", { name: "Inherit" }))[0];
+    const inheritOption = (await screen.findAllByRole("option", { name: "Inherit" }))[0]!;
     await user.click(inheritOption);
     await user.click(screen.getByTestId("cfg-save-prj-aaaa1111"));
     await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
