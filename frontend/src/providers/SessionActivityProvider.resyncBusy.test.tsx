@@ -49,6 +49,18 @@ vi.mock("../api/workspaces", () => ({
   },
 }));
 
+// #1821 piece 4: the resync path additionally requests an authoritative
+// busy-snapshot flight per affected workspace — mock the surface so the
+// test's fetch-call accounting (exactly one connection) stays about the
+// SSE stream only.
+const mockRequestStatusSnapshot = vi.fn();
+vi.mock("../api/sessions", () => ({
+  sessionsApi: {
+    create: vi.fn(),
+    requestStatusSnapshot: (id: string) => mockRequestStatusSnapshot(id),
+  },
+}));
+
 const encoder = new TextEncoder();
 
 // A push-controlled reader: delivers chunks as they are pushed by the

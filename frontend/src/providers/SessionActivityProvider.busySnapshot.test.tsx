@@ -488,3 +488,170 @@ describe("SessionActivityProvider — busy snapshot review findings (#1848 r0)",
     expect(screen.getByTestId("busy").textContent).toBe("yes");
   });
 });
+
+// ===== Round-3 review findings (PR #1848 r1) =====
+//
+// X1: per-workspace subsumption — workspace B's snapshot cursor must
+//     not suppress workspace A's never-applied delta.
+// X2: per-workspace stale-flight discard — B's evidence must not
+//     discard A's flight.
+// X3: resync resets the ordering state (per-replica id spaces) and
+//     triggers the authority re-seed for workspaces that had busy.
+// X4: a degraded row with NO learned alias must not clear a
+//     REST-seeded phrase-keyed entry (the join is partial).
+// X5: a flight completing after agent_died must not re-latch busy.
+describe("SessionActivityProvider — busy ordering review findings (#1848 r1)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let stream: ReturnType<typeof pushedReader>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    mockGetAlerts.mockResolvedValue([]);
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
+    stream = pushedReader([]);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: { getReader: () => stream.reader },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderProbe(sessionId?: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe sessionId={sessionId} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  function ws2Flight(rows: Array<{ session_id: string; derived_busy: boolean }>, cursor: number) {
+    stream.push(`id: ${cursor + 1}\ndata: {"event_id":${cursor + 1},"type":"session.status.snapshot_begin","workspace_id":"ws-2","snapshot_id":"f-ws2"}\n\n`);
+    stream.push(`id: ${cursor + 2}\ndata: {"event_id":${cursor + 2},"type":"session.status.snapshot","workspace_id":"ws-2","snapshot_id":"f-ws2","data":{"cursor":${cursor},"sessions":${JSON.stringify(rows)}}}\n\n`);
+    stream.push(`id: ${cursor + 3}\ndata: {"event_id":${cursor + 3},"type":"session.status.snapshot_complete","workspace_id":"ws-2","snapshot_id":"f-ws2","snapshot_ok":true}\n\n`);
+  }
+
+  it("X1 workspace B's snapshot cursor does not suppress workspace A's never-applied delta", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Workspace 2 commits at cursor 100 (out-of-order delivery put its
+    // high ids on the wire first).
+    ws2Flight([{ session_id: "ws2-sess", derived_busy: false }], 100);
+    await settle(500);
+
+    // Workspace 1's delta id 90 — never applied, delivered late, and
+    // below ws-2's cursor. It must STILL apply (ws-2's rows say
+    // nothing about ws-1).
+    stream.push(`id: 90\ndata: {"event_id":90,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  it("X2 workspace B's delta does not discard workspace A's overlapping flight", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // ws-1 flight opens (begin at id 8, cursor will be 10)…
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-a"}\n\n`);
+    // …ws-2's delta id 50 lands mid-flight (its own workspace's
+    // evidence — must not enter ws-1's high-water)…
+    stream.push(`id: 50\ndata: {"event_id":50,"type":"session.status","workspace_id":"ws-2","session_id":"ws2-sess","status":"busy"}\n\n`);
+    // …and the ws-1 flight stages + completes at cursor 10.
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-a","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 11\ndata: {"event_id":11,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-a","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  it("X3 resync resets ordering state (per-replica ids) and re-seeds via the authority", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Old-replica state: a high cursor for ws-1 and latched busy.
+    pushBusyFlight(stream, { begin: 198, snap: 199, complete: 200 }, [
+      { session_id: "phrase-one", derived_busy: true },
+    ], 200);
+    await settle(500);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The broker overflowed: resync. The wipe clears busy, and the
+    // authority recheck fires for the workspace that had busy.
+    stream.push(`data: {"type":"resync"}\n\n`);
+    await advanceHealthy(stream, 2_000);
+    expect(mockRequestStatusSnapshot.mock.calls.filter((c: unknown[]) => c[0] === "ws-1").length).toBe(1);
+
+    // A fresh replica answers with LOW ids (its broker restarted):
+    // cursor 5 + delta 3 must not be suppressed by the old bounds.
+    stream.push(`id: 4\ndata: {"event_id":4,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-new"}\n\n`);
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-new","data":{"cursor":5,"sessions":[]}}\n\n`);
+    stream.push(`id: 6\ndata: {"event_id":6,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-new","snapshot_ok":true}\n\n`);
+    stream.push(`id: 7\ndata: {"event_id":7,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  it("X4 a degraded row with no learned alias must not clear a REST-seeded phrase-keyed entry", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([
+      { id: "phrase-one", title: "t", messageCount: 0, status: "active", hasUnread: false },
+    ] as SessionListItem[]);
+    renderProbe();
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The flight degraded server-side AND the client knows no pair:
+    // the harness-keyed busy row latches additively, but the partial
+    // join must NOT delete the phrase-keyed entry.
+    pushBusyFlight(stream, { begin: 8, snap: 9, complete: 11 }, [
+      { session_id: "h-1", derived_busy: true, session_id_deprecated: true },
+    ], 10);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
+  it("X5 a flight completing after agent_died must not re-latch busy", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // The flight fetched while the pod was alive; its begin + snapshot
+    // (busy row) are staged…
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-dead"}\n\n`);
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-dead","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    // …then the agent dies (clears everything)…
+    stream.push(`id: 12\ndata: {"event_id":12,"type":"agent_died","workspace_id":"ws-1"}\n\n`);
+    await settle(300);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+
+    // …and the flight's complete arrives late. It must not re-latch.
+    stream.push(`id: 13\ndata: {"event_id":13,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-dead","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+});

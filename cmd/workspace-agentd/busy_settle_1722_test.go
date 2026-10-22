@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,7 +159,7 @@ func TestCachedState_SettleRequiresAuthorityKnowledge(t *testing.T) {
 // successful fetch flips the signal true; the verdict survives cache
 // hits (a failed refresh must not launder into OK via the TTL).
 func TestCachedState_SessionsOKSignal(t *testing.T) {
-	failSessions := true
+	failSessions := int32(0) // 0 = ok, 1 = 500, 2 = 200-with-error-body (the status-blind path)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/provider":
@@ -166,8 +167,18 @@ func TestCachedState_SessionsOKSignal(t *testing.T) {
 		case "/config/providers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]any{{}}})
 		case "/session":
-			if failSessions {
+			if failSessions == 1 {
 				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if failSessions == 2 {
+				// #1848 r1 robustness: a non-2xx whose body decodes as an
+				// empty array — the pre-fix ListSessions ignored the status
+				// and returned an authoritative-looking empty list.
+				w.WriteHeader(http.StatusBadGateway)
+				_ = json.NewEncoder(w).Encode([]struct {
+					ID string `json:"id"`
+				}{})
 				return
 			}
 			_ = json.NewEncoder(w).Encode([]struct {
@@ -184,13 +195,20 @@ func TestCachedState_SessionsOKSignal(t *testing.T) {
 	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 5 * time.Second}}
 
 	cache := &providerCache{}
+	// #1848 r1: the status-blind shape first — a 502 body decoding as [].
+	atomic.StoreInt32(&failSessions, 2)
+	cache2 := &providerCache{}
+	_, _, _, ok2 := cachedState(context.Background(), client, cache2, newSessionStatusTracker(), nil)
+	assert.False(t, ok2, "a non-2xx ListSessions must read sessionsOK=false even when the body decodes as an empty array")
+
+	atomic.StoreInt32(&failSessions, 1)
 	_, _, sessions, ok := cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.False(t, ok, "a failed ListSessions must read sessionsOK=false")
 	assert.Empty(t, sessions, "the swallowed failure leaves the empty slice")
 
 	// Recover: the next fetch succeeds (cache TTL expired by clock —
 	// force it) and the signal flips true.
-	failSessions = false
+	atomic.StoreInt32(&failSessions, 0)
 	cache.lastFetchedAt = time.Time{}
 	_, _, sessions, ok = cachedState(context.Background(), client, cache, newSessionStatusTracker(), nil)
 	assert.True(t, ok, "a successful ListSessions must read sessionsOK=true")

@@ -63,6 +63,23 @@ E2 tier: deferred to #1818's coordinated suite per the issue #1821 coordination 
 
 Red-first round 2 (both suites observed red pre-fix): backend F4 (sessions_ok=false → asserted ok=false, got ok=true + empty rows committed); frontend F1a/F1b/F2/F3/F5 (5 failed — cursor-0 latch never cleared; REST seed never cleared; stale flight re-latched; out-of-order 99 dropped; degraded row unhealed). All green post-fix; agentd suite full green (361s — includes the new TestCachedState_SessionsOKSignal); handlers + eventbroker green; frontend 2387/2387; golangci-lint 0 issues (handlers, agentd, pkg/agentd); tsc clean; eslint 0 errors.
 
+## Review round r1 (PR #1848 second bot review) — findings addressed
+
+NOTE: the r0/r1 sections above describe the INTERMEDIATE designs as they shipped in each round (the global watermark, then the global cursor set); the FINAL design is what this section describes.
+
+1. **Global subsumption cursor dropped cross-workspace deltas (BLOCKING)** — the ordering state is now per-workspace: `wsSnapshotCursorRef` (subsumption bound keyed by the delta's workspace_id) + `wsAppliedEvidenceRef` (per-workspace stale-flight high-water). The applied-delta id SET stays global (exact-replay dedup — ids are unique per broker).
+2. **Global stale-flight high-water starved connect seeding/rechecks cross-workspace (BLOCKING)** — same scoping: a flight is discarded only against ITS OWN workspace's high-water.
+3. **Cross-replica reconnect kept stale ordering state** — reconnect AND resync now clear all three ordering refs (the broker is process-local, ids restart at 1 per replica; the chart runs 2 API replicas with no session affinity). Additionally, resync now requests one status-snapshot flight per workspace that had latched busy (the authority re-seed — the "resync converges via the snapshot" claim now holds for resync too, not just reconnect).
+4. **Degraded row with no learned alias deleted a phrase-keyed badge** — flights track `hasDegradedRows` (a busy row that stayed harness-keyed after the client-side heal); such flights ADD busy rows but never REMOVE (the id join is partial — absence cannot be proven for an entry the flight may be reporting busy under an untranslatable id).
+5. **Late flight re-latched after terminal events** — agent_died and non-Active workspace.phase delete the workspace's open busyFlights entries before clearing.
+6. **Agentd ListSessions status-blind residual** — non-2xx is now an error (a 502 body decoding as `[]` previously reported sessions_ok=true).
+
+Red-first round 3 (observed red against the r1 code via stash-revert): frontend X1 (ws-B cursor suppressed ws-A delta), X2 (ws-B delta discarded ws-A flight), X3 (post-resync low-id flight+delta suppressed; recheck not requested), X4 (degraded no-alias flight cleared REST-seeded phrase entry), X5 (post-agent_died complete re-latched) — 5/5 red, 5/5 green post-fix. Backend X6: coalescing pin (behavior shipped in r1 — coverage-only, no red state existed). Agentd X7: 502-with-[]-body red (sessionsOK wrongly true) → green via the client.go status check.
+
+One adjacent test updated: SessionActivityProvider.resyncBusy.test.tsx now mocks ../api/sessions (the resync path's additive authority recheck would otherwise hit real fetch and break that test's one-connection accounting; its REST-healing premise is unchanged).
+
+Verification at r2: frontend 2395/2395 (211 files); agentd full green (363s); handlers + eventbroker green; golangci-lint 0 issues; tsc clean; eslint 0 errors.
+
 ## Blockers
 
 None.

@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seam; the connect-path flight Registers only busy rows (cold-replica
   budget) and coalesces per workspace (one in-flight flight per
   trigger window).
+- **Review-hardened round 2 (PR #1848 r1)**: every ordering bound is
+  PER-WORKSPACE (a snapshot covers only its own workspace's rows —
+  global bounds suppressed other workspaces' never-applied deltas and
+  discarded their flights); resync/reconnect RESET the ordering state
+  (the broker's id space is per-replica, restarting at 1) and resync
+  additionally requests one authoritative busy-snapshot flight per
+  affected workspace (the authority re-seed, not just the REST
+  overlay); a flight with unhealed degraded rows adds busy but never
+  removes (its id join is partial); agent_died / non-Active phase
+  invalidate the workspace's open flights (no post-terminal re-latch);
+  agentd's ListSessions treats non-2xx as an error (the status-blind
+  empty-array decode could still report sessions_ok=true).
 
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)

@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -479,4 +481,41 @@ func TestStreamUserEvents_BusySnapshot_SessionListFailure_NotAuthoritative(t *te
 	assert.False(t, *complete.SnapshotOK,
 		"a failed session listing must read ok=false — an empty-row commit would clear latched busy (the D10 failure one layer above HTTP status)")
 	assert.Nil(t, findEvent(evts, "session.status.snapshot"))
+}
+
+// X6 (#1848 r1): the on-demand trigger coalesces — a second request
+// while a flight is running joins it (one statusz fetch), never spawns
+// a concurrent flight for the same workspace.
+func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
+	var fetches int32
+	hs := newBusySnapHarness(t, "user-co", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fetches, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, busyStatuszBody())
+	}, nil)
+
+	proxy := hs.router.Group("/api/v1/workspaces/:id")
+	proxy.POST("/sessions/status-snapshot", hs.handler.RequestSessionStatusSnapshot)
+
+	srv := httptest.NewServer(hs.router)
+	defer srv.Close()
+
+	// Fire two triggers nearly simultaneously.
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post(srv.URL+"/api/v1/workspaces/"+busySnapWS+"/sessions/status-snapshot", "", nil)
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Both flights complete; exactly ONE statusz fetch served them.
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&fetches) == 1
+	}, 2*time.Second, 20*time.Millisecond, "concurrent triggers must coalesce to one authority fetch (got %d)", atomic.LoadInt32(&fetches))
 }

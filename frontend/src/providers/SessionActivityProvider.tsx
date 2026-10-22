@@ -136,10 +136,13 @@ const KNOWN_EVENT_TYPES = new Set([
 
 // #1821 piece 2: one staged busy-snapshot flight — the busy rows and
 // cursor a begin marker opened, committed (or dropped) by the matching
-// complete.
+// complete. hasDegradedRows: the flight carried a busy row that stayed
+// harness-keyed after the client-side heal — its id join is PARTIAL, so
+// the commit may add busy rows but must never remove (#1848 r1 f4).
 interface BusyFlight {
   busyRowIds: Set<string>;
   cursor: number;
+  hasDegradedRows: boolean;
 }
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
@@ -261,20 +264,25 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [busySessions, setBusySessions] = useState<Map<string, BusyEntry>>(new Map());
   // #1821 piece 3 — delta-ordering state. The broker assigns monotonic
   // EventIDs but DELIVERS after releasing the shard lock, so arrival
-  // order is not guaranteed (#1848 r0 finding 3). The client therefore
-  // dedups rather than watermarks: an applied-delta id SET (pruned to a
-  // recent window) skips exact replays, and the last SNAPSHOT cursor is
-  // the only subsumption bound (a delta ≤ cursor is already reflected
-  // in the snapshot's rows). A never-applied delta below the newest
-  // applied id still applies — dropping it would lose the only
-  // transition another session ever got.
-  const lastSnapshotCursorRef = useRef(0);
+  // order is not guaranteed (#1848 r0 finding 3); and a snapshot only
+  // covers ITS OWN workspace's rows, so every ordering bound is
+  // PER-WORKSPACE (#1848 r1 findings 1-2: global bounds let workspace
+  // B's snapshot/deltas suppress workspace A's never-applied evidence).
+  // The client therefore dedups rather than watermarks: a global
+  // applied-delta id SET (ids are unique per broker; pruned to a recent
+  // window) skips exact replays, and a per-workspace snapshot cursor is
+  // that workspace's only subsumption bound (a delta ≤ cursor is
+  // already reflected in that workspace's committed rows). A
+  // never-applied delta below another workspace's newest applied id
+  // still applies.
+  const wsSnapshotCursorRef = useRef(new Map<string, number>());
+  // Per-workspace high-water of applied evidence (deltas + committed
+  // snapshot cursors) — the stale-flight discard: a flight whose cursor
+  // is below its OWN workspace's high-water completed after newer truth
+  // for that workspace applied and must not resurrect rows (#1848 r0
+  // finding 2, scoped per-workspace r1 finding 2).
+  const wsAppliedEvidenceRef = useRef(new Map<string, number>());
   const appliedDeltaIDsRef = useRef(new Set<number>());
-  // High-water of ALL applied evidence (deltas + snapshot cursors) —
-  // the stale-flight discard: a flight whose cursor is below it
-  // completed after newer truth applied and must not resurrect rows
-  // (#1848 r0 finding 2).
-  const maxAppliedEvidenceIDRef = useRef(0);
 
   // #1821 piece 2: open busy-snapshot flights, keyed workspaceId →
   // Map<flightId, BusyFlight> (the per-flight discipline of the input
@@ -744,6 +752,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // #1821 piece 2: open busy flights died with the connection —
       // the reconnect's connect-path flights rebuild authoritatively.
       busyFlightsRef.current.clear();
+      // #1848 r1 finding 3: the broker is process-local and its id
+      // space starts at 1 per replica — a reconnect may land on a
+      // fresh replica whose cursors/deltas are all "below" the old
+      // bounds. Reset the ordering state; the connect-path flights
+      // re-establish it.
+      wsSnapshotCursorRef.current.clear();
+      wsAppliedEvidenceRef.current.clear();
+      appliedDeltaIDsRef.current.clear();
     },
     onEvent: (data) => {
       const rawEvt = data as {
@@ -1035,7 +1051,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           open = new Map();
           busyFlightsRef.current.set(wsId, open);
         }
-        open.set(flightId, { busyRowIds: new Set(), cursor: 0 });
+        open.set(flightId, { busyRowIds: new Set(), cursor: 0, hasDegradedRows: false });
         return;
       }
 
@@ -1048,7 +1064,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // snapshots apply to unknown flight ids.
         const flight = wsId ? busyFlightsRef.current.get(wsId)?.get(flightId) : undefined;
         if (!wsId || !flight) return;
-        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; internal_session_id?: string; derived_busy?: boolean }> } }).data;
+        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; internal_session_id?: string; derived_busy?: boolean; session_id_deprecated?: boolean }> } }).data;
         if (!payload || !Array.isArray(payload.sessions)) return;
         for (const row of payload.sessions) {
           if (!row.session_id || !row.derived_busy) continue;
@@ -1060,6 +1076,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // harness-keyed (never worse).
           const pair = translateSessionIds(wsId, row.session_id, row.internal_session_id || undefined);
           if (pair.sessionId) flight.busyRowIds.add(pair.sessionId);
+          // #1848 r1 finding 4: a row that degraded AND could not be
+          // healed client-side leaves the flight's id join PARTIAL —
+          // remember it so the commit never deletes an entry the
+          // authority may actually be reporting busy under an id this
+          // flight could not name.
+          if (row.session_id_deprecated && pair.sessionId === row.session_id) {
+            flight.hasDegradedRows = true;
+          }
         }
         flight.cursor = payload.cursor ?? 0;
         return;
@@ -1081,35 +1105,35 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // NON-authoritative: keep every latched busy exactly as-is.
         if (!ok || !staged) return;
 
-        // #1848 r0 finding 2: the stale-flight discard. A flight whose
-        // cursor is below the applied evidence high-water completed
-        // after newer truth landed (an overlapping flight committed
-        // first, or a newer delta applied) — its rows are older than
-        // what the client already holds and must not resurrect or
-        // remove anything.
-        if (staged.cursor < maxAppliedEvidenceIDRef.current) return;
+        // #1848 r0 finding 2 (scoped per-workspace r1 finding 2): the
+        // stale-flight discard. A flight whose cursor is below its OWN
+        // workspace's applied-evidence high-water completed after newer
+        // truth for that workspace landed (an overlapping flight
+        // committed first, or a newer delta applied) — its rows are
+        // older than what the client already holds and must not
+        // resurrect or remove anything. Another workspace's evidence
+        // never enters the comparison.
+        const wsHighWater = wsAppliedEvidenceRef.current.get(wsId) ?? 0;
+        if (staged.cursor < wsHighWater) return;
 
         // The workspace is now seeded from a better source than the
         // REST overlay; the overlay's later add-only pass is harmless.
         seededRef.current.add(wsId);
 
         // #1821 piece 3: the cursor subsumes every delta at or below
-        // it — record the subsumption bound and forget the subsumed
-        // deltas (a late delivery of one is skipped as already
+        // it — record THIS workspace's subsumption bound and forget the
+        // subsumed deltas (a late delivery of one is skipped as already
         // reflected; a NEVER-applied delta ≤ cursor is genuinely
         // superseded by the authority's rows).
-        if (staged.cursor > lastSnapshotCursorRef.current) {
-          lastSnapshotCursorRef.current = staged.cursor;
-        }
+        wsSnapshotCursorRef.current.set(wsId, Math.max(wsSnapshotCursorRef.current.get(wsId) ?? 0, staged.cursor));
+        wsAppliedEvidenceRef.current.set(wsId, Math.max(wsHighWater, staged.cursor));
         for (const id of appliedDeltaIDsRef.current) {
           if (id <= staged.cursor) appliedDeltaIDsRef.current.delete(id);
-        }
-        if (staged.cursor > maxAppliedEvidenceIDRef.current) {
-          maxAppliedEvidenceIDRef.current = staged.cursor;
         }
 
         const cursor = staged.cursor;
         const busyRowIds = staged.busyRowIds;
+        const joinPartial = staged.hasDegradedRows;
         const now = stampBusyNow();
         setBusySessions((prev) => {
           const next = new Map(prev);
@@ -1121,10 +1145,18 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // its cursor) survive the commit; genuinely unorderable
           // legacy frames (undefined — no event id at all) stay
           // protected.
-          for (const [sid, entry] of prev) {
-            if (entry.workspaceId !== wsId) continue;
-            if (entry.confirmEventId === undefined || entry.confirmEventId > cursor) continue;
-            if (!busyRowIds.has(sid)) next.delete(sid);
+          //
+          // #1848 r1 finding 4: a flight with UNHEALED degraded rows
+          // cannot prove an entry's absence (the authority may be
+          // reporting that very session busy under the harness id this
+          // flight failed to translate) — such flights ADD busy rows
+          // but never remove.
+          if (!joinPartial) {
+            for (const [sid, entry] of prev) {
+              if (entry.workspaceId !== wsId) continue;
+              if (entry.confirmEventId === undefined || entry.confirmEventId > cursor) continue;
+              if (!busyRowIds.has(sid)) next.delete(sid);
+            }
           }
           // Busy rows latch or re-confirm: any busy-bearing snapshot
           // row refreshes the lease (piece 4). The confirm id is ALWAYS
@@ -1173,16 +1205,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (evt.type === "session.status" && evt.session_id && evt.workspace_id) {
         const deltaID = rawEvt.event_id ?? 0;
         if (deltaID > 0) {
-          if (deltaID <= lastSnapshotCursorRef.current || appliedDeltaIDsRef.current.has(deltaID)) {
+          // #1848 r1 finding 1: the subsumption bound is THIS delta's
+          // workspace cursor — another workspace's snapshot never
+          // subsumes this evidence.
+          const wsCursor = wsSnapshotCursorRef.current.get(evt.workspace_id) ?? 0;
+          if (deltaID <= wsCursor || appliedDeltaIDsRef.current.has(deltaID)) {
             return;
           }
           appliedDeltaIDsRef.current.add(deltaID);
-          if (deltaID > maxAppliedEvidenceIDRef.current) {
-            maxAppliedEvidenceIDRef.current = deltaID;
-          }
-          // Bound the set: ids at or below the subsumption cursor were
-          // pruned at commit; a hard cap catches the no-snapshot case
-          // (a long-lived tab on a quiet stream). 2× the replay ring.
+          wsAppliedEvidenceRef.current.set(
+            evt.workspace_id,
+            Math.max(wsAppliedEvidenceRef.current.get(evt.workspace_id) ?? 0, deltaID),
+          );
+          // Bound the set: ids at or below a workspace's subsumption
+          // cursor were pruned at commit; a hard cap catches the
+          // no-snapshot case (a long-lived tab on a quiet stream).
+          // 2× the replay ring.
           if (appliedDeltaIDsRef.current.size > 256) {
             const ids = Array.from(appliedDeltaIDsRef.current).sort((a, b) => a - b);
             for (let i = 0; i < ids.length - 128; i++) {
@@ -1394,6 +1432,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
       if (evt.type === "agent_died" && evt.workspace_id) {
         const wsId = evt.workspace_id;
+        // #1848 r1 finding 5: the agent is dead — any in-flight
+        // snapshot for this workspace fetched from a corpse or raced
+        // its death; its commit could re-latch busy nothing can clear
+        // (the recheck answers ok=false forever on a dead pod).
+        busyFlightsRef.current.delete(wsId);
         setBusySessions((prev) => {
           const next = new Map();
           for (const [sid, entry] of prev) {
@@ -1423,6 +1466,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // MUST land BEFORE the sessions invalidation dispatches its
         // refetches, so every re-seed's data birth postdates the wipe —
         // mirror of the onConnect ordering in useUserEventStream.
+        //
+        // #1848 r1: the re-seed also rides the AUTHORITY path — one
+        // status-snapshot flight per workspace that had latched busy
+        // (the same surface the lease recheck uses) so resync converges
+        // via the snapshot, not only the REST overlay. Capture the
+        // pre-wipe busy workspaces BEFORE the wipe clears them.
+        const resyncBusyWorkspaces = new Set<string>();
+        for (const entry of busySessions.values()) {
+          resyncBusyWorkspaces.add(entry.workspaceId);
+        }
         wipeBusyForEventLoss(wipeAtRef, seededRef, setBusySessions);
         queryClient.invalidateQueries({ queryKey: ["sessions"] });
         committedWsRef.current.clear();
@@ -1433,6 +1486,17 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // begin or snapshot frame — open flights are unreliable, and
         // the reconnect-path flights rebuild authoritatively.
         busyFlightsRef.current.clear();
+        // #1848 r1 finding 3: resync is admitted event loss on a
+        // HEALTHY connection, but the broker's id space is per-replica
+        // — reset the ordering bounds so post-resync flights and deltas
+        // (possibly from another replica) are not suppressed by stale
+        // high-waters.
+        wsSnapshotCursorRef.current.clear();
+        wsAppliedEvidenceRef.current.clear();
+        appliedDeltaIDsRef.current.clear();
+        for (const wsId of resyncBusyWorkspaces) {
+          sessionsApi.requestStatusSnapshot(wsId).catch(() => {});
+        }
         // Events were dropped for this subscriber — possibly including
         // the idle that would have cleared a hung badge. Full clear,
         // like reconnect; the gated seed re-adds genuine hangs.
@@ -1444,6 +1508,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         const wsId = evt.workspace_id;
         if (NON_ACTIVE_PHASES.has(evt.phase)) {
           seededRef.current.delete(wsId);
+          // #1848 r1 finding 5: a flight that fetched while Active and
+          // completes after the phase flip would re-latch busy for a
+          // workspace whose recheck always answers ok=false (the phase
+          // gate) — invalidate the workspace's open flights.
+          busyFlightsRef.current.delete(wsId);
           setBusySessions((prev) => {
             const next = new Map();
             for (const [sid, entry] of prev) {
