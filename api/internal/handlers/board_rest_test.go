@@ -51,6 +51,10 @@ type fakeBoardManager struct {
 	beltErr                error
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
+
+	// #1832 item 6 seam arms: the config write captures.
+	lastGlobalConfigSet  *board.BoardConfigOverride
+	lastProjectConfigSet *board.BoardConfigOverride
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
