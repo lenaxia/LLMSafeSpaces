@@ -1357,6 +1357,17 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	if message == "" {
 		return "", fmt.Errorf("message is required")
 	}
+	// #1814: placeholder-class auto-reject. The mid-write emission
+	// corruption mode replaces the drafted body with a literal
+	// placeholder token as the call fires — the sender rarely
+	// notices, and every such delivery costs the recipient a turn to
+	// diagnose. NARROW EXACT-MATCH set only (trimmed, case-folded):
+	// "ok"/"x"/probe traffic and sentences merely containing a
+	// placeholder word pass untouched — this is not a length
+	// heuristic. Rejection happens BEFORE any delivery.
+	if isPlaceholderClassPayload(message) {
+		return "", fmt.Errorf("message rejected: placeholder-class payload (%q) — your drafted text was likely replaced by a placeholder token mid-write (a known emission-corruption mode). Re-read your drafted message; if emission corruption ate it, re-compose the intended content and resend. Nothing was delivered", message)
+	}
 	origin, mode := "", ""
 	switch {
 	case strings.TrimSpace(injectedSession) != "":
@@ -1737,4 +1748,28 @@ func patchWithoutID(body map[string]any) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return out
+}
+
+// placeholderClassPayloads is the #1814 exact-match reject set for
+// send_message bodies: the literal placeholder tokens the mid-write
+// emission-corruption mode substitutes for drafted text (observed
+// across worker sessions and the orchestrator), plus the asdf-class
+// keyboard-mash single tokens. Deliberately NARROW: short legitimate
+// payloads and probe traffic ("ok", "x", "test", "ping") are NOT
+// members, and containment never matches — only whole-body equality
+// after trim+case-fold rejects.
+var placeholderClassPayloads = map[string]bool{
+	"placeholder":         true,
+	"placeholder-removed": true,
+	"<placeholder>":       true,
+	"todo":                true,
+	"tbd":                 true,
+	"asdf":                true,
+	"qwerty":              true,
+}
+
+// isPlaceholderClassPayload reports whether the (already-trimmed)
+// message body is ENTIRELY a placeholder-class token.
+func isPlaceholderClassPayload(message string) bool {
+	return placeholderClassPayloads[strings.ToLower(message)]
 }
