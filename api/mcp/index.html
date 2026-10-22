@@ -1836,6 +1836,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Triggers (Epic 64)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-inline-gate-script-1812" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The inline gate script (#1812)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -2532,6 +2549,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Triggers (Epic 64)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-inline-gate-script-1812" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The inline gate script (#1812)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -2937,12 +2971,12 @@
 <tr>
 <td><code>trigger_create</code></td>
 <td><code>name</code>, <code>source_type</code>, <code>source_config</code></td>
-<td>Create a trigger. Routine mode (no <code>workflow_id</code>): <code>workspace_id</code> + <code>prompt</code>. Workflow mode: <code>workflow_id</code>. Optional: <code>memory_mode</code>, <code>capture_mode</code>, <code>preserve_session</code>, <code>input_from</code> (<code>envelope</code> default | <code>body</code> — webhook only, the posted payload becomes the run input | <code>mapped</code> — the static <code>input</code> document), <code>input</code> (static run input, workflow mode; a JSON object ≤ 64 KiB; in envelope/body modes a shallow top-level overlay, static wins; in <code>mapped</code> mode validated against the workflow's <code>inputSchema</code>). Wiring an envelope-mode trigger with no <code>input</code> to a workflow whose <code>inputSchema</code> requires non-envelope fields is rejected with a 400 — set <code>input</code>, use <code>input_from: "body"</code>, or relax the schema.</td>
+<td>Create a trigger. Routine mode (no <code>workflow_id</code>): <code>workspace_id</code> + <code>prompt</code>. Workflow mode: <code>workflow_id</code>. Optional: <code>memory_mode</code>, <code>capture_mode</code>, <code>preserve_session</code>, <code>script</code> (the #1812 inline gate script — see below), <code>input_from</code> (<code>envelope</code> default | <code>body</code> — webhook only, the posted payload becomes the run input | <code>mapped</code> — the static <code>input</code> document), <code>input</code> (static run input, workflow mode; a JSON object ≤ 64 KiB; in envelope/body modes a shallow top-level overlay, static wins; in <code>mapped</code> mode validated against the workflow's <code>inputSchema</code>). Wiring an envelope-mode trigger with no <code>input</code> to a workflow whose <code>inputSchema</code> requires non-envelope fields is rejected with a 400 — set <code>input</code>, use <code>input_from: "body"</code>, or relax the schema.</td>
 </tr>
 <tr>
 <td><code>trigger_update</code></td>
 <td><code>trigger_id</code></td>
-<td>Partial update. Optional: <code>enabled</code> (<strong>boolean</strong>), <code>input_from</code>, <code>input</code> (a JSON <code>null</code> clears the static input; omitting the key keeps it).</td>
+<td>Partial update. Optional: <code>enabled</code> (<strong>boolean</strong>), <code>input_from</code>, <code>input</code> (a JSON <code>null</code> clears the static input; omitting the key keeps it), <code>script</code> (same three-state rule: omitted keeps, <code>null</code> clears, an object replaces).</td>
 </tr>
 <tr>
 <td><code>trigger_delete</code></td>
@@ -2952,6 +2986,33 @@
 </tbody>
 </table>
 <p><code>source_type</code> is <code>cron</code> (with <code>source_config</code> JSON <code>{"expr","tz"}</code>) or <code>webhook</code> (with <code>{}</code>).</p>
+<h4 id="the-inline-gate-script-1812">The inline gate script (#1812)<a class="headerlink" href="#the-inline-gate-script-1812" title="Permanent link">&para;</a></h4>
+<p>A routine trigger may carry <code>script</code> — an <strong>inline executable script</strong>, never a path pointer (the path form is the separate, legacy <code>script_path</code> pre-script). The shape matches a workflow script node:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span><span class="nt">"language"</span><span class="p">:</span><span class="w"> </span><span class="s2">"python"</span><span class="w"> </span><span class="err">|</span><span class="w"> </span><span class="s2">"node"</span><span class="p">,</span><span class="w"> </span><span class="nt">"handler"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;inline source&gt;"</span><span class="p">}</span>
+</span></code></pre></div>
+<p>The handler defines <code>handler(input) -&gt; {"proceed": &lt;bool&gt;, "vars": {&lt;str&gt;: &lt;str&gt;}}</code> and runs in the routine's target workspace (the same sandbox workflow script nodes use) before <strong>every</strong> fire's LLM call, with the fire envelope (<code>{source, received_at, headers?, body?}</code>) as input:</p>
+<ul>
+<li><strong><code>proceed: false</code></strong> — the fire exits with <strong>no LLM call</strong>. The gate is a cheap deterministic precondition: poll checks, state diffs, and threshold logic run as code, and the model is only invoked when the gate opens. The fire audit (<code>trigger_fires</code>) records a <code>skipped</code> fire with <code>{gate: {proceed: false, vars}}</code> in <code>actionResult</code>.</li>
+<li><strong><code>proceed: true</code></strong> — the prompt fires with each vars value substituted jinja-style (<code>{{key}}</code> — literal token replacement; unmatched tokens stay literal) and <strong>all</strong> vars (consumed or not) appended as a trailing <code>[trigger script vars]</code> metadata block. <code>{{.input}}</code>, <code>{{.prevResult}}</code>, and <code>{{.scriptResult}}</code> are platform tokens and never collide with vars. The open gate records <code>{gate: {proceed: true, vars}}</code> before the agent leg.</li>
+<li><strong>Any script failure</strong> — runtime error, unparseable output, or a return violating the schema (<code>proceed</code> must be a bool; <code>vars</code> values must be strings; keys must not start with <code>.</code>) — <strong>fails closed</strong>: a <code>failed</code> fire with the named error in <code>actionResult.gate.error</code>, no LLM call, and the failure counts toward auto-disable.</li>
+<li><strong>Script-only triggers</strong> (a <code>script</code>, no <code>prompt</code>) never call the LLM at all — the gate runs for its side effects and the fire delivers.</li>
+</ul>
+<p><code>script</code> is routine-only: setting it alongside <code>workflow_id</code> is rejected with a self-teaching 400 (a workflow's DAG carries its own script/condition nodes).</p>
+<p><strong>Worked example</strong> — a nightly digest that only spends an LLM call when work accumulated:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>// trigger_create
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>{
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>  "name": "nightly-digest",
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>  "source_type": "cron",
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>  "source_config": {"expr": "0 2 * * *", "tz": "UTC"},
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>  "workspace_id": "ws-1",
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>  "prompt": "Summarize the {{count}} new items since yesterday.",
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>  "script": {
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    "language": "python",
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    "handler": "def handler(input):\n    n = sum(1 for line in open('/workspace/inbox.log') if line.strip())\n    return {\"proceed\": n &gt; 0, \"vars\": {\"count\": str(n)}}\n"
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  }
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>}
+</span></code></pre></div>
+<p>At 02:00 the handler runs first. No new items → <code>proceed: false</code> → the fire is recorded <code>skipped</code>, no LLM call. New items → the prompt fires as "Summarize the 3 new items since yesterday." plus a trailing <code>[trigger script vars] {"count":"3"}</code> metadata block.</p>
 <h3 id="task-board-design-0067">Task Board (design 0067)<a class="headerlink" href="#task-board-design-0067" title="Permanent link">&para;</a></h3>
 <p>The owner's manager surface (ruling R7 — user-level only): every tool
 rides the authenticated <code>/api/v1/me</code> board routes, so guard outcomes,
@@ -3098,7 +3159,7 @@ position field, no ordering tool exists — dependencies alone define the
 ready set and creation order serves it.</p>
 <h2 id="how-mcp-maps-to-workspace-sessions">How MCP maps to workspace sessions<a class="headerlink" href="#how-mcp-maps-to-workspace-sessions" title="Permanent link">&para;</a></h2>
 <p>The MCP server is a stateless adapter over the REST API. There is no MCP-side session state — every tool call translates to one or more HTTP requests against the API:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>MCP client ──► MCP server (stdio/SSE) ──► LLMSafeSpaces API ──► workspace pod (opencode serve :4096)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>MCP client ──► MCP server (stdio/SSE) ──► LLMSafeSpaces API ──► workspace pod (opencode serve :4096)
 </span></code></pre></div>
 <ul>
 <li>A <strong>workspace</strong> is the persistent unit (PVC + pod). Create it once with <code>workspace_create</code>, activate it with <code>workspace_activate</code>.</li>
@@ -3116,33 +3177,33 @@ ready set and creation order serves it.</p>
 <p>The MCP server advertises <strong>tool capabilities</strong> only (<code>server.WithToolCapabilities(true)</code>). It does not currently expose MCP <code>resources</code> or <code>prompts</code> primitives — workspace data is accessed by calling tools, and the system prompt is managed via the <a href="../rest/#platform-admin">prompt endpoints</a> on the REST API.</p>
 <h2 id="end-to-end-example">End-to-end example<a class="headerlink" href="#end-to-end-example" title="Permanent link">&para;</a></h2>
 <p>A typical MCP-driven session, expressed as a sequence of tool calls:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>workspace_create(runtime="python:3.10", name="demo")
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  → { "id": "ws_abc123", ... }
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>workspace_activate(workspace_id="ws_abc123")
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>  → { "phase": "Resuming", ... }
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>  (poll status until Active — see REST GET /workspaces/:id/status)
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>credential_create(
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>  kind="anthropic",
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>  slug="my-anthropic",
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  api_key="sk-ant-...",
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>  workspace_id="ws_abc123"
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>)
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>  → { "id": "cred_...", ... }
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>session_create(workspace_id="ws_abc123")
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>  → { "sessionId": "ses_xyz", ... }
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>session_message(
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>  workspace_id="ws_abc123",
-</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>  session_id="ses_xyz",
-</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>  message="Write a Python function that returns the nth Fibonacci number."
-</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>)
-</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>  → "Here's a Python function ..."
-</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>
-</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>workspace_stop(workspace_id="ws_abc123")
-</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>  → "Workspace ws_abc123 stopped (files preserved)"
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>workspace_create(runtime="python:3.10", name="demo")
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  → { "id": "ws_abc123", ... }
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>workspace_activate(workspace_id="ws_abc123")
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  → { "phase": "Resuming", ... }
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  (poll status until Active — see REST GET /workspaces/:id/status)
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>credential_create(
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>  kind="anthropic",
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>  slug="my-anthropic",
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>  api_key="sk-ant-...",
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>  workspace_id="ws_abc123"
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>)
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>  → { "id": "cred_...", ... }
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>session_create(workspace_id="ws_abc123")
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>  → { "sessionId": "ses_xyz", ... }
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>session_message(
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>  workspace_id="ws_abc123",
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>  session_id="ses_xyz",
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>  message="Write a Python function that returns the nth Fibonacci number."
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>)
+</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>  → "Here's a Python function ..."
+</span><span id="__span-7-25"><a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>
+</span><span id="__span-7-26"><a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>workspace_stop(workspace_id="ws_abc123")
+</span><span id="__span-7-27"><a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a>  → "Workspace ws_abc123 stopped (files preserved)"
 </span></code></pre></div>
 <h2 id="next">Next<a class="headerlink" href="#next" title="Permanent link">&para;</a></h2>
 <ul>
@@ -3172,7 +3233,7 @@ ready set and creation order serves it.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 20, 2026 18:01:59 UTC"><span class="timeago" datetime="2026-10-20T18:01:59+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 20, 2026 18:01:59 UTC">2026-10-20</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 21, 2026 04:55:25 UTC"><span class="timeago" datetime="2026-10-21T04:55:25+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 21, 2026 04:55:25 UTC">2026-10-21</span>
   </span>
 
     
