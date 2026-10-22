@@ -52,6 +52,10 @@ type fakeBoardManager struct {
 	beltErr                error
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
+
+	// #1832 item 6 seam arms: the config write captures.
+	lastGlobalConfigSet  *board.BoardConfigOverride
+	lastProjectConfigSet *board.BoardConfigOverride
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -417,9 +421,18 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	p.POST("/:id/epics", h.CreateEpic)
 	p.POST("/:id/import-plan", h.ImportPlan)
 	p.GET("/:id/epics", h.ListProjectEpics)
+	p.GET("/:id/config", h.GetProjectBoardConfig)
+	p.PUT("/:id/config", h.SetProjectBoardConfig)
 	bb := g.Group("/board")
 	bb.GET("/search", h.BoardSearch)
 	bb.GET("/health", h.BoardHealth)
+	// #1832 item 6: the user-scoped board-wide config routes (the real
+	// router mounts these on the /api/v1/me/board group under the auth
+	// middleware — user scope, no admin gate, per the R7 ruling on PR
+	// #1840; the fixture stands in the userID middleware only — handler
+	// pins, not middleware pins).
+	bb.GET("/config", h.GetUserBoardConfig)
+	bb.PUT("/config", h.SetUserBoardConfig)
 	e := g.Group("/epics")
 	e.GET("/:id", h.GetEpic)
 	e.PATCH("/:id", h.UpdateEpic)

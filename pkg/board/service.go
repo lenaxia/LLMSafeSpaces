@@ -266,7 +266,17 @@ func (s *Service) CreateProject(ctx context.Context, actor Actor, in ProjectInpu
 	}
 	slots := in.WorkerSlots
 	if slots <= 0 {
-		slots = 2
+		// #1832 item 6: the caller-specified-none fallback is the
+		// owner's board-wide defaultWorkerSlots (their user defaults
+		// map; the code default DefaultBoardWorkerSlots when unset) —
+		// the config key is consumed here, not decorative. Fail-closed:
+		// a drifted defaults row surfaces as an error, never a silent
+		// zero-value fallback.
+		eff, err := s.GetUserBoardConfig(ctx, actor)
+		if err != nil {
+			return nil, err
+		}
+		slots = eff.DefaultWorkerSlots
 	}
 
 	// The project id is generated up front so the audit event can carry
