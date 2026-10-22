@@ -43,8 +43,8 @@ None.
 
 ## Files Modified
 
-- CHANGELOG.md — Unreleased entry (toolchain 1.26.10 + the invariant + the vite CVE bump)
+- CHANGELOG.md — Unreleased entry (the invariant; the toolchain/vite entries shipped with #1819's carries)
 - cmd/repolint/main.go — runWorklogUniqueness + registration
 - pkg/repolint/sequence.go — assignSentinels comment corrected
 - pkg/repolint/worklog_uniqueness_test.go — the three pins
-- worklogs/1161_2026-10-21_worklog-uniqueness-invariant.md — this worklog
+- worklogs/1165_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162 pre-empting main; ->1164 past main's bot; ->1165 by our own post-rewrite hook mid-rebase)
