@@ -269,3 +269,21 @@ the clause).
 - Union-merge of main (e6764841) — brings the CI stale-base heal
   (c42002e1: the stale-red checks ran the pre-merge-base merge commit)
   and the landed #1814/#1820 placeholder guard.
+
+## r5 review (CHANGES_REQUESTED) — remediated @ 5daa6b33
+
+- **Blocking: data race in the r4 permission pin** (repliedPath written
+  on the reply-handler goroutine, read unsynchronized — the reviewer
+  reproduced it under -race; the full-suite race job reddened
+  nondeterministically). Fixed with atomic.Value (store in the handler,
+  load in the Eventually/assert). Verified: -race -count=5 on the pin +
+  the FULL pkg/mcp package under -race — both ok.
+- Doc nit: the PR body now cites the current worklog path.
+
+## Numbering note (the third collision this branch)
+
+Main's repolint bot assigned 1163 (1817), then 1164 (builder-digests),
+then 1171 (#1825's toolchain worklog) to other lanes while this branch
+sat in review — each renumbered here (1164→1165-era resolution, then
+1164→1171, now 1171→1172 per the orchestrator's heads-up). The #1795
+uniqueness invariant holds at head; repolint green.
