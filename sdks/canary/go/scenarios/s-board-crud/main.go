@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	prjShape = regexp.MustCompile(`^prj-[0-9a-z]{8}$`)
-	epcShape = regexp.MustCompile(`^epc-[0-9a-z]{8}$`)
-	tskShape = regexp.MustCompile(`^tsk-[0-9a-z]{8}$`)
+	prjShape = regexp.MustCompile(`^prj-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$`)
+	epcShape = regexp.MustCompile(`^epc-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$`)
+	tskShape = regexp.MustCompile(`^tsk-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$`)
 	prAnchor = regexp.MustCompile(`^pr:[1-9][0-9]*$`)
 )
 

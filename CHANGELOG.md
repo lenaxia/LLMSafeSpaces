@@ -8,8 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
+### Changed — Task Board short ids flip to word phrases (issue #1831, the session-ID playbook)
 
+- **Fresh `prj-`/`epc-`/`tsk-` ids are word phrases** over the #1756
+  frozen session lists (same generator via `pkg/shortid`, not a fork):
+  `tsk-amber-falcon-glides`, with a deterministic counter suffix
+  (`-2`, `-3`, …) arbitrating mint collisions. The prefixes (the
+  closed kind map) are kept, keeping board ids pairwise disjoint from
+  session phrases (bare 3 words), workspace phrases (2 words + digit),
+  and harness slugs. The pre-#1831 random 8-char form
+  (`tsk-ab12cd34`) is never minted again.
+- **One-release dual-accept window**: legacy random-form rows keep
+  resolving on every surface (case-insensitive, as today) and render
+  `short_id_deprecated: true` at scan time — every read path carries
+  the flag (REST/MCP/agentd render the row verbatim). A later
+  migration narrows the CHECK once no legacy row remains.
+- **Uniqueness widened to owner-wide for `epc`/`tsk`**: the phrase
+  space and the resolution perimeter (workspace-scoped `board_read`,
+  user-scoped search) make design 0067's per-project scope
+  insufficient — a same-phrase row in a sibling project would resolve
+  silently wrong. The per-project UNIQUE constraints remain as DB
+  backstops; migration `000043` widens the shape CHECK to both forms.
+- **did-you-mean ranks phrase candidates over WORD edit distance**
+  (bound 2; the issue's acceptance case `tsk-meek-pony-rides` →
+  suggests `tsk-meek-poncho-rides` — character distance 4 was out of
+  bound); legacy random ids and titles keep the character ranker (word
+  distance degenerates on a single random token). The frontend's
+  `suggestBoardItems` mirrors the word ranker.
+- **Tool schemas/docs updated**: `pkg/mcp` + agentd registry describe
+  the phrase form first (`tsk-crimson-finch-blooms`), legacy forms
+  noted as deprecated-but-resolving; `docs/api/mcp.md` `board_get`
+  row, `design/0067` §4.1 supersession note, TaskDialog dependency
+  placeholder.
+
+### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
 - **The user-stream connect path emits a `session.status.snapshot`
   flight per Active workspace** (`snapshot_begin` → one snapshot frame
   carrying `{cursor, sessions: [{session_id(phrase),
@@ -128,7 +160,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness-id watermark too); idle snapshot rows are pinned
   phrase-keyed at the wire; and the lost-idle lease recheck is pinned
   at e2e fidelity (open-stream authority, fake-clock lease expiry).
-
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
 

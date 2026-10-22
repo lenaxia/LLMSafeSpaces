@@ -260,7 +260,7 @@ export function TaskDialog({
                     <Input
                       value={depInput}
                       onChange={(e) => setDepInput(e.target.value)}
-                      placeholder="tsk-… (short id)"
+                      placeholder="tsk-amber-falcon-glides (short id)"
                       className="h-8 font-mono"
                       data-testid="dep-input"
                     />

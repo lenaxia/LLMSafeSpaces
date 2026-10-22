@@ -180,6 +180,39 @@ function editDistanceBounded(a: string, b: string, max: number): number {
   return prev[b.length]!;
 }
 
+/** Token-level bounded Levenshtein over "-"-split words — the #1831
+ * phrase-id ranker unit (mirrors pkg/board's wordEditDistanceBounded:
+ * a one-WORD drift is distance 1 however many characters differ). */
+function wordDistanceBounded(a: string, b: string, max: number): number {
+  const ta = a.toLowerCase().split("-");
+  const tb = b.toLowerCase().split("-");
+  if (Math.abs(ta.length - tb.length) > max) return max + 1;
+  const prev = new Array<number>(ta.length + 1).fill(0);
+  const cur = new Array<number>(ta.length + 1).fill(0);
+  for (let j = 0; j <= ta.length; j++) prev[j] = j;
+  for (let i = 1; i <= tb.length; i++) {
+    cur[0] = i;
+    let rowMin = cur[0]!;
+    for (let j = 1; j <= ta.length; j++) {
+      const cost = ta[j - 1] === tb[i - 1] ? 0 : 1;
+      const v = Math.min(prev[j - 1]! + cost, prev[j]! + 1, cur[j - 1]! + 1);
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+    for (let j = 0; j <= ta.length; j++) prev[j] = cur[j]!;
+  }
+  return prev[ta.length]!;
+}
+
+/** The #1831 board-phrase shape: kind prefix + three word tokens +
+ * optional counter rung (server's IsPhraseIDForm). */
+const BOARD_PHRASE_ID = /^(prj|epc|tsk)-[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?$/;
+
+export function isBoardPhraseId(id: string): boolean {
+  return BOARD_PHRASE_ID.test(id.trim().toLowerCase());
+}
+
 export interface Suggestible {
   shortId: string;
   title: string;
@@ -199,12 +232,18 @@ export function suggestBoardItems<T extends Suggestible>(
   for (const c of candidates) {
     const id = c.shortId.toLowerCase();
     const title = c.title.toLowerCase();
-    let best = Math.min(
-      editDistanceBounded(q, id, 2),
-      editDistanceBounded(q, title, 2),
-    );
+    // #1831: a PHRASE-form id candidate scores the better of word
+    // distance (one-word drift = 1, however many chars differ) and
+    // character distance (within-word typos); legacy random ids and
+    // titles keep the character ranker (word distance degenerates on
+    // a single random token / free text).
+    let idDist = editDistanceBounded(q, id, 2);
+    if (isBoardPhraseId(c.shortId)) {
+      idDist = Math.min(idDist, wordDistanceBounded(q, id, 2));
+    }
+    let best = Math.min(idDist, editDistanceBounded(q, title, 2));
     // Prefix hits are strong suggestions even past distance 2 (the
-    // truncated-id case: "tsk-abc" → tsk-abc12345).
+    // truncated-id case: "tsk-crimson-finch" → the full phrase id).
     if (id.startsWith(q) || title.startsWith(q)) best = Math.min(best, 1);
     if (best <= 2) scored.push({ item: c, score: best });
   }

@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // Queryer abstracts pool vs tx (pgx's own common surface).
@@ -77,6 +79,7 @@ func scanTask(row pgx.Row) (*Task, error) {
 	if assignee != nil {
 		t.AssigneeSession = *assignee
 	}
+	t.ShortIDDeprecated = IsDeprecatedBoardID(t.ShortID)
 	if len(criteria) > 0 {
 		if err := json.Unmarshal(criteria, &t.AcceptanceCriteria); err != nil {
 			return nil, fmt.Errorf("board: criteria decode: %w", err)
@@ -99,6 +102,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	if ws != nil {
 		p.TargetWorkspaceID = *ws
 	}
+	p.ShortIDDeprecated = IsDeprecatedBoardID(p.ShortID)
 	return &p, nil
 }
 
@@ -112,6 +116,7 @@ func scanEpic(row pgx.Row) (*Epic, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.ShortIDDeprecated = IsDeprecatedBoardID(e.ShortID)
 	return &e, nil
 }
 
@@ -315,24 +320,64 @@ func (st *Store) resolveEpic(ctx context.Context, q Queryer, projectID, idOrShor
 	return e, nil
 }
 
-// mintUniqueTaskShortID mints with check-and-retry inside the caller's tx.
+// taskMintOwnerScope is the #1831 phrase-mint uniqueness scope for
+// epics/tasks: a candidate is taken if ANY of the owner's projects
+// holds it. The phrase space (~2M) makes the design-0067 per-project
+// scope insufficient for the resolution perimeter — the worker read
+// (resolveTaskInWorkspace) resolves workspace-scoped and search
+// resolves user-scoped, so a same-phrase row in a sibling project
+// would resolve silently wrong. The per-project UNIQUE constraints
+// remain as DB backstops; the owner-wide check is the mint's guard.
+const taskMintOwnerScope = ` AND project_id IN (SELECT id FROM projects WHERE user_id=$2)`
+
+// mintLadderMax bounds the deterministic counter-suffix rungs tried
+// per draw before re-minting a fresh base (paranoid bound: a scope
+// holding base..base-N all taken re-draws rather than suffixing
+// deeper).
+const mintLadderMax = 5
+
+// mintUnique mints a #1831 phrase id with the deterministic collision
+// ladder inside the caller's tx: draw a base phrase, then try base,
+// base-2, base-3, … (shortid.WithCounterSuffix discipline) against the
+// scope's existence check; a fully-exhausted ladder re-draws, bounded.
 func mintUnique(ctx context.Context, q Queryer, table, prefix, scopeSQL string, scopeArgs ...any) (string, error) {
-	for attempt := 0; attempt < 5; attempt++ {
-		id, err := mintShortID(prefix)
+	for draw := 0; draw < 3; draw++ {
+		base, err := mintBoardID(prefix)
 		if err != nil {
 			return "", err
 		}
-		var exists bool
-		args := append([]any{id}, scopeArgs...)
-		err = q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE short_id=$1`+scopeSQL+`)`, args...).Scan(&exists)
+		id, err := arbitrateMint(ctx, q, table, base, scopeSQL, scopeArgs...)
 		if err != nil {
 			return "", err
 		}
-		if !exists {
+		if id != "" {
 			return id, nil
 		}
 	}
 	return "", fmt.Errorf("board: short-id mint exhausted for %s", prefix)
+}
+
+// arbitrateMint walks the collision ladder for one drawn base:
+// candidate n is the base (n=1) or base-n (n>=2), returned as the
+// first candidate the scope does not already hold; "" when every rung
+// is taken (the caller re-draws).
+func arbitrateMint(ctx context.Context, q Queryer, table, base, scopeSQL string, scopeArgs ...any) (string, error) {
+	for n := 1; n <= mintLadderMax; n++ {
+		candidate := base
+		if n >= 2 {
+			candidate = shortid.WithCounterSuffix(base, n)
+		}
+		var exists bool
+		args := append([]any{candidate}, scopeArgs...)
+		err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE short_id=$1`+scopeSQL+`)`, args...).Scan(&exists)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", nil
 }
 
 // writeTransition records one board_transitions row.
