@@ -243,6 +243,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the overlay renders on every task read (REST/SDK/MCP) and in
   reclaim audit events (escalate events carry exhausted=true).
 
+### Fixed — create_session workers get re-phrased after spawn; 3-word ids must be persistent (#1850)
+
+- **The reconcile reap no longer deletes LIVE sessions off a harness
+  list gap.** The #1340 convergence pass treated two consecutive
+  harness-list absences as deletion evidence, but the list is not a
+  liveness authority for harness/Act-path sessions (#1452: live and
+  readable by ID while never listed — exactly the create_session
+  spawn class). A fresh spawn's `session_index` row sits at
+  `message_count == 0` for its whole first turn, so the row was reaped
+  mid-turn; the first turn-boundary event then re-registered the
+  session and the single-mint seam minted a NEW phrase — the reported
+  re-phrase (old phrase dead: `send_message` to it 500s mid-lane; the
+  session re-emits flagged `id_deprecated`). Every reap is now
+  confirmed by the by-ID probe first (the send_message `SessionExists`
+  precedent — immune to the list-visibility gap): alive-by-ID vetoes
+  the reap and resets the miss counter (`reap_vetoed_live`); an
+  indeterminate probe (transport/5xx) defers it to the next pass
+  (`reap_deferred_probe`); only a definitive by-ID not-found reaps, as
+  before.
+- **The agentd short-id replica applies registry pulls as a MERGE,
+  not a replace.** `putAll` rebuilt the whole map from each pull's
+  snapshot: a pull in flight at spawn (the emission-warm worker's 1s
+  cadence) returned without the just-registered row and WIPED the
+  fresh phrase→harness mapping — the spawned session degraded to
+  harness-id emission + `id_deprecated` (worker panes stopped
+  rendering it) and phrase-addressed sends lost resolution until a
+  later pull. Pulls now upsert (a pull never removes entries): absent
+  entries are stale snapshots or deleted sessions — the latter resolve
+  to a dead id and fail the `SessionExists` probe cleanly with the
+  did-you-mean clause, never a hard error. This is also the honest
+  reading of the replica's own contract ("only ever RECEIVES entries"
+  — phrases are immutable once minted).
+- **Phrase-as-identity contract pinned red-first** on both tiers: the
+  spawned session keeps its original 3-word phrase across its first
+  turn boundary AND across a stale registry pull (e2e over the real
+  create_session + delivery path); a `send_message` addressed to the
+  ORIGINAL phrase still resolves and delivers after rename and
+  compaction paths; the by-ID reap veto/defer/confirm matrix is pinned
+  at the reconcile orchestration. Test-isolation fix (fail on
+  unmodified main at `-count>1`): the on-miss pull TTL timestamp now
+  resets per test.
+
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 - **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
   #1819's 1.26.10 digest re-pins (main already carries those, the
