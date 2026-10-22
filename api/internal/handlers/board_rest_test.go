@@ -70,6 +70,14 @@ type fakeBoardManager struct {
 	// THIS row verbatim (a stored row that differs from the submitted
 	// text — the drift the echo must flag).
 	driftTask *board.Task
+
+	// #1837 P2 arms: workspace-scoped list/health captures + the last
+	// update-task input (setCriteriaMet echo tier).
+	lastListWorkspace string
+	lastHealthWorkspace string
+	wsTasks            []board.Task
+	wsHealth           *board.Health
+	lastTaskInput      *board.TaskInput
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -375,6 +383,8 @@ func (f *fakeBoardManager) CreateTask(_ context.Context, actor board.Actor, _, i
 func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, idOrShort string, in board.TaskInput, requestID string) (*board.Task, error) {
 	f.call("update_task")
 	f.lastActor, f.lastRequestID = actor, requestID
+	captured := in
+	f.lastTaskInput = &captured
 	_ = idOrShort
 	if err := f.errFor["update_task"]; err != nil {
 		return nil, err
