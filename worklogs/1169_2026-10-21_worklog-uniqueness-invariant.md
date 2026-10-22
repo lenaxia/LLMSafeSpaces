@@ -53,6 +53,7 @@ The r6 review proved the invariant's matcher blind spot with LIVE evidence: `Wor
 - pkg/repolint/worklog_uniqueness_test.go — the four pins (CLI red, uppercase matcher, registration+matcher pin, post-rewrite e2e)
 - README-LLM.md + docs/contributing/worklogs.md — the sentinel-scheme race narrative corrected (bot-lag window, not atomic-impossible)
 - pkg/repolint/sequence_test.go — the retired-test comment's same falsified sentence corrected
-- .githooks/pre-commit — the run_repolint_gate comment's 'structurally impossible' premise corrected
+- .githooks/pre-commit — the run_repolint_gate comment's 'structurally impossible' premise corrected; the printed failure hint gained the worklogs-uniqueness heal guidance
+- .github/workflows/worklog-renumber.yml — the race-safety comment corrected (partial: serial-common-case, lag-window counter-case named)
 - worklogs/0498→1166_relay-leak-fix-implementation.md, 0500→1167_epic-43-verify-pending-invitee.md — the two healed historical duplicates
 - worklogs/1169_2026-10-21_worklog-uniqueness-invariant.md — this worklog (NNNN->1161 bot-in-branch; ->1162; ->1164; ->1165 by our own post-rewrite hook; ->1169 past main's bot-assigned 1165_trigger-script-gate — the fourth lag-window renumber)

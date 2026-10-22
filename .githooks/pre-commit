@@ -195,7 +195,10 @@ run_repolint_gate \
     "duplicate migration: rename to next 6-digit number (ls api/migrations/).
   chart migrations drift: run 'make chart-sync-migrations' and stage the result.
   CRD drift: read the failure message; align chart CRD properties with Go
-    JSON tags (see pkg/repolint/crd_drift.go and worklog 0119)."
+    JSON tags (see pkg/repolint/crd_drift.go and worklog 0119).
+  worklogs uniqueness: a lag-window duplicate — rename one of the named
+    files to the next free number (see cmd/repolint/main.go's
+    runWorklogUniqueness note; uppercase-slug files need the manual step)."
 
 # Go gates: skip entirely on doc-only commits.
 if [ "$GO_STAGED" -eq 1 ]; then
