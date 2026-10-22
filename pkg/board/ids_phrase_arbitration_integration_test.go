@@ -76,7 +76,7 @@ func TestMintUniqueOwnerWideLadder(t *testing.T) {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO projects (id, short_id, user_id, name, target_workspace_id, worker_slots, tags)
 			VALUES ($1::uuid, $2, $3, $1::text, $4::uuid, 2, '{}')`,
-			pid, "prj-arb"+pid[len(pid)-2:], owner, arbWS)
+			pid, "prj-arb0000"+pid[len(pid)-1:], owner, arbWS)
 		if err != nil {
 			t.Fatalf("seed project %s: %v", pid, err)
 		}
