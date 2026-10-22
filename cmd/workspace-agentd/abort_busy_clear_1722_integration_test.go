@@ -396,7 +396,7 @@ func TestIntegration1722_AbortedLongToolSettlesBusy(t *testing.T) {
 	// PIN 2 — the tracker settle: the composition (the statusz/sessions
 	// render) converges the raw mark too.
 	cache := &providerCache{}
-	_, _, _ = cachedState(context.Background(), client, cache, tracker, busyTruth)
+	_, _, _, _ = cachedState(context.Background(), client, cache, tracker, busyTruth)
 	assert.Eventually(t, func() bool { return tracker.get(sess.ID) == "idle" },
 		5*time.Second, 50*time.Millisecond,
 		"#1722: the tracker mark must settle — else restart gating and the busy gauge carry the fiction forever")

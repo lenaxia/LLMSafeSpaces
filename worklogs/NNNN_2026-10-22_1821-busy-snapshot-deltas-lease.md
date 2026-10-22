@@ -49,6 +49,20 @@ Frontend (pre-implementation run, 5/6 red): T0.2a (snapshot→busy: badge stayed
 - Frontend: `vitest run` — 2382/2382 green (211 files) including the 6 new T0.2 tests; provider family 132/132.
 - gofmt / `go vet` / `golangci-lint` (handlers + eventbroker): 0 issues. `tsc -b`: clean. `npm run lint`: 0 errors (6 pre-existing warnings in generated abi_pb files).
 
+## Review round r0 (PR #1848 bot review, CHANGES_REQUESTED) — all findings addressed
+
+1. **Cursor-0/REST-seeded permanently-protected (BLOCKING)** — fixed: BusyEntry.confirmEventId is now 0 for REST-overlay evidence (orderable-at-0 — any snapshot governs), and snapshot-latched rows always carry a number (cursor 0 included). Only genuinely unorderable frames (no event_id — unreachable in practice) stay protected.
+2. **Stale overlapping flight re-latch (BLOCKING)** — fixed: a flight whose cursor is below the applied-evidence high-water (max of applied delta ids + committed snapshot cursors) is discarded at complete — it cannot add or remove anything.
+3. **Global watermark drops valid deltas (BLOCKING)** — fixed: replaced the watermark with dedup-by-applied-set + snapshot-cursor subsumption. The broker delivers after releasing the shard lock (arrival order not guaranteed), so an event is skipped ONLY on exact replay (id in the applied set) or snapshot subsumption (id ≤ cursor); a never-applied out-of-order delta still applies. Set pruned at commit (ids ≤ cursor) and hard-capped (256).
+4. **statusz 200 with failed session listing committed as authoritative empty** — fixed: agentd's cachedState now returns a sessionsOK verdict (persisted across cache hits; false until a successful ListSessions), threaded into StatuszResponse.SessionsOK (pointer — older pods omit it and the API reads absent as ok, never worse); fetchStatuszSessions gates ok on it.
+5. **Degraded rows not healed client-side** — fixed: every staged busy row runs through translateSessionIds (healthy rows are the phrase and teach the pair; degraded harness-keyed rows resolve through a learned alias or stay harness — never worse).
+
+Robustness: the flight Registers only busy rows (idle rows never join client-side — a cold replica's thousands of idle sessions can no longer burn the 5s budget); emitSessionStatusSnapshot coalesces per workspace (sync.Map in-flight guard) so the on-demand POST cannot amplify concurrent statusz+Register flights. Style: sse_event.go SnapshotOK/SnapshotID docs cover the busy family; seedBusy's renamed entry variable; REST re-seed never downgrades a delta-confirmed entry.
+
+E2 tier: deferred to #1818's coordinated suite per the issue #1821 coordination ruling (reviewer acknowledged the ruling; noted for the human reviewer).
+
+Red-first round 2 (both suites observed red pre-fix): backend F4 (sessions_ok=false → asserted ok=false, got ok=true + empty rows committed); frontend F1a/F1b/F2/F3/F5 (5 failed — cursor-0 latch never cleared; REST seed never cleared; stale flight re-latched; out-of-order 99 dropped; degraded row unhealed). All green post-fix; agentd suite full green (361s — includes the new TestCachedState_SessionsOKSignal); handlers + eventbroker green; frontend 2387/2387; golangci-lint 0 issues (handlers, agentd, pkg/agentd); tsc clean; eslint 0 errors.
+
 ## Blockers
 
 None.

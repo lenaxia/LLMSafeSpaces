@@ -28,8 +28,11 @@ type StoredInputRequest = InputRequest & { whileAway?: boolean; receivedAt?: num
 export interface BusyEntry {
   workspaceId: string;
   confirmedAt: number;
-  // undefined = unorderable evidence (event carried no event_id —
-  // REST-seeded rows, legacy frames): protected from snapshot removal.
+  // The broker EventID of the confirming evidence. 0 = REST-overlay
+  // evidence (no broker id — governed by ANY later snapshot). undefined
+  // = unorderable legacy frame (no event_id at all — protected from
+  // snapshot removal; unreachable in practice: every PublishToUser
+  // event carries an id).
   confirmEventId?: number;
 }
 
@@ -256,12 +259,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // (BusyEntry) — workspace, last confirming evidence timestamp, and
   // the confirming delta's EventID when orderable.
   const [busySessions, setBusySessions] = useState<Map<string, BusyEntry>>(new Map());
-  // #1821 piece 3: watermark of the highest session.status event_id
-  // APPLIED (deltas + snapshot cursors). A delta with event_id ≤ the
-  // watermark is a stale replay overlap — already reflected in (or
-  // superseded by) applied state — and is skipped, making delta
-  // application idempotent across snapshot/replay overlap.
-  const lastSessionStatusIDRef = useRef(0);
+  // #1821 piece 3 — delta-ordering state. The broker assigns monotonic
+  // EventIDs but DELIVERS after releasing the shard lock, so arrival
+  // order is not guaranteed (#1848 r0 finding 3). The client therefore
+  // dedups rather than watermarks: an applied-delta id SET (pruned to a
+  // recent window) skips exact replays, and the last SNAPSHOT cursor is
+  // the only subsumption bound (a delta ≤ cursor is already reflected
+  // in the snapshot's rows). A never-applied delta below the newest
+  // applied id still applies — dropping it would lose the only
+  // transition another session ever got.
+  const lastSnapshotCursorRef = useRef(0);
+  const appliedDeltaIDsRef = useRef(new Set<number>());
+  // High-water of ALL applied evidence (deltas + snapshot cursors) —
+  // the stale-flight discard: a flight whose cursor is below it
+  // completed after newer truth applied and must not resurrect rows
+  // (#1848 r0 finding 2).
+  const maxAppliedEvidenceIDRef = useRef(0);
 
   // #1821 piece 2: open busy-snapshot flights, keyed workspaceId →
   // Map<flightId, BusyFlight> (the per-flight discipline of the input
@@ -446,11 +459,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           // responses and any cache entries written by the SSE handler.
           if (session.status === "busy" || session.status === "active") {
             if (!busyDelta) busyDelta = new Map();
-            // #1821 piece 4: REST-overlay evidence is unorderable (no
-            // broker EventID) — the lease stamps now and the entry is
-            // protected from snapshot-removal until a snapshot flight
-            // (or a delta with an id) governs it.
-            busyDelta.set(session.id, { workspaceId: wsId, confirmedAt: Date.now() });
+            // #1821 piece 4 / #1848 r0 finding 1: REST-overlay evidence
+            // is ORDERABLE-AT-ZERO — no broker id, so any later snapshot
+            // (cursor ≥ 0) governs it. Marking it unorderable made
+            // REST-seeded busy permanently unremovable, defeating the
+            // lease's bounded-staleness guarantee.
+            busyDelta.set(session.id, { workspaceId: wsId, confirmedAt: Date.now(), confirmEventId: 0 });
           }
         }
 
@@ -483,8 +497,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       if (busyDelta && busyDelta.size > 0) {
         setBusySessions((prev) => {
           const next = new Map(prev);
-          for (const [sid, wid] of busyDelta!) {
-            next.set(sid, wid);
+          for (const [sid, entry] of busyDelta!) {
+            // Never downgrade: a delta-confirmed entry (broker id) is
+            // stronger evidence than the REST overlay's 0.
+            const existing = next.get(sid);
+            if (existing && (existing.confirmEventId ?? 0) > (entry.confirmEventId ?? 0)) continue;
+            next.set(sid, entry);
           }
           return next;
         });
@@ -1030,10 +1048,18 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // snapshots apply to unknown flight ids.
         const flight = wsId ? busyFlightsRef.current.get(wsId)?.get(flightId) : undefined;
         if (!wsId || !flight) return;
-        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; derived_busy?: boolean }> } }).data;
+        const payload = (rawEvt as { data?: { cursor?: number; sessions?: Array<{ session_id?: string; internal_session_id?: string; derived_busy?: boolean }> } }).data;
         if (!payload || !Array.isArray(payload.sessions)) return;
         for (const row of payload.sessions) {
-          if (row.session_id && row.derived_busy) flight.busyRowIds.add(row.session_id);
+          if (!row.session_id || !row.derived_busy) continue;
+          // #1848 r0 finding 5: a DEGRADED row (Register failed
+          // server-side) carries the harness id on the wire. Run every
+          // row through the alias seam — a healthy row is already the
+          // phrase (identity, and the additive pair teaches the table);
+          // a degraded row resolves through a learned pair or stays
+          // harness-keyed (never worse).
+          const pair = translateSessionIds(wsId, row.session_id, row.internal_session_id || undefined);
+          if (pair.sessionId) flight.busyRowIds.add(pair.sessionId);
         }
         flight.cursor = payload.cursor ?? 0;
         return;
@@ -1055,14 +1081,31 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // NON-authoritative: keep every latched busy exactly as-is.
         if (!ok || !staged) return;
 
+        // #1848 r0 finding 2: the stale-flight discard. A flight whose
+        // cursor is below the applied evidence high-water completed
+        // after newer truth landed (an overlapping flight committed
+        // first, or a newer delta applied) — its rows are older than
+        // what the client already holds and must not resurrect or
+        // remove anything.
+        if (staged.cursor < maxAppliedEvidenceIDRef.current) return;
+
         // The workspace is now seeded from a better source than the
         // REST overlay; the overlay's later add-only pass is harmless.
         seededRef.current.add(wsId);
 
         // #1821 piece 3: the cursor subsumes every delta at or below
-        // it — advance the application watermark.
-        if (staged.cursor > lastSessionStatusIDRef.current) {
-          lastSessionStatusIDRef.current = staged.cursor;
+        // it — record the subsumption bound and forget the subsumed
+        // deltas (a late delivery of one is skipped as already
+        // reflected; a NEVER-applied delta ≤ cursor is genuinely
+        // superseded by the authority's rows).
+        if (staged.cursor > lastSnapshotCursorRef.current) {
+          lastSnapshotCursorRef.current = staged.cursor;
+        }
+        for (const id of appliedDeltaIDsRef.current) {
+          if (id <= staged.cursor) appliedDeltaIDsRef.current.delete(id);
+        }
+        if (staged.cursor > maxAppliedEvidenceIDRef.current) {
+          maxAppliedEvidenceIDRef.current = staged.cursor;
         }
 
         const cursor = staged.cursor;
@@ -1072,24 +1115,28 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const next = new Map(prev);
           // Authoritative reconciliation: entries of THIS workspace
           // whose confirming evidence the cursor supersedes (ordered
-          // confirm ≤ cursor) are governed by the authority's rows.
-          // Fresher deltas (confirm > cursor — published after the
-          // flight read its cursor) and unorderable entries (REST
-          // seeds, legacy frames) survive the commit.
+          // confirm ≤ cursor — REST seeds at 0 included, #1848 r0
+          // finding 1) are governed by the authority's rows. Fresher
+          // deltas (confirm > cursor — published after the flight read
+          // its cursor) survive the commit; genuinely unorderable
+          // legacy frames (undefined — no event id at all) stay
+          // protected.
           for (const [sid, entry] of prev) {
             if (entry.workspaceId !== wsId) continue;
             if (entry.confirmEventId === undefined || entry.confirmEventId > cursor) continue;
             if (!busyRowIds.has(sid)) next.delete(sid);
           }
           // Busy rows latch or re-confirm: any busy-bearing snapshot
-          // row refreshes the lease (piece 4).
+          // row refreshes the lease (piece 4). The confirm id is ALWAYS
+          // a number here (cursor 0 included) — a cursor-0 snapshot is
+          // ordering evidence, not an unorderable legacy frame.
           for (const sid of busyRowIds) {
             const existing = prev.get(sid);
             const confirmEventId = Math.max(existing?.confirmEventId ?? 0, cursor);
             next.set(sid, {
               workspaceId: wsId,
               confirmedAt: now,
-              confirmEventId: confirmEventId > 0 ? confirmEventId : undefined,
+              confirmEventId,
             });
           }
           return next;
@@ -1113,16 +1160,37 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // ===== #1821 piece 3: EventID-ordered deltas =====
       //
       // The broker stamps every published event with a monotonic
-      // EventID; the client applies session.status deltas in id order.
-      // A delta at or below the watermark is a stale replay overlap
-      // (reconnect replay racing the connect-path snapshot flight) —
-      // its truth is already reflected in applied state — and is
-      // skipped, making application idempotent across overlap.
+      // EventID but delivers after releasing the shard lock, so two
+      // concurrent publishers can deliver id 100 before 99 to the same
+      // subscriber (#1848 r0 finding 3). The client therefore DEDUPS
+      // rather than watermarks: an event is skipped only when it is an
+      // EXACT replay (its id is in the applied set) or when a snapshot
+      // cursor already subsumes it (id ≤ cursor — its truth is in the
+      // committed rows). A never-applied delta below the newest applied
+      // id still applies — dropping it would lose the only transition
+      // another session ever got. This keeps application idempotent
+      // across snapshot/replay overlap without trusting delivery order.
       if (evt.type === "session.status" && evt.session_id && evt.workspace_id) {
         const deltaID = rawEvt.event_id ?? 0;
         if (deltaID > 0) {
-          if (deltaID <= lastSessionStatusIDRef.current) return;
-          lastSessionStatusIDRef.current = deltaID;
+          if (deltaID <= lastSnapshotCursorRef.current || appliedDeltaIDsRef.current.has(deltaID)) {
+            return;
+          }
+          appliedDeltaIDsRef.current.add(deltaID);
+          if (deltaID > maxAppliedEvidenceIDRef.current) {
+            maxAppliedEvidenceIDRef.current = deltaID;
+          }
+          // Bound the set: ids at or below the subsumption cursor were
+          // pruned at commit; a hard cap catches the no-snapshot case
+          // (a long-lived tab on a quiet stream). 2× the replay ring.
+          if (appliedDeltaIDsRef.current.size > 256) {
+            const ids = Array.from(appliedDeltaIDsRef.current).sort((a, b) => a - b);
+            for (let i = 0; i < ids.length - 128; i++) {
+              const staleID = ids[i];
+              if (staleID === undefined) break;
+              appliedDeltaIDsRef.current.delete(staleID);
+            }
+          }
         }
         if (evt.status === "busy") {
           clearedRef.current.delete(evt.session_id);

@@ -457,3 +457,26 @@ func TestRequestSessionStatusSnapshot_FiresFlight(t *testing.T) {
 		"session.status.snapshot_complete",
 	}, seq)
 }
+
+// F4 (#1848 r0): a statusz 200 whose session listing FAILED (agentd
+// swallows ListSessions errors and caches the empty slice —
+// session_tracker.go cachedState) must read as a non-authoritative
+// busy set, not an authoritative empty set. The sessions_ok signal
+// (absent on older pods — treated as ok, never worse) carries it.
+func TestStreamUserEvents_BusySnapshot_SessionListFailure_NotAuthoritative(t *testing.T) {
+	hs := newBusySnapHarness(t, "user-t16", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"healthy":true,"sessions":[],"sessions_ok":false}`)
+	}, nil)
+
+	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
+		return findEvent(evts, "session.status.snapshot_complete") != nil
+	})
+
+	complete := findEvent(evts, "session.status.snapshot_complete")
+	require.NotNil(t, complete)
+	require.NotNil(t, complete.SnapshotOK)
+	assert.False(t, *complete.SnapshotOK,
+		"a failed session listing must read ok=false — an empty-row commit would clear latched busy (the D10 failure one layer above HTTP status)")
+	assert.Nil(t, findEvent(evts, "session.status.snapshot"))
+}

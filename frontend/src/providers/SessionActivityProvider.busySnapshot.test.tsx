@@ -92,7 +92,13 @@ function SessionsProbe({ sessionId = "phrase-one" }: { sessionId?: string }) {
     queryFn: () => mockGetSessions("ws-1"),
   });
   const busy = useIsSessionBusy(sessionId);
-  return <span data-testid="busy">{busy ? "yes" : "no"}</span>;
+  const busyTwo = useIsSessionBusy("phrase-two");
+  return (
+    <>
+      <span data-testid="busy">{busy ? "yes" : "no"}</span>
+      <span data-testid="busy-two">{busyTwo ? "yes" : "no"}</span>
+    </>
+  );
 }
 
 // A complete ok=true busy-snapshot flight for ws-1 whose rows say
@@ -100,7 +106,7 @@ function SessionsProbe({ sessionId = "phrase-one" }: { sessionId?: string }) {
 function pushBusyFlight(
   stream: ReturnType<typeof pushedReader>,
   ids: { begin: number; snap: number; complete: number },
-  rows: Array<{ session_id: string; derived_busy: boolean }>,
+  rows: Array<{ session_id: string; derived_busy: boolean; session_id_deprecated?: boolean; internal_session_id?: string }>,
   cursor = 10,
 ) {
   stream.push(`id: ${ids.begin}\ndata: {"event_id":${ids.begin},"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-1"}\n\n`);
@@ -330,5 +336,155 @@ describe("SessionActivityProvider — busy snapshot + lease (#1821 pieces 2-4)",
     // window later — not a hammering retry loop.
     await advanceHealthy(stream, 90_000);
     expect(mockRequestStatusSnapshot.mock.calls.length).toBe(2);
+  });
+});
+
+// ===== Round-2 review findings (PR #1848 r0) =====
+//
+// F1: cursor-0 snapshots and REST seeds must be governable by an
+//     authoritative idle snapshot (no permanently-protected classes).
+// F2: an older overlapping flight completing after a newer one must not
+//     re-latch stale busy.
+// F3: out-of-order broker delivery (id 100 applied before 99) must not
+//     drop the never-applied 99.
+// F5/F6: a degraded (harness-keyed) snapshot row heals through the
+//     client's learned alias table.
+describe("SessionActivityProvider — busy snapshot review findings (#1848 r0)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let stream: ReturnType<typeof pushedReader>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    mockGetAlerts.mockResolvedValue([]);
+    mockRequestStatusSnapshot.mockResolvedValue(undefined);
+    stream = pushedReader([]);
+    fetchMock.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        body: { getReader: () => stream.reader },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function renderProbe(sessionId?: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <SessionsProbe sessionId={sessionId} />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("F1a a busy row latched by a cursor-0 snapshot is cleared by a later authoritative idle snapshot", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Cursor 0 is legitimate (a fresh replica's broker): the row is
+    // ordering evidence, not an unorderable legacy frame.
+    pushBusyFlight(stream, { begin: 1, snap: 2, complete: 3 }, [
+      { session_id: "phrase-one", derived_busy: true },
+    ], 0);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    // The authority later reports idle — the entry must clear.
+    pushBusyFlight(stream, { begin: 11, snap: 12, complete: 13 }, [
+      { session_id: "phrase-one", derived_busy: false },
+    ], 13);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("F1b a REST-seeded active row is cleared by an authoritative idle snapshot (the common refresh race)", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([
+      { id: "phrase-one", title: "t", messageCount: 0, status: "active", hasUnread: false },
+    ] as SessionListItem[]);
+    renderProbe();
+
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+
+    pushBusyFlight(stream, { begin: 8, snap: 9, complete: 11 }, [
+      { session_id: "phrase-one", derived_busy: false },
+    ], 10);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("F2 an older overlapping flight completing after a newer commit must not re-latch stale busy", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // F2 (newer): cursor 21, session idle → clears.
+    pushBusyFlight(stream, { begin: 20, snap: 21, complete: 22 }, [
+      { session_id: "phrase-one", derived_busy: false },
+    ], 21);
+    await settle(500);
+
+    // F1 (older, overlapping — its begin predates F2): cursor 10, busy
+    // row. Completing after F2's commit, it must be discarded as stale.
+    stream.push(`id: 8\ndata: {"event_id":8,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-old"}\n\n`);
+    stream.push(`id: 9\ndata: {"event_id":9,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-old","data":{"cursor":10,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 14\ndata: {"event_id":14,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-old","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+  });
+
+  it("F3 out-of-order delta delivery does not drop a never-applied older delta", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe();
+
+    // Broker delivers id 100 (phrase-one busy) before the never-applied
+    // 99 (phrase-two busy) — 99 must still apply.
+    stream.push(`id: 100\ndata: {"event_id":100,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(300);
+    stream.push(`id: 99\ndata: {"event_id":99,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-two","status":"busy"}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    expect(screen.getByTestId("busy-two").textContent).toBe("yes");
+  });
+
+  it("F5 a degraded harness-keyed snapshot row heals through the client's learned alias", async () => {
+    vi.useFakeTimers();
+    mockGetSessions.mockResolvedValue([]);
+    renderProbe("phrase-two");
+
+    // The seam learns the pair from a live delta (phrase wire id +
+    // additive harness id).
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-two","status":"idle","data":{"internal_session_id":"h-2"}}\n\n`);
+    await settle(300);
+
+    // The flight's row degraded server-side (Register failed): harness
+    // id on the wire, flagged deprecated — the client must resolve it
+    // through the alias table and badge the phrase.
+    pushBusyFlight(stream, { begin: 8, snap: 9, complete: 11 }, [
+      { session_id: "h-2", derived_busy: true, session_id_deprecated: true },
+    ], 10);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
   });
 });

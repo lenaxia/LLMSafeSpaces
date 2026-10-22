@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deltas survive), replacing the REST overlay as the re-seed source
   on reconnect/resync/refresh (the overlay stays as the degraded
   fallback).
+- **Review-hardened (PR #1848 r0)**: the statusz session-list
+  authority signal (`sessions_ok`, pointer — absent on older pods
+  reads ok) so a 200 whose ListSessions failed (agentd's swallowed
+  empty slice) reads non-authoritative instead of clearing latched
+  busy; delta ordering is now DEDUP-BY-APPLIED-SET + snapshot-cursor
+  subsumption instead of a watermark (the broker delivers after
+  releasing the shard lock — out-of-order arrivals of never-applied
+  deltas must still apply); a stale overlapping flight (cursor below
+  the applied evidence high-water) is discarded instead of
+  re-latching; REST-seeded and cursor-0 entries are orderable-at-0
+  (governable by any snapshot — no permanently-protected classes);
+  degraded harness-keyed rows heal client-side through the alias
+  seam; the connect-path flight Registers only busy rows (cold-replica
+  budget) and coalesces per workspace (one in-flight flight per
+  trigger window).
 
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 

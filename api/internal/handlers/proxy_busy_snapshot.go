@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -107,12 +108,32 @@ func (h *ProxyHandler) fetchStatuszSessions(ctx context.Context, workspaceID str
 		return nil, false
 	}
 
+	// #1848 r0 finding 4: a 200 whose session listing FAILED is not an
+	// authoritative empty set — agentd swallows ListSessions errors and
+	// caches the empty slice (session_tracker cachedState). The
+	// sessions_ok signal carries the verdict; absent (older pods)
+	// reads ok — never worse than the pre-signal behavior.
+	if statusz.SessionsOK != nil && !*statusz.SessionsOK {
+		h.logger.Debug("busy snapshot: statusz session list not authoritative",
+			"workspaceID", workspaceID)
+		return nil, false
+	}
+
 	rows := make([]statuszSessionRow, 0, len(statusz.Sessions))
 	for _, sess := range statusz.Sessions {
 		rows = append(rows, statuszSessionRow{ID: sess.ID, Status: sess.Status})
 	}
 	return rows, true
 }
+
+// busyFlightsInFlight coalesces concurrent busy-snapshot flights per
+// workspace (#1848 r0 robustness): a second trigger while one flight
+// is running is a no-op — the running flight's events already answer
+// the second caller (both ride the same user stream). This bounds the
+// on-demand POST's amplification (a client hammering the trigger gets
+// one statusz fetch + one Register pass per in-flight window, not one
+// per request) without adding a rate limiter to the route.
+var busyFlightsInFlight sync.Map // workspaceID → struct{}
 
 // emitSessionStatusSnapshot runs one busy-snapshot flight for the
 // workspace on the user stream — the D9/D10 template from
@@ -127,6 +148,11 @@ func (h *ProxyHandler) fetchStatuszSessions(ctx context.Context, workspaceID str
 // state at least as fresh as the fetch, so the client lets it survive
 // the commit (#1821 piece 3).
 func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceID string) {
+	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); loaded {
+		return // a flight is already running — its events answer this trigger too
+	}
+	defer busyFlightsInFlight.Delete(workspaceID)
+
 	ok := false
 
 	flightID := fmt.Sprintf("%s-%d", workspaceID, time.Now().UnixNano())
@@ -180,6 +206,17 @@ func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceI
 			SessionID:   raw.ID,
 			Status:      raw.Status,
 			DerivedBusy: raw.Status != "idle",
+		}
+		if !row.DerivedBusy {
+			// Idle rows never latch client-side and never join against
+			// latched entries (removal is keyed by the LATCHED session's
+			// id, not the idle row's) — skip the Register seam for them.
+			// #1848 r0 robustness: on an LRU miss Register is a DB
+			// EnsureSessionRegistered; a cold replica with thousands of
+			// idle sessions would otherwise burn the 5s flight budget
+			// translating rows nobody keys on, degrading the busy tail.
+			rows = append(rows, row)
+			continue
 		}
 		// The #1821 piece-1 ID discipline on the new surface: key the
 		// row by the phrase, harness id additive. Register is the
