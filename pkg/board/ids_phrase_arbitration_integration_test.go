@@ -65,6 +65,7 @@ func TestMintUniqueOwnerWideLadder(t *testing.T) {
 	const arbP1 = "22222222-2222-4222-8222-222222222221"
 	const arbP2 = "22222222-2222-4222-8222-222222222222"
 	const arbE1 = "44444444-4444-4444-8444-444444444441" // epic in p1 (tasks.epic_id NOT NULL)
+	const arbE2 = "44444444-4444-4444-8444-444444444442" // epic in p2 (FK: epic must sit in the task's own project)
 	_, err := pool.Exec(ctx, `INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
 		VALUES ($1, $2, 'phrase-arb', 'default', now(), now())`, arbWS, owner)
 	if err != nil {
@@ -81,26 +82,30 @@ func TestMintUniqueOwnerWideLadder(t *testing.T) {
 			t.Fatalf("seed project %s: %v", pid, err)
 		}
 	}
-	_, err = pool.Exec(ctx, `
-		INSERT INTO epics (id, project_id, short_id, title, project_name)
-		VALUES ($1::uuid, $2::uuid, 'epc-arb00001', 'arb epic', 'p')`, arbE1, arbP1)
-	if err != nil {
-		t.Fatalf("seed epic: %v", err)
+	for _, e := range []struct{ id, project, shortID string }{
+		{arbE1, arbP1, "epc-arb00001"}, {arbE2, arbP2, "epc-arb00002"},
+	} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO epics (id, project_id, short_id, title, project_name)
+			VALUES ($1::uuid, $2::uuid, $3, 'arb epic', 'p')`, e.id, e.project, e.shortID)
+		if err != nil {
+			t.Fatalf("seed epic %s: %v", e.shortID, err)
+		}
 	}
 	// The project mints must not collide with these seeds — arbitrary
 	// fixed prj- ids are fine (arbitration targets tasks here).
-	seedTask := func(id, project, shortID string) {
+	seedTask := func(id, project, epic, shortID string) {
 		t.Helper()
 		_, err := pool.Exec(ctx, `
 			INSERT INTO tasks (id, project_id, epic_id, short_id, title, description, project_name, epic_name, tags, acceptance_criteria)
-			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'seed', 'd', 'p', 'e', '{}', '[]')`, id, project, arbE1, shortID)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'seed', 'd', 'p', 'e', '{}', '[]')`, id, project, epic, shortID)
 		if err != nil {
 			t.Fatalf("seed task %s: %v", shortID, err)
 		}
 	}
 	const base = PrefixTask + "amber-falcon-glides"
-	seedTask("33333333-3333-4333-8333-333333333331", arbP1, base)      // owner holds the base
-	seedTask("33333333-3333-4333-8333-333333333332", arbP2, base+"-2") // …and the -2 rung (sibling project)
+	seedTask("33333333-3333-4333-8333-333333333331", arbP1, arbE1, base)      // owner holds the base
+	seedTask("33333333-3333-4333-8333-333333333332", arbP2, arbE2, base+"-2") // …and the -2 rung (sibling project)
 
 	// The owner-wide task-mint scope: the candidate is taken if ANY of
 	// the owner's projects holds it.
