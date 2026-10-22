@@ -175,7 +175,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       return;
     }
     const url = new URL(r.request().url());
-    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1];
+    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
     const body = r.request().postDataJSON() as { title?: string; outcome?: string };
     void r.fulfill(j({
       id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
@@ -192,7 +192,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       void r.continue();
       return;
     }
-    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0];
+    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0] ?? "";
     const body = r.request().postDataJSON() as { title?: string };
     const parent = state.tasks.find((t) => t.epic_id === epicId);
     if (!parent) {
@@ -386,7 +386,7 @@ test.describe("Task Board UI (#1702)", () => {
     // Back to all; epic chip filters.
     await page.getByTestId("project-focus").selectOption({ value: "all" });
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
-    await page.getByText("E2", { exact: true }).click();
+    await page.getByTestId("epic-chip-epic-epic-2").click();
     await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
     await page.getByTestId("epic-chip-all").click();
@@ -579,7 +579,12 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
   test("clicking a band highlights its tasks and dims the swimlane's others", async ({ page }) => {
     await openBoard(page);
 
-    await page.getByTestId("epic-band-epic-2").click();
+    // Borealis's only task sits in a side column (pending_input) — open
+    // the lane's side columns so its card is rendered for the assertion.
+    await page.getByTestId(`swimlane-${PROJECT_B}`).getByTestId("side-columns-toggle").click();
+    await expect(page.getByTestId("task-card-tsk-ffff0006")).toBeVisible();
+
+    await page.getByTestId("band-header-epic-2").click();
     await expect(page.getByTestId("task-card-tsk-eeee0005")).toHaveAttribute("data-highlighted", "true");
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-dimmed", "true");
     await expect(page.getByTestId("task-card-tsk-dddd0004")).toHaveAttribute("data-dimmed", "true");
@@ -587,7 +592,7 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     await expect(page.getByTestId("task-card-tsk-ffff0006")).not.toHaveAttribute("data-dimmed");
 
     // Click again → deselect: dims and highlights clear.
-    await page.getByTestId("epic-band-epic-2").click();
+    await page.getByTestId("band-header-epic-2").click();
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).not.toHaveAttribute("data-dimmed");
     await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
   });
@@ -595,7 +600,7 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
   test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
     const state = await openBoard(page);
 
-    await page.getByTestId("epic-band-epic-2").click();
+    await page.getByTestId("band-header-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
 
     // The dialog names the selected epic as the landing zone.

@@ -738,15 +738,23 @@ export function BoardPage() {
                           key={epic.id}
                           data-testid={`epic-band-${epic.id}`}
                           data-selected={selected ? "true" : undefined}
-                          onClick={() => toggleEpicSelection(project.id, epic.id)}
-                          onDoubleClick={() => void openEpicDrawer(epic.id)}
-                          title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
                           className={cn(
-                            "cursor-pointer rounded-md border transition-colors",
+                            "rounded-md border transition-colors",
                             selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
                           )}
                         >
-                          <div className="flex items-center gap-1.5 px-2 py-1">
+                          {/* The HEADER ROW is the selection surface (not the
+                           * whole container): a container-level click would
+                           * sit atop the task rows beneath it — in a real
+                           * pointer click the band's center lands on its
+                           * only task row (task-edit), never selecting. */}
+                          <div
+                            className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1"
+                            data-testid={`band-header-${epic.id}`}
+                            onClick={() => toggleEpicSelection(project.id, epic.id)}
+                            onDoubleClick={() => void openEpicDrawer(epic.id)}
+                            title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
+                          >
                             <button
                               type="button"
                               data-testid={`band-toggle-${epic.id}`}

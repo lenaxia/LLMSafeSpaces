@@ -107,7 +107,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     await screen.findByTestId("task-card-tsk-ffff0006");
 
     // Select E2 in Apollo's swimlane.
-    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
     await waitFor(() => {
       expect(screen.getByTestId("task-card-tsk-eeee0005").getAttribute("data-highlighted")).toBe("true");
     });
@@ -121,7 +121,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     expect(screen.getByTestId("task-card-tsk-ffff0006").getAttribute("data-highlighted")).toBeNull();
 
     // Click again → deselect: no dims or highlights anywhere.
-    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
     await waitFor(() => expect(screen.getByTestId("task-card-tsk-aaaa0001").getAttribute("data-dimmed")).toBeNull());
     expect(screen.getByTestId("task-card-tsk-eeee0005").getAttribute("data-highlighted")).toBeNull();
   });
@@ -133,7 +133,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
 
-    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
 
     // The dialog names the selected epic as the landing zone (the

@@ -136,6 +136,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary, real origin-injection plugin, real tool dispatch, warm
   phrase replica — with the harness id asserted absent from results;
   the full-id window still accepts with the notice.
+### Added — Task Board: swimlane creation buttons + collapsible epic bands (#1832 items 1-2)
+
+- **Contextual creation per project swimlane.** Every swimlane header
+  now carries its own New epic / New task buttons; the New-epic dialog
+  is retargeted to the swimlane it was opened from (no dropdown
+  selection required — the global toolbar button remains but is no
+  longer the only path, and is still greyed at All-projects scope).
+- **Collapsible epic bands inside each swimlane**, tasks grouped
+  beneath their band (title, short id, per-lane derived progress,
+  collapse toggle; default expanded). The band header row is the
+  selection surface: clicking it highlights the epic's task cards and
+  dims the lane's others (display-only — never filters, never crosses
+  swimlanes); double-click opens the epic drawer.
+- **The selected epic scopes task creation.** The swimlane's New task
+  lands inside the selected epic; with no selection an epic picker
+  opens (with a create-epic escape hatch for empty projects).
+- **E2E port isolation**: the Playwright dev-server port is
+  `E2E_PORT`-driven (default 5173, `--strictPort`) so concurrent
+  sibling worktrees cannot latch a foreign server; this lane runs
+  18519 (nightly PORTFWD_PORT registry 18083–18093 untouched).
 
 ## [0.40.1] - 2026-10-21
 

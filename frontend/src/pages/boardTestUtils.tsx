@@ -185,9 +185,7 @@ export function defaultTasks(): BoardTask[] {
  * (callers derive updated states from it). */
 export function seedBoard(tasks: BoardTask[] = defaultTasks(), projects: BoardProject[] = [PROJECT_A, PROJECT_B]): BoardTask[] {
   mockListProjects.mockResolvedValue(projects);
-  mockListProjectTasks.mockImplementation(async (pid: string) =>
-    pid === "proj-uuid-b" ? tasks.filter((t) => t.project_id === "proj-uuid-b") : tasks.filter((t) => t.project_id === "proj-uuid-a"),
-  );
+  mockListProjectTasks.mockImplementation(async (pid: string) => tasks.filter((t) => t.project_id === pid));
   mockWorkspacesList.mockResolvedValue({
     items: [{ id: "ws-1", name: "Main", userId: "u1", runtime: "python", storageSize: "1Gi", createdAt: "", updatedAt: "" }],
   });
