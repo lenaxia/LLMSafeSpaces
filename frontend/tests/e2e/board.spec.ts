@@ -40,6 +40,7 @@ type E2ETask = {
   acceptance_criteria: Array<{ text: string; met: boolean }>;
   is_blocked: boolean;
   blocked_by?: string[];
+  assignee_session?: string;
   attempts: number;
   claim_incremented_attempts: boolean;
   stage_entered_at: string;
@@ -71,7 +72,7 @@ interface BoardState {
   /** #1832 r2: epics that exist ONLY on the server (zero task rows). */
   epics: E2EEpic[];
   /** Per-test board overrides (e.g. a third project for the picker row). */
-  projects?: Array<{ id: string; short_id: string; name: string; worker_slots: number }>;
+  projects?: Array<{ id: string; short_id: string; name: string; worker_slots: number; user_id?: string; target_workspace_id?: string; tags?: string[]; status?: string; created_at?: string; updated_at?: string }>;
   /** Unhappy-path levers: force the two creation POSTs to 500. */
   failEpicCreate?: boolean;
   failTaskCreate?: boolean;
@@ -118,6 +119,10 @@ function derivedEpicsFromTasks(tasks: E2ETask[]): E2EEpic[] {
 
 function freshState(): BoardState {
   return {
+    projects: [
+      { id: PROJECT_A, short_id: PROJECT_A, user_id: "u1", name: "Apollo", target_workspace_id: WORKSPACE_ID, worker_slots: 2, tags: [], status: "active", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" },
+      { id: PROJECT_B, short_id: PROJECT_B, user_id: "u1", name: "Borealis", target_workspace_id: WORKSPACE_ID, worker_slots: 1, tags: [], status: "active", created_at: "2026-10-02T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" },
+    ],
     epics: [],
     tasks: [
       task({ short_id: "tsk-aaaa0001", title: "Write charter", stage: "backlog", project_id: PROJECT_A, epic_id: "epic-1" }),
@@ -209,6 +214,166 @@ async function setupBoardMocks(page: Page, state: BoardState) {
         { id: PROJECT_B, short_id: PROJECT_B, user_id: "u1", name: "Borealis", target_workspace_id: WORKSPACE_ID, worker_slots: 1, tags: [], status: "active", created_at: "2026-10-02T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" },
       ],
     })));
+  // #1832 item 3: project kebab — archive/unarchive ONLY (#1747:
+  // project delete is eliminated; no DELETE route exists at all).
+  for (const lifecycle of ["archive", "unarchive"]) {
+    await page.route(`${API}/me/projects/*/${lifecycle}`, (r: Route) => {
+      if (r.request().method() !== "POST") {
+        void r.continue();
+        return;
+      }
+      const url = new URL(r.request().url());
+      const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
+      const project = (state.projects ?? []).find((p) => p.id === pid || p.short_id === pid);
+      if (!project) {
+        void r.fulfill(j({ error: `board: project "${pid}" not found` }, 404));
+        return;
+      }
+      project.status = lifecycle === "archive" ? "archived" : "active";
+      void r.fulfill(j(project));
+    });
+  }
+  await page.route(`${API}/me/projects/*/tasks*`, (r: Route) => {
+    const url = new URL(r.request().url());
+    const pid = url.pathname.split("/").pop() === "tasks" ? url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] : "";
+    void r.fulfill(j({ tasks: state.tasks.filter((t) => t.project_id === pid) }));
+  });
+  // #1832 item 1: contextual epic creation — POST /me/projects/:id/epics.
+  // The route echoes the project the button carried (asserted per-test).
+  await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    const url = new URL(r.request().url());
+    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
+    const body = r.request().postDataJSON() as { title?: string; outcome?: string };
+    void r.fulfill(j({
+      id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
+      title: body.title ?? "", outcome: body.outcome ?? "", status: "draft", tags: [],
+      created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
+      progress_done: 0, progress_total: 0, progress_derived: false,
+    }));
+  });
+  // #1832 item 2: epic-scoped task creation — POST /me/epics/:id/tasks.
+  // Appends to the shared state so the post-invalidation refetch shows
+  // the new row in the backlog column and beneath the epic band.
+  await page.route(`${API}/me/epics/*/tasks`, async (r: Route) => {
+    if (r.request().method() !== "POST") {
+      void r.continue();
+      return;
+    }
+    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0] ?? "";
+    const body = r.request().postDataJSON() as { title?: string };
+    const parent = state.tasks.find((t) => t.epic_id === epicId);
+    if (!parent) {
+      void r.fulfill(j({ error: `board: epic "${epicId}" not found` }, 404));
+      return;
+    }
+    const row = task({
+      short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
+      title: body.title ?? "New task",
+      stage: "backlog",
+      project_id: parent.project_id,
+      epic_id: epicId,
+    });
+    state.tasks.push(row);
+    void r.fulfill(j(row));
+  });
+  await page.route(`${API}/me/tasks/*/move-stage`, async (r: Route) => {
+    const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
+    const body = r.request().postDataJSON() as { toStage: string; evidenceUrl?: string };
+    const t = state.tasks.find((x) => x.short_id === shortId);
+    if (!t) {
+      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
+      return;
+    }
+    // The Done guard, honestly: criteria unmet or no evidence → 409.
+    if (body.toStage === "done" && (body.evidenceUrl === "" || t.acceptance_criteria.some((c) => !c.met))) {
+      void r.fulfill(j({ error: "board: guard done_guard: all acceptance criteria must be met before done (ruling R2)", code: "done_guard" }, 409));
+      return;
+    }
+    t.stage = body.toStage;
+    void r.fulfill(j(t));
+  });
+
+  await page.route(`${API}/me/tasks/*`, async (r: Route) => {
+    // #1747: cancel is eliminated — DELETE removes the row; the delete
+    // result lists orphaned dependents (surfaced, never a refusal).
+    // #1832 item 3: ?reconnect=true lets orphans inherit the deleted
+    // node's direct upstream edges (pairs surface in the result).
+    if (r.request().method() !== "DELETE") {
+      void r.continue();
+      return;
+    }
+    const url = new URL(r.request().url());
+    const shortId = url.pathname.split("/tasks/")[1]?.split("/")[0] ?? "";
+    const reconnect = url.searchParams.get("reconnect") === "true";
+    const t = state.tasks.find((x) => x.short_id === shortId);
+    if (!t) {
+      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
+      return;
+    }
+    const upstream = t.blocked_by ?? [];
+    const orphanRows = state.tasks.filter((x) => (x.blocked_by ?? []).includes(shortId));
+    const reconnected: string[] = [];
+    for (const orphan of orphanRows) {
+      if (reconnect) {
+        for (const up of upstream) {
+          if (up !== orphan.short_id && !(orphan.blocked_by ?? []).includes(up)) {
+            orphan.blocked_by = [...(orphan.blocked_by ?? []), up];
+            reconnected.push(`${orphan.short_id}→${up}`);
+          }
+        }
+      } else {
+        orphan.blocked_by = (orphan.blocked_by ?? []).filter((id) => id !== shortId);
+      }
+      orphan.is_blocked = (orphan.blocked_by ?? []).length > 0;
+    }
+    state.tasks = state.tasks.filter((x) => x.short_id !== shortId);
+    void r.fulfill(j({
+      item_kind: "task", id: t.id, short_id: t.short_id,
+      orphaned_dependents: orphanRows.map((o) => o.short_id),
+      ...(reconnect ? { reconnected } : {}),
+    }));
+  });
+  // #1832 item 3: epic delete — refuses while claims are in flight
+  // under the epic unless ?force=true (force deletes, then aborts each
+  // in-flight worker post-commit). Matches pkg/board/delete.go.
+  await page.route(`${API}/me/epics/*`, async (r: Route) => {
+    if (r.request().method() !== "DELETE") {
+      void r.continue();
+      return;
+    }
+    const url = new URL(r.request().url());
+    const epicId = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
+    const force = url.searchParams.get("force") === "true";
+    const under = state.tasks.filter((t) => t.epic_id === epicId);
+    const inFlight = under.filter((t) => t.stage === "in_progress" && t.assignee_session);
+    if (inFlight.length > 0 && !force) {
+      void r.fulfill(j({
+        error: "board: guard epic_state: claims in flight under the epic — force required (force=true deletes, then aborts each in-flight worker post-commit)",
+        code: "epic_state",
+      }, 409));
+      return;
+    }
+    // Cross-epic dependents outside the blast radius are orphaned.
+    const cascade = under.map((t) => t.short_id);
+    const orphaned: string[] = [];
+    for (const t of under) {
+      for (const dep of state.tasks.filter((x) => x.epic_id !== epicId && (x.blocked_by ?? []).includes(t.short_id))) {
+        dep.blocked_by = (dep.blocked_by ?? []).filter((id) => id !== t.short_id);
+        dep.is_blocked = (dep.blocked_by ?? []).length > 0;
+        orphaned.push(dep.short_id);
+      }
+    }
+    state.tasks = state.tasks.filter((t) => t.epic_id !== epicId);
+    void r.fulfill(j({
+      item_kind: "epic", id: epicId, short_id: `epc-${epicId.slice(-6)}`,
+      cascade_tasks: cascade, orphaned_dependents: orphaned,
+    }));
+  });
+
   await page.route(`${API}/me/projects/*/tasks*`, (r: Route) => {
     const url = new URL(r.request().url());
     const pid = url.pathname.split("/").pop() === "tasks" ? url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] : "";
@@ -315,16 +480,78 @@ async function setupBoardMocks(page: Page, state: BoardState) {
   await page.route(`${API}/me/tasks/*`, async (r: Route) => {
     // #1747: cancel is eliminated — DELETE removes the row; the delete
     // result lists orphaned dependents (surfaced, never a refusal).
+    // #1832 item 3: ?reconnect=true lets orphans inherit the deleted
+    // node's direct upstream edges (pairs surface in the result).
     if (r.request().method() !== "DELETE") {
       void r.continue();
       return;
     }
-    const shortId = r.request().url().split("/tasks/")[1]?.split("?")[0];
+    const url = new URL(r.request().url());
+    const shortId = url.pathname.split("/tasks/")[1]?.split("/")[0] ?? "";
+    const reconnect = url.searchParams.get("reconnect") === "true";
     const t = state.tasks.find((x) => x.short_id === shortId);
+    if (!t) {
+      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
+      return;
+    }
+    const upstream = t.blocked_by ?? [];
+    const orphanRows = state.tasks.filter((x) => (x.blocked_by ?? []).includes(shortId));
+    const reconnected: string[] = [];
+    for (const orphan of orphanRows) {
+      if (reconnect) {
+        for (const up of upstream) {
+          if (up !== orphan.short_id && !(orphan.blocked_by ?? []).includes(up)) {
+            orphan.blocked_by = [...(orphan.blocked_by ?? []), up];
+            reconnected.push(`${orphan.short_id}→${up}`);
+          }
+        }
+      } else {
+        orphan.blocked_by = (orphan.blocked_by ?? []).filter((id) => id !== shortId);
+      }
+      orphan.is_blocked = (orphan.blocked_by ?? []).length > 0;
+    }
     state.tasks = state.tasks.filter((x) => x.short_id !== shortId);
-    void r.fulfill(j(t
-      ? { item_kind: "task", id: t.id, short_id: t.short_id, orphaned_dependents: [] }
-      : { error: "not found" }, t ? 200 : 404));
+    void r.fulfill(j({
+      item_kind: "task", id: t.id, short_id: t.short_id,
+      orphaned_dependents: orphanRows.map((o) => o.short_id),
+      ...(reconnect ? { reconnected } : {}),
+    }));
+  });
+  // #1832 item 3: epic delete — refuses while claims are in flight
+  // under the epic unless ?force=true (force deletes, then aborts each
+  // in-flight worker post-commit). Matches pkg/board/delete.go.
+  await page.route(`${API}/me/epics/*`, async (r: Route) => {
+    if (r.request().method() !== "DELETE") {
+      void r.continue();
+      return;
+    }
+    const url = new URL(r.request().url());
+    const epicId = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
+    const force = url.searchParams.get("force") === "true";
+    const under = state.tasks.filter((t) => t.epic_id === epicId);
+    const inFlight = under.filter((t) => t.stage === "in_progress" && t.assignee_session);
+    if (inFlight.length > 0 && !force) {
+      void r.fulfill(j({
+        error: "board: guard epic_state: claims in flight under the epic — force required (force=true deletes, then aborts each in-flight worker post-commit)",
+        code: "epic_state",
+      }, 409));
+      return;
+    }
+    // Cross-epic dependents outside the blast radius are orphaned.
+    const cascade = under.map((t) => t.short_id);
+    const orphaned: string[] = [];
+    for (const t of under) {
+      for (const dep of state.tasks.filter((x) => x.epic_id !== epicId && (x.blocked_by ?? []).includes(t.short_id))) {
+        dep.blocked_by = (dep.blocked_by ?? []).filter((id) => id !== t.short_id);
+        dep.is_blocked = (dep.blocked_by ?? []).length > 0;
+        orphaned.push(dep.short_id);
+      }
+    }
+    state.tasks = state.tasks.filter((t) => t.epic_id !== epicId);
+    void r.fulfill(j({
+      item_kind: "epic", id: epicId, short_id: `epc-${epicId.slice(-6)}`,
+      cascade_tasks: cascade, orphaned_dependents: orphaned,
+    }));
   });
   await page.route(`${API}/me/tasks/*/start`, async (r: Route) => {
     const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
@@ -836,5 +1063,121 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await expect(page.getByTestId("epic-picker-empty")).toBeVisible();
     await page.getByTestId("epic-picker-create-epic").click();
     await expect(page.getByText("New epic in Ceres")).toBeVisible();
+  });
+});
+
+test.describe("#1832 item 3 — kebab menus + delete flows", () => {
+  test("project kebab: archive then unarchive (NO delete item — #1747)", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem", { name: "Archive project" })).toBeVisible();
+    // #1747: project delete is eliminated — the menu must not offer it.
+    await expect(menu.getByRole("menuitem", { name: /Delete project/i })).toHaveCount(0);
+
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/me/projects/${PROJECT_A}/archive`));
+    await menu.getByRole("menuitem", { name: "Archive project" }).click();
+    const req = await reqP;
+    expect(req.url()).toContain(`/me/projects/${PROJECT_A}/archive`);
+
+    // Post-invalidation: the swimlane header shows the archived badge.
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived").first()).toBeVisible({ timeout: 8000 });
+
+    // Unarchive from the same kebab restores active.
+    await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
+    await menu.getByRole("menuitem", { name: "Unarchive project" }).click();
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("task delete modal: UNCHECKED reconnect sends plain DELETE (dependents simply unblocked)", async ({ page }) => {
+    const state = await openBoard(page);
+
+    await page.getByTestId("task-kebab-tsk-cccc0003").click();
+    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+
+    const modal = page.getByTestId("task-delete-modal");
+    await expect(modal).toBeVisible();
+    // The dependent (tsk-eeee0005 is blocked-by this task) is surfaced.
+    await expect(modal.getByTestId("task-delete-dependents")).toContainText("tsk-eeee0005");
+    await expect(modal.getByTestId("reconnect-dependents")).not.toBeChecked();
+
+    const reqP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/tasks\/tsk-cccc0003$/.test(r.url()));
+    await modal.getByTestId("confirm-delete-task").click();
+    const req = await reqP;
+    // Semantics 1 — unchecked: NO reconnect flag on the wire.
+    expect(new URL(req.url()).searchParams.get("reconnect")).toBeNull();
+
+    // The card is gone after the invalidation refetch.
+    await expect(page.getByTestId("task-card-tsk-cccc0003")).toHaveCount(0, { timeout: 8000 });
+    expect(state.tasks.some((t) => t.short_id === "tsk-cccc0003")).toBe(false);
+  });
+
+  test("task delete modal: CHECKED reconnect sends ?reconnect=true (inherit upstream edges)", async ({ page }) => {
+    const state = await openBoard(page);
+
+    await page.getByTestId("task-kebab-tsk-cccc0003").click();
+    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+    const modal = page.getByTestId("task-delete-modal");
+    await modal.getByTestId("reconnect-dependents").check();
+
+    const reqP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/tasks\/tsk-cccc0003/.test(r.url()));
+    await modal.getByTestId("confirm-delete-task").click();
+    const req = await reqP;
+    // Semantics 2 — checked: reconnect=true on the wire.
+    expect(new URL(req.url()).searchParams.get("reconnect")).toBe("true");
+
+    await expect(page.getByTestId("task-card-tsk-cccc0003")).toHaveCount(0, { timeout: 8000 });
+    expect(state.tasks.some((t) => t.short_id === "tsk-cccc0003")).toBe(false);
+  });
+
+  test("epic delete: in-flight surfaced, refusal reveals force-confirm; force cascades", async ({ page }) => {
+    // A live claim under epic-1: tsk-bbbb0002 in_progress + assignee.
+    // Set BEFORE goto — the browser's query cache holds parsed copies,
+    // so a post-load Node-side mutation never reaches the UI.
+    const state = freshState();
+    state.tasks.find((t) => t.short_id === "tsk-bbbb0002")!.assignee_session = `${WORKSPACE_ID}/sess-bbbb`;
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    await page.goto("/board");
+
+    await page.getByTestId("task-card-tsk-aaaa0001").waitFor();
+    // Scoped to Apollo's swimlane — the fixture's epic-1 id also renders
+    // as a band in Borealis (tsk-ffff0006 shares the epic id).
+    await page.getByTestId(`swimlane-${PROJECT_A}`).getByTestId("epic-kebab-epic-1").click();
+    await page.getByRole("menuitem", { name: "Delete epic…" }).click();
+
+    const modal = page.getByTestId("epic-delete-modal");
+    await expect(modal).toBeVisible();
+    // In-flight worker surfaced pre-flight + honest cascade count
+    // (5 tasks carry epic-1: 4 in Apollo + Borealis's pending row).
+    await expect(modal.getByTestId("epic-delete-inflight")).toContainText("tsk-bbbb0002");
+    await expect(modal.getByTestId("epic-delete-cascade-count")).toHaveText("5");
+
+    // First attempt: NO force — the API refuses (epic_state).
+    const refuseP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epic-1$/.test(r.url()));
+    await modal.getByTestId("confirm-delete-epic").click();
+    const refuseReq = await refuseP;
+    expect(new URL(refuseReq.url()).searchParams.get("force")).toBeNull();
+    await expect(modal.locator("[data-board-error]")).toHaveAttribute("data-board-error", "epic_state");
+
+    // Force-confirm: gated behind the acknowledge checkbox.
+    const forceBtn = modal.getByTestId("force-delete-epic");
+    await expect(forceBtn).toBeDisabled();
+    await modal.getByTestId("force-abort-confirm").check();
+    await expect(forceBtn).toBeEnabled();
+
+    const forceP = page.waitForRequest((r) => r.method() === "DELETE" && /\/me\/epics\/epic-1\?force=true$/.test(r.url()));
+    await forceBtn.click();
+    const forceReq = await forceP;
+    expect(new URL(forceReq.url()).searchParams.get("force")).toBe("true");
+
+    // Cascade: modal closes; epic-1's cards + band vanish on refetch.
+    await expect(modal).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("epic-band-epic-1")).toHaveCount(0, { timeout: 8000 });
+    // epic-2 survives (scoped blast radius).
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
+    expect(state.tasks.some((t) => t.epic_id === "epic-1")).toBe(false);
   });
 });
