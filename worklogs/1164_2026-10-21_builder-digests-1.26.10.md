@@ -36,4 +36,4 @@ None.
 ## Files Modified
 
 - api/Dockerfile, controller/Dockerfile, cmd/relay-proxy/Dockerfile, cmd/relay-router/Dockerfile, cmd/workspace-agentd/Dockerfile
-- worklogs/NNNN_2026-10-21_builder-digests-1.26.10.md — this worklog
+- worklogs/1164_2026-10-21_builder-digests-1.26.10.md — this worklog
