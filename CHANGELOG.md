@@ -175,6 +175,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Effective view with provenance**: each project row shows the
   merged effective config, each key marked override vs inherited from
   the stored overrides.
+### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
+
+- **The forge-agnostic verdict core**: a validated payload
+  (`{verdict: approve|fail, findings: [{severity blocker|major|minor,
+  pointer, criterionIndex?}], reviewer}` — criterionIndex
+  bounds-checked against the task's criteria; a fail requires at least
+  one finding) persisted as an ORDERED per-task record (the verdict
+  chain) and applied through the EXISTING guarded stage machine. Forge
+  adapters (PR reviews) map INTO the core; they never re-implement it.
+- **approve → done STILL passes the Done guard** (ALL criteria met +
+  evidence URL). A refused transition is a RECORDED outcome, not an
+  error: the verdict persists with `applied=false` and
+  `transition="refused:<code>"` — the chain keeps the evidence.
+- **fail → in_progress rides the bounce**: a fresh claim is minted for
+  the recorded assignee and **attempts are UNCHANGED** — a review
+  bounce is an iteration inside the verdict chain, never a
+  failure-ledger entry (the amended #1832 semantics).
+- **Surfaces (construction parity)**: `POST /api/v1/me/tasks/:id/verdict`
+  + `GET /api/v1/me/tasks/:id/verdicts`; external MCP
+  `board_record_verdict` + `board_task_verdicts`; OpenAPI paths +
+  schemas. Idempotent per `requestId`.
 
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
 
