@@ -219,6 +219,11 @@ export const boardApi = {
   },
 
   // /me/projects/:id/epics + /me/epics
+  // The list seam (#1699 engine read): a project's epics with derived
+  // progress — the source of existence for bands/picker (zero-task
+  // epics live here, not in task rows).
+  listProjectEpics: (projectIdOrShort: string): Promise<BoardEpic[]> =>
+    api.get<{ epics: BoardEpic[] }>(`/me/projects/${encodeURIComponent(projectIdOrShort)}/epics`).then((r) => r.epics ?? []),
   createEpic: (projectIdOrShort: string, input: BoardEpicInput): Promise<BoardEpic> =>
     api.post<BoardEpic>(`/me/projects/${encodeURIComponent(projectIdOrShort)}/epics`, { ...input, requestId: newBoardRequestId() }),
   getEpic: (idOrShort: string): Promise<BoardEpic> =>

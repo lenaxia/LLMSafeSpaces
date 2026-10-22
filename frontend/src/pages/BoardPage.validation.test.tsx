@@ -193,11 +193,13 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     mockCreateTask.mockResolvedValue({});
     renderBoard();
     await screen.findByTestId("task-card-tsk-eeee0005");
-    // dblclick the E2 chip opens the drawer; use the drawer's New task.
-    fireEvent.dblClick(screen.getByText("E2"));
+    // dblclick the E2 chip opens the drawer; use the drawer's New task
+    // (the swimlane headers carry their own New task since #1832 —
+    // disambiguate via the drawer button's testid).
+    fireEvent.dblClick(screen.getByText("E2", { selector: "button" }));
     const drawer = await screen.findByTestId("epic-outcome");
     expect(drawer).toBeInTheDocument();
-    fireEvent.click(screen.getByText("New task"));
+    fireEvent.click(screen.getByTestId("drawer-new-task"));
     const title = await screen.findByTestId("task-title");
     fireEvent.change(title, { target: { value: "Fresh task" } });
     fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "criterion one" } });

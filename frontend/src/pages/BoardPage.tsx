@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
@@ -15,7 +15,7 @@ import { TaskDialog } from "../components/board/TaskDialog";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { KanbanSquare, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-import { boardApi, type BoardEpic, type BoardTask, type BoardEventPayload } from "../api/board";
+import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
 import { subscribeBoardEvents } from "../lib/boardFeed";
 import { workspacesApi } from "../api/workspaces";
 import { ApiClientError } from "../api/client";
@@ -88,26 +88,81 @@ export function BoardPage() {
   });
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
 
-  // Read-path failures are NOT emptiness (r2): a failed projects/tasks
-  // fetch renders an error notice — the empty-board state is reserved
-  // for a successful read of zero projects (the "no swallowed errors"
-  // posture extended from action paths to read paths).
+  // #1832 r2 (review finding 1): the ListEpics REST seam —
+  // GET /me/projects/:id/epics (router → ListProjectEpics →
+  // pkg/board Service.ListEpics, #1699's engine read). The epic LIST
+  // is the source of existence for bands and the create-task picker:
+  // zero-task epics (created last session, or via the API) live here,
+  // never in task rows.
+  const epicsQueries = useQueries({
+    queries: projects.map((p) => ({
+      queryKey: ["board", "epics", p.id],
+      queryFn: () => boardApi.listProjectEpics(p.id),
+      enabled: projectsQuery.isSuccess && projects.length > 0,
+      refetchInterval: BOARD_REFETCH_MS,
+    })),
+  });
+  const serverEpicsByProject = useMemo(() => {
+    const m = new Map<string, BoardEpic[]>();
+    projects.forEach((p, i) => m.set(p.id, epicsQueries[i]?.data ?? []));
+    return m;
+  }, [projects, epicsQueries]);
+  // When each lane's list last ARRIVED (0 = never) — the clock the
+  // session-known bridge is gated against (below).
+  const epicsArrivedAtByProject = useMemo(() => {
+    const m = new Map<string, number>();
+    projects.forEach((p, i) => {
+      const at = epicsQueries[i]?.dataUpdatedAt ?? 0;
+      if (at > 0) m.set(p.id, at);
+    });
+    return m;
+  }, [projects, epicsQueries]);
+
+  // Read-path failures are NOT emptiness (r2): a failed projects/tasks/
+  // epics fetch renders an error notice — the empty-board state is
+  // reserved for a successful read of zero projects (the "no swallowed
+  // errors" posture extended from action paths to read paths).
   const boardReadError = useMemo(() => {
     if (projectsQuery.isError) return toBoardError(projectsQuery.error);
     if (tasksQuery.isError) return toBoardError(tasksQuery.error);
+    const failedEpics = epicsQueries.find((q) => q.isError);
+    if (failedEpics) return toBoardError(failedEpics.error);
     return null;
-  }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error]);
+  }, [projectsQuery.isError, projectsQuery.error, tasksQuery.isError, tasksQuery.error, epicsQueries]);
 
-  // Epics are derived from task rows (display inheritance, R2) plus the
-  // epics this session created/opened — the ListEpics REST seam does not
-  // exist yet (#1699 stopped it on the engine gap); this bridge keeps the
-  // epic chips + create-task picker honest over live data.
-  const [knownEpics, setKnownEpics] = useState<BoardEpic[]>([]);
-  const derivedEpics = useMemo(() => {
-    const byId = new Map<string, BoardEpic>();
+  // #1832: epics per lane. Precedence, per id:
+  //   1. the SERVER LIST, once it has arrived for the lane — the
+  //      engine's truth for existence, progress, and metadata; a known
+  //      copy stops applying the moment a list response (re)lands
+  //      (whether it carries the epic or not — server deletion wins);
+  //   2. task-row derivation — the mid-load fallback (an epic visible
+  //      in freshly-fetched task rows renders before its list response
+  //      lands) and the honest floor when the list lags the rows;
+  //   3. this session's created/opened epics (knownEpics) — the
+  //      POST→refetch bridge ONLY: each carries knownAt and applies
+  //      until the lane's NEXT list arrival, never past it (r3: the
+  //      create response's 0/0 must not shadow the refetched 0/1).
+  type KnownEpic = BoardEpic & { knownAt: number };
+  const [knownEpics, setKnownEpics] = useState<KnownEpic[]>([]);
+  const rememberEpic = useCallback((epic: BoardEpic) => {
+    setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), { ...epic, knownAt: Date.now() }]);
+  }, []);
+  const epicsByProject = useMemo(() => {
+    const byProject = new Map<string, Map<string, BoardEpic>>();
+    const laneOf = (projectId: string) => {
+      let m = byProject.get(projectId);
+      if (!m) {
+        m = new Map();
+        byProject.set(projectId, m);
+      }
+      return m;
+    };
+    const put = (epic: BoardEpic) => laneOf(epic.project_id).set(epic.id, epic);
     for (const t of tasks) {
-      if (!byId.has(t.epic_id)) {
-        byId.set(t.epic_id, {
+      const lane = laneOf(t.project_id);
+      if (!lane.has(t.epic_id)) {
+        const rows = tasks.filter((x) => x.project_id === t.project_id && x.epic_id === t.epic_id);
+        lane.set(t.epic_id, {
           id: t.epic_id,
           project_id: t.project_id,
           short_id: `epic-${t.epic_id.slice(0, 8)}`,
@@ -117,15 +172,31 @@ export function BoardPage() {
           tags: [],
           created_at: "",
           updated_at: "",
-          progress_done: tasks.filter((x) => x.epic_id === t.epic_id && x.stage === "done").length,
-          progress_total: tasks.filter((x) => x.epic_id === t.epic_id).length,
-          progress_derived: tasks.some((x) => x.epic_id === t.epic_id),
+          progress_done: rows.filter((x) => x.stage === "done").length,
+          progress_total: rows.length,
+          progress_derived: true,
         });
       }
     }
-    for (const e of knownEpics) byId.set(e.id, e);
+    for (const [, epics] of serverEpicsByProject) for (const e of epics) put(e);
+    for (const e of knownEpics) {
+      // The bridge applies only while the lane's list has NOT arrived
+      // since the epic was learned (server truth supersedes, r3).
+      if (e.knownAt > (epicsArrivedAtByProject.get(e.project_id) ?? 0)) put(e);
+    }
+    return new Map([...byProject.entries()].map(([k, v]) => [k, [...v.values()]]));
+  }, [tasks, serverEpicsByProject, knownEpics, epicsArrivedAtByProject]);
+
+  // The flat epic list (scope-switcher chips): ONE entry per epic id —
+  // a same-id epic spanning lanes is a single chip. Server/known rows
+  // (progress_derived=false, real epc- short ids) win the id over
+  // task-derived entries when both exist.
+  const derivedEpics = useMemo(() => {
+    const byId = new Map<string, BoardEpic>();
+    for (const list of epicsByProject.values()) for (const e of list) if (!byId.has(e.id)) byId.set(e.id, e);
+    for (const list of epicsByProject.values()) for (const e of list) if (!e.progress_derived) byId.set(e.id, e);
     return [...byId.values()];
-  }, [tasks, knownEpics]);
+  }, [epicsByProject]);
 
   const scopedEpics = useMemo(
     () => derivedEpics.filter((e) => focusProject === "all" || e.project_id === focusProject),
@@ -288,10 +359,21 @@ export function BoardPage() {
   const [projTagErrors, setProjTagErrors] = useState<string[]>([]);
   const [createError, setCreateError] = useState<DescribedBoardError | null>(null);
 
-  const [showCreateEpic, setShowCreateEpic] = useState(false);
+  // #1832 item 1: the New-epic dialog carries ITS OWN project context
+  // (the swimlane header button sets it directly — the global toolbar
+  // button sets it from the focus dropdown; null = closed).
+  const [createEpicTarget, setCreateEpicTarget] = useState<string | null>(null);
   const [epicTitle, setEpicTitle] = useState("");
   const [epicOutcome, setEpicOutcome] = useState("");
   const [epicTags, setEpicTags] = useState<string[]>([]);
+
+  // #1832 item 2: the swimlane's selected epic (projectId → epicId) —
+  // highlight/dim + task-creation scope; collapsed band ids (default
+  // expanded — "tasks grouped beneath" is the at-rest view); and the
+  // New-task epic picker (opened when no epic is selected).
+  const [selectedEpicByProject, setSelectedEpicByProject] = useState<Record<string, string>>({});
+  const [collapsedBands, setCollapsedBands] = useState<ReadonlySet<string>>(new Set());
+  const [taskPickerProject, setTaskPickerProject] = useState<BoardProject | null>(null);
 
   const [taskDialog, setTaskDialog] = useState<{ mode: "create"; epic: BoardEpic } | { mode: "edit"; task: BoardTask } | null>(null);
   const [dialogError, setDialogError] = useState<DescribedBoardError | null>(null);
@@ -314,8 +396,8 @@ export function BoardPage() {
     mutationFn: (projectId: string) =>
       boardApi.createEpic(projectId, { title: epicTitle.trim(), outcome: epicOutcome, tags: epicTags }),
     onSuccess: (epic) => {
-      setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
-      setShowCreateEpic(false);
+      rememberEpic(epic);
+      setCreateEpicTarget(null);
       setEpicTitle("");
       setEpicOutcome("");
       setEpicTags([]);
@@ -323,6 +405,51 @@ export function BoardPage() {
     },
     onError: (err) => setCreateError(toBoardError(err)),
   });
+
+  // #1832 item 2: the swimlane's LIVE selected epic — derived, so a
+  // selection whose epic vanished from the read model reads as none
+  // (never a stale scope for creation).
+  const selectedEpicOf = useCallback(
+    (projectId: string): BoardEpic | null => {
+      const sel = selectedEpicByProject[projectId];
+      if (!sel) return null;
+      return epicsByProject.get(projectId)?.find((e) => e.id === sel) ?? null;
+    },
+    [selectedEpicByProject, epicsByProject],
+  );
+
+  const toggleEpicSelection = useCallback((projectId: string, epicId: string) => {
+    setSelectedEpicByProject((prev) => {
+      const next = { ...prev };
+      if (next[projectId] === epicId) delete next[projectId];
+      else next[projectId] = epicId;
+      return next;
+    });
+  }, []);
+
+  const toggleBand = useCallback((epicId: string) => {
+    setCollapsedBands((prev) => {
+      const next = new Set(prev);
+      if (next.has(epicId)) next.delete(epicId);
+      else next.add(epicId);
+      return next;
+    });
+  }, []);
+
+  // #1832 item 1+2: the swimlane's New task — the SELECTED epic scopes
+  // creation (New task lands inside it); with no selection the epic
+  // picker opens (never a dead/greyed path).
+  const openSwimlaneNewTask = useCallback(
+    (project: BoardProject) => {
+      const epic = selectedEpicOf(project.id);
+      if (epic) {
+        setTaskDialog({ mode: "create", epic });
+        return;
+      }
+      setTaskPickerProject(project);
+    },
+    [selectedEpicOf],
+  );
 
   const submitTask = useCallback(
     async (fields: { title: string; description: string; tags: string[]; acceptanceCriteria: Array<{ text: string; met: boolean }> }): Promise<boolean> => {
@@ -348,7 +475,7 @@ export function BoardPage() {
       action === "activate" ? boardApi.activateEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id) : boardApi.pauseEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id),
     onSuccess: (epic) => {
       setDrawerError(null);
-      setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+      rememberEpic(epic);
       setEpicDrawer(epic);
       void queryClient.invalidateQueries({ queryKey: ["board"] });
     },
@@ -389,7 +516,7 @@ export function BoardPage() {
     async (epicId: string) => {
       try {
         const epic = await boardApi.getEpic(epicId);
-        setKnownEpics((prev) => [...prev.filter((e) => e.id !== epic.id), epic]);
+        rememberEpic(epic);
         setDrawerError(null);
         setEpicDrawer(epic);
       } catch (err) {
@@ -446,7 +573,15 @@ export function BoardPage() {
             data-testid="board-search"
           />
           <div className="ml-auto flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => { setShowCreateEpic(true); setCreateError(null); }} disabled={focusProject === "all" || projects.length === 0} data-testid="new-epic-button">
+            {/* #1832 item 1: the global button stays, but the swimlane
+             * headers carry the contextual path (never greyed-only). */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setCreateEpicTarget(focusProject !== "all" ? focusProject : null); setCreateError(null); }}
+              disabled={focusProject === "all" || projects.length === 0}
+              data-testid="new-epic-button"
+            >
               New epic
             </Button>
             <Button variant="outline" size="sm" onClick={() => { setShowCreateProject(true); setCreateError(null); }} data-testid="new-project-button">
@@ -572,6 +707,18 @@ export function BoardPage() {
         <div className="flex flex-col gap-4">
           {visibleProjects.map((project) => {
             const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
+            const laneAllTasks = tasks.filter((t) => t.project_id === project.id);
+            // Unfiltered row count per epic (#1832 r2, finding 2): the
+            // band's "No tasks yet." must not fire when tasks exist but
+            // the lane's filter (epic chip / tag / search) hides them.
+            const laneRowsByEpic = new Map<string, number>();
+            for (const t of laneAllTasks) laneRowsByEpic.set(t.epic_id, (laneRowsByEpic.get(t.epic_id) ?? 0) + 1);
+            const laneEpics = epicsByProject.get(project.id) ?? [];
+            // The swimlane's selection (derived — a vanished epic reads
+            // as unselected) drives highlight/dim on the kanban cards
+            // and scopes the header's New task.
+            const selectedEpic = selectedEpicOf(project.id);
+            const highlightEpicId = selectedEpic?.id ?? null;
             return (
               <section key={project.id} data-swimlane={project.short_id} data-testid={`swimlane-${project.short_id}`} className="rounded-lg border border-border">
                 <header className="flex items-center gap-2 border-b border-border px-3 py-1.5">
@@ -586,18 +733,141 @@ export function BoardPage() {
                       slot cooldown
                     </Badge>
                   )}
+                  {/* #1832 item 1: contextual creation — the swimlane IS
+                   * the selection (New epic / New task land here, no
+                   * dropdown needed; New task honors the selected epic
+                   * band, else the picker). */}
+                  <div className="ml-auto flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => { setCreateEpicTarget(project.id); setCreateError(null); }}
+                      data-testid={`new-epic-${project.short_id}`}
+                      title={`New epic in ${project.name}`}
+                    >
+                      New epic
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => openSwimlaneNewTask(project)}
+                      data-testid={`new-task-${project.short_id}`}
+                      title={selectedEpic ? `New task in ${selectedEpic.title}` : `New task in ${project.name} — pick an epic`}
+                    >
+                      New task
+                    </Button>
+                  </div>
                 </header>
+                {/* #1832 item 2: collapsible epic bands, tasks grouped
+                 * beneath; clicking a band selects it (highlight own
+                 * tasks, dim the lane's others, scope New task). */}
+                <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5" data-testid={`epic-bands-${project.short_id}`}>
+                  {laneEpics.length === 0 ? (
+                    <span className="px-1 text-[10px] text-muted-foreground/70">No epics yet — use New epic above.</span>
+                  ) : (
+                    laneEpics.map((epic) => {
+                      const collapsed = collapsedBands.has(epic.id);
+                      const selected = selectedEpic?.id === epic.id;
+                      const bandTasks = projectTasks.filter((t) => t.epic_id === epic.id);
+                      return (
+                        <div
+                          key={epic.id}
+                          data-testid={`epic-band-${epic.id}`}
+                          data-selected={selected ? "true" : undefined}
+                          className={cn(
+                            "rounded-md border transition-colors",
+                            selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
+                          )}
+                        >
+                          {/* The HEADER ROW is the selection surface (not the
+                           * whole container): a container-level click would
+                           * sit atop the task rows beneath it — in a real
+                           * pointer click the band's center lands on its
+                           * only task row (task-edit), never selecting. */}
+                          <div
+                            className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1"
+                            data-testid={`band-header-${epic.id}`}
+                            onClick={() => toggleEpicSelection(project.id, epic.id)}
+                            onDoubleClick={() => void openEpicDrawer(epic.id)}
+                            title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
+                          >
+                            <button
+                              type="button"
+                              data-testid={`band-toggle-${epic.id}`}
+                              aria-expanded={!collapsed}
+                              aria-label={collapsed ? `Expand ${epic.title}` : `Collapse ${epic.title}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleBand(epic.id);
+                              }}
+                              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                            >
+                              <ChevronRight className={cn("h-3 w-3 transition-transform", !collapsed && "rotate-90")} />
+                            </button>
+                            <span className="text-[11px] font-medium">{epic.title}</span>
+                            <span className="font-mono text-[10px] text-muted-foreground">{epic.short_id}</span>
+                            <span className="text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
+                              {epic.progress_done}/{epic.progress_total}
+                            </span>
+                            {epic.status === "paused" && <Badge variant="warning" className="px-1.5 py-0 text-[10px]">paused</Badge>}
+                            {selected && <Badge variant="default" className="px-1.5 py-0 text-[10px]">selected</Badge>}
+                          </div>
+                          {!collapsed && (
+                            <div className="flex flex-col gap-0.5 px-2 pb-1.5 pt-0.5">
+                              {bandTasks.map((t) => (
+                                <button
+                                  key={t.short_id}
+                                  type="button"
+                                  data-testid={`band-task-${epic.id}-${t.short_id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setTaskDialog({ mode: "edit", task: t });
+                                  }}
+                                  className={cn(
+                                    "flex items-center gap-2 rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-accent",
+                                    highlightEpicId && t.epic_id !== highlightEpicId && "opacity-40",
+                                  )}
+                                >
+                                  <span className="font-mono text-[10px] text-muted-foreground">{t.short_id}</span>
+                                  <span className="truncate">{t.title}</span>
+                                  <span className="ml-auto rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
+                                    {STAGE_LABELS[t.stage as BoardStage] ?? t.stage}
+                                  </span>
+                                </button>
+                              ))}
+                              {bandTasks.length === 0 &&
+                                (laneRowsByEpic.get(epic.id) ?? 0) > 0 && (
+                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-filtered-empty-${epic.id}`}>
+                                    No tasks match the current filter.
+                                  </span>
+                                )}
+                              {bandTasks.length === 0 &&
+                                (laneRowsByEpic.get(epic.id) ?? 0) === 0 && (
+                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-empty-${epic.id}`}>
+                                    No tasks yet.
+                                  </span>
+                                )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
                 <div className="grid grid-cols-4 gap-2 p-2">
                   {MAIN_STAGES.map((stage) => (
                     <StageCell
                       key={stage}
                       stage={stage}
                       projectTasks={projectTasks}
-                      allProjectTasks={tasks.filter((t) => t.project_id === project.id)}
+                      allProjectTasks={laneAllTasks}
                       stageOf={stageOf}
                       optimistic={optimistic}
                       refusedShortId={refusedShortId}
                       draggingStage={draggingStage}
+                      highlightEpicId={highlightEpicId}
                       onDrop={handleDrop(stage)}
                       onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
                       onCardDragStart={(t) => setDraggingStage(t.stage)}
@@ -628,11 +898,12 @@ export function BoardPage() {
                           key={stage}
                           stage={stage}
                           projectTasks={projectTasks}
-                          allProjectTasks={tasks.filter((t) => t.project_id === project.id)}
+                          allProjectTasks={laneAllTasks}
                           stageOf={stageOf}
                           optimistic={optimistic}
                           refusedShortId={refusedShortId}
                           draggingStage={draggingStage}
+                          highlightEpicId={highlightEpicId}
                           onDrop={handleDrop(stage)}
                           onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
                           onCardDragStart={(t) => setDraggingStage(t.stage)}
@@ -735,13 +1006,13 @@ export function BoardPage() {
         </Dialog.Portal>
       </Dialog.Root>
 
-      {/* --- New epic dialog ------------------------------------------------------ */}
-      <Dialog.Root open={showCreateEpic} onOpenChange={setShowCreateEpic}>
+      {/* --- New epic dialog (target = the swimlane or focus context) -------- */}
+      <Dialog.Root open={createEpicTarget !== null} onOpenChange={(open) => { if (!open) setCreateEpicTarget(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
             <Dialog.Title className="text-sm font-semibold">
-              New epic in {projects.find((p) => p.id === focusProject)?.name}
+              New epic in {projects.find((p) => p.id === createEpicTarget)?.name}
             </Dialog.Title>
             {createError && <BoardErrorNotice error={createError} onDismiss={() => setCreateError(null)} />}
             <label className="flex flex-col gap-1 text-xs">
@@ -757,15 +1028,73 @@ export function BoardPage() {
               <TagInput value={epicTags} onChange={setEpicTags} id="epic-tags" />
             </div>
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setShowCreateEpic(false)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => setCreateEpicTarget(null)}>Cancel</Button>
               <Button
                 size="sm"
                 disabled={!epicTitle.trim() || createEpicMutation.isPending}
-                onClick={() => focusProject !== "all" && createEpicMutation.mutate(focusProject)}
+                onClick={() => createEpicTarget && createEpicMutation.mutate(createEpicTarget)}
                 data-testid="epic-create"
               >
                 Create
               </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* --- Epic picker (New task with no band selected, #1832 item 2) ------ */}
+      <Dialog.Root open={taskPickerProject !== null} onOpenChange={(open) => { if (!open) setTaskPickerProject(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
+            <Dialog.Title className="text-sm font-semibold">
+              New task in {taskPickerProject?.name} — pick an epic
+            </Dialog.Title>
+            <div className="flex flex-col gap-1" data-testid="epic-picker">
+              {(taskPickerProject ? epicsByProject.get(taskPickerProject.id) ?? [] : []).map((epic) => (
+                <button
+                  key={epic.id}
+                  type="button"
+                  data-testid={`epic-picker-option-${epic.id}`}
+                  onClick={() => {
+                    const p = taskPickerProject;
+                    setTaskPickerProject(null);
+                    if (p) setTaskDialog({ mode: "create", epic });
+                  }}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5 text-left text-xs hover:border-primary/40 hover:bg-accent"
+                >
+                  <span className="font-medium">{epic.title}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {epic.progress_done}/{epic.progress_total} done
+                  </span>
+                </button>
+              ))}
+              {taskPickerProject && (epicsByProject.get(taskPickerProject.id) ?? []).length === 0 && (
+                <div className="flex flex-col gap-2" data-testid="epic-picker-empty">
+                  <span className="text-xs text-muted-foreground">
+                    No epics in {taskPickerProject.name} yet — a task needs its epic.
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
+                    data-testid="epic-picker-create-epic"
+                    onClick={() => {
+                      const p = taskPickerProject;
+                      setTaskPickerProject(null);
+                      if (p) {
+                        setCreateEpicTarget(p.id);
+                        setCreateError(null);
+                      }
+                    }}
+                  >
+                    Create epic in {taskPickerProject.name}
+                  </Button>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <Button variant="ghost" size="sm" onClick={() => setTaskPickerProject(null)}>Cancel</Button>
             </div>
           </Dialog.Content>
         </Dialog.Portal>
@@ -943,6 +1272,9 @@ interface StageCellProps {
    * (the manager-surface mirror); the drop still attempts (the engine
    * arbitrates and its 409 renders). */
   draggingStage: string | null;
+  /** #1832 item 2: the swimlane's selected epic id — cards in OTHER
+   * epics dim, cards in this epic highlight (display-only scope). */
+  highlightEpicId: string | null;
   onDrop: (e: React.DragEvent) => void;
   onOpenCard: (t: BoardTask) => void;
   onCardDragStart: (t: BoardTask) => void;
@@ -959,6 +1291,7 @@ function StageCell({
   optimistic,
   refusedShortId,
   draggingStage,
+  highlightEpicId,
   onDrop,
   onOpenCard,
   onCardDragStart,
@@ -1008,6 +1341,8 @@ function StageCell({
           projectTasks={allProjectTasks}
           pending={optimistic[t.short_id] !== undefined}
           refused={refusedShortId === t.short_id}
+          dimmed={highlightEpicId !== null && t.epic_id !== highlightEpicId}
+          highlighted={highlightEpicId !== null && t.epic_id === highlightEpicId}
           starting={startingShortId === t.short_id}
           onStart={onCardStart}
           onOpen={onOpenCard}
