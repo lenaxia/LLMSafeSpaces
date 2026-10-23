@@ -93,6 +93,14 @@ type E2EEpic = {
   progress_derived: boolean;
 };
 
+/** #1831 wire contract: the wire addresses epics by their DERIVED short
+ * id (epc-<compact-id>). The ONE derivation, shared by the epic-list
+ * mapper and the epic-delete route's guard arms — two inline copies
+ * would drift and silently unmatch the guards (r2 review note). */
+function wireEpicShortId(id: string): string {
+  return `epc-${id.replace(/-/g, "").padEnd(8, "0")}`;
+}
+
 /** Server-side ListEpics: the task-backed epics derived from rows (the
  * read the UI used to guess client-side) — progress scoped PER PROJECT
  * (a same-id epic spanning projects is one row per project, matching
@@ -108,7 +116,7 @@ function derivedEpicsFromTasks(tasks: E2ETask[]): E2EEpic[] {
       continue;
     }
     byKey.set(key, {
-      id: t.epic_id, project_id: t.project_id, short_id: `epc-${t.epic_id.replace(/-/g, "").padEnd(8, "0")}`,
+      id: t.epic_id, project_id: t.project_id, short_id: wireEpicShortId(t.epic_id),
       title: t.epic_name, outcome: "", status: "active", tags: [],
       created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
       progress_done: t.stage === "done" ? 1 : 0, progress_total: 1, progress_derived: false,
@@ -233,110 +241,6 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       void r.fulfill(j(project));
     });
   }
-  await page.route(`${API}/me/projects/*/tasks*`, (r: Route) => {
-    const url = new URL(r.request().url());
-    const pid = url.pathname.split("/").pop() === "tasks" ? url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] : "";
-    void r.fulfill(j({ tasks: state.tasks.filter((t) => t.project_id === pid) }));
-  });
-  // #1832 item 1: contextual epic creation — POST /me/projects/:id/epics.
-  // The route echoes the project the button carried (asserted per-test).
-  await page.route(`${API}/me/projects/*/epics`, async (r: Route) => {
-    if (r.request().method() !== "POST") {
-      void r.continue();
-      return;
-    }
-    const url = new URL(r.request().url());
-    const pid = url.pathname.split("/")[url.pathname.split("/").indexOf("projects") + 1] ?? "";
-    const body = r.request().postDataJSON() as { title?: string; outcome?: string };
-    void r.fulfill(j({
-      id: `epic-created-${pid}`, project_id: pid, short_id: `epc-new${pid.slice(-4)}`,
-      title: body.title ?? "", outcome: body.outcome ?? "", status: "draft", tags: [],
-      created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
-      progress_done: 0, progress_total: 0, progress_derived: false,
-    }));
-  });
-  // #1832 item 2: epic-scoped task creation — POST /me/epics/:id/tasks.
-  // Appends to the shared state so the post-invalidation refetch shows
-  // the new row in the backlog column and beneath the epic band.
-  await page.route(`${API}/me/epics/*/tasks`, async (r: Route) => {
-    if (r.request().method() !== "POST") {
-      void r.continue();
-      return;
-    }
-    const epicId = r.request().url().split("/epics/")[1]?.split("/")[0] ?? "";
-    const body = r.request().postDataJSON() as { title?: string };
-    const parent = state.tasks.find((t) => t.epic_id === epicId);
-    if (!parent) {
-      void r.fulfill(j({ error: `board: epic "${epicId}" not found` }, 404));
-      return;
-    }
-    const row = task({
-      short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
-      title: body.title ?? "New task",
-      stage: "backlog",
-      project_id: parent.project_id,
-      epic_id: epicId,
-    });
-    state.tasks.push(row);
-    void r.fulfill(j(row));
-  });
-  await page.route(`${API}/me/tasks/*/move-stage`, async (r: Route) => {
-    const shortId = r.request().url().split("/tasks/")[1]?.split("/")[0];
-    const body = r.request().postDataJSON() as { toStage: string; evidenceUrl?: string };
-    const t = state.tasks.find((x) => x.short_id === shortId);
-    if (!t) {
-      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
-      return;
-    }
-    // The Done guard, honestly: criteria unmet or no evidence → 409.
-    if (body.toStage === "done" && (body.evidenceUrl === "" || t.acceptance_criteria.some((c) => !c.met))) {
-      void r.fulfill(j({ error: "board: guard done_guard: all acceptance criteria must be met before done (ruling R2)", code: "done_guard" }, 409));
-      return;
-    }
-    t.stage = body.toStage;
-    void r.fulfill(j(t));
-  });
-
-  await page.route(`${API}/me/tasks/*`, async (r: Route) => {
-    // #1747: cancel is eliminated — DELETE removes the row; the delete
-    // result lists orphaned dependents (surfaced, never a refusal).
-    // #1832 item 3: ?reconnect=true lets orphans inherit the deleted
-    // node's direct upstream edges (pairs surface in the result).
-    if (r.request().method() !== "DELETE") {
-      void r.continue();
-      return;
-    }
-    const url = new URL(r.request().url());
-    const shortId = url.pathname.split("/tasks/")[1]?.split("/")[0] ?? "";
-    const reconnect = url.searchParams.get("reconnect") === "true";
-    const t = state.tasks.find((x) => x.short_id === shortId);
-    if (!t) {
-      void r.fulfill(j({ error: `board: task "${shortId}" not found` }, 404));
-      return;
-    }
-    const upstream = t.blocked_by ?? [];
-    const orphanRows = state.tasks.filter((x) => (x.blocked_by ?? []).includes(shortId));
-    const reconnected: string[] = [];
-    for (const orphan of orphanRows) {
-      if (reconnect) {
-        for (const up of upstream) {
-          if (up !== orphan.short_id && !(orphan.blocked_by ?? []).includes(up)) {
-            orphan.blocked_by = [...(orphan.blocked_by ?? []), up];
-            reconnected.push(`${orphan.short_id}→${up}`);
-          }
-        }
-      } else {
-        orphan.blocked_by = (orphan.blocked_by ?? []).filter((id) => id !== shortId);
-      }
-      orphan.is_blocked = (orphan.blocked_by ?? []).length > 0;
-    }
-    state.tasks = state.tasks.filter((x) => x.short_id !== shortId);
-    void r.fulfill(j({
-      item_kind: "task", id: t.id, short_id: t.short_id,
-      orphaned_dependents: orphanRows.map((o) => o.short_id),
-      ...(reconnect ? { reconnected } : {}),
-    }));
-  });
   // #1832 item 3: epic delete — refuses while claims are in flight
   // under the epic unless ?force=true (force deletes, then aborts each
   // in-flight worker post-commit). Matches pkg/board/delete.go.
@@ -348,11 +252,10 @@ async function setupBoardMocks(page: Page, state: BoardState) {
     const url = new URL(r.request().url());
     const epicId = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
     const force = url.searchParams.get("force") === "true";
-    // #1831 wire contract: the wire addresses epics by derived short id
-    // (epc-<compact-id>); map back through the same derivation the
-    // harness uses (line ~111) so guard arms see the fixture's rows.
-    const wireEpic = (id: string) => `epc-${id.replace(/-/g, "").padEnd(8, "0")}`;
-    const under = state.tasks.filter((t) => wireEpic(t.epic_id) === epicId);
+    // #1831 wire contract: the wire addresses epics by their derived
+    // short id — the ONE shared derivation maps the fixture's epic ids
+    // to wire ids so the guard arms see the fixture's rows.
+    const under = state.tasks.filter((t) => wireEpicShortId(t.epic_id) === epicId);
     const inFlight = under.filter((t) => t.stage === "in_progress" && t.assignee_session);
     if (inFlight.length > 0 && !force) {
       void r.fulfill(j({
@@ -371,7 +274,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
         orphaned.push(dep.short_id);
       }
     }
-    state.tasks = state.tasks.filter((t) => wireEpic(t.epic_id) !== epicId);
+    state.tasks = state.tasks.filter((t) => wireEpicShortId(t.epic_id) !== epicId);
     void r.fulfill(j({
       item_kind: "epic", id: epicId, short_id: `epc-${epicId.slice(-6)}`,
       cascade_tasks: cascade, orphaned_dependents: orphaned,
@@ -551,8 +454,8 @@ async function setupBoardMocks(page: Page, state: BoardState) {
 }
 
 async function openBoard(page: Page, init?: Partial<BoardState>) {
-  const __base = freshState();
-  const state: BoardState = { tasks: __base.tasks, projects: __base.projects, epics: [], ...init };
+  const base = freshState();
+  const state: BoardState = { tasks: base.tasks, projects: base.projects, epics: [], ...init };
   await installSSEEmitters(page);
   await setupBoardMocks(page, state);
   await page.goto("/board");
@@ -1057,6 +960,45 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
     await menu.getByRole("menuitem", { name: "Unarchive project" }).click();
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("project kebab: failed lifecycle call surfaces the page error; board stays consistent, retry recovers", async ({ page }) => {
+    const state = await openBoard(page);
+
+    // The failure injection rides the lifecycle mock's own 404 arm (the
+    // `project not found` branch): the project vanishes server-side
+    // between the board's read and the lifecycle write. The handler
+    // reads state.projects at request time, and the failed path never
+    // invalidates — the UI keeps its cached read, so the write 404s
+    // while the board keeps rendering (#1860 mandatory gate: the
+    // handleProjectLifecycle catch branch, BoardPage.tsx setPageError).
+    const apollo = state.projects!.find((p) => p.id === PROJECT_A)!;
+    state.projects = state.projects!.filter((p) => p.id !== PROJECT_A);
+
+    await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
+    await page.getByRole("menuitem", { name: "Archive project" }).click();
+
+    // The error is SURFACED, not swallowed: the page-level notice
+    // renders the engine's message verbatim (no guard code on this
+    // arm → the "error" class attribute).
+    const notice = page.locator("[data-board-error]");
+    await expect(notice).toHaveAttribute("data-board-error", "error", { timeout: 8000 });
+    await expect(notice).toContainText(`board: project "${PROJECT_A}" not found`);
+
+    // Board state consistent: no crash, the swimlane and its cards
+    // survive on the cached read, and the archived badge did NOT land
+    // (the write never succeeded).
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived")).toHaveCount(0);
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
+
+    // Recovery: the project is back server-side; a retry archives it,
+    // clears the page error, and the post-invalidation badge lands.
+    state.projects = [...(state.projects ?? []), { ...apollo }];
+    await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
+    await page.getByRole("menuitem", { name: "Archive project" }).click();
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived").first()).toBeVisible({ timeout: 8000 });
+    await expect(page.locator("[data-board-error]")).toHaveCount(0);
   });
 
   test("task delete modal: UNCHECKED reconnect sends plain DELETE (dependents simply unblocked)", async ({ page }) => {
