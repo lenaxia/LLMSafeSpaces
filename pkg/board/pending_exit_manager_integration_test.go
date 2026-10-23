@@ -31,7 +31,7 @@ import (
 // the orchestrator-class session's identity (audit attribution).
 func (s *BoardSuite) agentManager(wsID, sessionID string) board.Actor {
 	return board.Actor{Kind: board.ActorUser, UserID: testUser,
-		Surface: "agent_manager", WorkspaceID: wsID, SessionID: sessionID} // the surface const lands with the impl
+		Surface: board.SurfaceAgentManager, WorkspaceID: wsID, SessionID: sessionID}
 }
 
 func (s *BoardSuite) TestPendingExit_WorkerStillDenied_OrchestratorGradeAllowed() {
@@ -100,10 +100,17 @@ func (s *BoardSuite) TestPendingExit_AgentManagerWorkspaceBindingHolds() {
 	// An agent-manager actor bound to a DIFFERENT workspace must not
 	// reach the row (403 workspace_binding — the structural scope).
 	foreign := board.Actor{Kind: board.ActorUser, UserID: testUser,
-		Surface: "agent_manager", WorkspaceID: "00000000-0000-0000-0000-000000000000", SessionID: "rogue"}
+		Surface: board.SurfaceAgentManager, WorkspaceID: "00000000-0000-0000-0000-000000000000", SessionID: "rogue"}
 	_, err := s.svc.MoveStage(context.Background(), foreign, "", t.ShortID, board.StageBacklog, "", "")
 	require.Error(s.T(), err)
 	var guard *board.GuardError
 	require.ErrorAs(s.T(), err, &guard)
 	require.Equal(s.T(), board.GuardWorkspaceBinding, guard.Code)
+}
+
+// The surface vocabulary pin: the manager-grade agent surface is a
+// DISTINCT audit entry (tonight's freeze diagnosis needed exactly this
+// distinction in the actor trail).
+func (s *BoardSuite) TestPendingExit_SurfaceVocabulary() {
+	require.Equal(s.T(), "agent_manager", board.SurfaceAgentManager)
 }

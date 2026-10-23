@@ -558,15 +558,15 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "board_move_stage",
-			Description: "Move YOUR claimed task's stage — the worker's forward writes, guarded by the claim token from your charter envelope. Your moves: in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker. → done is the reviewer's move, not yours: it requires ALL acceptance criteria met + evidenceUrl, and the guard refuses otherwise. Exiting pending_input (any origin) is a human decision — refused on this surface; the reviewer/owner moves it through their surfaces. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the task with board_read. The task's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
+			Description: "Move a task's stage — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed task): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — orchestrator-class sessions only; spawned workers are refused the manager dispatch): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) — the pending_input freeze-out class (#1832) is gone; your session identity rides the audit. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the task with board_read. The task's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
-				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done) or in_progress (re-work); pending_input exits are human-only"},
+				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard) — OMIT it only for the manager-grade move (orchestrator-class sessions)"},
+				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done), in_progress (re-work / the pending_input re-claim exit), done, pending_input, backlog (the pending_input re-queue exit)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
 				"shortId":     map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
 				"taskId":      map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
-			}, "required": []string{"claimToken", "toStage"}},
+			}, "required": []string{"toStage"}},
 		},
 		{
 			Name:        "abort_session",

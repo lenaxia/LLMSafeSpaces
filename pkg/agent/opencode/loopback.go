@@ -1110,6 +1110,17 @@ func (c *Client) BoardManagerTaskAction(ctx context.Context, saToken, workspaceI
 		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/%s", taskID, verb), json.RawMessage(`{}`))
 }
 
+// BoardManagerMoveStage is the manager-grade stage move (#1832 WS2):
+// the orchestrator-class session's path — same canonical MoveStage,
+// manager-grade agent surface, session-attributed audit.
+func (c *Client) BoardManagerMoveStage(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/move-stage", taskID), body)
+}
+
 // BoardDeleteTask destructively removes a task (reconnect rides the query).
 func (c *Client) BoardDeleteTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, reconnect bool) (*AutomationResponse, error) {
 	if err := validateBoardRef(taskID); err != nil {

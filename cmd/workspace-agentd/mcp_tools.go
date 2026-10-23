@@ -1671,10 +1671,17 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		}
 		res, err = client.BoardReportThrottle(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 	case "board_move_stage":
-		if err := requireBoardClaimToken(name, body); err != nil {
-			return "", err
+		// #1832 WS2 dual-route: a caller holding a claim token rides
+		// the worker projection (unchanged); a token-less caller rides
+		// the manager-grade path (harness-attested session identity +
+		// the live-assignee worker refusal at both gates — spawned
+		// workers MUST keep sending their charter token; a worker that
+		// omits it is refused manager dispatch, never routed through).
+		if tok, _ := boardToolArgs(body)["claimToken"].(string); strings.TrimSpace(tok) != "" {
+			res, err = client.BoardMoveStage(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+		} else {
+			res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 		}
-		res, err = client.BoardMoveStage(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 
 	// --- Task Board MANAGER tools (#1747): the full manager set at
 	// project/epic/task level, workspace-scoped by the pod identity,

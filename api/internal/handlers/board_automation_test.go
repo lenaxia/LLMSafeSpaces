@@ -122,6 +122,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.DELETE("/epics/:id", h.BoardDeleteEpic)
 	b.POST("/epics/:id/tasks", h.BoardCreateTask)
 	b.PATCH("/tasks/:id", h.BoardUpdateTask)
+	b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2
 	b.POST("/tasks/:id/pause", h.BoardPauseTask)
 	b.POST("/tasks/:id/resume", h.BoardResumeTask)
 	b.DELETE("/tasks/:id", h.BoardDeleteTask)
@@ -236,9 +237,11 @@ func TestBoardAutomation_WorkspaceIdentityMismatch(t *testing.T) {
 // --- #1747 manager seam: actor stamping, session attribution, grant belt --------
 
 // TestBoardAutomation_ManagerActorStamping: a manager call stamps the
-// full #1747 delegation — the pod's resolved owner (ws-1 → user-7), the
-// agent surface, the structural workspace binding, AND the creating
-// session's identity (audit attribution) — on the manager projection.
+// full #1747 delegation — the pod's resolved owner (ws-1 → user-7),
+// the manager-grade agent surface (#1832 WS2: a DISTINCT audit
+// vocabulary from the worker projection), the structural workspace
+// binding, AND the creating session's identity (audit attribution) —
+// on the manager projection.
 func TestBoardAutomation_ManagerActorStamping(t *testing.T) {
 	mgr := newFakeBoardManager()
 	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
@@ -250,7 +253,8 @@ func TestBoardAutomation_ManagerActorStamping(t *testing.T) {
 	require.NotNil(t, mgr.lastActor)
 	assert.Equal(t, board.ActorUser, mgr.lastActor.Kind)
 	assert.Equal(t, "user-7", mgr.lastActor.UserID, "the pod's resolved owner (R7 delegation)")
-	assert.Equal(t, board.SurfaceAgent, mgr.lastActor.Surface)
+	assert.Equal(t, board.SurfaceAgentManager, mgr.lastActor.Surface,
+		"#1832 WS2: the manager-grade surface — the audit distinction tonight's freeze diagnosis needed")
 	assert.Equal(t, "ws-1", mgr.lastActor.WorkspaceID, "the structural caller-workspace binding")
 	assert.Equal(t, "ses_author1", mgr.lastActor.SessionID, "audit attribution to the creating session (#1747)")
 	assert.Empty(t, mgr.lastActor.ClaimToken, "manager actions hold no claim token")

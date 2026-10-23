@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: manager-grade pending_input exits (issue #1832, lane board-stage-hygiene WS2)
+
+- **The pod seam's manager projection gains a manager-grade move
+  (`SurfaceAgentManager`)**: `POST /internal/v1/automation/board/
+  tasks/:id/move-stage` behind the existing manager belt
+  (harness-attested session identity + live-assignee worker refusal,
+  fail-closed on omission) — the orchestrator-class in-workspace
+  session can now exit `pending_input` rows (the tsk-3do6n458 freeze
+  class: → in_progress re-claims, → backlog re-queues with the attempts
+  reset), audited with its session identity and a distinct surface
+  vocabulary.
+- **`board_move_stage` on the agentd toolset dual-routes**: a claim
+  token rides the worker projection (wire unchanged); a token-less
+  call with an orchestrator-class identity rides the manager path.
+  Ordinary workers are unaffected and cannot reach the manager path
+  (both gates refuse them).
+- **The workspace binding extends to the manager grade**: a foreign
+  workspace's rows stay untouchable (403 workspace_binding).
+
 ### Added — Task Board: delegated-review completion coupling (issue #1832, lane board-stage-hygiene WS1)
 
 - **A task whose job is to review another task's artifact anchors to

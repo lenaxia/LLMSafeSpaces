@@ -53,6 +53,10 @@ type fakeBoardManager struct {
 	lastVerdictInput board.VerdictInput
 	verdicts         []board.Verdict
 
+	// #1832 WS2: the manager move-stage capture arms.
+	lastMoveStageTo       string
+	lastMoveStageEvidence string
+
 	errFor map[string]error
 
 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
@@ -380,8 +384,8 @@ func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, i
 func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, idOrShort, toStage, evidenceURL, requestID string) (*board.Task, error) {
 	f.call("move_stage")
 	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastMoveStageTo, f.lastMoveStageEvidence = toStage, evidenceURL
 	_ = idOrShort
-	_ = evidenceURL
 	if err := f.errFor["move_stage"]; err != nil {
 		return nil, err
 	}
