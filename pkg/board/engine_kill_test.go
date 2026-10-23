@@ -370,7 +370,7 @@ func (s *BoardSuite) TestKill_LeaseLifecycleTotality() {
 	markCriteria := s.reloadTask(task.ID)
 	markCriteria.AcceptanceCriteria = []board.AcceptanceCriterion{{Text: "c1", Met: true}, {Text: "c2", Met: true}}
 	updated, err := s.svc.UpdateTask(context.Background(), s.owner(), task.ID, "",
-		board.TaskInput{Title: markCriteria.Title, AcceptanceCriteria: markCriteria.AcceptanceCriteria}, "")
+		board.TaskInput{Title: markCriteria.Title, Description: "seeded charter", AcceptanceCriteria: markCriteria.AcceptanceCriteria}, "")
 	s.Require().NoError(err)
 	_ = updated
 	// The bounced worker still holds the work: its (fresh) token drives

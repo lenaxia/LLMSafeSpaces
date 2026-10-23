@@ -136,14 +136,14 @@ func (s *BoardSuite) TestKill_DoneGuard() {
 
 	// Check off one criterion (of two) → still unmet.
 	_, err = s.svc.UpdateTask(context.Background(), s.owner(), task.ID, "",
-		board.TaskInput{Title: task.Title, AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}, {Text: "c2", Met: false}}}, "")
+		board.TaskInput{Title: task.Title, Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}, {Text: "c2", Met: false}}}, "")
 	s.Require().NoError(err)
 	_, err = s.svc.MoveStage(context.Background(), s.owner(), task.ID, "", board.StageDone, "https://evidence.example/a", "")
 	s.Require().Error(err, "ALL criteria must be met")
 
 	// All met but no evidence → still fires.
 	_, err = s.svc.UpdateTask(context.Background(), s.owner(), task.ID, "",
-		board.TaskInput{Title: task.Title, AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}, {Text: "c2", Met: true}}}, "")
+		board.TaskInput{Title: task.Title, Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}, {Text: "c2", Met: true}}}, "")
 	s.Require().NoError(err)
 	_, err = s.svc.MoveStage(context.Background(), s.owner(), task.ID, "", board.StageDone, "", "")
 	s.Require().Error(err)

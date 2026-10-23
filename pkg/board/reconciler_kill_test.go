@@ -300,7 +300,7 @@ func (s *BoardSuite) doneDirect(t *board.Task) {
 		tok = started.ClaimToken
 	}
 	updated, err := s.svc.UpdateTask(ctx, s.owner(), t.ID, "",
-		board.TaskInput{Title: cur.Title, AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c", Met: true}}}, "")
+		board.TaskInput{Title: cur.Title, Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c", Met: true}}}, "")
 	s.Require().NoError(err)
 	_ = updated
 	actor := s.owner()
