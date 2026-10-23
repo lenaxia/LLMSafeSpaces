@@ -80,6 +80,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (ci.yml's is the verified lever); e2e-pr.yml is noted for its owner
   lane.
 
+### Added — run watchdog: automated detection + recovery for dropped synchronize events (#1844, PR 2 of 2)
+
+- **A zero-run PR head no longer stalls silently.** Every 10 minutes
+  the new `run-watchdog` sweep enumerates open PRs; a head ≥15 min old
+  carrying ZERO total check-runs (pr-review.yml is the universal
+  check-runs producer — every pull_request, no branch/paths filter)
+  and no Actions skip marker is a #1844 delivery fault → namespaced
+  comment on the PR (tagging #1844 so instances accumulate as
+  evidence; deduplicated per head SHA via the `<!-- run-watchdog:
+  fault sha=... -->` marker — the identical literal pr-review.yml's
+  dispatch-recovery shim posts once that PR merges) +
+  `workflow_dispatch` of ci.yml on the branch — the recovery verified
+  live during the 2026-10-23 branch-scoped suppression. Auto-retrigger
+  is OPT-OUT (label `watchdog:no-auto-retrigger`) and HONEST about its
+  cost: a dispatched ci.yml run pushes a sha-/ts- image set from the
+  unmerged branch, so amplification is capped at exactly-once per head
+  SHA (the dispatch consults the same per-SHA marker as the comment),
+  and the predicate clears once the dispatched run registers
+  check-runs. The default stays ON because the fault is silent and
+  GitHub-side — an opt-in default would have caught zero of the four
+  documented instances.
+- **The detection predicate lives in tested Go, not bash**
+  (`pkg/runwatchdog`, red-first: the skip-ci, dedup, label, and
+  comment-contract tests were verified failing against the naive
+  age+zero-runs baseline before the full predicate landed;
+  `cmd/runwatchdog` is a thin stdin→stdout caller; the workflow only
+  gathers inputs and executes the decision — the numbering-gate
+  pattern). Dry-run against live repo data caught the still-suppressed
+  probe branch (PR #1873, head 75 min, zero runs) as a fault on its
+  first pass.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
