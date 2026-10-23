@@ -271,7 +271,22 @@ dynamic busy set. Verified end-to-end live:
 Same family as #1879/#1880: a cached/projection signal trusted after it has
 silently diverged from harness truth. Filed #1883 with the full chain.
 
+## Addendum 3 (2026-10-23 — sidebar truncation: arbitrary eviction past 100 rows; filed #1886)
+
+User reported seeing 9 unarchived sessions where the index held 16 (104
+archived). Root: the listing's `ORDER BY last_message_at DESC NULLS LAST
+LIMIT 100` is vacuous — only 6 of 225 rows have a non-NULL last_message_at
+(the rest NULL because the incremental path never records dispatched
+sessions' messages, #1880) — and there is NO tiebreaker, so the ~20-row cut
+through the NULL pool is arbitrary. Freshly-spawned workers are evicted as
+readily as September sessions; the "Archived" badge is page-local (91 vs
+104). Refresh-proof (server-side per query). The 8 evicted at observation
+were all live lane workers. One-line mitigation: tiebreaker on
+created_at DESC (or COALESCE(last_message_at, created_at)); root fix is
+#1880. Family: #1879/#1880/#1883/#1886 — projection state trusted after it
+diverged from harness truth, with the sidebar as the common victim.
+
 ## Files Modified
 
-This worklog (addendum 1 + 2, D3 correction); issues #1879, #1880, #1883
+This worklog (addenda 1-3, D3 correction); issues #1879, #1880, #1883, #1886
 filed. No code changes.
