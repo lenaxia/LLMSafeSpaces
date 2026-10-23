@@ -56,11 +56,47 @@ presentation (#1845)"), verified RED against origin/main @ 51300dcf
 - PASS companion "DESKTOP: the full stack renders (no single-card
   gating, no queue line)" — the desktop invariant, protected unchanged.
 
-## Verification
+## Review round 1 (CHANGES_REQUESTED — test gates; correctness verified)
 
-- `vitest run src/pages/` — 42 files / 404 tests green (incl. the 17
-  in ChatPage.input.test.tsx and the bumped hookcount guard).
-- `eslint` + `tsc --noEmit` clean.
+The reviewer independently reproduced the red-first claims (revert →
+2 FAIL / 1 PASS; the `[length-1]→[0]` mutation red) and requested three
+coverage additions. Writing the requested e2e exposed a REAL provider
+defect the jsdom suite could not see (its read-hooks are mocked with
+hand-ordered arrays):
+
+- **Provider tie bug (found by the new mobile e2e)**: asks seeded from
+  ONE fold snapshot (reload/reconnect with several pending) register in
+  the same tick — identical `Date.now()` first-seen stamps collapsed
+  `pendingQuestionsForSession`'s newest-first comparator to a stable
+  no-op, so the array kept fold insertion order and the presenter's
+  `[length-1]` picked the NEWEST ask (e2e presented "Second ask?").
+  Fix: `registerFirstSeen` stamps strictly-monotonically per
+  registration (`max(seq+1, now)` — ms-ordered vs real time, so
+  distinct-time behavior is unchanged); the duplicated inline stamp in
+  `addPendingAction` now shares the same seam. Red-first: the new
+  "same-tick batch" provider pin fails against the unfixed provider
+  (verified via stash), passes with it.
+
+### Added coverage (r1)
+
+1. **Mobile permission presenter pins** (jsdom): oldest-only,
+   "Permission 1 of N" line, advance on resolve.
+2. **Mobile dismiss-advance pin** (jsdom): Dismiss (questionReject)
+   advances to the next ask — the issue's other exit.
+3. **Mobile-viewport Playwright e2e** (400×800, real matchMedia +
+   real provider composition), 3 tests: answer-advance (happy),
+   dismiss-advance (unhappy), and count-line deepening on a mid-queue
+   arrival (1 of 2 → 1 of 3) with the presented ask unchanged.
+
+CHANGELOG wording tuned per review ("chronological" → first-seen order,
+the provider's standing semantics).
+
+## Verification (r1 head)
+
+- vitest `src/pages/ src/providers/ src/components/chat/` — 1061 green
+  (incl. 97 provider tests, 19 ChatPage.input tests).
+- Playwright `input-requests.spec.ts` — 14/14 (11 pre-existing + 3 new).
+- eslint + `tsc --noEmit` clean.
 
 ## Audit (mutation-verify suggestions)
 

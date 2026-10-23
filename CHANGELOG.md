@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card in the message stream, which on a phone viewport surfaced only
   the topmost card with no indication more were queued — and the stack
   orders newest-first, so the surfaced card was the NEWEST ask. Mobile
-  now presents ONE ask of each kind at a time, OLDEST first (the ask
-  the agent made first — chronological order, so answers cannot orphan
-  earlier asks), with a "Question 1 of N — answer to see the next"
+  now presents ONE ask of each kind at a time, the OLDEST pending
+  (first-seen order — the provider's standing semantics; asks seeded
+  from one fold snapshot now carry strictly-monotonic first-seen stamps
+  so same-batch asks can never tie and leak insertion order through the
+  newest-first sort), with a "Question 1 of N — answer to see the next"
   queue-depth line; answering or dismissing advances to the next ask
   automatically. Desktop rendering is unchanged.
 
