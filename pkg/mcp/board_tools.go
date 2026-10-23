@@ -175,7 +175,9 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 	mcp.WithDescription("Create a backlog task in an epic. The description (markdown) seeds the worker "+
 		"charter; acceptance criteria define Done (ALL met + evidence_url — ruling R2). Tags may carry "+
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
-		"the reconciler consumes; malformed anchors are inert tags, never guessed). depends_on adds "+
+		"the reconciler consumes; malformed anchors are inert tags, never guessed) and the delegated-review "+
+		"anchor review-of:<subject-short-id> (#1832 — a review task whose subject's done transition settles it: "+
+		"done when its criteria are ALL met, pending_input/drift_review when unmet). depends_on adds "+
 		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),

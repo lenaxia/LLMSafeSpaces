@@ -160,7 +160,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
-			err = s.doneCascade(ctx, tx, cur)
+			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
 
 	case from == StageInProgress && toStage == StagePendingInput:
@@ -190,7 +190,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
-			err = s.doneCascade(ctx, tx, cur)
+			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
 
 	case from == StageInReview && toStage == StagePendingInput:
@@ -228,18 +228,24 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	return res, postNudge, nil
 }
 
-// nudge is a deferred post-commit delivery (r1-C5: a rollback must never
-// emit it). Under the merged design's re-spawn semantics the delivery is
-// a SPAWN of the fresh worker that receives the token in its charter
-// (optionally aborting a superseded live session first — the interrupt
-// seam); there are no nudges to dead sessions anywhere.
+// nudge is the deferred post-commit side-effect carrier (r1-C5: a
+// rollback must never emit one). Under the merged design's re-spawn
+// semantics the delivery is a SPAWN of the fresh worker that receives
+// the token in its charter (optionally aborting a superseded live
+// session first — the interrupt seam); there are no nudges to dead
+// sessions anywhere. events carries nested settle events (the #1832
+// review-complete/park coupling) for post-commit SSE publication.
 type nudge struct {
 	taskID, token string
 	spawn         bool
 	abortAssignee string
+	events        []Event
 }
 
 func (n nudge) fire(ctx context.Context, s *Service) {
+	for _, evt := range n.events {
+		s.publishCommitted(evt)
+	}
 	if !n.spawn {
 		return
 	}
@@ -260,15 +266,22 @@ func (s *Service) doneGuard(t *Task, evidenceURL string) error {
 	return nil
 }
 
-// doneCascade: the reverse-edge unblock + the RC4 completion check, both
-// in the →done transaction.
-func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task) error {
+// doneCascade: the reverse-edge unblock + the RC4 completion check +
+// the #1832 review settle (the subject's anchored review tasks complete
+// or park with the transition), all in the →done transaction. The
+// settle's nested events ride the post-commit nudge for publication.
+func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceURL string, n *nudge) error {
 	if _, err := unblockDependents(ctx, txQ{tx}, t.ID, true); err != nil {
 		return err
 	}
 	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
 		return err
 	}
+	evts, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
+	if err != nil {
+		return err
+	}
+	n.events = append(n.events, evts...)
 	return nil
 }
 

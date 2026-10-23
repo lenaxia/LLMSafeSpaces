@@ -4975,7 +4975,11 @@ paths:
         ruling R2) and never blocks. Task `tags` may carry the explicit
         PR-drift anchor `pr:N` (owner ruling OR4 — the ONLY anchor form;
         pattern `^pr:[1-9][0-9]*$`, e.g. `pr:1234`; the reconciler never
-        free-text-guesses or scrapes URLs).
+        free-text-guesses or scrapes URLs) and the delegated-review
+        anchor `review-of:<subject-short-id>` (#1832 — when the subject
+        task reaches done, the engine settles this task: done when its
+        criteria are ALL met, pending_input/drift_review when unmet;
+        malformed anchors are inert, never guessed).
       operationId: createBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"

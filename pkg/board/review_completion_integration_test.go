@@ -23,10 +23,12 @@ import (
 //     form the engine consumes; malformed anchors are inert tags,
 //     never guessed);
 //   - every path that lands a task in done (manager move, approve
-//     verdict via moveStageTx, RC2 drift_done) also completes the
-//     subject's review tasks that are in_review (or parked
-//     pending_input/drift_review — the incident's exact shape) with
-//     ALL criteria met — the Done guard is never bypassed;
+//     verdict via moveStageTx, RC2 drift_done) settles the subject's
+//     review tasks: ALL criteria met → complete (audited transition +
+//     review_complete event); criteria UNMET → NEVER done — the
+//     in_review row parks pending_input/drift_review with a
+//     review_park event (the owner-guard ruling: stranded-in_review
+//     rots invisibly; the pending_input column is owner-visible).
 //   - the completion is engine-actor audited: a transition row plus a
 //     `review_complete` board event naming subject and evidence.
 
@@ -102,7 +104,7 @@ func (s *BoardSuite) TestReviewAuto_SubjectDoneByDriftCompletesReviewTask() {
 	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone))
 }
 
-func (s *BoardSuite) TestReviewAuto_CriteriaUnmetLeavesReview() {
+func (s *BoardSuite) TestReviewAuto_CriteriaUnmetParksForDecision() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -122,9 +124,14 @@ func (s *BoardSuite) TestReviewAuto_CriteriaUnmetLeavesReview() {
 	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/x", "")
 	s.Require().NoError(err)
 
-	require.Equal(s.T(), board.StageInReview, s.reloadTask(review.ID).Stage,
-		"the Done guard holds: unmet criteria are never bypassed by the engine")
-	require.Equal(s.T(), 0, s.countEvents("review_complete"))
+	parked := s.reloadTask(review.ID)
+	require.Equal(s.T(), board.StagePendingInput, parked.Stage,
+		"the owner-guard ruling: criteria-unmet review tasks NEVER auto-complete — they park owner-visibly")
+	require.NotNil(s.T(), parked.PendingOrigin)
+	require.Equal(s.T(), "drift_review", *parked.PendingOrigin)
+	require.Equal(s.T(), 0, s.countEvents("review_complete"), "no completion ever fired")
+	require.GreaterOrEqual(s.T(), s.countEvents("review_park"), 1, "the park is audited")
+	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StagePendingInput))
 }
 
 func (s *BoardSuite) TestReviewAuto_MalformedAnchorsInert() {
