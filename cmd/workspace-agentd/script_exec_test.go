@@ -261,3 +261,49 @@ func TestControlSocketScriptExec_TransportTyped(t *testing.T) {
 		t.Fatalf("dead supervisor must surface transport, got %+v", werr)
 	}
 }
+
+// --- #1878 review r2 F-B: the production composition roots are pinned ---
+
+// buildSidecarDeps must wire the scriptExecForwarder: its silent
+// deletion compiles, passes every hand-constructed-seam test, and
+// resurrects the pre-#1878 sidecar failure mode (script nodes dying in
+// the scratch container) — only this composition-root pin catches it
+// in per-PR CI.
+func TestSidecarDepsWireScriptExecForwarder(t *testing.T) {
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", &fakeRestartProc{})
+	go srv.serve()
+	deps := buildSidecarDeps(sidecarConfig{
+		password:    "wiring-pw",
+		adminToken:  "wiring-tok",
+		controlAddr: srv.addr(),
+	})
+	if deps.scriptExecForwarder == nil {
+		t.Fatal("buildSidecarDeps must wire deps.scriptExecForwarder (#1878) — nil restores the scratch-sidecar script failure mode")
+	}
+}
+
+// newSupervisorControlServer must wire the scriptExec engine with the
+// SESSION-env composition (base + live spawn delta — composeChild
+// parity). Delta parity is asserted by composing a delta var through
+// the engine's childEnv and finding it in the built environment.
+func TestSupervisorControlServerWiresScriptExecEngine(t *testing.T) {
+	adapter := &managedProcAdapter{currentDelta: map[string]string{"WT1878_WIRING_PROBE": "delta-parity"}}
+	srv, err := newSupervisorControlServer("127.0.0.1:0", adapter, nil)
+	if err != nil {
+		t.Fatalf("supervisor control server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.close() })
+	if srv.scriptExec == nil {
+		t.Fatal("newSupervisorControlServer must wire srv.scriptExec (#1878) — nil answers internal on every script_exec dispatch")
+	}
+	env := srv.scriptExec.childEnv()
+	found := false
+	for _, e := range env {
+		if e == "WT1878_WIRING_PROBE=delta-parity" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the engine's childEnv must compose the live spawn delta (session-env parity, composeChild composition); env: %v", env)
+	}
+}

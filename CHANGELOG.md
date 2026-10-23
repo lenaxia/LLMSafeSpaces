@@ -38,15 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   condition now covers every script-bearing, prompt-less shape.
 - **Failures are loud in every topology.** The `script_exec` closed
   error enum (`bad_request`, `script_env_unavailable`, `script_failed`,
-  `script_timeout`) maps 1:1 onto the workflow error envelope; a dead
+  `script_timeout`) maps onto the workflow error envelope with
+  fidelity (`bad_request` folds into `script_failed` — the local path's
+  deterministic-validation outcome, behavior parity); a dead
   supervisor surfaces `script_env_unavailable` naming the control
   socket; the #1812 gate carries script errors into the fire audit's
   `actionResult.gate.error` — never a silent `delivered`. The legacy
   pre-script leg was ErrorCode-blind (HTTP-200 error envelopes read as
-  success); it now fails the fire, accounts it, and records the cause
-  in `actionResult.script.error` (review F1 — without this, a failed
-  `script_path`-only trigger laundered to `delivered` + a failure-
-  counter reset).
+  success); it now fails the fire LOUD (error log + accounting), and
+  records the cause in `actionResult.script.error` without clobbering
+  an open gate's audited outcome (review F1/F-A/F-C — without this, a
+  failed `script_path`-only trigger laundered to `delivered` + a
+  failure-counter reset).
 - The #1455/#1812 nightly e2e contracts flip from "sidecar fails loud
   with `script_env_unavailable`" to "the script executes in BOTH
   modes" (marker + in-workspace side effect asserted). The execution

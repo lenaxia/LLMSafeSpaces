@@ -58,7 +58,12 @@ const (
 
 // Closed error-code enum (A.1/A.3 discipline — the upload_apply /
 // disk_recover set, script edition). Every failure maps onto the
-// workflow error envelope 1:1; nothing is swallowed.
+// workflow error envelope with fidelity: script_env_unavailable,
+// script_failed, and script_timeout keep their codes; bad_request (the
+// supervisor-side deterministic-validation class) surfaces as the
+// envelope's script_failed — behavior parity with the local path,
+// where scriptwrap's own validation errors ("unsupported language")
+// are script_failed too. Nothing is swallowed.
 const (
 	scriptExecErrBadRequest     = "bad_request"
 	scriptExecErrEnvUnavailable = "script_env_unavailable"

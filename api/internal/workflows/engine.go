@@ -926,10 +926,33 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			errMsg, _ := json.Marshal(map[string]string{"error": cause})
 			resultData = errMsg
 			resultStatus = "failed"
-			action, _ := json.Marshal(map[string]any{"script": map[string]string{"error": cause}})
-			_ = s.Store.UpdateTriggerFireAction(ctx, fireID, action)
+			// #1878 review r2 F-C: UpdateTriggerFireAction REPLACES the
+			// action payload — a trigger whose gate OPENED (its
+			// {gate:{proceed,vars}} already audited at the gate leg)
+			// must not have that outcome clobbered by the pre-script's
+			// failure, so the failure arm carries BOTH keys.
+			action := map[string]any{"script": map[string]string{"error": cause}}
+			if trigger.ScriptLanguage != "" {
+				// The gate leg only reaches here when it OPENED
+				// (closed/failed gates returned above), so the preserved
+				// outcome is reconstructible in-place: proceed=true plus
+				// its vars.
+				inner := map[string]any{"proceed": true}
+				if len(gateVars) > 0 {
+					inner["vars"] = gateVars
+				}
+				action["gate"] = inner
+			}
+			actionPayload, _ := json.Marshal(action)
+			if aerr := s.Store.UpdateTriggerFireAction(ctx, fireID, actionPayload); aerr != nil {
+				logger.Error(aerr, "routine: failed to record pre-script failure", "triggerId", trigger.ID, "fireId", fireID)
+			}
 			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
 			s.accountTriggerFailure(ctx, trigger)
+			// #1878 review r2 F-A: the arm is LOUD — a failed pre-script
+			// fire must leave a log line (the gate leg's fail-closed
+			// discipline, engine_gate.go), not only a DB row.
+			logger.Error(fmt.Errorf("%s", cause), "routine: pre-script failed — no LLM call", "triggerId", trigger.ID, "fireId", fireID)
 			return
 		}
 		if scriptResp.Output != nil {

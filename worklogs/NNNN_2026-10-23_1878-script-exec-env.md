@@ -103,6 +103,26 @@ here: script-only fires never reach `execAgentNode`.
       job failed 10 min prior (run 39909164886, scriptwrap node
       interpreter timeout) — the shared-runner contention window.
 
+- [x] review r2 (head df85d2e8, verdict on PR #1885): F-A fixed —
+      the pre-script failure arm logs the failure (errorOnlyLogger pin
+      TestExecuteRoutine_PreScriptFailure_LoudAndGatePreserved) and
+      logs (not swallows) the audit-write error; F-B fixed —
+      composition-root pins TestSidecarDepsWireScriptExecForwarder +
+      TestSupervisorControlServerWiresScriptExecEngine (the latter
+      asserts delta parity through the engine's childEnv); F-C fixed —
+      the failure arm carries BOTH keys ({gate:{proceed,vars}} from the
+      open gate + {script:{error}}; UpdateTriggerFireAction REPLACES);
+      F-D fixed — explicit bad_request→script_failed case (local-path
+      behavior parity, comment + CHANGELOG claim amended). r2's own
+      verdict: r1 F1 "properly fixed" + mutation-verified by the
+      reviewer; issue #1878 "FULLY ADDRESSED" (skeptical pass AGREES).
+      Note: r2's first delivery attempt failed mechanically (no
+      verdict delivered — quota window); rerun delivered at 08:13Z.
+      Secrets Integration board-subtest failures: reviewer-classified
+      CI noise (pkg/board untouched; the reviewer re-ran every lane
+      locally green at this head; same job failed on main + two
+      sibling branches in the window).
+
 ## Live-probe instructions (post-deploy verification — the orchestrator
 re-runs these against the DEPLOYED platform)
 

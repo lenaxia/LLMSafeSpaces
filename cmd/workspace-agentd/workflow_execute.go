@@ -262,6 +262,14 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 			case scriptExecErrTransport:
 				writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
 					fmt.Sprintf("cannot reach the workspace-container supervisor over the control socket (sidecar mode, #1878): %s — script nodes execute in the workspace container; the supervisor may be restarting", werr.Message))
+			case scriptExecErrBadRequest:
+				// Behavior parity with the LOCAL path: deterministic
+				// validation failures (unsupported language et al.)
+				// surface as script_failed there (scriptwrap's
+				// "unsupported language" error text) — the forwarded
+				// bad_request maps to the SAME envelope code, message
+				// verbatim.
+				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
 			default:
 				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
 			}

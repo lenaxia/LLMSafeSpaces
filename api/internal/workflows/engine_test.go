@@ -2459,3 +2459,50 @@ func TestExecuteRoutine_ScriptPathOnlyFailingScript_FailsLoud(t *testing.T) {
 	assert.Equal(t, 1, store.triggerFail["trig-1878-sp-fail"],
 		"the failure must count toward auto-disable (not laundered by a counter reset)")
 }
+
+// #1878 review r2 F-A/F-C: the pre-script failure arm is LOUD (an
+// error log line, the gate leg's fail-closed discipline) and its audit
+// write MERGES — a gate that OPENED keeps its audited outcome alongside
+// the script error (UpdateTriggerFireAction REPLACES; the arm carries
+// both keys).
+func TestExecuteRoutine_PreScriptFailure_LoudAndGatePreserved(t *testing.T) {
+	var errs []string
+	logger := &errorOnlyLogger{errs: &errs}
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-gate"] = "" // gate succeeds below via outputs
+	agentd.outputs["routine-gate"] = json.RawMessage(`{"proceed":true,"vars":{"topic":"t"}}`)
+	agentd.errCodes["routine-script"] = "script_failed"
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-r2", WorkspaceID: &wsID,
+		ScriptLanguage: "python", ScriptHandler: "def handler(input):\n    return {\"proceed\": True, \"vars\": {\"topic\": \"t\"}}",
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-r2", TriggerID: "trig-1878-r2", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: logger}
+	sched.executeRoutine(context.Background(), logger, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-r2"])
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent")
+
+	// F-A: the failure leaves a log line (not only a DB row).
+	assert.NotEmpty(t, errs, "a failed pre-script fire must log an error line (fail-loud contract)")
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "pre-script failed") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the failure log must name the pre-script failure, got %v", errs)
+
+	// F-C: the audit carries BOTH the open gate's outcome and the
+	// script error (REPLACE must not clobber the gate payload).
+	action := string(store.actions["fire-1878-r2"])
+	assert.Contains(t, action, `"gate"`, "the open gate's audited outcome must survive the pre-script failure")
+	assert.Contains(t, action, `"proceed":true`)
+	assert.Contains(t, action, `"script"`)
+	assert.Contains(t, action, "script failed: script_failed", "the script cause rides actionResult.script.error")
+}
