@@ -894,6 +894,19 @@ func (h *ProxyHandler) isSessionDeleted(workspaceID, sessionID string) bool {
 	return h.state().IsSessionDeleted(context.Background(), workspaceID, sessionID)
 }
 
+// DeletedSessionChecker exposes the handler's tombstone consult for the
+// session-index drainer (#1901 item c): the drainer runs in the
+// sessionindex service, which must not import the handler — the
+// returned closure resolves the LIVE state store per call, so it always
+// matches the store the delete routes tombstone through (in-memory
+// same-replica, or the Redis-backed cluster tombstone with its
+// fail-closed outage policy).
+func (h *ProxyHandler) DeletedSessionChecker() func(ctx context.Context, workspaceID, sessionID string) bool {
+	return func(ctx context.Context, workspaceID, sessionID string) bool {
+		return h.state().IsSessionDeleted(ctx, workspaceID, sessionID)
+	}
+}
+
 // RenameSessionInAgent sends a title update to the opencode agent running on
 // the workspace pod so that the agent's in-memory session title matches the
 // user-assigned title. Without this, the periodic title fetch (useSessionTitle

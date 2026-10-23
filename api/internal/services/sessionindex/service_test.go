@@ -61,6 +61,99 @@ func TestDrain_CallsUpsert(t *testing.T) {
 	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "sess-1", now)
 }
 
+// TestDrain_ShutdownFlushSkipsTombstonedSession — #1901 item (c): a
+// queued RecordMessage event whose session was user-deleted between
+// enqueue and drain must NOT re-mint the row. The drain's upsert is
+// row-creating with a #1850 phrase-bearing INSERT leg: applied
+// unconditionally it births a fresh VISIBLE row (deleted_at NULL — the
+// durable death mark died with the hard-deleted row; message_count ≥ 1
+// → DefaultReapGuard refuses → kept_for_operator forever, the #1882
+// ghost class at drain-race rate). The drain must consult the
+// tombstone seam and drop the event, observably (a counted skip).
+func TestDrain_ShutdownFlushSkipsTombstonedSession(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_live", mock.AnythingOfType("time.Time")).Return(nil)
+
+	svc := &Service{
+		db:     db,
+		queue:  make(chan recordEvent, 10),
+		closeC: make(chan struct{}),
+	}
+	svc.SetDeletedSessionChecker(func(ctx context.Context, workspaceID, sessionID string) bool {
+		return workspaceID == "ws-1" && sessionID == "ses_dead"
+	})
+
+	before := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("drain_skip_tombstoned"))
+	now := time.Now()
+	svc.queue <- recordEvent{workspaceID: "ws-1", sessionID: "ses_dead", at: now}
+	svc.queue <- recordEvent{workspaceID: "ws-1", sessionID: "ses_live", at: now}
+	close(svc.closeC)
+	svc.wg.Add(1)
+	svc.drain()
+
+	db.AssertNotCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_dead", mock.AnythingOfType("time.Time"),
+		"a tombstoned session's queued event must not re-mint the row")
+	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_live", now)
+	assert.Greater(t,
+		promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("drain_skip_tombstoned")),
+		before, "the tombstoned skip must be a queryable outcome")
+}
+
+// TestDrain_LiveLoopSkipsTombstonedSession — the same #1901 item (c)
+// invariant on the drainer's live leg (the queue-receive branch, not
+// the shutdown flush): the skip must hold while the service runs, not
+// only at shutdown.
+func TestDrain_LiveLoopSkipsTombstonedSession(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_live", mock.AnythingOfType("time.Time")).Return(nil)
+
+	svc := New(db, nil)
+	svc.SetDeletedSessionChecker(func(ctx context.Context, workspaceID, sessionID string) bool {
+		return sessionID == "ses_dead"
+	})
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	before := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("drain_skip_tombstoned"))
+	svc.RecordMessage("ws-1", "ses_dead", "", time.Now())
+	assert.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("drain_skip_tombstoned")) > before
+	}, 3*time.Second, 25*time.Millisecond, "the tombstoned event must be skipped (counted), not applied")
+
+	beforeApplied := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("applied"))
+	svc.RecordMessage("ws-1", "ses_live", "", time.Now())
+	assert.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("applied")) > beforeApplied
+	}, 3*time.Second, 25*time.Millisecond, "the live session's event must still apply")
+	// t.Cleanup Stops the drainer; both events are already processed
+	// (the two Eventually gates above), so the flush leg is empty and
+	// AssertNotCalled observes the whole drain.
+	db.AssertNotCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_dead", mock.AnythingOfType("time.Time"))
+}
+
+// TestDrain_NilCheckerKeepsPreFixSemantics — nil checker (unwired
+// construction) must degrade to the pre-#1901 apply-unconditionally
+// drain: the consult is an added guard, never a behavior change for
+// constructions that never wired it (the SetSessionOriginLister nil
+// precedent).
+func TestDrain_NilCheckerKeepsPreFixSemantics(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_dead", mock.AnythingOfType("time.Time")).Return(nil)
+
+	svc := &Service{
+		db:     db,
+		queue:  make(chan recordEvent, 10),
+		closeC: make(chan struct{}),
+	}
+
+	svc.queue <- recordEvent{workspaceID: "ws-1", sessionID: "ses_dead", at: time.Now()}
+	close(svc.closeC)
+	svc.wg.Add(1)
+	svc.drain()
+
+	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_dead", mock.AnythingOfType("time.Time"))
+}
+
 func TestListByWorkspace_DelegatesToDB(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	expected := []types.SessionListItem{

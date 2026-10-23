@@ -79,6 +79,24 @@ const (
 	SessionOriginAPI      = "api"
 )
 
+// SessionOriginKind discriminates a routine origin row's FATE (#1901
+// item a): the reap-side carrier bypass must admit ONLY rows the
+// platform itself deleted — a preserved session's mark (kind=session)
+// keeps the operator-review guard, because a harness store reset is
+// exactly the kept_for_operator scenario for it.
+const (
+	// SessionOriginKindCarrier: the session was an ephemeral carrier
+	// the platform deleted by policy (propagateCarrierDelete's
+	// transient mark). Its absence from the harness is platform policy,
+	// not a harness-store reset — reap-admissible past the history
+	// exception.
+	SessionOriginKindCarrier = "carrier"
+	// SessionOriginKindSession: the session SURVIVED its fire
+	// (recordRoutineSessionArtifacts' persistent mark — PreserveAlways,
+	// PreserveOnFailure-failed). NEVER reap-admitted past the guard.
+	SessionOriginKindSession = "session"
+)
+
 // NodeType enumerates the four v1 node types (design Node Type Specifications).
 const (
 	NodeTypeScript    = "script"

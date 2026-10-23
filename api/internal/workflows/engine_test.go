@@ -489,6 +489,10 @@ type mockSchedulerStore struct {
 	getTriggerByIDErr error
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
+	// originWrites records every RecordSessionOrigin call in order
+	// (#1901: carrier marks are cleaned post-effects; their Kind is
+	// only observable in the write history).
+	originWrites []*wf.SessionOriginRow
 	// originDeletes records DeleteSessionOrigin calls (#1882 carrier
 	// mark cleanup).
 	originDeletes   []string
@@ -670,6 +674,9 @@ func (m *mockSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.Sess
 		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
 	}
 	m.sessionOrigins[row.SessionID] = row
+	// #1901: keep the full write history — carrier marks are cleaned
+	// post-effects, so their Kind is only observable here.
+	m.originWrites = append(m.originWrites, row)
 	return nil
 }
 

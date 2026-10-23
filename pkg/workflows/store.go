@@ -19,6 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // ErrNotFound is returned by Get/Update/Delete when the row does not exist
@@ -1223,18 +1225,35 @@ type SessionOriginRow struct {
 	SessionID   string
 	WorkspaceID string
 	Origin      string
-	TriggerID   *string
-	FireID      *string
-	Title       string
-	CreatedAt   time.Time
+	// Kind is the #1901 reap discriminator: "carrier" (platform-deleted
+	// ephemeral — reap-admissible) vs "session" (survived its fire —
+	// keeps the operator-review guard). Zero value "" reads as the
+	// fail-safe "session" verdict at every consumer.
+	Kind      string
+	TriggerID *string
+	FireID    *string
+	Title     string
+	CreatedAt time.Time
+}
+
+// normalizedKind coerces an origin row's kind to a verdict value
+// (#1901): an unset Kind ("" — legacy callers, zero-value structs)
+// reads as the fail-safe 'session' (never reap-admitted), matching the
+// column DEFAULT's backfill semantics.
+func normalizedKind(k string) string {
+	if k == "" {
+		return types.SessionOriginKindSession
+	}
+	return k
 }
 
 func (s *Store) RecordSessionOrigin(ctx context.Context, row *SessionOriginRow) error {
+	kind := normalizedKind(row.Kind)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO session_origins (session_id, workspace_id, origin, trigger_id, fire_id, title, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (session_id) DO UPDATE SET origin = $3, trigger_id = $4, fire_id = $5, title = $6
-	`, row.SessionID, row.WorkspaceID, row.Origin,
+		INSERT INTO session_origins (session_id, workspace_id, origin, kind, trigger_id, fire_id, title, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (session_id) DO UPDATE SET origin = $3, kind = $4, trigger_id = $5, fire_id = $6, title = $7
+	`, row.SessionID, row.WorkspaceID, row.Origin, kind,
 		nullableStrPtr(row.TriggerID), nullableStrPtr(row.FireID),
 		row.Title, row.CreatedAt)
 	return err
@@ -1242,7 +1261,7 @@ func (s *Store) RecordSessionOrigin(ctx context.Context, row *SessionOriginRow) 
 
 func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*SessionOriginRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, workspace_id, origin, trigger_id, fire_id, title, created_at
+		SELECT session_id, workspace_id, origin, kind, trigger_id, fire_id, title, created_at
 		FROM session_origins WHERE workspace_id = $1
 		ORDER BY created_at DESC
 	`, workspaceID)
@@ -1253,12 +1272,40 @@ func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*
 	var out []*SessionOriginRow
 	for rows.Next() {
 		var r SessionOriginRow
-		if err := rows.Scan(&r.SessionID, &r.WorkspaceID, &r.Origin, &r.TriggerID, &r.FireID, &r.Title, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.SessionID, &r.WorkspaceID, &r.Origin, &r.Kind, &r.TriggerID, &r.FireID, &r.Title, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &r)
 	}
 	return out, rows.Err()
+}
+
+// ListCarrierOriginMarks returns the workspace's CARRIER-class origin
+// marks (#1901 item a): the session ids the platform itself deleted
+// (kind='carrier') — the ONLY class the reap bypass admits. Preserved
+// sessions' marks (kind='session') are invisible here BY CONTRACT, so
+// the blanket-bypass defect (a harness store reset reaping a preserved
+// session's history row) is unreachable through this seam. A pre-000046
+// row backfilled to the DEFAULT 'session' also reads unmarked — the
+// fail-safe direction.
+func (s *Store) ListCarrierOriginMarks(ctx context.Context, workspaceID string) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id FROM session_origins
+		WHERE workspace_id = $1 AND kind = 'carrier'
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	marks := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		marks[id] = true
+	}
+	return marks, rows.Err()
 }
 
 // DeleteSessionOrigin removes a session's origin row (#1882): the
