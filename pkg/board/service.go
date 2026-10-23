@@ -69,15 +69,20 @@ func WithPendingInputSource(src PendingInputSource) Option {
 // adapter. Safe for concurrent use (pgxpool arbitrates; Postgres is the
 // only scheduler state).
 type Service struct {
-	store      *Store
-	cfg        EngineConfig
-	failpoint  Failpoint
-	spawner    WorkerSpawner
-	asyncSpawn bool
-	driveQueue chan<- string
-	aborter    WorkerAborter
-	drift      PRDriftSource
-	pending    PendingInputSource
+	store          *Store
+	cfg            EngineConfig
+	failpoint      Failpoint
+	spawner        WorkerSpawner
+	reviewAssigner ReviewAssigner
+	asyncSpawn     bool
+	driveQueue     chan<- string
+	aborter        WorkerAborter
+	drift          PRDriftSource
+	pending        PendingInputSource
+	// turnEvidence is the #1832 WS4 stillborn guard's source: a
+	// session's actual message/output count. Nil = the guard is inert
+	// (today's timestamp-rule semantics).
+	turnEvidence TurnEvidenceSource
 	// messenger delivers halt/resume directives to in-flight workers
 	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
 	// authoritative; tests pin the nil-seam behavior).
@@ -194,13 +199,14 @@ func requireOwner(actor Actor, userID string) error {
 }
 
 // requireManagerAction enforces the #1747 manager-action scope on the
-// agent surface: the acting pod's resolved workspace must be the
-// project's target workspace (§4.4 caller-workspace binding extended to
-// manager rows — a pod manages ITS OWN workspace's board only). Manager
-// surfaces (REST/external MCP) scope by ownership alone (requireOwner,
-// R7); the engine never routes here.
+// agent surfaces (worker and manager-grade): the acting pod's resolved
+// workspace must be the project's target workspace (§4.4
+// caller-workspace binding extended to manager rows — a pod manages ITS
+// OWN workspace's board only). Manager surfaces (REST/external MCP)
+// scope by ownership alone (requireOwner, R7); the engine never routes
+// here.
 func requireManagerAction(actor Actor, p *Project) error {
-	if actor.Surface != SurfaceAgent {
+	if !isAgentSurface(actor.Surface) {
 		return nil
 	}
 	if actor.WorkspaceID == "" || actor.WorkspaceID != p.TargetWorkspaceID {
@@ -210,10 +216,10 @@ func requireManagerAction(actor Actor, p *Project) error {
 }
 
 // requireAgentWorkspaceTarget enforces the binding on CREATE (no project
-// row exists yet): on the agent surface the payload's target workspace
+// row exists yet): on the agent surfaces the payload's target workspace
 // must be the caller's resolved workspace.
 func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
-	if actor.Surface != SurfaceAgent {
+	if !isAgentSurface(actor.Surface) {
 		return nil
 	}
 	if actor.WorkspaceID == "" || actor.WorkspaceID != targetWorkspaceID {
@@ -325,9 +331,9 @@ func (s *Service) UpdateProject(ctx context.Context, actor Actor, projectID, sho
 			ws = p.TargetWorkspaceID
 		}
 		if ws != p.TargetWorkspaceID {
-			// #1747: the agent surface never retargets — a pod's board
+			// #1747: the agent surfaces never retarget — a pod's board
 			// targets its own workspace structurally.
-			if actor.Surface == SurfaceAgent {
+			if isAgentSurface(actor.Surface) {
 				return nil, &GuardError{Code: GuardWorkspaceBinding, Detail: "agent manager actions cannot retarget a project's workspace (ruling #1747)"}
 			}
 			var wsOwner string

@@ -191,6 +191,49 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	}
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	for _, id := range remove {
+		// #1850: the harness LIST is not a liveness authority — sessions
+		// created through the harness/Act path (exactly the
+		// create_session spawn class) can be live and readable by ID
+		// while the list omits them (#1452). A fresh spawn's row sits at
+		// message_count==0 for its whole (long) first turn, so two
+		// list-miss passes reaped LIVE sessions — the first
+		// turn-boundary event then re-registered the row and the
+		// registration seam minted a NEW phrase (the old phrase dead:
+		// sends to it failed, the session re-emitted flagged). Confirm
+		// gone by ID before deleting — the SessionExists precedent: the
+		// by-ID probe is immune to the list-visibility gap. ONLY the
+		// probe's definitive not-found verdict reaps; every other
+		// outcome (alive, transport/5xx error, or a sessionless 2xx
+		// answer) keeps the row — uncertainty never deletes.
+		alive, perr := h.probeSessionAliveByID(ctx, workspaceID, id)
+		gone := perr != nil && errors.Is(perr, agent.ErrSessionNotFound)
+		switch {
+		case perr == nil && alive:
+			// Live, list-invisible: presence. Keep the row (its phrase
+			// is the session's addressable identity — #1756 §1), reset
+			// the miss counter so the next absence starts a fresh count.
+			sessionindex.ReconcileOutcome("reap_vetoed_live")
+			h.logger.Info("session reconcile: reap vetoed — session live by ID, absent from the harness list (#1452 class)",
+				"workspaceID", workspaceID, "sessionID", id)
+			delete(next, id)
+			h.state().SetReconcileMisses(ctx, workspaceID, next)
+			continue
+		case gone:
+			// Definitive not-found verdict — fall through to the delete.
+		default:
+			// Indeterminate probe (transport/5xx error, or a sessionless
+			// 2xx answer — reachable: ParseSessionWire answers (session,
+			// nil) with an empty ID for empty 2xx bodies): defer to the
+			// next pass, counter pinned at threshold so the probe
+			// retries (the harness-error-never-reaps rule, applied to
+			// the confirmation itself).
+			sessionindex.ReconcileOutcome("reap_deferred_probe")
+			h.logger.Warn("session reconcile: reap deferred — by-ID probe indeterminate",
+				"workspaceID", workspaceID, "sessionID", id, "error", perr)
+			next[id] = reconcileMissThreshold
+			h.state().SetReconcileMisses(ctx, workspaceID, next)
+			continue
+		}
 		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
 			sessionindex.ReconcileOutcome("delete_failed")
 			// Pin the counter at threshold: a failed delete retries on
@@ -205,7 +248,25 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
+	// #1850 truthfulness split (review r1's robustness nit): the kept
+	// population is TWO populations with different meanings —
+	// history-bearing rows the guard held for operator review, and
+	// fresh count-zero rows sheltered by the spawn-window grace (NOT
+	// history-bearing; count 0). One "history-bearing" metric+log for
+	// both conflated them. The row lookup re-derives which is which;
+	// a kept id missing from the lookup keeps the operator-review
+	// classification (never worse than the old single bucket).
+	byInternal := make(map[string]types.SessionListItem, len(rows))
+	for _, row := range rows {
+		byInternal[row.InternalID] = row
+	}
 	for _, id := range keptForOperator {
+		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
+			sessionindex.ReconcileOutcome("kept_spawn_window")
+			h.logger.Warn("session reconcile: spawn-window grace kept fresh row (not a ghost until the grace lapses)",
+				"workspaceID", workspaceID, "sessionID", id)
+			continue
+		}
 		// #1340 triage guard: history-bearing rows the harness reports
 		// gone are NOT auto-deleted — metric + Warn for operator review
 		// (a vanished session with history may indicate a harness store
@@ -217,6 +278,26 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 
 	h.backfillShortIDs(ctx, workspaceID, rows)
 	h.rebuildMessageCounts(ctx, workspaceID, rows, presentSet)
+}
+
+// probeSessionAliveByID is the #1850 reap confirmation: the by-ID
+// existence probe (the send_message SessionExists precedent — immune
+// to the #1452 harness list-visibility gap). A found session reports
+// alive; an adapter not-found verdict reports !alive with the typed
+// error the caller matches as the ONE definitive gone-verdict; every
+// other outcome — transport/5xx errors, or a sessionless 2xx answer
+// (nil session / empty ID with nil error, which ParseSessionWire
+// produces for empty 2xx bodies) — is indeterminate and the caller
+// DEFERS (uncertainty never deletes).
+func (h *ProxyHandler) probeSessionAliveByID(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if s == nil || s.ID == "" {
+		return false, nil
+	}
+	return true, nil
 }
 
 // shortIDBackfillBudget bounds the short-id mint pass (design 0066

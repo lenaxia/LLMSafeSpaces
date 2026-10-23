@@ -282,6 +282,19 @@ test.describe("User-message history navigation (real browser)", () => {
     await expect(textarea).toHaveValue("my draft");
   });
 
+  // #1846 (r1): the issue's exact repro in a real browser. pressSequentially
+  // (not fill()) leaves the caret at the typed end — the guard must refuse
+  // recall there; note this closes only the single-line negative case (the
+  // multi-line fill() limitation documented below still applies).
+  test("Up at the end of a single-line draft does NOT replace the draft (#1846)", async ({ page }) => {
+    await gotoChat(page);
+    const textarea = page.getByPlaceholder("Type a message...");
+    await textarea.click();
+    await textarea.pressSequentially("my important draft"); // caret at end
+    await textarea.press("ArrowUp");
+    await expect(textarea).toHaveValue("my important draft");
+  });
+
   // Note: a "Up in the middle of a multi-line draft does NOT navigate" test
   // would close the loop on cursor-gating, but Playwright's fill() truncates
   // multi-line values in some environments, and the controlled-textarea
