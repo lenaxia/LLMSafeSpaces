@@ -17,11 +17,21 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
+// DeletedSessionChecker reports whether a (workspace, session) pair is
+// tombstoned — deleted recently enough that late-arriving writes must
+// not re-mint its index row (#1901 item c). Satisfied in production by
+// the wsstate store's IsSessionDeleted (in-memory same-replica, or the
+// Redis-backed cluster-wide tombstone with its fail-closed outage
+// policy: during a Redis outage the checker answers true and the
+// drainer suppresses re-mints — data integrity over availability, the
+// existing worklog-371 posture extended to the drain).
+type DeletedSessionChecker func(ctx context.Context, workspaceID, sessionID string) bool
+
 // sessionIndexEvents counts the write path's outcomes (#754 fold-in via
 // #1340): queue drops were previously Warn-log-only — not queryable.
 var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_events_total",
-	Help: "Session-index write outcomes by kind (queued, applied, db_error, dropped_queue_full).",
+	Help: "Session-index write outcomes by kind (queued, applied, db_error, dropped_queue_full, drain_skip_tombstoned).",
 }, []string{"outcome"})
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
@@ -33,10 +43,12 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // (#1850 via #1881: fresh count-zero rows sheltered by the reap grace —
 // not history-bearing, a distinct population from kept_for_operator,
 // split so the metric never conflates them), delete_failed,
-// reaped_carrier (#1882: the reaped row was session_origins-marked — a
-// platform routine carrier admitted past the history exception and the
+// reaped_carrier (#1882 via #1901: the reaped row carried a
+// CARRIER-class origin mark — kind='carrier', a platform-deleted
+// routine ephemeral admitted past the history exception and the
 // spawn-window grace; a carrier's absence is platform policy, not
-// harness-list lag); the count rebuild's count_pass_ran (the #1880 r2
+// harness-list lag; preserved sessions' marks — kind='session' — can
+// never reach this outcome); the count rebuild's count_pass_ran (the #1880 r2
 // denominator — a pass whose count leg executed with a live
 // present-set; sidebar traffic without it means the pass is never
 // scheduled, the issue's third skip class), count_rebuilt /
@@ -79,6 +91,13 @@ type Service struct {
 	registerLRU *list.List // front = most recent
 	registerMap map[string]*list.Element
 	registerCap int
+
+	// deletedChecker is the #1901 item-c tombstone consult for the
+	// drain: a queued RecordMessage event whose session was deleted
+	// between enqueue and drain must not re-mint the row (the #1850
+	// phrase-bearing INSERT leg births a fresh visible ghost). Nil (or
+	// never set) disables the consult — pre-#1901 drain semantics.
+	deletedChecker DeletedSessionChecker
 }
 
 // registeredPair is one LRU entry.
@@ -210,6 +229,14 @@ func (s *Service) Stop() error {
 		s.logger.Info("SessionIndexService stopped")
 	}
 	return nil
+}
+
+// SetDeletedSessionChecker wires the #1901 item-c drain-time tombstone
+// consult. Nil (or never called) disables it — the drainer keeps its
+// pre-#1901 apply-unconditionally semantics. Must be called before
+// Start (the drainer reads the field unsynchronized).
+func (s *Service) SetDeletedSessionChecker(c DeletedSessionChecker) {
+	s.deletedChecker = c
 }
 
 // RecordMessage is non-blocking: pushes to a bounded channel.
@@ -428,6 +455,10 @@ func (s *Service) drain() {
 		select {
 		case ev := <-s.queue:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if s.tombstoned(ctx, ev) {
+				cancel()
+				continue
+			}
 			if err := s.db.UpsertSessionMessage(ctx, ev.workspaceID, ev.sessionID, ev.at); err != nil {
 				sessionIndexEvents.WithLabelValues("db_error").Inc()
 				if s.logger != nil {
@@ -442,6 +473,10 @@ func (s *Service) drain() {
 			for len(s.queue) > 0 {
 				ev := <-s.queue
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if s.tombstoned(ctx, ev) {
+					cancel()
+					continue
+				}
 				if err := s.db.UpsertSessionMessage(ctx, ev.workspaceID, ev.sessionID, ev.at); err != nil {
 					if s.logger != nil {
 						s.logger.Warn("Failed to flush session message on shutdown", "error", err, "workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
@@ -452,4 +487,22 @@ func (s *Service) drain() {
 			return
 		}
 	}
+}
+
+// tombstoned is the #1901 item-c drain-time consult: a queued event
+// whose session the platform deleted between enqueue and drain must be
+// DROPPED, not applied — UpsertSessionMessage is row-creating with a
+// #1850 phrase-bearing INSERT leg, so applying it re-mints a fresh
+// VISIBLE row under a new phrase (deleted_at NULL: the durable death
+// mark died with the hard-deleted row; message_count ≥ 1 →
+// DefaultReapGuard refuses → the kept_for_operator ghost of #1882, at
+// drain-race rate). The skip is a queryable outcome, never silent. A
+// nil checker (unwired construction) keeps the pre-#1901
+// apply-unconditionally semantics.
+func (s *Service) tombstoned(ctx context.Context, ev recordEvent) bool {
+	if s.deletedChecker == nil || !s.deletedChecker(ctx, ev.workspaceID, ev.sessionID) {
+		return false
+	}
+	sessionIndexEvents.WithLabelValues("drain_skip_tombstoned").Inc()
+	return true
 }

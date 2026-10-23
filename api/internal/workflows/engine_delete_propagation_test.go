@@ -306,6 +306,58 @@ func TestExecuteRoutine_RetryAttempts_CarriersPropagateSeparately(t *testing.T) 
 		"each carrier's origin mark is cleaned")
 }
 
+// TestExecuteRoutine_OriginKind_DiscriminatesFate is the #1901 item-a
+// discriminator pin: the two origin writers must record the session's
+// FATE. propagateCarrierDelete (agentd-reported-deleted ephemerals)
+// writes kind=carrier — reap-admissible (its absence from the harness
+// is platform policy). recordRoutineSessionArtifacts (sessions that
+// SURVIVED the fire) writes kind=session — NEVER reap-admitted past
+// the operator-review guard: a harness store reset is exactly the
+// kept_for_operator scenario for a preserved session. Pre-#1901 both
+// wrote the same undiscriminated mark, so the blanket bypass could
+// reap a preserved session's history row.
+func TestExecuteRoutine_OriginKind_DiscriminatesFate(t *testing.T) {
+	// Leg 1 — ephemeral carrier (PreserveNever + deletedSessionId):
+	// the transient mark must be kind=carrier.
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":""}`)
+	agentd.deletedSessionIDs["routine-agent"] = "ses_kind_carrier"
+	effects := &recordingDeleteEffects{}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-kind1", Name: "Watch", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
+	fire := &wf.TriggerFireRow{ID: "fire-kind1", TriggerID: "trig-kind1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		DeleteEffects: effects}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "delivered", store.statuses["fire-kind1"])
+	require.Len(t, store.originWrites, 1, "the carrier's transient mark must be recorded (pre-cleanup)")
+	require.Equal(t, types.SessionOriginKindCarrier, store.originWrites[0].Kind,
+		"a platform-deleted ephemeral carrier's mark must be kind=carrier (reap-admissible)")
+
+	// Leg 2 — preserved session (PreserveAlways): the persistent mark
+	// must be kind=session.
+	store2 := newMockSchedulerStore()
+	agentd2 := newMockAgentd()
+	agentd2.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_kind_preserved"}`)
+	wsID2 := "ws-1"
+	trigger2 := &wf.TriggerRow{ID: "trig-kind2", Name: "Weather Bot", WorkspaceID: &wsID2, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveAlways}
+	fire2 := &wf.TriggerFireRow{ID: "fire-kind2", TriggerID: "trig-kind2", InputEnvelope: json.RawMessage(`{}`)}
+	sched2 := &Scheduler{Store: store2, Activator: &mockActivator{}, AgentdClient: agentd2, Logger: noopLogger{}}
+
+	sched2.executeRoutine(context.Background(), noopLogger{}, trigger2, fire2)
+
+	require.Equal(t, "delivered", store2.statuses["fire-kind2"])
+	preserved, ok := store2.sessionOrigins["ses_kind_preserved"]
+	require.True(t, ok, "the preserved session's mark must persist")
+	require.Equal(t, types.SessionOriginKindSession, preserved.Kind,
+		"a survived fire's mark must be kind=session (never reap-admitted past the guard)")
+}
+
 // TestExecuteNode_SupersededAttemptCleanup_PropagatesEffects: the DAG
 // node-retry authorized delete (#1476) must run the delete effects —
 // before #1882 the cleaned orphan's index row lingered as a ghost.

@@ -83,11 +83,13 @@ type ProxyHandler struct {
 	// (nil = resolution disabled: every ref passes through and 404s
 	// stay suggestion-free — the pre-rollout behavior byte-for-byte).
 	sessionRefs sessionindex.RefResolver
-	// sessionOriginLister feeds the #1882 carrier reap-guard bypass:
-	// session_origins-marked routine sessions absent at the harness are
-	// reaped even with history (the harness-store-reset rationale does
-	// not apply to platform carriers). Nil = no marks = DefaultReapGuard
-	// semantics only.
+	// sessionOriginLister feeds the #1901 carrier reap-guard bypass:
+	// CARRIER-class origin-marked routine sessions (kind='carrier' —
+	// platform-deleted ephemerals) absent at the harness are reaped
+	// even with history (the harness-store-reset rationale does not
+	// apply to platform carriers). Preserved sessions' marks
+	// (kind='session') are invisible through the seam. Nil = no marks =
+	// DefaultReapGuard semantics only.
 	sessionOriginLister SessionOriginLister
 	userBroker          *eventbroker.UserEventBroker
 	sessionParents      *sessionParentCache

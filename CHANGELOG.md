@@ -69,6 +69,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage) prevent vacuous passes. Red pin `733bce3d` (guard alone:
   1 failed, 55 passed — failing exactly on the dow 8), green
   `6d9a5aa3` (56 passed).
+### Fixed — carrier-reap follow-ons: kind discriminator, drain tombstone visibility, restart posture (#1901)
+
+- **The #1882 carrier reap bypass now admits ONLY platform-deleted
+  carriers.** The blanket "any `session_origins` mark admits a
+  history-bearing row past the reap guard" verdict could not tell an
+  ephemeral carrier (reap-admissible: its absence from the harness is
+  platform policy) from a PRESERVED session's persistent mark
+  (`preserveSession: always` / `on_failure`-failed) — a harness store
+  reset would have reaped the preserved session's history row, the
+  exact `kept_for_operator` scenario for it. Migration 000046 adds
+  `session_origins.kind` (`'carrier' | 'session'`, DEFAULT `'session'`
+  — the fail-safe backfill: stale pre-migration carrier marks stop
+  being reaped rather than risk wrong deletion); the engine records
+  the session's fate at mark time (`propagateCarrierDelete` →
+  carrier, `recordRoutineSessionArtifacts` → session) and the store's
+  carrier-marks lookup feeds both reap paths (reconcile plan +
+  read-path) — preserved marks are unreachable at the guard.
+- **The session-index drainer no longer re-mints deleted sessions'
+  rows.** A queued message-count event whose session was deleted
+  between enqueue and drain previously applied unconditionally: the
+  phrase-bearing INSERT leg birthed a fresh visible ghost row
+  (`message_count ≥ 1` → reaped never — the #1882 harm at drain-race
+  rate). The drain now consults the wsstate tombstone (both legs —
+  live and shutdown flush; nil-unwired keeps pre-fix semantics) and
+  drops tombstoned events as a queryable
+  `session_index_events_total{outcome="drain_skip_tombstoned"}`
+  outcome; the consult inherits the Redis store's fail-closed outage
+  posture (an outage suppresses re-mints rather than minting).
+- **Restart posture pinned.** API restarts wipe the in-memory
+  tombstones and the known-registered LRU; a late pod event can
+  re-mint a dead carrier's row (accepted per the store's design). The
+  durable `kind='carrier'` mark survives the restart and the reconcile
+  reaps the re-born row — the converging backstop, now pinned.
 
 ### Fixed — session_index.message_count drift to 0 on live sessions: listing serve-through, loud skips, and rebuild rotation (#1880)
 

@@ -29,17 +29,35 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
-// stubOriginLister feeds the #1882 carrier-mark lookup.
+// stubOriginLister feeds the #1901 carrier-mark lookup (carrier-class
+// ids only — the seam's contract).
 type stubOriginLister struct {
-	marks map[string]string // sessionID → origin
+	marks map[string]bool // carrier-class session ids
 	err   error
 }
 
-func (s *stubOriginLister) ListSessionOrigins(_ context.Context, _ string) (map[string]string, error) {
+func (s *stubOriginLister) ListCarrierOriginMarks(_ context.Context, _ string) (map[string]bool, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.marks, nil
+}
+
+// TestDeletedSessionChecker_ReflectsLiveStateStore — #1901 item (c)
+// wiring contract: the drainer's tombstone consult is exposed as a
+// closure that must resolve the LIVE state store per call (a checker
+// captured against a pre-swap store would silently miss every
+// tombstone after a SetStateStore swap — the redis-migration class).
+func TestDeletedSessionChecker_ReflectsLiveStateStore(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	checker := h.DeletedSessionChecker()
+
+	assert.False(t, checker(context.Background(), "ws-1", "ses_x"),
+		"no tombstone → the consult must answer false (event applies)")
+
+	h.state().MarkSessionDeleted(context.Background(), "ws-1", "ses_x")
+	assert.True(t, checker(context.Background(), "ws-1", "ses_x"),
+		"the closure must see the live store's tombstone (event dropped)")
 }
 
 // TestApplySessionDeleteEffects_EmitsAllEffects pins the engine-facing
@@ -97,8 +115,8 @@ func TestHardDeleteSession_UserRouteMarksDeletedAt(t *testing.T) {
 // not-found).
 func TestSessionIndexReconcile_OriginMarkedCarrierReaped(t *testing.T) {
 	h, idx := reconcileTestHandler(t, map[string]bool{"ses_alive": true}, nil)
-	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]string{
-		"ses_carrier": "routine",
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_carrier": true,
 	}})
 	idx.seedRow("ws-1", "ses_alive")
 	idx.seedRowCounted("ws-1", "ses_carrier", 7) // history-bearing: DefaultReapGuard refuses
@@ -116,14 +134,50 @@ func TestSessionIndexReconcile_OriginMarkedCarrierReaped(t *testing.T) {
 		"the carrier reap is observable (reaped_carrier outcome)")
 }
 
+// TestSessionIndexReconcile_PreservedSessionMarkNotAdmitted is the
+// #1901 item-b invariant: a PRESERVED routine session (its persistent
+// origin mark, kind='session — invisible through the carrier-marks
+// seam BY CONTRACT) absent at the harness keeps the operator-review
+// guard. A harness store reset is exactly the kept_for_operator
+// scenario for it — the blanket bypass (pre-#1901: every
+// session_origins mark admitted) would have reaped its history row.
+// The carrier in the same pass still reaps: one workspace, two fates,
+// one discriminator.
+func TestSessionIndexReconcile_PreservedSessionMarkNotAdmitted(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
+	// Carrier-class marks: ONLY the carrier. The preserved session's
+	// origin row exists (kind='session') but never appears here.
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_carrier": true,
+	}})
+	idx.seedRowCounted("ws-1", "ses_carrier", 7)    // history-bearing carrier: policy-deleted
+	idx.seedRowCounted("ws-1", "ses_preserved", 11) // history-bearing preserved: store-reset candidate
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{
+		"ses_carrier":   1,
+		"ses_preserved": 1,
+	})
+
+	keptBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("kept_for_operator"))
+
+	runReconcile(t, h, "ws-1") // miss 2 for both rows
+	runReconcile(t, h, "ws-1")
+
+	assert.True(t, idx.deletedTree["ws-1/ses_carrier"],
+		"the carrier-class mark still admits the carrier's reap")
+	assert.NotContains(t, idx.deletedTree, "ws-1/ses_preserved",
+		"a preserved session's mark must NEVER admit its row past the guard (#1901 b)")
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("kept_for_operator")), keptBefore,
+		"the preserved row surfaces kept_for_operator — the operator-review signal")
+}
+
 // TestSessionIndexReconcile_OriginMarkedCarrier_ProbeVetoStillApplies:
 // the #1865 semantics are unchanged for marked rows — a live-by-ID
 // verdict vetoes the reap (the #1452 list-visibility gap protects
 // platform carriers exactly as it protects spawns).
 func TestSessionIndexReconcile_OriginMarkedCarrier_ProbeVetoStillApplies(t *testing.T) {
 	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
-	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]string{
-		"ses_carrier_live": "routine",
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_carrier_live": true,
 	}})
 	h.adapter.(*mockAdapter).getSessionFn = func(_ context.Context, _, _, sid string) (*session.Session, error) {
 		return &session.Session{ID: sid}, nil // alive by ID
@@ -154,6 +208,40 @@ func TestSessionIndexReconcile_OriginListerError_FailsSafe(t *testing.T) {
 	assert.Empty(t, idx.deletedTree, "an origins lookup failure must not admit history-bearing rows")
 }
 
+// TestSessionIndexReconcile_RestartRebornCarrierRow_Converges is the
+// #1901 item-(d) posture pin: an API restart wipes the in-memory
+// wsstate tombstones AND the known-registered LRU, so a late pod event
+// for an already-deleted carrier re-mints its index row (nothing
+// same-replica remains to stop it — accepted per the store's design).
+// The CONVERGING BACKSTOP is the (a) reap net: the carrier's durable
+// kind='carrier' origin mark survives the restart (it lives in
+// session_origins, not memory), and the reconcile reaps the re-born
+// row despite the tombstone being gone.
+func TestSessionIndexReconcile_RestartRebornCarrierRow_Converges(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil) // harness: the carrier is gone
+	// Post-restart state: the durable carrier mark SURVIVES (DB-backed);
+	// the tombstone map died with the old process.
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_reborn": true,
+	}})
+	assert.False(t, h.isSessionDeleted("ws-1", "ses_reborn"),
+		"restart-wiped tombstones: no same-replica suppression remains (the accepted posture)")
+
+	// The late pod event re-mints the row: message history from the
+	// carrier's brief turn — DefaultReapGuard alone would refuse it.
+	idx.seedRowCounted("ws-1", "ses_reborn", 1)
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_reborn": 1})
+
+	reapedCarriersBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_carrier"))
+	runReconcile(t, h, "ws-1") // miss 2 → carrier mark admits → probe confirms gone
+	runReconcile(t, h, "ws-1")
+
+	assert.True(t, idx.deletedTree["ws-1/ses_reborn"],
+		"the re-born carrier row must converge via the carrier-kind reap net (the (d) backstop)")
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_carrier")), reapedCarriersBefore,
+		"the convergence is observable as reaped_carrier")
+}
+
 // TestReapSessionIfGone_OriginMarkedCarrierReaped: the READ-path reap
 // (the owner's click on a ghost) admits origin-marked carriers with
 // history — the row is reaped and the typed 410 answers sessionGoneReaped
@@ -163,8 +251,8 @@ func TestReapSessionIfGone_OriginMarkedCarrierReaped(t *testing.T) {
 	idx.seedRowCounted("ws-1", "ses_ghost_carrier", 4) // history: guard alone refuses
 	h := newProxyHandlerForAdapterTest(t)
 	h.sessionIndex = idx
-	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]string{
-		"ses_ghost_carrier": "routine",
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_ghost_carrier": true,
 	}})
 	h.adapter = &mockAdapter{
 		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
