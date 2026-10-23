@@ -37,8 +37,9 @@ func (r *recordingSessionIndex) RecordMessage(_, _, _ string, _ time.Time) {}
 func (r *recordingSessionIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
-func (r *recordingSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
-func (r *recordingSessionIndex) DeleteSession(_ context.Context, _, _ string) error  { return nil }
+func (r *recordingSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error     { return nil }
+func (r *recordingSessionIndex) MarkSessionDeleted(_ context.Context, _, _ string) error { return nil }
+func (r *recordingSessionIndex) DeleteSession(_ context.Context, _, _ string) error      { return nil }
 func (r *recordingSessionIndex) UpsertTitle(_ context.Context, _, sessionID, title string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

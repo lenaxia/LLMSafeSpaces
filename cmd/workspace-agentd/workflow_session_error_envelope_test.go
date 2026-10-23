@@ -23,25 +23,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// envelopeOutcome decodes the full workflow envelope: error fields and
-// the first-class sessionId, plus the success output payload.
+// envelopeOutcome decodes the full workflow envelope: error fields,
+// the first-class sessionId, the #1882 deletedSessionId, and the
+// success output payload.
 type envelopeOutcome struct {
-	ErrorCode string
-	Detail    string
-	SessionID string
-	Output    map[string]any
+	ErrorCode        string
+	Detail           string
+	SessionID        string
+	DeletedSessionID string
+	Output           map[string]any
 }
 
 func decodeEnvelope(t *testing.T, w *httptest.ResponseRecorder) envelopeOutcome {
 	t.Helper()
 	var resp struct {
-		Output    json.RawMessage `json:"output"`
-		ErrorCode string          `json:"errorCode"`
-		Detail    string          `json:"detail"`
-		SessionID string          `json:"sessionId"`
+		Output           json.RawMessage `json:"output"`
+		ErrorCode        string          `json:"errorCode"`
+		Detail           string          `json:"detail"`
+		SessionID        string          `json:"sessionId"`
+		DeletedSessionID string          `json:"deletedSessionId"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	out := envelopeOutcome{ErrorCode: resp.ErrorCode, Detail: resp.Detail, SessionID: resp.SessionID}
+	out := envelopeOutcome{ErrorCode: resp.ErrorCode, Detail: resp.Detail, SessionID: resp.SessionID, DeletedSessionID: resp.DeletedSessionID}
 	if len(resp.Output) > 0 {
 		require.NoError(t, json.Unmarshal(resp.Output, &out.Output))
 	}

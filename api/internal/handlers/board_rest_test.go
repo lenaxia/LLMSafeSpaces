@@ -53,6 +53,10 @@ type fakeBoardManager struct {
 	lastVerdictInput board.VerdictInput
 	verdicts         []board.Verdict
 
+	// #1832 WS2: the manager move-stage capture arms.
+	lastMoveStageTo       string
+	lastMoveStageEvidence string
+
 	errFor map[string]error
 
 	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
@@ -395,12 +399,24 @@ func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, i
 func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, idOrShort, toStage, evidenceURL, requestID string) (*board.Task, error) {
 	f.call("move_stage")
 	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastMoveStageTo, f.lastMoveStageEvidence = toStage, evidenceURL
 	_ = idOrShort
-	_ = evidenceURL
 	if err := f.errFor["move_stage"]; err != nil {
 		return nil, err
 	}
 	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: toStage, Tags: []string{}}, nil
+}
+
+// RearmTask is the #1832 WS3 capture (re-pool an escalated row).
+func (f *fakeBoardManager) RearmTask(_ context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error) {
+	f.call("rearm_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	_ = taskID
+	_ = shortIDOrID
+	if err := f.errFor["rearm_task"]; err != nil {
+		return nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Attempts: 0, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _, idOrShort string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
@@ -506,6 +522,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.POST("/:id/verdict", h.RecordTaskVerdict)
 	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
+	k.POST("/:id/rearm", h.RearmTask)
 	k.POST("/:id/pause", h.PauseTask)
 	k.POST("/:id/resume", h.ResumeTask)
 	k.DELETE("/:id", h.DeleteTask)

@@ -26,13 +26,28 @@ name: Worklog Renumbering
 #
 #   workflow_dispatch: manual trigger for operators (rare).
 #
-# Race safety: partial — GitHub serializes merge commits, so the common
-# case is sequential (each run sees the previous renumbered state), and
-# the [skip ci] in the auto-commit message prevents an infinite loop.
-# NOT atomic across the lag window (#1795): two merges landing between
-# numbering runs can each draw the same next-free number — the repolint
-# uniqueness invariant reddens CI on the duplicate, and the next bot
-# run (or a manual renumber) heals it.
+# Race safety (#1838): SERIALIZED + tip-based + CAS retry.
+#   - The concurrency group below queues runs (never cancels an
+#     in-flight one) — at most ONE numbering pass executes at a time,
+#     so two merges inside one bot-lag window can no longer each draw
+#     the same next-free number from concurrent snapshots (the 1161x2 /
+#     1164x2 mechanism).
+#   - The checkout uses ref: main, not the triggering SHA: a queued run
+#     always numbers the CURRENT tip, including whatever the previous
+#     run's numbering commit just landed.
+#   - The push is a compare-and-swap: main's fast-forward check IS the
+#     lock. If main advanced between fetch and push, the push is
+#     rejected; the retry loop rebases onto the new tip, re-runs the
+#     fix pass (the interleaved merge may have added new sentinels),
+#     amends, and pushes again (≤3 attempts). Git's tip is the CAS
+#     register — no separate manifest file to conflict or drift.
+#   - The assignment itself skips numbers claimed by OPEN PRs
+#     (repolint's open-claims discovery, same #1838): a number held by
+#     a pushed-but-unmerged branch is not free, which is what closed
+#     the 1173x2 / 1175x2 branch-vs-branch class.
+#   - The #1807 uniqueness invariant remains the detection net for the
+#     degraded mode (offline/gh-less environments) and the numbering-gate
+#     workflow reddens stale merge trees before they merge.
 
 on:
   push:
@@ -45,9 +60,22 @@ on:
     - cron: '17 */6 * * *'
   workflow_dispatch:
 
+# Serialize ALL numbering passes. cancel-in-progress: false — a queued
+# run must never cancel an in-flight numbering commit.
+concurrency:
+  group: worklog-renumber
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
+  # actions:write lets the numbering pass dispatch the numbering-gate
+  # sweep after pushing (r1 review): this commit carries [skip ci], so
+  # the sweep's push trigger skips it — in the degraded mode (gh
+  # discovery unavailable here) the numbering above may have minted a
+  # number an open sibling PR holds, and the dispatched sweep is what
+  # detects that within minutes instead of at the 6h cron.
+  actions: write
 
 jobs:
   renumber:
@@ -55,8 +83,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ref: main (#1838): number the CURRENT tip, not the triggering
+      # SHA. A queued run (see the concurrency group) must see the
+      # previous run's numbering commit — checking out a stale merge
+      # SHA here is exactly how two runs minted 1164 twice.
       - uses: actions/checkout@v6
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -70,13 +103,21 @@ jobs:
 
       - name: Assign numbers to NNNN_ worklogs and fix collisions
         id: autofix
+        env:
+          MERGE_SUBJECT: ${{ github.event.head_commit.message }}
+          # GH_TOKEN powers repolint's open-claims discovery (#1838):
+          # the numbering pass skips numbers held by open PRs. Without
+          # it (or offline) discovery degrades to nil — same behavior
+          # as before #1838 — and the uniqueness net stays as backstop.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Capture the PR number from the CURRENT HEAD (the merge commit)
-          # before we commit any renames below. After the commit+push, HEAD
-          # becomes the bot's own commit ("chore(repolint): ..."), which has
-          # no PR number. On the cron path the HEAD may already be the bot's
-          # own previous commit, so PR_NUM will be empty — the comment step
-          # tolerates that.
+          # Capture the PR number from the MERGE COMMIT that triggered
+          # this run — BEFORE any rebase below rewrites HEAD. Because
+          # the checkout is ref: main (not the triggering SHA), HEAD is
+          # the tip (possibly other merges' commits), so the subject
+          # comes from the push event's head_commit. On the cron and
+          # dispatch paths it is empty — the comment step tolerates
+          # that.
           #
           # Extraction: GitHub's squash/merge convention appends "(#PR)" as
           # the LAST parenthesized ref on the subject; titles also carry
@@ -89,7 +130,7 @@ jobs:
           # inside) with its regression suite pinning the exact bug shapes
           # (scripts/renumber_pr_num_test.go) — including the residual one
           # the suite caught: subject-before-body order in the fallback.
-          PR_NUM=$(./scripts/renumber-pr-num.sh "$(git log -1 --pretty=%s)" "$(git log -1 --pretty=%B)")
+          PR_NUM=$(./scripts/renumber-pr-num.sh "$MERGE_SUBJECT" "$MERGE_SUBJECT")
           echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
 
           OUTPUT=$(./bin/repolint -fix-worklogs-only 2>&1) || true
@@ -106,8 +147,10 @@ jobs:
             echo "$RENAMES" > /tmp/renames.txt
           fi
 
-      - name: Commit and push if changed
+      - name: Commit and push if changed (CAS retry)
         if: steps.autofix.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Worklog numbering applied:"
           git --no-pager diff --stat -- worklogs/
@@ -120,7 +163,44 @@ jobs:
           # cron trigger handles the next pass anyway — and the no-rename
           # idempotent exit keeps it cheap.
           git commit -m "chore(repolint): assign worklog numbers [skip ci]"
-          git push
+          # CAS (#1838): the push is the compare-and-swap on main's tip.
+          # A rejection means main advanced under us — rebase onto the
+          # new tip, re-run the fix pass (the interleaved merge may have
+          # landed NEW sentinels), fold any extra renames into the
+          # numbering commit, and retry. Bounded: after 3 attempts the
+          # job fails loudly and the next trigger (or cron) retries from
+          # a fresh tip.
+          for attempt in 1 2 3; do
+            if git push; then
+              # The numbering commit carries [skip ci], so it does NOT
+              # trigger the numbering-gate sweep via the push path.
+              # Dispatch it explicitly (r1 review): the sweep re-checks
+              # open PRs' merge trees against the tip this commit just
+              # created — the belt for the degraded-mode hole where the
+              # assignment above could not see sibling claims. Best
+              # effort: the cron sweep is the backstop.
+              gh workflow run numbering-gate.yml || \
+                echo "::warning::could not dispatch numbering-gate sweep — the 6h cron will re-check"
+              exit 0
+            fi
+            echo "::notice::push rejected (attempt $attempt/3) — main moved; rebasing and re-fixing"
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::rebase onto new tip failed; leaving numbering to the next run"
+              exit 1
+            fi
+            RETRY_OUTPUT=$(./bin/repolint -fix-worklogs-only 2>&1) || true
+            RETRY_RENAMES=$(echo "$RETRY_OUTPUT" | grep '^fix-worklogs: renamed ' || true)
+            if [ -n "$RETRY_RENAMES" ]; then
+              echo "$RETRY_OUTPUT"
+              echo "$RETRY_RENAMES" >> /tmp/renames.txt
+            fi
+            git add worklogs/
+            git commit --amend --no-edit
+          done
+          echo "::error::could not push numbering commit after 3 attempts"
+          exit 1
 
       - name: Comment assigned numbers on merged PR
         if: steps.autofix.outputs.changed == 'true' && steps.autofix.outputs.pr_num != ''

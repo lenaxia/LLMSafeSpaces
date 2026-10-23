@@ -378,9 +378,11 @@ describe("Composer", () => {
 
   // ── Feature B: user-message history navigation (desktop only) ─
   //
-  // Up/Down walk the userMessageHistory prop (newest-first), but only
-  // when the cursor is on the first/last line of the textarea. Mobile
-  // is a no-op (cursor moves normally). IME composition suppresses.
+  // Up/Down walk the userMessageHistory prop (newest-first). Up fires
+  // ONLY from a collapsed caret at position 0 of line 1 (#1846 — the
+  // draft is never swapped mid-text); Down fires from the last line
+  // while browsing. Mobile is a no-op (cursor moves normally). IME
+  // composition suppresses.
 
   it("DESKTOP: Up on first line loads previous user message from history", async () => {
     const user = userEvent.setup();
@@ -433,6 +435,8 @@ describe("Composer", () => {
     render(<Composer onSend={vi.fn()} userMessageHistory={["old"]} />);
     const textarea = screen.getByPlaceholderText("Type a message...");
     await user.type(textarea, "my draft"); // draft captured
+    // #1846 guard: recall fires from position 0 — park the caret there.
+    await user.keyboard("{Home}");
     await user.keyboard("{ArrowUp}"); // → "old" (index 0)
     expect(textarea).toHaveValue("old");
     // Move cursor to last line of "old" then Down past newest.
@@ -474,6 +478,74 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("history-msg");
   });
 
+  // ── #1846: recall guard — Up mid-text must not destroy the draft ──
+  //
+  // History recall fires ONLY when the caret is at position 0 of line 1
+  // (the very beginning of the buffer — the opencode TUI boundary rule
+  // the guard mirrors). Up with a non-empty draft and the caret anywhere
+  // else must leave the draft untouched.
+
+  it("DESKTOP: Up at end of a single-line draft does NOT replace the draft (#1846)", async () => {
+    // The issue's exact repro: caret mid-text on line 1 (old guard only
+    // checked the line, so the whole draft was swapped out).
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "my important draft"); // caret at end (17)
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("my important draft");
+  });
+
+  it("DESKTOP: Up with caret mid-line (not position 0) does NOT load history (#1846)", async () => {
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "hello world");
+    await user.keyboard("{ArrowLeft}{ArrowLeft}{ArrowLeft}"); // caret at 8
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("hello world");
+  });
+
+  it("DESKTOP: Up at position 0 of a non-empty draft DOES recall (caret-at-buffer-start rule)", async () => {
+    // The recall-guard convention: caret at the very beginning of the
+    // buffer IS the intentional recall gesture, draft or not.
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "draft text");
+    await user.keyboard("{Home}"); // caret to position 0
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("history-msg");
+  });
+
+  it("DESKTOP: Up on an EMPTY input DOES recall history (#1846 companion)", async () => {
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.click(textarea); // caret at 0 of empty buffer
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("history-msg");
+  });
+
+  it("DESKTOP: Up with a SELECTION anchored at position 0 does NOT recall (#1846 r1)", async () => {
+    // A selection is not a caret: Up must collapse it (native behavior),
+    // never swap the text for history[0]. Pins the guard's second
+    // conjunct (selectionEnd !== 0) — dropping that half silently
+    // re-introduces the data loss for select-all-then-Up (verified red
+    // under the selectionStart-only mutation).
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    await user.type(textarea, "hello world"); // caret at end (11)
+    // jsdom's user-event does not materialize Shift+Home selections —
+    // set the selection directly (the DOM API the guard reads).
+    textarea.setSelectionRange(0, 11);
+    expect(textarea.selectionStart).toBe(0);
+    expect(textarea.selectionEnd).toBe(11);
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("hello world");
+  });
+
   it("DESKTOP: Down when not browsing history does nothing (cursor moves normally)", async () => {
     const user = userEvent.setup();
     render(<Composer onSend={vi.fn()} userMessageHistory={["old"]} />);
@@ -505,8 +577,9 @@ describe("Composer", () => {
     // Draft a value EQUAL to history[0] ("hello" — the most recent).
     await user.type(textarea, "hello");
     expect(textarea).toHaveValue("hello");
-    // Cursor is at end (5). Press Up — should load "hello" (same text)
-    // AND move cursor to 0.
+    // #1846 guard: recall fires from position 0 — park the caret there.
+    // Press Up — should load "hello" (same text) AND move cursor to 0.
+    await user.keyboard("{Home}");
     await user.keyboard("{ArrowUp}");
     expect(textarea).toHaveValue("hello");
     expect(textarea.selectionStart).toBe(0);

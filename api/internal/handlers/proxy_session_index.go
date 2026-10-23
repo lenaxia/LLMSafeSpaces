@@ -54,17 +54,50 @@ func writeSessionGoneBodyWithSuggestions(c *gin.Context, message string, suggest
 	c.JSON(http.StatusGone, body)
 }
 
+// SessionOriginLister feeds the #1882 carrier reap-guard bypass: the
+// workspace's session_origins marks (sessionID → origin). Satisfied in
+// production by an adapter over the workflows store's
+// ListSessionOrigins.
+type SessionOriginLister interface {
+	ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error)
+}
+
+// SetSessionOriginLister wires the #1882 carrier-mark lookup. Nil (or
+// never called) disables the bypass — the reap guard keeps its
+// DefaultReapGuard-only semantics.
+func (h *ProxyHandler) SetSessionOriginLister(l SessionOriginLister) {
+	h.sessionOriginLister = l
+}
+
+// carrierOriginMarks returns the workspace's session_origins marks for
+// the reap guard. Fail-safe: a lookup error degrades to NO marks (the
+// history-bearing row stays kept_for_operator — uncertainty never
+// widens a reap).
+func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID string) map[string]string {
+	if h.sessionOriginLister == nil {
+		return nil
+	}
+	marks, err := h.sessionOriginLister.ListSessionOrigins(ctx, workspaceID)
+	if err != nil {
+		h.logger.Warn("session reconcile: origin marks lookup failed; carrier bypass disabled for this pass",
+			"workspaceID", workspaceID, "error", err.Error())
+		return nil
+	}
+	return marks
+}
+
 // reapSessionIfGone classifies an adapter error from a session-scoped
 // read: when the agent's definitive verdict is not-found
 // (agent.ErrSessionNotFound), the session_index row is a stale ghost
 // (#1340). The TYPED 410 always answers (the session is unreadable
 // either way); the row itself is reaped only when the #1340 triage
-// safety guard admits it (no message history — nothing of value). A
-// history-bearing row the harness lost stays for operator attention
-// (a vanished session WITH history may indicate a harness store reset).
-// Any other error (transport, 5xx, timeouts) returns false so the
-// caller keeps its generic path: an unreachable pod is not evidence of
-// deletion.
+// safety guard admits it (no message history — nothing of value, or a
+// #1882 origin-marked platform carrier: its deletion was platform
+// policy, not a harness-store reset). A history-bearing unmarked row
+// the harness lost stays for operator attention (a vanished session
+// WITH history may indicate a harness store reset). Any other error
+// (transport, 5xx, timeouts) returns false so the caller keeps its
+// generic path: an unreachable pod is not evidence of deletion.
 func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID string, err error, route string) bool {
 	if !errors.Is(err, agent.ErrSessionNotFound) {
 		return false
@@ -80,6 +113,7 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			h.logger.Warn("session_gone: index lookup failed; row left for the convergence pass",
 				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", listErr.Error())
 		}
+		marks := h.carrierOriginMarks(ctx, workspaceID)
 		for _, row := range rows {
 			// The middleware canonicalizes to the harness id; index
 			// rows carry the phrase in ID post-#1756 — compare on
@@ -88,12 +122,15 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			if row.InternalID != sessionID {
 				continue
 			}
-			if sessionindex.DefaultReapGuard(row) {
+			if sessionindex.DefaultReapGuard(row) || marks[sessionID] != "" {
 				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
 					h.logger.Warn("session_gone: index row reap failed",
 						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
 					writeSessionGoneBody(c, sessionGoneUncertain)
 				} else {
+					if marks[sessionID] != "" {
+						sessionindex.ReconcileOutcome("reaped_carrier")
+					}
 					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
 				}
 			} else {
@@ -182,7 +219,16 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		return present, nil
 	}
 
-	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, sessionindex.DefaultReapGuard)
+	// #1882 carrier bypass: session_origins-marked rows (platform
+	// routine carriers) are admitted past the history exception even
+	// with message_count > 0 — the harness-store-reset rationale does
+	// not apply to sessions the platform itself created and deleted.
+	// Every admitted row still faces the #1850 by-ID probe below.
+	marks := h.carrierOriginMarks(ctx, workspaceID)
+	reap := func(row types.SessionListItem) bool {
+		return sessionindex.DefaultReapGuard(row) || marks[row.InternalID] != ""
+	}
+	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, reap)
 	// keptForOperator rows keep a threshold-level counter so every
 	// subsequent pass re-detects them — the operator signal fires
 	// consistently, never every-other-pass (r2 finding).
@@ -191,6 +237,49 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	}
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	for _, id := range remove {
+		// #1850: the harness LIST is not a liveness authority — sessions
+		// created through the harness/Act path (exactly the
+		// create_session spawn class) can be live and readable by ID
+		// while the list omits them (#1452). A fresh spawn's row sits at
+		// message_count==0 for its whole (long) first turn, so two
+		// list-miss passes reaped LIVE sessions — the first
+		// turn-boundary event then re-registered the row and the
+		// registration seam minted a NEW phrase (the old phrase dead:
+		// sends to it failed, the session re-emitted flagged). Confirm
+		// gone by ID before deleting — the SessionExists precedent: the
+		// by-ID probe is immune to the list-visibility gap. ONLY the
+		// probe's definitive not-found verdict reaps; every other
+		// outcome (alive, transport/5xx error, or a sessionless 2xx
+		// answer) keeps the row — uncertainty never deletes.
+		alive, perr := h.probeSessionAliveByID(ctx, workspaceID, id)
+		gone := perr != nil && errors.Is(perr, agent.ErrSessionNotFound)
+		switch {
+		case perr == nil && alive:
+			// Live, list-invisible: presence. Keep the row (its phrase
+			// is the session's addressable identity — #1756 §1), reset
+			// the miss counter so the next absence starts a fresh count.
+			sessionindex.ReconcileOutcome("reap_vetoed_live")
+			h.logger.Info("session reconcile: reap vetoed — session live by ID, absent from the harness list (#1452 class)",
+				"workspaceID", workspaceID, "sessionID", id)
+			delete(next, id)
+			h.state().SetReconcileMisses(ctx, workspaceID, next)
+			continue
+		case gone:
+			// Definitive not-found verdict — fall through to the delete.
+		default:
+			// Indeterminate probe (transport/5xx error, or a sessionless
+			// 2xx answer — reachable: ParseSessionWire answers (session,
+			// nil) with an empty ID for empty 2xx bodies): defer to the
+			// next pass, counter pinned at threshold so the probe
+			// retries (the harness-error-never-reaps rule, applied to
+			// the confirmation itself).
+			sessionindex.ReconcileOutcome("reap_deferred_probe")
+			h.logger.Warn("session reconcile: reap deferred — by-ID probe indeterminate",
+				"workspaceID", workspaceID, "sessionID", id, "error", perr)
+			next[id] = reconcileMissThreshold
+			h.state().SetReconcileMisses(ctx, workspaceID, next)
+			continue
+		}
 		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
 			sessionindex.ReconcileOutcome("delete_failed")
 			// Pin the counter at threshold: a failed delete retries on
@@ -202,10 +291,31 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			continue
 		}
 		sessionindex.ReconcileOutcome("reaped")
+		if marks[id] != "" {
+			sessionindex.ReconcileOutcome("reaped_carrier")
+		}
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
+	// #1850 truthfulness split (review r1's robustness nit): the kept
+	// population is TWO populations with different meanings —
+	// history-bearing rows the guard held for operator review, and
+	// fresh count-zero rows sheltered by the spawn-window grace (NOT
+	// history-bearing; count 0). One "history-bearing" metric+log for
+	// both conflated them. The row lookup re-derives which is which;
+	// a kept id missing from the lookup keeps the operator-review
+	// classification (never worse than the old single bucket).
+	byInternal := make(map[string]types.SessionListItem, len(rows))
+	for _, row := range rows {
+		byInternal[row.InternalID] = row
+	}
 	for _, id := range keptForOperator {
+		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
+			sessionindex.ReconcileOutcome("kept_spawn_window")
+			h.logger.Warn("session reconcile: spawn-window grace kept fresh row (not a ghost until the grace lapses)",
+				"workspaceID", workspaceID, "sessionID", id)
+			continue
+		}
 		// #1340 triage guard: history-bearing rows the harness reports
 		// gone are NOT auto-deleted — metric + Warn for operator review
 		// (a vanished session with history may indicate a harness store
@@ -217,6 +327,26 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 
 	h.backfillShortIDs(ctx, workspaceID, rows)
 	h.rebuildMessageCounts(ctx, workspaceID, rows, presentSet)
+}
+
+// probeSessionAliveByID is the #1850 reap confirmation: the by-ID
+// existence probe (the send_message SessionExists precedent — immune
+// to the #1452 harness list-visibility gap). A found session reports
+// alive; an adapter not-found verdict reports !alive with the typed
+// error the caller matches as the ONE definitive gone-verdict; every
+// other outcome — transport/5xx errors, or a sessionless 2xx answer
+// (nil session / empty ID with nil error, which ParseSessionWire
+// produces for empty 2xx bodies) — is indeterminate and the caller
+// DEFERS (uncertainty never deletes).
+func (h *ProxyHandler) probeSessionAliveByID(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if s == nil || s.ID == "" {
+		return false, nil
+	}
+	return true, nil
 }
 
 // shortIDBackfillBudget bounds the short-id mint pass (design 0066

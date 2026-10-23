@@ -40,6 +40,7 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useClearPendingUnread, useClearSessionBusy, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useIsSessionDeleted, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
@@ -454,6 +455,21 @@ export function ChatPage() {
   // navigation (#346). No session-local state — nothing to clear on switch.
   const pendingQuestions = usePendingQuestionsForSession(sessionId ?? "");
   const pendingPermissions = usePendingPermissionsForSession(sessionId ?? "");
+  // #1845: on mobile, present ONE ask of each kind at a time — the
+  // OLDEST. The provider stack is newest-activity-first (a stale pill
+  // must not shadow the live ask), so the oldest ask is the LAST
+  // element; presenting the stack's head would surface the newest ask
+  // and risk orphaning earlier answers. Resolution (answer/dismiss)
+  // advances to the next ask automatically; the "1 of N" line under
+  // each single card signals the queue depth. Desktop keeps the full
+  // stack (unchanged).
+  const isMobile = useIsMobile();
+  const mobilePresentedQuestion = isMobile && pendingQuestions.length > 0
+    ? pendingQuestions[pendingQuestions.length - 1]
+    : undefined;
+  const mobilePresentedPermission = isMobile && pendingPermissions.length > 0
+    ? pendingPermissions[pendingPermissions.length - 1]
+    : undefined;
   // #1365: the whileAway staleness backstop — interval-driven, not lazy
   // (see the hook doc). No-op when no whileAway pills are pending.
   useWhileAwayStalenessSweep(pendingQuestions, pendingPermissions, dropPendingAction);
@@ -1371,16 +1387,39 @@ export function ChatPage() {
             onDismissCapViolation={composerAttachments.dismissCapViolation}
             prompts={
               (pendingQuestions.length > 0 || pendingPermissions.length > 0) ? (
-                <>
-                  {pendingQuestions.map((q) => (
-                    <QuestionPrompt key={q.id} workspaceId={workspaceId!} request={q}
-                      onResolved={() => { resolvedInputIdsRef.current.add(q.id); removePendingAction(q.id); }} />
-                  ))}
-                  {pendingPermissions.map((p) => (
-                    <PermissionPrompt key={p.id} workspaceId={workspaceId!} request={p}
-                      onResolved={() => { resolvedInputIdsRef.current.add(p.id); removePendingAction(p.id); }} />
-                  ))}
-                </>
+                isMobile ? (
+                  <>
+                    {mobilePresentedQuestion && (
+                      <QuestionPrompt key={mobilePresentedQuestion.id} workspaceId={workspaceId!} request={mobilePresentedQuestion}
+                        onResolved={() => { resolvedInputIdsRef.current.add(mobilePresentedQuestion.id); removePendingAction(mobilePresentedQuestion.id); }} />
+                    )}
+                    {mobilePresentedQuestion && pendingQuestions.length > 1 && (
+                      <div data-testid="question-queue-count" className="mb-2 text-center text-xs text-muted-foreground">
+                        Question 1 of {pendingQuestions.length} — answer to see the next
+                      </div>
+                    )}
+                    {mobilePresentedPermission && (
+                      <PermissionPrompt key={mobilePresentedPermission.id} workspaceId={workspaceId!} request={mobilePresentedPermission}
+                        onResolved={() => { resolvedInputIdsRef.current.add(mobilePresentedPermission.id); removePendingAction(mobilePresentedPermission.id); }} />
+                    )}
+                    {mobilePresentedPermission && pendingPermissions.length > 1 && (
+                      <div data-testid="permission-queue-count" className="mb-2 text-center text-xs text-muted-foreground">
+                        Permission 1 of {pendingPermissions.length} — answer to see the next
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {pendingQuestions.map((q) => (
+                      <QuestionPrompt key={q.id} workspaceId={workspaceId!} request={q}
+                        onResolved={() => { resolvedInputIdsRef.current.add(q.id); removePendingAction(q.id); }} />
+                    ))}
+                    {pendingPermissions.map((p) => (
+                      <PermissionPrompt key={p.id} workspaceId={workspaceId!} request={p}
+                        onResolved={() => { resolvedInputIdsRef.current.add(p.id); removePendingAction(p.id); }} />
+                    ))}
+                  </>
+                )
               ) : undefined
             }
           />

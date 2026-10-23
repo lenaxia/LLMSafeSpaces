@@ -62,9 +62,10 @@ func (s *shortIDSeamIndex) RecordMessage(_, _, _ string, _ time.Time) {}
 func (s *shortIDSeamIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
-func (s *shortIDSeamIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
-func (s *shortIDSeamIndex) DeleteSession(_ context.Context, _, _ string) error  { return nil }
-func (s *shortIDSeamIndex) UpsertTitle(_ context.Context, _, _, _ string) error { return nil }
+func (s *shortIDSeamIndex) DeleteByWorkspace(_ context.Context, _ string) error     { return nil }
+func (s *shortIDSeamIndex) MarkSessionDeleted(_ context.Context, _, _ string) error { return nil }
+func (s *shortIDSeamIndex) DeleteSession(_ context.Context, _, _ string) error      { return nil }
+func (s *shortIDSeamIndex) UpsertTitle(_ context.Context, _, _, _ string) error     { return nil }
 func (s *shortIDSeamIndex) RebuildMessageCount(_ context.Context, _, sessionID string, count int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

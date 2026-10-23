@@ -26,6 +26,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 
@@ -47,6 +48,16 @@ type reconcileSpyAdapter struct {
 // spy — the router piggyback drives the full reconciliation.
 func (a *reconcileSpyAdapter) CountMessages(_ context.Context, _, _, _ string) (int, error) {
 	return 0, nil
+}
+
+// GetSession overrides the nil-embedded Adapter for the same reason:
+// the #1850 reap by-ID confirmation runs on every guard-admitted
+// removal candidate, and the promoted nil-adapter call SIGSEGVs the
+// fire-and-forget goroutine (killing the test process — the CI crash
+// the round-1 review caught). The seeded ghost must still reap, so the
+// override answers the definitive not-found verdict.
+func (a *reconcileSpyAdapter) GetSession(_ context.Context, _, _, _ string) (*session.Session, error) {
+	return nil, agent.ErrSessionNotFound
 }
 
 func (a *reconcileSpyAdapter) ListSessions(_ context.Context, _, _ string) ([]session.Session, error) {
@@ -91,7 +102,8 @@ func (r *recordingIndex) ListByWorkspace(_ context.Context, w string) ([]types.S
 	defer r.mu.Unlock()
 	return append([]types.SessionListItem{}, r.rows[w]...), nil
 }
-func (r *recordingIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
+func (r *recordingIndex) DeleteByWorkspace(_ context.Context, _ string) error     { return nil }
+func (r *recordingIndex) MarkSessionDeleted(_ context.Context, _, _ string) error { return nil }
 func (r *recordingIndex) DeleteSession(_ context.Context, w, s string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

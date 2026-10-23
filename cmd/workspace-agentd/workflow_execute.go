@@ -65,6 +65,14 @@ type workflowExecuteResponse struct {
 	// leak is real and must stay discoverable). Older API servers
 	// ignore it; older agentd simply never sets it.
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID reports which session an ephemeral teardown
+	// DELETED (#1882) — the id the engine needs to run the platform
+	// delete effects (tombstone, session_index row removal, SSE
+	// session.status:deleted). Mutually exclusive with SessionID by
+	// construction: the deleted session no longer exists, so the
+	// #1470 field stays omitted exactly as before. Older API servers
+	// ignore it.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
 type workflowExecuteError struct {
@@ -73,6 +81,9 @@ type workflowExecuteError struct {
 	// SessionID carries the surviving session of a FAILED agent turn
 	// (#1470) — same existence contract as the success envelope.
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID reports the session the failure leg's ephemeral
+	// teardown deleted (#1882) — same contract as the success envelope.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
 type inFlightExec struct {
@@ -477,6 +488,9 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	// down and omit it, a failed teardown reports the leaked session
 	// (reality over intent). WithoutCancel + a bound so the timeout
 	// leg's dead context can neither skip nor wedge the cleanup DELETE.
+	// #1882: a successful teardown reports the DELETED id
+	// (deletedSessionId) so the engine can propagate the delete.
+	deletedSessionID := ""
 	failAgentNode := func(status int, code, detail string) {
 		surviving := sessionID
 		if createdEphemeral && sessionMode == "ephemeral" {
@@ -484,9 +498,10 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 			defer cancel() //nolint:gocritic // defer-in-closure: fires when the handler returns
 			if deleteOpencodeSession(dctx, password, sessionID) {
 				surviving = ""
+				deletedSessionID = sessionID
 			}
 		}
-		writeWorkflowErrorSession(w, status, code, detail, surviving)
+		writeWorkflowErrorSession(w, status, code, detail, surviving, deletedSessionID)
 	}
 
 	// #1327: the agent POST carries the execution-derived dedupe key.
@@ -574,6 +589,11 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 
 	if createdEphemeral && sessionMode == "ephemeral" {
 		if deleteOpencodeSession(ctx, password, sessionID) {
+			// #1882: report which session died so the engine runs the
+			// platform delete effects (the ghost-row mint the live
+			// event bridge performed during the carrier's turn is
+			// undone). SessionID itself stays "" (#1470).
+			deletedSessionID = sessionID
 			sessionID = ""
 			result["session_deleted"] = true
 		}
@@ -583,7 +603,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	}
 	result["session_id"] = sessionID
 
-	writeWorkflowSuccessSession(w, result, sessionID)
+	writeWorkflowSuccessSession(w, result, sessionID, deletedSessionID)
 }
 
 // Key-shape constants for workflowAgentMessageKey (#1327). The prefix
@@ -658,9 +678,11 @@ func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 
 // writeWorkflowSuccessSession writes the success envelope with the
 // node's surviving session identity (#1470); an empty sessionID renders
-// identically to the session-less success writer (omitempty).
-func writeWorkflowSuccessSession(w http.ResponseWriter, output any, sessionID string) {
-	writeWorkflowSuccessResponse(w, output, workflowExecuteResponse{SessionID: sessionID})
+// identically to the session-less success writer (omitempty). The
+// #1882 deletedSessionID rides alongside when an ephemeral teardown
+// deleted the carrier.
+func writeWorkflowSuccessSession(w http.ResponseWriter, output any, sessionID, deletedSessionID string) {
+	writeWorkflowSuccessResponse(w, output, workflowExecuteResponse{SessionID: sessionID, DeletedSessionID: deletedSessionID})
 }
 
 func writeWorkflowSuccessResponse(w http.ResponseWriter, output any, resp workflowExecuteResponse) {
@@ -672,16 +694,18 @@ func writeWorkflowSuccessResponse(w http.ResponseWriter, output any, resp workfl
 }
 
 func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) {
-	writeWorkflowErrorSession(w, status, code, detail, "")
+	writeWorkflowErrorSession(w, status, code, detail, "", "")
 }
 
 // writeWorkflowErrorSession writes the error envelope with the session
 // that survived a failed agent turn (#1470); an empty sessionID renders
-// identically to the session-less writers (omitempty).
-func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID string) {
+// identically to the session-less writers (omitempty). The #1882
+// deletedSessionID rides alongside when the failure leg's ephemeral
+// teardown deleted the carrier.
+func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID, deletedSessionID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID})
+	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID, DeletedSessionID: deletedSessionID})
 }
 
 func loadSecretsEnv() (map[string]string, error) {

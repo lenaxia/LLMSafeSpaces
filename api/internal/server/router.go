@@ -148,6 +148,9 @@ type RouterConfig struct {
 	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
 	// (#1601 mechanical disk recovery; optional wiring like reload).
 	DiskRecoverHandler *handlers.DiskRecoverHandler
+	// FsAuditHandler handles POST /api/v1/workspaces/:id/fs-audit
+	// (#1808 zero-fill corruption audit; optional wiring like reload).
+	FsAuditHandler *handlers.FsAuditHandler
 
 	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
 	BulkReloadHandler *handlers.BulkReloadHandler
@@ -1384,6 +1387,8 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/epics/:id/tasks", h.BoardCreateTask)
 
 		b.PATCH("/tasks/:id", h.BoardUpdateTask)
+		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by orchestrator-class sessions)
+		b.POST("/tasks/:id/rearm", h.BoardRearmTask)             // #1832 WS3: the attempts-exhaustion re-pool
 		b.POST("/tasks/:id/pause", h.BoardPauseTask)
 		b.POST("/tasks/:id/resume", h.BoardResumeTask)
 		b.DELETE("/tasks/:id", h.BoardDeleteTask)
@@ -2369,6 +2374,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.POST("/:id/verdict", b.RecordTaskVerdict)
 		k.GET("/:id/verdicts", b.ListTaskVerdicts)
 		k.POST("/:id/start", b.StartTask)
+		k.POST("/:id/rearm", b.RearmTask)
 		k.POST("/:id/pause", b.PauseTask)
 		k.POST("/:id/resume", b.ResumeTask)
 		k.DELETE("/:id", b.DeleteTask)
@@ -2414,5 +2420,8 @@ func registerWorkspaceMaintenanceRoutes(idGroup *gin.RouterGroup, cfg RouterConf
 	}
 	if cfg.DiskRecoverHandler != nil {
 		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
+	}
+	if cfg.FsAuditHandler != nil {
+		idGroup.POST("/fs-audit", cfg.FsAuditHandler.Audit)
 	}
 }

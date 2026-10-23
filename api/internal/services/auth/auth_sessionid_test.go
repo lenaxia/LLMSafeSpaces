@@ -165,8 +165,9 @@ func (m *mockDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
 func (m *mockDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {
 	return 0, nil
 }
-func (m *mockDB) DeleteSessionIndex(context.Context, string) error        { return nil }
-func (m *mockDB) DeleteSessionTree(context.Context, string, string) error { return nil }
+func (m *mockDB) DeleteSessionIndex(context.Context, string) error              { return nil }
+func (m *mockDB) DeleteSessionTree(context.Context, string, string) error       { return nil }
+func (m *mockDB) MarkSessionIndexDeleted(context.Context, string, string) error { return nil }
 func (m *mockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }

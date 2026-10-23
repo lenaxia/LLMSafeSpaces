@@ -98,6 +98,7 @@ func (s *crossWSSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.S
 	s.origins = append(s.origins, row)
 	return nil
 }
+func (s *crossWSSchedulerStore) DeleteSessionOrigin(_ context.Context, _ string) error { return nil }
 
 // crossWSActivator / crossWSAgentd record which workspace the REAL engine
 // reached for.

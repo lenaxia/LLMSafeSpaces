@@ -1130,12 +1130,14 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		        si.context_used,
 		        si.archived,
 		        si.short_id,
+		        si.created_at,
 		        parent.short_id
-		 FROM session_index si
-		 LEFT JOIN session_index parent
-		   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
-		 WHERE si.workspace_id = $1
-		 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
+	 FROM session_index si
+	 LEFT JOIN session_index parent
+	   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
+	 WHERE si.workspace_id = $1
+	   AND si.deleted_at IS NULL
+	 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1150,12 +1152,21 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		var lastSeen sql.NullTime
 		var contextUsed sql.NullInt64
 		var shortID sql.NullString
+		var createdAt sql.NullTime
 		var parentShortID sql.NullString
-		if err := rows.Scan(&item.InternalID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID, &parentShortID); err != nil {
+		if err := rows.Scan(&item.InternalID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID, &createdAt, &parentShortID); err != nil {
 			return nil, err
 		}
 		if title.Valid {
 			item.Title = title.String
+		}
+		// #1850: created_at feeds the reap guard's spawn-window grace
+		// (a fresh row is never a ghost). Nullable-tolerant: a NULL
+		// (never in practice — created_at has a DEFAULT) reads as no
+		// grace information, the pre-#1850 verdict.
+		if createdAt.Valid {
+			t := createdAt.Time
+			item.CreatedAt = &t
 		}
 		// #1756 spec §1: the wire id is the phrase; the harness id is
 		// the internal key. A not-yet-minted row degrades to the
@@ -1213,25 +1224,58 @@ func (s *Service) DeleteSessionTree(ctx context.Context, workspaceID, sessionID 
 	return err
 }
 
-func (s *Service) UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, last_message_at, message_count, updated_at)
-		 VALUES ($1, $2, $3, 1, NOW())
-		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
-		   last_message_at = EXCLUDED.last_message_at,
-		   message_count = session_index.message_count + 1,
-		   updated_at = NOW()`, workspaceID, sessionID, at)
+// MarkSessionIndexDeleted is the #1882 durable death mark: stamps
+// deleted_at on the session's index row AND its descendants (the
+// DeleteSessionTree shape) BEFORE the row delete runs. Belt-and-braces
+// for the read path — ListSessionIndex filters on deleted_at, so a row
+// whose DELETE failed (or whose effects tail crashed mid-sequence)
+// stops rendering even though it lingers. Idempotent; row-creating
+// upserts never clear the mark, so late pod events cannot resurrect a
+// death-marked row (the #1850 phrase-bearing INSERT leg included — its
+// column list carries no deleted_at).
+func (s *Service) MarkSessionIndexDeleted(ctx context.Context, workspaceID, sessionID string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT session_id FROM session_index
+			WHERE workspace_id = $1 AND session_id = $2
+			UNION ALL
+			SELECT si.session_id FROM session_index si
+			INNER JOIN descendants d ON si.parent_session_id = d.session_id AND si.workspace_id = $1
+		)
+		UPDATE session_index SET deleted_at = NOW(), updated_at = NOW()
+		WHERE workspace_id = $1 AND session_id IN (SELECT session_id FROM descendants)
+		  AND deleted_at IS NULL`, workspaceID, sessionID)
 	return err
 }
 
+// UpsertSessionMessage records one message. #1850: the INSERT leg
+// carries a minted phrase — the row is born WITH its short_id (same
+// statement, same transaction); the conflict leg never touches it.
+func (s *Service) UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error {
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, last_message_at, message_count, updated_at)
+		 VALUES ($1, $2, $3, $4, 1, NOW())
+		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
+		   last_message_at = EXCLUDED.last_message_at,
+		   message_count = session_index.message_count + 1,
+		   updated_at = NOW()`, workspaceID, sessionID, phrase, at)
+		return err
+	})
+}
+
+// UpsertSessionTitle persists the session title. #1850 phrase-bearing
+// INSERT leg; the conflict leg never touches short_id.
 func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID, title string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, title, updated_at)
-		 VALUES ($1, $2, $3, NOW())
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, title, updated_at)
+		 VALUES ($1, $2, $3, $4, NOW())
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 		   title = EXCLUDED.title,
-		   updated_at = NOW()`, workspaceID, sessionID, title)
-	return err
+		   updated_at = NOW()`, workspaceID, sessionID, phrase, title)
+		return err
+	})
 }
 
 // UpsertSessionContextUsed persists the prompt token count for the most recent
@@ -1239,13 +1283,15 @@ func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID
 // adapter-declared usage event. Idempotent: concurrent writes of the same
 // value are safe (both replicas receive the same event and write the same data).
 func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, context_used, updated_at)
-		 VALUES ($1, $2, $3, NOW())
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, context_used, updated_at)
+		 VALUES ($1, $2, $3, $4, NOW())
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 		   context_used = EXCLUDED.context_used,
-		   updated_at = NOW()`, workspaceID, sessionID, contextUsed)
-	return err
+		   updated_at = NOW()`, workspaceID, sessionID, phrase, contextUsed)
+		return err
+	})
 }
 
 // UpsertSessionMessageCount sets a session's message_count ABSOLUTELY
@@ -1255,14 +1301,16 @@ func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, ses
 // workspaces write-free: the 30s reconcile pass only touches rows
 // whose count actually drifted.
 func (s *Service) UpsertSessionMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, message_count, updated_at)
-		 VALUES ($1, $2, $3, NOW())
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)
+		 VALUES ($1, $2, $3, $4, NOW())
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 		   message_count = EXCLUDED.message_count,
 		   updated_at = NOW()
-		 WHERE session_index.message_count IS DISTINCT FROM EXCLUDED.message_count`, workspaceID, sessionID, count)
-	return err
+		 WHERE session_index.message_count IS DISTINCT FROM EXCLUDED.message_count`, workspaceID, sessionID, phrase, count)
+		return err
+	})
 }
 
 // UpsertSessionParent records (or refreshes) the parent_session_id for a
@@ -1275,23 +1323,27 @@ func (s *Service) UpsertSessionMessageCount(ctx context.Context, workspaceID, se
 // practice, and an UPDATE-on-conflict path costs less than a SELECT-then-
 // UPDATE round trip.
 func (s *Service) UpsertSessionParent(ctx context.Context, workspaceID, sessionID, parentID string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, parent_session_id, updated_at)
-		 VALUES ($1, $2, $3, NOW())
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, parent_session_id, updated_at)
+		 VALUES ($1, $2, $3, $4, NOW())
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 		   parent_session_id = EXCLUDED.parent_session_id,
-		   updated_at = NOW()`, workspaceID, sessionID, parentID)
-	return err
+		   updated_at = NOW()`, workspaceID, sessionID, phrase, parentID)
+		return err
+	})
 }
 
 func (s *Service) UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_index (workspace_id, session_id, last_seen_at, message_count, updated_at)
-		 VALUES ($1, $2, NOW(), 0, NOW())
+	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+		_, err := s.DB.ExecContext(ctx,
+			`INSERT INTO session_index (workspace_id, session_id, short_id, last_seen_at, message_count, updated_at)
+		 VALUES ($1, $2, $3, NOW(), 0, NOW())
 		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
 		   last_seen_at = NOW(),
-		   updated_at = NOW()`, workspaceID, sessionID)
-	return err
+		   updated_at = NOW()`, workspaceID, sessionID, phrase)
+		return err
+	})
 }
 
 // SetSessionArchivedStatus sets the platform-level archived marker on
