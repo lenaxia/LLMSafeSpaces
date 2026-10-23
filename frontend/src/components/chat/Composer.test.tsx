@@ -527,6 +527,25 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("history-msg");
   });
 
+  it("DESKTOP: Up with a SELECTION anchored at position 0 does NOT recall (#1846 r1)", async () => {
+    // A selection is not a caret: Up must collapse it (native behavior),
+    // never swap the text for history[0]. Pins the guard's second
+    // conjunct (selectionEnd !== 0) — dropping that half silently
+    // re-introduces the data loss for select-all-then-Up (verified red
+    // under the selectionStart-only mutation).
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    await user.type(textarea, "hello world"); // caret at end (11)
+    // jsdom's user-event does not materialize Shift+Home selections —
+    // set the selection directly (the DOM API the guard reads).
+    textarea.setSelectionRange(0, 11);
+    expect(textarea.selectionStart).toBe(0);
+    expect(textarea.selectionEnd).toBe(11);
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("hello world");
+  });
+
   it("DESKTOP: Down when not browsing history does nothing (cursor moves normally)", async () => {
     const user = userEvent.setup();
     render(<Composer onSend={vi.fn()} userMessageHistory={["old"]} />);
