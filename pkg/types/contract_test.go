@@ -50,10 +50,10 @@ func TestGenerateContractFixtures(t *testing.T) {
 			HasUnread:     true,
 			ContextUsed:   &contextUsed,
 		},
-		"ActiveSessionsResponse": ActiveSessionsResponse{
-			Active:    []string{"sess-1", "sess-2"},
-			MaxActive: 5,
-		},
+		// #1884: the ActiveSessionsResponse fixture was removed with the
+		// dead frontend type — the endpoint has no frontend consumer
+		// (the busy-snapshot handshake + lease own reconciliation); the
+		// route stays for the Go SDK's canary scenarios.
 		"WorkspaceListItem": WorkspaceListItem{
 			ID:                "ws-1",
 			Name:              "alpha",

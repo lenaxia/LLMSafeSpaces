@@ -99,6 +99,15 @@ func DefaultLoggingConfig() LoggingConfig {
 			// class as /api/v1/secrets/*. Skip it for the same reason;
 			// the array-masker fix is the second layer, this is the first.
 			"/internal/v1/pod-bootstrap",
+			// #1884 (ask 3): the session-registry replica pull is
+			// pod-authenticated internal traffic (agentd's boot + on-miss
+			// phrase↔harness-id mapping fetch, pod_session_registry.go) —
+			// high-frequency, status-free by design, and its response_body
+			// lines were misread as the USER-FACING /sessions list during
+			// the #1883 incident triage (the log filter captured the wrong
+			// endpoint). Skipping keeps request logs user-signal-bearing
+			// and unmisleading.
+			"/internal/v1/session-registry",
 			// G25 defense-in-depth: admin and org credential endpoints
 			// accept provider API keys (OpenAI sk-..., Anthropic sk-ant-...,
 			// etc.) in the "apiKey" JSON field. "apiKey" is in
