@@ -109,12 +109,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	from := cur.Stage
 	res := moveStageResult{TaskID: taskID, FromStage: from, RequestedTo: toStage}
 
-	// The pending_input exits are manager-surface-only (a delegated worker
-	// is not the human the exit exists for; its token does not unlock
-	// self-exit). This is the ONE remaining agent-surface manager denial
-	// (#1747 keeps it: the human exit stays human).
+	// The pending_input exits are manager-surface-only for WORKERS (a
+	// delegated worker is not the human the exit exists for; its token
+	// does not unlock self-exit). #1832 WS2: the pod seam's
+	// manager-grade agent surface (SurfaceAgentManager — the
+	// orchestrator-class session behind the resolveManager belt:
+	// harness-attested identity + the live-assignee worker refusal)
+	// is a manager surface; the ordinary-worker rule is unchanged.
 	if from == StagePendingInput && actor.Surface == SurfaceAgent {
-		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human decisions (manager surfaces only)"}
+		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the orchestrator-class manager path is the agent-manager surface)"}
 	}
 
 	// #1747 pause-must-pause: FORWARD stage-writes refuse on a
@@ -468,14 +471,22 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 }
 
 // resolveTaskForActor resolves a task through the actor's scope: the
-// agent surface reads workspace-scoped (r1-S1 — an unscoped read leaked
-// cross-tenant rows and claim tokens); manager surfaces resolve by id
-// (ownership follows via requireOwner).
+// agent surfaces read workspace-scoped (r1-S1 — an unscoped read leaked
+// cross-tenant rows and claim tokens; #1832 WS2 extends the scoping to
+// the manager-grade agent surface — same pod, same binding); manager
+// surfaces resolve by id (ownership follows via requireOwner).
 func (s *Service) resolveTaskForActor(ctx context.Context, actor Actor, ref string) (*Task, error) {
-	if actor.Surface == SurfaceAgent && actor.WorkspaceID != "" {
+	if isAgentSurface(actor.Surface) && actor.WorkspaceID != "" {
 		return s.store.resolveTaskInWorkspace(ctx, s.q(), actor.WorkspaceID, ref)
 	}
 	return s.store.resolveTask(ctx, s.q(), "", ref)
+}
+
+// isAgentSurface reports whether the surface is one of the in-pod
+// agent projections (worker or manager-grade) — the two surfaces the
+// caller-workspace binding governs.
+func isAgentSurface(surface string) bool {
+	return surface == SurfaceAgent || surface == SurfaceAgentManager
 }
 
 // effectivePausedTx reports the #1744 pause state as ONE predicate: a

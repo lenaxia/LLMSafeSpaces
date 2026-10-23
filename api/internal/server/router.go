@@ -1384,6 +1384,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/epics/:id/tasks", h.BoardCreateTask)
 
 		b.PATCH("/tasks/:id", h.BoardUpdateTask)
+		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by orchestrator-class sessions)
 		b.POST("/tasks/:id/pause", h.BoardPauseTask)
 		b.POST("/tasks/:id/resume", h.BoardResumeTask)
 		b.DELETE("/tasks/:id", h.BoardDeleteTask)
