@@ -469,6 +469,12 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	// reset, audit carrying the session identity.
 	_, err = pool.Exec(ctx, `UPDATE tasks SET attempts=$2 WHERE id=$1`, task.ID, 3)
 	require.NoError(t, err)
+	// The epic is at its DRR round quota from section C's claim
+	// (deficit==quantum==1): roll the round over (the engine's own
+	// resetDeficits discipline) so the escalation claim finds its
+	// candidate — the sweep's escalation rides the same candidateSQL.
+	_, err = pool.Exec(ctx, `UPDATE epics SET deficit=0 WHERE id=$1`, epic.ID)
+	require.NoError(t, err)
 	esc, err := svc.ClaimNext(ctx, "e2e-escalate", wsPod)
 	require.NoError(t, err)
 	require.NotNil(t, esc)
