@@ -41,7 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `script_timeout`) maps 1:1 onto the workflow error envelope; a dead
   supervisor surfaces `script_env_unavailable` naming the control
   socket; the #1812 gate carries script errors into the fire audit's
-  `actionResult.gate.error` — never a silent `delivered`.
+  `actionResult.gate.error` — never a silent `delivered`. The legacy
+  pre-script leg was ErrorCode-blind (HTTP-200 error envelopes read as
+  success); it now fails the fire, accounts it, and records the cause
+  in `actionResult.script.error` (review F1 — without this, a failed
+  `script_path`-only trigger laundered to `delivered` + a failure-
+  counter reset).
 - The #1455/#1812 nightly e2e contracts flip from "sidecar fails loud
   with `script_env_unavailable`" to "the script executes in BOTH
   modes" (marker + in-workspace side effect asserted). The execution

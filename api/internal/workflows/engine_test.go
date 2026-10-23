@@ -2429,3 +2429,33 @@ func TestExecuteRoutine_ScriptPathOnlyEmptyPrompt_NeverDispatchesAgentLeg(t *tes
 	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
 		"a script-only fire must NEVER reach the agent leg — that mints the ephemeral carrier session (#1878/#1882)")
 }
+
+// #1878 review F1: a script-only fire whose pre-script leg FAILS must
+// fail LOUD — the HTTP-200 error envelope (scriptResp.ErrorCode) is a
+// leg failure, not a nil-error success. The #1878 early-return would
+// otherwise stamp delivered + reset the failure counter, laundering
+// the failure out of auto-disable accounting (the silent-delivered
+// class, pre-script edition).
+func TestExecuteRoutine_ScriptPathOnlyFailingScript_FailsLoud(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-script"] = "script_failed"
+	agentd.outputs["routine-script"] = nil
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp-fail", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp-fail", TriggerID: "trig-1878-sp-fail", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-sp-fail"],
+		"a failing pre-script must fail the fire — never delivered")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a failed script-only fire still never reaches the agent leg")
+	assert.Equal(t, 1, store.triggerFail["trig-1878-sp-fail"],
+		"the failure must count toward auto-disable (not laundered by a counter reset)")
+}

@@ -910,10 +910,24 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
 		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil)
+		// #1878 review F1: agentd surfaces script failures as HTTP-200
+		// error ENVELOPES (err == nil, ErrorCode set) — the gate and
+		// agent legs classify those; this leg was ErrorCode-blind, so a
+		// failed pre-script on a script-only trigger fell into the
+		// sessionless early-return below as delivered (+ a failure-
+		// counter reset) — the silent-delivered class, pre-script
+		// edition. A non-empty ErrorCode is a leg failure: fail loud,
+		// account it, and carry the cause in the fire audit.
+		if scriptResp != nil && scriptResp.ErrorCode != "" {
+			err = fmt.Errorf("%s: %s", scriptResp.ErrorCode, scriptResp.Detail)
+		}
 		if err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
+			cause := fmt.Sprintf("script failed: %v", err)
+			errMsg, _ := json.Marshal(map[string]string{"error": cause})
 			resultData = errMsg
 			resultStatus = "failed"
+			action, _ := json.Marshal(map[string]any{"script": map[string]string{"error": cause}})
+			_ = s.Store.UpdateTriggerFireAction(ctx, fireID, action)
 			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
 			s.accountTriggerFailure(ctx, trigger)
 			return

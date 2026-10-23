@@ -88,6 +88,21 @@ here: script-only fires never reach `execAgentNode`.
       through the full mux→socket→engine path, loud failure with stderr,
       transport-loud naming control socket, timeout→504)
 
+- [x] review r1 (PR #1885): F1 fixed — the pre-script leg was
+      ErrorCode-blind (HTTP-200 error envelopes read as success), so a
+      FAILED script_path-only trigger hit the new early-return as
+      delivered + failure-counter reset. Now: ErrorCode != "" fails the
+      fire, accounts it, and records actionResult.script.error; red
+      pin TestExecuteRoutine_ScriptPathOnlyFailingScript_FailsLoud
+      (failed pre-fix: triggerFail 0, status delivered). CHANGELOG
+      tightened per the r1 nit. CI's -short failure
+      (TestRequestSessionStatusSnapshot_Coalesces, api/internal/
+      handlers) not-attributable: 0 diff files touch handlers/proxy,
+      local -count=3 green, the same test PASSED in this head's
+      full-suite race run (reviewer-corroborated), and main's own -short
+      job failed 10 min prior (run 39909164886, scriptwrap node
+      interpreter timeout) — the shared-runner contention window.
+
 ## Live-probe instructions (post-deploy verification — the orchestrator
 re-runs these against the DEPLOYED platform)
 
