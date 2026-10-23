@@ -125,8 +125,12 @@ within spawn-grace (#1847 starting defaults G=15/A=10/spawn-grace=5).
 RC1 (`pkg/board/reconciler.go` `rc1Reclaims`) reclaims only on
 `lease_expires_at < now()`. Add a stillborn predicate:
 `stage='in_progress' AND assignee_session IS NOT NULL AND spawn age >
-spawn-grace AND session_index.message_count = 0` (join on
-(workspace_id, session_id) — platform-owned tables only).
+spawn-grace AND assignee has ZERO harness-side messages`.
+**⚠️ Corrected 2026-10-23 (addendum below): the predicate must read HARNESS
+truth (agentd `/v1/statusz` / opencode session metadata message counts), NOT
+`session_index.message_count`** — the index column drifts to 0 on live
+sessions (filed #1880: 10 rows at index-0 with 3–389 harness messages), so an
+index-keyed eviction would kill live workers.
 - Evict → re-arm FIFO with a fresh claim_token immediately (worst-case burn
   drops 15 min → ~5 min even if D1 regresses).
 - Emit a distinct board_event action (`stillborn_evict`) for the PR-D
@@ -204,6 +208,47 @@ regression in Defect A's failure rate is visible without log spelunking.
    provider throttling; spawner ignores ErrorCode + no retry) — draft lives
    in this worklog's Evidence section.
 
+## Addendum (2026-10-23 — live re-investigation; filed #1879, #1880)
+
+Follow-up session: user reported the frontend sidebar showed only 2 active
+sessions while the orchestrator claimed a 6-lane fleet in the SAME workspace
+(the lane-1832 "active workspaces" phrasing meant sessions — the 10-23
+reading of point 1 in the earlier chat was wrong and is corrected here).
+
+Findings, in the order they unraveled:
+
+1. **Sidebar "active" is ground truth for a different predicate.** UI active
+   = agentd `/v1/statusz` streaming-now (router.go:1459, #792 Pattern 1);
+   the orchestrator's "ACTIVE" = recently-updated. Between-turns lane workers
+   legitimately read inactive. No listing bug for the actives.
+2. **`session_index.message_count` drift → #1880.** 10 of 15 unarchived rows
+   at index-0 with 3–389 harness messages (profound-okra-rushes: 389). The
+   rebuild pass (rebuildMessageCounts, 3 rows/30s, NULL-last-message sorts
+   first) is not converging on them. This INVALIDATES the original D3
+   predicate (index-keyed eviction would kill ten live workers) — D3 text
+   corrected above to require harness truth.
+3. **Archive split-brain → #1879.** Orchestrator's "archive succeeded yet
+   still listed" is real but not what it looked like: `opencode.session
+   .time_archived` is NULL for ALL 128 sessions (harness archive state does
+   not exist); archive lives only in `session_index.archived`, which the pod
+   consumes through a ~15s cache that DEGRADES TO UNFILTERED on refresh
+   failure (mcp_server.go:321). Platform flags were set correctly the whole
+   time; the orchestrator's listings hit the fail-open window. (My own first
+   read also had a NULL-vs-0 CASE bug that briefly suggested "archived" rows
+   — corrected by checking `count(time_archived) = 0` across all 128.)
+4. **Orchestrator liveness claims are unreliable.** Its 04:36Z "checked
+   state" cited per-session update timestamps (04:35:60 etc.) that match
+   neither harness (`time_updated` monotonic: neon-otter 03:59:03,
+   playful-star 03:55:53) nor index; its 6-lane fleet table included a
+   worker stood down and archived 1h earlier. Treat session-level liveness
+   claims from LLM sessions as hypotheses; verify against statusz/DB.
+
+Net for this report's design: D1/D2/D4/D5 unchanged; D3 predicate source
+corrected. Two new platform bugs filed (#1879 archive fail-open, #1880 count
+drift) — both are instances of the same family: index/projection state
+trusted where harness truth differs.
+
 ## Files Modified
 
-None (investigation + design only; this worklog).
+This worklog (2026-10-23 addendum + D3 correction); issues #1879 and #1880
+filed. No code changes.
