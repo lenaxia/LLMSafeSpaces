@@ -35,6 +35,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -862,12 +863,31 @@ func TestCriteriaCheckArg_Branches(t *testing.T) {
 func TestBoardUpdateItem_SchemaRequiredList(t *testing.T) {
 	schema := boardUpdateItemTool.InputSchema
 	require.NotNil(t, schema.Properties["set_criteria_met"], "the object form is advertised")
-	if len(schema.Required) == 0 {
-		return // nothing marked required beyond none — acceptable
-	}
+	require.Contains(t, schema.Required, "item_id", "item_id stays required unconditionally")
 	for _, name := range schema.Required {
 		assert.NotEqual(t, "set_criteria_met", name,
 			"set_criteria_met must NOT be tool-level required (index-required rides the object form)")
 	}
-	assert.Contains(t, schema.Required, "item_id")
+}
+
+// TestBoardCreateTask_RefusesSetCriteriaMet pins the external-MCP arm
+// of the uniform create refusal (#1864 review round 3, blocking): the
+// field is refused loudly AND the client is never called (no task can
+// be created — the silent-drop class guard).
+func TestBoardCreateTask_RefusesSetCriteriaMet(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything).
+		Return("", fmt.Errorf("must not be called")).Maybe()
+	h := &handlers{client: m, timeout: 30 * time.Second}
+
+	res, err := callBoardTool(t, h, "board_create_task", map[string]any{
+		"epic_id": "epc-bbbb2222", "title": "T",
+		"set_criteria_met": map[string]any{"index": 0, "met": true},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.True(t, res.IsError, "the refusal is a tool error")
+	assert.Contains(t, boardResultText(res), "UPDATES only")
+	m.AssertNotCalled(t, "BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything,
+		"a refused create never reaches the client — nothing can store")
 }

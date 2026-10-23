@@ -368,7 +368,14 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 			Suggestions []string `json:"suggestions"`
 		}
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &miss))
-		assert.Empty(t, miss.Suggestions, "no cross-tenant did-you-mean: the scoped resolution cannot see the foreign row")
+		// #1864 review round 3 (pre-existing flake): an in-scope
+		// phrase id can land within the did-you-mean bound of the
+		// random foreign id — suggestions may legitimately carry
+		// IN-SCOPE rows; the perimeter guarantee is that the FOREIGN
+		// id itself never appears.
+		for _, s := range miss.Suggestions {
+			assert.NotEqual(t, shortID, s, "no cross-tenant did-you-mean: the scoped resolution cannot see the foreign row")
+		}
 
 		w = heartbeat(t, shortID, claim.ClaimToken, time.Now().UTC().Format(time.RFC3339))
 		require.Equal(t, http.StatusNotFound, w.Code, "the REAL token of a foreign task buys nothing on this pod")
