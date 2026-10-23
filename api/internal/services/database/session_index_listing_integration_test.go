@@ -69,10 +69,13 @@ func seedRowCapWorkspace(t *testing.T, h *testharness.Harness) {
 
 	// The archive: 103 archived NULL-key rows, every one older than
 	// the whole fleet (arch-030 = now-30min, newest of the block;
-	// arch-132 = now-132min, oldest row in the workspace).
+	// arch-132 = now-132min, oldest row in the workspace). The
+	// $2::timestamptz cast pins the parameter's type — untyped, pgx
+	// lets Postgres infer it from the subtraction context as
+	// interval (SQLSTATE 42804).
 	_, err = pool.Exec(context.Background(), `
 		INSERT INTO session_index (workspace_id, session_id, title, message_count, last_message_at, archived, created_at)
-		SELECT $1, 'ses-arch-' || g::text, 'Archived ' || g::text, 0, NULL, true, $2 - make_interval(mins => g)
+		SELECT $1, 'ses-arch-' || g::text, 'Archived ' || g::text, 0, NULL, true, $2::timestamptz - make_interval(mins => g)
 		FROM generate_series(30, 132) g
 	`, rowCapWS, now)
 	require.NoError(t, err, "seed archived block")
