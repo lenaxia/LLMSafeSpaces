@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -376,6 +377,28 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// Evidence gate: extend only when the watermark moved past the stored
 	// progress watermark.
 	extends := t.LastProgressAt == nil || observedProgressAt.After(*t.LastProgressAt)
+	// #1832 WS4 stillborn guard (the narrow evidence fix — the
+	// platform-derived liveness rework is #1847's, another lane): a
+	// POSITIVE zero-message report for the assignee session refuses the
+	// extension — a spawn that never turned is not alive, whatever
+	// timestamps say (the lease-keeper-renews-the-corpse class). A
+	// source ERROR fails OPEN (a transient blip must not kill a live
+	// worker's renewal; the rework owns the stronger posture). Nil seam
+	// or no recorded assignee: today's semantics, unchanged.
+	if extends && s.turnEvidence != nil && t.AssigneeSession != "" {
+		turns, terr := s.turnEvidence.SessionTurnEvidence(ctx, t.AssigneeSession)
+		if terr != nil {
+			slog.WarnContext(ctx, "board: turn-evidence source unavailable — heartbeat falls back to the timestamp rule (#1832 WS4 fail-open)",
+				"task", t.ShortID, "assignee", t.AssigneeSession, "err", terr.Error())
+		} else if turns <= 0 {
+			return HeartbeatResult{
+				Extended:       false,
+				LeaseExpiresAt: derefTime(t.LeaseExpiresAt),
+				LastProgressAt: derefTime(t.LastProgressAt),
+				Reason:         "stillborn: zero turn evidence for the assignee session — updated_at alone is not liveness (#1832 WS4)",
+			}, nil
+		}
+	}
 	var lease time.Time
 	if extends {
 		if err := s.q().QueryRow(ctx, `
