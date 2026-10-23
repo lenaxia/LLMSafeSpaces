@@ -1,0 +1,189 @@
+name: Run Watchdog
+
+# #1844 mitigation (automated arm; the manual lever is pr-review.yml's
+# dispatch-recovery job): GitHub intermittently drops synchronize events
+# — a pushed PR head gets ZERO workflow runs of ANY workflow while
+# sibling branches run instantly. Documented instances: #1841 (2/2
+# pushes), #1839, #1843 (PR-scoped), feat/board-review-settle 2026-10-23
+# ~01:44Z+ (branch-scoped, actor-independent, 40+ min persistent).
+# Silent impact: a lane looks "awaiting review" while GitHub never
+# dispatched anything — without an external poller, PRs stall
+# indefinitely.
+#
+# WHAT THIS DOES (every 10 minutes): for each open PR, if the head SHA
+# is older than WATCHDOG_MIN_AGE_MINUTES (15) and carries ZERO total
+# check-runs (ci.yml triggers on every pull_request with no paths
+# filter, so ANY delivered synchronize produces at least its runs), and
+# the head commit does not carry an Actions skip marker ([skip ci] —
+# the renumber bot's commits legitimately produce no runs):
+#   1. post the namespaced #1844 fault comment — deduplicated per head
+#      SHA via the `<!-- run-watchdog: fault sha=... -->` marker (the
+#      same literal pr-review.yml's dispatch-recovery posts; pinned by
+#      pkg/runwatchdog's TestFaultMarkerFormat), tagging #1844 so
+#      instances accumulate as issue evidence;
+#   2. dispatch ci.yml on the branch — the recovery lever verified live
+#      during the 2026-10-23 branch-scoped suppression (02:23Z:
+#      workflow_dispatch queues normally while push events to the same
+#      branch produce zero runs). GITHUB_TOKEN-created
+#      workflow_dispatch events DO create runs (the documented
+#      recursion exemption).
+#
+# AUTO-RETRIGGER DEFAULT: OPT-OUT, not opt-in. Rationale (pinned in the
+# PR): the fault is silent and GitHub-side — nobody labels a PR in
+# advance for a fault they cannot see, and an opt-in default would have
+# caught ZERO of the four documented instances; a ci.yml dispatch is
+# side-effect-free (build+test, no pushes); amplification is capped by
+# comment dedup AND by the predicate itself — a dispatched run creates
+# check-runs on the SAME head SHA, so the fault (and with it the
+# dispatch) clears on the next sweep. Opt out per-PR with the label
+# `watchdog:no-auto-retrigger` (comment still posts — evidence stands).
+#
+# The decision matrix lives in pkg/runwatchdog (red-first,
+# unit-tested); this workflow only gathers inputs via gh and executes
+# the decision — the numbering-gate pattern from #1867: bash gathers,
+# Go decides, so the predicate can never drift between tests and CI.
+#
+# LIMIT (documented): PR-scoped by design — branch-scoped suppression
+# on a branch with NO open PR is out of scope (nothing to comment on;
+# the manual ci.yml dispatch lever covers it). Fork PRs comment fine
+# but their ci.yml dispatch fails (head ref lives in the fork) — a
+# warning, not an error.
+
+on:
+  schedule:
+    # Every 10 minutes. A fault is detected on the first sweep after
+    # the head crosses the 15-minute threshold (detection latency
+    # 15–25 min from push), well inside the documented 40+ min
+    # persistent-suppression windows.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+# Newest-wins: a newer sweep supersedes the previous one (numbering-
+# gate convention).
+concurrency:
+  group: run-watchdog
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Fault comments on PRs.
+  pull-requests: write
+  # gh workflow run (ci.yml re-dispatch). workflow_dispatch created
+  # with GITHUB_TOKEN is one of the two recursion exemptions.
+  actions: write
+
+jobs:
+  sweep:
+    name: Detect zero-run PR heads (#1844)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Build runwatchdog
+        run: make runwatchdog-build
+
+      - name: Sweep open PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WATCHDOG_MIN_AGE_MINUTES: "15"
+        run: |
+          set -uo pipefail
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # watch_one <pr> <sha> <branch> <no_auto_json 0|1> — gather
+          # one PR's inputs, decide in Go, execute. Failure-tolerant by
+          # design (the gate_one principle): one broken PR (missing
+          # commit, API hiccup) must never blind the sweep for the
+          # others; only comment/dispatch FAILURES on a confirmed fault
+          # propagate as warnings for the job summary.
+          watch_one() {
+            local PR="$1" SHA="$2" BRANCH="$3" NOAUTO="$4"
+
+            local COMMIT_DATE MSG CHECK_RUNS
+            COMMIT_DATE=$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.committer.date' 2>/dev/null) || {
+              echo "::warning::PR $PR: could not fetch head commit — skipping"; return 0; }
+            MSG=$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.message' 2>/dev/null) || {
+              echo "::warning::PR $PR: could not fetch head commit message — skipping"; return 0; }
+            CHECK_RUNS=$(gh api "repos/$REPO/commits/$SHA/check-runs" --jq '.total_count' 2>/dev/null) || {
+              echo "::warning::PR $PR: could not query check-runs — skipping"; return 0; }
+
+            # Existing fault markers on this PR (dedup input): every
+            # comment body carrying the marker, SHA extracted.
+            local MARKERS_JSON
+            MARKERS_JSON=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
+              --jq '[.[] | .body | select(contains("run-watchdog: fault sha=")) | capture("run-watchdog: fault sha=(?<sha>[0-9a-f]+)").sha]' 2>/dev/null) \
+              || MARKERS_JSON='[]'
+
+            local STATE DECISION
+            STATE=$(jq -n \
+              --argjson number "$PR" \
+              --arg sha "$SHA" --arg branch "$BRANCH" \
+              --arg date "$COMMIT_DATE" --arg msg "$MSG" --arg now "$NOW" \
+              --argjson checks "${CHECK_RUNS:-0}" \
+              --argjson markers "${MARKERS_JSON:-[]}" \
+              --argjson noauto "$NOAUTO" \
+              --argjson minam "${WATCHDOG_MIN_AGE_MINUTES:-15}" \
+              '{number:$number, head_sha:$sha, head_branch:$branch,
+                head_commit_date:$date, head_commit_message:$msg, now:$now,
+                total_check_runs:$checks, existing_marker_shas:$markers,
+                no_auto_retrigger:$noauto, min_age_minutes:$minam}')
+
+            if ! DECISION=$(printf '%s' "$STATE" | ./bin/runwatchdog); then
+              echo "::warning::PR $PR: runwatchdog evaluate failed — skipping"
+              return 0
+            fi
+            echo "PR #$PR: $(printf '%s' "$DECISION" | jq -r .reason)"
+
+            if [ "$(printf '%s' "$DECISION" | jq -r .should_comment)" = "true" ]; then
+              printf '%s' "$DECISION" | jq -r .comment_body > "/tmp/watchdog-body-$PR.md"
+              if gh pr comment "$PR" --repo "$REPO" --body-file "/tmp/watchdog-body-$PR.md"; then
+                echo "PR #$PR: fault comment posted"
+              else
+                echo "::warning::PR $PR: fault comment FAILED to post"
+              fi
+            fi
+
+            if [ "$(printf '%s' "$DECISION" | jq -r .should_dispatch)" = "true" ]; then
+              if gh workflow run ci.yml --repo "$REPO" --ref "$BRANCH"; then
+                echo "PR #$PR: ci.yml dispatched on $BRANCH"
+              else
+                # Fork PRs land here (head ref is fork-side) — the
+                # comment already carries the manual lever.
+                echo "::warning::PR $PR: ci.yml dispatch failed (fork head? branch gone?) — manual lever in the fault comment"
+              fi
+            fi
+          }
+
+          if ! PRS=$(gh pr list --state open --limit 200 --json number,headRefOid,headRefName,labels); then
+            echo "::error::could not enumerate open PRs — watchdog sweep failed"
+            exit 1
+          fi
+          COUNT=$(printf '%s' "$PRS" | jq 'length')
+          echo "$COUNT open PR(s) to check (sweep $NOW)."
+          [ "$COUNT" -gt 0 ] || exit 0
+
+          # The 4th column is the JSON boolean for no_auto_retrigger
+          # (label present → true → dispatch withheld), passed through
+          # --argjson below — jq parses it as a real bool.
+          printf '%s' "$PRS" | jq -r '.[] | [
+            (.number | tostring),
+            .headRefOid,
+            .headRefName,
+            ([.labels[].name] | contains(["watchdog:no-auto-retrigger"]))
+          ] | @tsv' | while IFS=$'\t' read -r PR SHA BRANCH NOAUTO; do
+            [ -n "$PR" ] || continue
+            watch_one "$PR" "$SHA" "$BRANCH" "$NOAUTO"
+          done
+
+          echo "Run-watchdog sweep complete."
+          # Per-PR failures are warnings (the next sweep re-checks);
+          # only a total inability to enumerate PRs fails the job
+          # (the gh pr list above, under set -o pipefail without -e).
+          exit 0

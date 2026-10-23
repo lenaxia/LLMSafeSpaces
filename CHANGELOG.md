@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — run watchdog: automated detection + recovery for dropped synchronize events (#1844, PR 2 of 2)
+
+- **A zero-run PR head no longer stalls silently.** Every 10 minutes
+  the new `run-watchdog` sweep enumerates open PRs; a head ≥15 min old
+  carrying ZERO total check-runs and no Actions skip marker is a #1844
+  delivery fault → namespaced comment on the PR (tagging #1844 so
+  instances accumulate as evidence; deduplicated per head SHA via the
+  `<!-- run-watchdog: fault sha=... -->` marker shared with the
+  pr-review.yml dispatch shim) + `workflow_dispatch` of ci.yml on the
+  branch — the recovery verified live during the 2026-10-23
+  branch-scoped suppression. Auto-retrigger is OPT-OUT (label
+  `watchdog:no-auto-retrigger`): the fault is silent and GitHub-side
+  (an opt-in default would have caught zero of the four documented
+  instances), a dispatch is side-effect-free, and amplification is
+  double-capped by comment dedup and the predicate itself (a dispatched
+  run creates check-runs on the same SHA → the fault clears).
+- **The detection predicate lives in tested Go, not bash**
+  (`pkg/runwatchdog`, red-first: the skip-ci, dedup, label, and
+  comment-contract tests were verified failing against the naive
+  age+zero-runs baseline before the full predicate landed;
+  `cmd/runwatchdog` is a thin stdin→stdout caller; the workflow only
+  gathers inputs and executes the decision — the numbering-gate
+  pattern). Dry-run against live repo data caught the still-suppressed
+  probe branch (PR #1873, head 75 min, zero runs) as a fault on its
+  first pass.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
