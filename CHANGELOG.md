@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
+
+- **A disabled trigger's webhook deliveries are absorbed, never
+  executed.** The cron claim already filtered `enabled=false`, but the
+  webhook receiver minted executing fires for disabled triggers
+  regardless — so auto-disable (the `consecutiveFailures` /
+  `autoDisableAfter` circuit) was decorative on the webhook route.
+  During the 2026-10-21 routine-path outage (01:20–22:54Z, the
+  headless opencode invocation surface wedged post-OOM across
+  workspaces), an auto-disabled trigger (pr-monitor-sweep: ~30 failed
+  fires, `cf=0` under the pre-#1878 accounting) kept dispatching the
+  wedged path on every signed delivery — the platform's own breaker
+  could not stop the bleeding it exists to stop. The receiver now
+  checks `trigger.Enabled` after HMAC/skew/dedup (auth-first: no
+  unauthenticated oracle for trigger state) and records a
+  self-explaining `skipped` fire (`{"reason":"trigger_disabled"}`) with
+  a 202 — a non-2xx would make GitHub-style senders retry-storm a
+  trigger the platform just disarmed.
+- **The pending-fire drain skips disabled triggers too** — a fire
+  minted before the disable (a delivery racing the auto-disable, or
+  pre-fix residue) no longer rides `processPendingRoutineFire` into
+  the agent leg. The gate-closed discipline applies: absorbing is not
+  failing, so no failure accounting, no counter movement.
+- **The outage's error shape is pinned fail-loud**: a retry-exhausted
+  `script_failed` / `"opencode returned 500"` envelope (every attempt,
+  the exact 15–25s class the investigation recorded) fails the fire,
+  carries the code+detail verbatim into the audit, and counts toward
+  auto-disable exactly once — the #1441/#1878 accounting family,
+  extended to the retry-exhausted agent-leg shape.
+
 ### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
 
 - **`POST /api/v1/workspaces/:id/fs-audit` — fsck-style detector for

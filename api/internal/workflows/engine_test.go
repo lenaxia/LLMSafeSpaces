@@ -132,11 +132,15 @@ func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMess
 }
 
 type mockAgentd struct {
-	outputs   map[string]json.RawMessage
-	branches  map[string]string
-	errors    map[string]error
-	errCodes  map[string]string
-	sentSpecs map[string]json.RawMessage
+	outputs  map[string]json.RawMessage
+	branches map[string]string
+	errors   map[string]error
+	errCodes map[string]string
+	// errDetails overrides the canned "simulated error" envelope detail
+	// for a node — the #1834 outage shape needs the REAL classifier
+	// string ("opencode returned 500") to exercise the retryable leg.
+	errDetails map[string]string
+	sentSpecs  map[string]json.RawMessage
 	// sessionIDs stamps the #1470 first-class envelope field onto the
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
@@ -155,6 +159,7 @@ func newMockAgentd() *mockAgentd {
 		branches:          make(map[string]string),
 		errors:            make(map[string]error),
 		errCodes:          make(map[string]string),
+		errDetails:        make(map[string]string),
 		sentSpecs:         make(map[string]json.RawMessage),
 		sessionIDs:        make(map[string]string),
 		deletedSessionIDs: make(map[string]string),
@@ -177,6 +182,9 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	if code, ok := m.errCodes[req.NodeID]; ok {
 		resp.ErrorCode = code
 		resp.Detail = "simulated error"
+		if d, ok := m.errDetails[req.NodeID]; ok {
+			resp.Detail = d
+		}
 	}
 	if sid, ok := m.sessionIDs[req.NodeID]; ok {
 		resp.SessionID = sid

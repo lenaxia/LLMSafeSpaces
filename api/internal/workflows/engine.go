@@ -1467,6 +1467,25 @@ func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger
 		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
 		return
 	}
+	// #1834: auto-disable must disarm BOTH entry routes. The cron claim
+	// filters enabled=false; the webhook receiver now skips disabled
+	// triggers at mint — but a fire minted BEFORE the disable (a signed
+	// delivery racing the auto-disable, or pre-fix residue) still rides
+	// this drain into executeRoutine. A disabled trigger's pending fire
+	// is skipped, never executed: the gate-closed discipline (absorbing
+	// is not failing — no accounting), the row self-explains, and the
+	// wedged-headless hammering of the 2026-10-21 outage class stops at
+	// the platform's own circuit breaker instead of outliving it.
+	if !trigger.Enabled {
+		logger.Info("routine: trigger disabled; skipping pending fire", "triggerId", trigger.ID, "fireId", fire.ID)
+		skipPayload, _ := json.Marshal(map[string]string{
+			"reason": "trigger_disabled",
+			"hint":   "auto-disabled after consecutive failures or disabled by the owner",
+		})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, skipPayload, "skipped")
+		return
+	}
+
 	if _, ok := routineTargetWorkspace(trigger); !ok {
 		// #1473 gap 1 — the drain twin of the cron route's #1440 guard:
 		// a targetless trigger must never tick silently through either

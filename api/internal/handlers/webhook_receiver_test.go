@@ -257,6 +257,65 @@ func TestWebhookReceiver_WebhookNotFound(t *testing.T) {
 	assert.Equal(t, 404, w.Code)
 }
 
+// #1834: auto-disable must disarm the webhook route too. The cron
+// claim filters enabled=false, but the receiver minted executing fire
+// rows for a DISABLED trigger's signed deliveries — during the
+// 2026-10-21 outage, an auto-disabled trigger (e.g. pr-monitor-sweep)
+// kept hammering the wedged headless path on every delivery forever.
+// The disabled leg absorbs the delivery (202 — a non-2xx would make
+// GitHub-style senders retry-storm) with a self-explaining skipped
+// fire, and NEVER executes: no run, no routine fire for the drain.
+func TestWebhookReceiver_DisabledTrigger_AbsorbedSkippedNeverExecutes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		workflowID  *string
+		workspaceID string
+	}{
+		{"workflow-targeted", strPtrWF("wf-1"), ""},
+		{"routine-targeted", nil, "ws-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockWebhookReceiverStore()
+			secret := "s"
+			store.webhooks["hook-1"] = &wf.WebhookRow{
+				ID: "hook-1", TriggerID: "t1",
+				SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+			}
+			store.triggers["t1"] = &wf.TriggerRow{
+				ID: "t1", OwnerType: "user", OwnerID: "u1",
+				Enabled: false, SourceType: types.TriggerSourceWebhook,
+				WorkflowID: tc.workflowID, WorkspaceID: strPtrWF(tc.workspaceID),
+			}
+			if tc.workflowID != nil {
+				store.workflows["wf-1"] = &wf.WorkflowRow{
+					ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
+					OwnerType: "user", OwnerID: "u1",
+				}
+			}
+
+			r := setupWebhookRouter(t, store, &mockDecryptor{secret: secret})
+
+			body := `{"event":"push"}`
+			sig := makeHMAC([]byte(body), []byte(secret))
+			req := httptest.NewRequest("POST", "/api/v1/hooks/t1", bytes.NewBufferString(body))
+			req.Header.Set("X-Hub-Signature-256", sig)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, 202, w.Code, "a disabled trigger absorbs the delivery — 2xx, never a sender retry storm")
+			assert.Contains(t, w.Body.String(), "skipped")
+			require.Len(t, store.recordedFires, 1, "exactly one audit row — the skip")
+			skip := store.recordedFires[0]
+			assert.Equal(t, "skipped", skip.Status)
+			assert.Contains(t, string(skip.ActionResult), "trigger_disabled",
+				"the skip row must self-explain")
+			assert.NotNil(t, skip.CompletedAt, "a skip is terminal at mint")
+			assert.Empty(t, store.recordedRuns, "a disabled trigger must NEVER mint a workflow run")
+			assert.Equal(t, 0, store.triggerFail["t1"], "absorbing on a disabled trigger is not a failure")
+		})
+	}
+}
+
 func TestWebhookReceiver_ConcurrentRun(t *testing.T) {
 	store := newMockWebhookReceiverStore()
 	store.runErr = wf.ErrConcurrentRun
