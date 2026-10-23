@@ -524,6 +524,10 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 		WorkspaceID: s.projectWorkspace(ctx, t.ProjectID),
 		ClaimToken:  token, Task: t,
 	}
+	// #1832 item 5 (2/2): the verdict chain rides the claim — a fresh
+	// claimant after a fail-bounce sees every prior verdict + findings
+	// in its charter (iteration history, never a failure count).
+	c.VerdictChain = s.claimVerdictChain(ctx, t.ProjectID, t.ID)
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — delivery outlives the caller's context (same rationale as the claim spawn); failures heal by lease lapse
 			sctx := context.Background()

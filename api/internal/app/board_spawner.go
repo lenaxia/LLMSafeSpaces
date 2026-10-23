@@ -52,6 +52,26 @@ func boardCharterPrompt(c *board.Claim) string {
 			b.WriteString("\n")
 		}
 	}
+	// #1832 item 5 (2/2): prior review verdicts ride the charter — the
+	// iteration history after a fail-bounce (never a failure count).
+	if len(c.VerdictChain) > 0 {
+		b.WriteString("PRIOR REVIEW VERDICTS (address every outstanding finding):\n")
+		for _, v := range c.VerdictChain {
+			fmt.Fprintf(&b, "  - %s by %s", v.Verdict, v.Reviewer)
+			if !v.Applied {
+				fmt.Fprintf(&b, " (transition refused: %s)", v.Transition)
+			}
+			fmt.Fprintln(&b)
+			for _, f := range v.Findings {
+				crit := ""
+				if f.CriterionIndex != nil {
+					crit = fmt.Sprintf(" [criterion %d]", *f.CriterionIndex)
+				}
+				fmt.Fprintf(&b, "      %s: %s%s\n", f.Severity, f.Pointer, crit)
+			}
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("Work the task to completion. Report progress via board heartbeats; move the\n")
 	b.WriteString("task to in_review when the work is done, attaching evidence. The claim token\n")
 	b.WriteString("above authorizes your in-flight writes for this task only.\n")
@@ -87,5 +107,69 @@ func newBoardSpawner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTT
 				resp.ErrorCode, resp.Detail)
 		}
 		return resp.SessionID, nil
+	}
+}
+
+// reviewerCharterPrompt builds the auto-assigned reviewer's charter
+// (#1832 item 5, part 2). The reviewer is a MANAGER-surface actor: no
+// claim token, no stage writes — it reads the task, verifies each
+// acceptance criterion adversarially, and records ONE structured
+// verdict through the forge-agnostic core (board_record_verdict /
+// POST /me/tasks/:id/verdict). approve → the Done guard still applies;
+// fail → findings land in the chain and the task bounces for the next
+// claimant, whose charter will carry this verdict.
+func reviewerCharterPrompt(t *board.Task, p *board.Project) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the assigned reviewer for task %s (project %s).\n\n", t.ShortID, p.ShortID)
+	if t.Description != "" {
+		fmt.Fprintf(&b, "%s\n\n", t.Description)
+	}
+	if len(t.AcceptanceCriteria) > 0 {
+		b.WriteString("Acceptance criteria (verify EACH adversarially, with evidence):\n")
+		for i, crit := range t.AcceptanceCriteria {
+			fmt.Fprintf(&b, "  [%d] %s\n", i, crit.Text)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Record ONE structured verdict: board_record_verdict with verdict=approve\n")
+	b.WriteString("(requires the task's evidence URL and ALL criteria met — the Done guard\n")
+	b.WriteString("applies regardless) or verdict=fail with findings [{severity blocker|major|minor,\n")
+	b.WriteString("pointer, criterionIndex}]. A fail bounces the task to its next claimant with\n")
+	b.WriteString("your findings embedded. Never merge, never push, never hold a claim.\n")
+	return b.String()
+}
+
+// newReviewAssigner builds the production review-assigner seam: same
+// activator/executor pair as the worker spawn, a dedicated reviewer
+// session (never queued behind the worker FIFO — the latency driver).
+func newReviewAssigner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTTPAgentExecutor) board.ReviewAssigner {
+	return func(ctx context.Context, t *board.Task, p *board.Project) error {
+		if p.TargetWorkspaceID == "" {
+			return fmt.Errorf("board: review-assign: project %s carries no workspace", p.ShortID)
+		}
+		podIP, err := activator.EnsureActive(ctx, p.TargetWorkspaceID, 2*time.Minute)
+		if err != nil {
+			return fmt.Errorf("board: review-assign: activate workspace %s: %w", p.TargetWorkspaceID, err)
+		}
+		spec, _ := json.Marshal(map[string]any{
+			"prompt":  reviewerCharterPrompt(t, p),
+			"session": "new",
+		})
+		resp, err := executor.Execute(ctx, p.TargetWorkspaceID, podIP, &apiwf.NodeExecRequest{
+			NodeID: "board-reviewer", NodeType: "agent",
+			// RunID is unique per review round (a re-entering in_review
+			// task dispatches a fresh reviewer; reusing a bare task-id
+			// suffix would collide across rounds).
+			WorkflowID: "board:" + p.ID, RunID: fmt.Sprintf("%s-review-%d", t.ID, time.Now().Unix()),
+			Spec: spec, Timeout: "20m",
+		})
+		if err != nil {
+			return fmt.Errorf("board: review-assign dispatch: %w", err)
+		}
+		if resp.SessionID == "" {
+			return fmt.Errorf("board: review-assign: agentd returned no session id (errorCode=%s detail=%s)",
+				resp.ErrorCode, resp.Detail)
+		}
+		return nil
 	}
 }
