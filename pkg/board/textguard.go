@@ -55,7 +55,7 @@ const GuardTextRejected = "text_rejected"
 // quote-colon — the bytes of a serialized JSON object leaking INTO a
 // string value (the #1832 stored artifact was literally
 // `","title":"PLACEHOLDER"}` inside a description).
-var boardSpliceRe = regexp.MustCompile(`","[A-Za-z_][A-Za-z0-9_]*":"`)
+var boardSpliceRe = regexp.MustCompile(`",\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:\s*"`)
 
 // ValidateProjectInput enforces the text-field caps on project writes.
 func ValidateProjectInput(in ProjectInput) error {
@@ -104,6 +104,12 @@ func validateTags(tags []string) error {
 	for _, tag := range tags {
 		if len(tag) > MaxTagBytes {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("tag %q exceeds the %d-byte cap", tag, MaxTagBytes)}
+		}
+		// The corruption scan rides the tag channel too (#1837 review
+		// round 2): a 24-byte tag carrying the #1832 splice artifact is
+		// rejected, never stored silently.
+		if err := scanTextCorruption("tag "+truncateFor(tag, 24), tag); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -193,21 +199,23 @@ func tiledRepetition(s string) (string, int) {
 // runRepetition catches the junk-wrapped corruption shape the #1832
 // evidence actually shows: prefix + fragment*N + suffix, contiguous,
 // on one line or across lines. For every candidate unit length p in
-// [2, runUnitMax] it tracks the longest run r such that s[i] ==
+// [1, runUnitMax] it tracks the longest run r such that s[i] ==
 // s[i-p] holds throughout — a run of length ≥ repetitionFloor*p is N
 // back-to-back repeats of a p-byte unit. The unit must carry an
-// alnum rune (divider bars are formatting). Exact tiling by units
-// LARGER than runUnitMax stays tiledRepetition's job.
+// alnum rune (divider bars are formatting). SCOPE BOUND (documented,
+// deliberate): junk-wrapped units LARGER than runUnitMax bytes and
+// repeats broken by unique interleaved separators are outside this
+// heuristic — exact tiling at any size stays tiledRepetition's job.
 func runRepetition(s string) (string, int) {
 	n := len(s)
-	if n < repetitionFloor*2 {
-		return s, 1
+	if n < repetitionFloor {
+		return s, 1 // a 50-unit run needs at least 50 bytes (p=1)
 	}
 	limit := runUnitMax
 	if maxUnit := n / repetitionFloor; maxUnit < limit {
 		limit = maxUnit
 	}
-	for p := 2; p <= limit; p++ {
+	for p := 1; p <= limit; p++ {
 		bestStart, bestLen := 0, 0
 		runStart, runLen := 0, 0
 		for i := p; i < n; i++ {
@@ -246,7 +254,13 @@ const runUnitMax = 512
 // repeatedLine reports the most-repeated single line and its count.
 // Only lines with ≥8 bytes and at least one alphanumeric rune count —
 // short/punctuation-only lines (markdown table separators, dividers)
-// are formatting, not signal.
+// are formatting, not signal. RULING (documented, pinned by test):
+// interleaved boilerplate — e.g. 55 unique steps sharing one identical
+// checklist line — is REJECTED at the floor by design; the #1832
+// corruption evidence repeats fragments hundreds of times and the
+// false-positive risk of exempting interleaved repeats outweighs the
+// rare legitimate identical-line run. Content needing >49 identical
+// boilerplate lines must vary them (numbering); the error says so.
 func repeatedLine(s string) (string, int) {
 	best, bestCount := "", 0
 	counts := map[string]int{}
@@ -269,9 +283,6 @@ func repeatedLine(s string) (string, int) {
 // containers (a legitimate inline JSON example), and lines whose
 // trimmed form opens with a JSON structural byte ({, [, ").
 func spliceHits(s string) int {
-	if !strings.Contains(s, `","`) {
-		return 0 // fast path: the signature cannot occur
-	}
 	exempt := spliceExemptSpans(s)
 	n := 0
 	for _, loc := range boardSpliceRe.FindAllStringIndex(s, -1) {

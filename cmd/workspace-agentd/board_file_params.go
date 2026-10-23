@@ -33,14 +33,18 @@ import (
 const boardFileFieldMaxBytes = 128 << 10
 
 // resolveBoardFileArgs resolves the <field>_file param into the inline
-// <field> string on args, consuming the file spelling (it never
-// reaches the wire — the platform API has no such key). targetField is
-// the ONE field this tool admits (description_file on task
-// create/update; outcome_file on epic create/update): a *_file key for
-// any other field is a caller mistake, refused loudly — never silently
-// dropped onto the wire.
+// <field> string on args, consuming the file spelling (no *_file
+// spelling ever reaches the wire — the platform API has no such key).
+// targetField is the ONE field this tool admits (description_file on
+// task create/update; outcome_file on epic create/update); an empty
+// targetField admits NO file param at all. Any *_file key for another
+// field — or on a no-file tool — is a caller mistake, refused loudly;
+// never silently dropped onto the wire.
 func resolveBoardFileArgs(args map[string]any, targetField string) error {
 	admitted := targetField + "_file"
+	if targetField == "" {
+		admitted = "_" // no admitted spelling: every *_file key is foreign
+	}
 	for k := range args {
 		// A *_file key for another field is a caller mistake, refused
 		// loudly — never silently dropped onto the wire (a null value
@@ -50,7 +54,13 @@ func resolveBoardFileArgs(args map[string]any, targetField string) error {
 		}
 	}
 	raw, present := args[admitted]
-	if !present || raw == nil {
+	if !present {
+		return nil
+	}
+	if raw == nil {
+		// A null mention is still a mention of the param — consume it
+		// so no *_file spelling ever reaches the wire.
+		delete(args, admitted)
 		return nil
 	}
 	path, ok := raw.(string)
@@ -61,8 +71,15 @@ func resolveBoardFileArgs(args map[string]any, targetField string) error {
 	// would silently resolve to whichever wins — exactly the silent-
 	// corruption class this param exists to kill.
 	if inline, ok := args[targetField]; ok {
-		if s, isStr := inline.(string); isStr && s != "" {
-			return fmt.Errorf("%s and %s are mutually exclusive — send one or the other", targetField, admitted)
+		switch v := inline.(type) {
+		case string:
+			if v != "" {
+				return fmt.Errorf("%s and %s are mutually exclusive — send one or the other", targetField, admitted)
+			}
+		case nil:
+			// absent/JSON-null: the file wins
+		default:
+			return fmt.Errorf("%s and %s are mutually exclusive (the inline %s is neither string nor null)", targetField, admitted, targetField)
 		}
 	}
 	content, err := readBoardFileField(path)

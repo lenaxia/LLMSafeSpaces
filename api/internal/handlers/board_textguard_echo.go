@@ -52,10 +52,10 @@ func epicEchoDiff(submittedTitle, submittedOutcome string, stored *board.Epic) [
 	return diffs
 }
 
-// projectEchoResponse is the project tier (name — the one text field;
-// criteria text and tags are deliberately NOT echo-diffed in v1: they
-// are short structured fields whose storage drift is caught by the
-// rejection heuristics' caps, not prose round-trips).
+// projectEchoResponse is the project tier (name — the one prose field;
+// tags are deliberately NOT echo-diffed in v1: short structured
+// strings whose corruption is caught by the tag-channel scan, not
+// prose round-trips).
 type projectEchoResponse struct {
 	board.Project
 	ContentEchoDiff []string `json:"content_echo_diff,omitempty"`

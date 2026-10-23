@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: agent overview reads + setCriteriaMet safety (issue #1837 P2)
+
+- **`board_list` + `board_health` on the agent manager surface**: one
+  project's every task in a single call (stage, claim/assignee, lease
+  expiry, paused, blocked, attempts, cooldown columns) with the derived
+  READY set (backlog + unblocked + unpaused + not cooling), and the
+  workspace's board health snapshot (active leases with expiry,
+  cooldowns, pending origins, reclaims, per-project slots). New
+  manager seam routes `GET /internal/v1/automation/board/projects/:id/tasks`
+  and `GET /internal/v1/automation/board/health` — manager-gated
+  (session identity + worker refusal), workspace-scoped (a foreign
+  workspace's project is a plain 404).
+- **`setCriteriaMet` is `{index, met}`**: check off AND uncheck (the
+  legacy bare-integer form still decodes as `{index, met:true}` wire
+  compat). Combined use with an `acceptanceCriteria` replace is
+  refused ("send one or the other"); out-of-bounds indices are loud
+  errors (both were silent before); create/update responses echo the
+  mutated criterion (`mutated_criterion`: index, met, text). All
+  three surfaces (REST, external MCP, agent seam) share the service
+  semantics.
+
 ### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
 
 - **Server-side text rejection heuristics on every board write surface**
@@ -17,11 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repetition rejection (a fragment tiling the value, or one line
   repeated, ≥50 times), and raw JSON structural splice rejection
   (`","key":"` adjacency inside string values — the #1832 dogfood's
-  silent-corruption artifact). New guard code `text_rejected`
-  (400 class; `content_echo_diff` on create/update responses flags
-  stored != submitted, never silent). Fenced code blocks, balanced
-  inline JSON containers, and JSON-opening lines are exempt —
-  legitimate markdown/JSON/code is pinned un-rejected by tests.
+  silent-corruption artifact; junk-wrapped repeats, line-start
+  artifacts, artifacts after unterminated fences, and the tag channel
+  included). New guard code `text_rejected` (400 class;
+  `content_echo_diff` on task/epic/project create/update responses
+  flags stored != submitted, never silent). TERMINATED fenced code
+  blocks and balanced inline JSON containers are exempt — legitimate
+  markdown/JSON/code is pinned un-rejected by tests; the repetition
+  heuristic covers fragments up to 512 bytes (documented bound).
 - **File-backed long fields on the agent manager surface**:
   `description_file` (board_create_task / board_update_task) and
   `outcome_file` (board_create_epic / board_update_epic) read a

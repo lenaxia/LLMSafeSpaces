@@ -12593,6 +12593,14 @@ components:
         updated_at:
           type: string
           format: date-time
+        content_echo_diff:
+          type: array
+          items:
+            type: string
+            enum: [name]
+          description: |
+            #1837 P1b echo: present ONLY on create/update responses when
+            the submitted name stored differently (never silent).
     BoardEpic:
       type: object
       required: [id, project_id, short_id, title, outcome, status, tags, created_at, updated_at, progress_done, progress_total, progress_derived]

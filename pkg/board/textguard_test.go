@@ -260,3 +260,56 @@ func TestTextGuard_CriterionErrorHasNoFileHint(t *testing.T) {
 	require.NotContains(t, err.Error(), "criterion_file", "no such param exists — never suggest it")
 	require.Contains(t, err.Error(), "criterion[0].text")
 }
+
+func TestTextGuard_TagChannelCorruptionRejected(t *testing.T) {
+	// #1837 review round 2: a 24-byte tag carrying the literal #1832
+	// artifact is rejected — never stored silently.
+	err := ValidateTaskInput(TaskInput{Title: "ok", Tags: []string{`","title":"PLACEHOLDER"}`}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "splice")
+}
+
+func TestTextGuard_OneByteJunkWrappedRunRejected(t *testing.T) {
+	// p=1 units: a junk-wrapped single-character run rejects too.
+	payload := "prefix " + strings.Repeat("q", 60) + " suffix"
+	err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repetition")
+}
+
+func TestTextGuard_WhitespaceSpliceVariantRejected(t *testing.T) {
+	// Whitespace-tolerant adjacency: ", "x": " is the pretty-printed
+	// corruption shape.
+	payload := "prose " + `", "x": "` + "PLACEHOLDER} tail"
+	err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "splice")
+}
+
+func TestTextGuard_InterleavedBoilerplateRuling(t *testing.T) {
+	// DOCUMENTED RULING (repeatedLine comment + #1864 review round 1):
+	// 55 unique steps sharing ONE identical checklist line is REJECTED
+	// at the floor by design — the corruption evidence repeats
+	// fragments hundreds of times and exempting interleaved repeats
+	// would open the exact junk-wrapped evasion class. The error tells
+	// the caller to vary the lines.
+	var b strings.Builder
+	for i := 0; i < 55; i++ {
+		b.WriteString("Unique step number ")
+		b.WriteString(strings.Repeat("s", i%4+1))
+		b.WriteString(" with distinct payload.\n")
+		b.WriteString("- [ ] verify the checklist item before proceeding\n")
+	}
+	err := ValidateTaskInput(TaskInput{Title: "ok", Description: b.String()})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repetition")
+
+	// The pass boundary: 49 identical interleaved lines pass.
+	b.Reset()
+	for i := 0; i < 49; i++ {
+		b.WriteString("Step ")
+		b.WriteString(strings.Repeat("u", i%3+1))
+		b.WriteString(" unique.\n- [ ] verify the checklist item before proceeding\n")
+	}
+	require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: b.String()}))
+}

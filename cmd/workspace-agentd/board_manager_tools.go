@@ -111,10 +111,12 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 	case "board_create_epic", "board_update_epic":
 		fileField = "outcome"
 	}
-	if fileField != "" {
-		if err := resolveBoardFileArgs(args, fileField); err != nil {
-			return nil, fmt.Errorf("%s failed: %w", name, err)
-		}
+	// #1837 review round 2: the guard runs on EVERY manager tool — on
+	// the four file-admitting tools it resolves; on the rest it still
+	// refuses any stray *_file key (previously forwarded and silently
+	// dropped by platform binding).
+	if err := resolveBoardFileArgs(args, fileField); err != nil {
+		return nil, fmt.Errorf("%s failed: %w", name, err)
 	}
 
 	wire := boardWireBody(args)

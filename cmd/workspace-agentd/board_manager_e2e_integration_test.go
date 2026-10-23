@@ -40,6 +40,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +161,10 @@ func (s *boardE2ESeam) engineError(c *gin.Context, err error) {
 	case *board.GuardError:
 		if e.Code == board.GuardWorkspaceBinding || e.Code == board.GuardAuthz {
 			c.JSON(http.StatusForbidden, gin.H{"error": e.Error(), "code": e.Code})
+			return
+		}
+		if e.Code == board.GuardInput || e.Code == board.GuardTextRejected { // #1837: text caps/corruption are 400s
+			c.JSON(http.StatusBadRequest, gin.H{"error": e.Error(), "code": e.Code})
 			return
 		}
 		c.JSON(http.StatusConflict, gin.H{"error": e.Error(), "code": e.Code})
@@ -431,4 +437,62 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
 	assert.Contains(t, err.Error(), board.GuardWorkspaceBinding)
+
+	// --- E+F (#1837): composed file→store byte-identical + corruption refusal —
+	// the real dispatch, the real wire, the real engine, real PG.
+	e2eFileBackedCharterSections(t, ctx, client, svc, pool, &epic, mgrSession, wsPod)
+}
+
+// appendE2EFileSections — #1863/#1864 review: the composed real-wiring
+// arcs for #1837 P1. Called from TestIntegrationBoardManagerE2E's tail.
+func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *opencode.Client, svc *board.Service, pool *pgxpool.Pool, epic *struct {
+	ID      string `json:"id"`
+	ShortID string `json:"short_id"`
+}, mgrSession, wsPod string) {
+	t.Helper()
+
+	// --- E: composed file → wire → store, byte-identical -------------------------
+	var charter strings.Builder
+	for i := 0; i < 130; i++ {
+		charter.WriteString("### Charter section number ")
+		charter.WriteString(strconv.Itoa(i))
+		charter.WriteString("\nDistinct numbered guidance payload ")
+		charter.WriteString(strconv.Itoa(i))
+		charter.WriteString(" for the worker.\n")
+	}
+	content := charter.String()
+	require.Greater(t, len(content), 4096)
+	path := filepath.Join(t.TempDir(), "charter.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "file-backed charter",
+		"description_file":     path,
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, resp.Status)
+
+	var fileTask struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &fileTask))
+	var storedDesc string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
+	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
+
+	// --- F: composed corruption refusal — nothing stored ------------------------
+	before := boardE2EEventCount(t, pool)
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "corrupted",
+		"description":          "prefix " + strings.Repeat("Retry the loop step and continue. ", 50) + " suffix",
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), board.GuardTextRejected)
+	assert.Equal(t, before, boardE2EEventCount(t, pool), "a refused write stores nothing")
 }
