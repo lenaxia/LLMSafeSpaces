@@ -1110,6 +1110,15 @@ func (c *Client) BoardManagerTaskAction(ctx context.Context, saToken, workspaceI
 		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/%s", taskID, verb), json.RawMessage(`{}`))
 }
 
+// BoardRearmTask is the attempts-exhaustion re-pool (#1832 WS3).
+func (c *Client) BoardRearmTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/rearm", taskID), body)
+}
+
 // BoardManagerMoveStage is the manager-grade stage move (#1832 WS2):
 // the orchestrator-class session's path — same canonical MoveStage,
 // manager-grade agent surface, session-attributed audit.

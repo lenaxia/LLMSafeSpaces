@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Task Board: re-arm, the attempts-exhaustion re-pool (issue #1832, lane board-stage-hygiene WS3)
+
+- **`POST /api/v1/me/tasks/:id/rearm`** (and `board_rearm_task` on
+  both MCP surfaces, the pod seam manager route, and the agentd
+  manager catalog): a task parked at `pending_input/escalated`
+  (attempts at the cap — the engine withheld the grant) returns to
+  `backlog` with attempts reset to 0 — a fresh-judgment ledger whose
+  pre-reset count rides the `rearm` audit event. The failure overlay
+  and cooldown clear (a re-arm is not a failure) and the row is
+  claimable immediately. Only escalated rows; other stages and
+  origins keep their enumerated transitions.
+- **UI deferral is a flagged ticket, not a silent gap** (standing
+  directive #20): the REST surface is live for a swimlane affordance.
+
 ### Added — Task Board: manager-grade pending_input exits (issue #1832, lane board-stage-hygiene WS2)
 
 - **The pod seam's manager projection gains a manager-grade move

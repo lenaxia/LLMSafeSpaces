@@ -61,7 +61,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		// Manager set (#1747): tasks + dependencies + plan.
 		"board_create_task", "board_update_task", "board_add_dependency",
 		"board_remove_dependency", "board_delete_task", "board_pause_task",
-		"board_resume_task", "board_import_plan",
+		"board_resume_task", "board_rearm_task", "board_import_plan",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
