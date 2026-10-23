@@ -28,9 +28,11 @@ name: Numbering Gate
 #   clean, no prior red → nothing (absence of the check = fine; the
 #   PR's own Lint run already covered at-push evaluation).
 #
-# The per-PR decision is pkg/repolint's NumberingGateDecision — this
-# workflow only gathers inputs and executes the action, so the matrix
-# (including clear-on-heal) is pinned by gate_test.go, not by bash.
+# The per-PR decision matrix (redden / clear-on-heal / noop) is pinned
+# by pkg/repolint's NumberingGateDecision (gate_test.go); the bash below
+# re-implements the same three-line matrix from the gathered inputs —
+# kept in lockstep deliberately so the decision is testable in Go while
+# the workflow stays self-contained.
 #
 # NOT a pull_request workflow: at PR-push time ci.yml's Lint (full
 # repolint on merge-checkout) is already the evaluation; duplicating it
@@ -75,6 +77,11 @@ concurrency:
 permissions:
   contents: read
   checks: write
+  # gh pr list (PR enumeration) reads via GraphQL; sibling workflows
+  # pair gh pr usage with an explicit grant. Failure is loud (the
+  # enumeration guard exits 1), but the grant removes the dependency
+  # on the repo being public (delegated-review follow-up).
+  pull-requests: read
 
 jobs:
   recheck:
