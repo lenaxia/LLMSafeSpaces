@@ -38,8 +38,14 @@ import (
 
 type uploadCaptureTransport struct {
 	server *httptest.Server
-	mu     sync.Mutex
-	urls   []string
+	// holdbackBytes, when > 0, wraps every outgoing request body in a
+	// holdbackReader that withholds the final holdbackBytes until EOF —
+	// a deterministic, exaggerated stand-in for the legitimate mid-stream
+	// pipeline holdback (multipart boundary disambiguation, buffer
+	// residue) pinned after #1842.
+	holdbackBytes int64
+	mu            sync.Mutex
+	urls          []string
 }
 
 func (t *uploadCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -48,6 +54,9 @@ func (t *uploadCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 	t.mu.Unlock()
 	req.URL.Scheme = "http"
 	req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	if t.holdbackBytes > 0 && req.Body != nil {
+		req.Body = io.NopCloser(&holdbackReader{r: req.Body, keep: t.holdbackBytes})
+	}
 	return http.DefaultTransport.RoundTrip(req)
 }
 
@@ -64,6 +73,50 @@ func (t *uploadCaptureTransport) requestURL(i int) string {
 		return ""
 	}
 	return t.urls[i]
+}
+
+// holdbackReader forwards everything it reads except a rolling keep-byte
+// tail, released only at EOF — mimicking, exaggerated ~2500x, the
+// multipart boundary-disambiguation holdback (a part-stream tail that
+// prefix-matches "\r\n--<boundary>" is withheld until more input arrives)
+// that deadlocked the zero-slack handshake of #1842.
+type holdbackReader struct {
+	r    io.Reader
+	keep int64
+	buf  []byte
+	eof  bool
+}
+
+func (h *holdbackReader) Read(p []byte) (int, error) {
+	for {
+		if !h.eof && int64(len(h.buf)) <= h.keep {
+			tmp := make([]byte, 32*1024)
+			n, err := h.r.Read(tmp)
+			h.buf = append(h.buf, tmp[:n]...)
+			if err == io.EOF {
+				h.eof = true
+			} else if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		releasable := int64(len(h.buf))
+		if !h.eof {
+			releasable -= h.keep
+		}
+		if releasable <= 0 {
+			if h.eof && len(h.buf) == 0 {
+				return 0, io.EOF
+			}
+			continue
+		}
+		if releasable > int64(len(p)) {
+			releasable = int64(len(p))
+		}
+		n := copy(p, h.buf[:releasable])
+		h.buf = h.buf[n:]
+		return n, nil
+	}
 }
 
 // fakeAgentdRecording is what the fake agentd observed for one PUT.
@@ -352,8 +405,28 @@ func TestUpload_ForwardsBasicAuthAndTargetsAgentdUserMux(t *testing.T) {
 // handshake (producer waits for the agentd-read signal before writing the
 // final chunk; a buffering API would never dial agentd until the producer
 // finished, which it never does) and the test fails on the 10s timeout. ---
+//
+// #1842 lesson — the handshake needs SLACK. The pipeline between producer
+// and agentd legitimately withholds a bounded tail of the body mid-stream:
+// mime/multipart's partReader holds back any window tail that prefix-matches
+// "\r\n--<boundary>" (boundary disambiguation — released when more input
+// arrives or at EOF), and bufio/copy layers buffer KBs while pumping. A
+// handshake that refuses to write more until agentd confirms receipt of
+// EXACTLY the pre-gate byte count (threshold == total pre-gate data)
+// deadlocks whenever that withheld tail is non-empty — on main this fired
+// ~1/256 runs (random part content ending in '\r'), a false "API buffered
+// the body". streamSignalThreshold is HALF the pre-gate data, so any
+// legitimate holdback (≤ ~26 bytes multipart + buffer residue) is absorbed
+// while a fully-buffering API still hands agentd nothing and deadlocks.
 
-const cap1MiB = int64(1 << 20)
+const (
+	cap1MiB               = int64(1 << 20)
+	streamSignalThreshold = 512 * 1024
+	// hopHoldbackBytes is the injected agentd-hop holdback of the U1.2.3b
+	// pin: ~2500x the largest legitimate holdback, still far inside the
+	// threshold slack.
+	hopHoldbackBytes = int64(64 * 1024)
+)
 
 // thresholdSignalingReader closes ch once threshold bytes have been read —
 // proves the agentd hop is receiving file bytes WHILE the client is still
@@ -376,11 +449,34 @@ func (t *thresholdSignalingReader) Read(p []byte) (int, error) {
 }
 
 func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
+	runStreamingUploadHandshake(t, nil)
+}
+
+// --- U1.2.3b hop-holdback pin (#1842): the agentd hop may legitimately
+// withhold a bounded tail of the streamed body mid-stream (multipart
+// boundary disambiguation, buffer residue). The streaming handshake must
+// tolerate a holdback far larger than any legitimate one and still
+// complete; under the pre-#1842 zero-slack threshold this reds
+// deterministically (agentd stalls at total-holdback < threshold). ---
+
+func TestUpload_Streams_ToleratesHopHoldback(t *testing.T) {
+	runStreamingUploadHandshake(t, func(uc *uploadCaptureTransport) {
+		uc.holdbackBytes = hopHoldbackBytes
+	})
+}
+
+// runStreamingUploadHandshake drives the U1.2.3 streaming proof: a
+// 1 MiB + tail file part streamed through the API under a producer that
+// refuses to write the tail until the fake agentd confirms receipt of
+// streamSignalThreshold bytes. decorateTransport optionally arms the
+// deterministic hop-holdback injection (U1.2.3b).
+func runStreamingUploadHandshake(t *testing.T, decorateTransport func(*uploadCaptureTransport)) {
+	t.Helper()
 	agentdHasMiB := make(chan struct{})
 	agentdSum := make(chan []byte, 1)
 	var signalOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sig := &thresholdSignalingReader{r: r.Body, threshold: cap1MiB, ch: agentdHasMiB, once: &signalOnce}
+		sig := &thresholdSignalingReader{r: r.Body, threshold: streamSignalThreshold, ch: agentdHasMiB, once: &signalOnce}
 		h := sha256.New()
 		n, err := io.Copy(h, sig)
 		if err != nil {
@@ -391,7 +487,11 @@ func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
 		agentdSum <- h.Sum(nil)
 	}))
 	t.Cleanup(srv.Close)
-	env := newUploadEnv(t, &uploadCaptureTransport{server: srv})
+	transport := &uploadCaptureTransport{server: srv}
+	if decorateTransport != nil {
+		decorateTransport(transport)
+	}
+	env := newUploadEnv(t, transport)
 	env.handler.SetUploadLimitsForTest(2*cap1MiB, 0)
 	env.setupPassword(t, "test-password")
 	env.setupWorkspace(t, activeUploadWS())
@@ -401,6 +501,12 @@ func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
 	chunk3 := []byte("tail")
 	_, _ = rand.Read(chunk1)
 	_, _ = rand.Read(chunk2)
+	// Deterministic multipart-holdback trigger (#1842): the part stream's
+	// final pre-gate byte is '\r', so mime/multipart's boundary
+	// disambiguation withholds it until chunk3 arrives — the exact byte
+	// that intermittently deadlocked the zero-slack handshake on main.
+	// With streamSignalThreshold slack the handshake must sail past it.
+	chunk2[len(chunk2)-1] = '\r'
 	want := append(append(append([]byte{}, chunk1...), chunk2...), chunk3...)
 
 	// Design 0060 §4.1: undeclared bodies 411, so this streaming test
@@ -446,7 +552,7 @@ func TestUpload_Streams_WithoutFullBuffering(t *testing.T) {
 		select {
 		case <-agentdHasMiB:
 		case <-time.After(10 * time.Second):
-			producerErr <- errors.New("streaming violation: agentd received nothing while producer was still writing — API buffered the body")
+			producerErr <- fmt.Errorf("streaming violation: agentd had not received the %d-byte streaming threshold while the producer was still writing — API buffered the body", streamSignalThreshold)
 			_ = pw.Close()
 			return
 		}
