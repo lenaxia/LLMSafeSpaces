@@ -113,6 +113,24 @@ type BridgeWithInternal interface {
 	ContextUsedWithInternal(workspaceID, sessionID, internalID string, used int64)
 }
 
+// BridgeResync is the #1884 optional extension: a bridge that wants to
+// be told when a snapshot seed lands that is NOT the gate's first — a
+// reconnect's first fold after a silent stream death, or the in-stream
+// reseed redial. Frames since the previous seed may have been lost with
+// every downstream surface healthy (the user stream never saw a drop,
+// so its #1646/#1687 heals never fire); the notification is the cue for
+// the handler layer to run its authority-flight reconciliation (the
+// busy-snapshot handshake) so subscribers converge onto ground truth.
+// Bridges that do not implement it are unaffected.
+type BridgeResync interface {
+	Bridge
+	// StreamResynced fires once per NON-INITIAL snapshot seed (the
+	// gate's first connection fires nothing — nothing was lost before
+	// it). Not a diff: an agreeing fold still fires (browser-side
+	// latches are state the gate cannot compare against).
+	StreamResynced(workspaceID string)
+}
+
 // emitSessionStatus routes the busy emission through the additive seam
 // when the bridge supports it, else the plain one. The ADDITIVE id is
 // evt.GetInternalSessionId() — the RAW agentd field, EMPTY for legacy /
@@ -235,6 +253,12 @@ type gate struct {
 	// snapshot frame) as not-yet-applied — the reconnect reconcile
 	// rebuilds derived from it.
 	seededFold bool
+	// snapshotSeeds counts the snapshot seeds this gate has applied
+	// (#1884): the initial connect's seed and every subsequent one (a
+	// reconnect's first fold, the in-stream reseed redial). A seed
+	// beyond the first means frames since the previous seed may have
+	// been lost — the bridge's StreamResynced cue.
+	snapshotSeeds int
 	// consultFails counts consecutive-or-not consult failures for the
 	// rate-limited observability warn (first + every 50th).
 	consultFails int
@@ -441,6 +465,7 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		}
 	}
 	var corrections []bridgeCorrection
+	resyncSeed := false
 	g.mu.Lock()
 	if !g.seededFold {
 		// Reconnect reconcile (#1602): the connection's first
@@ -452,6 +477,13 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		// BusyComponents (carried since the clone fix) are the derived
 		// truth verbatim.
 		g.seededFold = true
+		g.snapshotSeeds++
+		// #1884: a seed beyond the gate's first is a reconnect/reseed
+		// snapshot — frames since the previous seed may have been lost
+		// silently (the stream is replay-less) while every downstream
+		// surface stayed healthy. Fire the bridge's resync cue after
+		// the corrections (both outside the lock).
+		resyncSeed = g.snapshotSeeds > 1
 		rebuilt := map[string]bool{}
 		for sid, s := range st.Sessions {
 			// #1817 piece 3: key the fold's derived baseline by the INTERNAL
@@ -507,6 +539,16 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 			continue
 		}
 		c.cfg.Bridge.SessionStatus(workspaceID, corr.sessionID, corr.busy)
+	}
+	// #1884: the non-initial seed's resync cue — the corrections above
+	// heal only the busy DIFFS the gate can compute; the authority
+	// flight the handler layer runs on this cue heals the rest (browser
+	// latches, sessions absent from the fold). Non-implementing bridges
+	// are unaffected.
+	if resyncSeed {
+		if b, ok := c.cfg.Bridge.(BridgeResync); ok {
+			b.StreamResynced(workspaceID)
+		}
 	}
 }
 
