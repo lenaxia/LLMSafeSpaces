@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Fixed — Longhorn RecurringJob snapshot cron invalid day-of-week; deploy-tree cron validity guard (#1905, cross-repo)
+
+- **The `default-snapshot` RecurringJob's cron `0 1 * * 8` is corrected
+  to `0 1 * * *` (daily 01:00)** in lenaxia/talos-ops-prod
+  (`kubernetes/apps/storage/longhorn/app/recurring-jobs.yaml`,
+  PR talos-ops-prod#2795). Day-of-week 8 is outside the valid 0-7
+  range — `8` being the missed-Shift form of `*` (Shift+8) — so
+  Longhorn's robfig parser rejected the job and scheduled snapshots
+  never ran as declared. The daily cadence matches the job's own
+  `dailySnapshot` label (sibling convention: `0 0 * * 1` ↔
+  `weeklyBackup`); intent verification posted to the issue. Owner
+  ruling: the Longhorn recurring-jobs/backup posture is intentionally
+  dormant (prod backups run on Kopia via the kyverno
+  snapshot-cronjob-controller path) — this is latent correctness of
+  the declared manifest, no re-enable.
+- **A red-first deploy-tree cron validity guard** now parses every
+  literal cron expression under the ops repo's `kubernetes/` tree
+  (`cron:`/`schedule:` string fields) against a 5-field validator with
+  standard ranges (minute 0-59, hour 0-23, dom 1-31, month 1-12, dow
+  0-7) — the same class as the platform trigger validator. Six-field
+  CloudNative-PG schedules validate seconds 0-59 plus the standard
+  five; `@`-shorthands form-checked; sops ciphertext and `${...}`
+  templates excluded; unparseable files frozen behind an explicit
+  allowlist; walker-regression pins (harvest floor + longhorn
+  coverage) prevent vacuous passes. Red pin `733bce3d` (guard alone:
+  1 failed, 55 passed — failing exactly on the dow 8), green
+  `6d9a5aa3` (56 passed).
+
 ### Fixed — session_index.message_count drift to 0 on live sessions: listing serve-through, loud skips, and rebuild rotation (#1880)
 
 - **The sidebar's session list now serves the HARNESS-walked message
