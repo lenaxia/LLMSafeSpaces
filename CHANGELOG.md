@@ -944,6 +944,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
   18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
   untouched).
+
+### Fixed — CI flake: TestRequestSessionStatusSnapshot_Coalesces coalescing precondition now established, not hoped for (issue #1907)
+
+- **The `-short`+coverage-suite flake (run 39914818351, "got 2")** was a
+  test-design flaw, not a product race: the on-demand snapshot
+  trigger's coalescing guard (`busyFlightsInFlight`, an atomic CAS)
+  coalesces a second request only **while a flight is running** for
+  that workspace — after a flight completes, a new trigger legitimately
+  starts a new flight. The old test fired two POSTs "nearly
+  simultaneously" and hoped both guards landed inside the first
+  flight's sub-millisecond window (the statusz stub answers instantly);
+  under CI load the second POST's dial+handler latency exceeded that
+  window, the second trigger legitimately spawned its own flight, and
+  the monotonic fetch counter read 2 with `assert.Eventually(==1)`
+  unable to ever recover (the 2.01 s signature).
+- **The rewrite parks the first authority fetch in the stub and fires
+  the second trigger only once that fetch is provably mid-flight** —
+  the map entry cannot be gone yet (Delete runs only after the fetch
+  returns), so the second guard MUST coalesce. Four independent nets
+  assert it: the parked-phase fetch count, a stub-side flag on any
+  second fetch whenever it lands, a pre-release `snapshot_complete`
+  drain (impossible while the only flight is parked), and a
+  post-settle cleanup verdict. Mutation-verified red-first at 613238f3
+  under BOTH causal classes — a neutered guard and an early Delete
+  (the steady-state analogue of what CI load did transiently) — each
+  deterministic 3/3 under `-race`. No production code changed; no
+  sleeps/retries/skips added.
+- Companion verification (no diff): the #1842 upload-stream fix
+  (2a300c9d) re-verified on current main — `-race -count=50` green and
+  its mutation recipe (threshold → `cap1MiB`) re-confirmed to redden
+  both streaming tests deterministically.
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
