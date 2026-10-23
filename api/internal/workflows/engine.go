@@ -982,7 +982,13 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// leg even when the gate opens — the gate ran for its side effects,
 	// which IS the delivery. The prompt-less no-script shape keeps its
 	// legacy behavior (an agent leg fires, as before).
-	if trigger.ScriptLanguage != "" && prompt == "" {
+	// #1882 gap a: ScriptPath-only + empty prompt is script-only work
+	// too — the pre-script ran sessionless for its side effects; the
+	// fall-through minted an ephemeral carrier per fire for an EMPTY
+	// prompt. Owner framing: "we shouldn't need to create a session to
+	// run a script." (#1878 keeps the where-scripts-run lane; this is
+	// only the agent-leg gate.)
+	if (trigger.ScriptLanguage != "" || trigger.ScriptPath != "") && prompt == "" {
 		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, nil, "delivered")
 		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
 		logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", "delivered", "scriptOnly", true)
