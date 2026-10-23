@@ -12,18 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A zero-run PR head no longer stalls silently.** Every 10 minutes
   the new `run-watchdog` sweep enumerates open PRs; a head ≥15 min old
-  carrying ZERO total check-runs and no Actions skip marker is a #1844
-  delivery fault → namespaced comment on the PR (tagging #1844 so
-  instances accumulate as evidence; deduplicated per head SHA via the
-  `<!-- run-watchdog: fault sha=... -->` marker shared with the
-  pr-review.yml dispatch shim) + `workflow_dispatch` of ci.yml on the
-  branch — the recovery verified live during the 2026-10-23
-  branch-scoped suppression. Auto-retrigger is OPT-OUT (label
-  `watchdog:no-auto-retrigger`): the fault is silent and GitHub-side
-  (an opt-in default would have caught zero of the four documented
-  instances), a dispatch is side-effect-free, and amplification is
-  double-capped by comment dedup and the predicate itself (a dispatched
-  run creates check-runs on the same SHA → the fault clears).
+  carrying ZERO total check-runs (pr-review.yml is the universal
+  check-runs producer — every pull_request, no branch/paths filter)
+  and no Actions skip marker is a #1844 delivery fault → namespaced
+  comment on the PR (tagging #1844 so instances accumulate as
+  evidence; deduplicated per head SHA via the `<!-- run-watchdog:
+  fault sha=... -->` marker — the identical literal pr-review.yml's
+  dispatch-recovery shim posts once that PR merges) +
+  `workflow_dispatch` of ci.yml on the branch — the recovery verified
+  live during the 2026-10-23 branch-scoped suppression. Auto-retrigger
+  is OPT-OUT (label `watchdog:no-auto-retrigger`) and HONEST about its
+  cost: a dispatched ci.yml run pushes a sha-/ts- image set from the
+  unmerged branch, so amplification is capped at exactly-once per head
+  SHA (the dispatch consults the same per-SHA marker as the comment),
+  and the predicate clears once the dispatched run registers
+  check-runs. The default stays ON because the fault is silent and
+  GitHub-side — an opt-in default would have caught zero of the four
+  documented instances.
 - **The detection predicate lives in tested Go, not bash**
   (`pkg/runwatchdog`, red-first: the skip-ci, dedup, label, and
   comment-contract tests were verified failing against the naive

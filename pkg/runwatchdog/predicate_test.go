@@ -129,13 +129,14 @@ func TestEvaluate_OneCheckRunSufficesNotFault(t *testing.T) {
 	}
 }
 
-// TestEvaluate_DedupMarkerSuppressesComment — one fault comment per
-// head SHA (the ai-workflows verdict-marker pattern): an existing
-// marker for the SAME sha keeps commenting quiet while the fault
-// persists, but dispatch stays armed (predicate-clear self-limiting:
-// a dispatched CI run creates check-runs on the same SHA and clears
-// the fault entirely).
-func TestEvaluate_DedupMarkerSuppressesComment(t *testing.T) {
+// TestEvaluate_MarkerSuppressesCommentAndDispatch — one marker per
+// head SHA gates BOTH recovery actions (the ai-workflows verdict-marker
+// pattern, extended to the dispatch per the r1 review: a dispatched
+// ci.yml run PUSHES a sha-/ts- image set from the unmerged branch, so
+// repeat dispatches per sweep would publish repeat image sets —
+// exactly-once-per-head is the amplification cap). The fault itself
+// still stands (the head still has zero runs).
+func TestEvaluate_MarkerSuppressesCommentAndDispatch(t *testing.T) {
 	s := baseState()
 	s.ExistingMarkerSHAs = []string{s.HeadSHA}
 	d := Evaluate(s)
@@ -145,19 +146,40 @@ func TestEvaluate_DedupMarkerSuppressesComment(t *testing.T) {
 	if d.ShouldComment {
 		t.Error("marker for the same head SHA must suppress the comment")
 	}
-	if !d.ShouldDispatch {
-		t.Error("dispatch stays armed while the fault persists (self-limited by predicate-clear)")
+	if d.ShouldDispatch {
+		t.Error("marker for the same head SHA must suppress the dispatch too — a ci.yml dispatch publishes an image set from the unmerged branch; exactly-once-per-SHA is the cap")
 	}
 }
 
 // TestEvaluate_DedupMarkerOtherSHAIgnored — markers pinned to OLDER
-// heads do not suppress the comment for a NEW suppressed head.
+// heads suppress NEITHER action for a NEW suppressed head (a new push
+// resets the per-SHA dedup space).
 func TestEvaluate_DedupMarkerOtherSHAIgnored(t *testing.T) {
 	s := baseState()
 	s.ExistingMarkerSHAs = []string{"1111111111111111111111111111111111111111"}
 	d := Evaluate(s)
 	if !d.ShouldComment {
 		t.Error("marker on a different SHA must not suppress this head's comment")
+	}
+	if !d.ShouldDispatch {
+		t.Error("marker on a different SHA must not suppress this head's dispatch")
+	}
+}
+
+// TestEvaluate_MarkerAndLabelBothSuppressDispatch — the per-SHA dedup
+// and the opt-out label are independent dispatch suppressors; with
+// both present the comment stays suppressed by the marker and the
+// dispatch by either (combination pin — the r2 semantics).
+func TestEvaluate_MarkerAndLabelBothSuppressDispatch(t *testing.T) {
+	s := baseState()
+	s.ExistingMarkerSHAs = []string{s.HeadSHA}
+	s.NoAutoRetrigger = true
+	d := Evaluate(s)
+	if !d.Fault {
+		t.Fatal("fault persists")
+	}
+	if d.ShouldComment || d.ShouldDispatch {
+		t.Errorf("marker+label must suppress both actions, got comment=%v dispatch=%v", d.ShouldComment, d.ShouldDispatch)
 	}
 }
 

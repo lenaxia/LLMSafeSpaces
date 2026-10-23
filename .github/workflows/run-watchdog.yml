@@ -12,10 +12,13 @@ name: Run Watchdog
 #
 # WHAT THIS DOES (every 10 minutes): for each open PR, if the head SHA
 # is older than WATCHDOG_MIN_AGE_MINUTES (15) and carries ZERO total
-# check-runs (ci.yml triggers on every pull_request with no paths
-# filter, so ANY delivered synchronize produces at least its runs), and
-# the head commit does not carry an Actions skip marker ([skip ci] —
-# the renumber bot's commits legitimately produce no runs):
+# check-runs (pr-review.yml is the universal check-runs producer: it
+# triggers on every pull_request — opened/synchronize — with no branch
+# and no paths filter, so ANY delivered synchronize produces at least
+# its review-round runs; ci.yml also fires for this repo's PRs but
+# filters branches: [main]), and the head commit does not carry an
+# Actions skip marker ([skip ci] — the renumber bot's commits
+# legitimately produce no runs):
 #   1. post the namespaced #1844 fault comment — deduplicated per head
 #      SHA via the `<!-- run-watchdog: fault sha=... -->` marker (the
 #      same literal pr-review.yml's dispatch-recovery posts; pinned by
@@ -28,14 +31,19 @@ name: Run Watchdog
 #      workflow_dispatch events DO create runs (the documented
 #      recursion exemption).
 #
-# AUTO-RETRIGGER DEFAULT: OPT-OUT, not opt-in. Rationale (pinned in the
-# PR): the fault is silent and GitHub-side — nobody labels a PR in
-# advance for a fault they cannot see, and an opt-in default would have
-# caught ZERO of the four documented instances; a ci.yml dispatch is
-# side-effect-free (build+test, no pushes); amplification is capped by
-# comment dedup AND by the predicate itself — a dispatched run creates
-# check-runs on the SAME head SHA, so the fault (and with it the
-# dispatch) clears on the next sweep. Opt out per-PR with the label
+# AUTO-RETRIGGER DEFAULT: OPT-OUT, not opt-in. Honest cost (r1 review):
+# a workflow_dispatch of ci.yml PUSHES a sha-/ts- image set from the
+# UNMERGED branch (ci.yml pushes on every non-pull_request event) — the
+# dispatch is NOT side-effect-free. Amplification is capped at
+# EXACTLY-ONCE PER HEAD SHA: ShouldDispatch consults the same per-SHA
+# marker as the comment (pkg/runwatchdog Evaluate; a marker-present
+# head gets neither action), and the predicate itself clears once the
+# dispatched run registers check-runs on the same SHA. That bounds the
+# cron side effect to one image set per suppressed head — visible in
+# the fault comment, removable per-PR. The default stays ON (ratified):
+# the fault is silent and GitHub-side — nobody labels a PR in advance
+# for a fault they cannot see, and an opt-in default would have caught
+# ZERO of the four documented instances. Opt out per-PR with the label
 # `watchdog:no-auto-retrigger` (comment still posts — evidence stands).
 #
 # The decision matrix lives in pkg/runwatchdog (red-first,
@@ -71,6 +79,12 @@ permissions:
   # gh workflow run (ci.yml re-dispatch). workflow_dispatch created
   # with GITHUB_TOKEN is one of the two recursion exemptions.
   actions: write
+  # The core input: GET commits/{sha}/check-runs. Without this grant
+  # every check-runs call 403s under GITHUB_TOKEN, the per-PR guard
+  # skips every PR, and the sweep is SILENTLY INERT (r1 review critical
+  # — numbering-gate.yml grants checks: for the identical call). Pinned
+  # by TestRunWatchdogPermissionsPinned.
+  checks: read
 
 jobs:
   sweep:
@@ -116,10 +130,20 @@ jobs:
 
             # Existing fault markers on this PR (dedup input): every
             # comment body carrying the marker, SHA extracted.
-            local MARKERS_JSON
-            MARKERS_JSON=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
-              --jq '[.[] | .body | select(contains("run-watchdog: fault sha=")) | capture("run-watchdog: fault sha=(?<sha>[0-9a-f]+)").sha]' 2>/dev/null) \
-              || MARKERS_JSON='[]'
+            # --paginate: chatty PRs cross the 100-comment page and the
+            # PR's own recent markers land on page 2+ (r1 review) —
+            # without it the dedup breaks exactly on the PRs that argue
+            # most. Probe failure is LOUD (fails the sweep): a swallowed
+            # failure here reads as "no markers" and mints duplicate
+            # fault comments + image-publishing dispatches on every
+            # sweep — the never-a-silent-skip rule. The jq streams one
+            # SHA per hit per page; jq -R -s reassembles the pages into
+            # one JSON array.
+            local MARKER_LINES MARKERS_JSON
+            MARKER_LINES=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+              --jq '.[] | .body | select(contains("run-watchdog: fault sha=")) | capture("run-watchdog: fault sha=(?<sha>[0-9a-f]+)").sha') \
+              || { echo "::error::PR $PR: comment enumeration failed — aborting sweep (a swallowed failure breaks the per-SHA dedup)"; exit 1; }
+            MARKERS_JSON=$(printf '%s\n' "$MARKER_LINES" | jq -R -s 'split("\n") | map(select(length > 0))')
 
             local STATE DECISION
             STATE=$(jq -n \

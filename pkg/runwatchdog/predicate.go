@@ -98,23 +98,35 @@ func NaiveEvaluate(s PRState) Decision {
 //  2. the head commit message carries NO Actions skip marker
 //     ([skip ci] heads legitimately have zero runs),
 //  3. TOTAL check-runs on the head SHA is zero. Total, not
-//     per-workflow: ci.yml triggers on every pull_request with no
-//     paths filter, so ANY delivered synchronize produces at least its
-//     runs; path-filtered workflows legitimately skip, and keying on
-//     them would false-positive.
+//     per-workflow: pr-review.yml is the universal check-runs producer
+//     — it triggers on every pull_request (opened/synchronize) with no
+//     branch and no paths filter, so ANY delivered synchronize produces
+//     at least its review-round check runs. (ci.yml also fires for
+//     this repo's PRs but filters branches: [main]; the guarantee the
+//     predicate rests on is pr-review.yml's.)
 //
-// Recovery actions: comment (deduped per head SHA via FaultMarker —
-// the ai-workflows verdict-marker pattern) and, unless the
-// watchdog:no-auto-retrigger label opts out, dispatch ci.yml on the
-// branch. Dispatch is self-limiting: a dispatched run creates
-// check-runs on the SAME head SHA, so the fault (and with it the
-// dispatch) clears on the next sweep.
+// Recovery actions, both deduplicated per head SHA via FaultMarker
+// (the ai-workflows verdict-marker pattern):
 //
-// The auto-retrigger default is OPT-OUT, not opt-in: the fault is
-// silent and GitHub-side (four documented instances — nobody labels a
-// PR in advance for a fault they cannot see), a ci.yml dispatch is
-// side-effect-free (build+test, no pushes), and dedup + self-limiting
-// cap amplification.
+//   - comment: at most one fault comment per head SHA;
+//   - ci.yml dispatch: at most one per head SHA (ShouldDispatch also
+//     consults ExistingMarkerSHAs) — a workflow_dispatch of ci.yml
+//     PUSHES a sha-/ts- image set from the unmerged branch (ci.yml
+//     pushes on every non-pull_request event), so the dispatch is NOT
+//     side-effect-free; exactly-once-per-head bounds the publish to a
+//     single image set per suppressed head, visible in the fault
+//     comment and removable per-PR via the opt-out label. The default
+//     stays ON (ratified): the fault is silent and GitHub-side — an
+//     opt-in default would have caught ZERO of the four documented
+//     instances, since nobody labels a PR in advance for a fault they
+//     cannot see.
+//
+// Ordering note: if the comment POST fails but the dispatch fired, the
+// next sweep may dispatch once more (the marker is absent until the
+// comment lands) — bounded by the predicate itself: a dispatched run
+// creates check-runs on the SAME head SHA, clearing the fault. If the
+// comment lands but the dispatch fails, per-SHA dedup withholds further
+// dispatches; the comment carries the manual lever.
 func Evaluate(s PRState) Decision {
 	minAge := s.MinAge
 	if minAge == 0 {
@@ -131,14 +143,15 @@ func Evaluate(s PRState) Decision {
 		return Decision{Reason: fmt.Sprintf("%d check-run(s) present on head — delivery happened", s.TotalCheckRuns)}
 	}
 
-	// Fault: recovery actions.
+	// Fault: recovery actions, both deduplicated per head SHA.
 	d := Decision{
 		Number: s.Number,
 		Fault:  true,
 		Reason: fmt.Sprintf("head %s aged %s with zero check-runs — synchronize event presumed dropped (#1844)", shortSHA(s.HeadSHA), age.Truncate(time.Second)),
 	}
-	d.ShouldComment = !contains(s.ExistingMarkerSHAs, s.HeadSHA)
-	d.ShouldDispatch = !s.NoAutoRetrigger
+	already := contains(s.ExistingMarkerSHAs, s.HeadSHA)
+	d.ShouldComment = !already
+	d.ShouldDispatch = !s.NoAutoRetrigger && !already
 	if d.ShouldComment {
 		d.CommentBody = FaultCommentBody(s.HeadSHA, age, s.HeadBranch, d.ShouldDispatch)
 	}
