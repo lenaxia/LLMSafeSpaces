@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1878-script-exec-env`
-**Status:** implementation complete; PR opening
+**Status:** MERGE-READY — PR #1885 APPROVED on ecc132ef (2026-10-23T18:13Z), all checks green
 
 ---
 
