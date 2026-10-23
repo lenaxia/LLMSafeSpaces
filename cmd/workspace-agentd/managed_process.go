@@ -554,12 +554,26 @@ func opencodeServeCmd(bin string) *exec.Cmd {
 	cmd := exec.Command(bin, "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", agentd.AgentPort))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Design 0053 S2: /sandbox-runtime/bin leads PATH so the supervisor-
+	// Design 0053 §4.1/S2: /sandbox-runtime/bin leads PATH so the supervisor-
 	// installed redact wrapper resolves ahead of any baked binary.
 	// Design 0053 S3: opencodeChildEnv applies the relocated entrypoint
 	// exports on top (#942 containment).
-	cmd.Env = opencodeChildEnv(prependPathEnv(buildEnvFrom(agentd.SecretsEnvPath), filepath.Dir(redactWrapperPath())))
+	cmd.Env = opencodeBaseEnv()
 	return cmd
+}
+
+// opencodeBaseEnv is the ONE construction of the opencode child's base
+// environment (secrets-env sourced via buildEnvFrom, the redact-wrapper
+// PATH prepend, and the relocated entrypoint exports). The opencode
+// spawn (opencodeServeCmd) and #1878's script children
+// (script_exec's childEnv) both build on it so a script child sees
+// exactly the environment session tool children see — single
+// construction site, no drift. The secrets coordinate resolves through
+// the #1455 US-4b override seam (production: the env var is
+// sidecar-mode-only and never set in the containers that run this
+// code, so the default path applies; tests relocate it).
+func opencodeBaseEnv() []string {
+	return opencodeChildEnv(prependPathEnv(buildEnvFrom(secretsEnvPathFromEnv()), filepath.Dir(redactWrapperPath())))
 }
 
 // opencodeChildEnv applies the relocated entrypoint exports onto the

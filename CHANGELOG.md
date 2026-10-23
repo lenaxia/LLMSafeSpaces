@@ -217,6 +217,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows for the window's duration. The id_deprecated marker remains
   only for legacy rows and the degraded emission window.
 
+### Fixed — Trigger inline scripts + workflow script nodes execute in the workspace container (#1878)
+
+- **Scripts run in the environment the sessions run in (owner ruling,
+  2026-10-23).** Both trigger inline scripts (the `script` gate and the
+  legacy `script_path` pre-script) and workflow script nodes executed
+  inside agentd's own process — in sidecar mode
+  (`controller.agentdSidecar.enabled`) the FROM-scratch uid-2000
+  container with no `/tmp`, no interpreters, no `gh`, and a read-only
+  `/workspace`: workflow nodes failed `script_env_unavailable` and the
+  deployed trigger path failed SILENTLY (probe fire `delivered` in
+  0.77s, sentinel never created). Script execution now runs in the
+  WORKSPACE container in both topologies: single-container executes
+  in-process; sidecar mode forwards the handler over the design-0051
+  control socket (`script_exec` method — the `upload_apply`/
+  `disk_recover` long-held pattern) to the workspace-container
+  supervisor, which runs it via `scriptwrap` with the opencode spawn
+  environment (`opencodeBaseEnv()` — secrets-env sourced, redact PATH
+  prepend — plus the live spawn delta), so interpreters, mise shims,
+  `gh`, the credential belt, and `GH_TOKEN` resolve exactly as they do
+  for session tool children. `scriptwrap` gains `ExecuteWithEnv` (env-
+  explicit exec); the local EnvCheck text now names the single-container
+  cause.
+- **Script-only fires never mint a carrier session.** The #1812
+  sessionless early-return tested `ScriptLanguage` only, so a
+  `script_path`-only trigger with an empty prompt fell through to the
+  agent leg with an empty prompt — one ephemeral carrier session per
+  fire (the ~75 ghost-sessions/hour churn #1882 measured). The
+  condition now covers every script-bearing, prompt-less shape.
+- **Failures are loud in every topology.** The `script_exec` closed
+  error enum (`bad_request`, `script_env_unavailable`, `script_failed`,
+  `script_timeout`) maps onto the workflow error envelope with
+  fidelity (`bad_request` folds into `script_failed` — the local path's
+  deterministic-validation outcome, behavior parity); a dead
+  supervisor surfaces `script_env_unavailable` naming the control
+  socket; the #1812 gate carries script errors into the fire audit's
+  `actionResult.gate.error` — never a silent `delivered`. The legacy
+  pre-script leg was ErrorCode-blind (HTTP-200 error envelopes read as
+  success); it now fails the fire LOUD (error log + accounting), and
+  records the cause in `actionResult.script.error` without clobbering
+  an open gate's audited outcome (review F1/F-A/F-C — without this, a
+  failed `script_path`-only trigger laundered to `delivered` + a
+  failure-counter reset).
+- The #1455/#1812 nightly e2e contracts flip from "sidecar fails loud
+  with `script_env_unavailable`" to "the script executes in BOTH
+  modes" (marker + in-workspace side effect asserted). The execution
+  environment contract is documented in `docs/api/mcp.md`.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored

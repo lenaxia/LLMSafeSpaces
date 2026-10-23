@@ -971,13 +971,50 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// #1458: the pre-script leg rides the same bounded transient
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
+		// #1878 review F1: agentd surfaces script failures as HTTP-200
+		// error ENVELOPES (err == nil, ErrorCode set) — the gate and
+		// agent legs classify those; this leg was ErrorCode-blind, so a
+		// failed pre-script on a script-only trigger fell into the
+		// sessionless early-return below as delivered (+ a failure-
+		// counter reset) — the silent-delivered class, pre-script
+		// edition. A non-empty ErrorCode is a leg failure: fail loud,
+		// account it, and carry the cause in the fire audit.
 		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil, nil)
+		if scriptResp != nil && scriptResp.ErrorCode != "" {
+			err = fmt.Errorf("%s: %s", scriptResp.ErrorCode, scriptResp.Detail)
+		}
 		if err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
+			cause := fmt.Sprintf("script failed: %v", err)
+			errMsg, _ := json.Marshal(map[string]string{"error": cause})
 			resultData = errMsg
 			resultStatus = "failed"
+			// #1878 review r2 F-C: UpdateTriggerFireAction REPLACES the
+			// action payload — a trigger whose gate OPENED (its
+			// {gate:{proceed,vars}} already audited at the gate leg)
+			// must not have that outcome clobbered by the pre-script's
+			// failure, so the failure arm carries BOTH keys.
+			action := map[string]any{"script": map[string]string{"error": cause}}
+			if trigger.ScriptLanguage != "" {
+				// The gate leg only reaches here when it OPENED
+				// (closed/failed gates returned above), so the preserved
+				// outcome is reconstructible in-place: proceed=true plus
+				// its vars.
+				inner := map[string]any{"proceed": true}
+				if len(gateVars) > 0 {
+					inner["vars"] = gateVars
+				}
+				action["gate"] = inner
+			}
+			actionPayload, _ := json.Marshal(action)
+			if aerr := s.Store.UpdateTriggerFireAction(ctx, fireID, actionPayload); aerr != nil {
+				logger.Error(aerr, "routine: failed to record pre-script failure", "triggerId", trigger.ID, "fireId", fireID)
+			}
 			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
 			s.accountTriggerFailure(ctx, trigger)
+			// #1878 review r2 F-A: the arm is LOUD — a failed pre-script
+			// fire must leave a log line (the gate leg's fail-closed
+			// discipline, engine_gate.go), not only a DB row.
+			logger.Error(fmt.Errorf("%s", cause), "routine: pre-script failed — no LLM call", "triggerId", trigger.ID, "fireId", fireID)
 			return
 		}
 		if scriptResp.Output != nil {
@@ -990,7 +1027,14 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// leg even when the gate opens — the gate ran for its side effects,
 	// which IS the delivery. The prompt-less no-script shape keeps its
 	// legacy behavior (an agent leg fires, as before).
-	if trigger.ScriptLanguage != "" && prompt == "" {
+	// #1878 (via #1882's trace): ScriptPath-only + empty prompt is
+	// script-only TOO — the pre-script leg above ran for its side
+	// effects. The old condition tested ScriptLanguage only, so this
+	// shape fell through to the agent leg with an EMPTY prompt and
+	// minted an ephemeral carrier session per fire (~75 ghost
+	// sessions/hour/workspace measured in #1882). Script-only fires
+	// NEVER reach the agent leg.
+	if (trigger.ScriptLanguage != "" || trigger.ScriptPath != "") && prompt == "" {
 		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, nil, "delivered")
 		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
 		logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", "delivered", "scriptOnly", true)

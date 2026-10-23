@@ -184,6 +184,8 @@ The handler defines `handler(input) -> {"proceed": <bool>, "vars": {<str>: <str>
 
 `script` is routine-only: setting it alongside `workflow_id` is rejected with a self-teaching 400 (a workflow's DAG carries its own script/condition nodes).
 
+**Execution environment (#1878)** — gate scripts and workflow script nodes execute in the **workspace container**, the same environment the sessions run in: the workspace filesystem (`/workspace`, `/tmp`), the interpreter toolchains (mise-installed `python3`/`node`), `gh` and the credential belt on `PATH`, and the materialized secrets env (`GH_TOKEN` et al. — exactly what a session bash child sees). Scripts are **sessionless**: no opencode session is created to run one. In single-container mode the handler executes in-process inside the workspace container; in sidecar mode (`controller.agentdSidecar.enabled`) the dispatch forwards over the pod's control socket to the workspace-container supervisor, which runs it with the opencode spawn environment. A failing script surfaces its error loudly — the trigger fire audit carries `actionResult.gate.error`, a workflow node run carries the `script_failed`/`script_env_unavailable`/`script_timeout` error code with stderr detail — never a silent `delivered`.
+
 **Worked example** — a nightly digest that only spends an LLM call when work accumulated:
 
 ```jsonc

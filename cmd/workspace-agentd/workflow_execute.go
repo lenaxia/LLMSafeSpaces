@@ -123,6 +123,15 @@ var registry = newNodeExecRegistry()
 // design). extraAuth carries additional ACCEPTED credentials (the
 // agentdPassword in sidecar mode; D6.1 mixed-generation window).
 func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.HandlerFunc {
+	return workflowExecuteHandlerForward(nil, workspacePassword, extraAuth...)
+}
+
+// workflowExecuteHandlerForward is workflowExecuteHandler with the #1878
+// script forwarder: in sidecar mode (fwd != nil) script nodes execute in
+// the WORKSPACE container via the control socket; nil runs them
+// in-process (single-container mode — the mux is already in the
+// workspace container there).
+func workflowExecuteHandlerForward(fwd scriptExecForwarder, workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuthAny(r, append([]string{workspacePassword}, extraAuth...)...) {
 			rejectUnauthorized(w)
@@ -163,7 +172,7 @@ func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.
 
 		switch req.NodeType {
 		case "script":
-			execScriptNode(ctx, w, &req)
+			execScriptNode(ctx, w, &req, fwd)
 		case "http":
 			execHTTPNode(ctx, w, &req)
 		case "condition":
@@ -218,7 +227,7 @@ func workflowDeleteSessionHandler(workspacePassword string, extraAuth ...string)
 	}
 }
 
-func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest) {
+func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest, fwd scriptExecForwarder) {
 	var data wf.ScriptNodeData
 	if err := json.Unmarshal(req.Spec, &data); err != nil {
 		writeWorkflowError(w, http.StatusBadRequest, "invalid_node_data", fmt.Sprintf("cannot parse script spec: %v", err))
@@ -234,20 +243,76 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 	}
 
 	lang := scriptwrap.Language(data.Language)
-	// #1455: probe Execute's prerequisites (writable temp dir,
-	// interpreter on PATH) before running. In sidecar mode agentd
-	// serves this mux from the FROM-scratch sidecar — no /tmp, no
-	// toolchains — and the raw failure is an incidental
-	// "create temp dir: stat ..." script_failed. The named code makes
-	// the environment contract loud and keeps the failure
-	// deterministic for the engine (outside the retry class by
-	// construction: an environment does not heal in 2s).
-	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
-		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
-			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) agentd serves workflow nodes from a scratch container without /tmp or interpreters — script nodes require the workspace container environment (epic-64 script contract; #1455). On a single-container pod this instead indicates a broken TMPDIR/PATH in the workspace container.", envErr))
+
+	// #1878: in sidecar mode the script executes in the WORKSPACE
+	// container (the session environment) — this mux serves from the
+	// FROM-scratch uid-2000 sidecar (no /tmp, no interpreters, no gh,
+	// read-only /workspace), so the handler forwards over the
+	// Appendix-A control socket to the supervisor, which runs it with
+	// the opencode spawn env. Failures ride the closed enum loudly.
+	if fwd != nil {
+		timeoutMS := int64(scriptExecDefaultTimeout / time.Millisecond)
+		if dl, ok := ctx.Deadline(); ok {
+			timeoutMS = time.Until(dl).Milliseconds()
+		}
+		params := map[string]any{
+			"language":   data.Language,
+			"handler":    data.Handler,
+			"timeout_ms": timeoutMS,
+		}
+		if len(req.Input) > 0 {
+			params["input"] = json.RawMessage(req.Input)
+		}
+		outcome, werr := fwd(ctx, params)
+		if werr != nil {
+			switch werr.Code {
+			case scriptExecErrTimeout:
+				writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", werr.Message)
+			case scriptExecErrEnvUnavailable:
+				writeWorkflowError(w, http.StatusOK, "script_env_unavailable", werr.Message)
+			case scriptExecErrTransport:
+				writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
+					fmt.Sprintf("cannot reach the workspace-container supervisor over the control socket (sidecar mode, #1878): %s — script nodes execute in the workspace container; the supervisor may be restarting", werr.Message))
+			case scriptExecErrBadRequest:
+				// Behavior parity with the LOCAL path: deterministic
+				// validation failures (unsupported language et al.)
+				// surface as script_failed there (scriptwrap's
+				// "unsupported language" error text) — the forwarded
+				// bad_request maps to the SAME envelope code, message
+				// verbatim.
+				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
+			default:
+				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
+			}
+			return
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(outcome.Output), &result); err != nil {
+			writeWorkflowError(w, http.StatusOK, "script_output_invalid", fmt.Sprintf("handler returned non-object JSON: %s", outcome.Output))
+			return
+		}
+		writeWorkflowSuccess(w, result)
 		return
 	}
-	output, stderr, exitCode, err := scriptwrap.Execute(ctx, lang, data.Handler, input)
+
+	// #1455: probe Execute's prerequisites (writable temp dir,
+	// interpreter on PATH) before running. Post-#1878 this local leg is
+	// the SINGLE-CONTAINER path (sidecar mode forwards above): a failure
+	// here means the workspace container's own TMPDIR/PATH is broken.
+	// The named code keeps the failure loud and deterministic for the
+	// engine (outside the retry class by construction: an environment
+	// does not heal in 2s).
+	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
+		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
+			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) script nodes are forwarded to the workspace container's supervisor over the control socket (#1878), so reaching this local check means single-container mode with a broken TMPDIR/PATH in the workspace container (epic-64 script contract; #1455, #1878).", envErr))
+		return
+	}
+	// #1878: even locally (single-container mode), the script child runs
+	// in the SESSION environment — the opencode spawn construction
+	// (secrets-env sourced, redact PATH prepend) — not agentd's own
+	// process env: "the script should be executed in the same
+	// environment that the sessions run."
+	output, stderr, exitCode, err := scriptwrap.ExecuteWithEnv(ctx, lang, data.Handler, input, opencodeBaseEnv())
 	if err != nil {
 		if ctx.Err() != nil {
 			writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", "script execution timed out or was canceled")

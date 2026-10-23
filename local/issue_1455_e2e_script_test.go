@@ -29,11 +29,12 @@ func TestIssue1455E2EScript_BashSyntax(t *testing.T) {
 	require.NoError(t, err, "bash -n failed: %s", string(out))
 }
 
-// TestIssue1455E2EScript_RowsAndAssertions pins the adaptive mode-
-// contract row: a script-node workflow run must terminate as EITHER
-// executed-with-marker (single-container) OR script_env_unavailable
-// with the sidecar-naming detail (sidecar mode) — any other terminal
-// shape fails the row.
+// TestIssue1455E2EScript_RowsAndAssertions pins the #1878 execution
+// contract row: a script-node workflow run must terminate SUCCEEDED
+// with the handler's marker output in BOTH topologies — single-
+// container (in-process) and sidecar (the #1878 control-socket forward
+// into the workspace container). Any other terminal shape — including
+// the pre-#1878 sidecar script_env_unavailable — fails the row.
 func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1455Script)
 	require.NoError(t, err)
@@ -49,13 +50,12 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 		// The script node under contract: python handler with a marker output.
 		`\"language\":\"python\"`, // inside the jq -nc workflow body
 		`e2e-1455-scriptenv-ran`,
-		// The adaptive row's three arms.
-		`R1a: single-container mode — script node executed post-EnvCheck (marker present in the node output)`,
-		`script_env_unavailable`, // the loud #1455 code is asserted by name
-		`R1b: sidecar mode — script node failed LOUD`,
-		`R1b: failed with script_env_unavailable but the detail does not name the sidecar cause`,
-		// The nothing-between arm: any other terminal shape fails.
-		`R1: terminal shape outside the mode contract`,
+		// The both-modes row: execution in the workspace container.
+		`R1: script node executed in the workspace container (marker present in the node output) — single-container in-process, sidecar via the #1878 control-socket forward`,
+		// The failure arms: marker-missing success AND any non-succeeded
+		// terminal (script_env_unavailable included) both fail the row.
+		`R1: run succeeded but the handler marker is missing from the node output`,
+		`R1: script node must EXECUTE in every mode (#1878: sidecar forwards to the workspace container)`,
 		// R1's output extraction (r4: the marker ships in every row's
 		// specSnapshot — asserting it on the raw row is a tautology).
 		`Assert the marker on the extracted .output`,
