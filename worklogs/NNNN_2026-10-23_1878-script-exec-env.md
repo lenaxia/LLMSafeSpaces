@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1878-script-exec-env`
-**Status:** red-first pinned, implementation in progress
+**Status:** implementation complete; PR opening
 
 ---
 
@@ -68,15 +68,50 @@ here: script-only fires never reach `execAgentNode`.
 
 ## Implementation ledger
 
-- [x] Design note posted (#1878 comment)
-- [x] Red pins committed
-- [ ] `scriptwrap.ExecuteWithEnv` (env-explicit exec; Execute unchanged)
-- [ ] `opencodeBaseEnv()` extraction (managed_process.go)
-- [ ] supervisor-side `script_exec` engine + control-socket method
-- [ ] sidecar-side forwarder seam (serverDeps + execScriptNode)
-- [ ] engine.go sessionless early-return covers ScriptPath-only
-- [ ] e2e contract flip (#1455/#1812 adaptive rows) + docs contract
-- [ ] born-green tests for the new seams
+- [x] Design note posted (#1878 comment issuecomment-6357735742)
+- [x] Red pins committed (b9845b59, both failing on main @ 43222359)
+- [x] `scriptwrap.ExecuteWithEnv` (env-explicit exec; Execute delegates)
+- [x] `opencodeBaseEnv()` extraction (managed_process.go; opencodeServeCmd
+      + script children share one construction; secrets coordinate via the
+      #1455 override seam — production-identical, env is sidecar-only)
+- [x] supervisor-side `script_exec` engine (script_exec.go) + control-socket
+      method (closed enum, deadline re-arm) + `newSupervisorControlServer`
+      wiring (opencodeBaseEnv + live spawn delta)
+- [x] sidecar forwarder seam: serverDeps.scriptExecForwarder, wired in
+      buildSidecarDeps (controlClient.ScriptExec); execScriptNode
+      forward/local split; EnvCheck text names the single-container cause
+- [x] engine.go sessionless early-return covers ScriptPath-only
+- [x] e2e contract flip (#1455/#1812: executes in BOTH modes) + docs
+      execution-environment contract (docs/api/mcp.md)
+- [x] born-green tests: engine (sentinel+belt, error mapping, bad params,
+      env-check loud), control-socket round trip, mux forwarding (sentinel
+      through the full mux→socket→engine path, loud failure with stderr,
+      transport-loud naming control socket, timeout→504)
+
+## Live-probe instructions (post-deploy verification — the orchestrator
+re-runs these against the DEPLOYED platform)
+
+1. **Sentinel trigger (the #1878 probe verbatim).** Create a cron trigger
+   (`* * * * *`) with `script` = `{"language":"python","handler":"def
+   handler(input):\n    import subprocess\n    r =
+   subprocess.run(['sh','-c','exec >>/tmp/opencode/sentinel-1878.log 2>&1;
+   { date -u; id; which gh; gh auth status 2>&1 | head -2; echo DONE; }'],
+   capture_output=True, text=True)\n    return {\"proceed\": True,
+   \"vars\": {\"ok\": str(r.returncode)}}\n"}` and NO prompt. Wait one
+   cycle. PASS: fire `delivered` with `{gate:{proceed:true}}` in the audit
+   AND `/tmp/opencode/sentinel-1878.log` exists in the workspace showing
+   `which gh` resolving + `gh auth status` output. FAIL shapes: fire
+   `delivered` with no sentinel (the silent bug), or any fire `failed`
+   with `script_env_unavailable`.
+2. **Workflow node (the #1878 evidence shape).** `workflow_run` a
+   one-node python workflow writing a marker under `/tmp/opencode/`.
+   PASS: run `succeeded`, marker present in the workspace.
+3. **Loud failure.** Trigger whose handler raises. PASS: fire `failed`
+   with the stderr text in `actionResult.gate.error` (errors_only
+   capture notwithstanding).
+4. **No carrier churn.** While 1-3 run, `session_list` in the target
+   workspace shows ZERO transient sessions (script-only fires are
+   sessionless).
 
 ## Assumptions
 

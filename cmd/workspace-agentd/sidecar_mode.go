@@ -345,6 +345,11 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	if cc != nil {
 		client := cc
 		deps.diskRecover = socketDiskRecover{client: client}
+		// #1878: script nodes execute in the WORKSPACE container — this
+		// sidecar has no /tmp, no interpreters, and a read-only
+		// /workspace, so script dispatches forward to the supervisor
+		// over the same control socket.
+		deps.scriptExecForwarder = client.ScriptExec
 	}
 
 	// Design 0060: the sidecar upload leg — budgeted staging admission

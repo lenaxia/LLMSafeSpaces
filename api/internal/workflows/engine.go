@@ -928,7 +928,14 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// leg even when the gate opens — the gate ran for its side effects,
 	// which IS the delivery. The prompt-less no-script shape keeps its
 	// legacy behavior (an agent leg fires, as before).
-	if trigger.ScriptLanguage != "" && prompt == "" {
+	// #1878 (via #1882's trace): ScriptPath-only + empty prompt is
+	// script-only TOO — the pre-script leg above ran for its side
+	// effects. The old condition tested ScriptLanguage only, so this
+	// shape fell through to the agent leg with an EMPTY prompt and
+	// minted an ephemeral carrier session per fire (~75 ghost
+	// sessions/hour/workspace measured in #1882). Script-only fires
+	// NEVER reach the agent leg.
+	if (trigger.ScriptLanguage != "" || trigger.ScriptPath != "") && prompt == "" {
 		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, nil, "delivered")
 		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
 		logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", "delivered", "scriptOnly", true)

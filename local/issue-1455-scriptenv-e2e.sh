@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 # Issue #1455 — the script-node ENVIRONMENT CONTRACT and the http-node
 # secrets coordinate, exercised against real workspace pods through the
-# platform API. agentd serves /v1/workflow/node/execute from the
-# container it lives in.
+# platform API. Post-#1878 script nodes execute in the WORKSPACE
+# container in BOTH topologies: single-container runs them in-process
+# (post-EnvCheck), sidecar mode forwards them over the design-0051
+# control socket to the supervisor (same session env — interpreters,
+# /tmp, gh, secrets).
 #
-#   R1 — script-node mode contract (adaptive, never silently skipped):
-#        a one-node python script workflow must terminate as EITHER
-#        (a) succeeded with the handler's marker output (single-
-#        container clusters: scripts still execute post-EnvCheck,
-#        guarding EnvCheck against false positives in the real
-#        toolchain env), OR (b) failed with script_env_unavailable +
-#        the sidecar-naming detail. The NIGHTLY installs
-#        controller.agentdSidecar.enabled=true (e2e-nightly.yml) — R1b
-#        is the expected arm there; R1a covers single-container
-#        pool/dev clusters. Any other terminal shape — the pre-#1455
-#        incidental "create temp dir: stat /tmp" script_failed,
-#        timeouts, fork/exec errors — fails the row.
+#   R1 — script-node execution contract (both modes, never silently
+#        skipped): a one-node python script workflow must SUCCEED with
+#        the handler's marker output — on single-container clusters
+#        (in-process execution guards EnvCheck against false positives
+#        in the real toolchain env) AND on the sidecar nightly
+#        (controller.agentdSidecar.enabled=true, e2e-nightly.yml; the
+#        #1878 forward is the arm under test). ANY failure — including
+#        the pre-#1878 sidecar script_env_unavailable — fails the row.
 #
 #   R2 — http-node {{secrets.*}} coordinate (live join): bind an
 #        env-secret via the harness convenience endpoint, wait for
@@ -120,7 +119,7 @@ wait_phase "${WS}" Active 360 || die "R0: workspace never Active"
 ok "workspace Active"
 
 # -----------------------------------------------------------------------------
-log "R1 — script-node mode contract (execute OR fail loud, nothing between)"
+log "R1 — script-node execution contract (executes in the workspace container, both modes)"
 
 WF_BODY=$(jq -nc --arg w "${WS}" '{name:"e2e-1455-scriptenv",targetWorkspaceId:$w,
     specYaml:"{\"nodes\":[{\"id\":\"s1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {\\\"marker\\\": \\\"e2e-1455-scriptenv-ran\\\"}\\n\"}}],\"edges\":[]}"}')
@@ -148,17 +147,11 @@ else
     # come from a real execution.
     r1_output=$(printf '%s' "${run_row}" | jq -r '.output | if type == "string" then . else tostring end')
     if [[ "${run_status}" == "succeeded" && "${r1_output}" == *"e2e-1455-scriptenv-ran"* ]]; then
-        ok "R1a: single-container mode — script node executed post-EnvCheck (marker present in the node output)"
-    elif [[ "${run_status}" == "failed" && "${run_row}" == *"script_env_unavailable"* ]]; then
-        if [[ "${run_row}" == *"sidecar"* ]]; then
-            ok "R1b: sidecar mode — script node failed LOUD (script_env_unavailable naming the sidecar cause)"
-        else
-            note_fail "R1b: failed with script_env_unavailable but the detail does not name the sidecar cause: ${run_row:0:300}"
-        fi
+        ok "R1: script node executed in the workspace container (marker present in the node output) — single-container in-process, sidecar via the #1878 control-socket forward"
     elif [[ "${run_status}" == "succeeded" ]]; then
-        note_fail "R1a: run succeeded but the handler marker is missing from the node output: ${r1_output:0:300}"
+        note_fail "R1: run succeeded but the handler marker is missing from the node output: ${r1_output:0:300}"
     else
-        note_fail "R1: terminal shape outside the mode contract (status=${run_status}): ${run_row:0:300}"
+        note_fail "R1: script node must EXECUTE in every mode (#1878: sidecar forwards to the workspace container) — got status=${run_status}: ${run_row:0:300}"
     fi
 fi
 

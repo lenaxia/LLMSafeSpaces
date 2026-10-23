@@ -989,9 +989,9 @@ func TestWorkflowExecute_ScriptNodeChildSeesSessionEnv(t *testing.T) {
 		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Output  json.RawMessage `json:"output"`
-		ErrorCode string        `json:"errorCode"`
-		Detail  string          `json:"detail"`
+		Output    json.RawMessage `json:"output"`
+		ErrorCode string          `json:"errorCode"`
+		Detail    string          `json:"detail"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)

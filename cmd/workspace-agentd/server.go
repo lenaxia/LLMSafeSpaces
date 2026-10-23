@@ -52,6 +52,13 @@ type serverDeps struct {
 	// direct-write path runs unchanged.
 	uploadStager *uploadStager
 	uploadApply  uploadApplier
+
+	// scriptExecForwarder (#1878) forwards script-node execution to the
+	// workspace-container supervisor over the control socket. Sidecar
+	// mode wires it (this mux serves from the scratch sidecar without
+	// /tmp or interpreters); single-container leaves it nil so script
+	// nodes execute in-process — already the workspace container there.
+	scriptExecForwarder scriptExecForwarder
 	// stateAuthority is the Epic 69 session-state authority (US-69.2).
 	// Nil only when construction failed (degraded, logged at boot).
 	stateAuthority *sessionstate.Authority
@@ -652,7 +659,9 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
-	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password, deps.controlPlanePassword))
+	// #1878: the script forwarder routes script nodes into the
+	// workspace container in sidecar mode (nil single-container).
+	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandlerForward(deps.scriptExecForwarder, deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
