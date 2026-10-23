@@ -122,6 +122,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins that claims-blind assignment still collides (the documented
   degraded mode the invariant nets).
 
+### Added — Task Board: delegated-review completion coupling (issue #1832, lane board-stage-hygiene WS1)
+
+- **A task whose job is to review another task's artifact anchors to
+  its subject with the `review-of:<subject-short-id>` tag** (the pr:N
+  discipline: the only form the engine consumes, workspace-scoped;
+  malformed anchors are inert tags, never guessed).
+- **When the subject reaches done — manager move, approve verdict, or
+  RC2 external-truth drift — the engine settles its review tasks in
+  the same transaction**: criteria ALL met → done (the Done guard is
+  never bypassed), with an audited transition plus a deterministic
+  `review_complete` event; chained delegation (a review of a review)
+  recurses safely over a visited set.
+- **Criteria UNMET → NEVER auto-done**: the in_review review task
+  parks to `pending_input/drift_review` with a `review_park` audit
+  event (the tsk-zbdeufiw class: subject merged, review stranded —
+  the pending_input column is the owner-visible surface instead of an
+  invisible in_review rot).
+
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit

@@ -225,7 +225,7 @@ func boardManagerTools() []mcpTool {
 				"epicId":      map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 				"title":       map[string]any{"type": "string", "description": "Task title"},
 				"description": map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor)"},
+				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},

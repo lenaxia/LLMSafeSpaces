@@ -591,7 +591,11 @@ type boardTaskRequest struct {
 
 // CreateEpicTask creates a backlog task in an epic. Task tags may carry
 // the explicit `pr:N` anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$,
-// the only PR-drift form the reconciler consumes; never free-text).
+// the only PR-drift form the reconciler consumes; never free-text) and
+// the `review-of:<subject-short-id>` anchor (#1832 — a delegated review
+// task whose subject's done transition settles it: complete when its
+// criteria are ALL met, park pending_input/drift_review when unmet;
+// malformed anchors are inert, never guessed).
 func (h *BoardHandler) CreateEpicTask(c *gin.Context) {
 	var req boardTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
