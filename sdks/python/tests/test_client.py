@@ -1205,7 +1205,7 @@ def test_board_task_or4_anchor_and_actions():
         json={"tasks": [{"id": "t1", "stage": "backlog", "last_attempt_failed": False}]}
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    task = client.board.create_task("epc-bbbb2222", title="T", tags=["pr:1234"])
+    task = client.board.create_task("epc-bbbb2222", title="T", description="seeded charter", tags=["pr:1234"])
     assert re.match(r"^pr:[1-9][0-9]*$", task["tags"][0])
     dep = client.board.add_dependency("tsk-cccc3333", depends_on="tsk-aaaa0000")
     assert dep["task"]["is_blocked"] is True

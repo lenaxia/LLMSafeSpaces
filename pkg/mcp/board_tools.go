@@ -172,8 +172,12 @@ var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 )
 
 var boardCreateTaskTool = mcp.NewTool("board_create_task",
-	mcp.WithDescription("Create a backlog task in an epic. The description (markdown) seeds the worker "+
-		"charter; acceptance criteria define Done (ALL met + evidence_url — ruling R2). Tags may carry "+
+	mcp.WithDescription("Create a backlog task in an epic. ATOMIC-CREATE CONTRACT (#1849): a non-empty "+
+		"description (the worker's charter) AND at least one acceptance criterion are REQUIRED — a create "+
+		"missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token "+
+		"(placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely "+
+		"mentions a token is fine). The description (markdown) seeds the worker charter; criteria define "+
+		"Done (ALL met + evidence_url — ruling R2). Tags may carry "+
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
 		"the reconciler consumes; malformed anchors are inert tags, never guessed) and the delegated-review "+
 		"anchor review-of:<subject-short-id> (#1832 — a review task whose subject's done transition settles it: "+
@@ -181,7 +185,7 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
-	mcp.WithString("description", mcp.Description("Markdown; seeds the fresh worker's charter (R9)")),
+	mcp.WithString("description", mcp.Required(), mcp.Description("REQUIRED at create (#1849): markdown; seeds the fresh worker's charter (R9)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor; the full set — project/epic updates rewrite tags wholesale)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
@@ -192,7 +196,8 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 			},
 			"required": []string{"text"},
 		}),
-		mcp.Description("Checkable criteria [{text, met}] — Done = ALL met + evidence")),
+		mcp.Required(),
+		mcp.Description("REQUIRED at create (#1849): checkable criteria [{text, met}] — Done = ALL met + evidence")),
 	mcp.WithArray("depends_on", mcp.WithStringItems(),
 		mcp.Description("Prerequisite task short ids — edges added in the same transaction (#1747)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),

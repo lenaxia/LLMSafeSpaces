@@ -150,7 +150,7 @@ func TestBoard_TaskAndOR4Anchor(t *testing.T) {
 	ctx := context.Background()
 
 	task, err := c.Board.CreateTask(ctx, "epc-bbbb2222", BoardTaskInput{
-		Title: "T", Tags: []string{"pr:1234"},
+		Title: "T", Description: "seeded charter", Tags: []string{"pr:1234"},
 		AcceptanceCriteria: []BoardAcceptanceCriterion{{Text: "c"}},
 	})
 	if err != nil {

@@ -546,6 +546,18 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
+	// --- H0 (#1849, the noted full-chain arm): a seedless create through
+	// the real dispatch chain refuses with the seed-contract class —
+	// the shape the model actually experiences.
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "seedless",
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "description is required at create")
+
 	// --- F: composed corruption refusal — nothing stored ------------------------
 	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{

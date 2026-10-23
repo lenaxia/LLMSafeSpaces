@@ -235,7 +235,7 @@ func boardManagerTools() []mcpTool {
 						"met":  map[string]any{"type": "boolean"},
 					}, "required": []string{"text"}}, "description": "Checkable criteria [{text, met}]"},
 				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Prerequisite task short ids — edges added in the same transaction"},
-			}, "required": []string{"epicId", "title"}},
+			}, "required": []string{"epicId", "title", "description", "acceptanceCriteria"}},
 		},
 		{
 			Name:        "board_update_task",

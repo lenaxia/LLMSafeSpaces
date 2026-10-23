@@ -128,9 +128,9 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	// P6: task create with the OR4 pr:N anchor tag + criteria
 	taskA, err := c.Board.CreateTask(ctx, epicSid, ll.BoardTaskInput{
-		Title: "Task A",
-
-		Tags: []string{"pr:1234"},
+		Title:       "Task A",
+		Description: "seeded charter (#1849: a create requires one)",
+		Tags:        []string{"pr:1234"},
 		AcceptanceCriteria: []ll.BoardAcceptanceCriterion{
 			{Text: "c1", Met: true},
 			{Text: "c2", Met: false},
@@ -143,7 +143,7 @@ func runBoardCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(len(taskA.Tags) == 1 && prAnchor.MatchString(taskA.Tags[0]), "create-task: OR4 pr:N anchor tag form", strings.Join(taskA.Tags, ","))
 	taskASid := taskA.ShortID
 
-	taskB, err := c.Board.CreateTask(ctx, epicSid, ll.BoardTaskInput{Title: "Task B"})
+	taskB, err := c.Board.CreateTask(ctx, epicSid, ll.BoardTaskInput{Title: "Task B", Description: "seeded charter", AcceptanceCriteria: []ll.BoardAcceptanceCriterion{{Text: "c"}}})
 	if !run.AssertNoError(err, "create-task-b: no error") {
 		return
 	}
