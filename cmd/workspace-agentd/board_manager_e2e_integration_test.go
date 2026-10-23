@@ -223,12 +223,13 @@ func (s *boardE2ESeam) createTask(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
+		Title              string                      `json:"title"`
+		Description        string                      `json:"description"`
+		AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
 	}
 	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
 	t, err := s.svc.CreateTask(c.Request.Context(), s.actor(owner, ws, session), "", c.Param("id"),
-		board.TaskInput{Title: req.Title, Description: req.Description}, "")
+		board.TaskInput{Title: req.Title, Description: req.Description, AcceptanceCriteria: req.AcceptanceCriteria}, "")
 	if err != nil {
 		s.engineError(c, err)
 		return
