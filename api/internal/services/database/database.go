@@ -1132,11 +1132,12 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		        si.short_id,
 		        si.created_at,
 		        parent.short_id
-		 FROM session_index si
-		 LEFT JOIN session_index parent
-		   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
-		 WHERE si.workspace_id = $1
-		 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
+	 FROM session_index si
+	 LEFT JOIN session_index parent
+	   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
+	 WHERE si.workspace_id = $1
+	   AND si.deleted_at IS NULL
+	 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,6 +1221,30 @@ func (s *Service) DeleteSessionTree(ctx context.Context, workspaceID, sessionID 
 		)
 		DELETE FROM session_index
 		WHERE workspace_id = $1 AND session_id IN (SELECT session_id FROM descendants)`, workspaceID, sessionID)
+	return err
+}
+
+// MarkSessionIndexDeleted is the #1882 durable death mark: stamps
+// deleted_at on the session's index row AND its descendants (the
+// DeleteSessionTree shape) BEFORE the row delete runs. Belt-and-braces
+// for the read path — ListSessionIndex filters on deleted_at, so a row
+// whose DELETE failed (or whose effects tail crashed mid-sequence)
+// stops rendering even though it lingers. Idempotent; row-creating
+// upserts never clear the mark, so late pod events cannot resurrect a
+// death-marked row (the #1850 phrase-bearing INSERT leg included — its
+// column list carries no deleted_at).
+func (s *Service) MarkSessionIndexDeleted(ctx context.Context, workspaceID, sessionID string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT session_id FROM session_index
+			WHERE workspace_id = $1 AND session_id = $2
+			UNION ALL
+			SELECT si.session_id FROM session_index si
+			INNER JOIN descendants d ON si.parent_session_id = d.session_id AND si.workspace_id = $1
+		)
+		UPDATE session_index SET deleted_at = NOW(), updated_at = NOW()
+		WHERE workspace_id = $1 AND session_id IN (SELECT session_id FROM descendants)
+		  AND deleted_at IS NULL`, workspaceID, sessionID)
 	return err
 }
 

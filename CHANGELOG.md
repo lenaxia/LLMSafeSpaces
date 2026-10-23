@@ -77,6 +77,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extends once and overwrites it; a re-sent identical stamp does not
   extend again — the C1 lockout cannot recur against repaired rows.
 
+### Fixed — Automation: platform-deleted sessions stop haunting the sidebar (#1882)
+
+- **Every session delete now propagates.** Routine-trigger fires used
+  to mint an ephemeral "carrier" session per fire (deleted seconds
+  later) whose deletion announced itself nowhere — no
+  `session.status: deleted` event, no tombstone, no `session_index`
+  cleanup — while the live event stream indexed the carrier during
+  its brief life. With watch triggers live that was ~75 ghost sidebar
+  rows per hour that vanished only when clicked (and history-bearing
+  rows survived even clicks). All platform-initiated deletes (agentd's
+  ephemeral teardown, the engine's authorized deletes: PreserveOnFailure
+  success cleanup, superseded retry attempts, DAG node-retry cleanup)
+  now run the same effect sequence as the user delete route, with
+  agentd reporting the deleted session's id on the node envelope
+  (`deletedSessionId`) so the engine can act on it; the carrier is
+  also origin-marked first so a partially-failed cleanup still
+  self-heals via the reconcile. Belt-and-braces on the read path: a
+  new durable `session_index.deleted_at` death mark (migration 000045)
+  keeps a lingering row out of the session list even when the row
+  delete itself fails. The #1340 reconcile now reaps
+  `session_origins`-marked carrier rows even with history (the
+  harness-store-reset exception does not apply to platform carriers —
+  the #1850 by-ID probe confirmation still gates every reap), so
+  accumulated marked residue drains without manual surgery.
+
 ### Fixed — chat UX
 
 - **Mobile is no longer stuck on the first of several queued agent

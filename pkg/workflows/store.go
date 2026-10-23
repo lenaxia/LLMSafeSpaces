@@ -1260,3 +1260,12 @@ func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*
 	}
 	return out, rows.Err()
 }
+
+// DeleteSessionOrigin removes a session's origin row (#1882): the
+// ephemeral carrier's mark is written before the delete effects run
+// and cleaned after — origin rows must not accumulate per fire. Also
+// the honest end-state for any deleted session's mark.
+func (s *Store) DeleteSessionOrigin(ctx context.Context, sessionID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM session_origins WHERE session_id = $1`, sessionID)
+	return err
+}

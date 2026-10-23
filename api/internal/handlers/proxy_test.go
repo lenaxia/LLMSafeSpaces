@@ -907,6 +907,9 @@ func (r *recordingDeleteSessionIndex) ListByWorkspace(_ context.Context, _ strin
 func (r *recordingDeleteSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error {
 	return nil
 }
+func (r *recordingDeleteSessionIndex) MarkSessionDeleted(_ context.Context, _, _ string) error {
+	return nil
+}
 func (r *recordingDeleteSessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {
 	r.mu.Lock()
 	r.workspaceID = workspaceID
@@ -948,6 +951,9 @@ func (f *failingDeleteSessionIndex) ListByWorkspace(_ context.Context, _ string)
 	return nil, nil
 }
 func (f *failingDeleteSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
+func (f *failingDeleteSessionIndex) MarkSessionDeleted(_ context.Context, _, _ string) error {
+	return nil
+}
 func (f *failingDeleteSessionIndex) DeleteSession(_ context.Context, _, _ string) error {
 	return fmt.Errorf("db connection lost")
 }
@@ -1210,6 +1216,9 @@ func (r *recordingActivitySessionIndex) ListByWorkspace(_ context.Context, _ str
 	return nil, nil
 }
 func (r *recordingActivitySessionIndex) DeleteByWorkspace(_ context.Context, _ string) error {
+	return nil
+}
+func (r *recordingActivitySessionIndex) MarkSessionDeleted(_ context.Context, _, _ string) error {
 	return nil
 }
 func (r *recordingActivitySessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {

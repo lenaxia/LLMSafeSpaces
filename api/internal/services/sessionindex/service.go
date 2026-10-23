@@ -25,7 +25,6 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"outcome"})
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
-// reconcileOutcomes counts the convergence pass's dispositions (#1340):
 // reaped (guard-admitted deletion), reap_vetoed_live (#1850 via #1865:
 // the by-ID probe found the session alive — the list gap alone never
 // reaps), reap_deferred_probe (#1850 via #1865: the probe was
@@ -33,10 +32,14 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // (history-bearing absent — the triage guard held it), kept_spawn_window
 // (#1850 via #1881: fresh count-zero rows sheltered by the reap grace —
 // not history-bearing, a distinct population from kept_for_operator,
-// split so the metric never conflates them), delete_failed.
+// split so the metric never conflates them), delete_failed,
+// reaped_carrier (#1882: the reaped row was session_origins-marked — a
+// platform routine carrier admitted past the history exception and the
+// spawn-window grace; a carrier's absence is platform policy, not
+// harness-list lag).
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_rebuilt, count_unchanged, count_walk_error).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
@@ -233,6 +236,14 @@ func (s *Service) DeleteByWorkspace(ctx context.Context, workspaceID string) err
 // DeleteSession removes a single session and its descendants from the session index.
 func (s *Service) DeleteSession(ctx context.Context, workspaceID, sessionID string) error {
 	return s.db.DeleteSessionTree(ctx, workspaceID, sessionID)
+}
+
+// MarkSessionDeleted stamps the #1882 durable death mark (session row
+// + descendants) BEFORE the row delete — the read-path filter's
+// signal. A row whose delete fails stays hidden instead of rendering
+// as a ghost.
+func (s *Service) MarkSessionDeleted(ctx context.Context, workspaceID, sessionID string) error {
+	return s.db.MarkSessionIndexDeleted(ctx, workspaceID, sessionID)
 }
 
 // UpsertTitle updates just the title for a session.

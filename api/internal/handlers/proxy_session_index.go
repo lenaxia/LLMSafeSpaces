@@ -54,17 +54,50 @@ func writeSessionGoneBodyWithSuggestions(c *gin.Context, message string, suggest
 	c.JSON(http.StatusGone, body)
 }
 
+// SessionOriginLister feeds the #1882 carrier reap-guard bypass: the
+// workspace's session_origins marks (sessionID → origin). Satisfied in
+// production by an adapter over the workflows store's
+// ListSessionOrigins.
+type SessionOriginLister interface {
+	ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error)
+}
+
+// SetSessionOriginLister wires the #1882 carrier-mark lookup. Nil (or
+// never called) disables the bypass — the reap guard keeps its
+// DefaultReapGuard-only semantics.
+func (h *ProxyHandler) SetSessionOriginLister(l SessionOriginLister) {
+	h.sessionOriginLister = l
+}
+
+// carrierOriginMarks returns the workspace's session_origins marks for
+// the reap guard. Fail-safe: a lookup error degrades to NO marks (the
+// history-bearing row stays kept_for_operator — uncertainty never
+// widens a reap).
+func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID string) map[string]string {
+	if h.sessionOriginLister == nil {
+		return nil
+	}
+	marks, err := h.sessionOriginLister.ListSessionOrigins(ctx, workspaceID)
+	if err != nil {
+		h.logger.Warn("session reconcile: origin marks lookup failed; carrier bypass disabled for this pass",
+			"workspaceID", workspaceID, "error", err.Error())
+		return nil
+	}
+	return marks
+}
+
 // reapSessionIfGone classifies an adapter error from a session-scoped
 // read: when the agent's definitive verdict is not-found
 // (agent.ErrSessionNotFound), the session_index row is a stale ghost
 // (#1340). The TYPED 410 always answers (the session is unreadable
 // either way); the row itself is reaped only when the #1340 triage
-// safety guard admits it (no message history — nothing of value). A
-// history-bearing row the harness lost stays for operator attention
-// (a vanished session WITH history may indicate a harness store reset).
-// Any other error (transport, 5xx, timeouts) returns false so the
-// caller keeps its generic path: an unreachable pod is not evidence of
-// deletion.
+// safety guard admits it (no message history — nothing of value, or a
+// #1882 origin-marked platform carrier: its deletion was platform
+// policy, not a harness-store reset). A history-bearing unmarked row
+// the harness lost stays for operator attention (a vanished session
+// WITH history may indicate a harness store reset). Any other error
+// (transport, 5xx, timeouts) returns false so the caller keeps its
+// generic path: an unreachable pod is not evidence of deletion.
 func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID string, err error, route string) bool {
 	if !errors.Is(err, agent.ErrSessionNotFound) {
 		return false
@@ -80,6 +113,7 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			h.logger.Warn("session_gone: index lookup failed; row left for the convergence pass",
 				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", listErr.Error())
 		}
+		marks := h.carrierOriginMarks(ctx, workspaceID)
 		for _, row := range rows {
 			// The middleware canonicalizes to the harness id; index
 			// rows carry the phrase in ID post-#1756 — compare on
@@ -88,12 +122,15 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			if row.InternalID != sessionID {
 				continue
 			}
-			if sessionindex.DefaultReapGuard(row) {
+			if sessionindex.DefaultReapGuard(row) || marks[sessionID] != "" {
 				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
 					h.logger.Warn("session_gone: index row reap failed",
 						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
 					writeSessionGoneBody(c, sessionGoneUncertain)
 				} else {
+					if marks[sessionID] != "" {
+						sessionindex.ReconcileOutcome("reaped_carrier")
+					}
 					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
 				}
 			} else {
@@ -182,7 +219,16 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		return present, nil
 	}
 
-	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, sessionindex.DefaultReapGuard)
+	// #1882 carrier bypass: session_origins-marked rows (platform
+	// routine carriers) are admitted past the history exception even
+	// with message_count > 0 — the harness-store-reset rationale does
+	// not apply to sessions the platform itself created and deleted.
+	// Every admitted row still faces the #1850 by-ID probe below.
+	marks := h.carrierOriginMarks(ctx, workspaceID)
+	reap := func(row types.SessionListItem) bool {
+		return sessionindex.DefaultReapGuard(row) || marks[row.InternalID] != ""
+	}
+	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, reap)
 	// keptForOperator rows keep a threshold-level counter so every
 	// subsequent pass re-detects them — the operator signal fires
 	// consistently, never every-other-pass (r2 finding).
@@ -245,6 +291,9 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			continue
 		}
 		sessionindex.ReconcileOutcome("reaped")
+		if marks[id] != "" {
+			sessionindex.ReconcileOutcome("reaped_carrier")
+		}
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}

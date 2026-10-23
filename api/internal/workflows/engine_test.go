@@ -141,6 +141,9 @@ type mockAgentd struct {
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
 	sessionIDs map[string]string
+	// deletedSessionIDs stamps the #1882 deletedSessionId envelope
+	// field (empty map = field never set).
+	deletedSessionIDs map[string]string
 	// calls records every Execute's node id in dispatch order — the
 	// spawn-count evidence for the #1812 no-LLM-call pins.
 	calls []string
@@ -148,12 +151,13 @@ type mockAgentd struct {
 
 func newMockAgentd() *mockAgentd {
 	return &mockAgentd{
-		outputs:    make(map[string]json.RawMessage),
-		branches:   make(map[string]string),
-		errors:     make(map[string]error),
-		errCodes:   make(map[string]string),
-		sentSpecs:  make(map[string]json.RawMessage),
-		sessionIDs: make(map[string]string),
+		outputs:           make(map[string]json.RawMessage),
+		branches:          make(map[string]string),
+		errors:            make(map[string]error),
+		errCodes:          make(map[string]string),
+		sentSpecs:         make(map[string]json.RawMessage),
+		sessionIDs:        make(map[string]string),
+		deletedSessionIDs: make(map[string]string),
 	}
 }
 
@@ -176,6 +180,9 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	}
 	if sid, ok := m.sessionIDs[req.NodeID]; ok {
 		resp.SessionID = sid
+	}
+	if sid, ok := m.deletedSessionIDs[req.NodeID]; ok {
+		resp.DeletedSessionID = sid
 	}
 	if br, ok := m.branches[req.NodeID]; ok {
 		resp.Branch = br
@@ -481,7 +488,10 @@ type mockSchedulerStore struct {
 	getTriggerByIDErr error
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
-	overridePending   []*wf.TriggerFireRow
+	// originDeletes records DeleteSessionOrigin calls (#1882 carrier
+	// mark cleanup).
+	originDeletes   []string
+	overridePending []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -659,6 +669,18 @@ func (m *mockSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.Sess
 		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
 	}
 	m.sessionOrigins[row.SessionID] = row
+	return nil
+}
+
+// DeleteSessionOrigin records #1882's carrier-mark cleanup calls.
+func (m *mockSchedulerStore) DeleteSessionOrigin(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.originDeletes == nil {
+		m.originDeletes = make([]string, 0)
+	}
+	m.originDeletes = append(m.originDeletes, sessionID)
+	delete(m.sessionOrigins, sessionID)
 	return nil
 }
 
@@ -2003,7 +2025,7 @@ func TestExecuteWithRetry_Transient5xxRecovers(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Output)
 	assert.Equal(t, 2, ex.calls, "exactly one retry")
@@ -2017,7 +2039,7 @@ func TestExecuteWithRetry_Exhausted(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 503"}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "script_failed", resp.ErrorCode)
 	assert.Equal(t, 3, ex.calls, "bounded: three attempts")
@@ -2032,7 +2054,7 @@ func TestExecuteWithRetry_DeterministicNoRetry(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "invalid_node_data", Detail: "unsupported language"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "invalid_node_data", resp.ErrorCode)
 	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
@@ -2047,7 +2069,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, ex.calls)
 
@@ -2057,7 +2079,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 404: no route")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
 }
 
@@ -2071,7 +2093,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 504: gateway timeout")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "504 transport not retried")
 
 	ex2 := &scriptedExecutor{results: []struct {
@@ -2080,7 +2102,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "agentd script_timeout not retried")
 
 	ex3 := &scriptedExecutor{results: []struct {
@@ -2089,7 +2111,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 504"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
 }
 
@@ -2212,7 +2234,7 @@ func TestExecuteWithRetry_SessionCreateFailedTransient5xxRecovers(t *testing.T) 
 			{resp: &NodeExecResponse{ErrorCode: "session_create_failed", Detail: "opencode returned " + status}},
 			{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 		}}
-		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 2, ex.calls, "opencode %s on session create must retry once", status)
 	}
@@ -2233,7 +2255,7 @@ func TestExecuteWithRetry_SessionCreateFailedNonTransientNotRetried(t *testing.T
 			resp *NodeExecResponse
 			err  error
 		}{{resp: resp}}}
-		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		assert.Equal(t, 1, ex.calls, "%s must not retry", name)
 	}
 }
@@ -2393,7 +2415,7 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_env_unavailable", Detail: "script node execution environment unavailable in this container: no writable temp dir"}},
 	}}
-	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
 }
