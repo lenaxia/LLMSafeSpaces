@@ -96,6 +96,10 @@ type DatabaseService interface {
 	ResolveStaleSessionAlerts(ctx context.Context, workspaceID string, before time.Time) (int64, error)
 	DeleteSessionIndex(ctx context.Context, workspaceID string) error
 	DeleteSessionTree(ctx context.Context, workspaceID, sessionID string) error
+	// MarkSessionIndexDeleted is the #1882 durable death mark (the
+	// session's row + descendants) — the read-path filter's signal,
+	// written before the row delete in every delete-effects tail.
+	MarkSessionIndexDeleted(ctx context.Context, workspaceID, sessionID string) error
 	UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error
 	UpsertSessionTitle(ctx context.Context, workspaceID, sessionID, title string) error
 	UpsertSessionMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error
@@ -207,6 +211,11 @@ type SessionIndexService interface {
 	ListByWorkspace(ctx context.Context, workspaceID string) ([]types.SessionListItem, error)
 	DeleteByWorkspace(ctx context.Context, workspaceID string) error
 	DeleteSession(ctx context.Context, workspaceID, sessionID string) error
+	// MarkSessionDeleted stamps the #1882 durable death mark on the
+	// session's index row (+ descendants) — the belt-and-braces that
+	// keeps a lingering row out of ListSessionIndex even when the row
+	// delete itself fails.
+	MarkSessionDeleted(ctx context.Context, workspaceID, sessionID string) error
 	UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error
 	// RebuildMessageCount sets a session's count ABSOLUTELY from the
 	// harness-walked ground truth (#1481) — the reconcile repair for the

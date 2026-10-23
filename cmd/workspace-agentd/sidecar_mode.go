@@ -350,6 +350,10 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		// /workspace, so script dispatches forward to the supervisor
 		// over the same control socket.
 		deps.scriptExecForwarder = client.ScriptExec
+		// #1808: the fs audit rides the same control-socket leg for the
+		// same READ-only-mount reason — the supervisor owns the
+		// PVC-facing execution surfaces.
+		deps.fsAudit = socketFsAudit{client: client}
 	}
 
 	// Design 0060: the sidecar upload leg — budgeted staging admission

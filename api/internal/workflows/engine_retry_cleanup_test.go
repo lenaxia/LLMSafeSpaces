@@ -80,7 +80,7 @@ func TestExecuteWithRetry_CleansSupersededAttemptSession(t *testing.T) {
 	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-		&NodeExecRequest{NodeID: "n1"}, cleanup)
+		&NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, "ses_final", resp.SessionID)
@@ -100,7 +100,7 @@ func TestExecuteWithRetry_FinalAttemptFailureNotCleaned(t *testing.T) {
 	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-		&NodeExecRequest{NodeID: "n1"}, cleanup)
+		&NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err, "an error-code response is a returned response, not a transport error")
 	require.Equal(t, "script_failed", resp.ErrorCode)
@@ -120,7 +120,7 @@ func TestExecuteWithRetry_NonRetryableFailureNotCleaned(t *testing.T) {
 	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-		&NodeExecRequest{NodeID: "n1"}, cleanup)
+		&NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, "schema_mismatch", resp.ErrorCode)
@@ -139,7 +139,7 @@ func TestExecuteWithRetry_TransportErrorNoSessionToClean(t *testing.T) {
 	}
 
 	_, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-		&NodeExecRequest{NodeID: "n1"}, cleanup)
+		&NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Empty(t, cleaned, "transport errors carry no response object — no session to clean (the #1470 blind residual)")
@@ -153,7 +153,7 @@ func TestExecuteWithRetry_NilCleanupNoPanic(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		_, _ = executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-			&NodeExecRequest{NodeID: "n1"}, nil)
+			&NodeExecRequest{NodeID: "n1"}, nil, nil)
 	})
 }
 
@@ -282,7 +282,7 @@ func TestExecuteWithRetry_RetryableWithoutSession_NoCleanup(t *testing.T) {
 	}
 
 	_, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
-		&NodeExecRequest{NodeID: "n1"}, cleanup)
+		&NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Empty(t, cleaned, "a retryable envelope with no session has nothing to clean")
@@ -309,7 +309,7 @@ func TestExecuteWithRetry_CtxCanceledAfterCleanup_ScrubsCleanedSession(t *testin
 		return true
 	}
 
-	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.Equal(t, []string{"ses_mid"}, cleaned, "the cleanup ran before cancellation")
 	require.NoError(t, err)
@@ -333,7 +333,7 @@ func TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_KeepsSession(t *testing.
 		return false // delete did not confirm — the session exists
 	}
 
-	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, "ses_live", resp.SessionID, "a live session keeps its id — dropping it would hide a real survivor")
@@ -401,7 +401,7 @@ func TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_MultiAttempt(t *testing.
 		return gone[sessionID]
 	}
 
-	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, "ses_s2", resp.SessionID,

@@ -155,3 +155,27 @@ re-runs these against the DEPLOYED platform)
 - `upload_apply`/`disk_recover` precedent licenses a long-held,
   ctx-bounded control-socket method with a closed error enum.
 - #1882's delete-propagation items are OUT of this lane.
+
+## Main-sync r3 (post-#1887/#1896, 2026-10-23) — union resolution
+
+Main moved under the PR: #1887 (#1882 delete-propagation: engine
+executeWithRetry gained the intermediateDeleted hook + NodeExecResponse.
+DeletedSessionID; agentd envelope carries deletedSessionId) and #1896
+(ai-workflows re-apply), plus #1808's fs_audit (#1891) landing on the
+SAME control-socket seams. Four conflicts, all both-added-shape unions:
+
+- engine.go: executeWithRetry call adopts main's new (…, nil,
+  intermediateDeleted) signature; the #1878 F1 ErrorCode check and the
+  loud/merged failure arm stay verbatim.
+- control_socket.go: BOTH engine fields (scriptExec #1878 + fsAudit
+  #1808) and BOTH dispatch cases (script_exec + fs_audit).
+- sidecar_mode.go: BOTH buildSidecarDeps wirings (scriptExecForwarder +
+  socketFsAudit) in the cc != nil block.
+- supervise_opencode.go: BOTH newSupervisorControlServer wirings
+  (scriptExec engine with session-env composition + fsAudit engine).
+
+A bot-side main-sync (275ee728, pre-#1887 main) sits under this merge —
+preserved, not dropped. No CHANGELOG union needed (auto-merge clean, one
+[Unreleased], sections deduped by content). Post-merge: go build ./...,
+api/internal/workflows (78s) + cmd/workspace-agentd (362s) full suites
+GREEN with #1887's delete-tail live.

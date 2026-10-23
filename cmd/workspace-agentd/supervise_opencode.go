@@ -158,6 +158,11 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	log.Info("supervise-opencode: shutdown signal")
 	_ = srv.close()
 	proc.stop()
+	// #1808 H1 belt: flush dirty pages (the opencode child's buffered
+	// writes included) while this process — the RW-PVC side of the
+	// pair — is still alive and the volume is mounted. Bounded; see
+	// shutdown_sync.go.
+	flushWorkspaceWritesLogged()
 	return 0
 }
 
@@ -233,6 +238,9 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter, upload
 	srv.scriptExec = newScriptExecEngine(func() []string {
 		return parentPlusDelta(opencodeBaseEnv(), adapter.snapshotDelta())
 	})
+	// #1808: the supervisor also owns the fs-audit engine (the RW PVC
+	// view — the sidecar forwards fs_audit over this socket).
+	srv.fsAudit = newFsAuditEngine()
 	srv.legacyScrubSnapshot = func() *agentd.LegacyScrubHealth {
 		if tr := supervisorLegacyScrub.Load(); tr != nil {
 			return tr.snapshot()

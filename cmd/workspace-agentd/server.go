@@ -133,6 +133,13 @@ type serverDeps struct {
 	// control-socket forwarder in sidecar mode. Nil in tests → the
 	// user-mux route answers 503 (never a silent no-op).
 	diskRecover diskRecoverEngine
+
+	// fsAudit (#1808) executes the zero-fill corruption scan where the
+	// filesystem view is (same topology as diskRecover): in-process
+	// engine in single-container mode, control-socket forwarder in
+	// sidecar mode. Nil in tests → the user-mux route answers 503
+	// (never a silent no-op).
+	fsAudit fsAuditEngine
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -670,6 +677,12 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// every API-driven route; response-only report (owner ruling — the
 	// path must work at 100% full, so it writes nothing).
 	userMux.HandleFunc("/v1/disk-recover", diskRecoverHandler(deps.password, deps.controlPlanePassword, deps.diskRecover))
+
+	// #1808: zero-fill corruption audit. Same §D1 carve-out pair gate;
+	// response-only report (the detector never writes — zero-filled
+	// bytes are unrecoverable, so its job is visibility, and the
+	// pre-push guard blocks propagation at the git seam).
+	userMux.HandleFunc("/v1/fs-audit", fsAuditHandler(deps.password, deps.controlPlanePassword, deps.fsAudit))
 
 	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev
 	// servers. The API server proxies to this endpoint, which forwards to
