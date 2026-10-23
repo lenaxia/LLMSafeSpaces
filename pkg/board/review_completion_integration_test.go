@@ -78,9 +78,11 @@ func (s *BoardSuite) TestReviewAuto_SubjectDoneByDriftCompletesReviewTask() {
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
 
-	// The RC2 path: subject anchored pr:42, PR merges externally.
-	review := s.seedTask(e, "review", []string{"review-of:PLACEHOLDER"}, true)
+	// The RC2 path: subject anchored pr:42, PR merges externally. Seed
+	// order = FIFO claim order: SUBJECT first (parkInReview claims it),
+	// review second (parked directly by SQL below — RC2's own shape).
 	subject := s.seedTask(e, "subject", []string{"pr:42"}, true)
+	review := s.seedTask(e, "review", []string{"review-of:PLACEHOLDER"}, true)
 	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
 		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
 	s.Require().NoError(err)
