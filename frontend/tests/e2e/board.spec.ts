@@ -793,6 +793,9 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     // The dialog names the selected epic as the landing zone.
     await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Scoped follow-up");
+    await page.getByTestId("task-description").fill("seeded charter (#1849: required at create)");
+    await page.getByTestId("new-criterion").fill("c1");
+    await page.getByLabelText("Add criterion").click();
     const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
     await page.getByTestId("task-save").click();
     const req = await reqP;
@@ -814,6 +817,9 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
 
     await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Picked task");
+    await page.getByTestId("task-description").fill("seeded charter");
+    await page.getByTestId("new-criterion").fill("c1");
+    await page.getByLabelText("Add criterion").click();
     const reqP = page.waitForRequest((r) => r.method() === "POST" && /\/me\/epics\/epic-2\/tasks$/.test(r.url()));
     await page.getByTestId("task-save").click();
     const req = await reqP;
@@ -849,6 +855,9 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
 
     await expect(page.getByText("New task in Reload survivor", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("First of its name");
+    await page.getByTestId("task-description").fill("seeded charter");
+    await page.getByTestId("new-criterion").fill("c1");
+    await page.getByLabelText("Add criterion").click();
     await page.getByTestId("task-save").click();
 
     // The authoritative row lands (no parent task existed — the project
@@ -914,6 +923,9 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
     await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Doomed task");
+    await page.getByTestId("task-description").fill("seeded charter");
+    await page.getByTestId("new-criterion").fill("c1");
+    await page.getByLabelText("Add criterion").click();
     await page.getByTestId("task-save").click();
 
     await expect(page.locator("[data-board-error]").first()).toBeVisible({ timeout: 8000 });
