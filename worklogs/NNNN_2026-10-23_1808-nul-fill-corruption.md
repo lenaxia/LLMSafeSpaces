@@ -98,8 +98,31 @@ reddens it.
 - `go test ./api/internal/handlers/ ./api/internal/server/
   ./api/internal/app/` — green (contract test updated with the
   FsAuditHandler fixture).
-- Hook pins run real `git push` against a local bare remote through a
-  template-dir install — the exact activation path the image uses.
+- Hook pins run real `git push` against a **hermetic local bare-repo
+  fixture** (`pushFixture` in `pkg/fsaudit/prepush_parity_test.go`):
+  work tree + bare remote both under `t.TempDir()`, pushes via
+  `file://<tmpdir>/remote.git`, hook installed through
+  `-c init.templateDir=<tmpdir>/templates` — the image's exact
+  activation path. No network, no origin writes, no shared state.
+
+## CI round 1 (e54da67a) — findings + remediation
+
+- `Test (-short, with coverage)` FAILURE: **real race, mine** — the
+  abandoned flush goroutine read the `flushSync` package var with no
+  happens-before edge against the test-cleanup restore (race detector
+  is CI-only; my local run didn't use `-race`). Fix in bfb72750: seam
+  snapshotted on the caller's goroutine before spawning; the bound
+  test's parked spy goroutine released post-assertion. Verified
+  `-race -count=2` clean.
+- `pkg/secrets integration (Postgres + Redis)` FAILURE: NOT this
+  lane — the failing tests are `pkg/board` TestBoardSuite
+  (TestPendingExit_AgentManagerWorkspaceBindingHolds,
+  TestRearm_ReplayReturnsOriginalOutcome, TestReviewAuto_ReplayIsInert)
+  from today's #1832 board merges (#1868/#1869/#1870/#1872); this
+  diff touches no board/secrets code. Cross-lane, flagged to the
+  orchestrator.
+- All other gates green on e54da67a (lint, kind posture, gitleaks,
+  govulncheck, trivy, buf/ABI, builds, docs-only detect).
 
 ## Mutation-verify recipes (for the orchestrator's gate)
 
