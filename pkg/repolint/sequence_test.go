@@ -826,7 +826,7 @@ func TestFixWorklogs_SelfReferenceWriteFailureIsSilent(t *testing.T) {
 // fixWorklogs with mainline awareness (the post-rebase auto-renumber path)
 // ---------------------------------------------------------------------------
 //
-// These tests exercise the unexported fixWorklogs(dir, remoteByVersion)
+// These tests exercise the unexported fixWorklogs(dir, remoteByVersion, nil)
 // directly so they can control the "what's on origin/main" signal without
 // needing a real git repo in the test sandbox. The public FixWorklogs(dir)
 // is a thin wrapper that queries git then calls fixWorklogs — its git
@@ -848,7 +848,7 @@ func TestFixWorklogs_PrefersMainlineIncumbent(t *testing.T) {
 		311: {"0311_2026-06-11_aaa.md"},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -884,7 +884,7 @@ func TestFixWorklogs_ResolvesPureMainlineCollision(t *testing.T) {
 		311: {"0311_2026-06-11_mainline.md"},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -913,7 +913,7 @@ func TestFixWorklogs_AvoidsNumbersTakenOnMainline(t *testing.T) {
 		312: {"0312_2026-06-11_taken.md"},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestFixWorklogs_MultipleLocalNewcomersAgainstMainline(t *testing.T) {
 		311: {"0311_2026-06-11_incumbent.md"},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -983,7 +983,7 @@ func TestFixWorklogs_NilRemoteFallsBackToLexical(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "0098_2026-01-01_aaa.md"), "")
 	mustWrite(t, filepath.Join(dir, "0098_2026-01-01_zzz.md"), "")
 
-	renames, err := fixWorklogs(dir, nil)
+	renames, err := fixWorklogs(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestFixWorklogs_AllOnMainlineFallsBackToLexical(t *testing.T) {
 		},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1054,7 +1054,7 @@ func TestFixWorklogs_LocalIncumbentWithMainlinePhantom(t *testing.T) {
 		},
 	}
 
-	renames, err := fixWorklogs(dir, remoteByVersion)
+	renames, err := fixWorklogs(dir, remoteByVersion, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1399,7 +1399,7 @@ func TestFixWorklogs_SentinelAvoidsMainlineNumbers(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(dir, "NNNN_2026-06-22_new.md"), "")
 
-	renames, err := fixWorklogs(dir, remote)
+	renames, err := fixWorklogs(dir, remote, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
