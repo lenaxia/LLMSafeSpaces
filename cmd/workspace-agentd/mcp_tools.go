@@ -916,6 +916,12 @@ func stampArchivedSetStale(body []byte) string {
 	if err := json.Unmarshal(body, &elems); err != nil {
 		return string(body)
 	}
+	if elems == nil {
+		// A JSON null body unmarshals into a nil slice without error —
+		// byte-identity still holds (null is never rewritten to [])
+		// (review r1 nit).
+		return string(body)
+	}
 	out := make([]byte, 0, len(body)+len(elems)*len(`,"archived_set_stale":true`))
 	out = append(out, '[')
 	for i, e := range elems {
@@ -979,15 +985,30 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 // posture as the metadata annotation (#1627 §4): the platform fact
 // must never fail the tool, and an empty/stale archived set
 // short-circuits untouched.
-func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
+//
+// #1879 single-capture contract: the second return reports whether the
+// set that BUILT this output was provably fresh (the filter ran) or
+// degraded (the output is the UNFILTERED list — the caller must stamp
+// it). The decision rides the ONE filterableArchivedSet() read inside
+// this function, never a second read afterwards: a concurrent cache
+// refresh (a sibling session_archive's force-refresh, or the throttled
+// background refresh) between two reads could flip nil→fresh in the
+// window and an unfiltered listing would ship UNSTAMPED — the exact
+// silent degrade #1879 exists to prevent (review r1 finding).
+func filterArchivedFromSessionList(ctx context.Context, body []byte) (string, bool) {
 	archivedSessionSet(ctx) // shared-cache refresh/throttle (annotation source)
 	archivedSet := filterableArchivedSet()
+	if archivedSet == nil {
+		// Degraded: no provably-fresh set — the documented degrade is
+		// the unfiltered list (#1735 r1 f1); the caller stamps it.
+		return string(body), false
+	}
 	if len(archivedSet) == 0 {
-		return string(body)
+		return string(body), true
 	}
 	var elems []json.RawMessage
 	if err := json.Unmarshal(body, &elems); err != nil {
-		return string(body)
+		return string(body), true
 	}
 	out := make([]byte, 0, len(body))
 	out = append(out, '[')
@@ -1008,10 +1029,10 @@ func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
 		wrote++
 	}
 	if dropped == 0 {
-		return string(body)
+		return string(body), true
 	}
 	out = append(out, ']')
-	return string(out)
+	return string(out), true
 }
 
 // mcpSessionMetadata aggregates read-only workspace + session vitals:

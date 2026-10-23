@@ -71,9 +71,10 @@ func TestRegistryPullToReplicaSeam(t *testing.T) {
 	// The archived filter consumes the SAME id domain: the set's
 	// harness ids drop list rows keyed by harness ids.
 	body := []byte(`[{"id":"ses_arch_gone","title":"Gone"},{"id":"ses_live_1","title":"Live"}]`)
-	got := filterArchivedFromSessionList(context.Background(), body)
+	got, fresh := filterArchivedFromSessionList(context.Background(), body)
 	assert.Contains(t, got, `"ses_live_1"`, "the live row survives")
 	assert.Contains(t, got, "Live")
 	assert.NotContains(t, got, `"ses_arch_gone"`, "the archived row must drop — the set and the rows share the harness-id domain")
 	assert.NotContains(t, got, "Gone")
+	assert.True(t, fresh, "the pulled set is fresh — the filter ran (#1879 single-capture contract)")
 }

@@ -137,12 +137,49 @@ func TestStampArchivedSetStale_Malformed_PassesThrough(t *testing.T) {
 		`{"not":"an array"}`,
 		`[`,
 		`not even json`,
+		`null`, // review r1 nit: null unmarshals to a nil slice — byte-identity must hold, never rewritten to []
 	} {
 		assert.Equal(t, body, stampArchivedSetStale([]byte(body)),
 			"a non-array body must pass through byte-identical — the stamp must never break the raw list contract")
 	}
 	assert.Equal(t, `[]`, stampArchivedSetStale([]byte(`[]`)),
 		"an empty list stays empty — nothing to stamp")
+}
+
+// #1879 review r1 finding (the blocking one): the stamp decision must
+// ride the SAME filterableArchivedSet() capture that built the listing
+// — the structural single-capture contract. A second read in the
+// caller raced concurrent cache refreshes (a sibling archive's
+// force-refresh flipping nil→fresh between the two) and could ship an
+// UNSTAMPED unfiltered list. The verdict is now a return value; these
+// pins hold the contract at the seam the filter owns.
+func TestFilterArchivedFromSessionList_FreshnessVerdictSingleCapture(t *testing.T) {
+	// Degraded (no provably-fresh set): unfiltered body + false —
+	// exactly what mcpSessionList stamps.
+	seedArchivedCache(t, map[string]bool{"ses_dead": true}, time.Now().Add(-2*archivedSetCacheTTL))
+	got, fresh := filterArchivedFromSessionList(context.Background(), []byte(`[{"id":"ses_dead"}]`))
+	assert.False(t, fresh, "a degraded capture reports false — the caller MUST stamp the unfiltered listing")
+	assert.Equal(t, `[{"id":"ses_dead"}]`, got, "degraded = unfiltered, byte-identical")
+
+	// Fresh with a dead id: filtered + true.
+	seedArchivedCache(t, map[string]bool{"ses_dead": true}, time.Now())
+	got, fresh = filterArchivedFromSessionList(context.Background(), []byte(`[{"id":"ses_dead"},{"id":"ses_live"}]`))
+	assert.True(t, fresh)
+	assert.Equal(t, `[{"id":"ses_live"}]`, got)
+
+	// Fresh EMPTY set (workspace has nothing archived): unfiltered +
+	// true — provably fresh, nothing to hide, no stamp.
+	seedArchivedCache(t, map[string]bool{}, time.Now())
+	got, fresh = filterArchivedFromSessionList(context.Background(), []byte(`[{"id":"ses_live"}]`))
+	assert.True(t, fresh, "an empty-but-fresh set is still provably fresh — no stamp on its listings")
+	assert.Equal(t, `[{"id":"ses_live"}]`, got)
+
+	// Never-fetched (cold pod): degraded shape — false.
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal, archivedSetCacheAt, archivedSetCacheFetchedAt = nil, time.Time{}, time.Time{}
+	archivedSetCacheMu.Unlock()
+	_, fresh = filterArchivedFromSessionList(context.Background(), []byte(`[]`))
+	assert.False(t, fresh, "a cold cache (never fetched) is degraded — the listing is unfiltered and must be stampable")
 }
 
 // --- 2. session_metadata top-level marker ----------------------------------

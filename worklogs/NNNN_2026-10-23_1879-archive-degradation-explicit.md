@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1879-archive-durability`
-**Status:** PR r1
+**Status:** PR r2 (#1914; r1 CHANGES_REQUESTED @ 4ab72e75 — one blocking finding, fixed below)
 
 ---
 
@@ -152,6 +152,42 @@ Updated in-same-commit (their platform fakes answered ALL paths with
 Full `cmd/workspace-agentd` suite green (361s, -count=1); gofmt/vet
 clean; `pkg/repolint` green (NNNN sentinel is feature-branch-correct;
 the post-merge bot numbers it).
+
+## Review r1 (CHANGES_REQUESTED @ 4ab72e75) — finding + resolution
+
+- **BLOCKING — stamp-gate TOCTOU:** the filter read
+  `filterableArchivedSet()` internally and `mcpSessionList` read it a
+  SECOND time for the stamp decision; a concurrent cache refresh
+  between the reads (a sibling `session_archive`'s force-refresh, or
+  the throttled background refresh — multi-session pods issue these
+  concurrently) could flip nil→fresh and ship an UNSTAMPED unfiltered
+  listing — the exact silent degrade this PR eliminates. **Fix
+  (structural single-capture):** `filterArchivedFromSessionList` now
+  returns `(body, filterFresh)` — the verdict rides the ONE capture
+  that built the output; `mcpSessionList` branches the stamp on that
+  value and never re-reads the cache. Pinned by
+  `TestFilterArchivedFromSessionList_FreshnessVerdictSingleCapture`
+  (degraded→false+unfiltered, fresh+dead-id→true+filtered, fresh
+  EMPTY set→true+unfiltered, cold cache→false) plus fresh-asserts added
+  to the three existing seam callers. A deterministic interleaving pin
+  is not realistically writable (reviewer's own note) — the property is
+  now structural instead.
+- **Nit (same review):** `stampArchivedSetStale` rewrote a JSON `null`
+  body to `[]` (null unmarshals into a nil slice without error) —
+  unreachable from the pinned harness but a byte-identity contract
+  break; now passes through byte-identical, pinned in the malformed
+  table.
+- Reviewer's execution evidence on r1's head: every #1879 pin green in
+  CI incl. the origin e2e; the one red job
+  (`TestWorkflowExecute_ScriptForwardTimeoutMaps504`, #1878's
+  control-socket subsystem, untouched by this diff) classified
+  transient — race-relevant tree byte-identical to the first-commit CI
+  run that passed. Rerun submitted; watched this round.
+- Non-blocking notes acknowledged and left as documented residuals:
+  no fetch-failure counter (metrics follow-up), cross-pod ≤15s
+  convergence window, F5(b) "verify harness-side visibility" implemented
+  as a non-gating platform read-back (harness-side impossible per F1)
+  with the catalog carrying the do-NOT-re-archive-on-unverified guard.
 
 ## Residuals
 

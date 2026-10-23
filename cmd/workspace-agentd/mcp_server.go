@@ -1065,14 +1065,18 @@ func mcpSessionList(ctx context.Context, password string, includeArchived bool) 
 	// re-served byte-exact, never rewritten).
 	filtered := string(body)
 	if !includeArchived {
-		filtered = filterArchivedFromSessionList(ctx, body)
-		// #1879: the degrade must never be silent. When the filter's
-		// set cannot prove freshness (platform outage past the ~15s
-		// window) the listing is deliberately unfiltered — every row
-		// is then stamped so the caller knows archived entries may be
-		// present. include_archived:true listings are unfiltered BY
+		// #1879: the degrade must never be silent. The filter returns
+		// the freshness verdict of the ONE cache capture that built the
+		// output — when that capture was degraded the listing is
+		// deliberately unfiltered and every row is stamped so the
+		// caller knows archived entries may be present (a separate
+		// second read for the stamp decision would race a concurrent
+		// cache refresh and ship an unstamped unfiltered list — review
+		// r1 finding). include_archived:true listings are unfiltered BY
 		// REQUEST and take no stamp.
-		if filterableArchivedSet() == nil {
+		var filterFresh bool
+		filtered, filterFresh = filterArchivedFromSessionList(ctx, body)
+		if !filterFresh {
 			filtered = stampArchivedSetStale([]byte(filtered))
 		}
 	}
