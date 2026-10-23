@@ -137,3 +137,28 @@ func TestBoardSeam_ListReadySetGatedOnFailedFilter(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Empty(t, resp.ReadySet, "failed-filtered lists render NO ready set (the subset would under-report)")
 }
+
+// #1864 review round 2 pins: bulk list carries NO claim tokens; the
+// seam refuses create-with-setCriteriaMet loudly.
+func TestBoardSeam_ListRedactsClaimTokens(t *testing.T) {
+	mgr := newFakeBoardManager()
+	mgr.wsTasks = []board.Task{
+		{ID: "t1", ShortID: "tsk-tok000001", Title: "claimed", Stage: board.StageInProgress,
+			AssigneeSession: "ses-w1", ClaimToken: "secret-token-material", Tags: []string{}},
+	}
+	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+
+	w := doBoard(t, r, http.MethodGet, "/internal/v1/automation/board/projects/prj-aaaa1111/tasks?workspaceID=ws-1&sessionId=ses-1", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.NotContains(t, w.Body.String(), "secret-token-material",
+		"the bulk projection never carries live claim tokens (the #1864 round-2 ruling)")
+	assert.Contains(t, w.Body.String(), "ses-w1", "the assignee column stays")
+}
+
+func TestBoardSeam_CreateWithSetCriteriaMetRefused(t *testing.T) {
+	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), newFakeBoardManager())
+	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
+		`{"sessionId":"ses-1","workspaceID":"ws-1","title":"T","setCriteriaMet":{"index":0,"met":true}}`)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "UPDATES only")
+}

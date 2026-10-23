@@ -278,10 +278,13 @@ func repeatedLine(s string) (string, int) {
 }
 
 // spliceHits counts raw JSON structural splice matches NOT inside an
-// exempt context. Exempts (the false-positive gates, both pinned by
-// test): fenced code blocks (```-delimited), balanced {...}/[...]
-// containers (a legitimate inline JSON example), and lines whose
-// trimmed form opens with a JSON structural byte ({, [, ").
+// exempt context. Exempts (the false-positive gates, pinned by test):
+// TERMINATED fenced code blocks (```-delimited) and balanced
+// {...}/[...] containers (a legitimate inline JSON example — inline
+// or line-leading). RULING: the repetition detectors have NO fence
+// exemption by design — quoting JSON artifacts inside a fence is
+// common legitimate documentation; a 50+-fold repeated line inside a
+// fence is still the degenerate class (pinned).
 func spliceHits(s string) int {
 	exempt := spliceExemptSpans(s)
 	n := 0

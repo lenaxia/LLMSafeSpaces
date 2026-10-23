@@ -233,8 +233,10 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 			"index": map[string]any{"type": "integer", "minimum": 0},
 			"met":   map[string]any{"type": "boolean", "default": true},
 		}),
-		mcp.Required(),
-		mcp.Description("{index, met} — check off OR uncheck the criterion at the 0-based index (tsk- only; #1837 P2b). The legacy bare-integer form N still decodes as {index:N, met:true}. Refused alongside acceptance_criteria (send one or the other); out-of-bounds indices are loud errors")),
+		// NOTE: the object is OPTIONAL at the tool level (mcp-go has no
+		// inner-required PropertyOption — index's requirement rides this
+		// description, matching openapi's inner required:[index]).
+		mcp.Description("OPTIONAL {index, met} — index is required inside the object; check off OR uncheck the criterion at the 0-based index (tsk- only; #1837 P2b). The legacy bare-integer form N still decodes as {index:N, met:true}. Refused alongside acceptance_criteria (send one or the other); out-of-bounds indices are loud errors")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -531,6 +533,11 @@ func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest)
 	title := strArg(args, "title")
 	if epicID == "" || title == "" {
 		return mcp.NewToolResultError("epic_id and title are required"), nil
+	}
+	// #1837 P2b: create never had criteria check-off — refuse the field
+	// loudly (the uniform no-silent-drop posture), never ignore it.
+	if _, has := args["set_criteria_met"]; has && args["set_criteria_met"] != nil {
+		return mcp.NewToolResultError("set_criteria_met applies to task UPDATES only — create accepts criteria with explicit met flags"), nil
 	}
 	criteria, err := boardCriteriaArg(args, "acceptance_criteria")
 	if err != nil {

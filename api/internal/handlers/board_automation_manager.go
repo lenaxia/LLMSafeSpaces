@@ -359,9 +359,16 @@ func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 		Tags               []string                    `json:"tags"`
 		AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
 		DependsOn          []string                    `json:"dependsOn"`
+		SetCriteriaMet     *board.CriteriaCheck        `json:"setCriteriaMet"`
 		RequestID          string                      `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	// #1837 P2b: create never had criteria check-off — the uniform
+	// loud-refusal posture (REST + external MCP refuse the same way).
+	if req.SetCriteriaMet != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "setCriteriaMet applies to task UPDATES only — create accepts criteria with explicit met flags", "code": board.GuardInput})
 		return
 	}
 	t, err := h.boardMgr.CreateTask(c.Request.Context(), h.managerActor(owner, ws, session), c.Param("id"), "",
@@ -574,6 +581,14 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 	if err != nil {
 		renderBoardError(c, err)
 		return
+	}
+	// RULING (#1864 review round 2): the bulk projection never carries
+	// live claim tokens — a manager reader gets assignee+lease columns
+	// (scheduling truth); the token stays on the per-task read where
+	// the claimant's own flow needs it (the #1832 dogfood logged a
+	// manager lifting a token off a bulk read; bulk surface = no tokens).
+	for i := range tasks {
+		tasks[i].ClaimToken = ""
 	}
 	ready := []string{}
 	if stage == "" && failed == "" {

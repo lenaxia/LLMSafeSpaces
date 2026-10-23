@@ -24,10 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy bare-integer form still decodes as `{index, met:true}` wire
   compat). Combined use with an `acceptanceCriteria` replace is
   refused ("send one or the other"); out-of-bounds indices are loud
-  errors (both were silent before); create/update responses echo the
-  mutated criterion (`mutated_criterion`: index, met, text). All
-  three surfaces (REST, external MCP, agent seam) share the service
-  semantics.
+  errors (both were silent before); a CREATE payload carrying
+  setCriteriaMet is refused loudly on every surface (never silently
+  dropped); create/update responses echo the mutated criterion
+  (`mutated_criterion`: index, met, text). All three surfaces (REST,
+  external MCP, agent seam) share the service semantics.
+- **board_list never carries live claim tokens** (ruling, #1864
+  review): the bulk projection renders assignee + lease columns only —
+  the claim token stays on the per-task read where the claimant's own
+  flow needs it.
 
 ### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
 

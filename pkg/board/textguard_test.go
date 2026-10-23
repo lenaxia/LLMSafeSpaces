@@ -313,3 +313,14 @@ func TestTextGuard_InterleavedBoilerplateRuling(t *testing.T) {
 	}
 	require.NoError(t, ValidateTaskInput(TaskInput{Title: "ok", Description: b.String()}))
 }
+
+func TestTextGuard_FencedRepetitionStillRejected(t *testing.T) {
+	// RULING (#1864 review round 2, pinned): the fence exemption is the
+	// SPLICE scanner's alone — a 50+-fold repeated line inside a
+	// terminated fence is still the degenerate class (quoting JSON
+	// artifacts in docs is common; repeating a line 50+ times is not).
+	payload := "Runbook:\n```\n" + strings.Repeat("2026-10-22 retry step 7 no progress\n", 55) + "```\nend."
+	err := ValidateTaskInput(TaskInput{Title: "ok", Description: payload})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repetition")
+}

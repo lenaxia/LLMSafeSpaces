@@ -854,3 +854,20 @@ func TestCriteriaCheckArg_Branches(t *testing.T) {
 		require.Nil(t, c)
 	})
 }
+
+// TestBoardUpdateItem_SchemaRequiredList pins the ADVERTISED schema
+// (#1864 review round 2): set_criteria_met is OPTIONAL at the tool
+// level (a required marking would break every prj-/epc- update and
+// force criterion mutations on task patches); item_id stays required.
+func TestBoardUpdateItem_SchemaRequiredList(t *testing.T) {
+	schema := boardUpdateItemTool.InputSchema
+	require.NotNil(t, schema.Properties["set_criteria_met"], "the object form is advertised")
+	if len(schema.Required) == 0 {
+		return // nothing marked required beyond none — acceptable
+	}
+	for _, name := range schema.Required {
+		assert.NotEqual(t, "set_criteria_met", name,
+			"set_criteria_met must NOT be tool-level required (index-required rides the object form)")
+	}
+	assert.Contains(t, schema.Required, "item_id")
+}
