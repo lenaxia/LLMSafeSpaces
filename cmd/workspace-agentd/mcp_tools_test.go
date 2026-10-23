@@ -2732,10 +2732,11 @@ func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
 	assert.NotContains(t, out2, `"origin_deprecated"`, "warm replica: the phrase needs no flag")
 }
 
-// r3 missing-test 1 (compact only): the session_id_deprecated marker
-// emission, warm AND cold, plus the guarded deprecation note (clean
-// refs carry NO empty-string field). The FIVE sibling sites (rename,
-// archive, delete, send_message session_id, abort) are pinned by
+// r3 missing-test 1 (compact idle only): the session_id_deprecated
+// marker emission, warm AND cold, plus the guarded deprecation note
+// (clean refs carry NO empty-string field). The SIX other sites
+// (rename, archive, delete, send_message session_id, abort, and
+// compact's BUSY branch) are pinned by
 // TestMCPEmission_SessionIDDeprecatedMarker_AllSurfaces below —
 // together the two tests hold all seven `if idDegraded` blocks.
 func TestMCPEmission_SessionIDDeprecatedMarker(t *testing.T) {
@@ -2798,8 +2799,10 @@ func TestMCPSessionMetadata_WarmReplicaEmitsPhraseAndFlagsCold(t *testing.T) {
 	assert.Equal(t, true, cold["id_deprecated"], "the cold row's harness id must be flagged")
 }
 
-// r4 missing-test 1: the five remaining session_id_deprecated sites
-// (rename, archive, delete, send_message session_id, abort) — each
+// r4 missing-test 1 + retro completion: the five sibling
+// session_id_deprecated sites (rename, archive, delete, send_message
+// session_id, abort) plus compact's BUSY branch — the 7th site,
+// asserted by no test even at r4 (#1806 post-merge residual) — each
 // pins the marker PRESENT on a cold replica and ABSENT (with the
 // phrase emitted) on a warm one, so no `if idDegraded` block can be
 // deleted green.
@@ -2879,5 +2882,41 @@ func TestMCPEmission_SessionIDDeprecatedMarker_AllSurfaces(t *testing.T) {
 		run(t, func(pw, sid string) (string, error) {
 			return mcpAbortSession(context.Background(), pw, sid)
 		})
+	})
+	t.Run("compact busy", func(t *testing.T) {
+		// Inline: the busy leg (mcp_tools.go:1193) detaches the
+		// summarize and answers "scheduled", so it needs a busy
+		// fixture the shared run() doesn't build — the send_message
+		// subtest's inline precedent.
+		f := newFakeAgent()
+		s1 := f.newSession("marker-busy")
+		f.busySet[s1] = true
+		withAgentServer(t, f.handler(t))
+
+		cold, err := mcpCompact(context.Background(), mcpTestPassword, s1, "")
+		require.NoError(t, err)
+		assert.Contains(t, cold, `"status":"scheduled"`,
+			"the BUSY branch is the leg under test (idle is the sibling test above)")
+		assert.Contains(t, cold, `"session_id_deprecated":"true"`,
+			"cold: the raw harness id must be flagged on the busy leg")
+		assert.Contains(t, cold, s1)
+
+		store := withShortIDStore(t)
+		store.put("amber-falcon-naps", s1)
+		warm, err := mcpCompact(context.Background(), mcpTestPassword, "amber-falcon-naps", "")
+		require.NoError(t, err)
+		assert.Contains(t, warm, `"status":"scheduled"`,
+			"still busy — the phrase resolves to the same scheduled leg")
+		assert.Contains(t, warm, `"session_id":"amber-falcon-naps"`,
+			"warm: the phrase is the emitted id")
+		assert.NotContains(t, warm, "session_id_deprecated",
+			"warm: no flag on the phrase")
+
+		// Join the detached summarize goroutine(s) before test end
+		// (CompactBusyFullStack convention — no goroutine may
+		// outlive the test's server swap).
+		require.Eventually(t, func() bool {
+			return f.lastSummary(s1) != nil
+		}, 5*time.Second, 50*time.Millisecond)
 	})
 }
