@@ -474,6 +474,55 @@ describe("Composer", () => {
     expect(textarea).toHaveValue("history-msg");
   });
 
+  // ── #1846: recall guard — Up mid-text must not destroy the draft ──
+  //
+  // History recall fires ONLY when the caret is at position 0 of line 1
+  // (the very beginning of the buffer — the opencode TUI boundary rule
+  // the guard mirrors). Up with a non-empty draft and the caret anywhere
+  // else must leave the draft untouched.
+
+  it("DESKTOP: Up at end of a single-line draft does NOT replace the draft (#1846)", async () => {
+    // The issue's exact repro: caret mid-text on line 1 (old guard only
+    // checked the line, so the whole draft was swapped out).
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "my important draft"); // caret at end (17)
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("my important draft");
+  });
+
+  it("DESKTOP: Up with caret mid-line (not position 0) does NOT load history (#1846)", async () => {
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "hello world");
+    await user.keyboard("{ArrowLeft}{ArrowLeft}{ArrowLeft}"); // caret at 8
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("hello world");
+  });
+
+  it("DESKTOP: Up at position 0 of a non-empty draft DOES recall (caret-at-buffer-start rule)", async () => {
+    // The recall-guard convention: caret at the very beginning of the
+    // buffer IS the intentional recall gesture, draft or not.
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.type(textarea, "draft text");
+    await user.keyboard("{Home}"); // caret to position 0
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("history-msg");
+  });
+
+  it("DESKTOP: Up on an EMPTY input DOES recall history (#1846 companion)", async () => {
+    const user = userEvent.setup();
+    render(<Composer onSend={vi.fn()} userMessageHistory={["history-msg"]} />);
+    const textarea = screen.getByPlaceholderText("Type a message...");
+    await user.click(textarea); // caret at 0 of empty buffer
+    await user.keyboard("{ArrowUp}");
+    expect(textarea).toHaveValue("history-msg");
+  });
+
   it("DESKTOP: Down when not browsing history does nothing (cursor moves normally)", async () => {
     const user = userEvent.setup();
     render(<Composer onSend={vi.fn()} userMessageHistory={["old"]} />);
