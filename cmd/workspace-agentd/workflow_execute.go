@@ -679,13 +679,9 @@ func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 	writeWorkflowSuccessResponse(w, output, resp)
 }
 
-// writeWorkflowSuccessSession writes the success envelope with the
-// node's surviving session identity (#1470); an empty sessionID renders
-// identically to the session-less success writer (omitempty).
-func writeWorkflowSuccessSession(w http.ResponseWriter, output any, sessionID string) {
-	writeWorkflowSuccessResponse(w, output, workflowExecuteResponse{SessionID: sessionID})
-}
-
+// writeWorkflowSuccessResponse writes the raw success envelope — the
+// #1882 success legs build it directly (session survival + the
+// reported teardown id are disjoint envelope fields).
 func writeWorkflowSuccessResponse(w http.ResponseWriter, output any, resp workflowExecuteResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
