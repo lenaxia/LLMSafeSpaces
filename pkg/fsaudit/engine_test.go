@@ -264,32 +264,52 @@ func TestAudit_ListCapFlagsTruncated(t *testing.T) {
 }
 
 // PIN (root confinement): every Request.Root resolves INSIDE the
-// engine base — "../.." and absolute paths are grounded at the base,
-// never escaping (deny-by-default; the scan cannot be pointed at /etc).
+// engine base — "../.." and absolute paths are grounded under the
+// base, never escaping (deny-by-default; the scan cannot be pointed at
+// /etc). A grounded root that does not exist surfaces as a walk ERROR
+// entry — a typo'd root must never read as "0 files, clean".
 func TestAudit_RootCannotEscapeBase(t *testing.T) {
 	base := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(base, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	nulFile(t, filepath.Join(base, "sub", "dead.yaml"), 128)
-	nulFile(t, filepath.Join(base, "outside-marker-not-this-one"), 128)
+	nulFile(t, filepath.Join(base, "dead-root.yaml"), 128)
 
 	eng := NewEngine(base)
-	for _, root := range []string{"..", "../../..", "/etc", "/../../etc/passwd", "sub"} {
+	// Grounded at base itself: both fixtures visible.
+	for _, root := range []string{"", ".", "..", "../.."} {
 		report, err := eng.Audit(context.Background(), Request{Root: root})
 		if err != nil {
 			t.Fatalf("root %q: %v", root, err)
 		}
-		for _, fr := range report.NulFilled {
-			if fr.Path == "outside-marker-not-this-one" && root == "sub" {
-				t.Fatalf("root %q scanned outside itself: %s", root, fr.Path)
-			}
+		if report.NulFilledCount != 2 {
+			t.Fatalf("root %q: want both fixtures, got %+v", root, report.NulFilled)
 		}
-		if root == "sub" && report.NulFilledCount != 1 {
-			t.Fatalf("root sub: want exactly sub/dead.yaml, got %+v", report.NulFilled)
+		if report.ErrorCount != 0 {
+			t.Fatalf("root %q: unexpected walk errors %+v", root, report.Errors)
 		}
-		if root != "sub" && report.NulFilledCount != 2 {
-			t.Fatalf("root %q: grounded-at-base scan should see both fixtures, got %+v", root, report.NulFilled)
+	}
+	// Confined subroot: only its child.
+	report, err := eng.Audit(context.Background(), Request{Root: "sub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.NulFilledCount != 1 || findReport(report.NulFilled, "sub/dead.yaml") == nil {
+		t.Fatalf("root sub: want exactly sub/dead.yaml, got %+v", report.NulFilled)
+	}
+	// Escape attempts ground to a nonexistent subdir under base: loud
+	// walk error, zero flags, NEVER a scan outside the base.
+	for _, root := range []string{"/etc", "/../../etc/passwd", "../../etc"} {
+		report, err := eng.Audit(context.Background(), Request{Root: root})
+		if err != nil {
+			t.Fatalf("root %q: %v", root, err)
+		}
+		if report.ErrorCount != 1 {
+			t.Fatalf("root %q: want 1 walk error for the grounded-missing dir, got %+v", root, report.Errors)
+		}
+		if report.NulFilledCount != 0 {
+			t.Fatalf("root %q: grounded dir must be empty, got %+v", root, report.NulFilled)
 		}
 	}
 }
@@ -323,6 +343,9 @@ func TestAudit_CtxCancellationReturnsError(t *testing.T) {
 // base-relative slash paths (the diskrecovery r1 F2/F4 lesson).
 func TestAudit_ReportWireShape(t *testing.T) {
 	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	nulFile(t, filepath.Join(base, "sub", "dead"), 32)
 	eng := NewEngine(base)
 	report, err := eng.Audit(context.Background(), Request{})
@@ -400,6 +423,9 @@ func TestAudit_BudgetDefaults(t *testing.T) {
 // smoke: a tree with a bit of everything classifies each correctly.
 func TestAudit_MixedTree(t *testing.T) {
 	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	nulFile(t, filepath.Join(base, "dead1"), 4096)
 	sparseNulFile(t, filepath.Join(base, "sparse1"), 1<<20)
 	textFile(t, filepath.Join(base, "ok1"), "hello")

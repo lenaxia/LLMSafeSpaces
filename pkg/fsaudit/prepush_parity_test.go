@@ -200,18 +200,25 @@ func TestPrePushHook_KillSwitchDisablesGuard(t *testing.T) {
 	}
 }
 
-// PIN (fail-open on tooling failure): when git is UNAVAILABLE, the
-// hook must let the push proceed (exit 0) — a broken guard must never
-// block legitimate work. Never-worse doctrine, both directions pinned.
+// PIN (fail-open on tooling failure): when git is UNAVAILABLE (the
+// scanner), the hook must let the push proceed (exit 0) — a broken
+// guard must never block legitimate work. Never-worse doctrine, both
+// directions pinned. (A missing bash INTERPRETER is pre-script
+// territory — exit 127 before any doctrine line runs — and outside the
+// guard's contract; bash is a runtime-image base package.)
 func TestPrePushHook_FailsOpenWhenGitUnavailable(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not on PATH")
 	}
-	// PATH containing only the hook's dir essentials (no git) — the
-	// hook must not find git and must exit 0.
-	emptyDir := t.TempDir()
+	// PATH with bash ONLY: env resolves the shebang, the script runs,
+	// and its `command -v git` fail-open line is what executes.
+	minPath := t.TempDir()
+	if err := os.Symlink(bashPath, filepath.Join(minPath, "bash")); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(prepushHookPath)
-	cmd.Env = []string{"PATH=" + emptyDir, "HOME=" + t.TempDir()}
+	cmd.Env = []string{"PATH=" + minPath, "HOME=" + t.TempDir()}
 	cmd.Stdin = strings.NewReader("refs/heads/main " + strings.Repeat("a", 40) + " refs/heads/main " + strings.Repeat("0", 40) + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("hook must fail OPEN when git is unavailable, got %v (%s)", err, out)

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# pre-push — LLMSafeSpaces #1808 zero-fill corruption guard.
+#
+# Blocks a push ONLY on positive detection: a blob in the pushed range
+# whose entire content is NUL bytes — the #1808 corruption shape
+# (length preserved, content 100% \0) that silently reached the remote
+# in the 2026-10 incident via a commit made from a corrupted workspace.
+# git cannot notice: an all-NUL blob is structurally valid zlib data.
+#
+# Doctrine (the #1793 belt's never-worse rule, applied to egress):
+#   - fail CLOSED on positive detection — the remote is the last
+#     uncorrupted copy; the dead-file list is printed on stderr;
+#   - fail OPEN on any tool/scanner error — a broken guard must never
+#     block legitimate work (every git failure below routes to "pass";
+#     a missing bash INTERPRETER is pre-script 127 territory, outside
+#     this contract);
+#   - opt-out: LLMSAFESPACE_PREPUSH_AUDIT=0 disables the guard entirely
+#     (the documented escape hatch for legitimate all-NUL files).
+#
+# Installed ACTIVE by the runtime image via git's template dir
+# (/usr/share/git-core/templates/hooks/pre-push): every NEW
+# `git init`/`git clone` in the workspace gets it. Existing clones are
+# untouched (new-clone-forward rollout).
+#
+# This file is pinned by pkg/fsaudit/prepush_parity_test.go — change it
+# there in the same PR.
+
+set -u
+
+[ "${LLMSAFESPACE_PREPUSH_AUDIT:-1}" = "0" ] && exit 0
+
+command -v git >/dev/null 2>&1 || exit 0 # fail open: no git, no guard
+
+# zero_sha: git's null object id (ref deletion / new-branch marker).
+zero_sha="0000000000000000000000000000000000000000"
+
+dead=""
+status=0
+
+# lookup_path <sha>: best-effort path for a dead blob (rev-list output
+# carries "sha path"). Absent path → "<path unknown>" — never a failure.
+lookup_path() {
+    local sha="$1" path
+    path="$(git rev-list --objects HEAD 2>/dev/null | awk -v s="$sha" '$1 == s { $1 = ""; sub(/^ /, ""); print; exit }')"
+    printf '%s' "${path:-<path unknown>}"
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Ref deletion: nothing pushed to scan.
+    [ "$local_sha" = "$zero_sha" ] && continue
+
+    if [ "$remote_sha" = "$zero_sha" ]; then
+        range="$local_sha"        # new branch: everything reachable
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    # Enumerate blobs in the range with sizes. Every failure in this
+    # pipeline yields empty output → the loop body never runs → the
+    # range passes (fail open).
+    while read -r sha size; do
+        [ -n "$sha" ] || continue
+        # Full-read verification: a short/error read is fail-open, and
+        # only a COMPLETE read that is 100% NUL may block.
+        bytes="$(git cat-file blob "$sha" 2>/dev/null | wc -c)"
+        [ "$bytes" = "$size" ] || continue
+        nonnul="$(git cat-file blob "$sha" 2>/dev/null | tr -d '\0' | wc -c)"
+        [ -n "$nonnul" ] || continue
+        if [ "$bytes" -gt 0 ] && [ "$nonnul" -eq 0 ]; then
+            dead="${dead}  $(lookup_path "$sha") (${size} bytes, blob ${sha})
+"
+            status=1
+        fi
+    done < <(git rev-list --objects "$range" 2>/dev/null \
+             | awk '{ print $1 }' \
+             | git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
+             | awk '$2 == "blob" && $3 > 0 { print $1, $3 }')
+done
+
+if [ "$status" -ne 0 ]; then
+    echo "pre-push: REFUSED — all-NUL (zero-filled) blob(s) in the push:" >&2
+    printf '%s' "$dead" >&2
+    echo "" >&2
+    echo "This is the #1808 corruption signature: a workspace file was silently" >&2
+    echo "zero-filled at preserved length. The content is unrecoverable here, but" >&2
+    echo "the remote is still clean. Rebuild the affected files from source or a" >&2
+    echo "fresh clone, re-commit, and push again. Verify with: POST /v1/fs-audit" >&2
+    echo "(workspace route) or see runtimes/base/git-templates/hooks/pre-push." >&2
+    echo "Legitimate all-NUL file? Push with: LLMSAFESPACE_PREPUSH_AUDIT=0 git push" >&2
+    exit 1
+fi
+
+exit 0

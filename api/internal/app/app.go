@@ -1223,6 +1223,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var agentReloadHandler *handlers.AgentReloadHandler
 	var bulkReloadHandler *handlers.BulkReloadHandler
 	var diskRecoverHandler *handlers.DiskRecoverHandler
+	var fsAuditHandler *handlers.FsAuditHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		agentReloadHandler = handlers.NewAgentReloadHandler(
 			wsSvc,
@@ -1257,6 +1258,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				log,
 			),
 			nil, // handler installs its own diskRecoverClientTimeout client
+			log,
+		)
+		// #1808: zero-fill corruption audit facade (same dispatch
+		// topology as disk-recover; response-only).
+		fsAuditHandler = handlers.NewFsAuditHandler(
+			wsSvc,
+			newSecretsPodIPResolver(
+				&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+				dbSvc,
+				log,
+			),
+			nil, // handler installs its own fsAuditClientTimeout client
 			log,
 		)
 	}
@@ -1678,6 +1691,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PreviewOriginHandler:            previewOriginHandler,
 		AgentReloadHandler:              agentReloadHandler,
 		DiskRecoverHandler:              diskRecoverHandler,
+		FsAuditHandler:                  fsAuditHandler,
 		BulkReloadHandler:               bulkReloadHandler,
 		UsageHandler:                    usageHandler,
 		WebhookHandler:                  webhookHandler,

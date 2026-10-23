@@ -6,7 +6,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -208,7 +207,8 @@ func controlReqFsAudit(params any) controlRequest {
 	raw, _ := json.Marshal(params)
 	var p map[string]any
 	_ = json.Unmarshal(raw, &p)
-	return controlRequest{V: controlProtocolVersion, Method: "fs_audit", Params: p}
+	v := controlProtocolVersion
+	return controlRequest{V: &v, Method: "fs_audit", Params: p}
 }
 
 // PIN: the supervisor control method decodes {root, max_file_bytes,
@@ -216,15 +216,15 @@ func controlReqFsAudit(params any) controlRequest {
 // shape is bad_request, never a silently-defaulted scan) and returns
 // the full report as the result map.
 func TestFsAuditControlMethod(t *testing.T) {
-	srv := &controlSocketServer{}
-	resp := srv.fsAuditControlMethod(context.Background(), nil, controlReqFsAudit(map[string]any{"root": "!not-a-string!"}))
+	// Explicit-over-implicit with the engine WIRED (the nil-engine
+	// internal answer takes precedence — disk_recover convention).
+	rep := fsaudit.Report{FilesScanned: 3, NulFilledCount: 2, NulFilled: []fsaudit.FileReport{{Path: "a"}, {Path: "b"}}}
+	srv := &controlSocketServer{fsAudit: &fakeFsAuditEngine{report: rep}}
+	resp := srv.fsAuditControlMethod(context.Background(), nil, controlReqFsAudit(map[string]any{"root": 42}))
 	if resp.Error == nil || resp.Error.Code != "bad_request" {
 		t.Fatalf("undecodable params: want bad_request, got %+v", resp.Error)
 	}
-
-	rep := fsaudit.Report{FilesScanned: 3, NulFilledCount: 2, NulFilled: []fsaudit.FileReport{{Path: "a"}, {Path: "b"}}}
-	eng := &fakeFsAuditEngine{report: rep}
-	srv = &controlSocketServer{fsAudit: eng}
+	eng := srv.fsAudit.(*fakeFsAuditEngine)
 	resp = srv.fsAuditControlMethod(context.Background(), nil, controlReqFsAudit(map[string]any{"root": "repo", "max_file_bytes": 4096, "max_total_bytes": 8192}))
 	if resp.Error != nil {
 		t.Fatalf("happy path errored: %+v", resp.Error)
@@ -272,7 +272,7 @@ func TestFsAuditControlMethodErrorCodes(t *testing.T) {
 func TestControlClientFsAuditErrorMapping(t *testing.T) {
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", &fakeRestartProc{})
 	srv.fsAudit = &fakeFsAuditEngine{err: fsaudit.ErrBusy}
-	go func() { _ = srv.serve() }()
+	go srv.serve()
 
 	c := newControlClient(srv.addr())
 	if _, err := c.FsAudit(context.Background(), fsaudit.Request{}); !errors.Is(err, fsaudit.ErrBusy) {

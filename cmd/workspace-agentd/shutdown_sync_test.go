@@ -88,7 +88,8 @@ func TestRunShutdown_FlushesBeforeExit(t *testing.T) {
 	spy := newFlushSpy()
 	withFlushSeam(t, spy, time.Second)
 
-	bgCtx, bgCancel := context.WithCancel(context.Background())
+	_, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
 	var bgWg sync.WaitGroup
 	runShutdown(&http.Server{}, &http.Server{}, bgCancel, &bgWg, nil)
 
