@@ -303,6 +303,12 @@ func main() {
 	}
 	deps.diskRecover = diskRecover
 
+	// #1808: in-process fs audit — same RW-PVC-view reasoning as the
+	// disk-recovery engine above (single-container mode; sidecar mode
+	// wires the control-socket forwarder instead, see
+	// supervise_opencode.go).
+	deps.fsAudit = newFsAuditEngine()
+
 	// US-72.4 (design 0058 §4.5/§4.8): relay-only liveness over the
 	// batch's token-emitted providers. The monitor scans the durable
 	// batch file (relayed entries carry relay metadata), honors token
@@ -660,4 +666,13 @@ func runShutdown(adminSrv, userSrv *http.Server, bgCancel context.CancelFunc, bg
 	if proc != nil {
 		proc.stop()
 	}
+
+	// #1808 H1 belt: flush dirty pages (user tooling's buffered writes
+	// included) as the last act of agentd's shutdown — while the volume
+	// is still mounted and this process still controls the window. This
+	// runs in BOTH agentd modes (single-container and sidecar; sync() is
+	// system-wide); the sidecar-mode supervisor runs the same belt at
+	// its own exit (supervise_opencode.go). Bounded; see
+	// shutdown_sync.go.
+	flushWorkspaceWritesLogged()
 }

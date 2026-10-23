@@ -141,6 +141,9 @@ type mockAgentd struct {
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
 	sessionIDs map[string]string
+	// deletedSessionIDs stamps the #1882 deletedSessionId envelope
+	// field (empty map = field never set).
+	deletedSessionIDs map[string]string
 	// calls records every Execute's node id in dispatch order — the
 	// spawn-count evidence for the #1812 no-LLM-call pins.
 	calls []string
@@ -148,12 +151,13 @@ type mockAgentd struct {
 
 func newMockAgentd() *mockAgentd {
 	return &mockAgentd{
-		outputs:    make(map[string]json.RawMessage),
-		branches:   make(map[string]string),
-		errors:     make(map[string]error),
-		errCodes:   make(map[string]string),
-		sentSpecs:  make(map[string]json.RawMessage),
-		sessionIDs: make(map[string]string),
+		outputs:           make(map[string]json.RawMessage),
+		branches:          make(map[string]string),
+		errors:            make(map[string]error),
+		errCodes:          make(map[string]string),
+		sentSpecs:         make(map[string]json.RawMessage),
+		sessionIDs:        make(map[string]string),
+		deletedSessionIDs: make(map[string]string),
 	}
 }
 
@@ -176,6 +180,9 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	}
 	if sid, ok := m.sessionIDs[req.NodeID]; ok {
 		resp.SessionID = sid
+	}
+	if sid, ok := m.deletedSessionIDs[req.NodeID]; ok {
+		resp.DeletedSessionID = sid
 	}
 	if br, ok := m.branches[req.NodeID]; ok {
 		resp.Branch = br
@@ -481,7 +488,10 @@ type mockSchedulerStore struct {
 	getTriggerByIDErr error
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
-	overridePending   []*wf.TriggerFireRow
+	// originDeletes records DeleteSessionOrigin calls (#1882 carrier
+	// mark cleanup).
+	originDeletes   []string
+	overridePending []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -659,6 +669,18 @@ func (m *mockSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.Sess
 		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
 	}
 	m.sessionOrigins[row.SessionID] = row
+	return nil
+}
+
+// DeleteSessionOrigin records #1882's carrier-mark cleanup calls.
+func (m *mockSchedulerStore) DeleteSessionOrigin(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.originDeletes == nil {
+		m.originDeletes = make([]string, 0)
+	}
+	m.originDeletes = append(m.originDeletes, sessionID)
+	delete(m.sessionOrigins, sessionID)
 	return nil
 }
 
@@ -2003,7 +2025,7 @@ func TestExecuteWithRetry_Transient5xxRecovers(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Output)
 	assert.Equal(t, 2, ex.calls, "exactly one retry")
@@ -2017,7 +2039,7 @@ func TestExecuteWithRetry_Exhausted(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 503"}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "script_failed", resp.ErrorCode)
 	assert.Equal(t, 3, ex.calls, "bounded: three attempts")
@@ -2032,7 +2054,7 @@ func TestExecuteWithRetry_DeterministicNoRetry(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "invalid_node_data", Detail: "unsupported language"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "invalid_node_data", resp.ErrorCode)
 	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
@@ -2047,7 +2069,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, ex.calls)
 
@@ -2057,7 +2079,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 404: no route")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
 }
 
@@ -2071,7 +2093,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 504: gateway timeout")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "504 transport not retried")
 
 	ex2 := &scriptedExecutor{results: []struct {
@@ -2080,7 +2102,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "agentd script_timeout not retried")
 
 	ex3 := &scriptedExecutor{results: []struct {
@@ -2089,7 +2111,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 504"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
 }
 
@@ -2212,7 +2234,7 @@ func TestExecuteWithRetry_SessionCreateFailedTransient5xxRecovers(t *testing.T) 
 			{resp: &NodeExecResponse{ErrorCode: "session_create_failed", Detail: "opencode returned " + status}},
 			{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 		}}
-		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 2, ex.calls, "opencode %s on session create must retry once", status)
 	}
@@ -2233,7 +2255,7 @@ func TestExecuteWithRetry_SessionCreateFailedNonTransientNotRetried(t *testing.T
 			resp *NodeExecResponse
 			err  error
 		}{{resp: resp}}}
-		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		assert.Equal(t, 1, ex.calls, "%s must not retry", name)
 	}
 }
@@ -2393,7 +2415,116 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_env_unavailable", Detail: "script node execution environment unavailable in this container: no writable temp dir"}},
 	}}
-	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
+}
+
+// --- #1878: script-only fires are sessionless (no carrier churn) ---
+
+// #1878 (via #1882's trace): a trigger with a ScriptPath and NO prompt
+// is script-only — the pre-script leg runs for its side effects, which
+// IS the delivery. The #1812 early-return tests ScriptLanguage only,
+// so this shape fell through to the agent leg with an EMPTY prompt:
+// agentd minted an ephemeral carrier session per fire (the ~75
+// ghost-sessions/hour churn #1882 measured) for a fire that has no LLM
+// work. The sessionless contract: script-only fires dispatch the script
+// node and NEVER the agent node.
+func TestExecuteRoutine_ScriptPathOnlyEmptyPrompt_NeverDispatchesAgentLeg(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-script"] = json.RawMessage(`{"exitCode":0,"stdout":"","stderr":""}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp", TriggerID: "trig-1878-sp", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "delivered", store.statuses["fire-1878-sp"],
+		"script-only fire delivers on the script leg's side effects")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script",
+		"the pre-script leg must dispatch")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a script-only fire must NEVER reach the agent leg — that mints the ephemeral carrier session (#1878/#1882)")
+}
+
+// #1878 review F1: a script-only fire whose pre-script leg FAILS must
+// fail LOUD — the HTTP-200 error envelope (scriptResp.ErrorCode) is a
+// leg failure, not a nil-error success. The #1878 early-return would
+// otherwise stamp delivered + reset the failure counter, laundering
+// the failure out of auto-disable accounting (the silent-delivered
+// class, pre-script edition).
+func TestExecuteRoutine_ScriptPathOnlyFailingScript_FailsLoud(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-script"] = "script_failed"
+	agentd.outputs["routine-script"] = nil
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp-fail", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp-fail", TriggerID: "trig-1878-sp-fail", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-sp-fail"],
+		"a failing pre-script must fail the fire — never delivered")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a failed script-only fire still never reaches the agent leg")
+	assert.Equal(t, 1, store.triggerFail["trig-1878-sp-fail"],
+		"the failure must count toward auto-disable (not laundered by a counter reset)")
+}
+
+// #1878 review r2 F-A/F-C: the pre-script failure arm is LOUD (an
+// error log line, the gate leg's fail-closed discipline) and its audit
+// write MERGES — a gate that OPENED keeps its audited outcome alongside
+// the script error (UpdateTriggerFireAction REPLACES; the arm carries
+// both keys).
+func TestExecuteRoutine_PreScriptFailure_LoudAndGatePreserved(t *testing.T) {
+	var errs []string
+	logger := &errorOnlyLogger{errs: &errs}
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-gate"] = "" // gate succeeds below via outputs
+	agentd.outputs["routine-gate"] = json.RawMessage(`{"proceed":true,"vars":{"topic":"t"}}`)
+	agentd.errCodes["routine-script"] = "script_failed"
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-r2", WorkspaceID: &wsID,
+		ScriptLanguage: "python", ScriptHandler: "def handler(input):\n    return {\"proceed\": True, \"vars\": {\"topic\": \"t\"}}",
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-r2", TriggerID: "trig-1878-r2", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: logger}
+	sched.executeRoutine(context.Background(), logger, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-r2"])
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent")
+
+	// F-A: the failure leaves a log line (not only a DB row).
+	assert.NotEmpty(t, errs, "a failed pre-script fire must log an error line (fail-loud contract)")
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "pre-script failed") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the failure log must name the pre-script failure, got %v", errs)
+
+	// F-C: the audit carries BOTH the open gate's outcome and the
+	// script error (REPLACE must not clobber the gate payload).
+	action := string(store.actions["fire-1878-r2"])
+	assert.Contains(t, action, `"gate"`, "the open gate's audited outcome must survive the pre-script failure")
+	assert.Contains(t, action, `"proceed":true`)
+	assert.Contains(t, action, `"script"`)
+	assert.Contains(t, action, "script failed: script_failed", "the script cause rides actionResult.script.error")
 }

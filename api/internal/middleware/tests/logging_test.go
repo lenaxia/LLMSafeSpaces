@@ -399,6 +399,39 @@ func TestLoggingMiddleware_SkipPaths(t *testing.T) {
 	mockLogger.AssertExpectations(t)
 }
 
+// TestLoggingMiddleware_SkipSessionRegistry_NoisyInternalPullNotLogged
+// (#1884 ask 3): the pod-auth session-registry replica pull
+// (GET /internal/v1/session-registry?workspaceID= — agentd's boot +
+// on-miss phrase↔harness-id mapping fetch, pod_session_registry.go) is
+// high-frequency internal traffic whose status-free session-list
+// response bodies polluted the response_body log lines — and were
+// misread as the USER-FACING /sessions list during the #1883 incident
+// triage (the log filter captured the wrong endpoint entirely). The
+// default config must skip it: it carries no user-facing signal and
+// actively misleads triage.
+func TestLoggingMiddleware_SkipSessionRegistry_NoisyInternalPullNotLogged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	// No Info calls expected — the path is in the default
+	// SkipPathPrefixes so the middleware short-circuits before logging.
+
+	config := middleware.DefaultLoggingConfig()
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.GET("/internal/v1/session-registry", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"sessions": []gin.H{{"sessionID": "ses-1", "shortID": "alpha-bravo-3"}}})
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/internal/v1/session-registry?workspaceID=ws-1", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code, "handler should still run")
+	mockLogger.AssertNotCalled(t, "Info", mock.Anything, mock.Anything,
+		"the session-registry replica pull must not be logged — its status-free bodies misled the #1883 triage")
+}
+
 // --- G25: secret value field redaction in logs ---
 
 // TestLoggingMiddleware_G25_SecretsPathBodyNotLogged is the G25 core

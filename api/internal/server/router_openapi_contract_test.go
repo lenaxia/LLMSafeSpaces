@@ -468,6 +468,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		PreviewOriginHandler:            &handlers.PreviewOriginHandler{},
 		AgentReloadHandler:              &handlers.AgentReloadHandler{},
 		DiskRecoverHandler:              &handlers.DiskRecoverHandler{},
+		FsAuditHandler:                  &handlers.FsAuditHandler{},
 		BulkReloadHandler:               &handlers.BulkReloadHandler{},
 		UsageHandler:                    &handlers.UsageHandler{},
 		WebhookHandler:                  &handlers.StripeWebhookHandler{},

@@ -499,3 +499,193 @@ func (s *Service) healthProjectSlots(ctx context.Context, userID string, h *Heal
 type rowScan struct{ rows pgx.Rows }
 
 func (r rowScan) Scan(dest ...any) error { return r.rows.Scan(dest...) }
+
+// --- Workspace-scoped agent reads (#1837 P2a) -----------------------------------
+//
+// The agent surface's list/health projections: the caller's resolved
+// WORKSPACE is the perimeter (a pod sees its own workspace's boards
+// only — narrower than the owner perimeter the REST/external surfaces
+// use, per the #1747 caller-workspace binding).
+
+// ListTasksInWorkspace lists a project's tasks for the agent surface:
+// the project resolves WORKSPACE-scoped (a foreign workspace's project
+// is a plain 404), then the projection is ListTasks' (stage/claim/
+// lease/paused/blocked columns, FIFO creation order).
+func (s *Service) ListTasksInWorkspace(ctx context.Context, workspaceID, projectID, shortIDOrID, stage, failed string) ([]Task, *Project, error) {
+	p, err := s.resolveProjectInWorkspace(ctx, workspaceID, pick(projectID, shortIDOrID))
+	if err != nil {
+		return nil, nil, err
+	}
+	tasks, err := s.ListTasks(ctx, p.ID, stage, failed)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tasks, p, nil
+}
+
+// resolveProjectInWorkspace resolves a project by UUID or
+// case-insensitive short id within one target workspace.
+func (s *Service) resolveProjectInWorkspace(ctx context.Context, workspaceID, idOrShort string) (*Project, error) {
+	var row pgx.Row
+	base := `SELECT ` + projectColumns + ` FROM projects WHERE target_workspace_id = $1::uuid AND `
+	if isUUID(idOrShort) {
+		row = s.q().QueryRow(ctx, base+`id=$2`, workspaceID, idOrShort)
+	} else {
+		row = s.q().QueryRow(ctx, base+`lower(short_id)=lower($2)`, workspaceID, idOrShort)
+	}
+	p, err := scanProject(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, s.store.notFoundProject(ctx, s.q(), "", workspaceID, idOrShort)
+		}
+		return nil, err
+	}
+	s.decorateProject(p)
+	return p, nil
+}
+
+// BoardHealthInWorkspace renders the health snapshot for the agent
+// surface: the same projection as BoardHealth, scoped to the caller's
+// workspace (the owner's OTHER workspaces' boards are invisible here).
+func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string) (*Health, error) {
+	h := &Health{
+		ActiveLeases:         []HealthLease{},
+		TaskCooldowns:        []HealthTaskCooldown{},
+		ProjectCooldowns:     []HealthProjectCooldown{},
+		PendingInputByOrigin: map[string]int{},
+		RecentReclaims:       []HealthReclaim{},
+		ProjectSlots:         []HealthProjectSlots{},
+	}
+	rows, err := s.q().Query(ctx, `
+		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at
+		FROM tasks t JOIN projects p ON p.id = t.project_id
+		WHERE p.target_workspace_id = $1::uuid AND t.stage = 'in_progress' AND t.lease_expires_at IS NOT NULL
+		ORDER BY t.lease_expires_at`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var l HealthLease
+		if err := rows.Scan(&l.TaskID, &l.ShortID, &l.Title, &l.ProjectID, &l.AssigneeSession, &l.LeaseExpiresAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		h.ActiveLeases = append(h.ActiveLeases, l)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	crows, err := s.q().Query(ctx, `
+		SELECT t.id, t.short_id, t.project_id, t.cooldown_until
+		FROM tasks t JOIN projects p ON p.id = t.project_id
+		WHERE p.target_workspace_id = $1::uuid AND t.cooldown_until > now()
+		ORDER BY t.cooldown_until`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for crows.Next() {
+		var c HealthTaskCooldown
+		if err := crows.Scan(&c.TaskID, &c.ShortID, &c.ProjectID, &c.CooldownUntil); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		h.TaskCooldowns = append(h.TaskCooldowns, c)
+	}
+	if err := crows.Err(); err != nil {
+		crows.Close()
+		return nil, err
+	}
+	crows.Close()
+
+	prows, err := s.q().Query(ctx, `
+		SELECT id, short_id, slot_cooldown_until FROM projects
+		WHERE target_workspace_id = $1::uuid AND slot_cooldown_until > now()
+		ORDER BY slot_cooldown_until`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for prows.Next() {
+		var c HealthProjectCooldown
+		if err := prows.Scan(&c.ProjectID, &c.ShortID, &c.CooldownUntil); err != nil {
+			prows.Close()
+			return nil, err
+		}
+		h.ProjectCooldowns = append(h.ProjectCooldowns, c)
+	}
+	if err := prows.Err(); err != nil {
+		prows.Close()
+		return nil, err
+	}
+	prows.Close()
+
+	orows, err := s.q().Query(ctx, `
+		SELECT coalesce(t.pending_origin, 'unknown'), count(*)
+		FROM tasks t JOIN projects p ON p.id = t.project_id
+		WHERE p.target_workspace_id = $1::uuid AND t.stage = 'pending_input'
+		GROUP BY 1`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for orows.Next() {
+		var origin string
+		var n int
+		if err := orows.Scan(&origin, &n); err != nil {
+			orows.Close()
+			return nil, err
+		}
+		h.PendingInputByOrigin[origin] = n
+	}
+	if err := orows.Err(); err != nil {
+		orows.Close()
+		return nil, err
+	}
+	orows.Close()
+
+	rrows, err := s.q().Query(ctx, `
+		SELECT be.item_id, be.created_at
+		FROM board_events be JOIN projects p ON p.id = be.project_id
+		WHERE p.target_workspace_id = $1::uuid AND be.action = 'reclaim' AND be.item_id IS NOT NULL
+		ORDER BY be.created_at DESC LIMIT 20`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for rrows.Next() {
+		var r HealthReclaim
+		if err := rrows.Scan(&r.TaskID, &r.At); err != nil {
+			rrows.Close()
+			return nil, err
+		}
+		h.RecentReclaims = append(h.RecentReclaims, r)
+	}
+	if err := rrows.Err(); err != nil {
+		rrows.Close()
+		return nil, err
+	}
+	rrows.Close()
+
+	srows, err := s.q().Query(ctx, `
+		SELECT p.id, p.short_id, p.worker_slots,
+		       (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.stage = 'in_progress')
+		FROM projects p WHERE p.target_workspace_id = $1::uuid AND p.status = 'active'
+		ORDER BY p.created_at`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for srows.Next() {
+		var ps HealthProjectSlots
+		if err := srows.Scan(&ps.ProjectID, &ps.ShortID, &ps.WorkerSlots, &ps.InUse); err != nil {
+			srows.Close()
+			return nil, err
+		}
+		h.ProjectSlots = append(h.ProjectSlots, ps)
+	}
+	if err := srows.Err(); err != nil {
+		srows.Close()
+		return nil, err
+	}
+	srows.Close()
+	return h, nil
+}

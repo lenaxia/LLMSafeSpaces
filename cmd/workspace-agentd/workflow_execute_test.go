@@ -960,3 +960,46 @@ func TestWorkflowExecute_RequestAdditiveKeysTolerated(t *testing.T) {
 		t.Fatalf("expected 200 with an additive key, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// --- #1878: script children run in the SESSION environment ---
+
+// #1878 owner ruling: "the script should be executed in the same
+// environment that the sessions run". Sessions' tool children inherit
+// the opencode spawn env — the secrets-env-sourced construction
+// (buildEnvFrom + redact PATH prepend), which is where GH_TOKEN and the
+// credential belt live. A script node's child must see the SAME env:
+// this pin asserts a secrets-env-sourced marker (LLMSAFESPACES_SECRETS_
+// ENV_PATH override — the #1455 US-4b coordinate seam) is visible to
+// the handler, exactly as it would be to a session bash child.
+func TestWorkflowExecute_ScriptNodeChildSeesSessionEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/secrets-env"
+	if err := os.WriteFile(path, []byte("WT1878_SESSION_ENV_PROBE=marker-1878\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", path)
+
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    import os\n    return {\"probe\": os.environ.get(\"WT1878_SESSION_ENV_PROBE\")}"},"input":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Output    json.RawMessage `json:"output"`
+		ErrorCode string          `json:"errorCode"`
+		Detail    string          `json:"detail"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("script node failed: %s: %s", resp.ErrorCode, resp.Detail)
+	}
+	if !strings.Contains(string(resp.Output), "marker-1878") {
+		t.Fatalf("script child must see the secrets-env-sourced session env (the #1878 ruling); output: %s", string(resp.Output))
+	}
+}

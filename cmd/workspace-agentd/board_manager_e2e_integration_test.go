@@ -40,6 +40,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +170,10 @@ func (s *boardE2ESeam) engineError(c *gin.Context, err error) {
 			c.JSON(http.StatusForbidden, gin.H{"error": e.Error(), "code": e.Code})
 			return
 		}
+		if e.Code == board.GuardInput || e.Code == board.GuardTextRejected { // #1837: text caps/corruption are 400s
+			c.JSON(http.StatusBadRequest, gin.H{"error": e.Error(), "code": e.Code})
+			return
+		}
 		c.JSON(http.StatusConflict, gin.H{"error": e.Error(), "code": e.Code})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -269,10 +275,10 @@ func boardE2EFieldsJSON(fields map[string]json.RawMessage) []byte {
 	return b
 }
 
-func boardE2EEventCount(t *testing.T, pool *pgxpool.Pool) int {
+func boardE2EEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
-	require.NoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM board_events`).Scan(&n))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM board_events`).Scan(&n))
 	return n
 }
 
@@ -417,14 +423,14 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Equal(t, 1, n)
 
 	// --- B: identity-less dispatch fails closed pre-wire ------------------------
-	before := boardE2EEventCount(t, pool)
+	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"projectId": proj.ShortID,
 		"title":     "x",
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "identity")
-	assert.Equal(t, before, boardE2EEventCount(t, pool))
+	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool))
 
 	// --- C: the engine belt refuses a claimed worker session --------------------
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_epic_activate", map[string]any{
@@ -489,4 +495,65 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(resp.Body), &moved))
 	assert.Equal(t, board.StageBacklog, moved.Stage)
 	assert.Zero(t, moved.Attempts, "re-pooled with the fresh-judgment ledger")
+
+	// --- G+H (#1837, relabeled past main's section E): composed
+	// file→store byte-identical + corruption refusal — the real
+	// dispatch, the real wire, the real engine, real PG.
+	e2eFileBackedCharterSections(t, ctx, client, svc, pool, &epic, mgrSession, wsPod)
+}
+
+// e2eFileBackedCharterSections (#1837 rounds 2/3, relabeled G+H past
+// main's section E): the composed real-wiring arcs for P1 —
+// file → wire → engine → PG byte-identical, and corruption → 400 with
+// nothing stored.
+func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *opencode.Client, svc *board.Service, pool *pgxpool.Pool, epic *struct {
+	ID      string `json:"id"`
+	ShortID string `json:"short_id"`
+}, mgrSession, wsPod string) {
+	t.Helper()
+
+	// --- G: composed file → wire → store, byte-identical -------------------------
+	var charter strings.Builder
+	for i := 0; i < 130; i++ {
+		charter.WriteString("### Charter section number ")
+		charter.WriteString(strconv.Itoa(i))
+		charter.WriteString("\nDistinct numbered guidance payload ")
+		charter.WriteString(strconv.Itoa(i))
+		charter.WriteString(" for the worker.\n")
+	}
+	content := charter.String()
+	require.Greater(t, len(content), 4096)
+	path := filepath.Join(t.TempDir(), "charter.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "file-backed charter",
+		"description_file":     path,
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, resp.Status)
+
+	var fileTask struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &fileTask))
+	var storedDesc string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
+	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
+
+	// --- H: composed corruption refusal — nothing stored ------------------------
+	before := boardE2EEventCount(t, ctx, pool)
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "corrupted",
+		"description":          "prefix " + strings.Repeat("Retry the loop step and continue. ", 50) + " suffix",
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), board.GuardTextRejected)
+	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool), "a refused write stores nothing")
 }

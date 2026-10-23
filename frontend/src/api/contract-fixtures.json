@@ -3,13 +3,6 @@
     "resumed": "ws-1",
     "suspended": "ws-old"
   },
-  "ActiveSessionsResponse": {
-    "active": [
-      "sess-1",
-      "sess-2"
-    ],
-    "maxActive": 5
-  },
   "AuthConfig": {
     "registrationEnabled": true,
     "oidcEnabled": false,

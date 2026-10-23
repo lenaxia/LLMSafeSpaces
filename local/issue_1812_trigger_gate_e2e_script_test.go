@@ -50,14 +50,13 @@ func TestIssue1812E2EScript_RowsAndAssertions(t *testing.T) {
 		// R1 — the closed gate: skipped fire + gate payload + no LLM.
 		`script:{language:"python",`,
 		"\\\"proceed\\\": False",
-		`R1 (exec mode): skipped fire with {gate:{proceed:false,vars}} in the audit`,
-		`R1 (sidecar mode): fail-closed with the named script_env_unavailable cause`,
+		`R1: skipped fire with {gate:{proceed:false,vars}} in the audit (both modes — the gate executes in the workspace container, #1878)`,
 		`assert_no_sessions "R1"`,
 		// R2 — the open gate on a script-only trigger: delivered +
-		// vars + in-sandbox side effect, still no LLM leg.
+		// vars + in-workspace side effect, still no LLM leg.
 		`issue-1812-marker`,
 		"\\\"proceed\\\": True",
-		`R2 (exec mode): delivered fire with {gate:{proceed:true,vars}}`,
+		`R2: delivered fire with {gate:{proceed:true,vars}} (both modes — #1878)`,
 		`side-effect marker present in the workspace`,
 		`assert_no_sessions "R2"`,
 		// R3 — fail-closed.

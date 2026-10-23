@@ -991,6 +991,40 @@ func (c *Client) boardManagerPost(ctx context.Context, saToken, workspaceID, ses
 	return c.automationCall(ctx, http.MethodPost, path, saToken, stamped)
 }
 
+// BoardManagerListTasks is board_list (#1837 P2a): one project's
+// tasks + the derived ready set, manager-gated and workspace-scoped
+// server-side. Identity rides the query (a body-less GET).
+func (c *Client) BoardManagerListTasks(ctx context.Context, saToken, workspaceID, sessionID, projectID, stage, failed string) (*AutomationResponse, error) {
+	if err := validateBoardRef(projectID); err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("workspaceID", workspaceID)
+	if sessionID != "" {
+		q.Set("sessionId", sessionID)
+	}
+	if stage != "" {
+		q.Set("stage", stage)
+	}
+	if failed != "" {
+		q.Set("failed", failed)
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		"/internal/v1/automation/board/projects/"+projectID+"/tasks?"+q.Encode(), saToken, nil)
+}
+
+// BoardManagerHealth is board_health (#1837 P2a): the workspace's
+// board health snapshot, manager-gated.
+func (c *Client) BoardManagerHealth(ctx context.Context, saToken, workspaceID, sessionID string) (*AutomationResponse, error) {
+	q := url.Values{}
+	q.Set("workspaceID", workspaceID)
+	if sessionID != "" {
+		q.Set("sessionId", sessionID)
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		"/internal/v1/automation/board/health?"+q.Encode(), saToken, nil)
+}
+
 // BoardManagerProjectAction serves the project lifecycle verbs
 // (archive/unarchive/pause/resume).
 func (c *Client) BoardManagerProjectAction(ctx context.Context, saToken, workspaceID, sessionID, projectID, verb string) (*AutomationResponse, error) {

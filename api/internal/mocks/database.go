@@ -216,6 +216,10 @@ func (m *MockDatabaseService) DeleteSessionTree(ctx context.Context, workspaceID
 	return m.Called(ctx, workspaceID, sessionID).Error(0)
 }
 
+func (m *MockDatabaseService) MarkSessionIndexDeleted(ctx context.Context, workspaceID, sessionID string) error {
+	return m.Called(ctx, workspaceID, sessionID).Error(0)
+}
+
 func (m *MockDatabaseService) UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error {
 	return m.Called(ctx, workspaceID, sessionID, at).Error(0)
 }
