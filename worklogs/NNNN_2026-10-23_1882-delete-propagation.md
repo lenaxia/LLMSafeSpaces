@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1882-delete-propagation`
-**Status:** PR opening (r1)
+**Status:** PR r1 (review round 1 addressed: closure re-scoped to Refs #1882 — fix item 1's ScriptPath fall-through carved into #1890; review's two missing-test findings landed: real-PG death-mark semantics suite + the retry-attempt carrier separation pin)
 
 ---
 
@@ -149,6 +149,19 @@ marked carriers too, so the owner's click on a carrier ghost answers
 
 ## Residuals
 
+- **Item 1's ScriptPath fall-through is tracked as #1890** (carved out
+  at review round 1): the #1812 script-only early-return gates on
+  `ScriptLanguage != ""` only, so a ScriptPath-only + empty-prompt
+  fire still dispatches the agent leg (carrier churn, now cleaned by
+  this PR's propagation but not eliminated). #1878 owns the script
+  EXECUTION environment; the dispatch fall-through half was in
+  neither issue's acceptance — #1890 closes the tracking gap. The PR
+  therefore says `Refs #1882` (items 2+3), not `Closes`.
+- The DAG Reconciler's ephemeral propagation
+  (`Reconciler.propagateDeletedSession`) runs effects without the
+  routine path's mark-first self-heal (review robustness note;
+  non-blocking — recovery is strictly weaker only under a correlated
+  double-failure, and `deleted_at` hides the row when it lands).
 - Pre-fix UNMARKED ephemeral-carrier residue (bridge-minted rows for
   carriers that pre-date this fix; no `session_origins` row, history
   present) remains `kept_for_operator` by the #1340 triage — the
@@ -167,9 +180,16 @@ marked carriers too, so the owner's click on a carrier ghost answers
 - User-route deletes of PRESERVED routine sessions leave their
   `session_origins` rows (pre-existing behavior, invisible — the
   badge join rides index rows).
+- Admin delete route (`admin_session.go`) still skips index cleanup
+  (review robustness note; ForceAbort is not a delete — outside fix
+  item 2's enumeration).
 - `TestLive_Worklogs_NoDuplicates` fails on origin/main's own
   unnumbered `NNNNN_2026-10-23_chatux-1845...` sentinel (pre-existing,
   not this branch).
+- `pkg/secrets integration (Postgres + Redis)` CI job is red on
+  origin/main (TestBoardSuite; runs 39914818345, 39914746332,
+  39913732914, 39911665448 all 2026-10-23) — not attributable (no
+  board/secrets files touched; attribution comment on the PR).
 
 ## Mutation-verify suggestion
 

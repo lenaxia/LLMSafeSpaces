@@ -267,6 +267,45 @@ func (e *indexDeleteEffects) ApplySessionDeleteEffects(ctx context.Context, work
 	_ = e.index.DeleteSession(ctx, workspaceID, sessionID)
 }
 
+// TestExecuteRoutine_RetryAttempts_CarriersPropagateSeparately is the
+// round-1 review's missing-test finding 2: a discarded RETRY attempt's
+// carrier (reported on the discarded response, propagated via
+// executeWithRetry's intermediateDeleted callback) AND the FINAL
+// attempt's carrier (reported on the returned response) each propagate
+// their own effects — neither rides the other's envelope.
+func TestExecuteRoutine_RetryAttempts_CarriersPropagateSeparately(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{
+			ErrorCode: "script_failed", Detail: "opencode returned 500",
+			DeletedSessionID: "ses_carrier_mid",
+		}},
+		{resp: &NodeExecResponse{
+			Output:           json.RawMessage(`{"response":"ok","session_id":""}`),
+			DeletedSessionID: "ses_carrier_final",
+		}},
+	}}
+	effects := &recordingDeleteEffects{}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-dp7", Name: "Watch", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
+	fire := &wf.TriggerFireRow{ID: "fire-dp7", TriggerID: "trig-dp7", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		DeleteEffects: effects}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "delivered", store.statuses["fire-dp7"])
+	got := effects.calls()
+	require.Len(t, got, 2, "the discarded attempt's carrier and the final attempt's carrier each propagate")
+	require.Equal(t, deleteEffectCall{workspaceID: "ws-1", sessionID: "ses_carrier_mid"}, got[0],
+		"the discarded retry attempt's carrier propagates first (before the retry dispatches)")
+	require.Equal(t, deleteEffectCall{workspaceID: "ws-1", sessionID: "ses_carrier_final"}, got[1],
+		"the final attempt's carrier propagates from the returned response")
+	require.ElementsMatch(t, []string{"ses_carrier_mid", "ses_carrier_final"}, store.originDeletes,
+		"each carrier's origin mark is cleaned")
+}
+
 // TestExecuteNode_SupersededAttemptCleanup_PropagatesEffects: the DAG
 // node-retry authorized delete (#1476) must run the delete effects —
 // before #1882 the cleaned orphan's index row lingered as a ghost.
