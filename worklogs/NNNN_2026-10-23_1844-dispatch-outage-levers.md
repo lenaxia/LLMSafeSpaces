@@ -58,3 +58,7 @@ A dispatched run would check out the right tree (default checkout of the ref) bu
 - The dispatch shim cannot force a review round (v0.2.23 reusable contract); the comment names the working levers. ai-workflows dispatch bridge = owner's radar via orchestrator.
 - e2e-pr.yml dispatch left to its owner lane.
 - PR-2 (run-watchdog.yml + pkg/runwatchdog) automates the detection this shim performs manually.
+
+## Addendum (r1) — pin the dispatch guards
+
+Mutation-verification (orchestrator) held PR-1 on one gap: `TestPrReviewCallerContract` did not pin the dispatch guards — removing the `review:` job's `if:` gate left the suite green, while the repo's own convention pins if-gates (`TestAiCommentAuthorizationGatePresent`). Added `TestPrReviewDispatchGuardsPinned`: the workflow_dispatch trigger's existence, the `review:` job's `pull_request`-only gate (between job id and `uses:`), and `dispatch-recovery`'s `workflow_dispatch`-only gate (between job id and `runs-on:`). Red-first: each gate independently removed → test FAILs naming the hazard; restored → full `./tests/ghaworkflows/` suite green.
