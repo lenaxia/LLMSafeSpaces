@@ -108,3 +108,90 @@ func dispatch(id string) bool { return strings.HasPrefix(id, "que_") }
 		}
 	}
 }
+
+// TestRepolintBinary_NumberingModes pins the two #1838 CLI modes at the
+// binary level — the numbering-gate workflow invokes `-numbering-only`
+// autonomously against merge trees and consumes its exit code for the
+// redden/clear decision, and `-next-numbers` is the authors' soft
+// lever. A broken flag wiring (or a mode that exits 0 on a colliding
+// tree) passes every package test but fails here — the #1305 class.
+func TestRepolintBinary_NumberingModes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("binary build smoke test skipped under -short")
+	}
+	root := repoRoot(t)
+	bin := filepath.Join(t.TempDir(), "repolint")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/repolint")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build cmd/repolint: %v\n%s", err, out)
+	}
+
+	newScratch := func() string {
+		scratch := t.TempDir()
+		wl := filepath.Join(scratch, "worklogs")
+		mig := filepath.Join(scratch, "api", "migrations")
+		if err := os.MkdirAll(wl, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(mig, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// A clean migration pair on every scratch so a missing-dir
+		// error can never satisfy the exit-code assertions below.
+		mustWrite(t, filepath.Join(mig, "000001_init.up.sql"), "")
+		mustWrite(t, filepath.Join(mig, "000001_init.down.sql"), "")
+		return scratch
+	}
+
+	// Colliding tree: the 1181x2 shape (both files above the
+	// grandfather threshold). `-numbering-only` must exit non-zero and
+	// name BOTH files — the exact output the gate embeds in its red
+	// check runs.
+	colliding := newScratch()
+	mustWrite(t, filepath.Join(colliding, "worklogs", "1181_2026-10-22_lane-alpha.md"), "")
+	mustWrite(t, filepath.Join(colliding, "worklogs", "1181_2026-10-22_lane-beta.md"), "")
+	out, err := exec.Command(bin, "-repo", colliding, "-numbering-only").CombinedOutput()
+	if err == nil {
+		t.Fatalf("-numbering-only on a colliding tree must exit non-zero; got 0\n%s", out)
+	}
+	for _, want := range []string{
+		"FAIL  worklogs uniqueness",
+		"1181_2026-10-22_lane-alpha.md",
+		"1181_2026-10-22_lane-beta.md",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("-numbering-only output must contain %q; got:\n%s", want, out)
+		}
+	}
+
+	// Clean tree: exit 0 with the pass line.
+	clean := newScratch()
+	mustWrite(t, filepath.Join(clean, "worklogs", "1181_2026-10-22_lane-alpha.md"), "")
+	mustWrite(t, filepath.Join(clean, "api", "migrations", "000002_next.up.sql"), "")
+	mustWrite(t, filepath.Join(clean, "api", "migrations", "000002_next.down.sql"), "")
+	out, err = exec.Command(bin, "-repo", clean, "-numbering-only").CombinedOutput()
+	if err != nil {
+		t.Fatalf("-numbering-only on a clean tree must exit 0; got %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "numbering checks passed") {
+		t.Errorf("-numbering-only clean-tree output must contain the pass line; got:\n%s", out)
+	}
+
+	// -next-numbers: both lines, correct values for the clean scratch
+	// (worklog max 1181 → 1182; migration max 2 → 3). The scratch is
+	// not a git repo, so mainline/claims discovery contributes nothing —
+	// the output is deterministic.
+	out, err = exec.Command(bin, "-repo", clean, "-next-numbers").CombinedOutput()
+	if err != nil {
+		t.Fatalf("-next-numbers must exit 0; got %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"next worklog number:   1182",
+		"next migration number: 3",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("-next-numbers output must contain %q; got:\n%s", want, out)
+		}
+	}
+}

@@ -69,6 +69,13 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # actions:write lets the numbering pass dispatch the numbering-gate
+  # sweep after pushing (r1 review): this commit carries [skip ci], so
+  # the sweep's push trigger skips it — in the degraded mode (gh
+  # discovery unavailable here) the numbering above may have minted a
+  # number an open sibling PR holds, and the dispatched sweep is what
+  # detects that within minutes instead of at the 6h cron.
+  actions: write
 
 jobs:
   renumber:
@@ -165,6 +172,15 @@ jobs:
           # a fresh tip.
           for attempt in 1 2 3; do
             if git push; then
+              # The numbering commit carries [skip ci], so it does NOT
+              # trigger the numbering-gate sweep via the push path.
+              # Dispatch it explicitly (r1 review): the sweep re-checks
+              # open PRs' merge trees against the tip this commit just
+              # created — the belt for the degraded-mode hole where the
+              # assignment above could not see sibling claims. Best
+              # effort: the cron sweep is the backstop.
+              gh workflow run numbering-gate.yml || \
+                echo "::warning::could not dispatch numbering-gate sweep — the 6h cron will re-check"
               exit 0
             fi
             echo "::notice::push rejected (attempt $attempt/3) — main moved; rebasing and re-fixing"

@@ -38,10 +38,17 @@ name: Numbering Gate
 # this workflow closes is exactly the between-pushes window on main.
 # Residual: a PR that pushes a new head goes un-swept until the next
 # main push — but a new head re-runs ci.yml's Lint against a FRESH
-# merge ref, which covers it. The renumber bot's own commits carry
-# [skip ci] and do not trigger this sweep (or any workflow) — the bot
-# cannot introduce a duplicate (it skips occupied + claimed numbers)
-# and loop prevention is why the marker exists.
+# merge ref, which covers it.
+#
+# The renumber bot's own commits carry [skip ci] and therefore do NOT
+# trigger this sweep via the push path — loop prevention is why the
+# marker exists. The bot CANNOT rely on that exemption for safety: in
+# its documented degraded mode (gh discovery unavailable on the runner)
+# the bot assigns from main-only knowledge and CAN mint a number an
+# open sibling PR holds (the 1173x2 shape — r1 review finding). The
+# bot therefore explicitly dispatches this workflow after every
+# successful numbering push (see worklog-renumber.yml); if that
+# dispatch fails, detection defers to the 6h cron sweep below.
 #
 # Merge-conflicted PRs have no refs/pull/N/merge (fetch 404s); they are
 # skipped — their merge would fail anyway and the next main push
@@ -113,6 +120,10 @@ jobs:
             fi
             if ! git worktree add -q --detach "$TREE" FETCH_HEAD; then
               echo "::warning::PR $PR: could not materialize merge tree — skipping"
+              # Partially-created worktrees must not wedge the sweep
+              # (r1 review): clean the path and prune registrations.
+              rm -rf "$TREE"
+              git worktree prune
               return 0
             fi
 
@@ -124,12 +135,15 @@ jobs:
             fi
 
             # Prior numbering-gate state on THIS head SHA (the
-            # clear-on-heal input). Check-runs are listed unsorted by
-            # default; the highest-id run of this name is the newest and
-            # is what the PR currently displays.
+            # clear-on-heal input). check_name + filter=latest + a
+            # generous per_page (r1 review: the default 30-per-page
+            # page can exclude the newest numbering-gate run on busy
+            # heads — a healed PR would stay pinned red, the exact
+            # freeze class this workflow exists to end). The jq still
+            # sorts by id defensively.
             local PRIOR
-            PRIOR=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '[.check_runs[] | select(.name == "numbering-gate")] | sort_by(.id) | reverse | .[0].conclusion // ""' 2>/dev/null || echo "")
+            PRIOR=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=numbering-gate&filter=latest&per_page=100" \
+              --jq '[.check_runs[]] | sort_by(.id) | reverse | .[0].conclusion // ""' 2>/dev/null || echo "")
 
             # Decision matrix (redden / clear-on-heal / noop) is pinned
             # in pkg/repolint gate_test.go — NumberingGateDecision.

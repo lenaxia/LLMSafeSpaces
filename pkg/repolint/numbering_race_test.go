@@ -217,6 +217,82 @@ func TestRenumberRace_ThreeBranchesOneWindow_Disjoint(t *testing.T) {
 	}
 }
 
+// TestFixWorklogs_SeamArgumentIsRepoRoot pins the discovery seam's
+// ARGUMENT (r1 review): FixWorklogs must pass the PARENT of the
+// worklogs dir (the repo root gh needs) to scanOpenClaims. A regression
+// passing `dir` instead compiles, runs, returns nil claims everywhere —
+// and silently blinds discovery forever, the exact silent-blinding
+// failure class the live smoke caught via the missing JSON tags.
+func TestFixWorklogs_SeamArgumentIsRepoRoot(t *testing.T) {
+	base := t.TempDir()
+	wl := filepath.Join(base, "worklogs")
+	if err := os.MkdirAll(wl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(wl, "1180_2026-10-22_mainline.md"), "")
+	mustWrite(t, filepath.Join(wl, "NNNN_2026-10-22_lane.md"), "")
+
+	var got []string
+	restoreClaimsSeam(t, func(root string) *OpenClaims {
+		got = append(got, root)
+		return nil
+	})
+	if _, err := FixWorklogs(wl); err != nil {
+		t.Fatalf("FixWorklogs: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("FixWorklogs never consulted the claims seam — discovery silently disabled")
+	}
+	for _, root := range got {
+		if root != base {
+			t.Errorf("claims seam received %q; want the repo root %q (parent of the worklogs dir) — wrong argument silently blinds gh discovery", root, base)
+		}
+	}
+}
+
+// TestFixWorklogs_DuplicateResolutionSkipsClaimedTargets pins the
+// duplicate-resolution call site with NON-nil claims (r1 review: every
+// other test exercises it with nil). A renumber target that collides
+// with an open sibling's claim must be skipped — otherwise the heal
+// itself recreates the branch-vs-branch race one number up.
+func TestFixWorklogs_DuplicateResolutionSkipsClaimedTargets(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1160; i <= 1180; i++ {
+		if i == 1175 {
+			continue
+		}
+		mustWrite(t, filepath.Join(dir, numName(i, "2026-10-22", "mainline")), "")
+	}
+	// The duplicate: two files at 1175, no mainline knowledge — the
+	// lexically-last local is the newcomer.
+	mustWrite(t, filepath.Join(dir, "1175_2026-10-22_aaa-first.md"), "")
+	mustWrite(t, filepath.Join(dir, "1175_2026-10-22_zzz-newcomer.md"), "")
+
+	// A sibling open PR already claims 1181 (the naive next-free).
+	claimed := map[int]bool{1181: true}
+
+	renames, err := fixWorklogs(dir, nil, claimed)
+	if err != nil {
+		t.Fatalf("fixWorklogs: %v", err)
+	}
+	if len(renames) != 1 {
+		t.Fatalf("expected 1 rename, got %d: %v", len(renames), renames)
+	}
+	if renames[0].From != "1175_2026-10-22_zzz-newcomer.md" {
+		t.Fatalf("expected the lexically-last local to be renumbered, got %s", renames[0].From)
+	}
+	if renames[0].To != "1182_2026-10-22_zzz-newcomer.md" {
+		t.Fatalf("renumber target must skip the sibling-claimed 1181 → 1182, got %s", renames[0].To)
+	}
+	rep, err := SequenceCheck(SequenceConfig{Dir: dir, Pattern: WorklogNumberPattern, AllowGaps: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.OK() {
+		t.Fatalf("tree must be duplicate-free after the claim-aware heal: %s", rep.String())
+	}
+}
+
 func TestMigrationRace_TwoPairsSameVersion_GateReddens(t *testing.T) {
 	// Pin for the numbering-gate workflow's migration half (occurrence
 	// 4: two 000041 pairs file-wise auto-merged onto one tree). The

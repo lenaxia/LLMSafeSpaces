@@ -91,7 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and its push is a compare-and-swap: on rejection it rebases onto the
   new tip, re-runs the fix pass (interleaved merges may have added new
   sentinels), amends, and retries (≤3). Git's fast-forward check on
-  main IS the lock — no manifest file to conflict or drift.
+  main IS the lock — no manifest file to conflict or drift. After a
+  successful push the bot explicitly dispatches the numbering-gate
+  sweep (its own `[skip ci]` marker suppresses the push trigger): in
+  the degraded mode where gh discovery was unavailable, the bot may
+  have minted a sibling-held number, and the dispatched sweep catches
+  it in minutes instead of at the 6h cron.
 - **New `repolint -next-numbers`**: prints the next free worklog and
   migration number given local state, origin/main, and open-PR claims —
   the soft layer for hand-numbered migrations (the 41x2 class had no

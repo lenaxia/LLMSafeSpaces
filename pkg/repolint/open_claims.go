@@ -28,6 +28,11 @@ import (
 // degrades to nil — the pre-#1838 behavior — whenever gh, the network,
 // or the repository context is unavailable, so hooks and the bot keep
 // working offline exactly as before.
+//
+// Cost note (r1 review): discovery is 1 + N-PR sequential gh calls
+// (~5-15s at today's open-PR counts), each bounded at 15s. Acceptable
+// for hooks and the bot; if open-PR counts grow an order of magnitude,
+// batch the tree lookups (GraphQL aliasing) before this becomes a tax.
 
 // OpenClaims maps a numbered-artifact version to the open PRs whose
 // heads claim it. The zero value is an empty (not nil) claim set.

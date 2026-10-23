@@ -42,5 +42,17 @@ No merge may land a duplicate numbered artifact (worklogs OR api/migrations), an
 
 - **Taken-set + merge-tree gate over manifest/merge-queue** (ratified by orchestrator): no branch protection exists, so required-check and merge-queue designs are not implementable from a PR; git's tip already IS a CAS register, so a manifest adds nothing for R1 and cannot see R2/R3.
 - **Clear-on-heal is pinned, not emergent**: a gate that only reddens pins healed PRs forever — the freeze class #1838 exists to end, recreated by its own fix. Likewise the red check is namespaced (title says "not this PR own-lint"; summary names files + heal lever) because lanes twice this week chased gate reds as their own diff's failure.
-- **Bot commits keep [skip ci]** — it skips the gate sweep too, which is sound (the bot cannot introduce a duplicate; it skips occupied + claimed) and loop-prevention depends on the marker.
+- **Bot commits keep [skip ci]** — it skips the gate sweep's push trigger, sound ONLY because the bot explicitly dispatches the sweep after pushing (r1): in the degraded mode the bot assigns main-only and CAN mint a sibling-held number; the dispatch closes that hole to minutes, the cron backstops a failed dispatch.
 - **Residual, documented**: offline/gh-less environments degrade to main-only assignment (control-pinned); a colliding PR that pushes a new head goes un-swept until the next main push, but a new head re-runs ci.yml's Lint against a fresh merge ref, which covers that window.
+
+## Review Round 1 (CHANGES_REQUESTED → addressed)
+
+The adversarial review confirmed the fix correct ("verified by reading and by execution"; it mutation-verified the red pins independently) and requested changes on test-completeness plus two workflow defects. All addressed:
+
+1. **check-runs pagination** (could break clear-on-heal on heads with >30 runs): query now `?check_name=numbering-gate&filter=latest&per_page=100`.
+2. **Unsound `[skip ci]` justification** (degraded-mode hole): comment corrected + the bot now dispatches the numbering-gate sweep after every successful push (`gh workflow run`, `actions: write` added); the cron backstops a failed dispatch.
+3. **Worktree cleanup on the add-failure path**: `rm -rf` + `git worktree prune` so a partial worktree cannot wedge the sweep.
+4. **Binary-level pins for the new CLI modes** (`TestRepolintBinary_NumberingModes`, the #1305 `binary_integration_test.go` convention): colliding tree → `-numbering-only` non-zero naming BOTH files; clean tree → 0 + pass line; `-next-numbers` prints both `next … number:` lines with deterministic values.
+5. **Seam-argument pin** (`TestFixWorklogs_SeamArgumentIsRepoRoot`): the claims seam must receive the repo ROOT (parent of worklogs/) — the silent-blinding regression class the live smoke caught once already.
+6. **Non-nil-claims duplicate-resolution pin** (`TestFixWorklogs_DuplicateResolutionSkipsClaimedTargets`): a renumber target colliding with a sibling claim skips it (1181 claimed → heal lands at 1182).
+7. **N+1 gh-call cost** documented as a bounded follow-up note in `open_claims.go` (batch via GraphQL if open-PR counts grow an order of magnitude).
