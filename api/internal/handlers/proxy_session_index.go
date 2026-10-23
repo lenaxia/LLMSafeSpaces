@@ -388,8 +388,9 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 // page costs 240–490ms over localhost, and typical sessions fit ONE
 // page (the pinned session list carries no count field — the walk is
 // the cheapest source). At K=3 the steady-state pass adds ≤3 single-GET
-// walks (~1.5s typical); every present row converges within
-// ceil(N/3)×30s (≤17min at the 100-row sidebar cap, <4min typically).
+// walks (typical); every present row converges within
+// ceil(N/3)×30s (≤17min at a 100-row workspace, <4min typically; the
+// #1886 uncapped listing scales N with the workspace's own rows).
 // The 15s pass timeout bounds the pathological multi-page tail.
 const reconcileCountBudget = 3
 
