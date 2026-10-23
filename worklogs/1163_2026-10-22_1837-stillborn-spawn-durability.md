@@ -248,7 +248,30 @@ corrected. Two new platform bugs filed (#1879 archive fail-open, #1880 count
 drift) — both are instances of the same family: index/projection state
 trusted where harness truth differs.
 
+## Addendum 2 (2026-10-23 — frozen sidebar busy indicators; filed #1883)
+
+Follow-on: user reported the sidebar consistently showed exactly two busy
+sessions (the two they had open in the browser) while harness truth showed a
+dynamic busy set. Verified end-to-end live:
+
+- statusz ground truth dynamic (5 busy, membership flips between checks);
+  Redis `ws:{ws}:active` fallback set EMPTY — backend cannot serve a frozen 2.
+- **Deployed api 0.40.1 serves `/sessions` bodies with NO status field**
+  (logged `response_body`, both replicas: `{sessionID,shortID}` only, 30+ min
+  of polls) — polling can never update a dot. Main's handler stamps Status
+  from statusz (router.go:1459-1471); deployed DTO predates/drops it.
+- Frontend never calls the statusz-backed `GET /sessions/active`
+  (types.ts:105 typed, zero consumers).
+- Dots are browser-side SSE latches (`SessionActivityProvider`): busy latches
+  on `session.status=busy`, clears only on idle frames — which the code's own
+  comments flag as loss-prone — with the repair bridge wired ONLY for the
+  open session (ChatPage.tsx:851). Background latches: no TTL, no resync
+  reconciliation. The two frozen = the two the user opened; idle clear missed.
+
+Same family as #1879/#1880: a cached/projection signal trusted after it has
+silently diverged from harness truth. Filed #1883 with the full chain.
+
 ## Files Modified
 
-This worklog (2026-10-23 addendum + D3 correction); issues #1879 and #1880
+This worklog (addendum 1 + 2, D3 correction); issues #1879, #1880, #1883
 filed. No code changes.
