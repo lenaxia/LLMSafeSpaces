@@ -246,17 +246,25 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 // the token in its charter (optionally aborting a superseded live
 // session first — the interrupt seam); there are no nudges to dead
 // sessions anywhere. events carries nested settle events (the #1832
-// review-complete/park coupling) for post-commit SSE publication.
+// review-complete/park coupling) for post-commit SSE publication;
+// pokeProjects carries settle-touched projects for the dispatch drive
+// (a settled review may live in a SIBLING project of the subject —
+// review r1, finding 5: unblocked dependents there get the event-driven
+// drive, not just the sweep's latency).
 type nudge struct {
 	taskID, token string
 	spawn         bool
 	abortAssignee string
 	events        []Event
+	pokeProjects  []string
 }
 
 func (n nudge) fire(ctx context.Context, s *Service) {
 	for _, evt := range n.events {
 		s.publishCommitted(evt)
+	}
+	for _, pid := range n.pokeProjects {
+		s.pokeDrive(pid)
 	}
 	if !n.spawn {
 		return
@@ -289,11 +297,12 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
 		return err
 	}
-	evts, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
+	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
 	if err != nil {
 		return err
 	}
 	n.events = append(n.events, evts...)
+	n.pokeProjects = append(n.pokeProjects, pokes...)
 	return nil
 }
 

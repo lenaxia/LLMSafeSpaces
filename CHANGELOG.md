@@ -122,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins that claims-blind assignment still collides (the documented
   degraded mode the invariant nets).
 
+
 ### Added — Task Board: manager-grade pending_input exits (issue #1832, lane board-stage-hygiene WS2)
 
 - **The pod seam's manager projection gains a manager-grade move
