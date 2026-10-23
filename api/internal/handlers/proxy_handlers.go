@@ -808,6 +808,23 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 	return nil
 }
 
+// PropagateSessionDeleted is the #1882 convergence seam: EVERY
+// confirmed session delete — this route's own, the engine's
+// authorized deletes, agentd-reported ephemeral teardowns — runs this
+// same platform-side teardown. Three effects, in a fixed order:
+// (1) the wsstate tombstone FIRST (a late pod event racing the row
+// removal must find the tombstone set, or the phrase-bearing upsert
+// re-births the row — #1881 made every row-creating upsert mint);
+// (2) the session_index row removal (the sidebar's only source);
+// (3) the session.status:deleted broadcast tail (active-session and
+// parents caches, then the phrase-keyed event on workspace + user
+// streams). The pod-side short-id replica invalidation is agentd's
+// own on its delete legs — the fourth part of the convergence.
+func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string) {
+	// #1882 red-pin stub: unimplemented.
+	_, _, _ = ctx, workspaceID, sessionID
+}
+
 // removeActiveSessionEvents is the post-delete UI bookkeeping tail —
 // detached from the request path (the same goroutine shape the REST
 // handler used pre-extraction: the response must not wait on state

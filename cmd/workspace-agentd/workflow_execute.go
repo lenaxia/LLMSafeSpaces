@@ -65,6 +65,13 @@ type workflowExecuteResponse struct {
 	// leak is real and must stay discoverable). Older API servers
 	// ignore it; older agentd simply never sets it.
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID names the ephemeral session agentd itself
+	// deleted (#1882) — disjoint from SessionID by the existence
+	// contract: this id does NOT exist when the node finishes. The
+	// engine propagates the delete platform-side (tombstone + index
+	// row + deleted broadcast); without it the carrier's index row
+	// outlives the carrier as a sidebar ghost.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
 type workflowExecuteError struct {
@@ -73,6 +80,9 @@ type workflowExecuteError struct {
 	// SessionID carries the surviving session of a FAILED agent turn
 	// (#1470) — same existence contract as the success envelope.
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID: the ephemeral the failure path tore down
+	// (#1882) — same contract as the success envelope's field.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
 type inFlightExec struct {

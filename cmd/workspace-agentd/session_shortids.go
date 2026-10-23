@@ -177,3 +177,20 @@ func (s *sessionShortIDStore) persistLocked() error {
 	}
 	return os.Rename(tmp, s.path)
 }
+
+// forget removes a session's mapping entirely — the #1882
+// delete-invalidates-the-replica seam. The replica is append-only by
+// design (#1850: a pull never removes entries), so pre-#1882 a dead
+// session's phrase kept resolving to its dead harness id until the
+// next full pod restart — live evidence in the issue: session_metadata
+// on a hard-deleted carrier still resolved the phrase. Deletes are
+// the ONE event that may retract: the phrase's session is gone, the
+// mapping is a lie, and did-you-mean degradation is strictly better
+// than silent dead-id resolution. Only agentd's own CONFIRMED delete
+// legs call this (deleteOpencodeSession's true return); platform-side
+// row removals (reconcile reaps) leave the replica warm — advisory
+// posture unchanged, boot pull rebuilds.
+func (s *sessionShortIDStore) forget(sessionID string) {
+	// #1882 red-pin stub: unimplemented.
+	_ = sessionID
+}

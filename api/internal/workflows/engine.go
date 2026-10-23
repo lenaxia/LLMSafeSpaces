@@ -121,6 +121,32 @@ type NodeExecResponse struct {
 	// engine falls back to parsing the output payload) and on
 	// transport errors (no response object at all).
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID is the #1882 teardown-visibility field: the id
+	// of the ephemeral session AGENTD itself deleted during the node's
+	// execution (success-path ephemeral cleanup and the failure-path
+	// ephemeral cleanup alike). The two fields are disjoint by
+	// contract: SessionID names a session that EXISTS when the node
+	// finished; DeletedSessionID names one that does NOT. The engine
+	// uses it to propagate the delete platform-side (tombstone +
+	// session_index row removal + session.status:deleted broadcast) —
+	// the row the pod event bridge minted during the carrier's brief
+	// life would otherwise persist as a sidebar ghost forever.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
+}
+
+// SessionDeletePropagator is the #1882 four-part post-delete teardown
+// every confirmed session delete must run — the user-route delete's
+// own tail, converged: (1) wsstate tombstone (late pod events must not
+// re-birth the row — every row-creating upsert is phrase-bearing since
+// #1881), (2) session_index row removal (the sidebar's only source),
+// (3) session.status:deleted broadcast on the workspace + user streams
+// (phrase-keyed via the no-mint translate). The pod-side short-id
+// replica invalidation rides agentd's own delete legs. Implemented by
+// the proxy handler layer; wired into the Scheduler and Reconciler.
+// Nil ⇒ propagation skipped (unwired/embedded engines keep the
+// pre-#1882 behavior).
+type SessionDeletePropagator interface {
+	PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string)
 }
 
 // executeWithRetry runs an agentd node-execution with a bounded retry
@@ -313,6 +339,10 @@ type Reconciler struct {
 	// AgentdPort overrides the agentd user-mux port for the cleanup
 	// delete. Zero → default (4097); mirrors the Scheduler's field.
 	AgentdPort int
+	// SessionDelete propagates the node-retry cleanup's confirmed
+	// deletes platform-side (#1882) — same contract as the Scheduler's
+	// field. Nil ⇒ skipped.
+	SessionDelete SessionDeletePropagator
 
 	cancelMu     sync.Mutex
 	canceledRuns map[string]struct{}
@@ -590,6 +620,13 @@ type Scheduler struct {
 	// proxy routes that write it. Nil → indexing skipped (fire result
 	// is unaffected).
 	SessionIndex SessionIndexWriter
+	// SessionDelete propagates the engine's authorized session deletes
+	// platform-side (#1882): PreserveOnFailure success cleanup,
+	// superseded retry-attempt cleanup, and agentd-reported ephemeral
+	// teardowns all converge on the same tombstone + row-removal +
+	// deleted-broadcast tail the user-route delete performs. Nil ⇒
+	// deletes stay pod-side only (the pre-#1882 ghost-row behavior).
+	SessionDelete SessionDeletePropagator
 }
 
 // SessionIndexWriter is the session-index surface the routine path
