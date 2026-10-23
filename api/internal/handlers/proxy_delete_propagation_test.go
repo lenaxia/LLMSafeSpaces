@@ -208,6 +208,40 @@ func TestSessionIndexReconcile_OriginListerError_FailsSafe(t *testing.T) {
 	assert.Empty(t, idx.deletedTree, "an origins lookup failure must not admit history-bearing rows")
 }
 
+// TestSessionIndexReconcile_RestartRebornCarrierRow_Converges is the
+// #1901 item-(d) posture pin: an API restart wipes the in-memory
+// wsstate tombstones AND the known-registered LRU, so a late pod event
+// for an already-deleted carrier re-mints its index row (nothing
+// same-replica remains to stop it — accepted per the store's design).
+// The CONVERGING BACKSTOP is the (a) reap net: the carrier's durable
+// kind='carrier' origin mark survives the restart (it lives in
+// session_origins, not memory), and the reconcile reaps the re-born
+// row despite the tombstone being gone.
+func TestSessionIndexReconcile_RestartRebornCarrierRow_Converges(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil) // harness: the carrier is gone
+	// Post-restart state: the durable carrier mark SURVIVES (DB-backed);
+	// the tombstone map died with the old process.
+	h.SetSessionOriginLister(&stubOriginLister{marks: map[string]bool{
+		"ses_reborn": true,
+	}})
+	assert.False(t, h.isSessionDeleted("ws-1", "ses_reborn"),
+		"restart-wiped tombstones: no same-replica suppression remains (the accepted posture)")
+
+	// The late pod event re-mints the row: message history from the
+	// carrier's brief turn — DefaultReapGuard alone would refuse it.
+	idx.seedRowCounted("ws-1", "ses_reborn", 1)
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_reborn": 1})
+
+	reapedCarriersBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_carrier"))
+	runReconcile(t, h, "ws-1") // miss 2 → carrier mark admits → probe confirms gone
+	runReconcile(t, h, "ws-1")
+
+	assert.True(t, idx.deletedTree["ws-1/ses_reborn"],
+		"the re-born carrier row must converge via the carrier-kind reap net (the (d) backstop)")
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_carrier")), reapedCarriersBefore,
+		"the convergence is observable as reaped_carrier")
+}
+
 // TestReapSessionIfGone_OriginMarkedCarrierReaped: the READ-path reap
 // (the owner's click on a ghost) admits origin-marked carriers with
 // history — the row is reaped and the typed 410 answers sessionGoneReaped
