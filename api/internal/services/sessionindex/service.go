@@ -36,8 +36,11 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // reaped_carrier (#1882: the reaped row was session_origins-marked — a
 // platform routine carrier admitted past the history exception and the
 // spawn-window grace; a carrier's absence is platform policy, not
-// harness-list lag); the count rebuild's count_rebuilt / count_unchanged
-// / count_walk_error plus the #1880 skip outcomes
+// harness-list lag); the count rebuild's count_pass_ran (the #1880 r2
+// denominator — a pass whose count leg executed with a live
+// present-set; sidebar traffic without it means the pass is never
+// scheduled, the issue's third skip class), count_rebuilt /
+// count_unchanged / count_walk_error plus the #1880 skip outcomes
 // (count_skip_not_present — a count-zero row the harness LIST omits,
 // the #1452 gap the rebuild cannot reach; count_skip_pass_no_list —
 // the whole pass skipped on a list failure); and the #1880 listing
@@ -46,7 +49,7 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // listing_count_cooldown.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_pass_ran, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).

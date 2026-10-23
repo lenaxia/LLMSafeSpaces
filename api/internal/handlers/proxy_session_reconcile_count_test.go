@@ -101,7 +101,9 @@ func TestSessionIndexReconcile_CountMatchWritesNothing(t *testing.T) {
 // TestSessionIndexReconcile_CountBudgetOldestFirst — the per-pass budget
 // walks the OLDEST-touched present rows first (steady-state convergence
 // for every row within ceil(N/K) passes); younger rows wait for later
-// passes.
+// passes. Window pinned to 0: the #1880 r2 rotation makes the >budget
+// window pass-dependent (the stationarity fix), and this pin holds the
+// window-zero contract — oldest-first within whatever window runs.
 func TestSessionIndexReconcile_CountBudgetOldestFirst(t *testing.T) {
 	now := time.Now().UTC()
 	ids := []string{"ses_new1", "ses_old1", "ses_mid1", "ses_old2", "ses_new2"}
@@ -120,6 +122,8 @@ func TestSessionIndexReconcile_CountBudgetOldestFirst(t *testing.T) {
 	for _, id := range ids {
 		seedRowCountedAt(t, idx, "ws-1", id, 1, now.Add(-ages[id]))
 	}
+	window0 := int64(0)
+	h.countPassIndexOverride = &window0
 
 	runReconcile(t, h, "ws-1")
 

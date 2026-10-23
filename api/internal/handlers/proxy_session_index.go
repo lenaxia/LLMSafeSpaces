@@ -395,6 +395,19 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 // The 15s pass timeout bounds the pathological multi-page tail.
 const reconcileCountBudget = 3
 
+// countPassIndex is the rebuild rotation's window index: wall-clock
+// buckets of the reconcile cadence (stateless — every replica computes
+// the same bucket for a given instant, and the cross-replica cadence
+// claim means ONE replica runs each window's pass, so consecutive
+// claimed windows advance the rotation by exactly one step). Tests pin
+// it via countPassIndexOverride instead of sleeping past boundaries.
+func (h *ProxyHandler) countPassIndex(now time.Time) int64 {
+	if h.countPassIndexOverride != nil {
+		return *h.countPassIndexOverride
+	}
+	return now.Unix() / int64(reconcileCadence.Seconds())
+}
+
 // rebuildMessageCounts repairs drifted message_count values for PRESENT
 // sessions from the harness ground truth (#1481, the #754 fold-in): the
 // incremental RecordMessage path double-counts duplicate SSE events,
@@ -441,6 +454,12 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 	if len(candidates) == 0 {
 		return
 	}
+	// #1880 direction 1 (r2): the pass-ran denominator — this pass's
+	// count leg executed with a live present-set. The issue's third
+	// skip class ("the pass not being scheduled for this workspace at
+	// all") was invisible: sidebar traffic with no count_pass_ran
+	// names it from metrics alone.
+	sessionindex.ReconcileOutcome("count_pass_ran")
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].LastMessageAt, candidates[j].LastMessageAt
 		if a == nil {
@@ -452,7 +471,26 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		return a.Before(*b)
 	})
 	if len(candidates) > reconcileCountBudget {
-		candidates = candidates[:reconcileCountBudget]
+		// #1880 r2, thread Finding 2 (rebuild stationarity): the sort
+		// key is last_message_at, but the count upsert never writes
+		// that column — repaired rows STAY in the (stable, NULLs-first)
+		// group, so the budget re-walked the same first-K candidates
+		// every pass forever and rows K+1..N never walked (7 of the
+		// issue's 10 evidence rows). Rotate the window instead: start
+		// at (passIndex × K) mod N, the pass index a wall-clock bucket
+		// of the reconcile cadence — stateless, and consistent under
+		// the cadence claim (one replica runs each window's pass, so
+		// every claimant computes the same window for its instant).
+		// Union of P consecutive windows covers P×K consecutive
+		// candidates: full coverage within ceil(N/K) passes. Workspaces
+		// at or under the budget keep the deterministic oldest-first
+		// walk (start 0).
+		n := len(candidates)
+		start := (int(h.countPassIndex(time.Now())) * reconcileCountBudget) % n
+		rotated := make([]types.SessionListItem, 0, reconcileCountBudget+(n-start))
+		rotated = append(rotated, candidates[start:]...)
+		rotated = append(rotated, candidates[:start]...)
+		candidates = rotated[:reconcileCountBudget]
 	}
 	for _, row := range candidates {
 		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
@@ -488,7 +526,11 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 // request — the drift class converges across listing polls (the sidebar
 // refreshes ~30s), so K=3 mirrors reconcileCountBudget's measured cost
 // bound (≤3 single-GET walks, ~1.5s worst case, ONLY while drift rows
-// exist; a converged workspace walks nothing).
+// exist). "Converged" is exact only for the proxy-traversed class; the
+// never-traversed signature (last_message_at NULL) deliberately stays
+// hot after a serve-through persist, so those rows re-walk on each
+// cooldown expiry — bounded staleness by design, not a steady state of
+// zero walks.
 const listingCountBudget = 3
 
 // countServeCooldown backs off a drift row whose last walk already
@@ -619,13 +661,19 @@ func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceI
 		key := workspaceID + "/" + row.InternalID
 		persisted := row.MessageCount
 		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
-		h.countServeState().record(key, count, time.Now())
 		if err != nil {
+			// NO tracker entry on error (review r2 defect 1): the
+			// error-path count is not a walked truth. Recording it
+			// anyway poisoned the cooldown tracker on count-0 rows
+			// (lastCt 0 == index 0 → the next listing cooldown-skipped
+			// the retry for five minutes, mislabeled as
+			// listing_count_cooldown). A failed walk re-arms.
 			sessionindex.ReconcileOutcome("listing_count_walk_error")
 			h.logger.Warn("session listing: harness count walk failed; serving the index value",
 				"workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
 			continue
 		}
+		h.countServeState().record(key, count, time.Now())
 		// Serve-through: the response carries harness truth.
 		row.MessageCount = count
 		if count == persisted {

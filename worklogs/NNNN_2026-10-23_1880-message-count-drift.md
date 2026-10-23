@@ -125,3 +125,96 @@ mutation carrier). Implementation commit turns them green.
   full) + worklogs/1192; proceeding on those + the issue body.
 - Pre-accepted main-flake classes noted for CI: TestUpload_Streams_
   WithoutFullBuffering, TestRequestSessionStatusSnapshot_Coalesces.
+
+## Review r2 (CHANGES_REQUESTED on d847910c) — fixes and evidence
+
+Rebased onto origin/main post-#1902/#1903 (union-merged the
+reconcileOutcomes help text with #1882's reaped_carrier; no other
+conflicts). Review findings → resolution:
+
+1. **Defect 1 — walk-error poisoned the cooldown tracker**
+   (record() before the err check): FIXED. record() now runs only
+   after a successful walk; the error path leaves NO tracker entry.
+   Red pin TestListingCount_WalkErrorRearmsNotCooldowns: errored walk
+   → immediate re-listing RETRIES (not listing_count_cooldown), and
+   the healed harness converges on the next poll (truth served +
+   persisted). Mutation M8 (record moved back before the check)
+   reddens exactly this pin.
+2. **Defect 2 — >100-row reach limit**: RESOLVED BY REBASE. #1886
+   (PR #1902, merged to main before this PR's r2) removed the
+   `LIMIT 100` from ListSessionIndex (deterministic ORDER BY, death
+   marks filtered pre-order). The serve-through and the rebuild both
+   iterate the full row set — NULLS-LAST now affects only display
+   order, never reach. Scoping claim in the r1 worklog ("≤100-row
+   workspaces") is superseded; CHANGELOG states it explicitly.
+3. **Thin unhappy paths**: BOTH PINNED.
+   TestListingCount_PersistErrorServesTruthAndRetries (unit: walked
+   truth on the wire despite persist failure, listing_count_persist_error
+   counted, listing_count_served NOT, next listing re-walks because
+   index ≠ walked, heal converges — mockSessionIndex.failRebuild)
+   and TestRouterSessionList_WalkErrorServesIndexValue (wiring tier:
+   walk error through the production router → 200 with the INDEX
+   value on the wire, walk attempted/observable). Both are
+   protective pins (green at the r1 head — the branches existed;
+   they were untested), mutation carriers per the house convention.
+4. **Issue closure gaps**:
+   - "not-scheduled" skip class: count_pass_ran now fires whenever a
+     pass's count leg executes with a live present-set — the
+     denominator. Sidebar traffic with zero count_pass_ran = the pass
+     is not being scheduled (distinguishable from metrics alone, the
+     issue's ask). Red pin TestSessionIndexReconcile_CountPassRanDenominator;
+     mutation M10 (outcome removed) reddens it.
+   - Thread Finding 2 (rebuild stationarity): FIXED with the rotation
+     the thread investigation specified — when candidates exceed the
+     budget, the walk window starts at (passIndex × K) mod N with
+     passIndex a wall-clock bucket of the 30s cadence (stateless;
+     consistent under the cadence claim — one replica per window).
+     Union of P consecutive windows covers P×K consecutive
+     candidates → full coverage in ceil(N/K) passes; ≤budget
+     workspaces keep the deterministic oldest-first walk.
+     TestSessionIndexReconcile_CountBudgetOldestFirst (pre-existing
+     #1481 pin) now pins window 0 via countPassIndexOverride — its
+     contract (oldest-first within the window) is unchanged; without
+     the pin the >budget walk set became wall-clock-dependent by
+     design. Red pin TestSessionIndexReconcile_RebuildRotatesThrough-
+     NullGroup (six-row all-NULL group: window 1 MUST walk the
+     starved tail); mutation M9 (rotation replaced by plain
+     truncation — the original bug) reddens exactly it.
+   - Direction 2 follow-up: FILED as issue #1906 (agentd→API
+     message-event telemetry for board-spawned sessions' incremental
+     counts) — the thread triage explicitly blessed the deferral and
+     asked for the filing.
+5. **Nits**: listingCountBudget comment corrected ("a converged
+   workspace walks nothing" overstated — never-traversed rows
+   re-walk on each cooldown expiry, bounded staleness by design);
+   CHANGELOG entry added (#1865/#1881 precedent).
+
+### r2 red-first + mutation evidence
+
+- RED commit 62c55f6f: TestListingCount_WalkErrorRearmsNotCooldowns,
+  TestSessionIndexReconcile_CountPassRanDenominator, and
+  TestSessionIndexReconcile_RebuildRotatesThroughNullGroup FAIL at
+  the r1 head (verified: walk-error pin cooldown-skips the retry;
+  count_pass_ran never fires; window-1 pass re-walks ids[0:3]).
+  TestListingCount_PersistErrorServesTruthAndRetries (after fixture
+  correction: each listing re-reads the INDEX's stale value — the
+  mutated slice is per-request) and the router walk-error pin are
+  green-at-head protective pins.
+- Mutations re-executed at the r2 head: M8 (record-before-error
+  restored) → ONLY TestListingCount_WalkErrorRearmsNotCooldowns;
+  M9 (rotation → plain truncation) → ONLY …RebuildRotatesThrough-
+  NullGroup; M10 (count_pass_ran removed) → ONLY …CountPassRan-
+  Denominator. Each restored → suite green.
+
+### r2 assumptions
+
+- The rotation's pass index uses wall-clock cadence buckets. If two
+  passes ever run in one window (claim bypass — not the current
+  ClaimReconcileTurn contract), they share a window and walk the
+  same set: at worst a wasted pass, never a regression to starvation.
+- countServeCap wholesale map reset (r1 "minor", self-documented,
+  bounded) left as-is per the skeptical-reviewer verdict.
+- Serve-through (direction 3) intentionally does not touch
+  last_message_at; rows persist in the hot signature by design
+  (growing never-traversed sessions keep converging; staleness
+  bounded by countServeCooldown).
