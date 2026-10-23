@@ -40,7 +40,7 @@ storage-layer root cause; it closes every platform-controllable gap:
 ## Red-first record (honest)
 
 New-package red = build failure against not-yet-existing seams
-(quoted in full in the red commit `dc0d9b0d` message):
+(quoted in full in the red commit `c2aa09b6` message):
 
 ```
 pkg/fsaudit: undefined: NewEngine, Request, Report, ErrBusy,
