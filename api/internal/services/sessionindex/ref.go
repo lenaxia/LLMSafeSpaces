@@ -144,12 +144,14 @@ func ResolveSessionRef(ctx context.Context, r RefResolver, workspaceID, ref stri
 }
 
 // SuggestionsFor computes the §4.6 did-you-mean payload for a failed
-// ref: workspace-scoped candidates first (bounded by the list
-// surface's own LIMIT), then — only when nothing scores and the
-// requester is known — an exact-match pass over the requester's OTHER
-// authorized workspaces (one bounded query; suggestions never reveal
-// a row the caller cannot already list). Best-effort by contract: any
-// error path returns fewer or no suggestions, never fails the caller.
+// ref: workspace-scoped candidates first (the complete indexed set —
+// #1886 removed the listing's row cap, so a suggestion pool can no
+// longer be blind to rows past the old 100), then — only when nothing
+// scores and the requester is known — an exact-match pass over the
+// requester's OTHER authorized workspaces (one bounded query;
+// suggestions never reveal a row the caller cannot already list).
+// Best-effort by contract: any error path returns fewer or no
+// suggestions, never fails the caller.
 func SuggestionsFor(ctx context.Context, r RefResolver, userID, workspaceID, ref string) []sessionref.Suggestion {
 	if r == nil || strings.TrimSpace(ref) == "" {
 		return nil

@@ -223,7 +223,10 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 	}
 }
 
-// ListByWorkspace returns session metadata ordered by last_message_at DESC.
+// ListByWorkspace returns the workspace's complete session listing
+// (#1886): message-recency head, created_at DESC through the #1880
+// NULL-key pool, session_id as the total-order tiebreaker — no row
+// cap, so live unarchived sessions survive past any row count.
 func (s *Service) ListByWorkspace(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	return s.db.ListSessionIndex(ctx, workspaceID)
 }

@@ -1121,6 +1121,17 @@ func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) 
 	return n, nil
 }
 
+// ListSessionIndex returns the workspace's COMPLETE session listing
+// (sidebar surface; #1886): message-recency first, then — through the
+// #1880 NULL pool of dispatch-spawned sessions whose message streams
+// never populate last_message_at — created_at DESC so the newest
+// spawn ranks ahead of stale rows, with the unique session_id as the
+// final key making the order total (dispatch cohorts share one
+// transaction-start now()). NO row cap: the old `LIMIT 100` cut the
+// NULL tie pool arbitrarily, evicting live unarchived workers past
+// 100 rows (refresh-proof — the same cut re-ran per query) and left
+// the sidebar's archived badge a page-local count. Death-marked rows
+// (#1882) are filtered ahead of the ordering.
 func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count,
@@ -1137,7 +1148,7 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 	   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
 	 WHERE si.workspace_id = $1
 	   AND si.deleted_at IS NULL
-	 ORDER BY si.last_message_at DESC NULLS LAST LIMIT 100`, workspaceID)
+	 ORDER BY si.last_message_at DESC NULLS LAST, si.created_at DESC, si.session_id ASC`, workspaceID)
 	if err != nil {
 		return nil, err
 	}

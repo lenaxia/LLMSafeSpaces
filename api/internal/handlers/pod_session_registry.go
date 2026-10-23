@@ -68,7 +68,9 @@ func (h *PodSessionRegistryHandler) HasLogger() bool { return h.logger != nil }
 
 // List handles GET /internal/v1/session-registry?workspaceID= — the
 // agentd replica's boot + on-miss pull: every indexed session of the
-// pod's own workspace with its short id (bounded by the list surface).
+// pod's own workspace with its short id (the complete set — #1886
+// removed the listing's row cap, so a workspace past 100 rows no
+// longer ships a registry blind to its own tail).
 func (h *PodSessionRegistryHandler) List(c *gin.Context) {
 	workspaceID := c.Query("workspaceID")
 	if _, ok := h.resolve(c, workspaceID); !ok {
