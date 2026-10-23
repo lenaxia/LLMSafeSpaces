@@ -59,6 +59,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
   18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
   untouched).
+### Fixed — worklog/migration renumber bot: root fix for the next-free assignment race (#1838)
+
+- **Assignment consults the open-branch taken-set** (the soft layer):
+  `repolint`'s worklog numbering pass (`-fix-worklogs`, the post-merge
+  bot, `.githooks/post-rewrite`, `make pre-commit-fix`) now skips
+  numbers claimed by OTHER open PRs' heads — discovered via
+  `gh pr list` + the git-trees API — in addition to the local tree and
+  origin/main. Two branches assigning inside one bot-lag window can no
+  longer both mint the same number and land it via file-wise auto-merge
+  (the 1161x2 / 1164x2 / 1173x2 / 1175x2 class). Discovery degrades to
+  the previous main-only behavior offline; the #1807 uniqueness
+  invariant stays as the net.
+- **New `numbering-gate` workflow** (the hard layer, both artifact
+  classes): on every push to main touching `worklogs/**` or
+  `api/migrations/**`, re-evaluates every open PR's MERGE tree
+  (`refs/pull/N/merge`) with `repolint -numbering-only` (migrations
+  sequence + worklog uniqueness — the same gates ci.yml's Lint runs,
+  but against the CURRENT tip, closing the stale-green window that
+  landed migration 41x2). A PR whose merge tree collides gets a red
+  namespaced `numbering-gate` check run on its head (title + summary
+  name the collision and the healing lever — never the PR's own lint);
+  once healed, a success run replaces the red (clear-on-heal, pinned in
+  `gate_test.go`). The decision matrix is pinned in `pkg/repolint`
+  (`NumberingGateDecision`), not in bash.
+- **The renumber bot is serialized and tip-based** (the CAS layer):
+  `worklog-renumber.yml` gains a `worklog-renumber` concurrency group
+  (queued, never cancelled), checks out `ref: main` (a queued run
+  numbers the CURRENT tip, including the previous run's numbering
+  commit — the stale-SHA checkout is how two runs minted 1164 twice),
+  and its push is a compare-and-swap: on rejection it rebases onto the
+  new tip, re-runs the fix pass (interleaved merges may have added new
+  sentinels), amends, and retries (≤3). Git's fast-forward check on
+  main IS the lock — no manifest file to conflict or drift. After a
+  successful push the bot explicitly dispatches the numbering-gate
+  sweep (its own `[skip ci]` marker suppresses the push trigger): in
+  the degraded mode where gh discovery was unavailable, the bot may
+  have minted a sibling-held number, and the dispatched sweep catches
+  it in minutes instead of at the 6h cron.
+- **New `repolint -next-numbers`**: prints the next free worklog and
+  migration number given local state, origin/main, and open-PR claims —
+  the soft layer for hand-numbered migrations (the 41x2 class had no
+  bot in the loop; authors get knowledge instead of automation).
+- Red-first suite: `pkg/repolint/numbering_race_test.go` simulates two
+  (and three) sibling branch trees assigning inside one window and
+  asserts the merged tree passes the uniqueness gate; the control test
+  pins that claims-blind assignment still collides (the documented
+  degraded mode the invariant nets).
 
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
