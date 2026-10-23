@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.41.0] - 2026-10-23
+
+### Added — board dispatch durability + stage-machine hardening (the #1832 lane)
+
+- **Board re-arm + stillborn guard** (#1869, #1870, feat/board-rearm /
+  feat/board-stillborn-evidence): the reconciler re-arms reclaimed claims
+  immediately and records stillborn evidence for zero-message spawn
+  failures, so a dead spawn no longer burns a full lease window invisibly.
+- **Platform-derived liveness** (#1862, the #1847 ruling): LLM heartbeats
+  retired as the primary lease-liveness mechanism; liveness reads
+  platform-observed session activity.
+- **Board reads criteria** (#1864) and **board tool hardening** (#1863):
+  criteria surface on board reads; manager-tool guardrails tightened.
+
+### Fixed
+
+- **#1878** — trigger inline scripts + workflow script nodes execute in the
+  session environment (sidecar lacked /tmp, interpreters, gh) (#1885).
+- **#1886** — sidebar row cap must not evict live unarchived sessions
+  (#1902); deterministic ordering keeps NULL-recency dispatch rows visible.
+- **#1882** — delete propagation (#1887).
+- **#1842** — upload stream flake: product-race vs test-flake stop-rule
+  resolved, race suite de-flaked (#1888).
+- **#1844** — run watchdog + secrets dispatch re-register (#1874, #1876,
+  #1894).
+- **#1846** — chat textbox up-arrow recall no longer fires mid-text (#1875).
+- **#1850** — create_session workers keep their minted phrase ids —
+  mint-in-create-transaction, DB-column persistence (#1881).
+- **#1884** — usage stream resync (#1899).
+- **#1832** — cascade integration (#1893).
+- **#1860** — e2e harness hygiene: lifecycle error coverage + dead route
+  purge (#1903).
+- **#1756** — retro completion r4: 7th surface + record corrections (#1900).
+- **#1856** — ai-workflows v0.2.24 reapply (#1896).
+
 ## [Unreleased]
 ### Fixed — Longhorn RecurringJob snapshot cron invalid day-of-week; deploy-tree cron validity guard (#1905, cross-repo)
 
