@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
+
+- **`POST /api/v1/workspaces/:id/fs-audit` — fsck-style detector for
+  the zero-fill corruption class** (files silently replaced with NUL
+  bytes at preserved length; the second sandbox-filesystem corruption
+  class after #1793, which reached the REMOTE via a pushed commit).
+  The engine (`pkg/fsaudit`, executed by agentd on the PVC view —
+  same topology as #1601 disk-recover, including the sidecar
+  control-socket leg) flags a file only on the exact signature:
+  `size > 0` AND 100% of content bytes NUL AND non-sparse
+  (`st_blocks*512 >= size` — ftruncate/seek-created all-NUL files
+  report `sparse`, never flagged: the false-positive trap a naive
+  zeros-grep walks into). Response-only (the #1601 ruling, inherited:
+  the scan writes nothing); bounded (4KiB-chunk reads with early exit
+  — clean files cost one chunk; per-file 64MiB / total 256MiB read
+  budgets, defaults overridable per request); honest about
+  incompleteness (an all-NUL file larger than the per-file cap reports
+  `suspect` — 100%-NUL unconfirmed — and an exhausted total budget
+  sets `truncated` rather than masquerading as a clean tree). Request
+  roots are grounded INSIDE the workspace (deny-by-default: no root
+  can point the scan elsewhere). Zero-filled bytes are unrecoverable —
+  the report's job is visibility (rebuild the dead files from source
+  or a fresh clone), not repair.
+- **Pre-push guard: all-NUL blobs no longer reach the remote.** The
+  runtime base image installs an executable `pre-push` hook via git's
+  template dir (`/usr/share/git-core/templates/hooks/pre-push`), so
+  every NEW `git init`/`git clone` in a workspace gets it active
+  (existing clones untouched — new-clone-forward rollout). The hook
+  scans the pushed range's blobs (`git rev-list --objects` +
+  `cat-file`) with the same all-NUL signature — git cannot notice the
+  class itself (an all-NUL blob is valid zlib data). Doctrine mirrors
+  the #1793 belt's never-worse rule, both directions pinned: fail
+  CLOSED on positive detection (the dead-file list is printed with
+  recovery guidance; the remote is the last unclean copy), fail OPEN
+  on any scanner/tool error, and `LLMSAFESPACE_PREPUSH_AUDIT=0` is
+  the documented opt-out for legitimate all-NUL files.
+- **Shutdown flush belt (the H1 window).** The suspend path (pod
+  delete → bounded graceful termination → unmount → CSI detach) never
+  proactively flushed dirty pages — the platform-controllable slice
+  of the ext4 delayed-allocation hypothesis (an unclean stop can
+  persist i_size while data blocks never land: zero-fill at preserved
+  length on the next mount). Both agentd shutdown paths that hold the
+  RW PVC view (single-container `runShutdown` and the sidecar-mode
+  supervisor) now trigger a filesystem-wide writeback flush as their
+  last act, bounded at 10s — the kernel completes a triggered
+  writeback asynchronously even after the triggering process exits,
+  so the bound can never hang shutdown.
+
 ### Fixed — board heartbeat: server clock bounds client-observed stamps (issue #1847 PR1, the C1 incident class)
 - **A future-stamped `observedProgressAt` rejects outright**
   (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker

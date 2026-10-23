@@ -148,6 +148,9 @@ type RouterConfig struct {
 	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
 	// (#1601 mechanical disk recovery; optional wiring like reload).
 	DiskRecoverHandler *handlers.DiskRecoverHandler
+	// FsAuditHandler handles POST /api/v1/workspaces/:id/fs-audit
+	// (#1808 zero-fill corruption audit; optional wiring like reload).
+	FsAuditHandler *handlers.FsAuditHandler
 
 	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
 	BulkReloadHandler *handlers.BulkReloadHandler
@@ -2417,5 +2420,8 @@ func registerWorkspaceMaintenanceRoutes(idGroup *gin.RouterGroup, cfg RouterConf
 	}
 	if cfg.DiskRecoverHandler != nil {
 		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
+	}
+	if cfg.FsAuditHandler != nil {
+		idGroup.POST("/fs-audit", cfg.FsAuditHandler.Audit)
 	}
 }
