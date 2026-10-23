@@ -83,11 +83,14 @@ type parityRow struct {
 	externalMCP parityCell
 	agent       parityCell
 
-	// agentTool names the agentd registry tool for a live agent cell
-	// (#1701): the tool the in-workspace agent sees in tools/list. An
+	// agentTools names the agentd registry tools for a live agent cell
+	// (#1701): the tools the in-workspace agent sees in tools/list. An
 	// absent agent cell names none — scanAgentdForBoardTools enforces
-	// both directions against cmd/workspace-agentd's source.
-	agentTool string
+	// both directions against cmd/workspace-agentd's source. A list
+	// (board_read's row: the per-task item read + #1837 P2a's
+	// board_list/board_health overview projections) keeps one matrix
+	// row per §4.2 action.
+	agentTools []string
 
 	// denyErr, when set, is the representative guard the REST allow/
 	// deny arms drive (the fake service returns it; the arm asserts the
@@ -124,27 +127,27 @@ var (
 var boardParityMatrix = []parityRow{
 	{action: "create_project", restMethods: []string{"CreateProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_project"}, agent: liveCell,
-		agentTool: "board_create_project",
-		denyErr:   &board.GuardError{Code: board.GuardWorkspaceBinding, Detail: "target workspace must be accessible"}, denyCode: http.StatusForbidden},
+		agentTools: []string{"board_create_project"},
+		denyErr:    &board.GuardError{Code: board.GuardWorkspaceBinding, Detail: "target workspace must be accessible"}, denyCode: http.StatusForbidden},
 	{action: "update_project", restMethods: []string{"UpdateProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
-		agentTool: "board_update_project"},
+		agentTools: []string{"board_update_project"}},
 	{action: "archive_project", restMethods: []string{"ArchiveProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_archive"}, agent: liveCell,
-		agentTool: "board_project_archive"},
+		agentTools: []string{"board_project_archive"}},
 	{action: "unarchive_project", restMethods: []string{"UnarchiveProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_unarchive"}, agent: liveCell,
-		agentTool: "board_project_unarchive"},
+		agentTools: []string{"board_project_unarchive"}},
 	{action: "pause_project", restMethods: []string{"PauseProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_pause"}, agent: liveCell,
-		agentTool: "board_project_pause",
-		denyErr:   &board.GuardError{Code: board.GuardProjectState, Detail: "archived projects refuse pause"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_project_pause"},
+		denyErr:    &board.GuardError{Code: board.GuardProjectState, Detail: "archived projects refuse pause"}, denyCode: http.StatusConflict},
 	{action: "resume_project", restMethods: []string{"ResumeProject"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_project_resume"}, agent: liveCell,
-		agentTool: "board_project_resume"},
+		agentTools: []string{"board_project_resume"}},
 	{action: "board_read", restMethods: []string{"ListProjects", "GetProject", "ListProjectTasks", "ListProjectEpics", "BoardSearch", "BoardHealth", "GetEpic", "GetTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
-		agentTool: "board_read"}, // agent v1 item form (GetTaskInWorkspace); list/search/health are manager-surface reads (#1699 seams, live on REST/external)
+		agentTools: []string{"board_read", "board_list", "board_health"}}, // agent item form (GetTaskInWorkspace) + #1837 P2a: board_list (per-project stage/claim projection + ready set) and board_health (workspace health) on the agent manager surface; search remains a manager-surface read (REST/external)
 	{action: "record_verdict", restMethods: []string{"RecordTaskVerdict"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_record_verdict"}, agent: absentCell}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it
 	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
@@ -153,67 +156,67 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
-		agentTool: "board_create_epic"},
+		agentTools: []string{"board_create_epic"}},
 	{action: "update_epic", restMethods: []string{"UpdateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
-		agentTool: "board_update_epic"},
+		agentTools: []string{"board_update_epic"}},
 	{action: "epic_activate", restMethods: []string{"ActivateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_epic_activate"}, agent: liveCell,
-		agentTool: "board_epic_activate",
-		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_epic_activate"},
+		denyErr:    &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
 	{action: "epic_pause", restMethods: []string{"PauseEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_epic_pause"}, agent: liveCell,
-		agentTool: "board_epic_pause",
-		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_epic_pause"},
+		denyErr:    &board.GuardError{Code: board.GuardEpicState, Detail: "not a lifecycle transition"}, denyCode: http.StatusConflict},
 	{action: "epic_archive", restMethods: []string{"ArchiveEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_epic_archive"}, agent: liveCell,
-		agentTool: "board_epic_archive"},
+		agentTools: []string{"board_epic_archive"}},
 	{action: "epic_unarchive", restMethods: []string{"UnarchiveEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_epic_unarchive"}, agent: liveCell,
-		agentTool: "board_epic_unarchive"},
+		agentTools: []string{"board_epic_unarchive"}},
 	{action: "delete_epic", restMethods: []string{"DeleteEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
-		agentTool: "board_delete_epic",
-		denyErr:   &board.GuardError{Code: board.GuardEpicState, Detail: "claims in flight — force required"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_delete_epic"},
+		denyErr:    &board.GuardError{Code: board.GuardEpicState, Detail: "claims in flight — force required"}, denyCode: http.StatusConflict},
 	{action: "create_task", restMethods: []string{"CreateEpicTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_task"}, agent: liveCell,
-		agentTool: "board_create_task"},
+		agentTools: []string{"board_create_task"}},
 	{action: "update_task", restMethods: []string{"UpdateTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
-		agentTool: "board_update_task"},
+		agentTools: []string{"board_update_task"}},
 	{action: "add_dependency", restMethods: []string{"AddDependency"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_add_dependency"}, agent: liveCell,
-		agentTool: "board_add_dependency",
-		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_add_dependency"},
+		denyErr:    &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	{action: "remove_dependency", restMethods: []string{"RemoveDependency"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_remove_dependency"}, agent: liveCell,
-		agentTool: "board_remove_dependency"},
+		agentTools: []string{"board_remove_dependency"}},
 	{action: "move_stage", restMethods: []string{"MoveStageTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_move_stage"}, agent: liveCell,
-		agentTool: "board_move_stage",
-		denyErr:   &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_move_stage"},
+		denyErr:    &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
 	{action: "task_start", restMethods: []string{"StartTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_start_task"}, agent: absentCell, // round-3 #2: dropped from agent surfaces (the engine claims and spawns)
 		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "paused epics refuse task_start"}, denyCode: http.StatusConflict},
 	{action: "delete_task", restMethods: []string{"DeleteTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
-		agentTool: "board_delete_task",
-		denyErr:   &board.GuardError{Code: board.GuardClaimToken, Detail: "claims in flight"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_delete_task"},
+		denyErr:    &board.GuardError{Code: board.GuardClaimToken, Detail: "claims in flight"}, denyCode: http.StatusConflict},
 	{action: "pause_task", restMethods: []string{"PauseTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_pause_task"}, agent: liveCell,
-		agentTool: "board_pause_task",
-		denyErr:   &board.GuardError{Code: board.GuardPaused, Detail: "terminal rows refuse pause"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_pause_task"},
+		denyErr:    &board.GuardError{Code: board.GuardPaused, Detail: "terminal rows refuse pause"}, denyCode: http.StatusConflict},
 	{action: "resume_task", restMethods: []string{"ResumeTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_resume_task"}, agent: liveCell,
-		agentTool: "board_resume_task"},
+		agentTools: []string{"board_resume_task"}},
 	{action: "rearm_task", restMethods: []string{"RearmTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_rearm_task"}, agent: liveCell,
-		agentTool: "board_rearm_task",
-		denyErr:   &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_rearm_task"},
+		denyErr:    &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
-		agentTool: "board_import_plan",
-		denyErr:   &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
+		agentTools: []string{"board_import_plan"},
+		denyErr:    &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
 	// #1832 item 6 config rows: the config system's read/write surfaces
 	// are the owner's REST projection (user-scoped board-wide defaults
 	// per the R7 ruling on PR #1840 + owner-scoped per-project
@@ -236,9 +239,9 @@ var boardParityMatrix = []parityRow{
 	// external actors hold no claim tokens); live on the agent seam
 	// (claim-token guarded).
 	{action: "heartbeat", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
-		agentTool: "board_heartbeat"},
+		agentTools: []string{"board_heartbeat"}},
 	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
-		agentTool: "board_report_throttle"},
+		agentTools: []string{"board_report_throttle"}},
 	// Engine-internal since R9 — absent on ALL surfaces, permanently.
 	// The agent surface's absence is enforced at BOTH tiers: the seam
 	// route table (TestBoardParity_AgentColumn) and the agentd registry
@@ -419,6 +422,8 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"DELETE /internal/v1/automation/board/epics/:id",
 		"DELETE /internal/v1/automation/board/tasks/:id",
 		"DELETE /internal/v1/automation/board/tasks/:id/dependencies/:dependsOnId",
+		"GET /internal/v1/automation/board/health",
+		"GET /internal/v1/automation/board/projects/:id/tasks",
 		"GET /internal/v1/automation/board/tasks/:id",
 		"PATCH /internal/v1/automation/board/epics/:id",
 		"PATCH /internal/v1/automation/board/projects/:id",
@@ -542,10 +547,12 @@ func TestBoardParity_AgentRegistryColumn(t *testing.T) {
 	want := map[string]bool{}
 	for _, row := range boardParityMatrix {
 		if row.agent.kind == "live" {
-			require.NotEmpty(t, row.agentTool, "action %s: live agent cell must name its registry tool", row.action)
-			want[row.agentTool] = true
+			require.NotEmpty(t, row.agentTools, "action %s: live agent cell must name its registry tools", row.action)
+			for _, tool := range row.agentTools {
+				want[tool] = true
+			}
 		} else {
-			require.Empty(t, row.agentTool, "action %s: absent agent cell must name no registry tool", row.action)
+			require.Empty(t, row.agentTools, "action %s: absent agent cell must name no registry tools", row.action)
 		}
 	}
 	assert.Equal(t, want, catalog,

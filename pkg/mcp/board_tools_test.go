@@ -35,6 +35,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,6 +43,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // boardToolNames is the exact external surface (design §4.3b + #1832
@@ -222,8 +225,7 @@ func boardAllowCases() []boardToolCase {
 			name: "board_update_task", tool: "board_update_item",
 			args: map[string]any{"item_id": "tsk-cccc3333", "set_criteria_met": 0},
 			mock: func(m *MockAPIClient) {
-				zero := 0
-				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &zero}).
+				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &board.CriteriaCheck{Index: 0, Met: true}}).
 					Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
@@ -812,4 +814,80 @@ func TestBoardTools_DeleteProjectRefused(t *testing.T) {
 	assert.True(t, res.IsError)
 	text := boardResultText(res)
 	assert.Contains(t, text, "archive", "the refusal points at the archive path")
+}
+
+// TestCriteriaCheckArg_Branches: the map-walking decoder's full matrix
+// (#1864 review round 1 — only the legacy-integer arm was pinned).
+func TestCriteriaCheckArg_Branches(t *testing.T) {
+	t.Run("object form met false", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(2), "met": false}}, "k")
+		require.NoError(t, err)
+		require.Equal(t, &board.CriteriaCheck{Index: 2, Met: false}, c)
+	})
+	t.Run("object form met default true", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(0)}}, "k")
+		require.NoError(t, err)
+		require.True(t, c.Met)
+	})
+	t.Run("missing index", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"met": true}}, "k")
+		require.ErrorContains(t, err, "requires index")
+	})
+	t.Run("met non-bool", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(0), "met": "yes"}}, "k")
+		require.ErrorContains(t, err, "met must be a boolean")
+	})
+	t.Run("non-integer float index", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": 1.5}}, "k")
+		require.ErrorContains(t, err, "integer")
+	})
+	t.Run("non-integer legacy float", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": 1.5}, "k")
+		require.ErrorContains(t, err, "integer")
+	})
+	t.Run("garbage", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": "x"}, "k")
+		require.ErrorContains(t, err, "expected {index, met}")
+	})
+	t.Run("absent nil", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{}, "k")
+		require.NoError(t, err)
+		require.Nil(t, c)
+	})
+}
+
+// TestBoardUpdateItem_SchemaRequiredList pins the ADVERTISED schema
+// (#1864 review round 2): set_criteria_met is OPTIONAL at the tool
+// level (a required marking would break every prj-/epc- update and
+// force criterion mutations on task patches); item_id stays required.
+func TestBoardUpdateItem_SchemaRequiredList(t *testing.T) {
+	schema := boardUpdateItemTool.InputSchema
+	require.NotNil(t, schema.Properties["set_criteria_met"], "the object form is advertised")
+	require.Contains(t, schema.Required, "item_id", "item_id stays required unconditionally")
+	for _, name := range schema.Required {
+		assert.NotEqual(t, "set_criteria_met", name,
+			"set_criteria_met must NOT be tool-level required (index-required rides the object form)")
+	}
+}
+
+// TestBoardCreateTask_RefusesSetCriteriaMet pins the external-MCP arm
+// of the uniform create refusal (#1864 review round 3, blocking): the
+// field is refused loudly AND the client is never called (no task can
+// be created — the silent-drop class guard).
+func TestBoardCreateTask_RefusesSetCriteriaMet(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything).
+		Return("", fmt.Errorf("must not be called")).Maybe()
+	h := &handlers{client: m, timeout: 30 * time.Second}
+
+	res, err := callBoardTool(t, h, "board_create_task", map[string]any{
+		"epic_id": "epc-bbbb2222", "title": "T",
+		"set_criteria_met": map[string]any{"index": 0, "met": true},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.True(t, res.IsError, "the refusal is a tool error")
+	assert.Contains(t, boardResultText(res), "UPDATES only")
+	m.AssertNotCalled(t, "BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything,
+		"a refused create never reaches the client — nothing can store")
 }

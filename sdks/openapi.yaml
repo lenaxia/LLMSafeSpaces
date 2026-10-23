@@ -12964,6 +12964,22 @@ components:
             #1837 P1b echo: present ONLY on create/update responses when
             a submitted text field stored differently than submitted
             (storage/canonicalization drift — never silent).
+        mutated_criterion:
+          type: object
+          required: [index, met, text]
+          properties:
+            index:
+              type: integer
+              minimum: 0
+            met:
+              type: boolean
+            text:
+              type: string
+          description: |
+            #1837 P2b echo: present ONLY on update responses that carried
+            setCriteriaMet — the mutated criterion's index, the met flag
+            written, and its text (a check-off/uncheck never lands
+            un-attributed).
     BoardPrAnchor:
       type: string
       pattern: "^pr:[1-9][0-9]*$"
@@ -13314,9 +13330,25 @@ components:
             $ref: "#/components/schemas/BoardAcceptanceCriterion"
           description: REPLACES the list when present; omitted keeps existing
         setCriteriaMet:
-          type: integer
-          minimum: 0
-          description: Checks off the criterion at this 0-based index (the reviewer's Done preparation)
+          oneOf:
+            - type: integer
+              minimum: 0
+            - type: object
+              required: [index]
+              properties:
+                index:
+                  type: integer
+                  minimum: 0
+                met:
+                  type: boolean
+                  default: true
+          description: |
+            Checks off OR unchecks the criterion (#1837 P2b): {index, met}
+            (the object form); the legacy bare integer decodes as
+            {index, met:true}. REFUSED alongside acceptanceCriteria
+            (send one or the other); out-of-bounds indices are loud
+            errors. The response echoes the mutated criterion (index,
+            met, text) as mutated_criterion.
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardMoveStageRequest:

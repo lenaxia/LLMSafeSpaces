@@ -108,3 +108,36 @@ func TestBoardTextGuard_ProjectEchoDiff(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"content_echo_diff":["name"]`,
 		"the stored name differs from the submitted one — flagged")
 }
+
+// #1864 review round 1, REST-tier contract pins: setCriteriaMet both
+// forms + the mutated_criterion echo, and the loud create refusal.
+func TestBoardTextGuard_RESTSetCriteriaMet(t *testing.T) {
+	mgr := newFakeBoardManager()
+	mgr.driftTask = &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1",
+		Title: "T", Stage: board.StageBacklog, Tags: []string{},
+		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c0"}, {Text: "c1", Met: true}}}
+	r := newBoardRESTRouter(t, mgr)
+
+	t.Run("object form unchecks + echoes", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333",
+			`{"setCriteriaMet":{"index":1,"met":false}}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), `"mutated_criterion":{"index":1,"met":false,"text":"c1"}`)
+		require.NotNil(t, mgr.lastTaskInput.SetCriteriaMet)
+		assert.False(t, mgr.lastTaskInput.SetCriteriaMet.Met)
+	})
+
+	t.Run("legacy integer form checks off", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333",
+			`{"setCriteriaMet":0}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), `"mutated_criterion":{"index":0,"met":true,"text":"c0"}`)
+	})
+
+	t.Run("create with setCriteriaMet refused loudly", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/tasks",
+			`{"title":"T","setCriteriaMet":{"index":0,"met":true}}`)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "UPDATES only")
+	})
+}

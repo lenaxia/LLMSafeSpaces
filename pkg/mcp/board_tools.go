@@ -37,6 +37,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // --- Tool definitions ---
@@ -204,8 +206,9 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 		"existing values. TAGS semantics differ by kind (engine rules, REST-identical): on a task, omitted "+
 		"tags KEEP the existing set and an explicit [] CLEARS it; on a project or epic, tags are written "+
 		"unconditionally — OMITTING THEM CLEARS the set (send the full set to keep it). Acceptance criteria "+
-		"REPLACE when present. set_criteria_met checks off the criterion at the 0-based index (the "+
-		"reviewer's Done preparation). The assignee is engine-set, never a patch field."),
+		"REPLACE when present. set_criteria_met is {index, met} — the "+
+		"reviewer's Done preparation can check off AND uncheck (#1837 P2b; the bare integer remains the check-off form); "+
+		"refused alongside acceptance_criteria. The assignee is engine-set, never a patch field."),
 	mcp.WithString("item_id", mcp.Required(),
 		mcp.Description("Short id, phrase form (#1831): prj-… (name/target_workspace_id/worker_slots/tags), "+
 			"epc-… (title/outcome/tags), tsk-… (title/description/tags/"+
@@ -227,8 +230,15 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 			"required": []string{"text"},
 		}),
 		mcp.Description("Task criteria [{text, met}] (tsk- only; REPLACE when present)")),
-	mcp.WithInteger("set_criteria_met",
-		mcp.Description("Check off the criterion at this 0-based index (tsk- only)")),
+	mcp.WithObject("set_criteria_met",
+		mcp.Properties(map[string]any{
+			"index": map[string]any{"type": "integer", "minimum": 0},
+			"met":   map[string]any{"type": "boolean", "default": true},
+		}),
+		// NOTE: the object is OPTIONAL at the tool level (mcp-go has no
+		// inner-required PropertyOption — index's requirement rides this
+		// description, matching openapi's inner required:[index]).
+		mcp.Description("OPTIONAL {index, met} — index is required inside the object; check off OR uncheck the criterion at the 0-based index (tsk- only; #1837 P2b). The legacy bare-integer form N still decodes as {index:N, met:true}. Refused alongside acceptance_criteria (send one or the other); out-of-bounds indices are loud errors")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -535,6 +545,11 @@ func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest)
 	if epicID == "" || title == "" {
 		return mcp.NewToolResultError("epic_id and title are required"), nil
 	}
+	// #1837 P2b: create never had criteria check-off — refuse the field
+	// loudly (the uniform no-silent-drop posture), never ignore it.
+	if _, has := args["set_criteria_met"]; has && args["set_criteria_met"] != nil {
+		return mcp.NewToolResultError("set_criteria_met applies to task UPDATES only — create accepts criteria with explicit met flags"), nil
+	}
 	criteria, err := boardCriteriaArg(args, "acceptance_criteria")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -612,10 +627,14 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 		if cerr != nil {
 			return mcp.NewToolResultError(cerr.Error()), nil
 		}
+		check, cerr := criteriaCheckArg(args, "set_criteria_met")
+		if cerr != nil {
+			return mcp.NewToolResultError(cerr.Error()), nil
+		}
 		resp, err = h.client.BoardUpdateTask(ctx, id, BoardTaskBody{
 			Title: strArg(args, "title"), Description: strArg(args, "description"),
 			Tags:               stringSlicePtrArg(args, "tags"),
-			AcceptanceCriteria: criteria, SetCriteriaMet: intPtrArg(args, "set_criteria_met"),
+			AcceptanceCriteria: criteria, SetCriteriaMet: check,
 			RequestID: requestID,
 		})
 	}
@@ -1031,21 +1050,45 @@ func intArg(args map[string]any, key string) int {
 	return 0
 }
 
-// intPtrArg pulls an optional integer argument; nil when absent.
-func intPtrArg(args map[string]any, key string) *int {
-	if raw, ok := args[key]; ok && raw != nil {
-		switch v := raw.(type) {
-		case float64:
-			i := int(v)
-			return &i
-		case int:
-			return &v
-		case int64:
-			i := int(v)
-			return &i
-		}
+// criteriaCheckArg pulls the optional set_criteria_met argument
+// (#1837 P2b): the object form {index, met} or the legacy integer
+// (check-off). A malformed payload is an error BEFORE any client call.
+func criteriaCheckArg(args map[string]any, key string) (*board.CriteriaCheck, error) {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil, nil
 	}
-	return nil
+	switch v := raw.(type) {
+	case float64:
+		if v != float64(int(v)) {
+			return nil, fmt.Errorf("%s: index must be an integer", key)
+		}
+		return &board.CriteriaCheck{Index: int(v), Met: true}, nil
+	case int:
+		return &board.CriteriaCheck{Index: v, Met: true}, nil
+	case int64:
+		return &board.CriteriaCheck{Index: int(v), Met: true}, nil
+	case map[string]any:
+		idxRaw, hasIdx := v["index"]
+		if !hasIdx || idxRaw == nil {
+			return nil, fmt.Errorf("%s: {index, met} requires index", key)
+		}
+		f64, ok := idxRaw.(float64)
+		if !ok || f64 != float64(int(f64)) {
+			return nil, fmt.Errorf("%s: index must be an integer", key)
+		}
+		met := true
+		if m, has := v["met"]; has && m != nil {
+			b, ok := m.(bool)
+			if !ok {
+				return nil, fmt.Errorf("%s: met must be a boolean", key)
+			}
+			met = b
+		}
+		return &board.CriteriaCheck{Index: int(f64), Met: met}, nil
+	default:
+		return nil, fmt.Errorf("%s: expected {index, met} or a legacy integer index", key)
+	}
 }
 
 // boardCriteriaArg decodes the acceptance_criteria array ([{text, met}],

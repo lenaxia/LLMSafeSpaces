@@ -496,20 +496,23 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Equal(t, board.StageBacklog, moved.Stage)
 	assert.Zero(t, moved.Attempts, "re-pooled with the fresh-judgment ledger")
 
-	// --- E+F (#1837): composed file→store byte-identical + corruption refusal —
-	// the real dispatch, the real wire, the real engine, real PG.
+	// --- G+H (#1837, relabeled past main's section E): composed
+	// file→store byte-identical + corruption refusal — the real
+	// dispatch, the real wire, the real engine, real PG.
 	e2eFileBackedCharterSections(t, ctx, client, svc, pool, &epic, mgrSession, wsPod)
 }
 
-// appendE2EFileSections — #1863/#1864 review: the composed real-wiring
-// arcs for #1837 P1. Called from TestIntegrationBoardManagerE2E's tail.
+// e2eFileBackedCharterSections (#1837 rounds 2/3, relabeled G+H past
+// main's section E): the composed real-wiring arcs for P1 —
+// file → wire → engine → PG byte-identical, and corruption → 400 with
+// nothing stored.
 func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *opencode.Client, svc *board.Service, pool *pgxpool.Pool, epic *struct {
 	ID      string `json:"id"`
 	ShortID string `json:"short_id"`
 }, mgrSession, wsPod string) {
 	t.Helper()
 
-	// --- E: composed file → wire → store, byte-identical -------------------------
+	// --- G: composed file → wire → store, byte-identical -------------------------
 	var charter strings.Builder
 	for i := 0; i < 130; i++ {
 		charter.WriteString("### Charter section number ")
@@ -541,7 +544,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
-	// --- F: composed corruption refusal — nothing stored ------------------------
+	// --- H: composed corruption refusal — nothing stored ------------------------
 	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,

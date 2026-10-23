@@ -427,6 +427,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pending_input column is the owner-visible surface instead of an
   invisible in_review rot).
 
+### Added — Task Board: agent overview reads + setCriteriaMet safety (issue #1837 P2)
+
+- **`board_list` + `board_health` on the agent manager surface**: one
+  project's every task in a single call (stage, claim/assignee, lease
+  expiry, paused, blocked, attempts, cooldown columns) with the derived
+  READY set (backlog + unblocked + unpaused + not cooling), and the
+  workspace's board health snapshot (active leases with expiry,
+  cooldowns, pending origins, reclaims, per-project slots). New
+  manager seam routes `GET /internal/v1/automation/board/projects/:id/tasks`
+  and `GET /internal/v1/automation/board/health` — manager-gated
+  (session identity + worker refusal), workspace-scoped (a foreign
+  workspace's project is a plain 404).
+- **`setCriteriaMet` is `{index, met}`**: check off AND uncheck (the
+  legacy bare-integer form still decodes as `{index, met:true}` wire
+  compat). Combined use with an `acceptanceCriteria` replace is
+  refused ("send one or the other"); out-of-bounds indices are loud
+  errors (both were silent before); a CREATE payload carrying
+  setCriteriaMet is refused loudly on every surface (never silently
+  dropped); create/update responses echo the mutated criterion
+  (`mutated_criterion`: index, met, text). All three surfaces (REST,
+  external MCP, agent seam) share the service semantics.
+- **board_list never carries live claim tokens** (ruling, #1864
+  review): the bulk projection renders assignee + lease columns only —
+  the claim token stays on the per-task read where the claimant's own
+  flow needs it.
+
 ### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
 
 - **Server-side text rejection heuristics on every board write surface**

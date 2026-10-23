@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -391,9 +392,16 @@ func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 		Tags               []string                    `json:"tags"`
 		AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
 		DependsOn          []string                    `json:"dependsOn"`
+		SetCriteriaMet     *board.CriteriaCheck        `json:"setCriteriaMet"`
 		RequestID          string                      `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	// #1837 P2b: create never had criteria check-off — the uniform
+	// loud-refusal posture (REST + external MCP refuse the same way).
+	if req.SetCriteriaMet != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "setCriteriaMet applies to task UPDATES only — create accepts criteria with explicit met flags", "code": board.GuardInput})
 		return
 	}
 	t, err := h.boardMgr.CreateTask(c.Request.Context(), h.managerActor(owner, ws, session), c.Param("id"), "",
@@ -417,7 +425,7 @@ func (h *PodAutomationHandler) BoardUpdateTask(c *gin.Context) {
 		Description        string                      `json:"description"`
 		Tags               []string                    `json:"tags"`
 		AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
-		SetCriteriaMet     *int                        `json:"setCriteriaMet"`
+		SetCriteriaMet     *board.CriteriaCheck        `json:"setCriteriaMet"`
 		RequestID          string                      `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
@@ -430,7 +438,7 @@ func (h *PodAutomationHandler) BoardUpdateTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
+	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t), MutatedCriterion: mutatedCriterion(req.SetCriteriaMet, t)})
 }
 
 // BoardTaskLifecycle serves pause/resume.
@@ -581,6 +589,88 @@ func (h *PodAutomationHandler) BoardImportPlan(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// --- Workspace-scoped manager reads (#1837 P2a) ---------------------------------
+
+// readySetFromTasks derives the project's ready HINT from a fully
+// UNFILTERED task list: backlog + unblocked + unpaused + not cooling —
+// the TASK-LEVEL claim predicates. Necessary-not-sufficient: the
+// engine's claim choke point additionally gates epic status/DRR quota
+// and project-level pause/saturation at claim time. Derived, not a
+// second engine read (the list already carries every task-level
+// predicate column); rendered only for fully unfiltered lists (a
+// stage OR failed filter would hide ready rows).
+func readySetFromTasks(tasks []board.Task) []string {
+	var ready []string
+	for _, t := range tasks {
+		if t.Stage == board.StageBacklog && !t.IsBlocked && !t.Paused &&
+			(t.CooldownUntil == nil || t.CooldownUntil.Before(time.Now())) {
+			ready = append(ready, t.ShortID)
+		}
+	}
+	return ready
+}
+
+// BoardManagerListTasks is board_list: one project's every task in one
+// call — stage, claim (assignee), lease expiry, paused, blocked — plus
+// the derived ready set. Manager-gated, workspace-scoped (a foreign
+// workspace's project is a plain 404).
+func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
+	_, ws, _, _, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	stage := c.Query("stage")
+	if stage != "" && !map[string]bool{"backlog": true, "in_progress": true, "in_review": true, "done": true, "pending_input": true}[stage] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages", "code": board.GuardInput})
+		return
+	}
+	failed := c.Query("failed")
+	if failed != "" && failed != "true" && failed != "false" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed filter must be true or false", "code": board.GuardInput})
+		return
+	}
+	tasks, p, err := h.boardMgr.ListTasksInWorkspace(c.Request.Context(), ws, c.Param("id"), "", stage, failed)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	// RULING (#1864 review round 2): the bulk projection never carries
+	// live claim tokens — a manager reader gets assignee+lease columns
+	// (scheduling truth); the token stays on the per-task read where
+	// the claimant's own flow needs it (the #1832 dogfood logged a
+	// manager lifting a token off a bulk read; bulk surface = no tokens).
+	for i := range tasks {
+		tasks[i].ClaimToken = ""
+	}
+	ready := []string{}
+	if stage == "" && failed == "" {
+		ready = readySetFromTasks(tasks)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"project_id": p.ShortID,
+		"project":    p,
+		"tasks":      tasks,
+		"ready_set":  ready,
+		"count":      len(tasks),
+	})
+}
+
+// BoardManagerHealth is board_health: the workspace's board health
+// snapshot (active leases with expiry, cooldowns, pending origins,
+// reclaims, per-project slots). Manager-gated, workspace-scoped.
+func (h *PodAutomationHandler) BoardManagerHealth(c *gin.Context) {
+	_, ws, _, _, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	health, err := h.boardMgr.BoardHealthInWorkspace(c.Request.Context(), ws)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"health": health})
 }
 
 // --- Resource pressure telemetry (#1747 round 3) --------------------------------
