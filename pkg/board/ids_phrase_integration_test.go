@@ -35,7 +35,7 @@ func (s *BoardSuite) TestPhrase_FreshMintsArePhraseForm() {
 	seen := map[string]bool{e.ShortID: true}
 	for i := 0; i < 30; i++ {
 		tk, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
-			board.TaskInput{Title: "t", Description: "d"}, "")
+			board.TaskInput{Title: "t", Description: "d", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 		s.Require().NoError(err)
 		s.Require().True(board.IsPhraseIDForm(tk.ShortID), "task mint is phrase-form (got %s)", tk.ShortID)
 		s.Require().False(board.IsDeprecatedBoardID(tk.ShortID), "a fresh mint is never deprecated-form")
@@ -57,7 +57,7 @@ func (s *BoardSuite) TestPhrase_DeprecationMarkingOnReads() {
 	e := s.seedEpic(p, board.EpicActive)
 
 	t1, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "fresh", Description: "d"}, "")
+		board.TaskInput{Title: "fresh", Description: "d", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	s.Require().NoError(err)
 	s.Require().True(board.IsPhraseIDForm(t1.ShortID))
 

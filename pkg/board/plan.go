@@ -121,6 +121,14 @@ func (s *Service) validatePlan(in PlanInput) *PlanValidation {
 			v.Error = fmt.Sprintf("task %q: %s", n.Key, err.Error())
 			return v
 		}
+		// #1849: the plan materializes tasks — the seed contract rides
+		// the dry-run too (the approval moment never blesses a
+		// seedless node).
+		if err := validateTaskSeed(TaskInput{Title: n.Title, Description: n.Description, AcceptanceCriteria: n.AcceptanceCriteria}); err != nil {
+			v.Valid = false
+			v.Error = fmt.Sprintf("task %q: %s", n.Key, err.Error())
+			return v
+		}
 		if n.Key == "" {
 			v.Valid = false
 			v.Error = "every plan task needs a key"

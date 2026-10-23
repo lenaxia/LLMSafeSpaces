@@ -321,7 +321,7 @@ func (s *BoardSuite) seedTask(e *board.Epic, title string, tags []string, criter
 		tags = []string{}
 	}
 	task, err := s.svc.CreateTask(context.Background(), s.owner(), e.ID, "",
-		board.TaskInput{Title: title, Tags: tags, AcceptanceCriteria: crit}, "")
+		board.TaskInput{Title: title, Description: "seeded charter for " + title, Tags: tags, AcceptanceCriteria: crit}, "")
 	s.Require().NoError(err)
 	return task
 }

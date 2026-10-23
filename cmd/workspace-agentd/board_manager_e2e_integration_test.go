@@ -402,6 +402,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		"epicId":               epic.ShortID,
 		"title":                "E2E Task",
 		"description":          "charter",
+		"acceptanceCriteria":   []any{map[string]any{"text": "e2e criterion met", "met": false}},
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -449,6 +450,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
 		"title":                "worker power grab",
+		"description":          "seeded charter",
+		"acceptanceCriteria":   []any{map[string]any{"text": "c", "met": false}},
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -528,6 +531,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		"epicId":               epic.ShortID,
 		"title":                "file-backed charter",
 		"description_file":     path,
+		"acceptanceCriteria":   []any{map[string]any{"text": "byte-identical storage", "met": false}},
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)

@@ -13272,13 +13272,19 @@ components:
           $ref: "#/components/schemas/BoardRequestId"
     BoardTaskCreateRequest:
       type: object
-      required: [title]
+      required: [title, description, acceptanceCriteria]
+      description: |
+        #1849 atomic-create contract: a non-empty description (the
+        worker charter) and at least one acceptance criterion are
+        REQUIRED — placeholder-class whole-value tokens (placeholder,
+        todo, tbd, asdf, qwerty…) reject with text_rejected; prose
+        that mentions a token passes.
       properties:
         title:
           type: string
         description:
           type: string
-          description: Markdown — seeds the worker charter
+          description: Markdown — seeds the worker charter (REQUIRED at create, #1849)
         dependsOn:
           type: array
           items:

@@ -222,7 +222,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_create_task",
-			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
+			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose. Prose that merely mentions such a token is fine. dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId":           map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 				"title":            map[string]any{"type": "string", "description": "Task title"},

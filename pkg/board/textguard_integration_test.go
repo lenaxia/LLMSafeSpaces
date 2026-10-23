@@ -76,7 +76,7 @@ func (s *BoardSuite) TestTextGuard_1837_LongLegitCharterRoundTripsByteIdentical(
 	require.Greater(s.T(), len(charter), 4096)
 
 	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "charter round-trip", Description: charter}, "")
+		board.TaskInput{Title: "charter round-trip", Description: charter, AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "byte-identical"}}}, "")
 	s.Require().NoError(err)
 
 	stored, err := s.svc.GetTask(ctx, "", created.ShortID)

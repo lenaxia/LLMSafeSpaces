@@ -55,14 +55,14 @@ func (s *BoardSuite) TestKill_1747_AgentManagerWorkspaceBinding() {
 
 	// Correct binding: the agent creates a task on its own workspace's board.
 	_, err := s.svc.CreateTask(context.Background(), s.agentFor(ws), e.ID, "",
-		board.TaskInput{Title: "agent-made"}, "")
+		board.TaskInput{Title: "agent-made", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	s.Require().NoError(err)
 
 	// Foreign binding: a project targeting ANOTHER workspace refuses.
 	pOther := s.seedProject(other, 4)
 	eOther := s.seedEpic(pOther, board.EpicActive)
 	_, err = s.svc.CreateTask(context.Background(), s.agentFor(ws), eOther.ID, "",
-		board.TaskInput{Title: "not mine"}, "")
+		board.TaskInput{Title: "not mine", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	s.Require().Error(err)
 	var ge *board.GuardError
 	require.ErrorAs(s.T(), err, &ge)

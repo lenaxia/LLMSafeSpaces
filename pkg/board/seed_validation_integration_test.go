@@ -61,8 +61,8 @@ func (s *BoardSuite) TestSeed_1849_PlanRefusesSeedlessNodes() {
 		},
 	}, true, "")
 	s.Require().NoError(err, "dry-run renders the refusal as an outcome")
-	require.False(s.T(), out.Valid)
-	require.Contains(s.T(), out.Error, "description")
+	require.False(s.T(), out.Plan.Valid)
+	require.Contains(s.T(), out.Plan.Error, "description")
 
 	out, err = s.svc.ImportPlan(ctx, s.owner(), p.ID, "", board.PlanInput{
 		EpicTitle: "criteria-less plan", Outcome: "ship",
@@ -71,6 +71,6 @@ func (s *BoardSuite) TestSeed_1849_PlanRefusesSeedlessNodes() {
 		},
 	}, true, "")
 	s.Require().NoError(err)
-	require.False(s.T(), out.Valid)
-	require.Contains(s.T(), out.Error, "criterion")
+	require.False(s.T(), out.Plan.Valid)
+	require.Contains(s.T(), out.Plan.Error, "criterion")
 }

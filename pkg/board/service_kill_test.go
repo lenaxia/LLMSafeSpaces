@@ -329,9 +329,9 @@ func (s *BoardSuite) TestKill_IdempotentReplayConverges() {
 	s.Equal(1, s.countTransitions(task.ID, board.StageDone))
 
 	// create_task replay: one event, one task.
-	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dup-create"}, "req-2")
+	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dup-create", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "req-2")
 	s.Require().NoError(err)
-	_, err = s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dup-create"}, "req-2")
+	_, err = s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dup-create", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "req-2")
 	s.Require().NoError(err)
 	var n int
 	s.Require().NoError(s.pool.QueryRow(ctx,

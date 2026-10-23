@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+
+### Added — Task Board: atomic-create seed validation (#1849 items 1+6)
+
+- **A task CREATE requires a charter and criteria**: non-empty
+  description (the worker's charter) and at least one acceptance
+  criterion are mandatory at create on every surface (service-layer
+  guard; import_plan dry-run refuses seedless nodes the same way —
+  the approval moment never blesses one). Updates stay exempt (patches
+  clear fields deliberately).
+- **Placeholder-class charters reject at the boundary** (#1820/#1814
+  discipline, shared vocabulary): whole-value placeholder tokens
+  (placeholder, placeholder-removed, <placeholder>, todo, tbd, asdf,
+  qwerty — trimmed, case-folded) reject with `text_rejected` in title,
+  description, or criterion text; prose that merely mentions a token
+  passes, short legitimate payloads pass. send_message's guard now
+  delegates to the ONE shared set (pkg/board).
+- Composes with #1837's guardrails: caps and corruption scans run
+  first, the seed contract second — a corrupted OR seedless create
+  never stores. agentd's board_create_task description teaches the
+  contract (Layer 2).
+
 ### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
 
 - **`POST /api/v1/workspaces/:id/fs-audit` — fsck-style detector for
