@@ -79,6 +79,23 @@ type SchedulerStore interface {
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	DisableTrigger(ctx context.Context, triggerID string) error
 	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
+	// DeleteSessionOrigin removes a session's origin row (#1882: the
+	// ephemeral carrier's mark is written before the delete effects and
+	// cleaned after — origins must not accumulate per fire).
+	DeleteSessionOrigin(ctx context.Context, sessionID string) error
+}
+
+// SessionDeleteEffectuator is the platform's delete-broadcast surface
+// (#1882): the SAME effect sequence the user proxy route runs — wsstate
+// tombstone, the durable session_index death mark, the row delete, and
+// the session.status:deleted SSE event. Every platform-initiated
+// session delete (agentd's ephemeral carrier teardown, the engine's
+// authorized deletes) must ride it; pre-#1882 only the user route
+// propagated, so routine fires minted ghost sidebar rows. Nil disables
+// propagation (graceful degradation; the ghost self-heals via the
+// #1340 reconcile's carrier bypass).
+type SessionDeleteEffectuator interface {
+	ApplySessionDeleteEffects(ctx context.Context, workspaceID, sessionID string)
 }
 
 // --- AgentdExecutor interface ---
@@ -121,6 +138,14 @@ type NodeExecResponse struct {
 	// engine falls back to parsing the output payload) and on
 	// transport errors (no response object at all).
 	SessionID string `json:"sessionId,omitempty"`
+	// DeletedSessionID is the #1882 delete-propagation field: set by
+	// agentd when an ephemeral teardown DELETED the carrier — the id
+	// the engine needs to run the platform delete effects (tombstone,
+	// session_index row removal, session.status:deleted SSE). Mutually
+	// exclusive with SessionID by construction; absent on old agentd
+	// (no propagation — the pre-#1882 ghost behavior) and on transport
+	// errors.
+	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
 // executeWithRetry runs an agentd node-execution with a bounded retry
@@ -151,7 +176,7 @@ type NodeExecResponse struct {
 // exist and deserves recording (a lost delete response may leave it
 // gone; presuming existence is the fail-safe direction — the narrow
 // accepted mirror of confirmed-gone semantics).
-func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool)) (*NodeExecResponse, error) {
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool), intermediateDeleted func(deletedSessionID string)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
 	var err error
@@ -162,6 +187,14 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 			return resp, err
 		}
 		if a < attempts {
+			// #1882: a discarded attempt whose ephemeral carrier agentd
+			// already tore down reports it (deletedSessionId) — the
+			// carrier's ghost index row must die with the attempt, not
+			// ride the retry's final response (which carries only the
+			// FINAL attempt's fields).
+			if intermediateDeleted != nil && resp != nil && resp.DeletedSessionID != "" {
+				intermediateDeleted(resp.DeletedSessionID)
+			}
 			if cleanupIntermediate != nil && resp != nil && resp.SessionID != "" {
 				if cleanupIntermediate(ctx, resp.SessionID) {
 					cleanedSession = resp.SessionID
@@ -313,6 +346,11 @@ type Reconciler struct {
 	// AgentdPort overrides the agentd user-mux port for the cleanup
 	// delete. Zero → default (4097); mirrors the Scheduler's field.
 	AgentdPort int
+	// DeleteEffects propagates platform-initiated deletes (#1882): the
+	// node-retry cleanup and DAG ephemeral teardowns run the same
+	// effect sequence as the user proxy route. Nil → skipped (ghost
+	// rows self-heal via the #1340 reconcile's carrier bypass).
+	DeleteEffects SessionDeleteEffectuator
 
 	cancelMu     sync.Mutex
 	canceledRuns map[string]struct{}
@@ -489,11 +527,16 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			_ = r.Store.UpdateNodeRunStatus(ctx, nodeRunID, types.NodeRunStatusFailed, nil, nil, &ec, errMsg)
 			lastErr = err
 		} else if resp.ErrorCode != "" {
+			// #1882: a failure-leg ephemeral teardown reports the
+			// deleted carrier — propagate before the outcome bookkeeping.
+			r.propagateDeletedSession(ctx, logger, run.WorkspaceID, resp)
 			errMsg, _ := json.Marshal(map[string]string{"error": resp.Detail, "code": resp.ErrorCode})
 			ec := resp.ErrorCode
 			_ = r.Store.UpdateNodeRunStatus(ctx, nodeRunID, types.NodeRunStatusFailed, nil, nil, &ec, errMsg)
 			lastErr = fmt.Errorf("%s: %s", resp.ErrorCode, resp.Detail)
 		} else {
+			// #1882: same propagation on the delivered leg.
+			r.propagateDeletedSession(ctx, logger, run.WorkspaceID, resp)
 			var branchPtr *string
 			if resp.Branch != "" {
 				branchPtr = &resp.Branch
@@ -510,7 +553,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			// failed) is an orphan. Best-effort; failures log inside
 			// the delete path and the retry proceeds.
 			if resp != nil && resp.SessionID != "" && !pinnedSession && r.PasswordProvider != nil {
-				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
+				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry, r.DeleteEffects)
 			}
 			select {
 			case <-time.After(time.Duration(attempt) * time.Second):
@@ -520,6 +563,18 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 		}
 	}
 	return nil, "", lastErr
+}
+
+// propagateDeletedSession runs the #1882 delete effects for a session
+// agentd reports as deleted by an ephemeral teardown (deletedSessionId
+// on the node envelope). No-op for nil effects or an absent field —
+// including every response shape older agentd produces.
+func (r *Reconciler) propagateDeletedSession(ctx context.Context, logger Logger, workspaceID string, resp *NodeExecResponse) {
+	if resp == nil || resp.DeletedSessionID == "" || r.DeleteEffects == nil {
+		return
+	}
+	logger.Info("workflow: propagating ephemeral carrier delete", "workspaceID", workspaceID, "sessionId", resp.DeletedSessionID)
+	r.DeleteEffects.ApplySessionDeleteEffects(ctx, workspaceID, resp.DeletedSessionID)
 }
 
 // agentdPort returns the reconciler's configured override or the
@@ -590,6 +645,13 @@ type Scheduler struct {
 	// proxy routes that write it. Nil → indexing skipped (fire result
 	// is unaffected).
 	SessionIndex SessionIndexWriter
+	// DeleteEffects propagates platform-initiated session deletes
+	// (#1882): the ephemeral carrier teardown and the authorized
+	// deletes run the same effect sequence as the user proxy route —
+	// tombstone, session_index row removal, session.status:deleted
+	// SSE. Nil → propagation skipped (ghost rows self-heal via the
+	// #1340 reconcile's carrier bypass).
+	DeleteEffects SessionDeleteEffectuator
 }
 
 // SessionIndexWriter is the session-index surface the routine path
@@ -909,7 +971,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// #1458: the pre-script leg rides the same bounded transient
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
-		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil)
+		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil, nil)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
@@ -970,7 +1032,12 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		}
 		return gone
 	}
-	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate)
+	// #1882: a discarded attempt's torn-down ephemeral carrier — same
+	// mark → effects → cleanup tail as the final response's carrier.
+	intermediateCarrierDeleted := func(deletedSessionID string) {
+		s.propagateCarrierDelete(ctx, logger, workspaceID, trigger, fireID, deletedSessionID)
+	}
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate, intermediateCarrierDeleted)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
@@ -983,6 +1050,9 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		errMsg, _ := json.Marshal(map[string]string{"error": agentResp.Detail, "code": agentResp.ErrorCode})
 		resultData = errMsg
 		resultStatus = "failed"
+		// #1882: a failure-leg ephemeral teardown reports the deleted
+		// carrier — propagate the delete exactly like the delivered leg.
+		s.propagateCarrierDelete(ctx, logger, workspaceID, trigger, fireID, agentResp.DeletedSessionID)
 		// #1470: a failed fire whose session SURVIVED (PreserveOnFailure
 		// semantics — keep on failure; PreserveAlways likewise; agentd
 		// tears ephemerals down and omits the id) is exactly the session
@@ -1016,6 +1086,11 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		if sessionID != "" && !sessionDeleted {
 			s.recordRoutineSessionArtifacts(ctx, logger, workspaceID, trigger, fireID, sessionID)
 		}
+
+		// #1882: the ephemeral carrier's teardown (or a 404-already-gone
+		// verdict) reports the deleted id — propagate the delete so the
+		// ghost index row minted during the carrier's turn dies with it.
+		s.propagateCarrierDelete(ctx, logger, workspaceID, trigger, fireID, agentResp.DeletedSessionID)
 	}
 
 	_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
@@ -1045,6 +1120,39 @@ func routineSessionID(resp *NodeExecResponse) string {
 		}
 	}
 	return ""
+}
+
+// propagateCarrierDelete is the #1882 ephemeral-carrier tail: for a
+// session agentd reports as deleted (deletedSessionId on the node
+// envelope — a session whose id never appeared in any earlier field,
+// because the carrier lived and died inside one node execution), the
+// engine (1) origin-MARKS it first — if the effects' index write
+// fails, the #1340 reconcile's carrier bypass still reaps the ghost
+// row — then (2) runs the platform delete effects (tombstone, index
+// death mark + row delete, session.status:deleted SSE), and (3)
+// cleans the mark (carriers are deleted sessions; origin rows must not
+// accumulate per fire). No-op for an empty id or unwired effects.
+func (s *Scheduler) propagateCarrierDelete(ctx context.Context, logger Logger, workspaceID string, trigger *wf.TriggerRow, fireID, deletedSessionID string) {
+	if deletedSessionID == "" || s.DeleteEffects == nil {
+		return
+	}
+	if err := s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+		SessionID:   deletedSessionID,
+		WorkspaceID: workspaceID,
+		Origin:      types.SessionOriginRoutine,
+		TriggerID:   &trigger.ID,
+		FireID:      &fireID,
+		Title:       trigger.Name,
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		// The mark is belt-and-braces, not a precondition: the effects
+		// below still run; only the reconcile self-heal degrades.
+		logger.Error(err, "routine: failed to mark ephemeral carrier origin", "sessionId", deletedSessionID, "triggerId", trigger.ID)
+	}
+	s.DeleteEffects.ApplySessionDeleteEffects(ctx, workspaceID, deletedSessionID)
+	if err := s.Store.DeleteSessionOrigin(ctx, deletedSessionID); err != nil {
+		logger.Error(err, "routine: failed to clean ephemeral carrier origin mark", "sessionId", deletedSessionID, "triggerId", trigger.ID)
+	}
 }
 
 // recordRoutineSessionArtifacts writes the origin row (sidebar badge +
@@ -1252,14 +1360,17 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 // deleteRoutineSession for the Scheduler's session-delete paths
 // (PreserveOnFailure success cleanup, superseded retry-attempt cleanup).
 func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
-	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
+	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.agentdPort(), workspaceID, podIP, sessionID, purpose, s.DeleteEffects)
 }
 
 // deleteSessionAuthorized is the caller-neutral authorized-delete core
 // shared by the routine scheduler and the DAG reconciler's retry
 // cleanup (#1476 DAG adoption): nil provider → skipped; every log line
-// carries the purpose label.
-func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, port int, workspaceID, podIP, sessionID, purpose string) bool {
+// carries the purpose label. A CONFIRMED delete (agentd 2xx) runs the
+// #1882 delete effects — the same tombstone + index cleanup + SSE
+// sequence the user proxy route emits; a refused delete (session
+// survived) propagates nothing.
+func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, port int, workspaceID, podIP, sessionID, purpose string, effects SessionDeleteEffectuator) bool {
 	if pp == nil {
 		logger.Error(fmt.Errorf("no PasswordProvider configured"), "session delete: no password provider configured", "sessionId", sessionID, "purpose", purpose)
 		return false
@@ -1269,7 +1380,13 @@ func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterface
 		logger.Error(err, "session delete: resolve workspace password failed", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
 		return false
 	}
-	return deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose)
+	gone := deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose)
+	if gone && effects != nil {
+		// #1882: propagate — the sidebar's ghost row for this session
+		// dies with the delete, not on the owner's click.
+		effects.ApplySessionDeleteEffects(ctx, workspaceID, sessionID)
+	}
+	return gone
 }
 
 // agentdPort returns the configured override or the production default.

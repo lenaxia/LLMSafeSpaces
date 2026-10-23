@@ -360,6 +360,10 @@ func (m *apiKeyAwareDB) DeleteSessionIndex(context.Context, string) error { retu
 func (m *apiKeyAwareDB) DeleteSessionTree(context.Context, string, string) error {
 	return nil
 }
+func (m *apiKeyAwareDB) MarkSessionIndexDeleted(context.Context, string, string) error {
+	return nil
+}
+func (m *fullMockDB) MarkSessionIndexDeleted(context.Context, string, string) error { return nil }
 func (m *apiKeyAwareDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }
