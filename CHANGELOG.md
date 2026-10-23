@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — chat UX
+
+- **Mobile is no longer stuck on the first of several queued agent
+  questions** (#1845): every pending ask used to render as a stacked
+  card in the message stream, which on a phone viewport surfaced only
+  the topmost card with no indication more were queued — and the stack
+  orders newest-first, so the surfaced card was the NEWEST ask. Mobile
+  now presents ONE ask of each kind at a time, OLDEST first (the ask
+  the agent made first — chronological order, so answers cannot orphan
+  earlier asks), with a "Question 1 of N — answer to see the next"
+  queue-depth line; answering or dismissing advances to the next ask
+  automatically. Desktop rendering is unchanged.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored

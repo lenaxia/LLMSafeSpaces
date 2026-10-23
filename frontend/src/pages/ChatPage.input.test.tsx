@@ -515,8 +515,8 @@ describe("ChatPage pending prompts (I12 fold-driven, US-69.10)", () => {
         makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
       ]);
       // Answer the presented (oldest) question through the real UI.
-      fireEvent.click(screen.getByRole("button", { name: "Go" }));
-      fireEvent.click(screen.getByText("Submit answers"));
+      act(() => { screen.getByRole("button", { name: "Go" }).click(); });
+      act(() => { screen.getByText("Submit answers").click(); });
       await waitFor(() =>
         expect(inputApi.questionReply).toHaveBeenCalledWith("ws-1", "que_1", [["Go"]]),
       );
@@ -527,7 +527,8 @@ describe("ChatPage pending prompts (I12 fold-driven, US-69.10)", () => {
       ]);
       expect(screen.getByText("Second (newer) question?")).toBeInTheDocument();
       expect(screen.queryByText("First (oldest) question?")).not.toBeInTheDocument();
-      expect(screen.getByText(/1 of 1/)).toBeInTheDocument();
+      // Last remaining ask — no queue-depth line needed.
+      expect(screen.queryByText(/Question 1 of/)).not.toBeInTheDocument();
     });
 
     it("DESKTOP: the full stack renders (no single-card gating, no queue line)", async () => {
