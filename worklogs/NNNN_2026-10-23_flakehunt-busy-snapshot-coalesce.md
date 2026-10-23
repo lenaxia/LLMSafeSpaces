@@ -2,6 +2,10 @@
 
 Date: 2026-10-23 · Lane: flakehunt (orchestrator leisure-wasabi-covers) · Branch: fix/flakehunt-upload-stream · Issues: #1907 (filed this lane, fixes) · #1842 (verification-only)
 
+## Objective
+
+De-flake the two known CI flake classes on main: fix the busy-snapshot coalesce flake (test-side, red-first) and verify the already-landed #1842 upload-stream fix — no production code changes.
+
 ## Charter scope
 
 Two known CI flake classes on main:
@@ -31,7 +35,7 @@ Organic local rate on an unloaded box: 0 in 50 iterations (0.02 s each) — cons
 
 - The statusz stub **parks the first authority fetch** (`firstFetch` channel + `release` channel).
 - Trigger 1 fires; the test waits until its flight's fetch is provably parked. Trigger 2 fires only then — **strictly inside the open coalescing window**: the parked flight's map entry cannot be gone (Delete runs only after the fetch returns), so trigger 2's guard (proven run by its 202) MUST coalesce.
-- Four independent nets: fetch-count assert at the parked phase; stub-side `t.Errorf` on any second fetch whenever it lands; pre-release `snapshot_complete` drain (impossible while the only flight is parked); post-settle `t.Cleanup` verdict (deferred `srv.Close` drains in-flight stub calls before cleanups run).
+- Four nets (overlapping, not fully independent — r1 review finding): fetch-count assert at the parked phase; stub-side `t.Errorf` on any second fetch while the stub lives; pre-release `snapshot_complete` drain (impossible while the only flight is parked); post-settle `t.Cleanup` verdict. The verdict does NOT rely on server-drain ordering (an earlier draft's comment wrongly claimed the deferred router-server Close drained stub calls — the statusz stub is a different server, closed by an earlier-registered, hence LIFO-later, cleanup): the counter increments at stub-handler entry, so every fetch that has begun is already counted, and in the happy path no second fetch can exist past the observed completion (both triggers coalesced, none remain). The one escape window — a fetch that has not yet begun by cleanup time — is disclosed; both causal mutations land well inside it (author 3/3, reviewer-independent 1/1 each).
 - No production code changed. No sleeps/retries/skips added.
 
 ## Red-first / mutation-verify

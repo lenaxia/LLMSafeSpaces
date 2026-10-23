@@ -556,9 +556,11 @@ func TestStreamUserEvents_BusySnapshot_SessionListFailure_NotAuthoritative(t *te
 // runs strictly inside the first flight's live window — the map entry
 // cannot be gone yet (Delete runs only after the fetch returns) and
 // the guard MUST coalesce. The second trigger's 202 proves its guard
-// ran; a second authority fetch at ANY point (stub-side, whenever it
-// lands) or a pre-release snapshot_complete both prove a non-coalesced
-// second flight.
+// ran; a second authority fetch — flagged stub-side, whenever it lands
+// while the stub lives — or a pre-release snapshot_complete both prove
+// a non-coalesced second flight. (A fetch that has not begun by
+// cleanup time is the one microscopic, disclosed escape window; every
+// fetch that HAS begun is on the counter at stub-handler entry.)
 //
 // Deterministic reds under the causal mutations: a neutered guard
 // (always spawn) and an early Delete (key released before the flight
@@ -594,9 +596,16 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 	srv := httptest.NewServer(hs.router)
 	defer srv.Close()
 
-	// Post-settle verdict: deferred srv.Close drains in-flight stub
-	// calls before cleanups run, so any late second fetch has already
-	// tripped the stub's t.Errorf (or landed on this count).
+	// Post-settle verdict, run after the test body returns. It does NOT
+	// rely on server-drain ordering: the fetch counter increments at
+	// stub-handler entry (the first statement of the statusz handler),
+	// so any fetch that has begun is already counted here, and any
+	// second fetch has already tripped the stub's t.Errorf. In the
+	// happy path no second fetch can exist past the flight's completion
+	// — both triggers coalesced and no further triggers remain. The one
+	// escape window (a fetch that has not yet begun by cleanup time) is
+	// the disclosed microscopic residual, not something a Close order
+	// would close.
 	t.Cleanup(func() {
 		assert.Equal(t, int32(1), atomic.LoadInt32(&fetches),
 			"final verdict: exactly one authority fetch must serve both triggers (got %d)", atomic.LoadInt32(&fetches))
@@ -644,10 +653,12 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 
 	close(release)
 
-	// The coalesced flight completes after release; the cleanup assert
-	// re-checks the fetch count once every goroutine has settled
-	// (httptest.Server.Close, deferred above, drains in-flight stub
-	// calls before cleanups run).
+	// The coalesced flight completes after release. Seeing its
+	// snapshot_complete is the happy-path end state: both triggers
+	// coalesced, so no further flight — and no further authority fetch
+	// — can exist from here on; the cleanup verdict re-checks the
+	// count after the body returns (the counter increments at stub
+	// entry, so nothing in flight slips past it uncounted).
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
