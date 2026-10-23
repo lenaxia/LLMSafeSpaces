@@ -1473,6 +1473,12 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		// the harness session list — reaps ghost rows the agent
 		// reports absent for N consecutive checks.
 		proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
+		// #1880 direction 3: serve the HARNESS count for the drift
+		// class — rows whose message stream never traversed the API
+		// proxy, invisible to both the incremental path and the
+		// present-only rebuild (the #1452 list gap). Bounded walks,
+		// serve-through + persist (self-healing).
+		proxyHandler.ServeHarnessMessageCounts(c.Request.Context(), workspaceID, sessions)
 		// Ground-truth session status (#792 Pattern 1): query
 		// /v1/statusz for authoritative busy/idle instead of the
 		// in-memory activeSess map, which goes stale when SSE

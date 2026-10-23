@@ -92,6 +92,20 @@ type ProxyHandler struct {
 	userBroker          *eventbroker.UserEventBroker
 	sessionParents      *sessionParentCache
 
+	// countServe is the #1880 listing serve-through's in-replica walk
+	// tracker (rotation fairness + unchanged-row cooldown). Lazy:
+	// struct-literal constructions (tests) reach it through
+	// ProxyHandler.countServeState(), never the nil field directly.
+	countServe   *countServeTracker
+	countServeMu sync.Mutex
+
+	// countPassIndexOverride pins the #1880 r2 rebuild-rotation
+	// window (tests). Production derives the window statelessly from
+	// wall-clock buckets of the reconcile cadence (see
+	// countPassIndex); a test driving consecutive passes flips this
+	// override instead of sleeping past window boundaries.
+	countPassIndexOverride *int64
+
 	meteringSvc interfaces.MeteringService
 
 	// versionSyncCb is the callback wired into the CRD watcher to persist

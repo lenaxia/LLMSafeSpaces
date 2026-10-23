@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Fixed — session_index.message_count drift to 0 on live sessions: listing serve-through, loud skips, and rebuild rotation (#1880)
+
+- **The sidebar's session list now serves the HARNESS-walked message
+  count for the drift class** (board/dispatch-spawned sessions whose
+  message stream never traverses the API proxy — `message_count = 0`
+  with a full harness history, the 10-row live evidence). The listing
+  route walks the count BY ID (immune to the #1452 list-visibility
+  gap), serves it on the wire in place, and persists it through the
+  rebuild seam — converging across listing polls (budget 3/request,
+  never-walked-first rotation, 5-minute unchanged-row cooldown); a
+  failed walk serves the index value and re-arms (no tracker entry),
+  a failed persist still serves the truth and retries. Reaching every
+  row is unconditional: #1886's uncapped `ListSessionIndex` removed
+  the 100-row page cut that previously hid NULL-`last_message_at`
+  rows past the budget.
+- **Every rebuild skip is now attributable.** `count_pass_ran` (the
+  denominator — its absence under sidebar traffic means the pass is
+  never scheduled, the issue's third skip class),
+  `count_skip_not_present` (list-invisible count-zero rows, the #1452
+  gap), `count_skip_pass_no_list` (harness list failure), walk
+  failures Debug→Warn with row identity, and the rebuild rotation:
+  the pass window advances `(passIndex × K) mod N` per 30s cadence
+  bucket, repairing the stationarity defect where the same first-K
+  NULL rows were re-walked every pass while the starved tail never
+  converged.
+
 ### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
 
 - **`POST /api/v1/workspaces/:id/fs-audit` — fsck-style detector for

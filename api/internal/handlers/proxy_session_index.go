@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -394,6 +395,19 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 // The 15s pass timeout bounds the pathological multi-page tail.
 const reconcileCountBudget = 3
 
+// countPassIndex is the rebuild rotation's window index: wall-clock
+// buckets of the reconcile cadence (stateless — every replica computes
+// the same bucket for a given instant, and the cross-replica cadence
+// claim means ONE replica runs each window's pass, so consecutive
+// claimed windows advance the rotation by exactly one step). Tests pin
+// it via countPassIndexOverride instead of sleeping past boundaries.
+func (h *ProxyHandler) countPassIndex(now time.Time) int64 {
+	if h.countPassIndexOverride != nil {
+		return *h.countPassIndexOverride
+	}
+	return now.Unix() / int64(reconcileCadence.Seconds())
+}
+
 // rebuildMessageCounts repairs drifted message_count values for PRESENT
 // sessions from the harness ground truth (#1481, the #754 fold-in): the
 // incremental RecordMessage path double-counts duplicate SSE events,
@@ -404,17 +418,48 @@ const reconcileCountBudget = 3
 // approximation.
 func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID string, rows []types.SessionListItem, present map[string]bool) {
 	if present == nil || len(rows) == 0 {
+		// #1880 direction 1: a pass-level skip must be loud. present ==
+		// nil means the harness LIST failed (or the pass ran without a
+		// list at all) — the entire rebuild silently returned for the
+		// duration, which is one of the three suspected non-convergence
+		// classes in the issue. One outcome + one Warn per pass.
+		if present == nil && len(rows) > 0 {
+			sessionindex.ReconcileOutcome("count_skip_pass_no_list")
+			h.logger.Warn("session reconcile: count rebuild skipped — no harness list this pass",
+				"workspaceID", workspaceID)
+		}
 		return
 	}
 	candidates := make([]types.SessionListItem, 0, len(rows))
 	for _, row := range rows {
 		if present[row.InternalID] {
 			candidates = append(candidates, row)
+			continue
+		}
+		// #1880 direction 1: the present-miss must be loud — but ONLY
+		// for drift-suspect rows. A count-zero row the harness LIST
+		// omits is exactly the #1452 list-invisibility class (live
+		// spawn-created sessions the #1865 reap veto protects from
+		// deletion): the rebuild can NEVER converge it here, one line
+		// per skipped row makes that attributable from logs/metrics.
+		// History-bearing absent rows are the ghost/operator machinery's
+		// population (kept_for_operator + miss counters) — not this
+		// signal, or every real ghost would pollute it.
+		if row.MessageCount == 0 {
+			sessionindex.ReconcileOutcome("count_skip_not_present")
+			h.logger.Warn("session reconcile: count rebuild cannot reach list-invisible count-zero row (the #1452 gap; the listing serve-through owns its convergence)",
+				"workspaceID", workspaceID, "sessionID", row.InternalID)
 		}
 	}
 	if len(candidates) == 0 {
 		return
 	}
+	// #1880 direction 1 (r2): the pass-ran denominator — this pass's
+	// count leg executed with a live present-set. The issue's third
+	// skip class ("the pass not being scheduled for this workspace at
+	// all") was invisible: sidebar traffic with no count_pass_ran
+	// names it from metrics alone.
+	sessionindex.ReconcileOutcome("count_pass_ran")
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].LastMessageAt, candidates[j].LastMessageAt
 		if a == nil {
@@ -426,13 +471,36 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		return a.Before(*b)
 	})
 	if len(candidates) > reconcileCountBudget {
-		candidates = candidates[:reconcileCountBudget]
+		// #1880 r2, thread Finding 2 (rebuild stationarity): the sort
+		// key is last_message_at, but the count upsert never writes
+		// that column — repaired rows STAY in the (stable, NULLs-first)
+		// group, so the budget re-walked the same first-K candidates
+		// every pass forever and rows K+1..N never walked (7 of the
+		// issue's 10 evidence rows). Rotate the window instead: start
+		// at (passIndex × K) mod N, the pass index a wall-clock bucket
+		// of the reconcile cadence — stateless, and consistent under
+		// the cadence claim (one replica runs each window's pass, so
+		// every claimant computes the same window for its instant).
+		// Union of P consecutive windows covers P×K consecutive
+		// candidates: full coverage within ceil(N/K) passes. Workspaces
+		// at or under the budget keep the deterministic oldest-first
+		// walk (start 0).
+		n := len(candidates)
+		start := (int(h.countPassIndex(time.Now())) * reconcileCountBudget) % n
+		rotated := make([]types.SessionListItem, 0, reconcileCountBudget+(n-start))
+		rotated = append(rotated, candidates[start:]...)
+		rotated = append(rotated, candidates[:start]...)
+		candidates = rotated[:reconcileCountBudget]
 	}
 	for _, row := range candidates {
 		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
 		if err != nil {
 			sessionindex.ReconcileOutcome("count_walk_error")
-			h.logger.Debug("session reconcile: count walk failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+			// #1880 direction 1: Warn, not Debug — a silently skipped
+			// row is indistinguishable from a converged one in prod
+			// logs, which is how the drift went unnoticed for hours.
+			h.logger.Warn("session reconcile: count walk failed; row skipped",
+				"workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
 			continue
 		}
 		if count == row.MessageCount {
@@ -451,6 +519,178 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 			continue
 		}
 		sessionindex.ReconcileOutcome("count_rebuilt")
+	}
+}
+
+// listingCountBudget bounds the #1880 listing serve-through walks per
+// request — the drift class converges across listing polls (the sidebar
+// refreshes ~30s), so K=3 mirrors reconcileCountBudget's measured cost
+// bound (≤3 single-GET walks, ~1.5s worst case, ONLY while drift rows
+// exist). "Converged" is exact only for the proxy-traversed class; the
+// never-traversed signature (last_message_at NULL) deliberately stays
+// hot after a serve-through persist, so those rows re-walk on each
+// cooldown expiry — bounded staleness by design, not a steady state of
+// zero walks.
+const listingCountBudget = 3
+
+// countServeCooldown backs off a drift row whose last walk already
+// matched the served count: a legitimately-empty session (walked 0,
+// index 0) must not eat the walk budget of live drift rows on every
+// listing poll. The cooldown bounds staleness for the never-traversed
+// class (their count is served up to this interval old); history-
+// bearing rows are never walked at all, and a row whose walk CHANGED
+// the count re-arms on its own new tracker entry.
+const countServeCooldown = 5 * time.Minute
+
+// countServeCap bounds the walk-tracker maps (drift rows per process).
+// Far above any sane workspace's drift cardinality; a workspace set
+// this pathological resets the rotation state rather than growing.
+const countServeCap = 8192
+
+// countServeTracker is the in-replica walk state behind
+// ServeHarnessMessageCounts: the last walk time and walked count per
+// (workspace/session) drift row. Rotation fairness (never-walked
+// first, then oldest — the rebuild pass's oldest-touched discipline on
+// the read path) and the unchanged-row cooldown both read it. Deliberately
+// NOT durable: any replica converges its own drift set, and a restart
+// just re-warms.
+type countServeTracker struct {
+	mu     sync.Mutex
+	lastAt map[string]time.Time
+	lastCt map[string]int
+}
+
+func (t *countServeTracker) lookup(key string) (time.Time, int, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	at, ok := t.lastAt[key]
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	return at, t.lastCt[key], true
+}
+
+func (t *countServeTracker) record(key string, count int, at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lastAt == nil {
+		t.lastAt = map[string]time.Time{}
+		t.lastCt = map[string]int{}
+	}
+	if len(t.lastAt) >= countServeCap {
+		t.lastAt = map[string]time.Time{}
+		t.lastCt = map[string]int{}
+	}
+	t.lastAt[key] = at
+	t.lastCt[key] = count
+}
+
+// countServeState lazily initializes the serve-through tracker (the
+// resolvers lazy-init precedent: struct-literal constructions in tests
+// must not nil-panic on the first listing).
+func (h *ProxyHandler) countServeState() *countServeTracker {
+	h.countServeMu.Lock()
+	defer h.countServeMu.Unlock()
+	if h.countServe == nil {
+		h.countServe = &countServeTracker{}
+	}
+	return h.countServe
+}
+
+// ServeHarnessMessageCounts is the #1880 direction-3 serve-through: the
+// listing read path makes the HARNESS count authoritative for the
+// drift class — rows whose message stream never traversed the API
+// proxy (board/dispatch-spawned sessions: pod-local prompt delivery,
+// no SSE subscriber) sit at message_count 0 forever because neither
+// the incremental RecordMessage path nor the present-only reconcile
+// rebuild can see them (#1452 list-visibility). For eligible rows
+// (sessionindex.CountServeEligible) this walks the harness count by
+// ID — the #1865 reap-veto's by-ID probe precedent, immune to the
+// list gap — serves it on the caller's slice IN PLACE, and persists
+// it through the rebuild seam (self-healing, the backfillContextUsed
+// precedent). Budgeted (listingCountBudget walks/request),
+// oldest-touched first across passes; unchanged rows back off for
+// countServeCooldown. A failed walk serves the index value (never
+// worse than the pre-fix wire) and counts the outcome loudly.
+func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceID string, sessions []types.SessionListItem) {
+	// h.adapter is ctor-required (#828 — never nil-checked). The
+	// sessionIndex seam is optional wiring; nil disables the overlay.
+	if h.sessionIndex == nil || len(sessions) == 0 {
+		return
+	}
+	now := time.Now()
+
+	type candidate struct {
+		idx      int
+		walkedAt time.Time
+		walked   bool
+	}
+	candidates := make([]candidate, 0, len(sessions))
+	for i := range sessions {
+		if !sessionindex.CountServeEligible(sessions[i]) {
+			continue
+		}
+		key := workspaceID + "/" + sessions[i].InternalID
+		at, walkedCt, walked := h.countServeState().lookup(key)
+		if walked && walkedCt == sessions[i].MessageCount && now.Sub(at) < countServeCooldown {
+			sessionindex.ReconcileOutcome("listing_count_cooldown")
+			continue
+		}
+		candidates = append(candidates, candidate{idx: i, walkedAt: at, walked: walked})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	// Rotation fairness: never-walked rows first, then oldest walk —
+	// without this the same three rows would consume every pass's
+	// budget and the tail would never converge.
+	sort.SliceStable(candidates, func(a, b int) bool {
+		if !candidates[a].walked {
+			return candidates[b].walked
+		}
+		if !candidates[b].walked {
+			return false
+		}
+		return candidates[a].walkedAt.Before(candidates[b].walkedAt)
+	})
+	if len(candidates) > listingCountBudget {
+		candidates = candidates[:listingCountBudget]
+	}
+	for _, cand := range candidates {
+		row := &sessions[cand.idx]
+		key := workspaceID + "/" + row.InternalID
+		persisted := row.MessageCount
+		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
+		if err != nil {
+			// NO tracker entry on error (review r2 defect 1): the
+			// error-path count is not a walked truth. Recording it
+			// anyway poisoned the cooldown tracker on count-0 rows
+			// (lastCt 0 == index 0 → the next listing cooldown-skipped
+			// the retry for five minutes, mislabeled as
+			// listing_count_cooldown). A failed walk re-arms.
+			sessionindex.ReconcileOutcome("listing_count_walk_error")
+			h.logger.Warn("session listing: harness count walk failed; serving the index value",
+				"workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
+			continue
+		}
+		h.countServeState().record(key, count, time.Now())
+		// Serve-through: the response carries harness truth.
+		row.MessageCount = count
+		if count == persisted {
+			sessionindex.ReconcileOutcome("listing_count_unchanged")
+			continue
+		}
+		// Row-creating upsert shape — the registration seam first
+		// (design 0066 §4.2; keyed by the harness id, never the
+		// phrase — the #1756/#1881 discipline).
+		h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode")
+		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.InternalID, count); err != nil {
+			sessionindex.ReconcileOutcome("listing_count_persist_error")
+			h.logger.Warn("session listing: count persist failed (truth still served)",
+				"workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
+			continue
+		}
+		sessionindex.ReconcileOutcome("listing_count_served")
 	}
 }
 
