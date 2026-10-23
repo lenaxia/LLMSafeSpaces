@@ -101,16 +101,6 @@ export interface SessionListItem {
   archived?: boolean;
 }
 
-/**
- * Returned by GET /workspaces/:id/sessions/active. The `active` field lists
- * session IDs currently running on the workspace, and `maxActive` is the
- * configured concurrency ceiling for that workspace.
- */
-export interface ActiveSessionsResponse {
-  active: string[];
-  maxActive: number;
-}
-
 // The platform session contract's Session object (pkg/session
 // contract_gen.go) as returned by GET /workspaces/:id/sessions/:sessionId —
 // the adapter seam translates the agent's native shape into this

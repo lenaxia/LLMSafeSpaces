@@ -52,6 +52,13 @@ type serverDeps struct {
 	// direct-write path runs unchanged.
 	uploadStager *uploadStager
 	uploadApply  uploadApplier
+
+	// scriptExecForwarder (#1878) forwards script-node execution to the
+	// workspace-container supervisor over the control socket. Sidecar
+	// mode wires it (this mux serves from the scratch sidecar without
+	// /tmp or interpreters); single-container leaves it nil so script
+	// nodes execute in-process — already the workspace container there.
+	scriptExecForwarder scriptExecForwarder
 	// stateAuthority is the Epic 69 session-state authority (US-69.2).
 	// Nil only when construction failed (degraded, logged at boot).
 	stateAuthority *sessionstate.Authority
@@ -126,6 +133,13 @@ type serverDeps struct {
 	// control-socket forwarder in sidecar mode. Nil in tests → the
 	// user-mux route answers 503 (never a silent no-op).
 	diskRecover diskRecoverEngine
+
+	// fsAudit (#1808) executes the zero-fill corruption scan where the
+	// filesystem view is (same topology as diskRecover): in-process
+	// engine in single-container mode, control-socket forwarder in
+	// sidecar mode. Nil in tests → the user-mux route answers 503
+	// (never a silent no-op).
+	fsAudit fsAuditEngine
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -652,7 +666,9 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
-	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password, deps.controlPlanePassword))
+	// #1878: the script forwarder routes script nodes into the
+	// workspace container in sidecar mode (nil single-container).
+	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandlerForward(deps.scriptExecForwarder, deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
@@ -661,6 +677,12 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// every API-driven route; response-only report (owner ruling — the
 	// path must work at 100% full, so it writes nothing).
 	userMux.HandleFunc("/v1/disk-recover", diskRecoverHandler(deps.password, deps.controlPlanePassword, deps.diskRecover))
+
+	// #1808: zero-fill corruption audit. Same §D1 carve-out pair gate;
+	// response-only report (the detector never writes — zero-filled
+	// bytes are unrecoverable, so its job is visibility, and the
+	// pre-push guard blocks propagation at the git seam).
+	userMux.HandleFunc("/v1/fs-audit", fsAuditHandler(deps.password, deps.controlPlanePassword, deps.fsAudit))
 
 	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev
 	// servers. The API server proxies to this endpoint, which forwards to

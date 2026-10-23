@@ -791,13 +791,34 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 	if err != nil {
 		return err
 	}
-	h.recordActivityIfTracked(workspaceID)
-
-	// #1882: the user route converges on the shared teardown — the
-	// same three effects every engine-authorized and agentd-reported
-	// delete now runs.
-	h.PropagateSessionDeleted(ctx, workspaceID, sessionID)
+	h.ApplySessionDeleteEffects(ctx, workspaceID, sessionID)
 	return nil
+}
+
+// ApplySessionDeleteEffects is the platform's delete-broadcast tail
+// (#1882) — the ONE effect sequence every session delete runs:
+//
+//   - wsstate tombstone (MarkSessionDeleted — late pod-event suppression)
+//   - the durable session_index death mark (deleted_at — the read-path
+//     filter's signal, written BEFORE the row delete so a failed delete
+//     still hides the row)
+//   - the session_index row removal (+ descendants)
+//   - session.status:deleted on both SSE streams (the event the
+//     frontend sidebar already handles) + active-session/parents cleanup
+//
+// The user route (HardDeleteSession) and every platform-initiated
+// delete (agentd's ephemeral carrier teardown, the engine's authorized
+// deletes) ride this same sequence — pre-#1882 only the user route
+// propagated, so routine fires minted ghost sidebar rows that lingered
+// until clicked.
+// ApplySessionDeleteEffects is the #1882 alias main shipped for the
+// same teardown (1764a1a9 lineage); the union keeps one sequence —
+// PropagateSessionDeleted below — and this name delegating to it, so
+// either wiring (main's DeleteEffects or the union's SessionDelete)
+// lands on the identical code path.
+func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceID, sessionID string) {
+	h.recordActivityIfTracked(workspaceID)
+	h.PropagateSessionDeleted(ctx, workspaceID, sessionID)
 }
 
 // PropagateSessionDeleted is the #1882 convergence seam: EVERY
@@ -817,6 +838,10 @@ func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID,
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 
 	if h.sessionIndex != nil {
+		//nolint:contextcheck // index cleanup must survive client disconnect
+		if err := h.sessionIndex.MarkSessionDeleted(context.Background(), workspaceID, sessionID); err != nil {
+			h.logger.Error("failed to mark session deleted in index", err, "workspaceID", workspaceID, "sessionID", sessionID)
+		}
 		//nolint:contextcheck // index cleanup must survive client disconnect
 		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
 			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)

@@ -104,6 +104,23 @@ func decodeOneDocument(r io.Reader, v any) error {
 func boardManagerTools() []mcpTool {
 	return []mcpTool{
 		{
+			// #1837 P2a: the orchestrator's overview reads. board_read
+			// stays per-task (the worker view); board_list/board_health
+			// are the manager's project/fleet projections.
+			Name:        "board_list",
+			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
+				"stage":     map[string]any{"type": "string", "enum": []string{"backlog", "in_progress", "in_review", "done", "pending_input"}, "description": "Optional stage filter (one of the five stages)"},
+				"failed":    map[string]any{"type": "string", "enum": []string{"true", "false"}, "description": "Optional #1813 failed-attempt filter (true = only last-attempt-failed rows)"},
+			}, "required": []string{"projectId"}},
+		},
+		{
+			Name:        "board_health",
+			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, task and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Manager tool (user-collaborator sessions only); workspace-scoped.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
 			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
 			// amended): the collaboration-to-execution loop — take a
 			// user-approved design, create the epics/tasks, activate the
@@ -165,20 +182,22 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_create_epic",
 			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"title":     map[string]any{"type": "string", "description": "Epic title"},
-				"outcome":   map[string]any{"type": "string", "description": "What this epic exists to achieve"},
-				"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
+				"projectId":    map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
+				"title":        map[string]any{"type": "string", "description": "Epic title"},
+				"outcome":      map[string]any{"type": "string", "description": "What this epic exists to achieve"},
+				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
+				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
 			}, "required": []string{"projectId", "title"}},
 		},
 		{
 			Name:        "board_update_epic",
 			Description: "Patch an epic (title, outcome, tags). The outcome is the steering wheel for every worker under the epic. A title rename cascades to its tasks' display. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":  map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":   map[string]any{"type": "string", "description": "New title"},
-				"outcome": map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
-				"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
+				"epicId":       map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
+				"title":        map[string]any{"type": "string", "description": "New title"},
+				"outcome":      map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
+				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
+				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
 			}, "required": []string{"epicId"}},
 		},
 		{
@@ -222,10 +241,11 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_create_task",
 			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":      map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "Task title"},
-				"description": map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
+				"epicId":           map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
+				"title":            map[string]any{"type": "string", "description": "Task title"},
+				"description":      map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
+				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},
@@ -236,18 +256,27 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_update_task",
-			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
+			Description: "Patch a task (title, description, tags, criteria). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b); the bare-integer form still decodes as {index, met:true}. REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors; the response echoes the mutated criterion's text. Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":      map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "New title"},
-				"description": map[string]any{"type": "string", "description": "New description (REPLACE)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
+				"taskId":           map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"title":            map[string]any{"type": "string", "description": "New title"},
+				"description":      map[string]any{"type": "string", "description": "New description (REPLACE)"},
+				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},
 						"met":  map[string]any{"type": "boolean"},
 					}, "required": []string{"text"}}, "description": "Criteria (REPLACE when present)"},
-				"setCriteriaMet": map[string]any{"type": "integer", "description": "Check off the criterion at this 0-based index"},
+				"setCriteriaMet": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"index": map[string]any{"type": "integer", "description": "0-based criterion index"},
+						"met":   map[string]any{"type": "boolean", "description": "The flag to write (default true — the legacy bare-integer form)"},
+					},
+					"required":    []string{"index"},
+					"description": "{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria",
+				},
 			}, "required": []string{"taskId"}},
 		},
 		{
@@ -538,7 +567,7 @@ func mcpToolCatalog() []mcpTool {
 			// surfaces, and the claim token (charter envelope) is the
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
-			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
+			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/health overview projections live on the manager tools board_list/board_health (#1837).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"shortId": map[string]any{"type": "string", "description": "The task's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
 				"taskId":  map[string]any{"type": "string", "description": "The task's UUID (alternative to shortId; taskId wins when both are given)"},
@@ -909,6 +938,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
 		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
+		"board_list", "board_health",
 		"board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",

@@ -148,6 +148,9 @@ type RouterConfig struct {
 	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
 	// (#1601 mechanical disk recovery; optional wiring like reload).
 	DiskRecoverHandler *handlers.DiskRecoverHandler
+	// FsAuditHandler handles POST /api/v1/workspaces/:id/fs-audit
+	// (#1808 zero-fill corruption audit; optional wiring like reload).
+	FsAuditHandler *handlers.FsAuditHandler
 
 	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
 	BulkReloadHandler *handlers.BulkReloadHandler
@@ -1362,6 +1365,8 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 	if h.HasBoard() {
 		b := router.Group("/internal/v1/automation/board")
 		b.GET("/tasks/:id", h.BoardTaskGet)
+		b.GET("/projects/:id/tasks", h.BoardManagerListTasks) // #1837 P2a board_list
+		b.GET("/health", h.BoardManagerHealth)                // #1837 P2a board_health
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
@@ -1468,6 +1473,12 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		// the harness session list — reaps ghost rows the agent
 		// reports absent for N consecutive checks.
 		proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
+		// #1880 direction 3: serve the HARNESS count for the drift
+		// class — rows whose message stream never traversed the API
+		// proxy, invisible to both the incremental path and the
+		// present-only rebuild (the #1452 list gap). Bounded walks,
+		// serve-through + persist (self-healing).
+		proxyHandler.ServeHarnessMessageCounts(c.Request.Context(), workspaceID, sessions)
 		// Ground-truth session status (#792 Pattern 1): query
 		// /v1/statusz for authoritative busy/idle instead of the
 		// in-memory activeSess map, which goes stale when SSE
@@ -2417,5 +2428,8 @@ func registerWorkspaceMaintenanceRoutes(idGroup *gin.RouterGroup, cfg RouterConf
 	}
 	if cfg.DiskRecoverHandler != nil {
 		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
+	}
+	if cfg.FsAuditHandler != nil {
+		idGroup.POST("/fs-audit", cfg.FsAuditHandler.Audit)
 	}
 }

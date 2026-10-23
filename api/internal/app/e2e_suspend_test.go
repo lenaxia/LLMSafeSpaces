@@ -239,6 +239,9 @@ func (d *recordingDB) DeleteSessionIndex(context.Context, string) error { return
 func (d *recordingDB) DeleteSessionTree(context.Context, string, string) error {
 	return nil
 }
+func (d *recordingDB) MarkSessionIndexDeleted(context.Context, string, string) error {
+	return nil
+}
 func (d *recordingDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }

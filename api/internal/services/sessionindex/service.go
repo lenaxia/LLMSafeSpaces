@@ -25,7 +25,6 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"outcome"})
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
-// reconcileOutcomes counts the convergence pass's dispositions (#1340):
 // reaped (guard-admitted deletion), reap_vetoed_live (#1850 via #1865:
 // the by-ID probe found the session alive — the list gap alone never
 // reaps), reap_deferred_probe (#1850 via #1865: the probe was
@@ -33,10 +32,24 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // (history-bearing absent — the triage guard held it), kept_spawn_window
 // (#1850 via #1881: fresh count-zero rows sheltered by the reap grace —
 // not history-bearing, a distinct population from kept_for_operator,
-// split so the metric never conflates them), delete_failed.
+// split so the metric never conflates them), delete_failed,
+// reaped_carrier (#1882: the reaped row was session_origins-marked — a
+// platform routine carrier admitted past the history exception and the
+// spawn-window grace; a carrier's absence is platform policy, not
+// harness-list lag); the count rebuild's count_pass_ran (the #1880 r2
+// denominator — a pass whose count leg executed with a live
+// present-set; sidebar traffic without it means the pass is never
+// scheduled, the issue's third skip class), count_rebuilt /
+// count_unchanged / count_walk_error plus the #1880 skip outcomes
+// (count_skip_not_present — a count-zero row the harness LIST omits,
+// the #1452 gap the rebuild cannot reach; count_skip_pass_no_list —
+// the whole pass skipped on a list failure); and the #1880 listing
+// serve-through's listing_count_served / listing_count_unchanged /
+// listing_count_walk_error / listing_count_persist_error /
+// listing_count_cooldown.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_pass_ran, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
@@ -220,7 +233,10 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 	}
 }
 
-// ListByWorkspace returns session metadata ordered by last_message_at DESC.
+// ListByWorkspace returns the workspace's complete session listing
+// (#1886): message-recency head, created_at DESC through the #1880
+// NULL-key pool, session_id as the total-order tiebreaker — no row
+// cap, so live unarchived sessions survive past any row count.
 func (s *Service) ListByWorkspace(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	return s.db.ListSessionIndex(ctx, workspaceID)
 }
@@ -233,6 +249,14 @@ func (s *Service) DeleteByWorkspace(ctx context.Context, workspaceID string) err
 // DeleteSession removes a single session and its descendants from the session index.
 func (s *Service) DeleteSession(ctx context.Context, workspaceID, sessionID string) error {
 	return s.db.DeleteSessionTree(ctx, workspaceID, sessionID)
+}
+
+// MarkSessionDeleted stamps the #1882 durable death mark (session row
+// + descendants) BEFORE the row delete — the read-path filter's
+// signal. A row whose delete fails stays hidden instead of rendering
+// as a ghost.
+func (s *Service) MarkSessionDeleted(ctx context.Context, workspaceID, sessionID string) error {
+	return s.db.MarkSessionIndexDeleted(ctx, workspaceID, sessionID)
 }
 
 // UpsertTitle updates just the title for a session.
@@ -357,6 +381,31 @@ type ReapGuard func(types.SessionListItem) bool
 // keep the #1340 ghost-hygiene verdict (they converge one grace
 // period later; stillborn rows are the accepted, documented cost).
 const reapGraceWindow = 15 * time.Minute
+
+// CountServeEligible is the #1880 listing serve-through gate: whether
+// this row's message_count is KNOWN-untrustworthy on the platform side
+// and therefore worth one bounded harness count walk on the listing
+// read path. The drift signature is "never counted OR never
+// message-timestamped" — the class whose message stream never
+// traversed the API proxy (board/dispatch-spawned sessions: pod-local
+// prompt delivery, no SSE subscriber), which the incremental
+// RecordMessage path cannot see and the reconcile rebuild cannot
+// reach (its candidates are present[]-derived; these rows are exactly
+// the #1452 list-invisible live sessions). The age gate shares the
+// reap grace window: a fresh spawn's 0 is legitimate inside the window
+// (#1881's belt owns it), and archived rows never spend walk budget.
+// The signature deliberately stays hot AFTER a serve-through persist
+// (the rebuild seam writes message_count but not last_message_at), so
+// a growing never-traversed session keeps converging on the listing.
+func CountServeEligible(row types.SessionListItem) bool {
+	if row.Archived {
+		return false
+	}
+	if row.CreatedAt != nil && time.Since(*row.CreatedAt) < reapGraceWindow {
+		return false
+	}
+	return row.MessageCount == 0 || row.LastMessageAt == nil
+}
 
 // DefaultReapGuard is the message_count == 0 safety guard, extended
 // by the #1850 spawn-window grace: a count-zero row inside

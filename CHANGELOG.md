@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Fixed — session_index.message_count drift to 0 on live sessions: listing serve-through, loud skips, and rebuild rotation (#1880)
+
+- **The sidebar's session list now serves the HARNESS-walked message
+  count for the drift class** (board/dispatch-spawned sessions whose
+  message stream never traverses the API proxy — `message_count = 0`
+  with a full harness history, the 10-row live evidence). The listing
+  route walks the count BY ID (immune to the #1452 list-visibility
+  gap), serves it on the wire in place, and persists it through the
+  rebuild seam — converging across listing polls (budget 3/request,
+  never-walked-first rotation, 5-minute unchanged-row cooldown); a
+  failed walk serves the index value and re-arms (no tracker entry),
+  a failed persist still serves the truth and retries. Reaching every
+  row is unconditional: #1886's uncapped `ListSessionIndex` removed
+  the 100-row page cut that previously hid NULL-`last_message_at`
+  rows past the budget.
+- **Every rebuild skip is now attributable.** `count_pass_ran` (the
+  denominator — its absence under sidebar traffic means the pass is
+  never scheduled, the issue's third skip class),
+  `count_skip_not_present` (list-invisible count-zero rows, the #1452
+  gap), `count_skip_pass_no_list` (harness list failure), walk
+  failures Debug→Warn with row identity, and the rebuild rotation:
+  the pass window advances `(passIndex × K) mod N` per 30s cadence
+  bucket, repairing the stationarity defect where the same first-K
+  NULL rows were re-walked every pass while the starved tail never
+  converged.
+
+### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
+
+- **`POST /api/v1/workspaces/:id/fs-audit` — fsck-style detector for
+  the zero-fill corruption class** (files silently replaced with NUL
+  bytes at preserved length; the second sandbox-filesystem corruption
+  class after #1793, which reached the REMOTE via a pushed commit).
+  The engine (`pkg/fsaudit`, executed by agentd on the PVC view —
+  same topology as #1601 disk-recover, including the sidecar
+  control-socket leg) flags a file only on the exact signature:
+  `size > 0` AND 100% of content bytes NUL AND non-sparse
+  (`st_blocks*512 >= size` — ftruncate/seek-created all-NUL files
+  report `sparse`, never flagged: the false-positive trap a naive
+  zeros-grep walks into). Response-only (the #1601 ruling, inherited:
+  the scan writes nothing); bounded (4KiB-chunk reads with early exit
+  — clean files cost one chunk; per-file 64MiB / total 256MiB read
+  budgets, defaults overridable per request); honest about
+  incompleteness (an all-NUL file larger than the per-file cap reports
+  `suspect` — 100%-NUL unconfirmed — and an exhausted total budget
+  sets `truncated` rather than masquerading as a clean tree). Request
+  roots are grounded INSIDE the workspace (deny-by-default: no root
+  can point the scan elsewhere). Zero-filled bytes are unrecoverable —
+  the report's job is visibility (rebuild the dead files from source
+  or a fresh clone), not repair.
+- **Pre-push guard: all-NUL blobs no longer reach the remote.** The
+  runtime base image installs an executable `pre-push` hook via git's
+  template dir (`/usr/share/git-core/templates/hooks/pre-push`), so
+  every NEW `git init`/`git clone` in a workspace gets it active
+  (existing clones untouched — new-clone-forward rollout). The hook
+  scans the pushed range's blobs (`git rev-list --objects` +
+  `cat-file`) with the same all-NUL signature — git cannot notice the
+  class itself (an all-NUL blob is valid zlib data). Doctrine mirrors
+  the #1793 belt's never-worse rule, both directions pinned: fail
+  CLOSED on positive detection (the dead-file list is printed with
+  recovery guidance; the remote is the last unclean copy), fail OPEN
+  on any scanner/tool error, and `LLMSAFESPACE_PREPUSH_AUDIT=0` is
+  the documented opt-out for legitimate all-NUL files.
+- **Shutdown flush belt (the H1 window).** The suspend path (pod
+  delete → bounded graceful termination → unmount → CSI detach) never
+  proactively flushed dirty pages — the platform-controllable slice
+  of the ext4 delayed-allocation hypothesis (an unclean stop can
+  persist i_size while data blocks never land: zero-fill at preserved
+  length on the next mount). Both agentd shutdown paths that hold the
+  RW PVC view (single-container `runShutdown` and the sidecar-mode
+  supervisor) now trigger a filesystem-wide writeback flush as their
+  last act, bounded at 10s — the kernel completes a triggered
+  writeback asynchronously even after the triggering process exits,
+  so the bound can never hang shutdown.
+
 ### Fixed — board heartbeat: server clock bounds client-observed stamps (issue #1847 PR1, the C1 incident class)
 - **A future-stamped `observedProgressAt` rejects outright**
   (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker
@@ -28,6 +102,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock skew) reads as stale, so an honest present-t observation
   extends once and overwrites it; a re-sent identical stamp does not
   extend again — the C1 lockout cannot recur against repaired rows.
+
+### Fixed — Automation: platform-deleted sessions stop haunting the sidebar (#1882)
+
+- **Every session delete now propagates.** Routine-trigger fires used
+  to mint an ephemeral "carrier" session per fire (deleted seconds
+  later) whose deletion announced itself nowhere — no
+  `session.status: deleted` event, no tombstone, no `session_index`
+  cleanup — while the live event stream indexed the carrier during
+  its brief life. With watch triggers live that was ~75 ghost sidebar
+  rows per hour that vanished only when clicked (and history-bearing
+  rows survived even clicks). All platform-initiated deletes (agentd's
+  ephemeral teardown, the engine's authorized deletes: PreserveOnFailure
+  success cleanup, superseded retry attempts, DAG node-retry cleanup)
+  now run the same effect sequence as the user delete route, with
+  agentd reporting the deleted session's id on the node envelope
+  (`deletedSessionId`) so the engine can act on it; the carrier is
+  also origin-marked first so a partially-failed cleanup still
+  self-heals via the reconcile. Belt-and-braces on the read path: a
+  new durable `session_index.deleted_at` death mark (migration 000045)
+  keeps a lingering row out of the session list even when the row
+  delete itself fails. The #1340 reconcile now reaps
+  `session_origins`-marked carrier rows even with history (the
+  harness-store-reset exception does not apply to platform carriers —
+  the #1850 by-ID probe confirmation still gates every reap), so
+  accumulated marked residue drains without manual surgery.
 
 ### Fixed — chat UX
 
@@ -143,6 +242,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path. Known effect: the grace window shelters genuinely stillborn
   rows for the window's duration. The id_deprecated marker remains
   only for legacy rows and the degraded emission window.
+
+### Fixed — Trigger inline scripts + workflow script nodes execute in the workspace container (#1878)
+
+- **Scripts run in the environment the sessions run in (owner ruling,
+  2026-10-23).** Both trigger inline scripts (the `script` gate and the
+  legacy `script_path` pre-script) and workflow script nodes executed
+  inside agentd's own process — in sidecar mode
+  (`controller.agentdSidecar.enabled`) the FROM-scratch uid-2000
+  container with no `/tmp`, no interpreters, no `gh`, and a read-only
+  `/workspace`: workflow nodes failed `script_env_unavailable` and the
+  deployed trigger path failed SILENTLY (probe fire `delivered` in
+  0.77s, sentinel never created). Script execution now runs in the
+  WORKSPACE container in both topologies: single-container executes
+  in-process; sidecar mode forwards the handler over the design-0051
+  control socket (`script_exec` method — the `upload_apply`/
+  `disk_recover` long-held pattern) to the workspace-container
+  supervisor, which runs it via `scriptwrap` with the opencode spawn
+  environment (`opencodeBaseEnv()` — secrets-env sourced, redact PATH
+  prepend — plus the live spawn delta), so interpreters, mise shims,
+  `gh`, the credential belt, and `GH_TOKEN` resolve exactly as they do
+  for session tool children. `scriptwrap` gains `ExecuteWithEnv` (env-
+  explicit exec); the local EnvCheck text now names the single-container
+  cause.
+- **Script-only fires never mint a carrier session.** The #1812
+  sessionless early-return tested `ScriptLanguage` only, so a
+  `script_path`-only trigger with an empty prompt fell through to the
+  agent leg with an empty prompt — one ephemeral carrier session per
+  fire (the ~75 ghost-sessions/hour churn #1882 measured). The
+  condition now covers every script-bearing, prompt-less shape.
+- **Failures are loud in every topology.** The `script_exec` closed
+  error enum (`bad_request`, `script_env_unavailable`, `script_failed`,
+  `script_timeout`) maps onto the workflow error envelope with
+  fidelity (`bad_request` folds into `script_failed` — the local path's
+  deterministic-validation outcome, behavior parity); a dead
+  supervisor surfaces `script_env_unavailable` naming the control
+  socket; the #1812 gate carries script errors into the fire audit's
+  `actionResult.gate.error` — never a silent `delivered`. The legacy
+  pre-script leg was ErrorCode-blind (HTTP-200 error envelopes read as
+  success); it now fails the fire LOUD (error log + accounting), and
+  records the cause in `actionResult.script.error` without clobbering
+  an open gate's audited outcome (review F1/F-A/F-C — without this, a
+  failed `script_path`-only trigger laundered to `delivered` + a
+  failure-counter reset).
+- The #1455/#1812 nightly e2e contracts flip from "sidecar fails loud
+  with `script_env_unavailable`" to "the script executes in BOTH
+  modes" (marker + in-workspace side effect asserted). The execution
+  environment contract is documented in `docs/api/mcp.md`.
 
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
@@ -306,6 +452,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event (the tsk-zbdeufiw class: subject merged, review stranded —
   the pending_input column is the owner-visible surface instead of an
   invisible in_review rot).
+
+### Added — Task Board: agent overview reads + setCriteriaMet safety (issue #1837 P2)
+
+- **`board_list` + `board_health` on the agent manager surface**: one
+  project's every task in a single call (stage, claim/assignee, lease
+  expiry, paused, blocked, attempts, cooldown columns) with the derived
+  READY set (backlog + unblocked + unpaused + not cooling), and the
+  workspace's board health snapshot (active leases with expiry,
+  cooldowns, pending origins, reclaims, per-project slots). New
+  manager seam routes `GET /internal/v1/automation/board/projects/:id/tasks`
+  and `GET /internal/v1/automation/board/health` — manager-gated
+  (session identity + worker refusal), workspace-scoped (a foreign
+  workspace's project is a plain 404).
+- **`setCriteriaMet` is `{index, met}`**: check off AND uncheck (the
+  legacy bare-integer form still decodes as `{index, met:true}` wire
+  compat). Combined use with an `acceptanceCriteria` replace is
+  refused ("send one or the other"); out-of-bounds indices are loud
+  errors (both were silent before); a CREATE payload carrying
+  setCriteriaMet is refused loudly on every surface (never silently
+  dropped); create/update responses echo the mutated criterion
+  (`mutated_criterion`: index, met, text). All three surfaces (REST,
+  external MCP, agent seam) share the service semantics.
+- **board_list never carries live claim tokens** (ruling, #1864
+  review): the bulk projection renders assignee + lease columns only —
+  the claim token stays on the per-task read where the claimant's own
+  flow needs it.
+
+### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
+
+- **Server-side text rejection heuristics on every board write surface**
+  (REST, external MCP, agent seam — enforced at the Service layer):
+  string-field byte caps (title 512 / description 128 KiB / outcome
+  64 KiB / name 256 / criterion 8 KiB / tag 64 ×16), degenerate-
+  repetition rejection (a fragment tiling the value, or one line
+  repeated, ≥50 times), and raw JSON structural splice rejection
+  (`","key":"` adjacency inside string values — the #1832 dogfood's
+  silent-corruption artifact; junk-wrapped repeats, line-start
+  artifacts, artifacts after unterminated fences, and the tag channel
+  included). New guard code `text_rejected` (400 class;
+  `content_echo_diff` on task/epic/project create/update responses
+  flags stored != submitted, never silent). TERMINATED fenced code
+  blocks and balanced inline JSON containers are exempt — legitimate
+  markdown/JSON/code is pinned un-rejected by tests; the repetition
+  heuristic covers fragments up to 512 bytes (documented bound).
+- **File-backed long fields on the agent manager surface**:
+  `description_file` (board_create_task / board_update_task) and
+  `outcome_file` (board_create_epic / board_update_epic) read a
+  workspace file agent-side (loadImages discipline: regular files
+  only, O_NONBLOCK open, stat+read caps, UTF-8 gate) and carry its
+  content to the platform verbatim — long charters never ride the
+  emitted-inline-argument path where corruption lives. Mutually
+  exclusive with the inline field; a `*_file` key on the wrong tool
+  is refused loudly.
 
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit

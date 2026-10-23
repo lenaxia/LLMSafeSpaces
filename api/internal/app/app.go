@@ -716,6 +716,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// on the user route's teardown — no more ghost rows.
 			SessionDelete: proxyHandler,
 		}
+		// #1882 carrier reap bypass: the #1340 reconcile reaps
+		// session_origins-marked routine carriers absent at the harness
+		// even when they carry history (the DefaultReapGuard history
+		// exception does not apply to platform carriers).
+		proxyHandler.SetSessionOriginLister(newSessionOriginLister(wfStore))
 		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-notify silently no-ops; see
@@ -1230,6 +1235,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var agentReloadHandler *handlers.AgentReloadHandler
 	var bulkReloadHandler *handlers.BulkReloadHandler
 	var diskRecoverHandler *handlers.DiskRecoverHandler
+	var fsAuditHandler *handlers.FsAuditHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		agentReloadHandler = handlers.NewAgentReloadHandler(
 			wsSvc,
@@ -1266,6 +1272,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			nil, // handler installs its own diskRecoverClientTimeout client
 			log,
 		)
+		// #1808: zero-fill corruption audit facade (same dispatch
+		// topology as disk-recover; response-only).
+		fsAuditHandler = handlers.NewFsAuditHandler(
+			wsSvc,
+			newSecretsPodIPResolver(
+				&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+				dbSvc,
+				log,
+			),
+			nil, // handler installs its own fsAuditClientTimeout client
+			log,
+		)
 	}
 
 	// Epic 27b: Drain mode SSETracker wiring is deferred to Run() — the tracker
@@ -1277,6 +1295,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		bulkReloadHandler.SetPasswordGetter(pwGetter)
 		if diskRecoverHandler != nil {
 			diskRecoverHandler.SetPasswordGetter(pwGetter)
+		}
+		// #1808 r1 F1: the fs-audit facade MUST be wired to the same
+		// password provider — an unwired getter is a 500 on every
+		// production call (pinned in fsaudit_wiring_pin_test.go).
+		if fsAuditHandler != nil {
+			fsAuditHandler.SetPasswordGetter(pwGetter)
 		}
 		// US-65.6: wire the status checker factory so agent_reload.go
 		// doesn't import pkg/agent/opencode.
@@ -1685,6 +1709,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PreviewOriginHandler:            previewOriginHandler,
 		AgentReloadHandler:              agentReloadHandler,
 		DiskRecoverHandler:              diskRecoverHandler,
+		FsAuditHandler:                  fsAuditHandler,
 		BulkReloadHandler:               bulkReloadHandler,
 		UsageHandler:                    usageHandler,
 		WebhookHandler:                  webhookHandler,
@@ -2294,6 +2319,28 @@ type appWorkspaceCreator struct {
 // dispatch (#762) — is testable without booting PostgreSQL/Redis.
 func newWorkflowAgentdExecutor(pw apiinterfaces.WorkspacePasswordProvider) *apiwf.HTTPAgentExecutor {
 	return &apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: pw}
+}
+
+// wfSessionOriginLister adapts the workflows store's ListSessionOrigins
+// to the proxy handler's #1882 carrier-mark lookup (sessionID → origin).
+type wfSessionOriginLister struct {
+	store *workflows.Store
+}
+
+func newSessionOriginLister(store *workflows.Store) handlers.SessionOriginLister {
+	return &wfSessionOriginLister{store: store}
+}
+
+func (l *wfSessionOriginLister) ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error) {
+	rows, err := l.store.ListSessionOrigins(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	marks := make(map[string]string, len(rows))
+	for _, row := range rows {
+		marks[row.SessionID] = row.Origin
+	}
+	return marks, nil
 }
 
 func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, ownerType, ownerID string) (string, error) {

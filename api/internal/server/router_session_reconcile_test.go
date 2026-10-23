@@ -102,7 +102,8 @@ func (r *recordingIndex) ListByWorkspace(_ context.Context, w string) ([]types.S
 	defer r.mu.Unlock()
 	return append([]types.SessionListItem{}, r.rows[w]...), nil
 }
-func (r *recordingIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
+func (r *recordingIndex) DeleteByWorkspace(_ context.Context, _ string) error     { return nil }
+func (r *recordingIndex) MarkSessionDeleted(_ context.Context, _, _ string) error { return nil }
 func (r *recordingIndex) DeleteSession(_ context.Context, w, s string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

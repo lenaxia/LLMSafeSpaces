@@ -69,6 +69,24 @@ type fakeBoardManager struct {
 	// #1832 item 6 seam arms: the config write captures.
 	lastGlobalConfigSet  *board.BoardConfigOverride
 	lastProjectConfigSet *board.BoardConfigOverride
+
+	// #1837 P1b echo-diff arm: when set, task create/update returns
+	// THIS row verbatim (a stored row that differs from the submitted
+	// text — the drift the echo must flag).
+	driftTask *board.Task
+
+	// driftProject (#1837 P1b project-echo arm): when set, project
+	// update returns THIS row (stored != submitted name).
+	driftProject *board.Project
+
+	// #1837 P2 arms: workspace-scoped list/health captures + the last
+	// update-task input (setCriteriaMet echo tier).
+	lastListWorkspace   string
+	lastListRef         string
+	lastHealthWorkspace string
+	wsTasks             []board.Task
+	wsHealth            *board.Health
+	lastTaskInput       *board.TaskInput
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -76,6 +94,39 @@ func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) 
 		return false, f.beltErr
 	}
 	return sessionID != "" && sessionID == f.workerSession, nil
+}
+
+// #1837 P2a: the agent surface's workspace-scoped projections.
+func (f *fakeBoardManager) ListTasksInWorkspace(_ context.Context, workspaceID, projectID, shortIDOrID, stage, failed string) ([]board.Task, *board.Project, error) {
+	f.lastListWorkspace = workspaceID
+	f.lastListRef = pickRef(projectID, shortIDOrID)
+	if err := f.errFor["list_tasks_ws"]; err != nil {
+		return nil, nil, err
+	}
+	p := &board.Project{ID: "p1", ShortID: "prj-aaaa1111", Name: "proj", TargetWorkspaceID: workspaceID}
+	return f.wsTasks, p, nil
+}
+
+func (f *fakeBoardManager) BoardHealthInWorkspace(_ context.Context, workspaceID string) (*board.Health, error) {
+	f.lastHealthWorkspace = workspaceID
+	if err := f.errFor["health_ws"]; err != nil {
+		return nil, err
+	}
+	if f.wsHealth != nil {
+		return f.wsHealth, nil
+	}
+	return &board.Health{
+		ActiveLeases: []board.HealthLease{}, TaskCooldowns: []board.HealthTaskCooldown{},
+		ProjectCooldowns: []board.HealthProjectCooldown{}, PendingInputByOrigin: map[string]int{},
+		RecentReclaims: []board.HealthReclaim{}, ProjectSlots: []board.HealthProjectSlots{},
+	}, nil
+}
+
+func pickRef(id, shortIDOrID string) string {
+	if id != "" {
+		return id
+	}
+	return shortIDOrID
 }
 
 func newFakeBoardManager() *fakeBoardManager {
@@ -125,6 +176,9 @@ func (f *fakeBoardManager) UpdateProject(_ context.Context, actor board.Actor, _
 	if err := f.errFor["update_project"]; err != nil {
 		return nil, err
 	}
+	if f.driftProject != nil {
+		return f.driftProject, nil
+	}
 	return &board.Project{ID: "p1", ShortID: "prj-aaaa1111", UserID: actor.UserID, Name: in.Name, WorkerSlots: 2, Status: board.ProjectActive}, nil
 }
 
@@ -164,7 +218,7 @@ func (f *fakeBoardManager) CreateEpic(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["create_epic"]; err != nil {
 		return nil, err
 	}
-	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Status: board.EpicDraft}, nil
+	return &board.Epic{ID: "e1", ShortID: "epc-bbbb2222", ProjectID: "p1", Title: in.Title, Outcome: in.Outcome, Status: board.EpicDraft}, nil
 }
 
 func (f *fakeBoardManager) UpdateEpic(_ context.Context, actor board.Actor, _, idOrShort string, in board.EpicInput, requestID string) (*board.Epic, error) {
@@ -368,17 +422,22 @@ func (f *fakeBoardManager) CreateTask(_ context.Context, actor board.Actor, _, i
 	if err := f.errFor["create_task"]; err != nil {
 		return nil, err
 	}
-	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Tags: []string{}}, nil
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Description: in.Description, Stage: board.StageBacklog, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) UpdateTask(_ context.Context, actor board.Actor, _, idOrShort string, in board.TaskInput, requestID string) (*board.Task, error) {
 	f.call("update_task")
 	f.lastActor, f.lastRequestID = actor, requestID
+	captured := in
+	f.lastTaskInput = &captured
 	_ = idOrShort
 	if err := f.errFor["update_task"]; err != nil {
 		return nil, err
 	}
-	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Stage: board.StageBacklog, Tags: []string{}}, nil
+	if f.driftTask != nil {
+		return f.driftTask, nil
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Title: in.Title, Description: in.Description, Stage: board.StageBacklog, Tags: []string{}}, nil
 }
 
 func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, idOrShort, toStage, evidenceURL, requestID string) (*board.Task, error) {
