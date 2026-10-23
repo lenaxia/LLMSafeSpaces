@@ -207,12 +207,16 @@ jsonpath "$.acceptance_criteria[0].met" isBoolean
 [Captures]
 task_a_sid: jsonpath "$.short_id"
 
-# Create task B
+# Create task B (#1849: a create carries description + criteria)
 POST {{base_url}}/me/epics/{{epic_sid}}/tasks
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
-  "title": "Task B"
+  "title": "Task B",
+  "description": "seeded charter",
+  "acceptanceCriteria": [
+    {"text": "dependency edge lands", "met": false}
+  ]
 }
 HTTP 201
 [Captures]
