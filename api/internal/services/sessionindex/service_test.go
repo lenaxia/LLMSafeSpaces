@@ -125,7 +125,9 @@ func TestDrain_LiveLoopSkipsTombstonedSession(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("applied")) > beforeApplied
 	}, 3*time.Second, 25*time.Millisecond, "the live session's event must still apply")
-	_ = svc.Stop()
+	// t.Cleanup Stops the drainer; both events are already processed
+	// (the two Eventually gates above), so the flush leg is empty and
+	// AssertNotCalled observes the whole drain.
 	db.AssertNotCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_dead", mock.AnythingOfType("time.Time"))
 }
 

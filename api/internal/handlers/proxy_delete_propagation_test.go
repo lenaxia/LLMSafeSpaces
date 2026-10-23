@@ -42,6 +42,23 @@ func (s *stubOriginLister) ListSessionOrigins(_ context.Context, _ string) (map[
 	return s.marks, nil
 }
 
+// TestDeletedSessionChecker_ReflectsLiveStateStore — #1901 item (c)
+// wiring contract: the drainer's tombstone consult is exposed as a
+// closure that must resolve the LIVE state store per call (a checker
+// captured against a pre-swap store would silently miss every
+// tombstone after a SetStateStore swap — the redis-migration class).
+func TestDeletedSessionChecker_ReflectsLiveStateStore(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	checker := h.DeletedSessionChecker()
+
+	assert.False(t, checker(context.Background(), "ws-1", "ses_x"),
+		"no tombstone → the consult must answer false (event applies)")
+
+	h.state().MarkSessionDeleted(context.Background(), "ws-1", "ses_x")
+	assert.True(t, checker(context.Background(), "ws-1", "ses_x"),
+		"the closure must see the live store's tombstone (event dropped)")
+}
+
 // TestApplySessionDeleteEffects_EmitsAllEffects pins the engine-facing
 // effect tail: tombstone (late-event suppression), the durable index
 // death mark (read-path filter), the row delete, and the SSE deleted

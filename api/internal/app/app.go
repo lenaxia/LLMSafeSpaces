@@ -722,6 +722,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// even when they carry history (the DefaultReapGuard history
 		// exception does not apply to platform carriers).
 		proxyHandler.SetSessionOriginLister(newSessionOriginLister(wfStore))
+		// #1901 item (c) drain-time tombstone visibility: a queued
+		// RecordMessage event whose session was deleted between enqueue
+		// and drain must be dropped, not applied — the upsert's INSERT
+		// leg would re-mint a fresh visible ghost row (#1882 class).
+		// Wired through the handler so the consult resolves the same
+		// state store the delete routes tombstone through.
+		sessionIndexSvc.SetDeletedSessionChecker(sessionindex.DeletedSessionChecker(proxyHandler.DeletedSessionChecker()))
 		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-notify silently no-ops; see

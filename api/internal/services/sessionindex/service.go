@@ -31,7 +31,7 @@ type DeletedSessionChecker func(ctx context.Context, workspaceID, sessionID stri
 // #1340): queue drops were previously Warn-log-only — not queryable.
 var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_events_total",
-	Help: "Session-index write outcomes by kind (queued, applied, db_error, dropped_queue_full).",
+	Help: "Session-index write outcomes by kind (queued, applied, db_error, dropped_queue_full, drain_skip_tombstoned).",
 }, []string{"outcome"})
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
@@ -453,6 +453,10 @@ func (s *Service) drain() {
 		select {
 		case ev := <-s.queue:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if s.tombstoned(ctx, ev) {
+				cancel()
+				continue
+			}
 			if err := s.db.UpsertSessionMessage(ctx, ev.workspaceID, ev.sessionID, ev.at); err != nil {
 				sessionIndexEvents.WithLabelValues("db_error").Inc()
 				if s.logger != nil {
@@ -467,6 +471,10 @@ func (s *Service) drain() {
 			for len(s.queue) > 0 {
 				ev := <-s.queue
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if s.tombstoned(ctx, ev) {
+					cancel()
+					continue
+				}
 				if err := s.db.UpsertSessionMessage(ctx, ev.workspaceID, ev.sessionID, ev.at); err != nil {
 					if s.logger != nil {
 						s.logger.Warn("Failed to flush session message on shutdown", "error", err, "workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
@@ -477,4 +485,22 @@ func (s *Service) drain() {
 			return
 		}
 	}
+}
+
+// tombstoned is the #1901 item-c drain-time consult: a queued event
+// whose session the platform deleted between enqueue and drain must be
+// DROPPED, not applied — UpsertSessionMessage is row-creating with a
+// #1850 phrase-bearing INSERT leg, so applying it re-mints a fresh
+// VISIBLE row under a new phrase (deleted_at NULL: the durable death
+// mark died with the hard-deleted row; message_count ≥ 1 →
+// DefaultReapGuard refuses → the kept_for_operator ghost of #1882, at
+// drain-race rate). The skip is a queryable outcome, never silent. A
+// nil checker (unwired construction) keeps the pre-#1901
+// apply-unconditionally semantics.
+func (s *Service) tombstoned(ctx context.Context, ev recordEvent) bool {
+	if s.deletedChecker == nil || !s.deletedChecker(ctx, ev.workspaceID, ev.sessionID) {
+		return false
+	}
+	sessionIndexEvents.WithLabelValues("drain_skip_tombstoned").Inc()
+	return true
 }
