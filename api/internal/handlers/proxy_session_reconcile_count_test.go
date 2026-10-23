@@ -304,3 +304,73 @@ func TestSessionIndexReconcile_NoHarnessListCountsSkipLoud(t *testing.T) {
 	assert.Equal(t, before+1, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_skip_pass_no_list")),
 		"the pass-level skip is visible in metrics")
 }
+
+// TestSessionIndexReconcile_CountPassRanDenominator — review r2, the
+// issue's third skip class ("the pass not being scheduled for this
+// workspace at all"): a listing-driven workspace whose count leg
+// actually EXECUTES must count count_pass_ran. That counter is the
+// denominator — sidebar traffic with walk/skip outcomes but zero
+// count_pass_ran means the pass is never scheduled; every outcome
+// without it was invisible (the issue's "rows sat at 0 for 1–5h while
+// the workspace was actively open").
+func TestSessionIndexReconcile_CountPassRanDenominator(t *testing.T) {
+	now := time.Now().UTC()
+	h, _, _ := countTestHandler(t,
+		[]string{"ses_alive"},
+		map[string]int{"ses_alive": 2}, nil)
+	seedRowCountedAt(t, h.sessionIndex.(*mockSessionIndex), "ws-1", "ses_alive", 2, now)
+
+	before := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_pass_ran"))
+	runReconcile(t, h, "ws-1")
+
+	assert.Equal(t, before+1, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_pass_ran")),
+		"a pass that reaches the count leg with a live present-set counts the pass-ran denominator")
+}
+
+// TestSessionIndexReconcile_RebuildRotatesThroughNullGroup — review
+// r2, thread Finding 2 (rebuild stationarity): the candidate sort keys
+// on last_message_at, but UpsertSessionMessageCount never writes that
+// column — the whole count-0/NULL drift group sorts as one stable
+// block, so the budget re-walked the SAME first-K rows every pass
+// forever and rows K+1..N were never walked at all (7 of the issue's
+// 10 evidence rows). The rotation fix: when candidates exceed the
+// budget, the walk window starts at (passIndex × K) mod N — the pass
+// index is a wall-clock bucket of the reconcile cadence (stateless
+// and cross-replica-consistent under the cadence claim; injected here
+// via countPassIndexOverride). Every candidate walks within
+// ceil(N/K) passes; ≤budget workspaces keep the deterministic
+// oldest-first walk.
+func TestSessionIndexReconcile_RebuildRotatesThroughNullGroup(t *testing.T) {
+	ids := []string{"ses_drift1", "ses_drift2", "ses_drift3",
+		"ses_drift4", "ses_drift5", "ses_drift6"}
+	counts := map[string]int{}
+	for _, id := range ids {
+		counts[id] = 9
+	}
+	h, idx, counted := countTestHandler(t, ids, counts, nil)
+	idx.mu.Lock()
+	for _, id := range ids {
+		idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+			ID: id, InternalID: id, MessageCount: 0, LastMessageAt: nil,
+		})
+	}
+	idx.mu.Unlock()
+
+	window0 := int64(0)
+	h.countPassIndexOverride = &window0
+	runReconcile(t, h, "ws-1")
+	assert.Equal(t, ids[0:3], *counted,
+		"window zero walks the first three rows of the stable NULL group")
+
+	window1 := int64(1)
+	h.countPassIndexOverride = &window1
+	runReconcile(t, h, "ws-1")
+	assert.Equal(t, ids[3:6], (*counted)[3:],
+		"window one MUST advance past the budget — the starved tail walks (the stationarity defect re-walked ids[0:3] here forever)")
+
+	require.Len(t, idx.rebuiltCounts, 6,
+		"two rotated passes converge the whole six-row drift group")
+	for _, id := range ids {
+		assert.Equal(t, 9, idx.rebuiltCounts["ws-1/"+id])
+	}
+}

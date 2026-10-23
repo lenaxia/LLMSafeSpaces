@@ -3,14 +3,16 @@
 
 package server
 
-// #1880 direction 3 — the WIRING pin: the sidebar's session list route
+// #1880 direction 3 — the WIRING pins: the sidebar's session list route
 // serves the HARNESS count for the drift class. A GET through the
 // production router must walk the harness count for a list-invisible
 // count-zero row (the #1452 class the reconcile rebuild cannot reach)
 // and carry it on the WIRE — deleting the router's ServeHarnessMessageCounts
-// piggyback reddens this test even with every handler unit green (the
+// piggyback reddens these tests even with every handler unit green (the
 // TestRouterSessionList_TriggersReconcilePass precedent for the
-// reconcile piggyback).
+// reconcile piggyback). The r2 unhappy-path twin pins the failure
+// contract at the wiring tier: a walk error must answer the INDEX value
+// (never worse than the pre-fix wire), never a 5xx.
 
 import (
 	"context"
@@ -37,19 +39,24 @@ import (
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
 
-// listingCountSpyAdapter walks ONE drift session's count and records
-// the call.
+// listingCountSpyAdapter walks drift sessions' counts and records the
+// calls. walkErr (r2) simulates the harness error leg at the wiring
+// tier.
 type listingCountSpyAdapter struct {
 	nullTestAdapter
 	mu       sync.Mutex
 	walked   []string
 	countFor map[string]int
+	walkErr  error
 }
 
 func (a *listingCountSpyAdapter) CountMessages(_ context.Context, _, _, sessionID string) (int, error) {
 	a.mu.Lock()
 	a.walked = append(a.walked, sessionID)
 	a.mu.Unlock()
+	if a.walkErr != nil {
+		return 0, a.walkErr
+	}
 	return a.countFor[sessionID], nil
 }
 
@@ -67,7 +74,11 @@ func (a *listingCountSpyAdapter) ListSessions(_ context.Context, _, _ string) ([
 	return []session.Session{{ID: "ses_other"}}, nil
 }
 
-func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
+// listingCountRouter builds the production router around the spy
+// adapter and the given session list (the shared #1880 wiring-tier
+// fixture).
+func listingCountRouter(t *testing.T, spy *listingCountSpyAdapter, list []types.SessionListItem) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	log, err := apilogger.New(false, "error", "json")
 	require.NoError(t, err)
@@ -95,26 +106,39 @@ func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
 	k8sMock.On("LlmsafespacesV1").Return(nil, nil).Maybe()
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset()).Maybe()
 
-	spy := &listingCountSpyAdapter{countFor: map[string]int{"ses_drift": 389}}
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, spy)
 	require.NoError(t, err)
 	proxyHandler.SetParentBackfilledForTest("ws-1")
 	idx := newRecordingIndex()
 	idx.seed("ws-1", "ses_other", 2)
 	proxyHandler.SetSessionIndex(idx)
-	ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(
-		[]types.SessionListItem{
-			{ID: "ses_drift", InternalID: "ses_drift", Title: "Drift", MessageCount: 0},
-			{ID: "ses_other", InternalID: "ses_other", Title: "Other", MessageCount: 2},
-		}, nil)
+	ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(list, nil).Maybe()
 
 	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
-	router := NewRouter(svc, log, proxyHandler, RouterConfig{Debug: false})
+	return NewRouter(svc, log, proxyHandler, RouterConfig{Debug: false})
+}
 
+func listingCountList() []types.SessionListItem {
+	return []types.SessionListItem{
+		{ID: "ses_drift", InternalID: "ses_drift", Title: "Drift", MessageCount: 0},
+		{ID: "ses_other", InternalID: "ses_other", Title: "Other", MessageCount: 2},
+	}
+}
+
+func listingCountGet(t *testing.T, router *gin.Engine) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
+	spy := &listingCountSpyAdapter{countFor: map[string]int{"ses_drift": 389}}
+	router := listingCountRouter(t, spy, listingCountList())
+
+	rec := listingCountGet(t, router)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	spy.mu.Lock()
@@ -134,6 +158,45 @@ func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
 			found = true
 			assert.Equal(t, 389, row.MessageCount,
 				"the WIRE carries the harness truth for the drift row")
+		}
+	}
+	assert.True(t, found, "the drift row is in the response")
+}
+
+// TestRouterSessionList_WalkErrorServesIndexValue — the r2 wiring-tier
+// unhappy pin: a harness count-walk error on the drift row must answer
+// the INDEX value on the wire with a 200 (the serve-through is
+// best-effort enhancement — its failure must never degrade the
+// listing), and the walk must have been attempted (the outcome is
+// observable, not silent).
+func TestRouterSessionList_WalkErrorServesIndexValue(t *testing.T) {
+	spy := &listingCountSpyAdapter{
+		countFor: map[string]int{"ses_drift": 389},
+		walkErr:  agent.ErrSessionNotFound,
+	}
+	router := listingCountRouter(t, spy, listingCountList())
+
+	rec := listingCountGet(t, router)
+	require.Equal(t, http.StatusOK, rec.Code,
+		"a walk error never fails the listing — the overlay is best-effort")
+
+	spy.mu.Lock()
+	walked := append([]string{}, spy.walked...)
+	spy.mu.Unlock()
+	require.Contains(t, walked, "ses_drift",
+		"the drift row's walk was attempted — the error outcome is observable, not a silent skip")
+
+	var body []struct {
+		ID           string `json:"id"`
+		MessageCount int    `json:"messageCount"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	found := false
+	for _, row := range body {
+		if row.ID == "ses_drift" {
+			found = true
+			assert.Equal(t, 0, row.MessageCount,
+				"the failed walk serves the index value on the wire — never worse than the pre-fix listing")
 		}
 	}
 	assert.True(t, found, "the drift row is in the response")

@@ -99,6 +99,13 @@ type ProxyHandler struct {
 	countServe   *countServeTracker
 	countServeMu sync.Mutex
 
+	// countPassIndexOverride pins the #1880 r2 rebuild-rotation
+	// window (tests). Production derives the window statelessly from
+	// wall-clock buckets of the reconcile cadence (see
+	// countPassIndex); a test driving consecutive passes flips this
+	// override instead of sleeping past window boundaries.
+	countPassIndexOverride *int64
+
 	meteringSvc interfaces.MeteringService
 
 	// versionSyncCb is the callback wired into the CRD watcher to persist

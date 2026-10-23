@@ -252,3 +252,96 @@ func TestListingCount_SkipsFreshGraceAndConvergedRows(t *testing.T) {
 	assert.Empty(t, *counted,
 		"fresh-grace, converged, and archived rows are outside the serve-through scope")
 }
+
+// TestListingCount_WalkErrorRearmsNotCooldowns — review r2 defect 1:
+// the walk tracker recorded (count, now) BEFORE the error check, so a
+// transient harness error on a count-0 drift row recorded lastCt=0 ==
+// the index count — the next listing cooldown-skipped the row for
+// five minutes (mislabeled listing_count_cooldown) and the retry was
+// suppressed exactly where the contract promises "a failed walk
+// ... counts the outcome loudly" and re-arms. A failed walk must
+// leave NO tracker entry: the next listing re-walks immediately, and
+// the moment the harness heals the row converges.
+func TestListingCount_WalkErrorRearmsNotCooldowns(t *testing.T) {
+	walkErrs := map[string]error{"ses_gone": agent.ErrSessionNotFound}
+	counts := map[string]int{"ses_gone": 77}
+	h, idx, counted := listingCountTestHandler(t, counts, walkErrs)
+	sessions := []types.SessionListItem{driftRow("ses_gone", 2*time.Hour)}
+	ctx := context.Background()
+
+	errBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_walk_error"))
+	cooldownBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_cooldown"))
+
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions) // walk one: error
+	require.Equal(t, []string{"ses_gone"}, *counted)
+	assert.Equal(t, 0, sessions[0].MessageCount,
+		"the failed walk serves the index value")
+
+	// The immediate re-listing must RETRY, not cooldown-skip: the
+	// poisoned-tracker bug spent five minutes here as
+	// listing_count_cooldown while the drift persisted.
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_gone", "ses_gone"}, *counted,
+		"a failed walk must not cooldown the retry — no tracker entry on error")
+	assert.Equal(t, cooldownBefore, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_cooldown")),
+		"the retry is not mislabeled as a cooldown")
+	assert.Equal(t, errBefore+2, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_walk_error")))
+
+	// The harness heals: the re-armed row converges on the very next
+	// listing (truth served AND persisted).
+	delete(walkErrs, "ses_gone")
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_gone", "ses_gone", "ses_gone"}, *counted)
+	assert.Equal(t, 77, sessions[0].MessageCount,
+		"the healed walk serves the harness truth")
+	assert.Equal(t, 77, idx.rebuiltCounts["ws-1/ses_gone"],
+		"the healed walk persists the truth through the rebuild seam")
+}
+
+// TestListingCount_PersistErrorServesTruthAndRetries — the r2
+// unhappy-path pin for listing_count_persist_error: when the walk
+// succeeds but the persist fails, the WIRE still carries the walked
+// truth (serve-through is not conditional on the write), the outcome
+// is counted, and the NEXT listing re-walks (the tracker holds the
+// walked count, the index still holds the stale one — they differ, so
+// no cooldown) and re-persists the moment the write heals.
+func TestListingCount_PersistErrorServesTruthAndRetries(t *testing.T) {
+	h, idx, counted := listingCountTestHandler(t,
+		map[string]int{"ses_drift": 42}, nil)
+	idx.failRebuild = map[string]bool{"ws-1/ses_drift": true}
+	sessions := []types.SessionListItem{driftRow("ses_drift", 2*time.Hour)}
+	ctx := context.Background()
+
+	persistErrBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_persist_error"))
+	servedBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_served"))
+
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_drift"}, *counted)
+	assert.Equal(t, 42, sessions[0].MessageCount,
+		"the walked truth is served even when the persist fails")
+	assert.Equal(t, persistErrBefore+1, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_persist_error")))
+	assert.Equal(t, servedBefore, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("listing_count_served")),
+		"a failed persist is never counted as served")
+	assert.Empty(t, idx.rebuiltCounts)
+
+	// Second listing: the index still holds 0 (the persist failed), so
+	// the fresh index read disagrees with the walked 42 — the cooldown
+	// must NOT swallow the row; it re-walks and retries the persist.
+	// (Reset the slice to the index's stale view — each production
+	// listing re-reads the index; the mutated slice is per-request.)
+	sessions[0].MessageCount = 0
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_drift", "ses_drift"}, *counted,
+		"a persist failure re-arms the walk — the index and walked counts differ")
+	assert.Equal(t, 42, sessions[0].MessageCount)
+
+	// The write heals: the retry lands and the outcome flips to served.
+	idx.mu.Lock()
+	idx.failRebuild = nil
+	idx.mu.Unlock()
+	sessions[0].MessageCount = 0
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_drift", "ses_drift", "ses_drift"}, *counted)
+	assert.Equal(t, map[string]int{"ws-1/ses_drift": 42}, idx.rebuiltCounts,
+		"the healed persist converges the index")
+}
