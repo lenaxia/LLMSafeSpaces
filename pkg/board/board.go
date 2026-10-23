@@ -139,10 +139,11 @@ const (
 
 // Surfaces (design §4.3): the four projections.
 const (
-	SurfaceREST        = "rest"         // (a) REST for UI + SDKs
-	SurfaceExternalMCP = "external_mcp" // (b) customer-facing platform MCP
-	SurfaceAgent       = "agent"        // (c) agent-internal registry (workers)
-	SurfaceReconciler  = "reconciler"   // system actor, engine-internal
+	SurfaceREST         = "rest"          // (a) REST for UI + SDKs
+	SurfaceExternalMCP  = "external_mcp"  // (b) customer-facing platform MCP
+	SurfaceAgent        = "agent"         // (c) agent-internal registry (workers)
+	SurfaceAgentManager = "agent_manager" // (c-manager) the pod seam's manager projection (#1832 WS2: orchestrator-class in-workspace sessions)
+	SurfaceReconciler   = "reconciler"    // system actor, engine-internal
 )
 
 // failureBackoff is the #1813 auto-return-to-ready delay for the nth

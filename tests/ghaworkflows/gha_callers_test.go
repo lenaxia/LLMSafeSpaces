@@ -212,6 +212,54 @@ func TestAiCommentCallerContract(t *testing.T) {
 	}
 }
 
+// TestPrReviewDispatchGuardsPinned pins the #1844 dispatch guards on
+// pr-review.yml. The reusable review workflow at v0.2.23 keys every
+// step on github.event.pull_request (job if:, concurrency group,
+// PR_NUMBER/PR_HEAD_SHA env in prompt-build/check-verdict/salvage/
+// verify) — a workflow_dispatch reaching it would run with EMPTY PR
+// context: burned LLM round, verdict verify against an empty SHA.
+// The local `review:` job gate is therefore load-bearing, and an
+// unpinned gate regresses silently (mutation-verification on #1874
+// found exactly that: removing the if: left the suite green — the
+// same hazard TestAiCommentAuthorizationGatePresent pins against for
+// the ai-comment admission gate).
+func TestPrReviewDispatchGuardsPinned(t *testing.T) {
+	body := stripYAMLCommentLines(readFile(t, filepath.Join(repoRoot(t), prReviewCaller)))
+
+	// The lever itself must exist: a dispatchable pr-review.yml.
+	if !strings.Contains(body, "workflow_dispatch:") {
+		t.Error("pr-review.yml lost its workflow_dispatch trigger — the #1844 outage lever is gone")
+	}
+
+	// review job block: from the job id to its uses: line — the gate
+	// must sit between them (before delegation is decided).
+	reviewIdx := strings.Index(body, "  review:")
+	if reviewIdx < 0 {
+		t.Fatal("pr-review.yml has no `review:` job (required-check name stability)")
+	}
+	usesRel := strings.Index(body[reviewIdx:], "uses:")
+	if usesRel < 0 {
+		t.Fatal("pr-review.yml `review:` job does not delegate (no uses:)")
+	}
+	if !strings.Contains(body[reviewIdx:reviewIdx+usesRel], "if: github.event_name == 'pull_request'") {
+		t.Error("review job is not pinned to pull_request events — a workflow_dispatch would run the reusable workflow with EMPTY PR context (empty number/head SHA: burned LLM round, verdict verify against an empty SHA). #1874 r1.")
+	}
+
+	// dispatch-recovery block: from the job id to runs-on: — the
+	// dispatch-only gate must precede execution.
+	drIdx := strings.Index(body, "  dispatch-recovery:")
+	if drIdx < 0 {
+		t.Fatal("pr-review.yml has no `dispatch-recovery:` job — the #1844 dispatch lever has no executor")
+	}
+	rrRel := strings.Index(body[drIdx:], "runs-on:")
+	if rrRel < 0 {
+		t.Fatal("pr-review.yml `dispatch-recovery:` job malformed (no runs-on:)")
+	}
+	if !strings.Contains(body[drIdx:drIdx+rrRel], "if: github.event_name == 'workflow_dispatch'") {
+		t.Error("dispatch-recovery is not pinned to workflow_dispatch — it would also run on every PR synchronize (fault-comment noise + duplicate ci dispatches on healthy pushes)")
+	}
+}
+
 // TestPromptContractFilesExist asserts the prompt files consumed by the
 // reusable workflows exist: pr-review.yml cats context.md, core-rules.md and
 // pr-review.md; post-footer.sh reads commands-footer.md. A rename or

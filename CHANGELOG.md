@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+### Fixed — board heartbeat: server clock bounds client-observed stamps (issue #1847 PR1, the C1 incident class)
+- **A future-stamped `observedProgressAt` rejects outright**
+  (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker
+  hallucinated a timestamp ~7.5h into the future; the server accepted
+  it as progress evidence and stored it as the lease's progress
+  watermark — which then became unrenewable by construction (every
+  honest later observation failed the moved-watermark evidence gate),
+  locking a live worker out of its own claim. Stamps more than
+  `heartbeatFutureTolerance` (2m) ahead of the server clock are
+  estimates, not evidence, and no longer touch the watermark or the
+  lease.
+- **Mild future skew clamps to the server clock** (a future stamp is
+  never stored — the poison direction only); honest clients with
+  drifting clocks keep extending. Past-skewed stamps remain
+  client-trusted until the #1847 rework retires worker-declared stamps
+  as the liveness input entirely.
+- **Already-poisoned watermarks self-heal, one-shot**: a stored
+  watermark reading future (pre-fix damage, or DB-ahead/app-behind
+  clock skew) reads as stale, so an honest present-t observation
+  extends once and overwrites it; a re-sent identical stamp does not
+  extend again — the C1 lockout cannot recur against repaired rows.
 
 ### Fixed — Automation: platform-deleted sessions stop haunting the sidebar (#1882)
 
@@ -25,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`deletedSessionId`) so the engine can act on it; the carrier is
   also origin-marked first so a partially-failed cleanup still
   self-heals via the reconcile. Belt-and-braces on the read path: a
-  new durable `session_index.deleted_at` death mark (migration 000044)
+  new durable `session_index.deleted_at` death mark (migration 000045)
   keeps a lingering row out of the session list even when the row
   delete itself fails. The #1340 reconcile now reaps
   `session_origins`-marked carrier rows even with history (the
@@ -47,6 +68,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   newest-first sort), with a "Question 1 of N — answer to see the next"
   queue-depth line; answering or dismissing advances to the next ask
   automatically. Desktop rendering is unchanged.
+- **Up-arrow history recall no longer destroys the in-progress draft**
+  (#1846): the Composer's Up-recall guard checked only the caret's LINE
+  (any column of line 1 qualified), so pressing Up with a non-empty
+  single-line draft swapped the entire draft for the previous message —
+  silent user-data loss. Recall now fires only from a collapsed caret at
+  the very beginning of the buffer (position 0 of line 1 — the opencode
+  TUI buffer-boundary rule the guard was always meant to mirror); any
+  other caret position moves the cursor and leaves the text untouched.
+  A selection, even one starting at position 0, collapses rather than
+  recalls. The empty-input recall gesture and the caret-at-0 recall are
+  unchanged; Down-navigation is unchanged.
+
+### Added — workflow_dispatch outage levers for PR-triggered workflows (#1844, PR 1 of 2)
+
+- **`pr-review.yml` is now dispatchable — with a guard, not a bare
+  trigger.** The reusable ai-workflows review workflow at v0.2.23 keys
+  every step on `github.event.pull_request.*`; a naive dispatch would
+  run it with EMPTY PR context (burned LLM round, verdict check against
+  an empty SHA). The reusable job is therefore pinned
+  `if: github.event_name == 'pull_request'` and dispatches land in a
+  new `dispatch-recovery` job: resolve the PR (input or auto-detect
+  from the dispatched ref), noop if the head already carries a bot
+  verdict, else post the #1844-namespaced fault comment (deduped per
+  head SHA on the `<!-- run-watchdog: fault sha=... -->` marker shared
+  with the automated sweep) and re-dispatch `ci.yml` on the branch —
+  the recovery verified live during the 2026-10-23 branch-scoped
+  suppression. Forcing an actual AI review round from inside this repo
+  remains impossible at v0.2.23 (documented in the workflow header);
+  the levers stay an admitted `/review` comment or an empty
+  `ci: retrigger` push.
+- **`secrets-integration.yml` gains a bare `workflow_dispatch`** — its
+  changes-gate keys on `event_name != 'pull_request'`, so a dispatch
+  always runs the full suite, exactly what an operator forcing
+  recovery wants. `ci.yml` and `posture-gate.yml` already had dispatch
+  (ci.yml's is the verified lever); e2e-pr.yml is noted for its owner
+  lane.
+
+### Added — run watchdog: automated detection + recovery for dropped synchronize events (#1844, PR 2 of 2)
+
+- **A zero-run PR head no longer stalls silently.** Every 10 minutes
+  the new `run-watchdog` sweep enumerates open PRs; a head ≥15 min old
+  carrying ZERO total check-runs (pr-review.yml is the universal
+  check-runs producer — every pull_request, no branch/paths filter)
+  and no Actions skip marker is a #1844 delivery fault → namespaced
+  comment on the PR (tagging #1844 so instances accumulate as
+  evidence; deduplicated per head SHA via the `<!-- run-watchdog:
+  fault sha=... -->` marker — the identical literal pr-review.yml's
+  dispatch-recovery shim posts once that PR merges) +
+  `workflow_dispatch` of ci.yml on the branch — the recovery verified
+  live during the 2026-10-23 branch-scoped suppression. Auto-retrigger
+  is OPT-OUT (label `watchdog:no-auto-retrigger`) and HONEST about its
+  cost: a dispatched ci.yml run pushes a sha-/ts- image set from the
+  unmerged branch, so amplification is capped at exactly-once per head
+  SHA (the dispatch consults the same per-SHA marker as the comment),
+  and the predicate clears once the dispatched run registers
+  check-runs. The default stays ON because the fault is silent and
+  GitHub-side — an opt-in default would have caught zero of the four
+  documented instances.
+- **The detection predicate lives in tested Go, not bash**
+  (`pkg/runwatchdog`, red-first: the skip-ci, dedup, label, and
+  comment-contract tests were verified failing against the naive
+  age+zero-runs baseline before the full predicate landed;
+  `cmd/runwatchdog` is a thin stdin→stdout caller; the workflow only
+  gathers inputs and executes the decision — the numbering-gate
+  pattern). Dry-run against live repo data caught the still-suppressed
+  probe branch (PR #1873, head 75 min, zero runs) as a fault on its
+  first pass.
+
+### Fixed — Session phrase IDs are persistent by construction: write-once column, phrase-bearing row births, spawn-window reap grace (#1850)
+
+- **create_session workers can no longer be re-phrased after spawn.**
+  Five reproductions showed platform-spawned workers losing the
+  3-word phrase minted at creation after their first turn —
+  `id_deprecated` on the original id, send_message to it failing
+  with 500, and the session's addressable identity collapsing onto
+  its 2-word harness slug. Root cause was lazy settlement in three
+  cooperating layers: six row-creating session_index upserts inserted
+  WITHOUT the phrase (any write landing on an absent row birthed a
+  phrase-less row, later backfilled with a FRESH mint); the #1340
+  reaper's message_count==0 guard was armed for exactly the spawn
+  window (a platform-spawned worker's prompt delivery is a pod-local
+  POST the API never sees, so the count stays 0 through the whole
+  first turn — two harness-list misses reaped the LIVE row and
+  orphaned the phrase); and the post-death resurrection re-minted a
+  different phrase. The fix is persistence-by-construction: every
+  row-creating upsert now carries a Go-minted phrase in its INSERT
+  leg (the phrase is born in the same statement/transaction as the
+  row; the ON CONFLICT legs never touch short_id, so an existing
+  phrase always wins), migration 000044 pins short_id WRITE-ONCE at
+  the DB level (a trigger refuses changing or NULL-ing a minted
+  phrase; identical rewrites and the legacy NULL-backfill stay
+  legal; helm mirror byte-identical), and the reap guard refuses
+  count-zero rows younger than 15 minutes (a fresh session is not a
+  ghost; aged rows keep the #1340 hygiene verdict — stillborn rows
+  now converge one grace period later, a deliberate, documented
+  trade). Phrase minting keeps the registration seam's ruling-3
+  collision discipline (deterministic counter suffix) on every birth
+  path. Known effect: the grace window shelters genuinely stillborn
+  rows for the window's duration. The id_deprecated marker remains
+  only for legacy rows and the degraded emission window.
 
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
@@ -99,6 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
   18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
   untouched).
+
 ### Fixed — worklog/migration renumber bot: root fix for the next-free assignment race (#1838)
 
 - **Assignment consults the open-branch taken-set** (the soft layer):
@@ -147,8 +269,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins that claims-blind assignment still collides (the documented
   degraded mode the invariant nets).
 
-### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
+### Changed — Task Board: stillborn turn-evidence guard on heartbeats (issue #1832, lane board-stage-hygiene WS4)
+
+- **A heartbeat extension now requires ACTUAL turn evidence when the
+  evidence source is installed**: a POSITIVE zero-message report for
+  the task's assignee session refuses the extension (the
+  lease-keeper-renews-a-stillborn-spawn class — spawn-moment
+  `updated_at` alone is not liveness); the refusal carries a `reason`.
+  The wall clock reclaims the stillborn's lease through the ordinary
+  RC1 path. Source errors fail open (logged) — the narrow fix only;
+  the platform-derived liveness rework is #1847's lane.
+
+### Added — Task Board: re-arm, the attempts-exhaustion re-pool (issue #1832, lane board-stage-hygiene WS3)
+
+- **`POST /api/v1/me/tasks/:id/rearm`** (and `board_rearm_task` on
+  both MCP surfaces, the pod seam manager route, and the agentd
+  manager catalog): a task parked at `pending_input/escalated`
+  (attempts at the cap — the engine withheld the grant) returns to
+  `backlog` with attempts reset to 0 — a fresh-judgment ledger whose
+  pre-reset count rides the `rearm` audit event. The failure overlay
+  and cooldown clear (a re-arm is not a failure) and the row is
+  claimable immediately. Only escalated rows; other stages and
+  origins keep their enumerated transitions.
+- **UI deferral is a flagged ticket, not a silent gap** (standing
+  directive #20): the REST surface is live for a swimlane affordance.
+
+### Added — Task Board: manager-grade pending_input exits (issue #1832, lane board-stage-hygiene WS2)
+
+- **The pod seam's manager projection gains a manager-grade move
+  (`SurfaceAgentManager`)**: `POST /internal/v1/automation/board/
+  tasks/:id/move-stage` behind the existing manager belt
+  (harness-attested session identity + live-assignee worker refusal,
+  fail-closed on omission) — the orchestrator-class in-workspace
+  session can now exit `pending_input` rows (the tsk-3do6n458 freeze
+  class: → in_progress re-claims, → backlog re-queues with the attempts
+  reset), audited with its session identity and a distinct surface
+  vocabulary.
+- **`board_move_stage` on the agentd toolset dual-routes**: a claim
+  token rides the worker projection (wire unchanged); a token-less
+  call with an orchestrator-class identity rides the manager path.
+  Ordinary workers are unaffected and cannot reach the manager path
+  (both gates refuse them).
+- **The workspace binding extends to the manager grade**: a foreign
+  workspace's rows stay untouchable (403 workspace_binding).
+
+### Added — Task Board: delegated-review completion coupling (issue #1832, lane board-stage-hygiene WS1)
+
+- **A task whose job is to review another task's artifact anchors to
+  its subject with the `review-of:<subject-short-id>` tag** (the pr:N
+  discipline: the only form the engine consumes, workspace-scoped;
+  malformed anchors are inert tags, never guessed).
+- **When the subject reaches done — manager move, approve verdict, or
+  RC2 external-truth drift — the engine settles its review tasks in
+  the same transaction**: criteria ALL met → done (the Done guard is
+  never bypassed), with an audited transition plus a deterministic
+  `review_complete` event; chained delegation (a review of a review)
+  recurses safely over a visited set.
+- **Criteria UNMET → NEVER auto-done**: the in_review review task
+  parks to `pending_input/drift_review` with a `review_park` audit
+  event (the tsk-zbdeufiw class: subject merged, review stranded —
+  the pending_input column is the owner-visible surface instead of an
+  invisible in_review rot).
+
+### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
   timeline** — every `board_events` row scoped to the task (stage
   transitions, claims who/when, review verdicts when present,
@@ -163,9 +347,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The task-detail drawer surfaces the timeline in the UI**: header
   completeness (ids, stage, owner perimeter), criteria, dependencies,
   and the full event feed on one panel.
-
 ### Changed — Task Board short ids flip to word phrases (issue #1831, the session-ID playbook)
-
 - **Fresh `prj-`/`epc-`/`tsk-` ids are word phrases** over the #1756
   frozen session lists (same generator via `pkg/shortid`, not a fork):
   `tsk-amber-falcon-glides`, with a deterministic counter suffix
@@ -196,7 +378,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   noted as deprecated-but-resolving; `docs/api/mcp.md` `board_get`
   row, `design/0067` §4.1 supersession note, TaskDialog dependency
   placeholder.
-
 ### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
 - **The user-stream connect path emits a `session.status.snapshot`
   flight per Active workspace** (`snapshot_begin` → one snapshot frame
@@ -317,7 +498,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phrase-keyed at the wire; and the lost-idle lease recheck is pinned
   at e2e fidelity (open-stream authority, fake-clock lease expiry).
 ### Added — Task Board: config UI section (issue #1832 item 6, part 2)
-
 - **Settings → Task Board tab**: the user's board-wide defaults editor
   (reviewColumn `off|manual|auto`, autoAssignReviewer,
   defaultWorkerSlots ≥ 1) over `GET/PUT /api/v1/me/board/config`, with
@@ -353,7 +533,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claim.
 
 ### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
-
 - **The forge-agnostic verdict core**: a validated payload
   (`{verdict: approve|fail, findings: [{severity blocker|major|minor,
   pointer, criterionIndex?}], reviewer}` — criterionIndex
@@ -373,9 +552,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   + `GET /api/v1/me/tasks/:id/verdicts`; external MCP
   `board_record_verdict` + `board_task_verdicts`; OpenAPI paths +
   schemas. Idempotent per `requestId`.
-
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
-
 - **A task whose worker attempt failed is now VISIBLE**: every
   lease-lapse reclaim marks `last_attempt_failed` (+1 consecutive
   `failure_count`, `last_failure_at`). NEVER a sixth stage — the
@@ -459,7 +636,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   burst. Pinned red-first (an exhaustion control leg proves the
   budget is spent — 429 observed on an ordinary route — before both
   probes are asserted: /livez exactly 200, /readyz its typed 503).
-
 ### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
 - **Duplicate worklog numbers now FAIL `make repolint`** — the new
   `runWorklogUniqueness` check, matching ANY numbered-worklog filename
@@ -476,9 +652,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (1162) was pre-empted by a manual leapfrog before it could redden.
   Companion security bumps shipped separately: 43a7ba29 (Go
   toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
-
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
-
 - **The delivery boundary now refuses literal placeholder tokens.** The
   mid-write emission-corruption mode (observed across worker sessions
   and the orchestrator) replaces a drafted body with a placeholder
@@ -493,9 +667,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pinned). The tool description teaches the same contract: send the
   complete intended content; re-compose if emission corruption ate the
   draft.
-
 ### Changed — platform MCP surfaces flip to phrase session IDs (#1816, the #1756 §5 remainder)
-
 - **The external MCP server (pkg/mcp / cmd/mcp) accepts phrase
   addressing for real.** `session_message` with a 3-word phrase target
   previously worked only by accident: the client's contract-stream
@@ -545,7 +717,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phrase replica — with the harness id asserted absent from results;
   the full-id window still accepts with the notice.
 ### Added — Task Board: swimlane creation buttons + collapsible epic bands (#1832 items 1-2)
-
 - **Contextual creation per project swimlane.** Every swimlane header
   now carries its own New epic / New task buttons; the New-epic dialog
   is retargeted to the swimlane it was opened from (no dropdown
@@ -578,7 +749,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sibling worktrees cannot latch a foreign server; this lane runs
   18519 (nightly PORTFWD_PORT registry 18083–18093 untouched).
 ### Added — task-detail drawer with the full audit timeline (#1832 item 4)
-
 - **The board's task cards open a detail drawer that renders the task's
   full history.** Header (title, short id, stage, attempts, claim/lease
   with assignee and lease-until, blocked-by with live dependency stage
@@ -599,7 +769,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`?limit=`, default 200, max 500 — lease heartbeats write a row per
   call, so long-lived claims stay bounded). OpenAPI schemas and the
   frontend client ship with it.
-
+### Added — Task Board: kebab menus + delete flows (#1832 item 3)
+- **Kebab menus at all three board levels.** Each project swimlane
+  header, epic band header, and task card carries a kebab menu
+  (distinct a11y labels; triggers stopPropagation — a kebab click
+  never toggles band selection nor opens the task editor).
+- **Task delete modal with the 'reconnect dependents to upstream'
+  checkbox** (#1747's optional flag): dependents are surfaced
+  pre-flight from the read model; unchecked (default) they are simply
+  unblocked (each gets an `unblocked_by_delete` audit event), checked
+  they inherit the deleted task's direct upstream edges (deduplicated,
+  cycle-guarded server-side). Both semantics are pinned at the wire in
+  e2e (`?reconnect=true` presence/absence exact-matched) and in
+  component tests (API-client args asserted). The delete result
+  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
+- **Epic delete surfaces in-flight workers with refuse/force-confirm
+  matching the API**: the modal lists the epic's in-flight claims
+  (in_progress + assignee, live read model) and its honest cascade
+  count; the first attempt never sends force — the engine's 409
+  `epic_state` renders inside the modal, and only that real refusal
+  reveals the acknowledge-gated "Force delete" (force deletes, then
+  aborts each in-flight worker post-commit).
+- **Project kebab is archive/unarchive ONLY** (#1747: project delete
+  is eliminated) — the menu structurally offers exactly one lifecycle
+  item; the absence of any delete item is pinned in both test layers.
+- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
+  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
+  untouched).
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)

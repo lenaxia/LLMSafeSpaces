@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1882-delete-propagation`
-**Status:** PR r1 (review round 1 addressed: closure re-scoped to Refs #1882 — fix item 1's ScriptPath fall-through carved into #1890; review's two missing-test findings landed: real-PG death-mark semantics suite + the retry-attempt carrier separation pin)
+**Status:** PR r2 (approved @ 96b60f1f round 2; main-sync merge: #1850 phrase-write-once + #1881 spawn-window grace + #1832 stack landed on main post-base — conflicts reasoned below; migration renumbered 000044→000045 after main took 000044)
 
 ---
 
@@ -82,7 +82,7 @@ Wiring:
 
 ### 2 — Read-path belt-and-braces (durable death filter)
 
-Migration 000044 adds `session_index.deleted_at`;
+Migration 000045 adds `session_index.deleted_at`;
 `MarkSessionIndexDeleted` stamps it (recursive tree, the
 `DeleteSessionTree` shape) before the row delete; `ListSessionIndex`
 filters `si.deleted_at IS NULL`. A row whose DELETE failed (crashed
@@ -190,6 +190,39 @@ marked carriers too, so the owner's click on a carrier ghost answers
   origin/main (TestBoardSuite; runs 39914818345, 39914746332,
   39913732914, 39911665448 all 2026-10-23) — not attributable (no
   board/secrets files touched; attribution comment on the PR).
+
+## Main-sync (r2) — reasoned merge, not union-text
+
+Main moved post-base: #1850's phrase-write-once (UpsertSessionMessage
+now INSERTs with a minted short_id via execWithMintedPhrase; my base
+rewrote the same region), #1881's spawn-window reap grace
+(DefaultReapGuard refuses count-zero rows younger than 15min;
+ListSessionIndex gained si.created_at), and the #1832 stack.
+
+- **database.go**: adjacency collision only — my MarkSessionIndexDeleted
+  insertion point is main's rewritten UpsertSessionMessage header. Both
+  sides kept verbatim. Verified interaction: #1850's phrase-bearing
+  INSERT column list carries no deleted_at and its ON CONFLICT leg
+  never touches it — the no-resurrect invariant holds under main's new
+  statement (noted in the method comment).
+- **sessionindex/service.go**: metric comment/Help — union of main's
+  refined wording + kept_spawn_window with my reaped_carrier.
+- **Guard composition** (proxy_session_index.go, auto-merged):
+  `DefaultReapGuard(row) || marked[row.InternalID]` — the marked bypass
+  intentionally dominates the #1881 spawn-window grace: a marked
+  carrier's harness absence is platform deletion policy, not
+  harness-list lag (the grace's rationale). Live marked sessions
+  (preserved routines) are still protected by the #1850 by-ID probe
+  veto — the same authority #1865 relies on.
+- **Migration renumber**: main's #1850 took 000044
+  (000044_session_phrase_write_once) while this branch held
+  000044_session_index_deleted_at — renumbered MINE to **000045**
+  (api + helm mirrors + doc references), the #1838 race protocol.
+- **sqlmock fixture**: my ListSessionIndex pin's column list gained
+  main's si.created_at (12 columns).
+- repolint green (45 migrations, chart mirror synced); worklog dup
+  check empty; full handlers/workflows/database/agentd/app/server
+  suites green on the merged tree.
 
 ## Mutation-verify suggestion
 

@@ -84,7 +84,7 @@ func (h *PodAutomationHandler) BoardHeartbeat(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"extended": res.Extended, "leaseExpiresAt": res.LeaseExpiresAt, "lastProgressAt": res.LastProgressAt})
+	c.JSON(http.StatusOK, gin.H{"extended": res.Extended, "leaseExpiresAt": res.LeaseExpiresAt, "lastProgressAt": res.LastProgressAt, "reason": res.Reason})
 }
 
 // BoardReportThrottle is board_report_throttle: the 429 path — requeue

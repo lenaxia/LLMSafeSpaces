@@ -59,11 +59,13 @@ func boardSessionID(c *gin.Context, raw []byte) string {
 }
 
 // managerActor stamps the #1747 manager delegation: the pod's resolved
-// owner (R7), the agent surface, the resolved workspace (the structural
+// owner (R7), the MANAGER-GRADE agent surface (#1832 WS2 — a distinct
+// audit vocabulary from the worker projection: the pending_input exits
+// read it as a manager surface), the resolved workspace (the structural
 // binding), and the creating SESSION (audit attribution).
 func (h *PodAutomationHandler) managerActor(ownerID, workspaceID, sessionID string) board.Actor {
 	return board.Actor{
-		Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgent,
+		Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgentManager,
 		WorkspaceID: workspaceID, SessionID: sessionID,
 	}
 }
@@ -346,6 +348,37 @@ func (h *PodAutomationHandler) BoardDeleteEpic(c *gin.Context) {
 
 // --- Tasks + dependencies ------------------------------------------------------
 
+// BoardManagerMoveStage is the manager-grade stage move (#1832 WS2 —
+// the tsk-3do6n458 incident: an escalated pending_input row froze the
+// dependency chain because the ONLY agent-surface move route is the
+// worker's, and the worker surface is denied the pending_input exits).
+// Rides resolveManager (harness-attested session identity + the
+// live-assignee worker refusal) and the canonical MoveStage — the
+// stage machine arbitrates exactly as it does for the owner on REST;
+// the actor's manager-grade surface is what unlocks the exits, and the
+// audit carries the orchestrator-class session's identity.
+func (h *PodAutomationHandler) BoardManagerMoveStage(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ToStage     string `json:"toStage"`
+		EvidenceURL string `json:"evidenceUrl"`
+		RequestID   string `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	t, err := h.boardMgr.MoveStage(c.Request.Context(), h.managerActor(owner, ws, session),
+		"", c.Param("id"), req.ToStage, req.EvidenceURL, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 // BoardCreateTask creates a backlog task (inline dependsOn allowed).
 func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)
@@ -428,6 +461,27 @@ func (h *PodAutomationHandler) BoardPauseTask(c *gin.Context) {
 // BoardResumeTask clears the pause (resume directive).
 func (h *PodAutomationHandler) BoardResumeTask(c *gin.Context) {
 	h.BoardTaskLifecycle(c, h.boardMgr.ResumeTask)
+}
+
+// BoardRearmTask is the attempts-exhaustion re-pool (#1832 WS3) on the
+// pod seam: manager-grade actor, canonical RearmTask.
+func (h *PodAutomationHandler) BoardRearmTask(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestID string `json:"requestId"`
+	}
+	if raw != nil {
+		_ = bindBoardBody(c, raw, &req)
+	}
+	t, err := h.boardMgr.RearmTask(c.Request.Context(), h.managerActor(owner, ws, session), "", c.Param("id"), req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
 }
 
 // BoardDeleteTask destructively removes a task (clean abort first when

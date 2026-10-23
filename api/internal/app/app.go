@@ -1589,6 +1589,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// transport).
 				board.WithWorkerAborter(newBoardAborter(boardPool, agentAdapter)),
 				board.WithWorkerMessenger(newBoardMessenger(boardPool, agentAdapter)),
+				// #1832 WS4: the stillborn guard's evidence source —
+				// the session index's message_count (positive-zero
+				// refuses heartbeat extension; errors fail open).
+				board.WithTurnEvidenceSource(&boardTurnEvidence{pool: boardPool}),
 			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions
 			// poke the queue; this consumer drives the affected project

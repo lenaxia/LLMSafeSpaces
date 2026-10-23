@@ -1,4 +1,4 @@
--- 000044_session_index_deleted_at (issue #1882)
+-- 000045_session_index_deleted_at (issue #1882)
 --
 -- Delete propagation for the sidebar's session index: every
 -- platform-initiated session delete (agentd's ephemeral carrier
