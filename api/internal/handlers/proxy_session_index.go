@@ -323,6 +323,14 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 		if minted >= shortIDBackfillBudget {
 			break
 		}
+		// #1882 r1: the rows are a PRE-PASS snapshot — a session whose
+		// confirmed delete propagated mid-pass (tombstone set, row
+		// removed) must not be re-registered: Register is a
+		// row-creating mint, so the dead carrier would be re-born.
+		//nolint:contextcheck // the tombstone read is store-local; the sweep's detached ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
+			continue
+		}
 		if h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode") != "" {
 			minted++
 		}
@@ -383,6 +391,17 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		if err != nil {
 			sessionindex.ReconcileOutcome("count_walk_error")
 			h.logger.Debug("session reconcile: count walk failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+			continue
+		}
+		// #1882 r1 — the reconcile re-birth race: the count walk is the
+		// validated window (240–490ms/page of network between the list
+		// snapshot and this write). A session whose confirmed delete
+		// propagated DURING the walk (tombstone set, row removed) must
+		// not be re-written: Register + RebuildMessageCount are both
+		// row-creating mints, so the dead carrier would be re-born with
+		// message_count>0 — a DefaultReapGuard-refused ghost forever.
+		//nolint:contextcheck // the tombstone read is store-local; the sweep's detached ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
 			continue
 		}
 		if count == row.MessageCount {

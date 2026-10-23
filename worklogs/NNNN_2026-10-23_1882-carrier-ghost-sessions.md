@@ -167,6 +167,45 @@ where scripts RUN stays #1878's lane (explicitly untouched).
 - #1881 (write-once phrases): no UPDATE path touched; the teardown
   deletes whole rows by exact key; the delete-side safety pin
   (recipe 5) closes the regression class from this side.
-- #1340 reconcile: untouched (DefaultReapGuard, probe-veto, spawn
-  grace all as merged); with propagation in place the reconcile's
-  kept_for_operator population stops GROWING from carriers.
+- #1340 reconcile: guard/probe/grace semantics untouched — the r1 fix
+  adds a tombstone consult BEFORE the sweep's row-creating writes
+  only; with propagation in place the reconcile's
+  kept_for_operator population stops GROWING from carriers. The reap
+  safety net (issue recommendation 3) is #1901's lane.
+
+## Review r1 remediation (CHANGES_REQUESTED → commits cbc77f62 + 13358ebc)
+
+The automation's verdict: mechanisms verified sound (four-route
+convergence, ordering, gate, wiring; 5/7 recipes independently
+mutation-verified red by the reviewer; PG pins green in CI's
+secrets-integration on 5d2549ad). CHANGES on three findings:
+
+1. **Reconcile re-birth race (validated, real)** —
+   `rebuildMessageCounts`/`backfillShortIDs` never consulted the
+   tombstone; a confirmed delete landing during the count walk
+   (240–490ms/page between list snapshot and write) re-minted the
+   carrier's row via Register + RebuildMessageCount (both
+   row-creating) → count>0 → kept_for_operator forever. FIXED: both
+   loops consult `isSessionDeleted` before their row-creating writes
+   (the count-rebuild consult sits AFTER the walk — the walk IS the
+   race window). Red pins:
+   `TestSessionIndexReconcile_CountRebuildSkipsTombstonedRow`,
+   `..._BackfillSkipsTombstonedRow` (red cbc77f62, green 13358ebc).
+   Mutation recipe 8: delete either consult → the corresponding pin
+   reds.
+2. **Recommendation 3 split** — filed as #1901 (reap safety net for
+   origin-marked carriers + drain-time tombstone visibility +
+   restart-wiped tombstones; includes the PreserveAlways-must-not-reap
+   design question). PR body updated: no full-closure claim over the
+   reap net.
+3. **E2E coverage at the harm's level** — R3 (ghost stays gone across
+   two reconcile passes; prompt-derived-title ghost signature) + R4
+   (scriptPath-only fire delivers sessionless, no row) added to
+   local/issue1452-routine-session-index-e2e.sh; structural pins
+   extended (bash -n, needles, jq-compile).
+
+Reviewer's non-blocking note (disclosed): ScriptPath-only scripts
+exiting non-zero still record `delivered` (pre-existing #1812
+transport-error-only semantics, now widened to ScriptPath-only) —
+noted on #1901's lane as a semantic follow-up, not changed here.
+

@@ -306,6 +306,7 @@ func TestSessionIndexReconcile_CountRebuildSkipsTombstonedRow(t *testing.T) {
 	// The count walk IS the race window: the carrier's confirmed delete
 	// (tombstone + row removal — the propagation tail) lands mid-walk.
 	h.adapter.(*mockAdapter).countMessagesFn = func(ctx context.Context, _, _, sid string) (int, error) {
+		//nolint:contextcheck // the mid-walk propagation tail is store-local by design
 		h.MarkSessionDeletedForTest("ws-1", sid)
 		_ = idx.DeleteSession(ctx, "ws-1", sid)
 		return 2, nil // != seeded 1 — the rebuild write would fire
