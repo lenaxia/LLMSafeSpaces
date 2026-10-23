@@ -235,8 +235,10 @@ func TestRunWatchdogNoSilentProbeSwallows(t *testing.T) {
 // (with the marker never landing) the per-SHA dispatch cap bypassed:
 // every recovery action silently disabled. This pin asserts every
 // Decision key the workflow consumes exists as an exact json tag on
-// runwatchdog.Decision, and that the consumed set is exactly the four
-// known keys (a new consumption site must consciously update this pin).
+// runwatchdog.Decision (in `jq -r .key` form — a future site written
+// differently is a conscious edit this pin does not auto-adopt), and
+// that the consumed set is exactly the four known keys (a new
+// consumption site must consciously update this pin).
 func TestRunWatchdogDecisionOutputContract(t *testing.T) {
 	body := runWatchdogBody(t)
 
