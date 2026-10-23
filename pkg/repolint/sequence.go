@@ -488,20 +488,35 @@ type WorklogRename struct {
 // After renaming, any occurrence of the old basename inside the file's
 // own content is replaced with the new basename, so self-referential
 // lines like "worklogs/0140_..._foo.md — This worklog" stay accurate.
+//
+// #1838: the assignment pass additionally consults the open-branch
+// taken-set (scanOpenClaims) — numbers claimed by OTHER open PRs' heads
+// are skipped exactly like numbers on origin/main. This closes the
+// check-then-act race where two branches assigning inside one bot-lag
+// window both minted the same next-free number and landed it via
+// file-wise auto-merge (1161x2, 1164x2, 1173x2, 1175x2; migration
+// 41x2). Discovery is best-effort: offline or unauthenticated
+// environments degrade to main-only knowledge — the pre-#1838 behavior
+// — and the #1807 uniqueness invariant remains the net for the
+// residual window.
 func FixWorklogs(dir string) ([]WorklogRename, error) {
-	return fixWorklogs(dir, remoteWorklogVersions(dir))
+	claims := scanOpenClaims(filepath.Dir(dir))
+	return fixWorklogs(dir, remoteWorklogVersions(dir), claims.WorklogClaimSet())
 }
 
 // fixWorklogs is the testable core of FixWorklogs. remoteByVersion is the
 // set of worklog files on origin/main, indexed by version number (the
-// shape returned by scanWorklogGit). An empty or nil map means "no
-// mainline knowledge" — the function falls back to local-only duplicate
+// shape returned by scanWorklogGit). claimedVersions is the open-branch
+// taken-set (#1838): numbers held by other open PRs — skipped during
+// assignment but NOT treated as mainline incumbents for newcomer
+// selection (a sibling branch is not mainline). Nil or empty maps mean
+// "no such knowledge" — the function falls back to local-only duplicate
 // detection with lexical tie-breaking, preserving the pre-mainline-aware
 // behavior.
 //
-// Tests drive this directly so they can control the mainline signal
-// without standing up a real git repo in the sandbox.
-func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename, error) {
+// Tests drive this directly so they can control the mainline and claims
+// signals without standing up a real git repo in the sandbox.
+func fixWorklogs(dir string, remoteByVersion map[int][]string, claimedVersions map[int]bool) ([]WorklogRename, error) {
 	const grandfatherBelow = 97
 	var renames []WorklogRename
 
@@ -521,14 +536,14 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 	// commit (#1795: the 25ed1853 rebase carried four) — and the
 	// ruling-c semantics deliberately renumber them anyway: the pass is
 	// the distributed self-healing that closes the lag window, and
-	// every assignment skips both local and remote occupied numbers —
-	// every number WORKLOGPATTERN can see (uppercase-slug files are
-	// invisible to this pass; the runWorklogUniqueness invariant is
-	// the net that catches what it cannot). The safety
-	// net for what two lag-window writers can still independently
-	// produce is the runWorklogUniqueness invariant (duplicate numbers
-	// = red CI), not this pass.
-	sentinelRenames, err := assignSentinels(dir, remoteByVersion)
+	// every assignment skips local, remote, AND open-branch-claimed
+	// numbers (#1838) — every number WORKLOGPATTERN can see
+	// (uppercase-slug files are invisible to this pass; the
+	// runWorklogUniqueness invariant is the net that catches what it
+	// cannot). The safety net for what two lag-window writers can still
+	// independently produce is the runWorklogUniqueness invariant
+	// (duplicate numbers = red CI), not this pass.
+	sentinelRenames, err := assignSentinels(dir, remoteByVersion, claimedVersions)
 	if err != nil {
 		return renames, err
 	}
@@ -625,7 +640,7 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 			datePart := m[2]
 			slugPart := m[3]
 
-			nextNum := nextFreeWorklogNumber(maxVer, localVersions, remoteVersions)
+			nextNum := nextFreeWorklogNumber(maxVer, localVersions, remoteVersions, claimedVersions)
 			newName := fmt.Sprintf("%04d_%s_%s.md", nextNum, datePart, slugPart)
 			// Advance maxVer so a second rename in the same pass does not
 			// collide with the one we just performed. (The outer loop
@@ -658,9 +673,9 @@ func fixWorklogs(dir string, remoteByVersion map[int][]string) ([]WorklogRename,
 // assignSentinels renames every NNNN_ sentinel file in dir to the next
 // free number, processing in lexical order so a batch of sentinels in
 // one branch gets contiguous numbers in a stable order. remoteByVersion
-// supplies the mainline-known versions so assigned numbers do not collide
-// with origin/main.
-func assignSentinels(dir string, remoteByVersion map[int][]string) ([]WorklogRename, error) {
+// supplies the mainline-known versions and claimedVersions the
+// open-branch taken-set (#1838); assigned numbers collide with neither.
+func assignSentinels(dir string, remoteByVersion map[int][]string, claimedVersions map[int]bool) ([]WorklogRename, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", dir, err)
@@ -690,12 +705,17 @@ func assignSentinels(dir string, remoteByVersion map[int][]string) ([]WorklogRen
 			}
 		}
 	}
-	// Seed from remote (origin/main) versions too.
+	// Seed from remote (origin/main) versions and open-branch claims
+	// (#1838) too. Claims are numbers, not files: they only add to the
+	// occupied set, never to the incumbent selection.
 	for v := range remoteByVersion {
 		occupied[v] = true
 		if v > maxVer {
 			maxVer = v
 		}
+	}
+	for v := range claimedVersions {
+		occupied[v] = true
 	}
 	if len(sentinels) == 0 {
 		return nil, nil
@@ -821,12 +841,14 @@ func SentinelCheck(dir string) (SentinelReport, error) {
 }
 
 // nextFreeWorklogNumber returns the smallest int strictly greater than
-// current that is unused in either localVersions or remoteVersions. Used
-// to pick a rename target that won't immediately re-collide with mainline.
-func nextFreeWorklogNumber(current int, localVersions, remoteVersions map[int]bool) int {
+// current that is unused in localVersions, remoteVersions, or
+// claimedVersions (the #1838 open-branch taken-set). Used to pick a
+// rename target that won't immediately re-collide with mainline or with
+// a sibling branch that has already assigned.
+func nextFreeWorklogNumber(current int, localVersions, remoteVersions, claimedVersions map[int]bool) int {
 	for {
 		current++
-		if !localVersions[current] && !remoteVersions[current] {
+		if !localVersions[current] && !remoteVersions[current] && !claimedVersions[current] {
 			return current
 		}
 	}

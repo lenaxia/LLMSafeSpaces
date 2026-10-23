@@ -34,6 +34,7 @@ type mockSessionIndex struct {
 	titles        map[string]string // key: "workspaceID/sessionID"
 	contextUsed   map[string]*int64 // key: "workspaceID/sessionID"
 	deletedTree   map[string]bool   // key: "workspaceID/sessionID" (DeleteSession recording)
+	markedDeleted map[string]bool   // key: "workspaceID/sessionID" (#1882 durable death mark)
 	failDelete    bool              // DeleteSession returns an error when set
 	failList      bool              // ListByWorkspace returns an error when set
 	rebuiltCounts map[string]int    // key: "workspaceID/sessionID" (#1481 count rebuilds)
@@ -51,6 +52,7 @@ func newMockSessionIndex() *mockSessionIndex {
 		titles:        make(map[string]string),
 		contextUsed:   make(map[string]*int64),
 		deletedTree:   make(map[string]bool),
+		markedDeleted: make(map[string]bool),
 		rows:          make(map[string][]types.SessionListItem),
 		phrases:       map[string]string{},
 		registerCalls: map[string]int{},
@@ -93,6 +95,12 @@ func (m *mockSessionIndex) seedRowCounted(workspaceID, sessionID string, count i
 	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{ID: sessionID, Title: sessionID, MessageCount: count})
 }
 func (m *mockSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
+func (m *mockSessionIndex) MarkSessionDeleted(_ context.Context, workspaceID, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markedDeleted[workspaceID+"/"+sessionID] = true
+	return nil
+}
 func (m *mockSessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

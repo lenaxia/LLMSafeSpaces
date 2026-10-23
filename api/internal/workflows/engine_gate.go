@@ -52,7 +52,7 @@ func (s *Scheduler) runRoutineGate(ctx context.Context, logger Logger, trigger *
 	// every other routine leg — a provider-blip-shaped 5xx must not
 	// fail-closed a healthy gate. Deterministic failures return after
 	// one attempt.
-	resp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, req, nil)
+	resp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, req, nil, nil)
 	if err != nil {
 		return false, nil, s.failRoutineGate(ctx, logger, trigger, fire, fmt.Sprintf("gate script failed: %v", err))
 	}

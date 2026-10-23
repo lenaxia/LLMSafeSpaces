@@ -87,12 +87,6 @@ async function mockAuthAndWorkspace(page: Page, opts: { phase?: string } = {}) {
       body: JSON.stringify([{ id: SES_ID, title: "e2e session", messageCount: 0, status: "idle", hasUnread: false }]),
     });
   });
-  await page.route(`${API}/workspaces/${WS_ID}/sessions/active`, async (route: Route) => {
-    await route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify({ active: [SES_ID], maxActive: 5 }),
-    });
-  });
   await page.route(`${API}/workspaces/${WS_ID}/models`, async (route: Route) => {
     await route.fulfill({
       status: 200, contentType: "application/json",
@@ -280,6 +274,19 @@ test.describe("User-message history navigation (real browser)", () => {
     await page.keyboard.press("Control+End");
     await textarea.press("ArrowDown"); // restore draft
     await expect(textarea).toHaveValue("my draft");
+  });
+
+  // #1846 (r1): the issue's exact repro in a real browser. pressSequentially
+  // (not fill()) leaves the caret at the typed end — the guard must refuse
+  // recall there; note this closes only the single-line negative case (the
+  // multi-line fill() limitation documented below still applies).
+  test("Up at the end of a single-line draft does NOT replace the draft (#1846)", async ({ page }) => {
+    await gotoChat(page);
+    const textarea = page.getByPlaceholder("Type a message...");
+    await textarea.click();
+    await textarea.pressSequentially("my important draft"); // caret at end
+    await textarea.press("ArrowUp");
+    await expect(textarea).toHaveValue("my important draft");
   });
 
   // Note: a "Up in the middle of a multi-line draft does NOT navigate" test

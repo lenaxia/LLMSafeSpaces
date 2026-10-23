@@ -132,6 +132,7 @@ type APIClient interface {
 	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
 	BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardDeleteTask(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error)
@@ -1516,6 +1517,19 @@ func (c *HTTPClient) BoardStartTask(ctx context.Context, taskID, requestID strin
 		body = boardStartBody{RequestID: requestID}
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/start", body)
+}
+
+// BoardRearmTask is board_rearm_task (#1832 WS3): re-pool an
+// attempts-exhausted (escalated) pending_input row.
+func (c *HTTPClient) BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	var body any
+	if requestID != "" {
+		body = boardStartBody{RequestID: requestID}
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/rearm", body)
 }
 
 func (c *HTTPClient) BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error) {

@@ -258,6 +258,13 @@ repolint: repolint-build
 repolint-build:
 	$(GOBUILD) -o bin/repolint ./cmd/repolint
 
+# runwatchdog-build: build the #1844 run-watchdog binary (detection
+# predicate for dropped synchronize events — zero workflow runs on a
+# pushed PR head). Used by .github/workflows/run-watchdog.yml; the
+# logic lives in pkg/runwatchdog with red-first unit tests.
+runwatchdog-build:
+	$(GOBUILD) -o bin/runwatchdog ./cmd/runwatchdog
+
 # chart-sync-migrations: copy api/migrations/*.sql into helm/migrations/.
 # Run this every time you add a migration so the Helm-bundled copy stays in
 # sync with the canonical one. The pre-commit hook will fail if you forget.

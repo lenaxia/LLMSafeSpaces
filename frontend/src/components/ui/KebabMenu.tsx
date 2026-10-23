@@ -24,9 +24,17 @@ interface Props {
   items: KebabMenuItem[];
   align?: "left" | "right";
   footer?: string[];
+  /**
+   * Accessible name for the trigger. Distinct per surface when several
+   * kebabs render together (board: project/epic/task kebabs) so role
+   * queries stay unambiguous; defaults to the legacy "Actions".
+   */
+  ariaLabel?: string;
+  /** Optional testid for the trigger (same purpose as ariaLabel). */
+  testId?: string;
 }
 
-export function KebabMenu({ items, align = "right", footer }: Props) {
+export function KebabMenu({ items, align = "right", footer, ariaLabel = "Actions", testId }: Props) {
   const [open, setOpen] = useState(false);
   const { triggerRef: buttonRef, menuRef, pos } = useMenuPosition<HTMLButtonElement, HTMLDivElement>(open, align);
 
@@ -52,9 +60,10 @@ export function KebabMenu({ items, align = "right", footer }: Props) {
         ref={buttonRef}
         onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
         className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-opacity"
-        aria-label="Actions"
+        aria-label={ariaLabel}
         aria-haspopup="true"
         aria-expanded={open}
+        data-testid={testId}
       >
         <MoreHorizontal className="h-4 w-4" />
       </button>

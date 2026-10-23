@@ -213,6 +213,19 @@ COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 # Both point at the absolute PVC-symlink path, immune to $HOME drift.
 RUN printf '[credential]\n\thelper = store --file=/home/sandbox/.git-credentials\n' > /etc/gitconfig
 
+# --- #1808 zero-fill corruption guard (pre-push) ---
+#
+# git's template dir: every `git init`/`git clone` copies template
+# contents into .git — an EXECUTABLE hooks/pre-push (no .sample
+# suffix) lands ACTIVE in every new clone. The hook blocks a push only
+# on positive all-NUL-blob detection (#1808: files silently zero-filled
+# at preserved length reached the remote through a workspace commit);
+# it fails open on any scanner error and honors
+# LLMSAFESPACE_PREPUSH_AUDIT=0 as the opt-out. Existing clones in
+# pre-image workspaces are untouched (new-clone-forward rollout).
+# Pinned by pkg/fsaudit/prepush_parity_test.go.
+COPY --chmod=755 runtimes/base/git-templates/hooks/pre-push /usr/share/git-core/templates/hooks/pre-push
+
 # Pre-install runtimes into the system mise data dir so they are baked into
 # the image layer and always available regardless of PVC state.
 #

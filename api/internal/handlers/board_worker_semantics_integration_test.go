@@ -358,7 +358,14 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		// The SAME owner owns a project targeting ANOTHER workspace; its
 		// task is claimed there. This pod (ws-1) can neither see nor
 		// touch it — resolution itself is workspace-scoped: a plain 404,
-		// no suggestions, the token never compared.
+		// and the foreign row itself can never appear as a suggestion.
+		// (Suggestion emptiness is NOT the invariant: same-WORKSPACE
+		// did-you-mean is the feature working — earlier subtests seed
+		// ws-1 tasks whose minted phrases occasionally sit within
+		// Levenshtein 2 of the foreign id, which is exactly the
+		// suggestion class. Pre-fix this asserted Empty and flaked on
+		// that randomness — main run 39849159942 and PR #1862's CI both
+		// caught it; the cross-tenant absence below is the real pin.)
 		shortID, _ := seed(t, true)
 		claim := claimFor(t, wsForeign, shortID)
 
@@ -368,14 +375,11 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 			Suggestions []string `json:"suggestions"`
 		}
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &miss))
-		// #1864 review round 3 (pre-existing flake): an in-scope
-		// phrase id can land within the did-you-mean bound of the
-		// random foreign id — suggestions may legitimately carry
-		// IN-SCOPE rows; the perimeter guarantee is that the FOREIGN
-		// id itself never appears.
-		for _, s := range miss.Suggestions {
-			assert.NotEqual(t, shortID, s, "no cross-tenant did-you-mean: the scoped resolution cannot see the foreign row")
-		}
+		// #1864 review round 3 (pre-existing flake): an in-scope phrase id
+		// can land within the did-you-mean bound — the perimeter guarantee
+		// is that the FOREIGN id itself never appears (main's form).
+		assert.NotContains(t, miss.Suggestions, shortID,
+			"no cross-tenant did-you-mean: the scoped resolution cannot see the foreign row")
 
 		w = heartbeat(t, shortID, claim.ClaimToken, time.Now().UTC().Format(time.RFC3339))
 		require.Equal(t, http.StatusNotFound, w.Code, "the REAL token of a foreign task buys nothing on this pod")

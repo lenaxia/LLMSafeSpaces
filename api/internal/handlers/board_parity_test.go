@@ -209,6 +209,10 @@ var boardParityMatrix = []parityRow{
 	{action: "resume_task", restMethods: []string{"ResumeTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_resume_task"}, agent: liveCell,
 		agentTools: []string{"board_resume_task"}},
+	{action: "rearm_task", restMethods: []string{"RearmTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_rearm_task"}, agent: liveCell,
+		agentTools: []string{"board_rearm_task"},
+		denyErr:    &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
 		agentTools: []string{"board_import_plan"},
@@ -375,6 +379,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done"}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", `{}`)
+	case "rearm_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", `{}`)
 	case "delete_task":
 		return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333", "")
 	case "pause_task":
@@ -436,7 +442,9 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/projects/:id/unarchive",
 		"POST /internal/v1/automation/board/resource-pressure",
 		"POST /internal/v1/automation/board/tasks/:id/dependencies",
+		"POST /internal/v1/automation/board/tasks/:id/move-stage", // #1832 WS2: manager-grade move (pending_input exits for orchestrator-class sessions)
 		"POST /internal/v1/automation/board/tasks/:id/pause",
+		"POST /internal/v1/automation/board/tasks/:id/rearm", // #1832 WS3
 		"POST /internal/v1/automation/board/tasks/:id/resume",
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
@@ -812,6 +820,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": "done"}, true
 	case "task_start":
 		return "board_start_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "rearm_task":
+		return "board_rearm_task", map[string]any{"task_id": "tsk-cccc3333"}, true
 	case "delete_task":
 		return "board_delete", map[string]any{"item_id": "tsk-cccc3333"}, true
 	case "pause_task":
@@ -981,6 +991,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/dependencies",
 		"POST /api/v1/me/tasks/:id/move-stage",
 		"POST /api/v1/me/tasks/:id/pause",
+		"POST /api/v1/me/tasks/:id/rearm",
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
 		"POST /api/v1/me/tasks/:id/verdict",
@@ -1153,6 +1164,8 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"title":"x","requestId":`+q(requestID)+`}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
+	case "rearm_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", body)
 	case "add_dependency":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
 	case "move_stage":

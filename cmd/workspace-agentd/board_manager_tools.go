@@ -163,6 +163,19 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 		return client.BoardRemoveDependency(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), boardRefArg(args, "dependsOn"))
 	case "board_delete_task":
 		return client.BoardDeleteTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), boardBoolArg(args, "reconnect"))
+	case "board_move_stage":
+		// #1832 WS2: the manager-grade move. The task ref rides the
+		// path (taskId preferred, shortId tolerated — the worker
+		// surface's pick order); {toStage, evidenceUrl, requestId}
+		// ride the body.
+		ref := boardRefArg(args, "taskId")
+		if ref == "" {
+			ref = boardRefArg(args, "shortId")
+		}
+		return client.BoardManagerMoveStage(ctx, saToken, workspaceID, sessionID, ref, wire)
+	case "board_rearm_task":
+		// #1832 WS3: the attempts-exhaustion re-pool.
+		return client.BoardRearmTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_pause_task":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "pause")
 	case "board_resume_task":

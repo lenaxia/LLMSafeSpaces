@@ -94,6 +94,13 @@ func (s *boardE2ESeam) actor(ownerID, workspaceID, sessionID string) board.Actor
 	return board.Actor{Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgent, WorkspaceID: workspaceID, SessionID: sessionID}
 }
 
+// managerActor mirrors the production manager seam (#1832 WS2): the
+// MANAGER-GRADE agent surface — what the stage machine's pending_input
+// guard reads.
+func (s *boardE2ESeam) managerActor(ownerID, workspaceID, sessionID string) board.Actor {
+	return board.Actor{Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgentManager, WorkspaceID: workspaceID, SessionID: sessionID}
+}
+
 func (s *boardE2ESeam) fail(c *gin.Context, status int, code, msg string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": msg, "code": code})
 }
@@ -242,6 +249,27 @@ func (s *boardE2ESeam) epicActivate(c *gin.Context) {
 	c.JSON(http.StatusOK, e)
 }
 
+// managerMoveStage mirrors the production manager move route (#1832
+// WS2): manager-grade actor, canonical MoveStage.
+func (s *boardE2ESeam) managerMoveStage(c *gin.Context) {
+	fields, ws, owner, session, ok := s.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ToStage     string `json:"toStage"`
+		EvidenceURL string `json:"evidenceUrl"`
+	}
+	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
+	t, err := s.svc.MoveStage(c.Request.Context(), s.managerActor(owner, ws, session),
+		"", c.Param("id"), req.ToStage, req.EvidenceURL, "")
+	if err != nil {
+		s.engineError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 func boardE2EFieldsJSON(fields map[string]json.RawMessage) []byte {
 	b, _ := json.Marshal(fields)
 	return b
@@ -323,6 +351,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	b.POST("/projects/:id/epics", seam.createEpic)
 	b.POST("/epics/:id/tasks", seam.createTask)
 	b.POST("/epics/:id/activate", seam.epicActivate)
+	b.POST("/tasks/:id/move-stage", seam.managerMoveStage)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -377,7 +406,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
 	var task struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		ShortID string `json:"short_id"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.Body), &task))
 
@@ -438,20 +468,51 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Contains(t, err.Error(), "403")
 	assert.Contains(t, err.Error(), board.GuardWorkspaceBinding)
 
-	// --- E+F (#1837): composed file→store byte-identical + corruption refusal —
-	// the real dispatch, the real wire, the real engine, real PG.
+	// --- E: the manager-grade move exits pending_input end to end (#1832 WS2) ----
+	// The tsk-3do6n458 freeze class: an escalated row (attempts at cap,
+	// no assignee) that neither the worker NOR the orchestrator-class
+	// session could exit. The manager move lands it backlog, attempts
+	// reset, audit carrying the session identity. The escalation's own
+	// engine path (attempts>=cap -> pending_input/escalated) is pinned
+	// by pkg/board's suite; here we pin the EXIT through the real seam,
+	// so the row is staged in the escalation's aftermath shape
+	// directly (section C's claim left it in_progress — a backlog-only
+	// candidate predicate is not this section's subject).
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
+			pending_origin='escalated', attempts=3, claim_token=NULL, lease_expires_at=NULL
+		WHERE id=$1`, task.ID)
+	require.NoError(t, err)
+
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_move_stage", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"taskId":               task.ShortID,
+		"toStage":              "backlog",
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	var moved board.Task
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &moved))
+	assert.Equal(t, board.StageBacklog, moved.Stage)
+	assert.Zero(t, moved.Attempts, "re-pooled with the fresh-judgment ledger")
+
+	// --- G+H (#1837, relabeled past main's section E): composed
+	// file→store byte-identical + corruption refusal — the real
+	// dispatch, the real wire, the real engine, real PG.
 	e2eFileBackedCharterSections(t, ctx, client, svc, pool, &epic, mgrSession, wsPod)
 }
 
-// appendE2EFileSections — #1863/#1864 review: the composed real-wiring
-// arcs for #1837 P1. Called from TestIntegrationBoardManagerE2E's tail.
+// e2eFileBackedCharterSections (#1837 rounds 2/3, relabeled G+H past
+// main's section E): the composed real-wiring arcs for P1 —
+// file → wire → engine → PG byte-identical, and corruption → 400 with
+// nothing stored.
 func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *opencode.Client, svc *board.Service, pool *pgxpool.Pool, epic *struct {
 	ID      string `json:"id"`
 	ShortID string `json:"short_id"`
 }, mgrSession, wsPod string) {
 	t.Helper()
 
-	// --- E: composed file → wire → store, byte-identical -------------------------
+	// --- G: composed file → wire → store, byte-identical -------------------------
 	var charter strings.Builder
 	for i := 0; i < 130; i++ {
 		charter.WriteString("### Charter section number ")
@@ -483,7 +544,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
-	// --- F: composed corruption refusal — nothing stored ------------------------
+	// --- H: composed corruption refusal — nothing stored ------------------------
 	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,

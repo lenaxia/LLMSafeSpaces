@@ -251,6 +251,24 @@ func (h *ProxyHandler) emitSessionStatusSnapshot(ctx context.Context, workspaceI
 	})
 }
 
+// triggerBusySnapshotFlight runs one coalesced, detached
+// busy-snapshot flight for the workspace — the seam every SERVER-side
+// resync cue shares (#1884: the pod→api usage stream's reconnect; the
+// POST surface below). Coalescing: one flight per workspace while one
+// is running — later cues ride the in-flight markers on the shared
+// user stream. Detached: callers are consumer goroutines (the usage
+// stream's fold) and HTTP handlers alike; neither may stall on the
+// ≤5s authority fetch.
+func (h *ProxyHandler) triggerBusySnapshotFlight(workspaceID string) {
+	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer busyFlightsInFlight.Delete(workspaceID)
+		h.emitSessionStatusSnapshot(context.Background(), workspaceID)
+	}()
+}
+
 // RequestSessionStatusSnapshot triggers a busy-snapshot flight for the
 // workspace — the RequestInputSnapshot pattern (proxy_input.go): the
 // request returns 202 immediately and the flight's events reach the
@@ -264,18 +282,13 @@ func (h *ProxyHandler) RequestSessionStatusSnapshot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
 		return
 	}
-	detached := context.WithoutCancel(c.Request.Context()) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
 	// Detached context: the flight (≤5s) must outlive this request,
 	// which returns immediately. The flight's events reach the caller
 	// via the user-event stream, not this response. The coalescing
-	// guard lives HERE (the on-demand trigger), not in the emitter —
-	// the connect path must always emit its own per-subscriber flight.
-	if _, loaded := busyFlightsInFlight.LoadOrStore(workspaceID, struct{}{}); !loaded {
-		go func() {
-			defer busyFlightsInFlight.Delete(workspaceID)
-			h.emitSessionStatusSnapshot(detached, workspaceID)
-		}()
-	}
+	// guard lives in the trigger (as it did here before), not in the
+	// emitter — the connect path must always emit its own
+	// per-subscriber flight.
+	h.triggerBusySnapshotFlight(workspaceID)
 	c.Status(http.StatusAccepted)
 }
 

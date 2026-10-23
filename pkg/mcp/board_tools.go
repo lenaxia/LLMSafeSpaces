@@ -177,7 +177,9 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 	mcp.WithDescription("Create a backlog task in an epic. The description (markdown) seeds the worker "+
 		"charter; acceptance criteria define Done (ALL met + evidence_url — ruling R2). Tags may carry "+
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
-		"the reconciler consumes; malformed anchors are inert tags, never guessed). depends_on adds "+
+		"the reconciler consumes; malformed anchors are inert tags, never guessed) and the delegated-review "+
+		"anchor review-of:<subject-short-id> (#1832 — a review task whose subject's done transition settles it: "+
+		"done when its criteria are ALL met, pending_input/drift_review when unmet). depends_on adds "+
 		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
@@ -258,6 +260,15 @@ var boardStartTaskTool = mcp.NewTool("board_start_task",
 		"the project's target workspace (R9). Explicitly allowed in draft epics; paused/completed/archived "+
 		"epics and archived projects refuse it. No caller-supplied worker identity exists on any surface."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
+var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
+	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap) "+
+		"returns to backlog with attempts reset to 0 — a fresh-judgment ledger (the pre-reset count rides the rearm audit event). "+
+		"The re-pooled row is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their "+
+		"enumerated transitions."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -752,6 +763,19 @@ func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) 
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardRearmTask(ctx, taskID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to re-arm task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolRequest,
 	call func(ctx context.Context, epicID, requestID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
@@ -1111,6 +1135,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
 		server.ServerTool{Tool: boardTaskVerdictsTool, Handler: h.boardTaskVerdicts},
 		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
+		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},
 		server.ServerTool{Tool: boardEpicArchiveTool, Handler: h.boardEpicArchive},

@@ -2732,9 +2732,13 @@ func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
 	assert.NotContains(t, out2, `"origin_deprecated"`, "warm replica: the phrase needs no flag")
 }
 
-// r3 missing-test 1: the session_id_deprecated marker emission, warm
-// AND cold, plus the guarded deprecation note (clean refs carry NO
-// empty-string field). Covers every `if idDegraded` block's contract.
+// r3 missing-test 1 (compact idle only): the session_id_deprecated
+// marker emission, warm AND cold, plus the guarded deprecation note
+// (clean refs carry NO empty-string field). The SIX other sites
+// (rename, archive, delete, send_message session_id, abort, and
+// compact's BUSY branch) are pinned by
+// TestMCPEmission_SessionIDDeprecatedMarker_AllSurfaces below —
+// together the two tests hold all seven `if idDegraded` blocks.
 func TestMCPEmission_SessionIDDeprecatedMarker(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("one")
@@ -2793,4 +2797,126 @@ func TestMCPSessionMetadata_WarmReplicaEmitsPhraseAndFlagsCold(t *testing.T) {
 	cold, ok := byID[s2]
 	require.True(t, ok, "the cold session's row keeps its harness id")
 	assert.Equal(t, true, cold["id_deprecated"], "the cold row's harness id must be flagged")
+}
+
+// r4 missing-test 1 + retro completion: the five sibling
+// session_id_deprecated sites (rename, archive, delete, send_message
+// session_id, abort) plus compact's BUSY branch — the 7th site,
+// asserted by no test even at r4 (#1806 post-merge residual) — each
+// pins the marker PRESENT on a cold replica and ABSENT (with the
+// phrase emitted) on a warm one, so no `if idDegraded` block can be
+// deleted green.
+func TestMCPEmission_SessionIDDeprecatedMarker_AllSurfaces(t *testing.T) {
+	run := func(t *testing.T, call func(password, sessionID string) (string, error)) {
+		t.Helper()
+		f := newFakeAgent()
+		s1 := f.newSession("marker")
+		withAgentServer(t, f.handler(t))
+
+		cold, err := call(mcpTestPassword, s1)
+		require.NoError(t, err)
+		assert.Contains(t, cold, `"session_id_deprecated":"true"`,
+			"cold: the raw harness id must be flagged")
+
+		store := withShortIDStore(t)
+		store.put("amber-falcon-naps", s1)
+		warm, err := call(mcpTestPassword, "amber-falcon-naps")
+		require.NoError(t, err)
+		assert.Contains(t, warm, `"session_id":"amber-falcon-naps"`,
+			"warm: the phrase is the emitted id")
+		assert.NotContains(t, warm, "session_id_deprecated",
+			"warm: no flag on the phrase")
+	}
+	t.Run("rename", func(t *testing.T) {
+		run(t, func(pw, sid string) (string, error) {
+			return mcpRenameSession(context.Background(), pw, sid, "new title")
+		})
+	})
+	// archive + delete ride the pod-identity platform surface — the
+	// automation env seam (token file + API URL) needs a stub.
+	withPlatformStub := func(t *testing.T) {
+		t.Helper()
+		platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(platform.Close)
+		token := filepath.Join(t.TempDir(), "sa-token")
+		require.NoError(t, os.WriteFile(token, []byte("tok"), 0o600))
+		t.Setenv("WORKSPACE_ID", "ws-markers")
+		t.Setenv("LLMSAFESPACE_API_URL", platform.URL)
+		t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", token)
+	}
+	t.Run("archive", func(t *testing.T) {
+		withPlatformStub(t)
+		run(t, func(pw, sid string) (string, error) {
+			return mcpSessionArchive(context.Background(), pw, sid, true)
+		})
+	})
+	t.Run("delete", func(t *testing.T) {
+		withPlatformStub(t)
+		run(t, func(pw, sid string) (string, error) {
+			return mcpDeleteSession(context.Background(), pw, sid, "")
+		})
+	})
+	t.Run("send_message session_id", func(t *testing.T) {
+		// Inline: the ORIGIN must be a real session (validated by ID
+		// — the #1452-immune probe), so this case builds its own
+		// fixture instead of the shared run().
+		f := newFakeAgent()
+		target := f.newSession("marker-target")
+		origin := f.newSession("marker-origin")
+		withAgentServer(t, f.handler(t))
+		cold, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "hi", origin, "")
+		require.NoError(t, err)
+		assert.Contains(t, cold, `"session_id_deprecated":"true"`,
+			"cold: the target's raw harness id must be flagged")
+		store := withShortIDStore(t)
+		store.put("amber-falcon-naps", target)
+		warm, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-naps", "hi", origin, "")
+		require.NoError(t, err)
+		assert.Contains(t, warm, `"session_id":"amber-falcon-naps"`)
+		assert.NotContains(t, warm, "session_id_deprecated")
+	})
+	t.Run("abort", func(t *testing.T) {
+		run(t, func(pw, sid string) (string, error) {
+			return mcpAbortSession(context.Background(), pw, sid)
+		})
+	})
+	t.Run("compact busy", func(t *testing.T) {
+		// Inline: the busy leg (mcp_tools.go:1193) detaches the
+		// summarize and answers "scheduled", so it needs a busy
+		// fixture the shared run() doesn't build — the send_message
+		// subtest's inline precedent.
+		f := newFakeAgent()
+		s1 := f.newSession("marker-busy")
+		f.busySet[s1] = true
+		withAgentServer(t, f.handler(t))
+
+		cold, err := mcpCompact(context.Background(), mcpTestPassword, s1, "")
+		require.NoError(t, err)
+		assert.Contains(t, cold, `"status":"scheduled"`,
+			"the BUSY branch is the leg under test (idle is the sibling test above)")
+		assert.Contains(t, cold, `"session_id_deprecated":"true"`,
+			"cold: the raw harness id must be flagged on the busy leg")
+		assert.Contains(t, cold, s1)
+
+		store := withShortIDStore(t)
+		store.put("amber-falcon-naps", s1)
+		warm, err := mcpCompact(context.Background(), mcpTestPassword, "amber-falcon-naps", "")
+		require.NoError(t, err)
+		assert.Contains(t, warm, `"status":"scheduled"`,
+			"still busy — the phrase resolves to the same scheduled leg")
+		assert.Contains(t, warm, `"session_id":"amber-falcon-naps"`,
+			"warm: the phrase is the emitted id")
+		assert.NotContains(t, warm, "session_id_deprecated",
+			"warm: no flag on the phrase")
+
+		// Join the detached summarize goroutine(s) before test end
+		// (CompactBusyFullStack convention — no goroutine may
+		// outlive the test's server swap).
+		require.Eventually(t, func() bool {
+			return f.lastSummary(s1) != nil
+		}, 5*time.Second, 50*time.Millisecond)
+	})
 }

@@ -516,6 +516,62 @@ paths:
           description: Disk usage unavailable on the workspace pod (or the pod's agentd has the engine unwired)
         "504":
           description: The bounded sweep timed out on the workspace pod
+  /workspaces/{id}/fs-audit:
+    post:
+      tags: [workspaces]
+      summary: Audit the workspace filesystem for zero-fill corruption (#1808)
+      description: |
+        #1808 fsck-style detector: scans the workspace pod's filesystem for
+        files silently replaced with NUL bytes at preserved length (the
+        zero-fill corruption class — second after #1793's SSH trailing
+        spaces). Signature is exact — flagged only when size > 0 AND 100% of
+        content bytes are NUL AND the file is not sparse (ftruncate/seek-
+        created all-NUL files report sparse, never flagged). Response-only:
+        the audit writes nothing; zero-filled bytes are unrecoverable, so
+        the report's job is visibility (rebuild the dead files from source
+        or a fresh clone). Bounded: 4KiB-chunk reads with early exit (clean
+        files cost one chunk), per-file (64MiB default) and total (256MiB
+        default) read budgets — an incomplete scan says so (truncated /
+        listTruncated / verdict "skipped"). An all-NUL file larger than the
+        per-file cap reports verdict "suspect" (100%-NUL unconfirmed).
+        Authz: workspace owner. Executed by agentd.
+      operationId: auditWorkspaceFilesystem
+      x-feature-gated: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: root
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "."
+          description: Path inside the workspace to audit (defaults to the whole workspace; always resolved inside it).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FsAuditRequest"
+            description: Optional typed body (overrides the query root; sets the read caps).
+      responses:
+        "200":
+          description: Audit report (response-only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsAuditReport"
+        "400":
+          description: Body was not one JSON document of the request shape
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Workspace not Active, workspace pod not reachable, or an audit is already in progress
+        "503":
+          description: The audit engine is unwired on the workspace pod
+        "504":
+          description: The bounded scan timed out on the workspace pod
   /workspaces/{id}/models:
     get:
       tags: [workspaces]
@@ -4975,7 +5031,11 @@ paths:
         ruling R2) and never blocks. Task `tags` may carry the explicit
         PR-drift anchor `pr:N` (owner ruling OR4 — the ONLY anchor form;
         pattern `^pr:[1-9][0-9]*$`, e.g. `pr:1234`; the reconciler never
-        free-text-guesses or scrapes URLs).
+        free-text-guesses or scrapes URLs) and the delegated-review
+        anchor `review-of:<subject-short-id>` (#1832 — when the subject
+        task reaches done, the engine settles this task: done when its
+        criteria are ALL met, pending_input/drift_review when unmet;
+        malformed anchors are inert, never guessed).
       operationId: createBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardEpicId"
@@ -5195,6 +5255,44 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+  /me/tasks/{id}/rearm:
+    post:
+      tags: [board]
+      summary: Re-pool an attempts-exhausted task (re-arm)
+      description: |
+        The attempts-exhaustion re-pool (#1832 WS3): a task parked at
+        `pending_input` with origin `escalated` (attempts at the cap —
+        the engine withheld the grant) returns to `backlog` with
+        attempts reset to 0 — a fresh-judgment ledger (the pre-reset
+        count rides the `rearm` audit event). The failure overlay and
+        cooldown are cleared (a re-arm is not a failure) and the row is
+        claimable immediately. Only pending_input/escalated rows;
+        other stages and origins keep their enumerated transitions.
+      operationId: rearmBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
+      responses:
+        "200":
+          description: The re-armed task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/start:
     post:
       tags: [board]
@@ -10070,6 +10168,80 @@ components:
         diskTotalBytes:
           type: integer
           format: int64
+    FsAuditRequest:
+      type: object
+      description: |
+        #1808 fs-audit request: root is resolved INSIDE the workspace
+        (deny-by-default); caps are optional (0 = defaults: 64MiB per
+        file, 256MiB total).
+      properties:
+        root:
+          type: string
+        maxFileBytes:
+          type: integer
+          format: int64
+        maxTotalBytes:
+          type: integer
+          format: int64
+    FsAuditReport:
+      type: object
+      description: |
+        #1808 report of a zero-fill corruption scan. Response-only.
+        nulFilled is the dead-file list (the #1808 corruption
+        signature: size > 0, 100% NUL, allocated); suspect = all-NUL
+        within the per-file cap, unconfirmed; paths are
+        workspace-relative slash paths. Counts stay exact when the
+        lists hit their 1000-entry bound (listTruncated).
+      properties:
+        root:
+          type: string
+        filesScanned:
+          type: integer
+        filesSkipped:
+          type: integer
+        bytesRead:
+          type: integer
+          format: int64
+        truncated:
+          type: boolean
+        listTruncated:
+          type: boolean
+        nulFilledCount:
+          type: integer
+        sparseCount:
+          type: integer
+        suspectCount:
+          type: integer
+        errorCount:
+          type: integer
+        nulFilled:
+          type: array
+          items:
+            $ref: "#/components/schemas/FsAuditFileReport"
+        suspect:
+          type: array
+          items:
+            $ref: "#/components/schemas/FsAuditFileReport"
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/FsAuditFileReport"
+    FsAuditFileReport:
+      type: object
+      properties:
+        path:
+          type: string
+        size:
+          type: integer
+          format: int64
+        allocatedBytes:
+          type: integer
+          format: int64
+        verdict:
+          type: string
+          enum: [clean, sparse, nul_filled, suspect, skipped, error]
+        reason:
+          type: string
     DiskRecoveryReport:
       type: object
       description: |
