@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -37,6 +38,12 @@ func reconcileTestHandler(t *testing.T, harnessSessions map[string]bool, harness
 				out = append(out, session.Session{ID: id})
 			}
 			return out, nil
+		},
+		// #1850: the reap's by-ID confirmation probe. Default answers
+		// not-found so the pre-probe reap semantics (the ghost rows the
+		// original pins seeded) still reap; the #1850 pins override it.
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, agent.ErrSessionNotFound
 		},
 	}
 	return h, idx
@@ -174,4 +181,94 @@ func TestSessionIndexReconcile_DeleteFailedContinuesAndCounts(t *testing.T) {
 	runReconcile(t, h, "ws-1")
 	assert.True(t, idx.deletedTree["ws-1/ses_dies"], "a later pass must still reap")
 	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped")), reapedBefore)
+}
+
+// --- #1850: the reap's by-ID confirmation -----------------------------------
+//
+// The harness LIST is not a liveness authority for Act-path sessions
+// (#1452: sessions created through the harness path — exactly the
+// create_session spawn class — can be live and readable by ID while
+// never appearing in the list). A fresh spawn's index row sits at
+// message_count==0 for the whole (long) first turn, so two 30s-cadence
+// passes that miss it in the list reaped the row — and the first
+// turn-boundary event re-registered the session, MINTING A NEW PHRASE
+// (the #1850 re-phrase: old phrase dead, sends to it 500). The reap
+// must confirm gone by ID (the SessionExists precedent: immune to the
+// list-visibility gap) before deleting.
+
+// TestSessionIndexReconcile_ListInvisibleLiveSessionNotReaped is the
+// #1850 red-first pin: a session the LIST misses twice but the by-ID
+// probe finds ALIVE must keep its index row (and with it its phrase).
+func TestSessionIndexReconcile_ListInvisibleLiveSessionNotReaped(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_other": true}, nil)
+	// The spawn: list-invisible (absent from the list above), alive by ID.
+	h.adapter.(*mockAdapter).getSessionFn = func(_ context.Context, _, _, sid string) (*session.Session, error) {
+		assert.Equal(t, "ses_spawn", sid, "the probe must target the row up for reaping")
+		return &session.Session{ID: sid, Title: "worker-1"}, nil
+	}
+	idx.seedRow("ws-1", "ses_spawn") // count 0: the guard alone would admit
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_spawn": 1})
+
+	runReconcile(t, h, "ws-1") // miss 2 → the plan says remove
+	assert.NotContains(t, idx.deletedTree, "ws-1/ses_spawn",
+		"a live (by-ID) session must never be reaped off the list gap alone — the row's phrase dies with it (#1850)")
+	// A live verdict is presence: the miss counter resets, so the next
+	// pass starts fresh instead of re-accusing immediately.
+	assert.NotContains(t, h.state().GetReconcileMisses(context.Background(), "ws-1"), "ses_spawn",
+		"a live probe verdict resets the miss counter (presence semantics)")
+}
+
+// TestSessionIndexReconcile_GhostReapedWhenByIDProbeConfirmsGone keeps
+// the true-deletion leg honest: the by-ID not-found verdict reaps
+// exactly as before (the probe gates, it does not neuter).
+func TestSessionIndexReconcile_GhostReapedWhenByIDProbeConfirmsGone(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_alive": true}, nil)
+	idx.seedRow("ws-1", "ses_alive")
+	idx.seedRow("ws-1", "ses_ghost")
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_ghost": 1})
+
+	runReconcile(t, h, "ws-1")
+	runReconcile(t, h, "ws-1")
+	assert.True(t, idx.deletedTree["ws-1/ses_ghost"], "list-absent twice + by-ID not-found still reaps")
+	assert.NotContains(t, idx.deletedTree, "ws-1/ses_alive")
+}
+
+// TestSessionIndexReconcile_ProbeIndeterminateDefersReap: a probe
+// transport error is uncertainty, never a gone-verdict — the row
+// survives the pass and the counter pins at the threshold so the next
+// pass retries (the harness-error-never-reaps discipline, applied to
+// the probe).
+func TestSessionIndexReconcile_ProbeIndeterminateDefersReap(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
+	h.adapter.(*mockAdapter).getSessionFn = func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, fmt.Errorf("pod unreachable")
+	}
+	idx.seedRow("ws-1", "ses_maybe")
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_maybe": 1})
+
+	runReconcile(t, h, "ws-1")
+	assert.Empty(t, idx.deletedTree, "an indeterminate probe must defer the reap")
+	assert.Equal(t, map[string]int{"ses_maybe": reconcileMissThreshold},
+		h.state().GetReconcileMisses(context.Background(), "ws-1"),
+		"the counter pins at threshold — the next pass retries the probe")
+}
+
+// TestSessionIndexReconcile_Sessionless2xxProbeDefersReap pins the
+// round-1 review finding-2 leg: ParseSessionWire answers a NON-NIL
+// parse with an empty session (nil error) for empty 2xx bodies — a
+// sessionless probe verdict that is neither alive nor a gone-verdict.
+// Uncertainty never deletes: the row survives, the counter pins.
+func TestSessionIndexReconcile_Sessionless2xxProbeDefersReap(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
+	h.adapter.(*mockAdapter).getSessionFn = func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, nil // sessionless 2xx: (false, nil) — the old code fell through to delete
+	}
+	idx.seedRow("ws-1", "ses_empty2xx")
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_empty2xx": 1})
+
+	runReconcile(t, h, "ws-1")
+	assert.Empty(t, idx.deletedTree, "a sessionless probe verdict must defer the reap (uncertainty never deletes)")
+	assert.Equal(t, map[string]int{"ses_empty2xx": reconcileMissThreshold},
+		h.state().GetReconcileMisses(context.Background(), "ws-1"),
+		"the counter pins at threshold — the next pass retries the probe")
 }

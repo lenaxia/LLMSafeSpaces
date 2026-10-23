@@ -39,7 +39,11 @@ func withShortIDStore(t *testing.T) *sessionShortIDStore {
 }
 
 // resetShortIDWarmForTest stops any prior worker and zeroes the warm
-// queue/backoff state so each test observes a cold singleton.
+// queue/backoff state so each test observes a cold singleton. The
+// on-miss pull TTL timestamp resets too: without it, a -count>1 (or
+// any prior test's rate-limited pull inside 30s) TTL-blocks the next
+// test's on-miss pull — a pre-existing isolation gap surfaced by the
+// #1850 stress runs (fail on unmodified main), not a behavior change.
 func resetShortIDWarmForTest(t *testing.T) {
 	t.Helper()
 	stopShortIDWarmForTest()
@@ -49,6 +53,9 @@ func resetShortIDWarmForTest(t *testing.T) {
 	warmPending = map[string]struct{}{}
 	warmBackoff = map[string]shortIDWarmBackoff{}
 	warmMu.Unlock()
+	shortIDPullMu.Lock()
+	shortIDLastPull = time.Time{}
+	shortIDPullMu.Unlock()
 }
 
 // stopShortIDWarmForTest cancels the singleton worker and joins it.
@@ -123,15 +130,25 @@ func TestShortIDStore_UnparseableLoadsEmpty(t *testing.T) {
 	}
 }
 
-func TestShortIDStore_PutAllReplaces(t *testing.T) {
+// TestShortIDStore_PutAllMerges pins the #1850 pull-apply contract:
+// a registry pull UPSERTS and never removes. The pull's snapshot can
+// predate a create_session's register round-trip; a replace-style
+// apply wiped the fresh spawn's mapping the moment the racing pull
+// landed (the re-phrase class #1850 root-caused).
+func TestShortIDStore_PutAllMerges(t *testing.T) {
 	s := withShortIDStore(t)
 	s.put("linen-orchard-chirps", "ses_old")
 	s.putAll(map[string]string{"jade-harvest-murmurs": "ses_new"})
-	if _, ok := s.resolveShortID("linen-orchard-chirps"); ok {
-		t.Fatal("putAll must replace, not merge")
+	if _, ok := s.resolveShortID("linen-orchard-chirps"); !ok {
+		t.Fatal("putAll must merge, not replace — entries absent from a (possibly stale) pull survive (#1850)")
 	}
 	if id, ok := s.resolveShortID("jade-harvest-murmurs"); !ok || id != "ses_new" {
 		t.Fatal("putAll entry missing")
+	}
+	// What a pull DOES list is authoritative (upsert wins).
+	s.putAll(map[string]string{"jade-harvest-murmurs": "ses_new2"})
+	if id, _ := s.resolveShortID("jade-harvest-murmurs"); id != "ses_new2" {
+		t.Fatalf("pull upsert must overwrite: got %q", id)
 	}
 }
 

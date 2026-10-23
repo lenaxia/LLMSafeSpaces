@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed — chat UX
 
+- **Mobile is no longer stuck on the first of several queued agent
+  questions** (#1845): every pending ask used to render as a stacked
+  card in the message stream, which on a phone viewport surfaced only
+  the topmost card with no indication more were queued — and the stack
+  orders newest-first, so the surfaced card was the NEWEST ask. Mobile
+  now presents ONE ask of each kind at a time, the OLDEST pending
+  (first-seen order — the provider's standing semantics; asks seeded
+  from one fold snapshot now carry strictly-monotonic first-seen stamps
+  so same-batch asks can never tie and leak insertion order through the
+  newest-first sort), with a "Question 1 of N — answer to see the next"
+  queue-depth line; answering or dismissing advances to the next ask
+  automatically. Desktop rendering is unchanged.
 - **Up-arrow history recall no longer destroys the in-progress draft**
   (#1846): the Composer's Up-recall guard checked only the caret's LINE
   (any column of line 1 qualified), so pressing Up with a non-empty
@@ -305,6 +317,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Effective view with provenance**: each project row shows the
   merged effective config, each key marked override vs inherited from
   the stored overrides.
+### Added — Task Board: review auto-assign + verdict chain in the next charter (issue #1832 item 5, part 2)
+
+- **Config-gated reviewer dispatch**: when a task enters in_review and
+  the project's EFFECTIVE config is `reviewColumn=auto` AND
+  `autoAssignReviewer=true`, a reviewer is dispatched DIRECTLY (a
+  dedicated reviewer session — never queued behind the global worker
+  FIFO; the single-reviewer latency multiplier was the design driver).
+  `manual`/`off`/`auto`-without-assign keep today's behavior exactly —
+  no event, no dispatch (5-combo gating matrix pinned in the PG
+  harness). The intent records a `review_assign` event; dispatch
+  failure logs and leaves the manual path intact.
+- **The verdict chain rides the next claimant's charter**: after a
+  fail-bounce, a fresh claim's spawn carries every prior verdict +
+  findings (`Claim.VerdictChain` → the charter prompt renders "PRIOR
+  REVIEW VERDICTS" with severity/pointer/criterion-index) — iteration
+  history, never a failure count.
+- **The reviewer's charter** carries the adversarial-review contract:
+  verify each criterion, record ONE structured verdict through the
+  forge-agnostic core (`board_record_verdict`), never merge or hold a
+  claim.
+
 ### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
 
 - **The forge-agnostic verdict core**: a validated payload
@@ -355,6 +388,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
   the overlay renders on every task read (REST/SDK/MCP) and in
   reclaim audit events (escalate events carry exhausted=true).
+
+### Fixed — create_session workers get re-phrased after spawn; 3-word ids must be persistent (#1850)
+
+- **The reconcile reap no longer deletes LIVE sessions off a harness
+  list gap.** The #1340 convergence pass treated two consecutive
+  harness-list absences as deletion evidence, but the list is not a
+  liveness authority for harness/Act-path sessions (#1452: live and
+  readable by ID while never listed — exactly the create_session
+  spawn class). A fresh spawn's `session_index` row sits at
+  `message_count == 0` for its whole first turn, so the row was reaped
+  mid-turn; the first turn-boundary event then re-registered the
+  session and the single-mint seam minted a NEW phrase — the reported
+  re-phrase (old phrase dead: `send_message` to it 500s mid-lane; the
+  session re-emits flagged `id_deprecated`). Every reap is now
+  confirmed by the by-ID probe first (the send_message `SessionExists`
+  precedent — immune to the list-visibility gap): alive-by-ID vetoes
+  the reap and resets the miss counter (`reap_vetoed_live`); any
+  indeterminate outcome (transport/5xx error, or a sessionless 2xx
+  answer) defers it to the next pass (`reap_deferred_probe`); only a
+  definitive by-ID not-found reaps, as before.
+- **The agentd short-id replica applies registry pulls as a MERGE,
+  not a replace.** `putAll` rebuilt the whole map from each pull's
+  snapshot: a pull in flight at spawn (the emission-warm worker's 1s
+  cadence) returned without the just-registered row and WIPED the
+  fresh phrase→harness mapping — the spawned session degraded to
+  harness-id emission + `id_deprecated` (worker panes stopped
+  rendering it) and phrase-addressed sends lost resolution until a
+  later pull. Pulls now upsert (a pull never removes entries): absent
+  entries are stale snapshots or deleted sessions — the latter resolve
+  to a dead id and fail the `SessionExists` probe cleanly with the
+  did-you-mean clause, never a hard error. This is also the honest
+  reading of the replica's own contract ("only ever RECEIVES entries"
+  — phrases are immutable once minted).
+- **Phrase-as-identity contract pinned red-first** on both tiers: the
+  spawned session keeps its original 3-word phrase across its first
+  turn boundary AND across a stale registry pull (e2e over the real
+  create_session + delivery path); a `send_message` addressed to the
+  ORIGINAL phrase still resolves and delivers after rename and
+  compaction paths; the by-ID reap veto/defer/confirm matrix is pinned
+  at the reconcile orchestration. Test-isolation fix (fail on
+  unmodified main at `-count>1`): the on-miss pull TTL timestamp now
+  resets per test.
 
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 - **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
