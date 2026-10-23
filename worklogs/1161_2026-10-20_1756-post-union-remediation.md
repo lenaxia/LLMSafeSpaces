@@ -24,8 +24,9 @@ standard applies before anything is pushed.
    parity.
 9. agentd §1: send_message/session_metadata/session_read (raw-body
    best-effort rewrite)/compact_session emit phrases +
-   session_id_deprecated cold marker + deprecation notes; catalog's
-   oc- guidance retired.
+   session_id_deprecated cold marker on single-id results (rows carry
+   id_deprecated — session_list parity; r4 correction) + deprecation
+   notes; catalog's oc- guidance retired.
 10. Sunset HTTP-date (with 1); MintPhrase's nil error documented as
     kept for call-site symmetry.
 
