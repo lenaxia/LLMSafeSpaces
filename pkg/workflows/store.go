@@ -1223,10 +1223,15 @@ type SessionOriginRow struct {
 	SessionID   string
 	WorkspaceID string
 	Origin      string
-	TriggerID   *string
-	FireID      *string
-	Title       string
-	CreatedAt   time.Time
+	// Kind is the #1901 reap discriminator: "carrier" (platform-deleted
+	// ephemeral — reap-admissible) vs "session" (survived its fire —
+	// keeps the operator-review guard). Zero value "" reads as the
+	// fail-safe "session" verdict at every consumer.
+	Kind      string
+	TriggerID *string
+	FireID    *string
+	Title     string
+	CreatedAt time.Time
 }
 
 func (s *Store) RecordSessionOrigin(ctx context.Context, row *SessionOriginRow) error {
