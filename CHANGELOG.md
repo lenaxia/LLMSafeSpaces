@@ -291,6 +291,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Effective view with provenance**: each project row shows the
   merged effective config, each key marked override vs inherited from
   the stored overrides.
+### Added — Task Board: review auto-assign + verdict chain in the next charter (issue #1832 item 5, part 2)
+
+- **Config-gated reviewer dispatch**: when a task enters in_review and
+  the project's EFFECTIVE config is `reviewColumn=auto` AND
+  `autoAssignReviewer=true`, a reviewer is dispatched DIRECTLY (a
+  dedicated reviewer session — never queued behind the global worker
+  FIFO; the single-reviewer latency multiplier was the design driver).
+  `manual`/`off`/`auto`-without-assign keep today's behavior exactly —
+  no event, no dispatch (5-combo gating matrix pinned in the PG
+  harness). The intent records a `review_assign` event; dispatch
+  failure logs and leaves the manual path intact.
+- **The verdict chain rides the next claimant's charter**: after a
+  fail-bounce, a fresh claim's spawn carries every prior verdict +
+  findings (`Claim.VerdictChain` → the charter prompt renders "PRIOR
+  REVIEW VERDICTS" with severity/pointer/criterion-index) — iteration
+  history, never a failure count.
+- **The reviewer's charter** carries the adversarial-review contract:
+  verify each criterion, record ONE structured verdict through the
+  forge-agnostic core (`board_record_verdict`), never merge or hold a
+  claim.
+
 ### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
 
 - **The forge-agnostic verdict core**: a validated payload

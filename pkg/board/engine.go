@@ -456,6 +456,14 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 	if s.spawner == nil {
 		return
 	}
+	// #1832 item 5 (2/2): the verdict chain rides EVERY spawn — the
+	// next claimant after a fail-bounce (whichever path minted the
+	// claim: grant, manual start, or re-arm) sees every prior verdict
+	// + findings in its charter (iteration history, never a failure
+	// count).
+	if len(claim.VerdictChain) == 0 {
+		claim.VerdictChain = s.claimVerdictChain(ctx, claim.ProjectID, claim.TaskID)
+	}
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — the production spawn (pod activation + agentd charter dispatch) outlives the request/sweep context by design; lost races self-heal via lease lapse
 			sctx := context.Background()
@@ -524,6 +532,9 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 		WorkspaceID: s.projectWorkspace(ctx, t.ProjectID),
 		ClaimToken:  token, Task: t,
 	}
+	// #1832 item 5 (2/2): the verdict chain rides the re-arm's charter
+	// too (the bounced assignee is the FIRST to see the findings).
+	c.VerdictChain = s.claimVerdictChain(ctx, t.ProjectID, t.ID)
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — delivery outlives the caller's context (same rationale as the claim spawn); failures heal by lease lapse
 			sctx := context.Background()

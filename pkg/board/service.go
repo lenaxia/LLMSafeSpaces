@@ -69,15 +69,16 @@ func WithPendingInputSource(src PendingInputSource) Option {
 // adapter. Safe for concurrent use (pgxpool arbitrates; Postgres is the
 // only scheduler state).
 type Service struct {
-	store      *Store
-	cfg        EngineConfig
-	failpoint  Failpoint
-	spawner    WorkerSpawner
-	asyncSpawn bool
-	driveQueue chan<- string
-	aborter    WorkerAborter
-	drift      PRDriftSource
-	pending    PendingInputSource
+	store          *Store
+	cfg            EngineConfig
+	failpoint      Failpoint
+	spawner        WorkerSpawner
+	reviewAssigner ReviewAssigner
+	asyncSpawn     bool
+	driveQueue     chan<- string
+	aborter        WorkerAborter
+	drift          PRDriftSource
+	pending        PendingInputSource
 	// messenger delivers halt/resume directives to in-flight workers
 	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
 	// authoritative; tests pin the nil-seam behavior).
