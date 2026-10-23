@@ -149,14 +149,21 @@ func (s *BoardSuite) TestReview_1832_VerdictChainRidesNextClaim() {
 	c2, err := svc.ClaimNext(ctx, "w2-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().Equal(task.ID, c2.TaskID)
-	require.Len(s.T(), spawner.claims, 2, "two spawns: fresh + re-claim")
-	second := spawner.claims[1]
-	require.NotEmpty(s.T(), second.VerdictChain, "the next claimant sees prior verdicts")
-	s.Equal(board.VerdictFail, second.VerdictChain[0].Verdict)
-	s.Equal("rev-chain", second.VerdictChain[0].Reviewer)
-	require.Len(s.T(), second.VerdictChain[0].Findings, 1)
-	// And the FIRST claim carried nothing (no verdicts existed).
+	// THREE spawns: the fresh claim, the fail-bounce's re-arm (a new
+	// claim minted for the recorded assignee — spawn #2), and the
+	// post-lapse re-claim (the fresh claimant — spawn #3, whose charter
+	// carries the chain).
+	require.Len(s.T(), spawner.claims, 3, "spawns: fresh + bounce re-arm + re-claim")
+	third := spawner.claims[2]
+	require.NotEmpty(s.T(), third.VerdictChain, "the next claimant sees prior verdicts")
+	s.Equal(board.VerdictFail, third.VerdictChain[0].Verdict)
+	s.Equal("rev-chain", third.VerdictChain[0].Reviewer)
+	require.Len(s.T(), third.VerdictChain[0].Findings, 1)
+	// And the FIRST claim carried nothing (no verdicts existed); the
+	// bounce re-arm's charter carries the chain too (the bounced
+	// assignee is the first to see the findings).
 	require.Empty(s.T(), spawner.claims[0].VerdictChain)
+	require.NotEmpty(s.T(), spawner.claims[1].VerdictChain, "the bounce re-arm's charter embeds the verdict chain")
 }
 
 func boolStr(b bool) string {
