@@ -48,7 +48,7 @@ A dispatched run would check out the right tree (default checkout of the ref) bu
 ## Validation
 
 - YAML parses (PyYAML safe_load): both files; jobs/`on` shapes as intended.
-- Every `run:` block extracted and `bash -n` clean (the #1867 workflow-validation harness).
+- Every `run:` block extracted and `bash -n` clean (pkg/repolint workflow_shell_syntax_test.go harness, #878/#881 — pre-dating #1867, which reused it).
 - `go test ./tests/ghaworkflows/` green — `TestPrReviewCallerContract` pins intact (`review:` job id, `types: [opened, synchronize]`, permissions, `secrets: inherit`, `project_name`).
 - Backtick escaping in the comment body audited (command-substitution hazard in double-quoted bash strings — all escaped).
 - `make repolint` clean (pre-push gate).
@@ -62,3 +62,15 @@ A dispatched run would check out the right tree (default checkout of the ref) bu
 ## Addendum (r1) — pin the dispatch guards
 
 Mutation-verification (orchestrator) held PR-1 on one gap: `TestPrReviewCallerContract` did not pin the dispatch guards — removing the `review:` job's `if:` gate left the suite green, while the repo's own convention pins if-gates (`TestAiCommentAuthorizationGatePresent`). Added `TestPrReviewDispatchGuardsPinned`: the workflow_dispatch trigger's existence, the `review:` job's `pull_request`-only gate (between job id and `uses:`), and `dispatch-recovery`'s `workflow_dispatch`-only gate (between job id and `runs-on:`). Red-first: each gate independently removed → test FAILs naming the hazard; restored → full `./tests/ghaworkflows/` suite green.
+
+## Addendum (r2) — the dead dedup probe (review findings 1-4 + robustness)
+
+Review reproduction caught what my validation could not: `gh api` has NO `--arg` flag — the dedup probe's `--jq --arg m ...` errored on every execution (`accepts 1 arg(s), received 4`), and the `2>/dev/null || echo 0` swallowed it, so EXISTING was always 0: every dispatch would have re-posted the fault comment and re-queued full CI. bash -n and the gha pins were green because the defect was runtime gh semantics, not syntax. Fixes shipped:
+
+1. All probes now pass SHA via `env.SHA` inside the jq program (the sibling probes' verified pattern) and stream hits per page with `--paginate` (>100-comment PRs hid markers/reviews on page 2+ — finding 4).
+2. Probe failures are LOUD: `|| { ::error; exit 1 }` — no `|| echo 0` anywhere; a transient API failure fails the job instead of inverting into delivered=false → spurious comment + dispatch (finding 2; secrets-integration.yml:50-52 never-a-silent-skip rule).
+3. The ci.yml re-dispatch step's `if:` is coupled to the comment dedup (`steps.comment.outputs.duplicate != 'true'`) — a marker-present invocation no longer queues full multi-arch CI per invocation (finding 3).
+4. Robustness guards while touched: `dispatch-recovery` gains a per-target concurrency group (near-simultaneous dispatches supersede instead of racing the dedup) and the resolve step refuses non-OPEN PRs (no fault comments on closed PRs, no dispatch at deleted refs).
+5. Style: dead `tee /tmp/pr.env` dropped; false-provenance corrected above.
+
+New pins (tests/ghaworkflows/pr_review_recovery_test.go, red-first where meaningful): TestPrReviewNoDeadProbeArgForm (the `--jq --arg` class is unpinnable-by-presence — asserted absent; env.SHA presence asserted), TestPrReviewProbeJqSemantics (every SHA-scoped --jq program executed through real jq against sample payloads — hit for the probed SHA, silence for another; the --arg form would fail this trivially), TestPrReviewFaultMarkerSelfConsistency (dedup probe's contains-key ↔ posted comment's marker skeleton, byte-consistent), TestPrReviewDispatchCoupledToDedup (both gate clauses + the duplicate flag emission), TestPrReviewRecoveryOpenOnly. Validation: full ./tests/ghaworkflows green; all three corrected probe invocations executed live against the API (exit 0, correct empties); the e2e dispatch exercise rides the post-merge live-fire per orchestrator ruling.
