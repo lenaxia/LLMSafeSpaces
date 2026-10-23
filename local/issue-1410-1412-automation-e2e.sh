@@ -683,6 +683,182 @@ case "${r10_verdict}" in
     *) note_fail "R10: unexpected verdict '${r10_verdict}'" ;;
 esac
 
+# R11 — auto-disable disarms the webhook route (#1834): the 2026-10-21
+# outage's amplifier. The cron claim filters enabled=false, but the
+# webhook receiver minted EXECUTING fires for disabled triggers and the
+# pending drain never re-checked — a wedged headless path kept
+# hammering on every signed delivery of an auto-disabled trigger.
+# Three legs: R11a the receiver gate on a disabled ROUTINE trigger
+# (delivery absorbed: 202 + skipped audit, never executed, no
+# accounting); R11b the same on a disabled WORKFLOW-targeted trigger
+# (no run minted); R11c the drain belt — a fire minted while ENABLED,
+# disabled before the tick, must drain to skipped (R10's tick-race
+# pattern; the dummy workspace never activates, so a lost race reads
+# as a failed fire with "workspace activation failed").
+r11_post() { # secret url body -> "body<TAB>code" (ONE HMAC-signed POST)
+    local secret="$1" url="$2" body="$3" out
+    out=$(curl -s -m 20 -w '\t%{http_code}' -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-Hub-Signature-256: sha256=$(printf '%s' "${body}" \
+            | openssl dgst -sha256 -hmac "${secret}" | awk '{print $NF}')" \
+        -d "${body}" "${url}" || printf '\t000')
+    printf '%s' "${out}"
+}
+
+# R11a — disabled ROUTINE trigger: signed delivery absorbed, skipped
+# audit row, no execution, no accounting.
+api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+    '{name:"e2e-r11a",sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"r11",autoDisableAfter:1}')"
+if [[ "${api_status}" != "201" ]]; then
+    note_fail "R11a setup: trigger create failed: ${api_status} ${api_body}"
+else
+    R11A_TRIG=$(printf '%s' "${api_body}" | jq -r '.trigger.id')
+    created_triggers+=("${R11A_TRIG}")
+    api PUT "/api/v1/me/triggers/${R11A_TRIG}" '{"enabled":false}' >/dev/null
+    if [[ "${api_status}" != "200" ]]; then
+        note_fail "R11a setup: disable patch failed: ${api_status} ${api_body}"
+    else
+        api POST "/api/v1/me/triggers/${R11A_TRIG}/rotate-secret" >/dev/null
+        R11A_SEC=$(printf '%s' "${api_body}" | jq -r '.webhookSecret // empty')
+        R11A_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${api_body}" | jq -r '.webhookUrl // empty')"
+        r11a_out=$(r11_post "${R11A_SEC}" "${R11A_URL}" '{"topic":"r11a"}')
+        r11a_code="${r11a_out##*$'\t'}"
+        r11a_body="${r11a_out%%$'\t'*}"
+        if [[ "${r11a_code}" == "202" && "${r11a_body}" == *"skipped"* ]]; then
+            ok "R11a: disabled trigger's signed delivery answered 202 + skipped"
+        else
+            note_fail "R11a: delivery returned ${r11a_code} '${r11a_body}', expected 202 + skipped"
+        fi
+        r11a_skip=$(api GET "/api/v1/me/triggers/${R11A_TRIG}/fires" \
+            | jq -rc '.fires[] | select(.status=="skipped") | ((.actionResult // "") | tostring)' | head -1)
+        if [[ "${r11a_skip}" == *"trigger_disabled"* ]]; then
+            ok "R11a: skipped fire self-explains (trigger_disabled)"
+        else
+            note_fail "R11a: no self-explaining skipped fire: '${r11a_skip}'"
+        fi
+        r11a_exec=$(api GET "/api/v1/me/triggers/${R11A_TRIG}/fires" \
+            | jq '[.fires[] | select(.status=="failed" or .status=="delivered")] | length')
+        if [[ "${r11a_exec}" -eq 0 ]]; then
+            ok "R11a: disabled trigger never executed"
+        else
+            note_fail "R11a: ${r11a_exec} executing fire(s) on a disabled trigger"
+        fi
+        if [[ "$(trigger_field "${R11A_TRIG}" consecutiveFailures)" -eq 0 ]]; then
+            ok "R11a: absorbing a delivery is not a failure (cf unchanged)"
+        else
+            note_fail "R11a: consecutiveFailures moved on a skipped delivery"
+        fi
+    fi
+fi
+
+# R11b — disabled WORKFLOW-targeted trigger: absorbed, no run minted.
+api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r11b-wf" \
+    '{name:$n,specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",targetWorkspaceId:$w}')"
+if [[ "${api_status}" != "201" ]]; then
+    note_fail "R11b setup: workflow create failed: ${api_status} ${api_body}"
+else
+    R11B_WF=$(printf '%s' "${api_body}" | jq -r '.id')
+    created_workflows+=("${R11B_WF}")
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R11B_WF}" \
+        '{name:"e2e-r11b",sourceType:"webhook",sourceConfig:{},workflowId:$w}')"
+    if [[ "${api_status}" != "201" ]]; then
+        note_fail "R11b setup: trigger create failed: ${api_status} ${api_body}"
+    else
+        R11B_TRIG=$(printf '%s' "${api_body}" | jq -r '.trigger.id')
+        created_triggers+=("${R11B_TRIG}")
+        api PUT "/api/v1/me/triggers/${R11B_TRIG}" '{"enabled":false}' >/dev/null
+        api POST "/api/v1/me/triggers/${R11B_TRIG}/rotate-secret" >/dev/null
+        R11B_SEC=$(printf '%s' "${api_body}" | jq -r '.webhookSecret // empty')
+        R11B_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${api_body}" | jq -r '.webhookUrl // empty')"
+        r11b_out=$(r11_post "${R11B_SEC}" "${R11B_URL}" '{"topic":"r11b"}')
+        r11b_code="${r11b_out##*$'\t'}"
+        if [[ "${r11b_code}" == "202" ]]; then
+            ok "R11b: disabled workflow trigger's delivery answered 202"
+        else
+            note_fail "R11b: delivery returned ${r11b_code}, expected 202"
+        fi
+        if [[ "$(api GET "/api/v1/me/workflows/${R11B_WF}/runs" | jq '.runs | length')" -eq 0 ]]; then
+            ok "R11b: disabled workflow trigger minted no run"
+        else
+            note_fail "R11b: run(s) minted for a disabled workflow trigger"
+        fi
+    fi
+fi
+
+# R11c — the drain belt: fire minted while ENABLED, trigger disabled
+# before the tick, drains to skipped. r11c_attempt follows R10's
+# contract (current-shell, always-0, sets r11c_verdict: 0 pass, 1 lost
+# tick race (retryable), 2 setup failure, 3 assertion failure).
+r11c_attempt() { # suffix -> sets r11c_verdict
+    local suffix="$1" tresp tsec turl tcode patch_resp fire_result cf enabled
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r11c-${suffix}" \
+        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"r11c",autoDisableAfter:3}')"
+    tresp="${api_body}"
+    [[ "${api_status}" == "201" ]] || { warn "R11c setup: trigger create failed: ${api_status} ${tresp}"; r11c_verdict=2; return 0; }
+    local trig_id
+    trig_id=$(printf '%s' "${tresp}" | jq -r '.trigger.id')
+    created_triggers+=("${trig_id}")
+
+    api POST "/api/v1/me/triggers/${trig_id}/rotate-secret" >/dev/null
+    tsec=$(printf '%s' "${api_body}" | jq -r '.webhookSecret // empty')
+    turl="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${api_body}" | jq -r '.webhookUrl // empty')"
+    if [[ -z "${tsec}" || "${turl}" == "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
+        warn "R11c setup: rotate-secret incomplete"
+        r11c_verdict=2; return 0
+    fi
+
+    # Single-shot code-only POST (an enabled trigger WOULD double-fire
+    # under r11_post's body+code double).
+    tcode=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-Hub-Signature-256: sha256=$(printf '%s' '{"topic":"r11c"}' \
+            | openssl dgst -sha256 -hmac "${tsec}" | awk '{print $NF}')" \
+        -d '{"topic":"r11c"}' "${turl}" || echo 000)
+    [[ "${tcode}" == "202" ]] || { warn "R11c: delivery returned ${tcode}, expected 202"; r11c_verdict=2; return 0; }
+
+    # Disable BEFORE the next tick drains the pending fire.
+    api PUT "/api/v1/me/triggers/${trig_id}" '{"enabled":false}' >/dev/null
+    patch_resp="${api_body}"
+    [[ "${api_status}" == "200" ]] || { warn "R11c: disable patch returned ${api_status} ${patch_resp}"; r11c_verdict=2; return 0; }
+
+    fire_result=""
+    for _ in $(seq 1 30); do
+        sleep 2
+        fire_result=$(api GET "/api/v1/me/triggers/${trig_id}/fires" \
+            | jq -rc '.fires[] | select(.status=="skipped" or .status=="failed" or .status=="delivered") | [.status, ((.actionResult // "") | tostring), ((.result // "") | tostring)] | @tsv' | head -1 || true)
+        if [[ -n "${fire_result}" ]]; then break; fi
+    done
+    if [[ "${fire_result}" == *"workspace activation failed"* ]]; then
+        warn "R11c: lost the tick race (attempt ${suffix}) — fire drained before the disable patch"
+        r11c_verdict=1; return 0
+    fi
+    if [[ "${fire_result}" != *"skipped"*"trigger_disabled"* ]]; then
+        note_fail "R11c: drained fire missing the trigger_disabled skip: '${fire_result}'"
+        r11c_verdict=3; return 0
+    fi
+    cf=$(trigger_field "${trig_id}" consecutiveFailures)
+    enabled=$(trigger_field "${trig_id}" enabled)
+    if [[ "${cf}" -eq 0 ]] && [[ "${enabled}" == "false" ]]; then
+        r11c_verdict=0; return 0
+    fi
+    note_fail "R11c: accounting wrong: consecutiveFailures='${cf}' enabled='${enabled}'"
+    r11c_verdict=3
+    return 0
+}
+
+r11c_verdict=""
+for sfx in a b; do
+    r11c_attempt "${sfx}"
+    if [[ "${r11c_verdict}" != "1" ]]; then break; fi
+done
+case "${r11c_verdict}" in
+    0) ok "R11c: pre-disable pending fire drained to skipped (trigger_disabled), unaccounted" ;;
+    1) note_fail "R11c: lost the tick race twice (fire drained before the disable patch both times)" ;;
+    2) note_fail "R11c: setup/delivery failed (see warnings above)" ;;
+    3) ;; # assertion failure already recorded by note_fail inside the attempt
+    *) note_fail "R11c: unexpected verdict '${r11c_verdict}'" ;;
+esac
+
 # R8 — org-scope automation CRUD resolves the RESOURCE segment (#1449):
 # on /orgs/:id/triggers/:triggerId the org id used to shadow the trigger
 # id (every org GET/PUT/DELETE/fires 404'd). The API-key user creates the

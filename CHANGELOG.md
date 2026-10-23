@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-fix residue) no longer rides `processPendingRoutineFire` into
   the agent leg. The gate-closed discipline applies: absorbing is not
   failing, so no failure accounting, no counter movement.
+- **The workflow shape's residue is gated at run execution** — a run
+  minted before the disable claims into the Reconciler, which now
+  re-checks the owning trigger and CANCELS the run (named reason
+  `trigger_disabled`, before workspace activation — the expensive leg)
+  with the audit mirrored onto the run's fire row. A trigger row that
+  cannot be confirmed disabled (store fetch error, trigger gone) is
+  not a disable verdict: the run executes as before.
+- **Re-enable-while-pending semantics (stated per review):** a
+  delivery absorbed while the trigger was disabled — at the receiver
+  gate, or as a pending fire skipped at the drain — is consumed, never
+  replayed after a later re-enable. Stale deliveries executing late
+  would be worse; owners re-arming a trigger send a fresh delivery.
 - **The outage's error shape is pinned fail-loud**: a retry-exhausted
   `script_failed` / `"opencode returned 500"` envelope (every attempt,
   the exact 15–25s class the investigation recorded) fails the fire,

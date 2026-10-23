@@ -316,6 +316,35 @@ func TestWebhookReceiver_DisabledTrigger_AbsorbedSkippedNeverExecutes(t *testing
 	}
 }
 
+// Auth-first ordering pin (review r1): the 6b disabled gate sits AFTER
+// HMAC verification — a disabled trigger with an INVALID signature
+// must stay 401, never the 202-skip. Moving the gate above HMAC would
+// hand senders an unauthenticated enabled/disabled oracle and would
+// pass the rest of the suite — this pin is the only guard.
+func TestWebhookReceiver_DisabledTrigger_InvalidSignature_Stays401(t *testing.T) {
+	store := newMockWebhookReceiverStore()
+	secret := "real-secret"
+	store.webhooks["hook-1"] = &wf.WebhookRow{
+		ID: "hook-1", TriggerID: "t1",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["t1"] = &wf.TriggerRow{
+		ID: "t1", OwnerType: "user", OwnerID: "u1",
+		Enabled: false, SourceType: types.TriggerSourceWebhook,
+		WorkspaceID: strPtrWF("ws-1"),
+	}
+
+	r := setupWebhookRouter(t, store, &mockDecryptor{secret: secret})
+
+	req := httptest.NewRequest("POST", "/api/v1/hooks/t1", bytes.NewBufferString(`{}`))
+	req.Header.Set("X-Hub-Signature-256", "sha256=invalidhex")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, 401, w.Code, "auth precedes the disabled gate — no unauthenticated trigger-state oracle")
+	assert.Empty(t, store.recordedFires, "an unauthenticated delivery records nothing, disabled or not")
+}
+
 func TestWebhookReceiver_ConcurrentRun(t *testing.T) {
 	store := newMockWebhookReceiverStore()
 	store.runErr = wf.ErrConcurrentRun

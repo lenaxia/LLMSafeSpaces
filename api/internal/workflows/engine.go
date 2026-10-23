@@ -56,6 +56,12 @@ type ReconcilerStore interface {
 	UpdateWorkflowRunStatus(ctx context.Context, runID, status string, errorCode *string, errMsg json.RawMessage, output json.RawMessage) error
 	CreateNodeRun(ctx context.Context, row *wf.WorkflowNodeRunRow) error
 	UpdateNodeRunStatus(ctx context.Context, nodeRunID, status string, output json.RawMessage, branch *string, errorCode *string, errMsg json.RawMessage) error
+	// GetTriggerByID re-checks the owning trigger's state at run
+	// execution (#1834): a run claimed before its trigger's
+	// auto-disable must not execute the wedged surface the disable
+	// disarmed. Satisfied by the same store verb the drain uses.
+	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
+	UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	GetWorkflowPolicy(ctx context.Context, workflowID string) (onMissing, ownerType, ownerID string, err error)
@@ -410,6 +416,32 @@ func (r *Reconciler) claimAndDispatch(ctx context.Context, logger Logger, sem ch
 }
 
 func (r *Reconciler) executeRun(ctx context.Context, logger Logger, run *wf.WorkflowRunRow) {
+	// #1834: auto-disable must disarm BOTH target shapes. The receiver
+	// gate covers post-disable DELIVERIES; the drain belt covers pending
+	// ROUTINE fires; this leg covers the workflow shape's residue — a
+	// run minted before the disable (a delivery racing the auto-disable,
+	// pre-fix backpressure) claims and would execute here. A CONFIRMED
+	// disabled trigger cancels the run before workspace activation (the
+	// expensive leg) with the named reason in the audit mirrors. Fetch
+	// failures are NOT a disable verdict: a transient store error or a
+	// gone trigger row keeps today's behavior (the run executes — the
+	// #1473 platform-problem-not-the-fire's discipline).
+	if run.TriggerID != nil && *run.TriggerID != "" {
+		if trigger, terr := r.Store.GetTriggerByID(ctx, *run.TriggerID); terr == nil && trigger != nil && !trigger.Enabled {
+			logger.Info("workflow run canceled: owning trigger disabled", "runId", run.ID, "triggerId", *run.TriggerID)
+			ec := types.RunErrorCodeCanceled
+			errMsg, _ := json.Marshal(map[string]string{
+				"reason": "trigger_disabled",
+				"hint":   "auto-disabled after consecutive failures or disabled by the owner",
+			})
+			_ = r.Store.UpdateWorkflowRunStatus(ctx, run.ID, types.RunStatusCanceled, &ec, errMsg, nil)
+			if run.TriggerFireID != nil && *run.TriggerFireID != "" {
+				_ = r.Store.UpdateTriggerFireResult(ctx, *run.TriggerFireID, errMsg, "skipped")
+			}
+			return
+		}
+	}
+
 	podIP, err := r.Activator.EnsureActive(ctx, run.WorkspaceID, 120*time.Second)
 	if err != nil {
 		policy, ownerType, ownerID, policyErr := r.Store.GetWorkflowPolicy(ctx, run.WorkflowID)

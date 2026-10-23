@@ -85,6 +85,81 @@ func TestExecuteRoutine_AgentLegOpencode500Envelope_FailsLoudAndCounts(t *testin
 	}
 }
 
+// The workflow-shape residue (review r1 F1): a run minted BEFORE the
+// disable claims and would execute through the Reconciler — the only
+// Enabled check anywhere on that path was none (ClaimQueuedRuns joins
+// nothing; the reconciler's own failure accounting can flip enabled
+// mid-queue). The gate cancels the run before workspace activation
+// with the named reason, mirrors the audit onto the fire, and never
+// dispatches a node. A trigger row that CANNOT be confirmed disabled
+// (fetch error, gone) is not a disable verdict — the run executes
+// (today's behavior, pinned as the belt).
+func TestExecuteRun_DisabledTrigger_CancelsRunWithoutExecution(t *testing.T) {
+	mkRun := func() (*mockStore, *Reconciler, *wf.WorkflowRunRow, *mockAgentd) {
+		store := newMockStore()
+		agentd := newMockAgentd()
+		agentd.outputs["start"] = json.RawMessage(`{}`)
+		rec := &Reconciler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+		run := store.addRun("run-1834-wf", "wf-1", "ws-1", linearSpec(), nil, "trig-1834-wf")
+		run.TriggerFireID = strPtr("fire-1834-wf")
+		return store, rec, run, agentd
+	}
+
+	t.Run("disabled trigger cancels before execution", func(t *testing.T) {
+		store, rec, run, agentd := mkRun()
+		store.triggers["trig-1834-wf"] = &wf.TriggerRow{ID: "trig-1834-wf", Enabled: false}
+
+		rec.executeRun(context.Background(), noopLogger{}, run)
+
+		if store.statuses["run-1834-wf"] != types.RunStatusCanceled {
+			t.Fatalf("the disabled trigger's residue run must cancel, got %q", store.statuses["run-1834-wf"])
+		}
+		if store.runErrCodes["run-1834-wf"] != types.RunErrorCodeCanceled {
+			t.Errorf("cancel error code must be the closed enum's canceled, got %q", store.runErrCodes["run-1834-wf"])
+		}
+		if got := string(store.runErrMsgs["run-1834-wf"]); !strings.Contains(got, "trigger_disabled") {
+			t.Errorf("the cancel must name its reason, got %s", got)
+		}
+		if store.fireStatuses["fire-1834-wf"] != "skipped" {
+			t.Errorf("the audit mirror must skip the fire row, got %q", store.fireStatuses["fire-1834-wf"])
+		}
+		if got := string(store.fireResults["fire-1834-wf"]); !strings.Contains(got, "trigger_disabled") {
+			t.Errorf("the fire mirror must carry the reason, got %s", got)
+		}
+		if n := len(store.nodeRuns); n != 0 {
+			t.Errorf("a canceled residue run must dispatch ZERO nodes, got %d", n)
+		}
+		if calls := agentd.callNodeIDs(); len(calls) != 0 {
+			t.Errorf("a canceled residue run must never reach agentd, dispatched %v", calls)
+		}
+		if store.triggerFail["trig-1834-wf"] != 0 {
+			t.Errorf("absorbing residue is not a failure, got %d increments", store.triggerFail["trig-1834-wf"])
+		}
+	})
+
+	t.Run("gone trigger row is not a disable verdict — run executes", func(t *testing.T) {
+		store, rec, run, _ := mkRun()
+		// store.triggers has no row → GetTriggerByID = ErrNotFound.
+
+		rec.executeRun(context.Background(), noopLogger{}, run)
+
+		if store.statuses["run-1834-wf"] == types.RunStatusCanceled {
+			t.Fatal("a gone trigger row must not cancel the run (today's behavior)")
+		}
+	})
+
+	t.Run("enabled trigger executes", func(t *testing.T) {
+		store, rec, run, _ := mkRun()
+		store.triggers["trig-1834-wf"] = &wf.TriggerRow{ID: "trig-1834-wf", Enabled: true}
+
+		rec.executeRun(context.Background(), noopLogger{}, run)
+
+		if store.statuses["run-1834-wf"] == types.RunStatusCanceled {
+			t.Fatal("an enabled trigger's run must never cancel at the gate")
+		}
+	})
+}
+
 // Auto-disable must disarm BOTH entry routes (#1834 finding 3's
 // circuit breaker): the cron claim filters enabled=false, but a fire
 // minted by the webhook receiver (which never checked Enabled) rode

@@ -39,6 +39,17 @@ type mockStore struct {
 	runUpdates    map[string]int
 	wfPolicies    map[string]string
 	runWorkspaces map[string]string
+	// triggers serves the #1834 reconciler disabled-trigger gate's
+	// GetTriggerByID; nil map = no trigger row found (ErrNotFound).
+	triggers map[string]*wf.TriggerRow
+	// runErrCodes/runErrMsgs capture UpdateWorkflowRunStatus's error
+	// envelope so the #1834 pin can assert the named cancel reason.
+	runErrCodes map[string]string
+	runErrMsgs  map[string]string
+	// fireStatuses/fireResults capture UpdateTriggerFireResult writes
+	// (the #1834 audit-mirror assertion).
+	fireStatuses map[string]string
+	fireResults  map[string]json.RawMessage
 }
 
 func newMockStore() *mockStore {
@@ -48,6 +59,11 @@ func newMockStore() *mockStore {
 		runUpdates:    make(map[string]int),
 		wfPolicies:    make(map[string]string),
 		runWorkspaces: make(map[string]string),
+		triggers:      make(map[string]*wf.TriggerRow),
+		runErrCodes:   make(map[string]string),
+		runErrMsgs:    make(map[string]string),
+		fireStatuses:  make(map[string]string),
+		fireResults:   make(map[string]json.RawMessage),
 	}
 }
 
@@ -59,11 +75,37 @@ func (m *mockStore) ClaimQueuedRuns(_ context.Context, _ int) ([]*wf.WorkflowRun
 	return runs, nil
 }
 
-func (m *mockStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, _ *string, _ json.RawMessage, _ json.RawMessage) error {
+func (m *mockStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, errorCode *string, errMsg json.RawMessage, _ json.RawMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.statuses[runID] = status
 	m.runUpdates[runID]++
+	if errorCode != nil {
+		m.runErrCodes[runID] = *errorCode
+	}
+	if errMsg != nil {
+		m.runErrMsgs[runID] = string(errMsg)
+	}
+	return nil
+}
+
+// GetTriggerByID serves the #1834 reconciler gate; store parity: a
+// missing row is wf.ErrNotFound (which the gate treats as "not a
+// disable verdict" and executes the run — today's behavior).
+func (m *mockStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.triggers[triggerID]; ok {
+		return t, nil
+	}
+	return nil, wf.ErrNotFound
+}
+
+func (m *mockStore) UpdateTriggerFireResult(_ context.Context, fireID string, result json.RawMessage, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fireStatuses[fireID] = status
+	m.fireResults[fireID] = result
 	return nil
 }
 
@@ -113,10 +155,6 @@ func (m *mockStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawM
 
 func (m *mockStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) ([]json.RawMessage, error) {
 	return nil, nil
-}
-
-func (m *mockStore) UpdateTriggerFireResult(_ context.Context, _ string, _ json.RawMessage, _ string) error {
-	return nil
 }
 
 func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMessage, input json.RawMessage, triggerID string) *wf.WorkflowRunRow {

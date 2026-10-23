@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Branch:** `fix/1834-routine-wedge-recovery`
-**Status:** PR open, iterating to review
+**Status:** PR #1909 r1 remediation pushed — review r1 (REQUEST_CHANGES @ 0171e45) findings addressed: workflow-shape residue gate + reconciler pins, auth-first pin, e2e R11 rows (a/b/c), closure re-scoped to "addresses the finding-3 amplifier"
 
 ---
 
@@ -77,6 +77,22 @@ executing anyway.
 
 ## Fix design (smallest correct)
 
+0. **Review r1 addition — the workflow shape's residue gate.** r1 F1:
+   the disarm invariant was half-delivered — `ClaimQueuedRuns` joins
+   nothing and the Reconciler never consulted `Enabled`, so a run
+   minted before the disable still executed post-disable (reachable in
+   exactly the outage shape: the reconciler's own failure accounting
+   flips `enabled=false` mid-queue; wedge-class backpressure piles
+   queued runs). `Reconciler.executeRun` now re-checks the owning
+   trigger at execution: a CONFIRMED disabled trigger cancels the run
+   BEFORE workspace activation (named reason `trigger_disabled`, run
+   `canceled` + the closed error-code enum's existing member, audit
+   mirrored onto the run's fire row as `skipped`). Fetch errors and
+   gone triggers are NOT disable verdicts — the run executes (the
+   #1473 platform-problem discipline, pinned as the belt).
+   Mutation-verified: gate deleted → pin RED (`must cancel, got
+   "succeeded"`); restored → green.
+
 1. **Receiver gate** (`webhook_receiver.go`): after HMAC/skew/dedup
    (auth-first — no unauthenticated oracle for trigger state) and after
    the envelope build, a disabled trigger records ONE self-explaining
@@ -115,14 +131,36 @@ surface decisions.
 
 ## Test matrix (green post-fix)
 
-- `api/internal/workflows` full suite (84s) — including the two new
-  pins (drain skip × 2 drives; agent-leg envelope: failed + code+detail
-  verbatim + exactly-once accounting + exactly 3 dispatch attempts +
-  no reset).
-- `api/internal/handlers` full suite (89s) — including the receiver pin
-  (workflow- and routine-targeted subtests: 202 + one skipped audit row
-  + no runs + no failure increments).
-- `go vet` clean; `gofmt` clean.
+- `api/internal/workflows` full suite (84s) — including the new pins:
+  drain skip × 2 drives (skipped + self-explaining + zero dispatches +
+  no accounting); agent-leg envelope (failed + code+detail verbatim +
+  exactly-once accounting + exactly 3 attempts + no reset); reconciler
+  residue × 3 subtests (disabled → canceled+mirrored+zero nodes+zero
+  agentd calls+no accounting; gone row → executes; enabled →
+  executes).
+- `api/internal/handlers` full suite — receiver pin × 2 target shapes
+  (202 + one terminal skip row + no runs + no increments) + the
+  auth-first regression pin (disabled trigger + invalid signature →
+  401, nothing recorded).
+- `local/` full suite (the ExecuteSmoke traversal under shims +
+  structural needles) — R11a (receiver gate, routine shape: 202+
+  skipped body, self-explaining skip fire, zero executing fires, cf
+  unchanged), R11b (workflow shape: 202, zero runs minted), R11c (the
+  drain belt with R10's tick-race retry pattern: pre-disable pending
+  fire → skipped trigger_disabled, cf==0, race-lost detection via the
+  dummy workspace's activation failure).
+- `go vet` clean; `gofmt` clean; `repolint` all checks passed; worklog
+  dup-check empty.
+
+## Closure scope (per review r1's issue-closure verification)
+
+The PR says "Addresses the #1834 finding-3 amplifier" — NOT Closes:
+finding 1's literal ask (agentd restart logs 22:41–22:54Z) is
+owner-surface and stays open with the code-level mechanism recorded
+below; finding 2 was superseded by #1885; finding 3's per-leg
+accounting was #1885's — this PR contributes the amplifier fix (the
+webhook disarm across receiver, drain, and reconciler paths) plus the
+outage-shape belt pins.
 
 ## Mutation-verify suggestion
 
