@@ -355,7 +355,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list, never a failed tool"},
+					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list (every row then carries archived_set_stale:true — known-unfiltered, never a failed tool), never a silent gap"},
 				},
 			},
 		},
@@ -628,7 +628,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_metadata",
-			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. Output is aggregate metadata only — read message CONTENT with session_read.",
+			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. A top-level archived_set_stale:true means the archive annotations could not prove freshness (~15s platform cache degraded) — treat archive flags in that result as possibly stale. Output is aggregate metadata only — read message CONTENT with session_read.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -641,7 +641,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_archive",
-			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
+			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. The success reply carries archived_visibility: verified (a post-write read of the archived set confirmed the transition — this pod's listings reflect it immediately) or unverified (the confirmation could not be read or disagreed; the state still holds, but listings may lag up to ~15s — do NOT re-archive on unverified, check with session_metadata instead). NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1066,6 +1066,15 @@ func mcpSessionList(ctx context.Context, password string, includeArchived bool) 
 	filtered := string(body)
 	if !includeArchived {
 		filtered = filterArchivedFromSessionList(ctx, body)
+		// #1879: the degrade must never be silent. When the filter's
+		// set cannot prove freshness (platform outage past the ~15s
+		// window) the listing is deliberately unfiltered — every row
+		// is then stamped so the caller knows archived entries may be
+		// present. include_archived:true listings are unfiltered BY
+		// REQUEST and take no stamp.
+		if filterableArchivedSet() == nil {
+			filtered = stampArchivedSetStale([]byte(filtered))
+		}
 	}
 	// #1756 §1: the listing's identifier IS the phrase — each row's
 	// id value flips to the replica-known phrase. Rows without a

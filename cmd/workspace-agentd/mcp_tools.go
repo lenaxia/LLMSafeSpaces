@@ -684,6 +684,11 @@ func podPlatformClient() (*opencode.Client, string, string, error) {
 // history stays viewable, and unarchiving restores chat instantly.
 // In-pod peer sends are NOT blocked (enforcement is proxy-side by the
 // owner's ruling) — the marker is for the USER's session list.
+// #1879: the success reply carries archived_visibility — "verified"
+// when the post-write confirmation read of the archived set agrees
+// (and the pod's cache is refreshed: this pod's listings converge
+// immediately), "unverified" when the read failed or disagreed (the
+// state still holds; listings may lag up to one cache window).
 func mcpSessionArchive(ctx context.Context, password, sessionID string, archived bool) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -714,14 +719,27 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 		}
 		return "", fmt.Errorf("failed to archive session: %w", err)
 	}
+	// #1879: the write landed — now prove it is VISIBLE. A confirmation
+	// read of the archived set (bypassing the ~15s throttle) both (a)
+	// refreshes this pod's shared cache so the pod's own listings
+	// converge immediately instead of after the TTL window, and (b)
+	// lets the tool report verified/unverified. A failed or
+	// disagreeing read never fails the tool (the platform write is the
+	// state truth) and never fabricates cache freshness.
+	confirmed := forceArchivedSetRefresh(ctx)
+	visibility := "unverified"
+	if confirmed != nil && confirmed[sessionID] == archived {
+		visibility = "verified"
+	}
 	status := "archived"
 	if !archived {
 		status = "unarchived"
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":     status,
-		"session_id": id,
+		"status":              status,
+		"session_id":          id,
+		"archived_visibility": visibility,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
@@ -860,6 +878,72 @@ func filterableArchivedSet() map[string]bool {
 		return nil
 	}
 	return archivedSetCacheVal
+}
+
+// forceArchivedSetRefresh fetches the archived set UNGATED — no TTL, no
+// throttle (#1879: the post-archive confirmation read must observe the
+// write immediately). On success the shared cache is updated (val,
+// throttle, and the freshness watermark) so this pod's listings and
+// annotations converge without waiting out the window. On ANY failure
+// it returns nil and leaves the cache untouched — a failed
+// confirmation must never fabricate freshness (the filter would then
+// trust a set it never saw).
+func forceArchivedSetRefresh(ctx context.Context) map[string]bool {
+	fetched := fetchArchivedSessionSet(ctx)
+	if fetched == nil {
+		return nil
+	}
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal = fetched
+	archivedSetCacheAt = time.Now()
+	archivedSetCacheFetchedAt = time.Now()
+	archivedSetCacheMu.Unlock()
+	return fetched
+}
+
+// stampArchivedSetStale marks every row of a DEGRADED default listing
+// with `"archived_set_stale":true` (#1879): the unfiltered degrade is
+// correct (a stale set must not keep hiding rows, #1735 r1 f1) but it
+// must never be SILENT — the incident's orchestrator re-archived
+// already-archived sessions because the listing looked authoritative.
+// Same splice discipline as the filter: each element's original bytes
+// are preserved (no re-marshal — json.Marshal would compact and
+// HTML-escape titles containing &<>; unknown fields survive) and the
+// marker is inserted before the closing brace. On ANY parse failure
+// the original body is returned unmarked.
+func stampArchivedSetStale(body []byte) string {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(body, &elems); err != nil {
+		return string(body)
+	}
+	out := make([]byte, 0, len(body)+len(elems)*len(`,"archived_set_stale":true`))
+	out = append(out, '[')
+	for i, e := range elems {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, stampElemArchivedStale(e)...)
+	}
+	out = append(out, ']')
+	return string(out)
+}
+
+// stampElemArchivedStale appends the marker field to one raw JSON
+// object element. Non-object elements pass through untouched; an empty
+// object becomes just the marker.
+func stampElemArchivedStale(e json.RawMessage) []byte {
+	trimmed := bytes.TrimRight(e, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[len(trimmed)-1] != '}' {
+		return e
+	}
+	inner := trimmed[:len(trimmed)-1]
+	if bytes.Equal(bytes.TrimSpace(inner), []byte("{")) {
+		return []byte(`{"archived_set_stale":true}`)
+	}
+	res := make([]byte, 0, len(inner)+len(`,"archived_set_stale":true`)+1)
+	res = append(res, inner...)
+	res = append(res, `,"archived_set_stale":true`...)
+	return append(res, '}')
 }
 
 // fetchArchivedSessionSet pulls the archived IDs from the platform's
@@ -1016,6 +1100,11 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
 	}
 	archivedSet := archivedSessionSet(ctx)
+	// #1879: one capture, two uses — the aggregate's freshness gate and
+	// the top-level staleness marker must describe the SAME set the
+	// rows below are annotated from (a per-row re-read could race a
+	// background refresh and lie about the shape just served).
+	freshArchivedSet := filterableArchivedSet()
 
 	match := func(s opencode.SessionSummary) bool {
 		if scope != "" {
@@ -1025,7 +1114,7 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		// include_archived is the explicit opt-in. Single-ID scopes
 		// never reach this branch. The filter set is freshness-gated —
 		// a stale set (platform outage past the TTL) no-ops (r1 f1).
-		return includeArchived || !filterableArchivedSet()[s.ID]
+		return includeArchived || !freshArchivedSet[s.ID]
 	}
 	type sessionMeta struct {
 		ID string `json:"session_id"`
@@ -1106,11 +1195,20 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 	if len(sessions) > 0 {
 		version = sessions[0].Version
 	}
-	out, _ := json.Marshal(map[string]any{
+	outFields := map[string]any{
 		"workspace_id":  os.Getenv("WORKSPACE_ID"),
 		"agent_version": version,
 		"sessions":      metas,
-	})
+	}
+	// #1879: the archived annotations (and, on the aggregate, the
+	// archived filter) ride a ~15s pod cache of index-only state. When
+	// the last successful fetch is beyond the window the result is
+	// still served (never a failed tool) but marked: callers comparing
+	// archive state across surfaces deserve to know it may be stale.
+	if freshArchivedSet == nil {
+		outFields["archived_set_stale"] = true
+	}
+	out, _ := json.Marshal(outFields)
 	return string(out), nil
 }
 

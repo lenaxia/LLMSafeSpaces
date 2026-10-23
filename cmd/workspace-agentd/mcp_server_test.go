@@ -913,6 +913,41 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		}
 	})
 
+	// #1879: the archived-set degradation disclosure is contract — the
+	// incident's orchestrator re-archived already-archived sessions
+	// because the degraded surfaces looked authoritative. Every marker
+	// the fix emits must be named in the description the model sees.
+	t.Run("archive degradation disclosure (#1879)", func(t *testing.T) {
+		d, ok := descs["session_list"]
+		require.True(t, ok, "session_list in tools/list")
+		assert.Contains(t, d, "NON-ARCHIVED sessions by default")
+		sd, ok := schemaDescs["session_list/include_archived"]
+		require.True(t, ok, "session_list/include_archived schema description present")
+		for _, want := range []string{
+			"archived_set_stale:true", // the per-row stale marker is named
+			"known-unfiltered",        // the degrade's meaning is stated
+			"never a silent gap",      // the disclosure guarantee
+		} {
+			assert.Contains(t, sd, want)
+		}
+
+		md, ok := descs["session_metadata"]
+		require.True(t, ok, "session_metadata in tools/list")
+		assert.Contains(t, md, "archived_set_stale:true", "the top-level stale marker is named")
+		assert.Contains(t, md, "possibly stale", "stale archive flags are called out as such")
+
+		ad, ok := descs["session_archive"]
+		require.True(t, ok, "session_archive in tools/list")
+		for _, want := range []string{
+			"archived_visibility",             // the verification verdict is named
+			"verified",                        // both verdicts and their meaning
+			"unverified",                      //
+			"do NOT re-archive on unverified", // the incident's failure mode is preempted
+		} {
+			assert.Contains(t, ad, want)
+		}
+	})
+
 	t.Run("session_read guidance", func(t *testing.T) {
 		d, ok := descs["session_read"]
 		require.True(t, ok, "session_read in tools/list")

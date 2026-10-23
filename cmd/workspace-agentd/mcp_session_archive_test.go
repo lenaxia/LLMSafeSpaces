@@ -38,6 +38,12 @@ func setupPodSessionEnv(t *testing.T, apiSrv *httptest.Server) {
 func TestMCPSessionArchive_HappyPath(t *testing.T) {
 	var gotPath, gotBody, gotAuth string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-archived" {
+			// #1879: the post-write confirmation read — answer fresh.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"archived":["ses-1"]}`))
+			return
+		}
 		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
 		buf := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(buf)
@@ -57,11 +63,17 @@ func TestMCPSessionArchive_HappyPath(t *testing.T) {
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
 	assert.Equal(t, "archived", res["status"])
+	assert.Equal(t, "verified", res["archived_visibility"], "#1879: the confirmation read agrees with the write")
 }
 
 func TestMCPSessionArchive_Unarchive(t *testing.T) {
 	var gotBody string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-archived" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"archived":[]}`))
+			return
+		}
 		buf := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(buf)
 		gotBody = string(buf)
