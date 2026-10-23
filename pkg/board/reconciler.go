@@ -552,7 +552,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					// The #1832 review settle rides the drift-done path
 					// too (a drift-completed subject completes/parks its
 					// anchored review tasks in the same transaction).
-					settleEvts, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil)
+					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil)
 					if err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
@@ -566,6 +566,9 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					done++
 					if err := s.commitPublishing(ctx, tx, append([]Event{evt}, settleEvts...)...); err != nil {
 						return done, review, reentry, err
+					}
+					for _, pid := range settlePokes {
+						s.pokeDrive(pid) // sibling projects of the subject (review r1, finding 5)
 					}
 				} else {
 					if err := tx.Commit(ctx); err != nil {

@@ -164,6 +164,10 @@ type Claim struct {
 	// (origin escalated) instead. The caller claims the next candidate.
 	Escalated bool  `json:"escalated"`
 	Task      *Task `json:"task,omitempty"`
+	// VerdictChain (#1832 item 5): the task's prior review verdicts, in
+	// order — the charter envelope embeds them for the next claimant
+	// after a fail-bounce (iteration history, never a failure count).
+	VerdictChain []Verdict `json:"verdictChain,omitempty"`
 }
 
 // SearchFilters scopes a board search (design §4.8's search box: project

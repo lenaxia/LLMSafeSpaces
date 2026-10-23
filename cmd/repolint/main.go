@@ -19,6 +19,12 @@
 //	repolint -fix-worklogs         # also: auto-renumber duplicate worklog files, then run all checks
 //	repolint -fix-worklogs-only    # ONLY auto-renumber; skip checks. For .githooks/post-rewrite
 //	                               # where the tree may be mid-rebase and checks would be noisy.
+//	repolint -numbering-only       # ONLY the numbering gates: migrations sequence + worklog
+//	                               # uniqueness. The checks the numbering-gate workflow runs
+//	                               # against merge trees (#1838).
+//	repolint -next-numbers         # print the next free worklog and migration numbers given
+//	                               # local state, origin/main, and open-PR claims (#1838 soft
+//	                               # layer for hand-numbered artifacts); exit 0.
 //	repolint -cluster-drift        # also: compare deployed CRDs on the current kubeconfig
 //	                               # context against the chart YAMLs. Off by default — requires
 //	                               # a reachable cluster, so unsuitable for pre-commit/CI
@@ -49,6 +55,8 @@ func main() {
 	fixDrift := flag.Bool("fix-drift", false, "copy api/migrations/*.sql into helm/migrations/ to resolve drift")
 	fixWorklogs := flag.Bool("fix-worklogs", false, "auto-renumber duplicate worklog files to the next available number, then run all checks")
 	fixWorklogsOnly := flag.Bool("fix-worklogs-only", false, "auto-renumber duplicate worklog files and exit (no checks). Used by .githooks/post-rewrite.")
+	numberingOnly := flag.Bool("numbering-only", false, "run ONLY the numbering gates (migrations sequence + worklog uniqueness) and exit. Used by the numbering-gate workflow against merge trees (#1838).")
+	nextNumbers := flag.Bool("next-numbers", false, "print the next free worklog and migration numbers given local state, origin/main, and open-PR claims; then exit (#1838 soft layer).")
 	clusterDrift := flag.Bool("cluster-drift", false, "additionally compare each chart CRD against the deployed CRD on the current kubeconfig context. OFF by default — requires a reachable cluster, so unsuitable for pre-commit/CI without one.")
 	flag.Parse()
 
@@ -79,6 +87,30 @@ func main() {
 			os.Exit(exitInternal)
 		}
 		_ = renames // runFixWorklogs already printed
+		os.Exit(exitOK)
+	}
+
+	// -next-numbers is the author-facing soft layer (#1838): print the
+	// numbers an author/lane may take, skipping everything the local
+	// tree, origin/main, and OPEN PRs already hold. Migrations are
+	// hand-numbered — this is their race prevention.
+	if *nextNumbers {
+		fmt.Print(repolint.NextNumbers(root))
+		os.Exit(exitOK)
+	}
+
+	// -numbering-only is the numbering-gate workflow's mode (#1838):
+	// exactly the two sequence gates, cheap enough to run per open PR
+	// per main push, and nothing else — a merge tree may legitimately
+	// fail unrelated layout checks the PR will never ship.
+	if *numberingOnly {
+		failures := runMigrations(root)
+		failures += runWorklogUniqueness(root)
+		if failures > 0 {
+			fmt.Fprintf(os.Stderr, "\nrepolint: %d numbering check(s) failed\n", failures)
+			os.Exit(exitFailures)
+		}
+		fmt.Println("repolint: numbering checks passed")
 		os.Exit(exitOK)
 	}
 

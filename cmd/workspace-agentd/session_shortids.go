@@ -129,15 +129,26 @@ func (s *sessionShortIDStore) put(shortID, sessionID string) {
 	_ = s.persistLocked()
 }
 
-// putAll replaces the whole replica (boot/on-miss pull) and persists.
+// putAll applies a registry pull as a MERGE (upsert) — a pull never
+// removes entries (#1850). The pull's snapshot can predate a
+// create_session's register round-trip (the warm worker's in-flight
+// pull at spawn): a replace-style apply wiped the fresh phrase→harness
+// mapping the moment the racing pull landed, degrading the spawned
+// session's emission to the harness id + id_deprecated and breaking
+// phrase-addressed sends until a later pull re-learned what the store
+// already knew. The registry's append-only contract (a phrase is
+// immutable once minted; rows are only born — the single-mint-owner
+// seam) makes merge the faithful apply: an entry ABSENT from a pull is
+// a stale snapshot or a deleted session — the latter keeps resolving
+// to a dead harness id and fails the SessionExists probe cleanly with
+// the did-you-mean clause, never a hard error (the replica-is-advisory
+// posture this file's header pins).
 func (s *sessionShortIDStore) putAll(entries map[string]string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.byShort = map[string]string{}
-	s.bySession = map[string]string{}
 	for shortID, sessionID := range entries {
 		s.install(shortID, sessionID)
 	}

@@ -67,9 +67,13 @@ type busySnapHarness struct {
 func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.HandlerFunc, si interfaces.SessionIndexService) *busySnapHarness {
 	t.Helper()
 
-	statuszCalls := 0
+	// The stub is hit from concurrent flight goroutines (an on-demand
+	// flight parking on the handler while a joiner's connect-path flight
+	// enters — the #1862 CI race fired exactly here); the counter is
+	// atomic end-to-end.
+	var statuszCalls atomic.Int32
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		statuszCalls++
+		statuszCalls.Add(1)
 		statuszHandler(w, r)
 	})
 	srv := httptest.NewServer(wrapped)
@@ -129,7 +133,7 @@ func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.Handler
 		router:   router,
 		statusz:  srv,
 		wsMock:   wsMock,
-		statuszN: func() int { return statuszCalls },
+		statuszN: func() int { return int(statuszCalls.Load()) },
 	}
 }
 

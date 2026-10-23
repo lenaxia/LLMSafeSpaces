@@ -1562,6 +1562,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
 				)),
 				board.WithAsyncSpawn(),
+				// #1832 item 5 (2/2): config-gated review auto-assign —
+				// a dedicated reviewer session dispatched directly when a
+				// task enters in_review under reviewColumn=auto +
+				// autoAssignReviewer=true (manual/off unchanged).
+				board.WithReviewAssigner(newReviewAssigner(
+					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
+					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
+				)),
 				// #1747: the worker-directive seams — delete's in-flight
 				// abort + pause-must-pause halt/resume delivery, both on
 				// the pkg/agent adapter's session routes (no new

@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -74,6 +75,15 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// cooldown expires (the sweep observes the expiry).
 	if toStage == StageDone {
 		s.pokeDrive(p.ID)
+	}
+	// #1832 item 5 (2/2): →in_review consults the effective config —
+	// reviewColumn=auto AND autoAssignReviewer dispatches a reviewer
+	// directly (never queued behind the worker FIFO). manual/off keep
+	// today's behavior exactly. A REPLAYED move (duplicate requestID,
+	// 200-with-original) does NOT re-dispatch — the original invocation's
+	// reviewer is already in flight.
+	if toStage == StageInReview && dup == nil {
+		s.maybeAutoAssignReview(ctx, p, t)
 	}
 	_ = dup // 200-with-original: the reloaded row IS the original outcome
 	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
@@ -238,17 +248,25 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 // the token in its charter (optionally aborting a superseded live
 // session first — the interrupt seam); there are no nudges to dead
 // sessions anywhere. events carries nested settle events (the #1832
-// review-complete/park coupling) for post-commit SSE publication.
+// review-complete/park coupling) for post-commit SSE publication;
+// pokeProjects carries settle-touched projects for the dispatch drive
+// (a settled review may live in a SIBLING project of the subject —
+// review r1, finding 5: unblocked dependents there get the event-driven
+// drive, not just the sweep's latency).
 type nudge struct {
 	taskID, token string
 	spawn         bool
 	abortAssignee string
 	events        []Event
+	pokeProjects  []string
 }
 
 func (n nudge) fire(ctx context.Context, s *Service) {
 	for _, evt := range n.events {
 		s.publishCommitted(evt)
+	}
+	for _, pid := range n.pokeProjects {
+		s.pokeDrive(pid)
 	}
 	if !n.spawn {
 		return
@@ -281,11 +299,12 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
 		return err
 	}
-	evts, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
+	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
 	if err != nil {
 		return err
 	}
 	n.events = append(n.events, evts...)
+	n.pokeProjects = append(n.pokeProjects, pokes...)
 	return nil
 }
 
@@ -363,9 +382,29 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 
 // --- Heartbeat + throttle -----------------------------------------------------------
 
+// heartbeatFutureTolerance bounds honest client-clock drift: an
+// observedProgressAt up to this far ahead of the SERVER clock is clamped
+// to the server clock (a FUTURE stamp is never stored — the C1 poison
+// direction); a stamp beyond it is a hallucinated estimate, not
+// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
+// future watermark is unrenewable by construction, so one accepted
+// future stamp locked the worker out of its own lease). PAST-skewed
+// client stamps remain client-trusted (only the future direction can
+// poison the evidence gate); the #1847 rework retires worker-declared
+// stamps as the liveness input entirely.
+const heartbeatFutureTolerance = 2 * time.Minute
+
 // Heartbeat refreshes the lease ONLY when it carries new progress evidence
 // (the worker's message-level watermark moved — #1685: elapsed time is not
-// liveness). Requires the matching claim token.
+// liveness). Requires the matching claim token. #1847: the server clock is
+// the authority over the FUTURE direction — a client-observed timestamp
+// beyond heartbeatFutureTolerance ahead of the server clock rejects
+// (invalid evidence), one within it clamps to now (a future stamp is
+// never stored), and a stored watermark already reading future (pre-fix
+// C1 damage, or DB-ahead/app-behind clock skew) reads as stale so an
+// honest present-t observation heals it — ONE evidence-free extend,
+// bounded: the heal overwrites the watermark, so a re-sent identical
+// stamp does not extend again (pinned TestKill_HeartbeatHealIsOneShot).
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -374,9 +413,21 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
+	serverNow := time.Now().UTC()
+	switch {
+	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
+		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
+			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
+	case observedProgressAt.After(serverNow):
+		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
+	}
 	// Evidence gate: extend only when the watermark moved past the stored
-	// progress watermark.
-	extends := t.LastProgressAt == nil || observedProgressAt.After(*t.LastProgressAt)
+	// Evidence gate: extend only when the watermark moved past the stored
+	// progress watermark. A stored watermark ahead of the server clock is
+	// pre-fix poison (the C1 lockout) and reads as stale — never as
+	// unbeatable evidence.
+	extends := t.LastProgressAt == nil || t.LastProgressAt.After(serverNow) || observedProgressAt.After(*t.LastProgressAt)
 	// #1832 WS4 stillborn guard (the narrow evidence fix — the
 	// platform-derived liveness rework is #1847's, another lane): a
 	// POSITIVE zero-message report for the assignee session refuses the

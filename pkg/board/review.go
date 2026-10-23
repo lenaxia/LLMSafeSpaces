@@ -49,8 +49,10 @@ func reviewEvidenceFallback(subject *Task) string {
 
 // completeReviewTasks settles the anchored review tasks of a task that
 // just reached done, inside the caller's transaction. It returns the
-// post-commit publishable events for the settles.
-func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool) ([]Event, error) {
+// post-commit publishable events for the settles plus the project ids
+// the settle touched (sibling projects of the subject — the dispatch
+// drive feed).
+func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool) ([]Event, []string, error) {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -60,10 +62,11 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 	}
 	candidates, err := s.reviewCandidates(ctx, tx, subject)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sys := Actor{Kind: ActorSystem, Surface: "engine"}
 	var out []Event
+	var pokes []string
 	for _, cand := range candidates {
 		if visited[cand.ID] {
 			continue
@@ -71,31 +74,33 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 		if criteriaAllMet(cand) {
 			evt, err := s.completeReviewTask(ctx, tx, cand, subject, evidence, sys)
 			if err != nil {
-				return out, err
+				return out, pokes, err
 			}
 			if evt != nil {
 				out = append(out, *evt)
+				pokes = append(pokes, cand.ProjectID)
 				visited[cand.ID] = true
 				// Chained delegation: the completed review may anchor
 				// its own reviewers. The visited set + the done
 				// predicate bound the walk.
-				more, err := s.completeReviewTasks(ctx, tx, cand, evidence, visited)
+				more, morePokes, err := s.completeReviewTasks(ctx, tx, cand, evidence, visited)
 				if err != nil {
-					return out, err
+					return out, pokes, err
 				}
 				out = append(out, more...)
+				pokes = append(pokes, morePokes...)
 			}
 		} else {
 			evt, err := s.parkReviewTask(ctx, tx, cand, subject, evidence, sys)
 			if err != nil {
-				return out, err
+				return out, pokes, err
 			}
 			if evt != nil {
 				out = append(out, *evt)
 			}
 		}
 	}
-	return out, nil
+	return out, pokes, nil
 }
 
 // completeReviewTask lands one eligible review task in done (guarded
@@ -108,7 +113,7 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
 			claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL, pending_origin=NULL
-		WHERE id=$1 AND (stage='in_review' OR (stage='pending_input' AND pending_origin='drift_review'))`,
+		WHERE id=$1 AND NOT paused AND (stage='in_review' OR (stage='pending_input' AND pending_origin='drift_review'))`,
 		cand.ID)
 	if err != nil {
 		return nil, err
@@ -150,7 +155,7 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 func (s *Service) parkReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor) (*Event, error) {
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='drift_review'
-		WHERE id=$1 AND stage='in_review'`, cand.ID)
+		WHERE id=$1 AND NOT paused AND stage='in_review'`, cand.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +186,16 @@ func (s *Service) parkReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *
 // reviewCandidates loads the subject's anchored review tasks that are
 // structurally eligible for the settle walk: same workspace (the
 // dependency-edge scoping rule — a foreign tenant's identically-tagged
-// row is never touched), non-terminal review stages, and not
+// row is never touched; IS NOT DISTINCT FROM so two workspace-less
+// projects still settle), non-terminal review stages, and not
 // effectively paused (#1747: the engine does not force forward writes
-// through the pause lever).
+// through the pause lever). FOR UPDATE locks each candidate row
+// THROUGH the settle's branch decision (review r1, finding 1: the
+// criteria verdict must read the locked row — a racing UpdateTask
+// rewriting the criteria array blocks on the lock, never lands
+// done-with-unmet-criteria through this path). Short-id anchors are
+// per-project unique, so two same-named tasks in one workspace's
+// projects both anchor — the UUID anchor form disambiguates.
 func (s *Service) reviewCandidates(ctx context.Context, tx pgx.Tx, subject *Task) ([]*Task, error) {
 	anchors := []string{"review-of:" + subject.ShortID, "review-of:" + subject.ID}
 	rows, err := tx.Query(ctx, `
@@ -194,7 +206,8 @@ func (s *Service) reviewCandidates(ctx context.Context, tx pgx.Tx, subject *Task
 		WHERE t.tags && $1::text[]
 		  AND (t.stage = 'in_review' OR (t.stage = 'pending_input' AND t.pending_origin = 'drift_review'))
 		  AND NOT t.paused AND e.status <> 'paused' AND NOT p.paused
-		  AND p.target_workspace_id = (SELECT p2.target_workspace_id FROM projects p2 WHERE p2.id = $2)`,
+		  AND p.target_workspace_id IS NOT DISTINCT FROM (SELECT p2.target_workspace_id FROM projects p2 WHERE p2.id = $2)
+		FOR UPDATE OF t`,
 		anchors, subject.ProjectID)
 	if err != nil {
 		return nil, err

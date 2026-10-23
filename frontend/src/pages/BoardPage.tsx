@@ -9,6 +9,9 @@ import { Input } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { TagInput } from "../components/ui/TagInput";
+import { TaskDeleteDialog, describeTaskDeleteResult } from "../components/board/TaskDeleteDialog";
+import { EpicDeleteDialog } from "../components/board/EpicDeleteDialog";
+import { KebabMenu } from "../components/ui/KebabMenu";
 import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
 import { TaskCard } from "../components/board/TaskCard";
 import { TaskDialog } from "../components/board/TaskDialog";
@@ -381,6 +384,13 @@ export function BoardPage() {
   const [epicDrawer, setEpicDrawer] = useState<BoardEpic | null>(null);
   // #1832 item 4: the task-detail drawer (charter + criteria + full
   // audit timeline) — opened from the card's details affordance.
+  // #1832 item 3: kebab delete flows — the modals' targets + their own
+  // error channel (a refusal renders INSIDE the modal, which stays open
+  // for a retry; page-level notices carry the successes).
+  const [taskDeleteTarget, setTaskDeleteTarget] = useState<BoardTask | null>(null);
+  const [epicDeleteTarget, setEpicDeleteTarget] = useState<BoardEpic | null>(null);
+  const [deleteError, setDeleteError] = useState<DescribedBoardError | null>(null);
+
   const [taskDrawer, setTaskDrawer] = useState<BoardTask | null>(null);
 
   const createProjectMutation = useMutation({
@@ -503,6 +513,71 @@ export function BoardPage() {
     onError: (err) => setPageError(toBoardError(err)),
     onSettled: (_d, _e, task) => setStartingShortId((cur) => (cur === task.short_id ? null : cur)),
   });
+
+  // #1832 item 3 — task kebab → delete. The reconnect checkbox rides
+  // through verbatim (#1747's optional flag): unchecked = dependents
+  // simply unblocked (audited), checked = they inherit the deleted
+  // task's direct upstream edges (dedup + cycle-guarded server-side).
+  const handleTaskDelete = useCallback(
+    async (task: BoardTask, reconnect: boolean): Promise<boolean> => {
+      setDeleteError(null);
+      try {
+        const result = await boardApi.deleteTask(task.short_id, reconnect);
+        setTaskDeleteTarget(null);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        setPageNotice(describeTaskDeleteResult(result));
+        return true;
+      } catch (err) {
+        setDeleteError(toBoardError(err));
+        return false;
+      }
+    },
+    [queryClient],
+  );
+
+  // #1832 item 3 — epic kebab → delete. The first attempt NEVER sends
+  // force (the engine refuses with epic_state while claims are live —
+  // the refusal reveals the force-confirm in the modal; force aborts
+  // each in-flight worker post-commit).
+  const handleEpicDelete = useCallback(
+    async (epic: BoardEpic, force: boolean): Promise<boolean> => {
+      setDeleteError(null);
+      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
+      try {
+        const result = await boardApi.deleteEpic(idOrShort, force);
+        setEpicDeleteTarget(null);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        const cascade = result.cascade_tasks ?? [];
+        const orphans = result.orphaned_dependents ?? [];
+        setPageNotice(
+          `${result.short_id} deleted — ${cascade.length} task${cascade.length === 1 ? "" : "s"} cascaded` +
+            (orphans.length > 0 ? `; ${orphans.length} cross-epic dependent${orphans.length === 1 ? "" : "s"} orphaned (audited)` : ""),
+        );
+        return true;
+      } catch (err) {
+        setDeleteError(toBoardError(err));
+        return false;
+      }
+    },
+    [queryClient],
+  );
+
+  // #1832 item 3 — project kebab: archive/unarchive ONLY (#1747 —
+  // project delete is eliminated; the menu never offers it).
+  const handleProjectLifecycle = useCallback(
+    async (project: BoardProject, action: "archive" | "unarchive"): Promise<void> => {
+      setPageError(null);
+      try {
+        const updated =
+          action === "archive" ? await boardApi.archiveProject(project.id) : await boardApi.unarchiveProject(project.id);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        setPageNotice(`${updated.short_id}: ${action === "archive" ? "archived (claims into it stopped)" : "unarchived (active again)"}.`);
+      } catch (err) {
+        setPageError(toBoardError(err));
+      }
+    },
+    [queryClient],
+  );
 
   // §4.8 activity feed: subscribe to the root stream's board.event fan-
   // out (boardFeed). Display-only — the ["board"] invalidation in the
@@ -738,9 +813,9 @@ export function BoardPage() {
                     </Badge>
                   )}
                   {/* #1832 item 1: contextual creation — the swimlane IS
-                   * the selection (New epic / New task land here, no
-                   * dropdown needed; New task honors the selected epic
-                   * band, else the picker). */}
+                    * the selection (New epic / New task land here, no
+                    * dropdown needed; New task honors the selected epic
+                    * band, else the picker). */}
                   <div className="ml-auto flex items-center gap-1">
                     <Button
                       variant="outline"
@@ -762,6 +837,24 @@ export function BoardPage() {
                     >
                       New task
                     </Button>
+                    {/* #1832 item 3: project kebab — archive/unarchive
+                     * ONLY (#1747: project delete is eliminated; this
+                     * menu never grows a delete item). */}
+                    <KebabMenu
+                      ariaLabel={`Project actions for ${project.name}`}
+                      testId={`project-kebab-${project.short_id}`}
+                      items={[
+                        project.status === "archived"
+                          ? {
+                              label: "Unarchive project",
+                              onClick: () => void handleProjectLifecycle(project, "unarchive"),
+                            }
+                          : {
+                              label: "Archive project",
+                              onClick: () => void handleProjectLifecycle(project, "archive"),
+                            },
+                      ]}
+                    />
                   </div>
                 </header>
                 {/* #1832 item 2: collapsible epic bands, tasks grouped
@@ -817,6 +910,27 @@ export function BoardPage() {
                             </span>
                             {epic.status === "paused" && <Badge variant="warning" className="px-1.5 py-0 text-[10px]">paused</Badge>}
                             {selected && <Badge variant="default" className="px-1.5 py-0 text-[10px]">selected</Badge>}
+                            {/* #1832 item 3: epic kebab — the delete flow
+                             * (in-flight surfacing + refuse/force-confirm
+                             * inside the modal). The trigger stops
+                             * propagation: the kebab never toggles the
+                             * band's selection. */}
+                            <span className="ml-auto">
+                              <KebabMenu
+                                ariaLabel={`Epic actions for ${epic.title}`}
+                                testId={`epic-kebab-${epic.id}`}
+                                items={[
+                                  {
+                                    label: "Delete epic…",
+                                    destructive: true,
+                                    onClick: () => {
+                                      setDeleteError(null);
+                                      setEpicDeleteTarget(epic);
+                                    },
+                                  },
+                                ]}
+                              />
+                            </span>
                           </div>
                           {!collapsed && (
                             <div className="flex flex-col gap-0.5 px-2 pb-1.5 pt-0.5">
@@ -881,6 +995,10 @@ export function BoardPage() {
                         setStartingShortId(t.short_id);
                         startTaskMutation.mutate(t);
                       }}
+                      onCardDelete={(t) => {
+                        setDeleteError(null);
+                        setTaskDeleteTarget(t);
+                      }}
                       startingShortId={startingShortId}
                     />
                   ))}
@@ -917,6 +1035,10 @@ export function BoardPage() {
                           onCardStart={(t) => {
                             setStartingShortId(t.short_id);
                             startTaskMutation.mutate(t);
+                          }}
+                          onCardDelete={(t) => {
+                            setDeleteError(null);
+                            setTaskDeleteTarget(t);
                           }}
                           startingShortId={startingShortId}
                         />
@@ -1257,6 +1379,38 @@ export function BoardPage() {
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+
+      {/* --- Task delete (kebab → modal with the reconnect checkbox) -------- */}
+      <TaskDeleteDialog
+        open={taskDeleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTaskDeleteTarget(null);
+            setDeleteError(null);
+          }
+        }}
+        task={taskDeleteTarget}
+        projectTasks={taskDeleteTarget ? tasks.filter((t) => t.project_id === taskDeleteTarget.project_id) : []}
+        onDelete={handleTaskDelete}
+        error={deleteError}
+        onDismissError={() => setDeleteError(null)}
+      />
+
+      {/* --- Epic delete (kebab → in-flight surfacing + force-confirm) ------ */}
+      <EpicDeleteDialog
+        open={epicDeleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEpicDeleteTarget(null);
+            setDeleteError(null);
+          }
+        }}
+        epic={epicDeleteTarget}
+        epicTasks={epicDeleteTarget ? tasks.filter((t) => t.epic_id === epicDeleteTarget.id) : []}
+        onDelete={handleEpicDelete}
+        error={deleteError}
+        onDismissError={() => setDeleteError(null)}
+      />
     </div>
   );
 }
@@ -1305,6 +1459,8 @@ interface StageCellProps {
   onCardDragStart: (t: BoardTask) => void;
   onCardDragEnd: () => void;
   onCardStart: (t: BoardTask) => void;
+  /** #1832 item 3: opens the task delete modal (card kebab). */
+  onCardDelete: (t: BoardTask) => void;
   startingShortId: string | null;
 }
 
@@ -1323,6 +1479,7 @@ function StageCell({
   onCardDragStart,
   onCardDragEnd,
   onCardStart,
+  onCardDelete,
   startingShortId,
 }: StageCellProps) {
   const [dragOver, setDragOver] = useState(false);
@@ -1373,6 +1530,13 @@ function StageCell({
           onStart={onCardStart}
           onOpen={onOpenCard}
           onDetails={onCardDetails}
+          kebabItems={[
+            {
+              label: "Delete task…",
+              destructive: true,
+              onClick: () => onCardDelete(t),
+            },
+          ]}
           onDragStart={onCardDragStart}
           onDragEnd={onCardDragEnd}
         />
