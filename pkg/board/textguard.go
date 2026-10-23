@@ -13,10 +13,14 @@ package board
 //
 // Design posture (per the #1837 review): every heuristic is
 // fixture-driven with BOTH directions pinned — corruption fixtures
-// reject, legitimate prose/markdown/JSON/code passes. The thresholds
-// match the observed class (fragments repeated 50+ times; structural
-// splice bytes) and sit far above legitimate content; nothing here
-// truncates silently — a violation is a loud GuardError.
+// reject, the common legitimate shapes (prose, fenced code, balanced
+// JSON examples, dividers/tables) pass. NARROW loud-reject class: UNFENCED
+// inline text quoting the splice artifact or field-list shapes like
+// "name", "version": "2.0" rejects with a 400 and a remedy (never
+// silent) — fence the quote. The thresholds match the observed class
+// (fragments repeated 50+ times; structural splice bytes) and sit far
+// above legitimate content; nothing here truncates silently — a
+// violation is a loud GuardError.
 
 import (
 	"fmt"
@@ -120,8 +124,9 @@ func validateTags(tags []string) error {
 // pass — updates patch. NOTE (#1837 review): the deliberately
 // UNGUARDED string fields are move-stage/verdict evidence URLs and
 // free-form session/verdict reviewer identities — short, non-prose
-// identifiers with no corruption surface; the evidence URL carries a
-// plain cap at its own call sites.
+// identifiers with no corruption surface. They are uncapped and
+// unscanned BY DESIGN (a recorded exclusion, not an oversight); if
+// either ever carries free prose, route it through here.
 func validateTextField(field, s string, max int) error {
 	if s == "" {
 		return nil
