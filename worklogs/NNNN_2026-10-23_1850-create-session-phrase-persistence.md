@@ -103,3 +103,34 @@ since DefaultReapGuard brushes its surface.
   concurrent post-spawn write storm, ListSessionIndex CreatedAt feed.
 - repolint: all checks passed (migration sequence + helm mirror
   byte-identical + worklog numbering).
+
+## Review r1 remediation (CHANGES_REQUESTED → this commit)
+
+The automation's verdict: implementation + regression pins sound
+(mutation-verified independently by the reviewer), CHANGES on two
+wiring-tier test gaps + one minor gap + one truthfulness nit.
+
+1. **Read-path grace pin (the blocking gap)** — the composition in
+   reapSessionIfGone (guard sees the listed row's CreatedAt) was the
+   only unpinned link: a future row source dropping the CreatedAt feed
+   would re-introduce the bug with every suite green. Added
+   TestGetSession_Harness404_FreshCountZeroRow_KeptBySpawnGrace
+   (fresh count-zero row + harness 404 → typed 410, KEPT body, row
+   SURVIVES) + the aged twin (AgedCountZeroRow_StillReaped: the grace
+   defers, never pardons).
+2. **Wiring-tier phrase-stability pin** —
+   TestIntegrationSessionRegistry_PostSpawnWriteStormKeepsCreationPhrase:
+   register through the REAL pod-registry handler (the creation mint
+   create_session consumes), drive the post-spawn storm through the
+   REAL session-index service (RecordMessage+drain, title, context,
+   last-seen), assert the CREATION phrase survives on all three
+   surfaces (registry pull / sidebar row / phrase resolution).
+3. **Tier gap** — UpsertSessionMessageCount + UpsertSessionParent got
+   integration birth pins (all six birth paths now covered at both
+   tiers).
+4. **Truthfulness split** — the reconcile pass's kept population was
+   two populations under one metric/log ("history-bearing" is untrue
+   for a grace-sheltered count-0 row): kept_spawn_window outcome +
+   truthful Warn for grace rows; kept_for_operator unchanged for
+   history-bearing rows.
+

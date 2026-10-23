@@ -109,6 +109,19 @@ func TestIntegration_RowCreatingUpsertsBirthWithPhrase(t *testing.T) {
 	assert.True(t, shortid.IsShortIDForm(readPhrase(sesSeen)),
 		"UpdateSessionLastSeen birthed a row without a phrase")
 
+	// Review r1 finding 3: the two upserts that were unit-pinned on
+	// SQL shape only get integration birth pins too — every birth
+	// path, no tier gap.
+	sesCount := "ses_count_" + h.ID()
+	require.NoError(t, svc.UpsertSessionMessageCount(ctx, wsID, sesCount, 9))
+	assert.True(t, shortid.IsShortIDForm(readPhrase(sesCount)),
+		"UpsertSessionMessageCount birthed a row without a phrase")
+
+	sesParent := "ses_parent_" + h.ID()
+	require.NoError(t, svc.UpsertSessionParent(ctx, wsID, sesParent, "ses_parent_up"))
+	assert.True(t, shortid.IsShortIDForm(readPhrase(sesParent)),
+		"UpsertSessionParent birthed a row without a phrase")
+
 	// And the existing-phrase-wins idempotency: after the registration
 	// seam minted P1, a message upsert must NOT change it.
 	sesReg := "ses_reg_" + h.ID()

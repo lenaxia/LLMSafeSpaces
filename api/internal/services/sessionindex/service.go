@@ -26,10 +26,13 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
 // reaped (guard-admitted deletion), kept_for_operator (history-bearing
-// absent — the triage guard held it), delete_failed.
+// absent — the triage guard held it), delete_failed. #1850 adds
+// kept_spawn_window: fresh count-zero rows sheltered by the reap grace
+// (not history-bearing — a distinct population from kept_for_operator,
+// split so the metric never conflates them).
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
+	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, kept_spawn_window, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
