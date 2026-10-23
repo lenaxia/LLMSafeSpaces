@@ -226,3 +226,62 @@ func TestRunWatchdogNoSilentProbeSwallows(t *testing.T) {
 		t.Error("marker enumeration is not paginated — markers hide on page 2+ of chatty PRs (r1 review robustness)")
 	}
 }
+
+// TestRunWatchdogDecisionOutputContract pins the OUTPUT half of the
+// workflow↔binary seam — the r2 review proved the input pin alone is
+// half-built: renaming a Decision json tag (should_comment →
+// shouldComment) kept every gate green while production `jq -r
+// .should_comment` would read null — no comment, no dedup marker, and
+// (with the marker never landing) the per-SHA dispatch cap bypassed:
+// every recovery action silently disabled. This pin asserts every
+// Decision key the workflow consumes exists as an exact json tag on
+// runwatchdog.Decision, and that the consumed set is exactly the four
+// known keys (a new consumption site must consciously update this pin).
+func TestRunWatchdogDecisionOutputContract(t *testing.T) {
+	body := runWatchdogBody(t)
+
+	// The Decision readers: `jq -r .<key>` applied to $DECISION.
+	// Terminator-agnostic: consumers appear as `jq -r .key)` (command
+	// substitution) and `jq -r .comment_body >` (redirect). The PR-list
+	// reader at the tail opens with a quote (`jq -r '.[] | ...`), so it
+	// cannot match.
+	re := regexp.MustCompile(`jq -r \.([A-Za-z_]+)`)
+	consumed := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(body, -1) {
+		consumed[m[1]] = true
+	}
+	wantConsumed := map[string]bool{
+		"reason":          false,
+		"should_comment":  false,
+		"comment_body":    false,
+		"should_dispatch": false,
+	}
+	if len(consumed) == 0 {
+		t.Fatal("no Decision consumption sites found — extraction broken")
+	}
+	for k := range wantConsumed {
+		if !consumed[k] {
+			t.Errorf("workflow no longer consumes Decision key %q — if intentional, update this contract pin consciously (and the workflow's recovery actions)", k)
+		}
+	}
+	for k := range consumed {
+		if _, known := wantConsumed[k]; !known {
+			t.Errorf("workflow consumes NEW Decision key %q — extend this contract pin consciously", k)
+		}
+	}
+
+	// Every consumed key must be an exact json tag on Decision (the
+	// tag-rename mutation class).
+	tags := map[string]bool{}
+	st := reflect.TypeOf(runwatchdog.Decision{})
+	for i := 0; i < st.NumField(); i++ {
+		if tag := st.Field(i).Tag.Get("json"); tag != "" && tag != "-" {
+			tags[strings.Split(tag, ",")[0]] = true
+		}
+	}
+	for k := range consumed {
+		if !tags[k] {
+			t.Errorf("workflow consumes %q but Decision carries no such json tag — a rename silently disabled a recovery action (the proven r2 mutation)", k)
+		}
+	}
+}

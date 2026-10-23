@@ -212,8 +212,9 @@ func TestEvaluate_MinAgeDefault(t *testing.T) {
 }
 
 // TestFaultMarkerFormat pins the exact marker literal shared with the
-// bash callers (pr-review.yml's dispatch-recovery posts the same
-// shape; any drift breaks cross-workflow dedup).
+// bash callers (pr-review.yml's dispatch-recovery posts the identical
+// marker once that PR merges — until then the two pins live in their
+// respective trees; any drift breaks cross-workflow dedup).
 func TestFaultMarkerFormat(t *testing.T) {
 	got := FaultMarker("abc123")
 	want := "<!-- run-watchdog: fault sha=abc123 -->"

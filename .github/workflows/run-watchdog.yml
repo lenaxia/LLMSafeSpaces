@@ -21,7 +21,8 @@ name: Run Watchdog
 # legitimately produce no runs):
 #   1. post the namespaced #1844 fault comment — deduplicated per head
 #      SHA via the `<!-- run-watchdog: fault sha=... -->` marker (the
-#      same literal pr-review.yml's dispatch-recovery posts; pinned by
+#      same literal pr-review.yml's dispatch-recovery posts (once that
+#      PR merges; its tree pins the marker against THIS package); pinned by
 #      pkg/runwatchdog's TestFaultMarkerFormat), tagging #1844 so
 #      instances accumulate as issue evidence;
 #   2. dispatch ci.yml on the branch — the recovery lever verified live
@@ -111,12 +112,18 @@ jobs:
           set -uo pipefail
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          # watch_one <pr> <sha> <branch> <no_auto_json 0|1> — gather
-          # one PR's inputs, decide in Go, execute. Failure-tolerant by
-          # design (the gate_one principle): one broken PR (missing
-          # commit, API hiccup) must never blind the sweep for the
-          # others; only comment/dispatch FAILURES on a confirmed fault
-          # propagate as warnings for the job summary.
+          # watch_one <pr> <sha> <branch> <no_auto> — gather one PR's
+          # inputs, decide in Go, execute. Failure model (GitHub's
+          # default step shell is `bash -e {0}` — errexit is INJECTED):
+          # per-PR probe failures (commit fetch, check-runs query) WARN
+          # and skip that PR — the gate_one tolerance; the marker
+          # enumeration is the deliberate EXCEPTION: it exits 1, which
+          # under -e fails the step and ends the sweep (remaining PRs
+          # are re-covered by the next 10-minute sweep) — a broken dedup
+          # register must never mint duplicate fault comments +
+          # image-publishing dispatches; a one-sweep deferral is the
+          # accepted price. Comment/dispatch failures on a confirmed
+          # fault are warnings (the lever is in the posted comment).
           watch_one() {
             local PR="$1" SHA="$2" BRANCH="$3" NOAUTO="$4"
 
@@ -207,7 +214,12 @@ jobs:
           done
 
           echo "Run-watchdog sweep complete."
-          # Per-PR failures are warnings (the next sweep re-checks);
-          # only a total inability to enumerate PRs fails the job
-          # (the gh pr list above, under set -o pipefail without -e).
+          # The job fails LOUD on exactly two conditions, both
+          # intentional: (a) the gh pr list above failed (nothing was
+          # swept); (b) a marker enumeration exited 1 inside the piped
+          # while-loop (the dedup register is broken — the
+          # never-a-silent-skip rule; under GitHub's injected
+          # `bash -e`, that exit fails the pipeline and the step, and
+          # the remaining PRs defer to the next sweep). Everything
+          # else about a single PR is a warning.
           exit 0

@@ -75,3 +75,13 @@ Against real repo data at 03:17Z, with the workflow's exact gh api + jq query sh
 6. **Marker extraction paginates** (>100-comment PRs hid recent markers on page 2+): per-page streaming + jq -R -s reassembly, LOUD on failure (the dedup register must not degrade to empty).
 
 Validation: pkg/runwatchdog 15/15 green (gofmt/vet clean); tests/ghaworkflows green incl. the four new pins; YAML+bash -n clean; the corrected marker pipeline executed live (paginate → reassemble → state → binary Decision) plus synthetic multi-hit reassembly.
+
+## Addendum (r3) — the output half of the wiring contract + honest failure-model docs
+
+r2 review confirmed all r1 fixes real (three mutation checks by the reviewer) and found the wiring pin half-built, proven by mutation: renaming a Decision json tag (should_comment → shouldComment) kept every gate green while production `jq -r .should_comment` would read null — no comment, no dedup marker, and with the marker never landing the per-SHA dispatch cap bypassed: every recovery action silently disabled, compounding into repeated image-publishing dispatches.
+
+1. **Decision output-contract pin (blocking finding)**: TestRunWatchdogDecisionOutputContract — extracts every `jq -r .<key>` Decision consumption site from the workflow (terminator-agnostic: `)` substitution and `>` redirect forms; the quoted PR-list reader cannot match), asserts the consumed set is exactly {reason, should_comment, comment_body, should_dispatch} (a new consumption site must consciously extend the pin), and asserts every consumed key is an exact json tag on Decision. Mutation-verified in-tree: should_comment → shouldCommentMUT reddens with "a rename silently disabled a recovery action"; restore → green.
+2. **Failure-model comments corrected (low finding)**: the workflow claimed "only a total inability to enumerate PRs fails the job ... under set -o pipefail without -e" — but GitHub's default step shell is `bash -e {0}` (errexit INJECTED). Real semantics, now documented at both sites: per-PR probe failures (commit fetch, check-runs) warn+skip (gate_one tolerance); the marker enumeration's exit 1 fails the step and ends the sweep (remaining PRs defer to the next 10-min sweep) — the deliberate never-a-silent-skip trade: a broken dedup register must never mint duplicates. The job fails LOUD on exactly two intentional conditions.
+3. **Tense nits**: workflow header + TestFaultMarkerFormat comment now state the pr-review.yml marker claim conditionally ("once that PR merges"); PR body's "#1874 added" → "open at r2 review time"; test count corrected to 15.
+
+Validation: full ./tests/ghaworkflows + pkg/runwatchdog green; mutation bite + restore verified; make repolint passed.
