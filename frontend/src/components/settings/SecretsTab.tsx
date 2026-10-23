@@ -5,6 +5,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Tooltip } from "../ui/Tooltip";
 import { useConfirmDialog } from "../../hooks/useConfirmDialog";
+import { normalizeSSHPrivateKeyForSave } from "../../lib/sshPrivateKey";
 
 const SECRET_TYPES = [
   { value: "llm-provider", label: "LLM Providers", icon: "🤖", metaFields: ["provider", "apiKey"] },
@@ -344,7 +345,13 @@ function UpdateSecretForm({
     e.preventDefault();
     setSubmitting(true);
     try {
-      await secretsApi.update(secret.id, { value, globalDefault });
+      await secretsApi.update(secret.id, {
+        // #1793: ssh-key values are whitespace-normalized on save —
+        // one trailing space per line makes stock OpenSSH fail the
+        // delivered file with "error in libcrypto".
+        value: secret.type === "ssh-key" ? normalizeSSHPrivateKeyForSave(value) : value,
+        globalDefault,
+      });
       toast("Secret updated");
       onUpdated();
     } catch (err: unknown) {
@@ -537,11 +544,14 @@ function CreateSecretForm({ onCreated, onError }: { onCreated: () => void; onErr
     setSubmitting(true);
     try {
       const submitMetadata = { ...metadata };
+      // #1793: ssh-key values are whitespace-normalized on save (the
+      // paste/transport trailing-space class); see lib/sshPrivateKey.
+      const submitValue = type === "ssh-key" ? normalizeSSHPrivateKeyForSave(value) : value;
       await secretsApi.create({
-        name, type, value, globalDefault,
+        name, type, value: submitValue, globalDefault,
         metadata: Object.keys(submitMetadata).length > 0 ? submitMetadata : undefined,
       });
-      setCreatedValue(value);
+      setCreatedValue(submitValue);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       onError(msg === "encryption key not available; re-authenticate"
