@@ -1,7 +1,7 @@
 # Worklog: Board tooling hardening P2 — board_list/board_health + setCriteriaMet safety (#1837)
 
 ## Scope
-Issue #1837 P2a+P2b, stacked on worklog 1181 (P1, PR #1863). Composed
+Issue #1837 P2a+P2b, stacked on worklog 1198 (P1, PR #1863). Composed
 with main @ cef43acf (post-#1859 task drawer/audit timeline — no
 overlap: TaskEvents is per-task history; these are per-project /
 fleet projections).
@@ -57,4 +57,4 @@ fleet projections).
 go build/vet ./... clean; pkg/board, pkg/mcp, api/internal/handlers
 (83s incl. parity), cmd/workspace-agentd (365s) ok;
 make openapi-validate ✓ (setCriteriaMet oneOf; BoardEpic/BoardTask
-content_echo_diff noted in 1181); make repolint ✓.
+content_echo_diff noted in 1198); make repolint ✓.
