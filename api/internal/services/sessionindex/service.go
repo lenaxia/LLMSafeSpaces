@@ -43,10 +43,12 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // (#1850 via #1881: fresh count-zero rows sheltered by the reap grace —
 // not history-bearing, a distinct population from kept_for_operator,
 // split so the metric never conflates them), delete_failed,
-// reaped_carrier (#1882: the reaped row was session_origins-marked — a
-// platform routine carrier admitted past the history exception and the
+// reaped_carrier (#1882 via #1901: the reaped row carried a
+// CARRIER-class origin mark — kind='carrier', a platform-deleted
+// routine ephemeral admitted past the history exception and the
 // spawn-window grace; a carrier's absence is platform policy, not
-// harness-list lag); the count rebuild's count_pass_ran (the #1880 r2
+// harness-list lag; preserved sessions' marks — kind='session' — can
+// never reach this outcome); the count rebuild's count_pass_ran (the #1880 r2
 // denominator — a pass whose count leg executed with a live
 // present-set; sidebar traffic without it means the pass is never
 // scheduled, the issue's third skip class), count_rebuilt /

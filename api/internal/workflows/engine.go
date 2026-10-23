@@ -1170,12 +1170,14 @@ func routineSessionID(resp *NodeExecResponse) string {
 // session agentd reports as deleted (deletedSessionId on the node
 // envelope — a session whose id never appeared in any earlier field,
 // because the carrier lived and died inside one node execution), the
-// engine (1) origin-MARKS it first — if the effects' index write
-// fails, the #1340 reconcile's carrier bypass still reaps the ghost
-// row — then (2) runs the platform delete effects (tombstone, index
-// death mark + row delete, session.status:deleted SSE), and (3)
-// cleans the mark (carriers are deleted sessions; origin rows must not
-// accumulate per fire). No-op for an empty id or unwired effects.
+// engine (1) origin-MARKS it first, kind=carrier (#1901: the reap
+// discriminator — the only kind the carrier bypass admits) — if the
+// effects' index write fails, the #1340 reconcile's carrier bypass
+// still reaps the ghost row — then (2) runs the platform delete
+// effects (tombstone, index death mark + row delete,
+// session.status:deleted SSE), and (3) cleans the mark (carriers are
+// deleted sessions; origin rows must not accumulate per fire). No-op
+// for an empty id or unwired effects.
 func (s *Scheduler) propagateCarrierDelete(ctx context.Context, logger Logger, workspaceID string, trigger *wf.TriggerRow, fireID, deletedSessionID string) {
 	if deletedSessionID == "" || s.DeleteEffects == nil {
 		return
@@ -1184,6 +1186,7 @@ func (s *Scheduler) propagateCarrierDelete(ctx context.Context, logger Logger, w
 		SessionID:   deletedSessionID,
 		WorkspaceID: workspaceID,
 		Origin:      types.SessionOriginRoutine,
+		Kind:        types.SessionOriginKindCarrier,
 		TriggerID:   &trigger.ID,
 		FireID:      &fireID,
 		Title:       trigger.Name,
@@ -1200,15 +1203,17 @@ func (s *Scheduler) propagateCarrierDelete(ctx context.Context, logger Logger, w
 }
 
 // recordRoutineSessionArtifacts writes the origin row (sidebar badge +
-// trigger linkage) and the session_index row (platform list
-// discoverability, #1452) for a routine session that exists after its
-// fire — delivered or failed. Both writes are best-effort: the fire's
-// outcome is already decided.
+// trigger linkage, kind=session — the #1901 preserved-fate verdict:
+// NEVER reap-admitted past the operator-review guard) and the
+// session_index row (platform list discoverability, #1452) for a
+// routine session that exists after its fire — delivered or failed.
+// Both writes are best-effort: the fire's outcome is already decided.
 func (s *Scheduler) recordRoutineSessionArtifacts(ctx context.Context, logger Logger, workspaceID string, trigger *wf.TriggerRow, fireID, sessionID string) {
 	if err := s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
 		SessionID:   sessionID,
 		WorkspaceID: workspaceID,
 		Origin:      types.SessionOriginRoutine,
+		Kind:        types.SessionOriginKindSession,
 		TriggerID:   &trigger.ID,
 		FireID:      &fireID,
 		Title:       trigger.Name,

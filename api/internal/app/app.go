@@ -717,10 +717,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// as the user proxy route — ghost rows die with the delete.
 			DeleteEffects: proxyHandler,
 		}
-		// #1882 carrier reap bypass: the #1340 reconcile reaps
-		// session_origins-marked routine carriers absent at the harness
-		// even when they carry history (the DefaultReapGuard history
-		// exception does not apply to platform carriers).
+		// #1901 carrier reap bypass (discriminated): the #1340 reconcile
+		// reaps CARRIER-class origin-marked routine carriers
+		// (kind='carrier' — platform-deleted ephemerals) absent at the
+		// harness even when they carry history; preserved sessions'
+		// marks never reach the guard (item b).
 		proxyHandler.SetSessionOriginLister(newSessionOriginLister(wfStore))
 		// #1901 item (c) drain-time tombstone visibility: a queued
 		// RecordMessage event whose session was deleted between enqueue
@@ -2329,8 +2330,10 @@ func newWorkflowAgentdExecutor(pw apiinterfaces.WorkspacePasswordProvider) *apiw
 	return &apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: pw}
 }
 
-// wfSessionOriginLister adapts the workflows store's ListSessionOrigins
-// to the proxy handler's #1882 carrier-mark lookup (sessionID → origin).
+// wfSessionOriginLister adapts the workflows store's
+// ListCarrierOriginMarks to the proxy handler's #1901 carrier-mark
+// lookup (carrier-class ids only — the kind discriminator lives in the
+// store's SQL).
 type wfSessionOriginLister struct {
 	store *workflows.Store
 }
@@ -2339,16 +2342,8 @@ func newSessionOriginLister(store *workflows.Store) handlers.SessionOriginLister
 	return &wfSessionOriginLister{store: store}
 }
 
-func (l *wfSessionOriginLister) ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error) {
-	rows, err := l.store.ListSessionOrigins(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	marks := make(map[string]string, len(rows))
-	for _, row := range rows {
-		marks[row.SessionID] = row.Origin
-	}
-	return marks, nil
+func (l *wfSessionOriginLister) ListCarrierOriginMarks(ctx context.Context, workspaceID string) (map[string]bool, error) {
+	return l.store.ListCarrierOriginMarks(ctx, workspaceID)
 }
 
 func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, ownerType, ownerID string) (string, error) {

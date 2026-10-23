@@ -55,32 +55,36 @@ func writeSessionGoneBodyWithSuggestions(c *gin.Context, message string, suggest
 	c.JSON(http.StatusGone, body)
 }
 
-// SessionOriginLister feeds the #1882 carrier reap-guard bypass: the
-// workspace's session_origins marks (sessionID → origin). Satisfied in
-// production by an adapter over the workflows store's
-// ListSessionOrigins.
+// SessionOriginLister feeds the #1901 carrier reap-guard bypass: the
+// workspace's CARRIER-class origin marks — session ids the platform
+// itself deleted (session_origins.kind='carrier'), the ONLY class the
+// bypass admits. Satisfied in production by an adapter over the
+// workflows store's ListCarrierOriginMarks; preserved sessions' marks
+// (kind='session') are invisible through this seam BY CONTRACT, so the
+// blanket-bypass defect (a harness store reset reaping a preserved
+// session's history row — #1901 item b) is unreachable at the handler.
 type SessionOriginLister interface {
-	ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error)
+	ListCarrierOriginMarks(ctx context.Context, workspaceID string) (map[string]bool, error)
 }
 
-// SetSessionOriginLister wires the #1882 carrier-mark lookup. Nil (or
+// SetSessionOriginLister wires the #1901 carrier-mark lookup. Nil (or
 // never called) disables the bypass — the reap guard keeps its
 // DefaultReapGuard-only semantics.
 func (h *ProxyHandler) SetSessionOriginLister(l SessionOriginLister) {
 	h.sessionOriginLister = l
 }
 
-// carrierOriginMarks returns the workspace's session_origins marks for
+// carrierOriginMarks returns the workspace's carrier-class marks for
 // the reap guard. Fail-safe: a lookup error degrades to NO marks (the
 // history-bearing row stays kept_for_operator — uncertainty never
 // widens a reap).
-func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID string) map[string]string {
+func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID string) map[string]bool {
 	if h.sessionOriginLister == nil {
 		return nil
 	}
-	marks, err := h.sessionOriginLister.ListSessionOrigins(ctx, workspaceID)
+	marks, err := h.sessionOriginLister.ListCarrierOriginMarks(ctx, workspaceID)
 	if err != nil {
-		h.logger.Warn("session reconcile: origin marks lookup failed; carrier bypass disabled for this pass",
+		h.logger.Warn("session reconcile: carrier marks lookup failed; carrier bypass disabled for this pass",
 			"workspaceID", workspaceID, "error", err.Error())
 		return nil
 	}
@@ -123,13 +127,13 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			if row.InternalID != sessionID {
 				continue
 			}
-			if sessionindex.DefaultReapGuard(row) || marks[sessionID] != "" {
+			if sessionindex.DefaultReapGuard(row) || marks[sessionID] {
 				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
 					h.logger.Warn("session_gone: index row reap failed",
 						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
 					writeSessionGoneBody(c, sessionGoneUncertain)
 				} else {
-					if marks[sessionID] != "" {
+					if marks[sessionID] {
 						sessionindex.ReconcileOutcome("reaped_carrier")
 					}
 					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
@@ -220,14 +224,19 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		return present, nil
 	}
 
-	// #1882 carrier bypass: session_origins-marked rows (platform
+	// #1901 carrier bypass (discriminated): CARRIER-class origin marks
+	// (session_origins.kind='carrier' — platform-deleted ephemeral
 	// routine carriers) are admitted past the history exception even
 	// with message_count > 0 — the harness-store-reset rationale does
 	// not apply to sessions the platform itself created and deleted.
-	// Every admitted row still faces the #1850 by-ID probe below.
+	// Preserved sessions' marks (kind='session') never reach this
+	// guard: their absence from the harness keeps the
+	// kept_for_operator review (a store reset is exactly that
+	// scenario for them — #1901 item b). Every admitted row still
+	// faces the #1850 by-ID probe below.
 	marks := h.carrierOriginMarks(ctx, workspaceID)
 	reap := func(row types.SessionListItem) bool {
-		return sessionindex.DefaultReapGuard(row) || marks[row.InternalID] != ""
+		return sessionindex.DefaultReapGuard(row) || marks[row.InternalID]
 	}
 	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, reap)
 	// keptForOperator rows keep a threshold-level counter so every
@@ -292,7 +301,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			continue
 		}
 		sessionindex.ReconcileOutcome("reaped")
-		if marks[id] != "" {
+		if marks[id] {
 			sessionindex.ReconcileOutcome("reaped_carrier")
 		}
 		h.logger.Info("session reconcile: reaped ghost index row",
