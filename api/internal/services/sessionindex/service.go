@@ -17,6 +17,16 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
+// DeletedSessionChecker reports whether a (workspace, session) pair is
+// tombstoned — deleted recently enough that late-arriving writes must
+// not re-mint its index row (#1901 item c). Satisfied in production by
+// the wsstate store's IsSessionDeleted (in-memory same-replica, or the
+// Redis-backed cluster-wide tombstone with its fail-closed outage
+// policy: during a Redis outage the checker answers true and the
+// drainer suppresses re-mints — data integrity over availability, the
+// existing worklog-371 posture extended to the drain).
+type DeletedSessionChecker func(ctx context.Context, workspaceID, sessionID string) bool
+
 // sessionIndexEvents counts the write path's outcomes (#754 fold-in via
 // #1340): queue drops were previously Warn-log-only — not queryable.
 var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -79,6 +89,13 @@ type Service struct {
 	registerLRU *list.List // front = most recent
 	registerMap map[string]*list.Element
 	registerCap int
+
+	// deletedChecker is the #1901 item-c tombstone consult for the
+	// drain: a queued RecordMessage event whose session was deleted
+	// between enqueue and drain must not re-mint the row (the #1850
+	// phrase-bearing INSERT leg births a fresh visible ghost). Nil (or
+	// never set) disables the consult — pre-#1901 drain semantics.
+	deletedChecker DeletedSessionChecker
 }
 
 // registeredPair is one LRU entry.
@@ -210,6 +227,14 @@ func (s *Service) Stop() error {
 		s.logger.Info("SessionIndexService stopped")
 	}
 	return nil
+}
+
+// SetDeletedSessionChecker wires the #1901 item-c drain-time tombstone
+// consult. Nil (or never called) disables it — the drainer keeps its
+// pre-#1901 apply-unconditionally semantics. Must be called before
+// Start (the drainer reads the field unsynchronized).
+func (s *Service) SetDeletedSessionChecker(c DeletedSessionChecker) {
+	s.deletedChecker = c
 }
 
 // RecordMessage is non-blocking: pushes to a bounded channel.
